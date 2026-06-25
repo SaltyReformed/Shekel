@@ -1,0 +1,264 @@
+/* Shekel accounts screen -- the "Net Worth Cockpit" rebuild
+   (docs/design/accounts_audit.md, "Chosen direction: Net Worth Cockpit").
+   Anatomy: net-worth hero band (headline + chips + forward trend chart),
+   the auto-fit account grid grouped by category with a per-group subtotal,
+   the Property home-equity cards, the savings section, and the debt
+   summary tied to the liabilities group.
+
+   Load-order contract (see base.html): this file loads AFTER
+   dashboard.css (so it may reuse the shared .pulse-chip / .pulse-chart /
+   .verdict-pill vocabulary defined there) and BEFORE utilities.css (which
+   must stay last). Tokens only -- no raw hex, no !important. */
+
+/* =============================================
+   NET-WORTH HERO BAND
+   Reuses .pulse-canvas + .pulse-chart + .pulse-statrow + .pulse-chip*
+   from dashboard.css; adds only the cockpit-specific hero figure (the
+   dashboard's .pulse-hero__num is a click-to-edit control with a pointer
+   cursor, which this read-only headline must not imply).
+   ============================================= */
+.nw-sky {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem 1.5rem;
+  padding: 1.125rem 1.375rem 0.25rem;
+  flex-wrap: wrap;
+}
+
+.nw-hero {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.nw-hero__num {
+  font-size: clamp(1.9rem, 3.5vw, 2.6rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--shekel-text-primary);
+}
+
+/* Net worth below zero is a real financial warning, paired with the
+   leading minus sign the money macro renders (color is never the only
+   signal). */
+.nw-hero__num--neg {
+  color: var(--shekel-danger);
+}
+
+.nw-hero__cap {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  margin-top: 0.125rem;
+}
+
+/* The chip row sits beside the hero, mirroring the dashboard sky band. */
+.nw-statrow {
+  margin: 0.25rem 0 0 1.25rem;
+}
+
+/* Money-state coloring for chip values that carry a sign meaning
+   (liabilities are money owed; the period change is a gain or a loss).
+   The chip background stays neutral; only the figure takes the state
+   color, so the band reads calm rather than alarmed. */
+.nw-amount--neg {
+  color: var(--shekel-danger);
+}
+
+.nw-amount--pos {
+  color: var(--shekel-done);
+}
+
+/* =============================================
+   ACCOUNT GRID (per-category auto-fit)
+   Each category renders its OWN auto-fit grid under its group header, so
+   empty tracks collapse and there are no trailing holes; more cards flow
+   in as the viewport widens (audit Surface 3 + Loop A grid correction).
+   ============================================= */
+.acct-group {
+  margin-bottom: 1.75rem;
+}
+
+.acct-group__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.acct-group__title {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-secondary);
+  margin: 0;
+}
+
+.acct-group__subtotal {
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+/* The liabilities subtotal is money owed: render the figure in the danger
+   token (a display decision keyed on the category, not the figure's
+   sign -- the producer sums positive owed balances). */
+.acct-group__subtotal--liability {
+  color: var(--shekel-danger);
+}
+
+.acct-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(17.5rem, 100%), 1fr));
+  gap: 1rem;
+}
+
+/* =============================================
+   ACCOUNT CARD
+   The whole card opens the type-specific detail page (the name carries
+   the .stretched-link); the Transfer button and the kebab are raised
+   siblings so the stretched link does not swallow them.
+   ============================================= */
+.acct-card {
+  position: relative;
+}
+
+.acct-card .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.acct-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/* Monochrome type glyph: the Steel Ink base keeps the accent as the only
+   non-money chroma, so account types are distinguished by glyph, not by a
+   rainbow of icon colors. */
+.acct-card__icon {
+  color: var(--shekel-text-secondary);
+  font-size: 1.125rem;
+  line-height: 1.4;
+}
+
+.acct-card__titlewrap {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.acct-card__name {
+  font-weight: 600;
+  color: var(--shekel-text-primary);
+  text-decoration: none;
+}
+
+.acct-card__name:hover,
+.acct-card__name:focus-visible {
+  color: var(--shekel-accent);
+  text-decoration: underline;
+}
+
+.acct-card__type {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
+.acct-card__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+}
+
+.acct-card__num {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--shekel-text-primary);
+}
+
+.acct-card__num--neg {
+  color: var(--shekel-danger);
+}
+
+.acct-card__secondary {
+  font-size: 0.78125rem;
+  color: var(--shekel-text-secondary);
+}
+
+/* Raised above the stretched link so they remain independently
+   clickable (Loop A card link/edit accessibility refinement). */
+.acct-card__actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: auto;
+  padding-top: 0.25rem;
+}
+
+.acct-card__actions .dropdown {
+  margin-left: auto;
+}
+
+/* =============================================
+   HOME EQUITY CARDS (Property <-> its mortgage)
+   Surfaces the equity producer (home_equity_service) the Property detail
+   page already uses; the net-worth math itself stays emergent.
+   ============================================= */
+.equity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: 1rem;
+}
+
+.equity-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.equity-card__row + .equity-card__row {
+  margin-top: 0.3125rem;
+}
+
+.equity-card__equity {
+  border-top: 1px solid var(--shekel-border-subtle);
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+.equity-card__equity-num {
+  font-weight: 700;
+  color: var(--shekel-done);
+}
+
+/* Underwater: debt exceeds value (a numeric comparison decides this, never
+   a name string). */
+.equity-card__equity-num--neg {
+  color: var(--shekel-danger);
+}
+
+/* =============================================
+   RESPONSIVE
+   ============================================= */
+@media (max-width: 767.98px) {
+  .nw-sky {
+    gap: 0.75rem 1.25rem;
+    padding: 0.875rem 1rem 0.125rem;
+  }
+
+  .nw-statrow {
+    margin: 0.25rem 0 0;
+  }
+}

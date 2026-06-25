@@ -1,6 +1,32 @@
 {% extends "base.html" %}
-{% from "_money_macros.html" import dti_badge, money %}
-{% block title %}Accounts Dashboard -- Shekel{% endblock title %}
+{% from "_money_macros.html" import dti_badge, money, pace_pill %}
+{% block title %}Accounts -- Shekel{% endblock title %}
+
+{# ── Per-card presentation helpers ───────────────────────────────────
+   Both resolve by integer ID / boolean type flag, never a ref-table
+   ``name`` string (the project's "IDs for logic" invariant). Defined
+   once so the icon glyph and the detail-page target cannot drift apart
+   across the card grid. #}
+{% macro acct_glyph(account) -%}
+{%- if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING -%}bi-bank
+{%- elif account.account_type and account.account_type.has_interest -%}bi-piggy-bank
+{%- elif account.account_type and account.account_type.has_amortization -%}bi-credit-card-2-back
+{%- elif account.account_type and account.account_type.has_appreciation -%}bi-house-door
+{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_RETIREMENT -%}bi-briefcase
+{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_INVESTMENT -%}bi-graph-up-arrow
+{%- elif account.account_type and account.account_type_id == ACCT_TYPE_SAVINGS -%}bi-piggy-bank
+{%- else -%}bi-wallet2
+{%- endif -%}
+{%- endmacro %}
+
+{% macro detail_endpoint(account) -%}
+{%- if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING -%}accounts.checking_detail
+{%- elif account.account_type and account.account_type.has_interest -%}accounts.interest_detail
+{%- elif account.account_type and account.account_type.has_amortization -%}loan.dashboard
+{%- elif account.account_type and account.account_type.has_appreciation -%}accounts.property_detail
+{%- elif account.account_type and account.account_type.category_id in (ACCT_CAT_RETIREMENT, ACCT_CAT_INVESTMENT) -%}investment.dashboard
+{%- endif -%}
+{%- endmacro %}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
@@ -12,9 +38,13 @@
 {% endblock breadcrumbs %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-wallet2"></i> Accounts Dashboard</h4>
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <h4 class="mb-0"><i class="bi bi-wallet2"></i> Accounts</h4>
   <div class="d-flex gap-2 flex-wrap">
+    {# "Manage Accounts" is temporary: the unified page becomes the manage
+       surface once inline balance edit lands (Loop B P2 edit slice) and the
+       /accounts table is retired by redirect (P4). Until then it is the only
+       balance-true-up surface, so it stays to avoid a functionality gap. #}
     <a href="{{ url_for('accounts.list_accounts') }}" class="btn btn-outline-secondary btn-sm">
       <i class="bi bi-pencil-square"></i> Manage Accounts
     </a>
@@ -27,7 +57,63 @@
   </div>
 </div>
 
-{# --- Account Overview Cards (grouped by category) --- #}
+{% if not account_data %}
+<div class="text-center py-5">
+  <i class="bi bi-wallet2 fs-1 text-muted"></i>
+  <h5 class="mt-3">No accounts yet</h5>
+  <p class="text-muted">Add an account to see your net worth and track your balances.</p>
+  <a href="{{ url_for('accounts.new_account') }}" class="btn btn-primary">
+    <i class="bi bi-plus-circle"></i> Create Account
+  </a>
+</div>
+{% else %}
+
+{# ── Net-worth hero band: headline + chips + forward trend ──────────── #}
+<div class="pulse-canvas mb-4">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Net worth</div>
+      <div class="nw-hero__num font-mono{% if net_worth.net_worth < 0 %} nw-hero__num--neg{% endif %}">
+        {{ money(net_worth.net_worth) }}
+      </div>
+      <div class="nw-hero__cap">as of today</div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Total assets</div>
+        <div class="pulse-chip__value font-mono">{{ money(net_worth.total_assets) }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Total liabilities</div>
+        <div class="pulse-chip__value font-mono{% if net_worth.total_liabilities > 0 %} nw-amount--neg{% endif %}">
+          {{ money(net_worth.total_liabilities) }}
+        </div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Change this period</div>
+        {% if net_worth.change_this_period is not none %}
+        <div class="pulse-chip__value font-mono{% if net_worth.change_this_period > 0 %} nw-amount--pos{% elif net_worth.change_this_period < 0 %} nw-amount--neg{% endif %}">
+          {%- if net_worth.change_this_period > 0 %}+{% endif %}{{ money(net_worth.change_this_period) }}
+        </div>
+        {% else %}
+        <div class="pulse-chip__value text-muted">--</div>
+        {% endif %}
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Liquid</div>
+        <div class="pulse-chip__value font-mono">{{ money(net_worth.liquid) }}</div>
+      </div>
+    </div>
+  </div>
+  {% if net_worth.series.periods %}
+  <div class="pulse-chart">
+    <canvas id="net-worth-chart-canvas" data-chart='{{ net_worth_chart_json }}'
+            role="img" aria-label="Projected net worth trend"></canvas>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Account grid: one auto-fit grid per category, with a subtotal ──── #}
 {% set category_icons = {
   'asset': 'bi-bank',
   'liability': 'bi-credit-card',
@@ -36,193 +122,340 @@
   'other': 'bi-wallet',
 } %}
 {% for category_name, category_accounts in grouped_accounts.items() %}
-<h5 class="mb-2 mt-3">
-  <i class="bi {{ category_icons.get(category_name, 'bi-wallet') }}"></i>
-  {{ category_name|title }}
-</h5>
-
-{# --- Debt Summary Card (liability section only) --- #}
-{% if category_name == 'liability' and debt_summary %}
-<div class="card mb-3">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Debt Summary</h6>
+<section class="acct-group">
+  <div class="acct-group__head">
+    <h2 class="acct-group__title">
+      <i class="bi {{ category_icons.get(category_name, 'bi-wallet') }}"></i>
+      {{ category_name|title }}
+    </h2>
+    <span class="acct-group__subtotal{% if category_name == 'liability' %} acct-group__subtotal--liability{% endif %} font-mono">
+      {{ money(group_subtotals[category_name]) }}
+    </span>
   </div>
-  <div class="card-body">
-    <div class="row">
-      <div class="col-md-6">
-        <div class="d-flex justify-content-between small mb-1">
-          <span class="text-muted">Total Debt</span>
-          <span class="fw-bold font-mono">{{ money(debt_summary.total_debt) }}</span>
+
+  <div class="acct-grid">
+    {% for ad in category_accounts %}
+    {% set ep = detail_endpoint(ad.account) | trim %}
+    <div class="card acct-card">
+      <div class="card-body">
+        <div class="acct-card__head">
+          <i class="bi {{ acct_glyph(ad.account) }} acct-card__icon"></i>
+          <div class="acct-card__titlewrap">
+            {% if ep %}
+            <a href="{{ url_for(ep, account_id=ad.account.id) }}"
+               class="stretched-link acct-card__name">{{ ad.account.name }}</a>
+            {% else %}
+            <span class="acct-card__name">{{ ad.account.name }}</span>
+            {% endif %}
+            {% if ad.needs_setup %}
+            <span class="badge bg-warning text-dark ms-1">Setup Required</span>
+            {% endif %}
+            {% if ad.is_paid_off %}
+            <span class="badge bg-success ms-1">Paid Off</span>
+            {% endif %}
+            <div class="acct-card__type">
+              {{ ad.account.account_type.name if ad.account.account_type else '--' }}
+              {%- if ad.interest_params is defined and ad.interest_params %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
+              {%- if ad.loan_params is defined and ad.loan_params %} &middot; {{ "%.3f"|format(ad.current_rate|to_percent) }}%{% endif -%}
+              {%- if ad.investment_params is defined and ad.investment_params %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
+              {%- if ad.account.asset_appreciation_params %} &middot; Appr {{ "%.2f"|format(ad.account.asset_appreciation_params.annual_appreciation_rate|to_percent) }}%{% endif -%}
+            </div>
+          </div>
         </div>
-        <div class="d-flex justify-content-between small mb-1">
-          <span class="text-muted">Monthly Payments</span>
-          <span class="fw-bold font-mono">{{ money(debt_summary.total_monthly_payments) }}</span>
+
+        <div>
+          <div class="acct-card__label">Balance</div>
+          <div class="acct-card__num font-mono{% if ad.current_balance is not none and ad.current_balance < 0 %} acct-card__num--neg{% endif %}">
+            {% if ad.current_balance is not none %}{{ money(ad.current_balance) }}{% else %}--{% endif %}
+          </div>
+        </div>
+
+        {% if ad.loan_params is defined and ad.loan_params %}
+        <div class="acct-card__secondary">
+          Monthly Payment <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
+          {% if ad.payoff_date %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
+        </div>
+        {% elif ad.projected %}
+        {% set last_proj = ad.projected.items() | list | last %}
+        <div class="acct-card__secondary">
+          {{ last_proj[0] }} <span class="font-mono">{{ money(last_proj[1], cents=false) }}</span>
+        </div>
+        {% endif %}
+
+        <div class="acct-card__actions">
+          <a href="{{ url_for('transfers.new_transfer_template', from_account=ad.account.id) }}"
+             class="btn btn-sm btn-outline-secondary"
+             title="New transfer from {{ ad.account.name }}">
+            <i class="bi bi-arrow-left-right"></i> Transfer
+          </a>
+          <div class="dropdown">
+            <button class="btn btn-sm btn-outline-secondary" type="button"
+                    data-bs-toggle="dropdown" aria-expanded="false"
+                    aria-label="More actions for {{ ad.account.name }}">
+              <i class="bi bi-three-dots-vertical"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li>
+                <a class="dropdown-item" href="{{ url_for('accounts.edit_account', account_id=ad.account.id) }}">
+                  <i class="bi bi-pencil me-2"></i>Edit
+                </a>
+              </li>
+              <li><hr class="dropdown-divider"></li>
+              <li>
+                <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
+                      data-confirm="Archive this account?">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="dropdown-item">
+                    <i class="bi bi-archive me-2"></i>Archive
+                  </button>
+                </form>
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
-      <div class="col-md-6">
-        <div class="d-flex justify-content-between small mb-1">
-          <span class="text-muted">Weighted Avg Rate</span>
-          <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# Debt Summary, tied to the liabilities group (rebuild decision 2). It
+     now sits AFTER the group's grid rather than as a full-width grid-breaker
+     before it (audit Surface 3 + 4). #}
+  {% if category_name == 'liability' and debt_summary %}
+  <div class="card mt-3">
+    <div class="card-header">
+      <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Debt Summary</h6>
+    </div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col-md-6">
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">Total Debt</span>
+            <span class="fw-bold font-mono">{{ money(debt_summary.total_debt) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">Monthly Payments</span>
+            <span class="fw-bold font-mono">{{ money(debt_summary.total_monthly_payments) }}</span>
+          </div>
         </div>
-        {% if debt_summary.projected_debt_free_date %}
-        <div class="d-flex justify-content-between small mb-1">
-          <span class="text-muted">Debt-Free Date</span>
-          <span class="fw-bold">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
+        <div class="col-md-6">
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">Weighted Avg Rate</span>
+            <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span>
+          </div>
+          {% if debt_summary.projected_debt_free_date %}
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">Debt-Free Date</span>
+            <span class="fw-bold">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% if debt_summary.dti_ratio is not none %}
+      <div class="mt-2 pt-2 border-top d-flex align-items-center">
+        <span class="text-muted small me-2">Debt-to-Income:</span>
+        <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
+        {{ dti_badge(debt_summary.dti_label) }}
+      </div>
+      {% else %}
+      <div class="mt-2 pt-2 border-top">
+        <span class="text-muted small">Debt-to-Income: N/A (no salary profile)</span>
+      </div>
+      {% endif %}
+      <div class="mt-2 pt-2 border-top text-end">
+        <a href="{{ url_for('debt_strategy.dashboard') }}" class="btn btn-sm btn-outline-warning">
+          <i class="bi bi-graph-down-arrow"></i> Payoff Strategies
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+
+{# ── Home equity: each Property nets against the loans it secures ───── #}
+{% if property_equity %}
+<section class="acct-group">
+  <div class="acct-group__head">
+    <h2 class="acct-group__title"><i class="bi bi-house-door"></i> Home Equity</h2>
+  </div>
+  <div class="equity-grid">
+    {% for pe in property_equity %}
+    <div class="card">
+      <div class="card-body">
+        <h6 class="card-title mb-2">{{ pe.account.name }}</h6>
+        <div class="equity-card__row">
+          <span class="text-muted">Market value</span>
+          <span class="font-mono">{{ money(pe.equity.market_value) }}</span>
+        </div>
+        <div class="equity-card__row">
+          <span class="text-muted">Mortgage balance</span>
+          <span class="font-mono">{{ money(pe.equity.total_debt) }}</span>
+        </div>
+        <div class="equity-card__row equity-card__equity">
+          <span class="text-muted">Equity</span>
+          <span class="font-mono equity-card__equity-num{% if pe.equity.equity < 0 %} equity-card__equity-num--neg{% endif %}">
+            {{ money(pe.equity.equity) }}
+          </span>
+        </div>
+        {% if pe.equity.ltv is not none %}
+        <div class="equity-card__row mt-1">
+          <span class="text-muted">Loan-to-value</span>
+          <span class="font-mono">{{ "%.1f"|format(pe.equity.ltv|to_percent) }}%</span>
         </div>
         {% endif %}
       </div>
     </div>
-    {# DTI ratio #}
-    {% if debt_summary.dti_ratio is not none %}
-    <div class="mt-2 pt-2 border-top d-flex align-items-center">
-      <span class="text-muted small me-2">Debt-to-Income:</span>
-      <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
-      {# Shared verdict-badge macro (Gate B6: this mapping was duplicated
-         with the dashboard's debt card). #}
-      {{ dti_badge(debt_summary.dti_label) }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ── Savings section: emergency fund + goals ───────────────────────── #}
+{% if total_savings > 0 %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-shield-check"></i> Emergency Fund Coverage</h6>
+  </div>
+  <div class="card-body">
+    <div class="row text-center">
+      <div class="col">
+        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.months_covered }}</div>
+        <small class="text-muted">Months</small>
+      </div>
+      <div class="col">
+        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.paychecks_covered }}</div>
+        <small class="text-muted">Paychecks</small>
+      </div>
+      <div class="col">
+        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.years_covered }}</div>
+        <small class="text-muted">Years</small>
+      </div>
     </div>
-    {% elif debt_summary %}
-    <div class="mt-2 pt-2 border-top">
-      <span class="text-muted small">Debt-to-Income: N/A (no salary profile)</span>
-    </div>
-    {% endif %}
-    <div class="mt-2 pt-2 border-top text-end">
-      <a href="{{ url_for('debt_strategy.dashboard') }}" class="btn btn-sm btn-outline-warning">
-        <i class="bi bi-graph-down-arrow"></i> Payoff Strategies
-      </a>
+    <div class="text-center mt-2">
+      <small class="text-muted">
+        Based on {{ money(total_savings, cents=false) }} savings
+        {% if avg_monthly_expenses > 0 %}
+        and {{ money(avg_monthly_expenses, cents=false) }}/mo avg expenses
+        {% endif %}
+      </small>
     </div>
   </div>
 </div>
 {% endif %}
 
+<h5 class="mb-3"><i class="bi bi-bullseye"></i> Savings Goals</h5>
+{% if goal_data %}
 <div class="row g-3 mb-4">
-  {% for ad in category_accounts %}
-  <div class="col-md-6 col-lg-4">
+  {% for gd in goal_data %}
+  <div class="col-md-6">
     <div class="card h-100">
       <div class="card-body">
-        <div class="d-flex justify-content-between align-items-start">
+        <div class="d-flex justify-content-between align-items-start mb-2">
           <div>
-            <h6 class="card-title mb-1">
-              {% if ad.account.account_type and ad.account.account_type.has_interest %}
-                <i class="bi bi-bank2 text-info"></i>
-              {% elif ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_SAVINGS %}
-                <i class="bi bi-piggy-bank text-success"></i>
-              {% elif ad.account.account_type and ad.account.account_type.has_amortization %}
-                <i class="bi {{ ad.account.account_type.icon_class or 'bi-bank' }} text-warning"></i>
-              {% elif ad.account.account_type and ad.account.account_type.category_id == ACCT_CAT_RETIREMENT %}
-                <i class="bi bi-briefcase text-info"></i>
-              {% elif ad.account.account_type and ad.account.account_type.category_id == ACCT_CAT_INVESTMENT %}
-                <i class="bi bi-graph-up text-success"></i>
-              {% else %}
-                <i class="bi bi-bank text-primary"></i>
-              {% endif %}
-              {{ ad.account.name }}
-              {% if ad.needs_setup %}
-              <span class="badge bg-warning text-dark ms-1">Setup Required</span>
-              {% endif %}
-              {% if ad.is_paid_off %}
-              <span class="badge bg-success ms-1">Paid Off</span>
-              {% endif %}
-            </h6>
-            <small class="text-muted">
-              {% if ad.account.account_type and ad.account.account_type.has_interest %}
-                {{ ad.account.account_type.name }}
-              {% elif ad.account.account_type %}
-                {{ ad.account.account_type.name }}
-              {% endif %}
-              {% if ad.interest_params is defined and ad.interest_params %}
-                -- APY: {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%
-              {% endif %}
-              {% if ad.loan_params is defined and ad.loan_params %}
-                {# DH-#56: resolver-derived current rate, not the retired
-                   LoanParams.interest_rate column. #}
-                -- {{ "%.3f"|format(ad.current_rate|to_percent) }}%
-              {% endif %}
-              {% if ad.investment_params is defined and ad.investment_params %}
-                -- Return: {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%
-              {% endif %}
-            </small>
+            <h6 class="card-title mb-0">{{ gd.goal.name }}</h6>
+            <small class="text-muted">{{ gd.goal.account.name if gd.goal.account else '' }}</small>
           </div>
           <div class="d-flex gap-1">
-          <a href="{{ url_for('transfers.new_transfer_template', from_account=ad.account.id) }}"
-             class="btn btn-sm btn-outline-secondary" title="New transfer from this account">
-            <i class="bi bi-arrow-left-right"></i>
-          </a>
-          {% if ad.account.account_type and ad.account.account_type_id == ACCT_TYPE_CHECKING %}
-          <a href="{{ url_for('accounts.checking_detail', account_id=ad.account.id) }}"
-             class="btn btn-sm btn-outline-primary" title="Checking Detail">
-            <i class="bi bi-bank"></i>
-          </a>
-          {% elif ad.account.account_type and ad.account.account_type.has_interest %}
-          <a href="{{ url_for('accounts.interest_detail', account_id=ad.account.id) }}"
-             class="btn btn-sm btn-outline-info" title="Interest Detail">
-            <i class="bi bi-graph-up"></i>
-          </a>
-          {% elif ad.account.account_type and ad.account.account_type.has_amortization %}
-          <a href="{{ url_for('loan.dashboard', account_id=ad.account.id) }}"
-             class="btn btn-sm btn-outline-warning" title="{{ ad.account.account_type.name }} Detail">
-            <i class="bi {{ ad.account.account_type.icon_class or 'bi-bank' }}"></i>
-          </a>
-          {% elif ad.account.account_type and ad.account.account_type.category_id in (ACCT_CAT_RETIREMENT, ACCT_CAT_INVESTMENT) %}
-          <a href="{{ url_for('investment.dashboard', account_id=ad.account.id) }}"
-             class="btn btn-sm btn-outline-info" title="Investment Detail">
-            <i class="bi bi-graph-up"></i>
-          </a>
-          {% endif %}
-          <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
-                class="d-inline" data-confirm="Archive this account?">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Archive">
-              <i class="bi bi-archive"></i>
-            </button>
-          </form>
+            <a href="{{ url_for('savings.edit_goal', goal_id=gd.goal.id) }}"
+               class="btn btn-sm btn-outline-secondary" aria-label="Edit {{ gd.goal.name }}">
+              <i class="bi bi-pencil"></i>
+            </a>
+            <a href="{{ url_for('transfers.new_transfer_template', to_account=gd.goal.account_id) }}"
+               class="btn btn-sm btn-outline-primary" title="Create recurring transfer to this goal">
+              <i class="bi bi-arrow-left-right"></i>
+            </a>
           </div>
         </div>
-        <div class="mt-3">
-          <div class="text-muted small">Current Balance</div>
-          <div class="fs-4 fw-bold font-mono text-accent">
-            {% if ad.current_balance is not none %}
-              {{ money(ad.current_balance) }}
+
+        {% if gd.income_descriptor and not gd.has_salary_data %}
+        <div class="alert alert-warning py-1 px-2 small mb-2">
+          <i class="bi bi-exclamation-triangle"></i>
+          No salary profile configured -- income target cannot be calculated.
+        </div>
+        {% endif %}
+
+        <div class="mb-2">
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="font-mono">{{ money(gd.current_balance, cents=false) }}</span>
+            <span class="font-mono">
+              {{ money(gd.resolved_target, cents=false) }}
+              {% if gd.income_descriptor %}
+              <span class="text-muted">({{ gd.income_descriptor }})</span>
+              {% endif %}
+            </span>
+          </div>
+          <div class="progress progress-h-8">
+            <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
+                 role="progressbar"
+                 data-progress-pct="{{ gd.progress_pct }}"
+                 aria-valuenow="{{ gd.progress_pct }}"
+                 aria-valuemin="0"
+                 aria-valuemax="100">
+            </div>
+          </div>
+          <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
+        </div>
+
+        {% if gd.goal.target_date %}
+        <div class="d-flex justify-content-between small">
+          <span class="text-muted">Target date</span>
+          <span>{{ gd.goal.target_date.strftime('%b %d, %Y') }}</span>
+        </div>
+        {% endif %}
+
+        {% if gd.remaining_periods is not none and gd.remaining_periods > 0 %}
+        <div class="d-flex justify-content-between small">
+          <span class="text-muted">Periods remaining</span>
+          <span>{{ gd.remaining_periods }}</span>
+        </div>
+        {% endif %}
+
+        {% if gd.required_contribution is not none %}
+        <div class="d-flex justify-content-between small mt-1">
+          <span class="text-muted fw-semibold">Recommended per paycheck</span>
+          <span class="fw-semibold font-mono text-accent">{{ money(gd.required_contribution) }}</span>
+        </div>
+        {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
+        <div class="small text-warning mt-1">
+          <i class="bi bi-exclamation-triangle"></i> Past target date
+        </div>
+        {% endif %}
+
+        {% if gd.goal.contribution_per_period %}
+        <div class="d-flex justify-content-between small">
+          <span class="text-muted">Manual target</span>
+          <span class="font-mono">{{ money(gd.goal.contribution_per_period) }}/period</span>
+        </div>
+        {% endif %}
+
+        {% if gd.trajectory %}
+        {% set traj = gd.trajectory %}
+        <div class="mt-2 pt-2 border-top">
+          {% if traj.months_to_goal == 0 %}
+          <p class="text-success fw-bold mb-1">Goal met!</p>
+          {% elif traj.months_to_goal is not none %}
+          <div class="small mb-1">
+            Projected completion:
+            <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
+            {% if traj.months_to_goal > 360 %}
+            (over 30 years)
             {% else %}
-              --
+            ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
             {% endif %}
           </div>
-        </div>
-        {% if ad.loan_params is defined and ad.loan_params %}
-        <div class="mt-2">
-          <div class="d-flex justify-content-between small">
-            <span class="text-muted">Monthly Payment</span>
-            <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
-          </div>
-          {% if ad.payoff_date %}
-          <div class="d-flex justify-content-between small">
-            <span class="text-muted">Payoff Date</span>
-            <span>{{ ad.payoff_date.strftime('%b %Y') }}</span>
-          </div>
+          {{ pace_pill(traj.pace) }}
+          {% if traj.pace == 'behind' and traj.required_monthly %}
+          <p class="small text-muted mt-1 mb-0">
+            Increase to {{ money(traj.required_monthly) }}/mo
+            to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
+          </p>
           {% endif %}
-        </div>
-        {% endif %}
-        {% if ad.projected %}
-        <div class="mt-2">
-          <small class="text-muted">Projected:</small>
-          {% for label, bal in ad.projected.items() %}
-          <div class="d-flex justify-content-between">
-            <small class="text-muted">{{ label }}</small>
-            <small class="font-mono">{{ money(bal, cents=false) }}</small>
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
-        {% if ad.is_paid_off %}
-        <div class="mt-3 pt-2 border-top">
-          <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
-                class="d-inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <small class="text-muted me-2">This loan is paid off.</small>
-            <button type="submit" class="btn btn-sm btn-outline-success">
-              <i class="bi bi-archive me-1"></i>Archive
-            </button>
-          </form>
+          {% else %}
+          <p class="text-muted small mb-1">
+            No recurring contribution -- trajectory cannot be calculated.
+          </p>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -230,9 +463,15 @@
   </div>
   {% endfor %}
 </div>
-{% endfor %}
+{% else %}
+<div class="alert alert-info">
+  No savings goals yet.
+  <a href="{{ url_for('savings.new_goal') }}" class="alert-link">Create one</a>
+  to track progress toward your savings targets.
+</div>
+{% endif %}
 
-{# --- Archived Accounts (collapsed) --- #}
+{# ── Archived accounts (collapsed) ─────────────────────────────────── #}
 {% if archived_accounts %}
 <div class="mb-4">
   <a class="text-muted text-decoration-none" data-bs-toggle="collapse"
@@ -257,9 +496,7 @@
                   <span class="badge bg-success ms-1">Paid Off</span>
                   {% endif %}
                 </h6>
-                <small>
-                  {{ ad.account.account_type.name if ad.account.account_type else '--' }}
-                </small>
+                <small>{{ ad.account.account_type.name if ad.account.account_type else '--' }}</small>
               </div>
               <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
                     class="d-inline">
@@ -271,9 +508,7 @@
             </div>
             <div class="mt-2">
               <div class="small">Last Balance</div>
-              <div class="fs-5 fw-bold font-mono">
-                {{ money(ad.current_balance) }}
-              </div>
+              <div class="fs-5 fw-bold font-mono">{{ money(ad.current_balance) }}</div>
             </div>
           </div>
         </div>
@@ -284,185 +519,11 @@
 </div>
 {% endif %}
 
-{# --- Emergency Fund Metrics --- #}
-{% if total_savings > 0 %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-shield-check"></i> Emergency Fund Coverage</h6>
-  </div>
-  <div class="card-body">
-    <div class="row text-center">
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">
-          {{ emergency_metrics.months_covered }}
-        </div>
-        <small class="text-muted">Months</small>
-      </div>
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">
-          {{ emergency_metrics.paychecks_covered }}
-        </div>
-        <small class="text-muted">Paychecks</small>
-      </div>
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">
-          {{ emergency_metrics.years_covered }}
-        </div>
-        <small class="text-muted">Years</small>
-      </div>
-    </div>
-    <div class="text-center mt-2">
-      <small class="text-muted">
-        Based on {{ money(total_savings, cents=false) }} savings
-        {% if avg_monthly_expenses > 0 %}
-        and {{ money(avg_monthly_expenses, cents=false) }}/mo avg expenses
-        {% endif %}
-      </small>
-    </div>
-  </div>
-</div>
-{% endif %}
-
-{# --- Savings Goals --- #}
-{% if goal_data %}
-<h5 class="mb-3"><i class="bi bi-bullseye"></i> Savings Goals</h5>
-<div class="row g-3 mb-4">
-  {% for gd in goal_data %}
-  <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-start mb-2">
-          <div>
-            <h6 class="card-title mb-0">{{ gd.goal.name }}</h6>
-            <small class="text-muted">{{ gd.goal.account.name if gd.goal.account else '' }}</small>
-          </div>
-          <div class="d-flex gap-1">
-            <a href="{{ url_for('savings.edit_goal', goal_id=gd.goal.id) }}"
-               class="btn btn-sm btn-outline-secondary" aria-label="Edit {{ gd.goal.name }}">
-              <i class="bi bi-pencil"></i>
-            </a>
-            <a href="{{ url_for('transfers.new_transfer_template', to_account=gd.goal.account_id) }}"
-               class="btn btn-sm btn-outline-primary" title="Create recurring transfer to this goal">
-              <i class="bi bi-arrow-left-right"></i>
-            </a>
-          </div>
-        </div>
-
-        {# No-salary warning for income-relative goals #}
-        {% if gd.income_descriptor and not gd.has_salary_data %}
-        <div class="alert alert-warning py-1 px-2 small mb-2">
-          <i class="bi bi-exclamation-triangle"></i>
-          No salary profile configured -- income target cannot be calculated.
-        </div>
-        {% endif %}
-
-        {# Progress bar #}
-        <div class="mb-2">
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="font-mono">{{ money(gd.current_balance, cents=false) }}</span>
-            <span class="font-mono">
-              {{ money(gd.resolved_target, cents=false) }}
-              {% if gd.income_descriptor %}
-              <span class="text-muted">({{ gd.income_descriptor }})</span>
-              {% endif %}
-            </span>
-          </div>
-          <div class="progress progress-h-8">
-            <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
-                 role="progressbar"
-                 data-progress-pct="{{ gd.progress_pct }}"
-                 aria-valuenow="{{ gd.progress_pct }}"
-                 aria-valuemin="0"
-                 aria-valuemax="100">
-            </div>
-          </div>
-          <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
-        </div>
-
-        {# Target date and contribution #}
-        {% if gd.goal.target_date %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Target date</span>
-          <span>{{ gd.goal.target_date.strftime('%b %d, %Y') }}</span>
-        </div>
-        {% endif %}
-
-        {% if gd.remaining_periods is not none and gd.remaining_periods > 0 %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Periods remaining</span>
-          <span>{{ gd.remaining_periods }}</span>
-        </div>
-        {% endif %}
-
-        {% if gd.required_contribution is not none %}
-        <div class="d-flex justify-content-between small mt-1">
-          <span class="text-muted fw-semibold">Recommended per paycheck</span>
-          <span class="fw-semibold font-mono text-accent">
-            {{ money(gd.required_contribution) }}
-          </span>
-        </div>
-        {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
-        <div class="small text-warning mt-1">
-          <i class="bi bi-exclamation-triangle"></i> Past target date
-        </div>
-        {% endif %}
-
-        {% if gd.goal.contribution_per_period %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Manual target</span>
-          <span class="font-mono">{{ money(gd.goal.contribution_per_period) }}/period</span>
-        </div>
-        {% endif %}
-
-        {# Trajectory and pace indicator #}
-        {% if gd.trajectory %}
-        {% set traj = gd.trajectory %}
-        <div class="mt-2 pt-2 border-top">
-          {% if traj.months_to_goal == 0 %}
-          <p class="text-success fw-bold mb-1">Goal met!</p>
-
-          {% elif traj.months_to_goal is not none %}
-          <div class="small mb-1">
-            Projected completion:
-            <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
-            {% if traj.months_to_goal > 360 %}
-            (over 30 years)
-            {% else %}
-            ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
-            {% endif %}
-          </div>
-
-          {% if traj.pace == 'ahead' %}
-          <span class="badge bg-success">Ahead of schedule</span>
-          {% elif traj.pace == 'on_track' %}
-          <span class="badge bg-primary">On track</span>
-          {% elif traj.pace == 'behind' %}
-          <span class="badge bg-warning text-dark">Behind pace</span>
-          {% if traj.required_monthly %}
-          <p class="small text-muted mt-1 mb-0">
-            Increase to {{ money(traj.required_monthly) }}/mo
-            to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
-          </p>
-          {% endif %}
-          {% endif %}
-
-          {% else %}
-          <p class="text-muted small mb-1">
-            No recurring contribution -- trajectory cannot be calculated.
-          </p>
-          {% endif %}
-        </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
-  {% endfor %}
-</div>
-{% elif not goal_data %}
-<div class="alert alert-info">
-  No savings goals yet.
-  <a href="{{ url_for('savings.new_goal') }}" class="alert-link">Create one</a>
-  to track progress toward your savings targets.
-</div>
 {% endif %}
 {% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/net_worth_cockpit.js') }}"></script>
+{% endblock scripts %}

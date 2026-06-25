@@ -431,21 +431,52 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    via `tests/manual/shoot.py`, iterate, lock the visual here. DONE 2026-06-24: round 1 produced
    three hero-band directions (A single-canvas, B chart-forward, C compact); the developer chose
    **B**. Rulings recorded above (Rebuild decisions 6-10; Loop A build refinements).
-3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
-   / CSS / JS): **P1 net-worth headline + forward-series producer DONE** (`e5ecd26`, shared
+3. **Loop B** (gated, full suite per phase).
+   **P1 net-worth headline and forward-series producer DONE** (`e5ecd26`, shared
    `net_worth_kernel`). **P2 BACKEND (Opus) DONE 2026-06-25 on dev** -- the cockpit data contract
-   the Fable template consumes: `compute_property_equity` (reuses
-   `home_equity_service.resolve_home_equity` + `classify_account`, never a raw `has_appreciation`
-   re-check) and `_compute_group_subtotals`, both wired into `compute_dashboard_data` via the new
-   `_compute_cockpit_grid_section` helper and exposed as the `property_equity` and `group_subtotals`
-   context keys; 7 new tests, full suite 6294, `pylint app/` 10.00/10. REMAINING -- **P2 (Fable):**
-   the unified `savings/dashboard.html` + new `accounts.css` + kebab and inline edit + the Property
-   equity card, consuming `property_equity` / `group_subtotals`; **P3** charts (trend + Net/assets
-   toggle + horizon + diverging bar + sparklines), whose sparkline-series + diverging-bar
-   serialization is the next Opus backend slice (deferred so its shape follows the real template);
-   **P4** `balanceChanged` wiring + the `/accounts` -> `savings.dashboard` redirect + retire
-   `list.html` + repoint links + relocate hard-delete to the detail page; **P5** live verification.
-   **A fresh session resumes at the Fable P2 template (data is ready) or the P3 backend slice.**
+   the template consumes: `compute_property_equity` (reuses
+   `home_equity_service.resolve_home_equity` and `classify_account`, never a raw `has_appreciation`
+   re-check) and `_compute_group_subtotals`, wired into `compute_dashboard_data` via
+   `_compute_cockpit_grid_section` and exposed as the `property_equity` and `group_subtotals`
+   context keys; full suite 6294, `pylint app/` 10.00/10.
+
+   The Fable model is unavailable with no restore ETA (developer note 2026-06-25), so the template,
+   CSS, and JS work originally slated for Fable is now Opus's, re-sliced into smaller gated commits.
+
+   **P2 slice 1, static read-only cockpit and trend chart: DONE 2026-06-25 on dev.** Rewrote
+   `app/templates/savings/dashboard.html` to the cockpit anatomy: the net-worth hero, the four
+   chips, the forward net-worth trend chart, a per-category auto-fit grid with group subtotals, the
+   Property home-equity cards, the savings and debt sections, and a per-card kebab carrying Edit and
+   Archive. New `app/static/css/accounts.css` (linked between `dashboard.css` and `utilities.css`)
+   and `app/static/js/net_worth_cockpit.js` (the trend via the shared `ShekelChart` factory). Reuses
+   the dashboard's `.pulse-*` chip, hero, and chart vocabulary; consumes `net_worth`,
+   `grouped_accounts`, `group_subtotals`, `property_equity`, and the already-serialized
+   `net_worth_chart_json`. Read-only this slice: no balance edit yet, so the header keeps a
+   temporary "Manage Accounts" link until slice
+   2. The card balance is the resolver `current_balance` (SSOT with the headline and the subtotals),
+   and account icons are monochrome so the accent stays the only non-money chroma. Six redesign-driven,
+   developer-approved test updates: the `Accounts Dashboard` -> `Accounts` rename; the three investment
+   milestone-count tests reworked to assert `max(projection)` (robust to the net-worth band's aggregate
+   figures); and the paid-off card's face prompt -> the `Paid Off` badge. No `app/` Python touched;
+   full suite 6294.
+
+   **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: NEXT.** Reuse the dashboard's grid
+   anchor editor (`accounts.anchor_form` -> `true_up`, which already fires `balanceChanged`), add an
+   `accounts` revert surface, and wrap the hero, chips, and grid subtotals in one `balanceChanged`
+   region so an edit re-syncs them.
+
+   **P3, charts:** the diverging assets-vs-liabilities bar, per-account sparklines, the Net vs
+   assets-and-liabilities toggle, and the 6 / 13 / 26 / All horizon picker. The diverging-bar,
+   sparkline, and wider-window serialization is the Opus backend slice that lands first (its shape now
+   follows the real template). The trend's solid-history vs dashed-projection split and the Today
+   marker also land here; they need the series widened to include past periods (the forward-only series
+   is all projection today).
+
+   **P4, retire `/accounts`:** redirect `list_accounts` -> `savings.dashboard`, repoint the redirect
+   call sites, retire `list.html`, relocate hard-delete to the detail pages, and drop the temporary
+   "Manage Accounts" link.
+
+   **P5, live verification** (both themes via `shoot.py`, SSOT hand-confirm).
 
 ## Verification (for the build)
 

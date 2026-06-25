@@ -365,7 +365,7 @@ class TestDashboard:
             # seed_user only has a checking account -- no savings accounts.
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"Accounts Dashboard" in resp.data
+            assert b"Accounts" in resp.data
             assert b"No savings goals yet" in resp.data
 
     def test_dashboard_with_goals(self, app, auth_client, seed_user, seed_periods):
@@ -428,18 +428,20 @@ class TestDashboard:
             # be notably higher than $50,000. If growth is NOT applied,
             # the balance stays flat at $50,000 (the bug).
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 50000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # Dashboard shows 3 milestones (3-month, 6-month, 1-year) at offsets
-            # 6, 13, 26 periods from current. With 7% annual return on $50k,
-            # all 3 milestones exceed $50,000 (~$50.8k, ~$51.7k, ~$53.5k).
-            assert len(amounts_int) == 3, (
-                "Expected 3 milestone projections > $50,000 with 7% growth, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (the
+            # furthest horizon, 1 year). With 7% annual return on $50k the
+            # 1-year projection (~$53.5k) is the largest dollar figure on the
+            # page -- above the ~$51k net-worth band (checking $1k + the $50k
+            # account summed at today's balances, NOT the projection) and the
+            # $50k anchor -- so max > $52k proves growth was applied (a flat
+            # balance would leave the max at the $51k band total).
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 52000, (
+                "Expected the 1-year projection to exceed $52,000 with 7% "
+                f"growth; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_investment_account_includes_contributions(
@@ -474,18 +476,18 @@ class TestDashboard:
             # on $50k, projections should be substantially higher than growth-only.
             # Growth-only 1yr ~$53,500. With contributions (~$18k/yr), ~$71k+.
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 60000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # 3 milestones at offsets 6, 13, 26. With $500/period employee +
-            # ~$192/period employer (5% of $100k/26) + 7% growth on $50k:
-            # 3-month ~$55k (<$60k), 6-month ~$61k (>$60k), 1-year ~$72k (>$60k)
-            assert len(amounts_int) == 2, (
-                "Expected 2 milestone projections > $60,000 with contributions, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (1 year).
+            # With $500/period employee + ~$192/period employer (5% of $100k/26)
+            # + 7% growth on $50k, the 1-year projection is ~$72k -- well above
+            # both the growth-only baseline (~$53.5k) and the ~$51k net-worth
+            # band -- so max > $60k proves the contributions are included.
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 60000, (
+                "Expected the 1-year projection to exceed $60,000 with "
+                f"contributions; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_employer_contribution_without_employee_deduction(
@@ -553,18 +555,18 @@ class TestDashboard:
             # With 5% employer on $3846/period (~$5k/yr) + 7% growth on $50k,
             # 1-year should be ~$58k+. Without employer, growth-only ~$53.5k.
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 54000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # 3 milestones at offsets 6, 13, 26. With 5% employer flat on
-            # $100k/26 (~$192/period) + 7% growth on $50k, no employee deduction:
-            # 3-month ~$52k (<$54k), 6-month ~$54.3k (>$54k), 1-year ~$58.7k (>$54k)
-            assert len(amounts_int) == 2, (
-                "Expected 2 milestone projections > $54,000 with employer contribution, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (1 year).
+            # With 5% employer flat on $100k/26 (~$192/period) + 7% growth on
+            # $50k and no employee deduction, the 1-year projection is ~$58.7k --
+            # above the growth-only baseline (~$53.5k) and the ~$51k net-worth
+            # band -- so max > $55k proves the employer contribution is included.
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 55000, (
+                "Expected the 1-year projection to exceed $55,000 with the "
+                f"employer contribution; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_requires_login(self, app, client, seed_user):
@@ -2480,7 +2482,13 @@ class TestAccountArchivalDashboard:
     def test_paid_off_shows_archive_prompt(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Paid-off loan card has a prominent 'Archive' prompt."""
+        """Paid-off loan card shows the 'Paid Off' badge and an archive action.
+
+        The Net Worth Cockpit rebuild moved archive off the card face into
+        the per-card kebab (audit Surface 2 / decision 9); a paid-off loan is
+        now signalled by the 'Paid Off' badge, and the archive affordance is
+        the kebab's archive form (its action URL asserted below).
+        """
         with app.app_context():
             acct = _create_small_loan(seed_user, name="Paid Off Archival")
             _make_confirmed_transfer(
@@ -2494,7 +2502,7 @@ class TestAccountArchivalDashboard:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "This loan is paid off" in html
+            assert "Paid Off" in html
             assert f"/accounts/{acct.id}/archive" in html
 
     def test_archived_account_no_projections(
@@ -3327,4 +3335,4 @@ class TestDashboardNetWorthContext:
         with app.app_context():
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"Accounts Dashboard" in resp.data
+            assert b"Accounts" in resp.data
