@@ -15,27 +15,6 @@ from app.models.pay_period import PayPeriod
 ZERO = Decimal("0")
 
 
-def _get_anchor_period_index(
-    account: Account, all_periods: list,
-) -> int | None:
-    """Return the period_index of the account's anchor period.
-
-    Args:
-        account: Account with current_anchor_period_id set.
-        all_periods: All user pay periods.
-
-    Returns:
-        int period_index, or None if the anchor period is not found.
-    """
-    anchor_pid = account.current_anchor_period_id
-    if anchor_pid is None:
-        return None
-    for p in all_periods:
-        if p.id == anchor_pid:
-            return p.period_index
-    return None
-
-
 def _get_month_end_periods(
     year: int, all_periods: list,
 ) -> dict[int, PayPeriod]:

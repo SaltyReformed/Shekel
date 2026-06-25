@@ -3185,3 +3185,146 @@ class TestDebtSummaryDisplay:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "N/A" in html or "no salary profile" in html
+
+
+class TestDashboardNetWorthContext:
+    """Tests for the net-worth cockpit data exposed by the /savings route.
+
+    The route hands the template the money-precise ``net_worth`` figures
+    (today totals + change + the forward trend series) and serializes the
+    trend to a Chart.js JSON string (``net_worth_chart_json``); ``float``
+    is applied only at that route boundary.  The template rebuild that
+    renders this data is a later phase, so these tests inspect the context
+    and the serialized contract directly.
+    """
+
+    @staticmethod
+    def _capture_dashboard_context(app, auth_client):
+        """Return the (template, context) captured from GET /savings.
+
+        Uses Flask's ``template_rendered`` signal so the test reads the
+        exact context the route handed ``render_template`` without parsing
+        HTML.  Asserts the dashboard template rendered (a 200 page), so the
+        test fails loud rather than inspecting a redirect.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the
+        # file-wide test convention.
+        from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+        recorded = []
+
+        def _record(sender, template, context, **extra):
+            recorded.append((template, context))
+
+        template_rendered.connect(_record, app)
+        try:
+            response = auth_client.get("/savings")
+        finally:
+            template_rendered.disconnect(_record, app)
+        assert response.status_code == 200, (
+            f"GET /savings returned {response.status_code}; expected 200"
+        )
+        records = [
+            (t, c) for t, c in recorded
+            if t.name == "savings/dashboard.html"
+        ]
+        assert records, (
+            "GET /savings did not render savings/dashboard.html; rendered: "
+            f"{[t.name for t, _ in recorded]!r}"
+        )
+        return records[0]
+
+    def test_context_carries_net_worth_decimal_figures(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The context's net_worth dict carries money-precise Decimals.
+
+        With the seed Checking ($1,000) plus an added Savings ($4,000) and
+        no transactions, the today figures are flat:
+          total_assets = 1000.00 + 4000.00 = 5000.00, liabilities 0.00,
+          net_worth 5000.00, liquid 5000.00.
+        """
+        with app.app_context():
+            _create_savings_account(
+                seed_user, name="Savings",
+                anchor_balance=Decimal("4000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
+            db.session.commit()
+
+            _template, context = self._capture_dashboard_context(
+                app, auth_client,
+            )
+            net_worth = context["net_worth"]
+
+            # 1000.00 + 4000.00 = 5000.00
+            assert net_worth["total_assets"] == Decimal("5000.00")
+            assert net_worth["total_liabilities"] == Decimal("0.00")
+            assert net_worth["net_worth"] == Decimal("5000.00")
+            assert net_worth["liquid"] == Decimal("5000.00")
+            # Flat balances -> zero change vs the prior period.
+            assert net_worth["change_this_period"] == Decimal("0.00")
+
+    def test_chart_json_parses_to_expected_shape_with_floats(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """net_worth_chart_json parses to the labeled float series shape.
+
+        The route serializes the Decimal trend to a JSON string with
+        parallel ``net`` / ``assets`` / ``liabilities`` float arrays, one
+        ``%b %-d`` label per period, and an integer ``actual_count``.  With
+        the seed Checking ($1,000) plus an added Savings ($4,000) and flat
+        balances, every ``net`` point is ``5000.0`` (the float boundary).
+        """
+        # pylint: disable=import-outside-toplevel
+        import json
+        with app.app_context():
+            _create_savings_account(
+                seed_user, name="Savings",
+                anchor_balance=Decimal("4000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
+            db.session.commit()
+
+            _template, context = self._capture_dashboard_context(
+                app, auth_client,
+            )
+            chart = json.loads(context["net_worth_chart_json"])
+
+            assert set(chart.keys()) == {
+                "labels", "net", "assets", "liabilities", "actual_count",
+            }
+            series = context["net_worth"]["series"]
+            n = len(series["periods"])
+            assert n > 0
+            assert len(chart["labels"]) == n
+            assert len(chart["net"]) == n
+            assert len(chart["assets"]) == n
+            assert len(chart["liabilities"]) == n
+            # float boundary: every value is a float, not a Decimal/str.
+            assert all(isinstance(v, float) for v in chart["net"])
+            assert all(isinstance(v, float) for v in chart["assets"])
+            assert all(isinstance(v, float) for v in chart["liabilities"])
+            # Flat $5,000 net worth at every forward point -> 5000.0.
+            assert chart["net"][0] == 5000.0
+            # actual_count is the leading run of already-ended periods,
+            # derived the same way the route does (clock-independent).
+            from datetime import date as _date  # pylint: disable=import-outside-toplevel
+            expected_actual = sum(
+                1 for p in series["periods"] if p["end_date"] <= _date.today()
+            )
+            assert chart["actual_count"] == expected_actual
+            assert isinstance(chart["actual_count"], int)
+
+    def test_dashboard_still_renders_with_net_worth_wired(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The existing /savings page still renders 200 with net worth added.
+
+        The template rebuild is a later phase; adding the net-worth context
+        keys must not break the current render.
+        """
+        with app.app_context():
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"Accounts Dashboard" in resp.data

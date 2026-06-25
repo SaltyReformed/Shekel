@@ -43,14 +43,23 @@ class AccountProjectionKind(Enum):
     2. :data:`INTEREST` -- interest projection layered over the
        balance calculator
        (:func:`app.services.balance_calculator.calculate_balances_with_interest`).
-    3. :data:`INVESTMENT` -- growth engine
+    3. :data:`APPRECIATING` -- the growth engine run as pure compound
+       appreciation with no contributions
+       (:func:`app.services.growth_engine.project_balance`, fed by
+       :class:`~app.models.asset_appreciation_params.AssetAppreciationParams`).
+       A physical asset (Property) whose user-set market value compounds
+       forward; pre-anchor periods hold the value flat (a manually-set
+       valuation is not back-cast).  Checked BEFORE :data:`INVESTMENT`
+       because a Property carries ``has_parameters=True`` too.
+    4. :data:`INVESTMENT` -- growth engine
        (:func:`app.services.growth_engine.project_balance`).
-    4. :data:`PLAIN` -- the generic entries-aware producer
+    5. :data:`PLAIN` -- the generic entries-aware producer
        (:func:`app.services.balance_resolver.balances_for`).
     """
 
     AMORTIZING = "amortizing"
     INTEREST = "interest"
+    APPRECIATING = "appreciating"
     INVESTMENT = "investment"
     PLAIN = "plain"
 
@@ -60,9 +69,12 @@ def classify_account(account) -> AccountProjectionKind:
 
     Branches solely on the boolean columns on the linked
     :class:`~app.models.ref.AccountType`
-    (``has_amortization`` / ``has_interest`` / ``has_parameters``):
-    no enum-name comparisons, no name strings -- consistent with the
-    IDs-for-logic standard.  An account with no ``account_type``
+    (``has_amortization`` / ``has_interest`` / ``has_appreciation`` /
+    ``has_parameters``): no enum-name comparisons, no name strings --
+    consistent with the IDs-for-logic standard.  ``has_appreciation`` is
+    checked before ``has_parameters`` so a parameterised physical asset
+    (Property) classifies as :data:`APPRECIATING`, not :data:`INVESTMENT`.
+    An account with no ``account_type``
     (degenerate / partially loaded) classifies as :data:`PLAIN`
     so the canonical balance resolver still produces a sensible
     output rather than the caller raising on ``None.has_amortization``.
@@ -91,6 +103,8 @@ def classify_account(account) -> AccountProjectionKind:
         return AccountProjectionKind.AMORTIZING
     if acct_type.has_interest:
         return AccountProjectionKind.INTEREST
+    if acct_type.has_appreciation:
+        return AccountProjectionKind.APPRECIATING
     if acct_type.has_parameters:
         return AccountProjectionKind.INVESTMENT
     return AccountProjectionKind.PLAIN

@@ -10,7 +10,7 @@ import logging
 from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
@@ -30,6 +30,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import anchor_service
 from app.services.anchor_service import AnchorTrueUpOutcome
+from app.utils.account_validation import _validate_collateral_link
 from app.utils.auth_helpers import get_or_404, require_owner
 
 logger = logging.getLogger(__name__)
@@ -304,4 +305,43 @@ def true_up_balance(account_id):
         f"as of {anchor_date.strftime('%b %-d, %Y')}.",
         "success",
     )
+    return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/collateral", methods=["POST"])
+@login_required
+@require_owner
+def update_collateral(account_id):
+    """Set or clear the asset that secures this loan (home-equity link).
+
+    Writes the nullable ``collateral_account_id`` self-link on the loan
+    account so a mortgage / HELOC can be grouped with the Property it is
+    secured by and equity rendered.  The link is presentation only -- the
+    emergent net-worth math never reads it.  An empty or malformed
+    submission clears the link; a non-empty value is validated by
+    :func:`app.utils.account_validation._validate_collateral_link`
+    (same-owner Asset target, no self-link, source is an amortizing
+    liability) before it is written.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+
+    # The picker submits an Asset account id or "" (clear).  A non-digit
+    # value can only come from a forged form; treat it as a clear rather
+    # than crashing -- the validator below is the authority on legality.
+    raw = (request.form.get("collateral_account_id") or "").strip()
+    collateral_account_id = int(raw) if raw.isdigit() else None
+
+    failure = _validate_collateral_link(
+        collateral_account_id, account, current_user.id,
+    )
+    if failure is not None:
+        flash(failure[0], failure[1])
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    account.collateral_account_id = collateral_account_id
+    db.session.commit()
+    logger.info("Updated collateral link for account %d", account.id)
+    flash("Secured-by link updated.", "success")
     return redirect(url_for("loan.dashboard", account_id=account_id))

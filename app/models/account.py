@@ -55,6 +55,13 @@ class Account(
             "current_anchor_balance IS NOT NULL",
             name="ck_accounts_anchor_balance_present",
         ),
+        # Collateral self-link guard (home-equity mini-sprint): an
+        # account may not secure itself.  Belt-and-suspenders with the
+        # route validator's no-self-link check.
+        db.CheckConstraint(
+            "collateral_account_id IS NULL OR collateral_account_id != id",
+            name="ck_accounts_collateral_not_self",
+        ),
         {"schema": "budget"},
     )
 
@@ -92,6 +99,24 @@ class Account(
         ),
         nullable=False,
     )
+    # Collateral link (home-equity mini-sprint): a secured liability
+    # (mortgage / HELOC / auto loan) points at the Asset account it is
+    # secured by, so a Property and its loans can be grouped and equity
+    # rendered.  Nullable -- NULL means the loan is not secured by a
+    # tracked asset.  ``ON DELETE SET NULL`` (not CASCADE) keeps the loan
+    # -- real money -- alive when the asset row is deleted; the link is
+    # presentation only and the net-worth math never reads it.  A
+    # self-link is rejected by ``ck_accounts_collateral_not_self`` and the
+    # route validator.
+    collateral_account_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.accounts.id",
+            name="fk_accounts_collateral_account",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
@@ -102,6 +127,19 @@ class Account(
         back_populates="account",
         order_by="AccountAnchorHistory.created_at.desc()",
         cascade="all, delete-orphan",
+    )
+    # Self-referential collateral link.  ``remote_side`` marks the
+    # referenced (asset) side; ``foreign_keys`` disambiguates from the
+    # account's other FKs.  The ``secured_loans`` backref lists the
+    # liabilities secured by this account (a Property can secure a
+    # mortgage AND a HELOC).  ``passive_deletes`` lets the database-level
+    # ``ON DELETE SET NULL`` null the link on asset deletion without the
+    # ORM eagerly loading and rewriting each secured loan first.
+    collateral_account = db.relationship(
+        "Account",
+        remote_side="Account.id",
+        foreign_keys="Account.collateral_account_id",
+        backref=db.backref("secured_loans", passive_deletes=True),
     )
 
     def __repr__(self):

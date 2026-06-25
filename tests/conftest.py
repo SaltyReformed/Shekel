@@ -74,7 +74,7 @@ _DEFAULT_ADMIN_URL = "postgresql:///postgres"
 # Expected ``ref.account_types`` row count in a freshly-cloned per-
 # session DB.  Sourced from ``app.ref_seeds.ACCT_TYPE_SEEDS``; any
 # mismatch indicates the template is corrupt and needs a rebuild.
-_EXPECTED_ACCOUNT_TYPE_COUNT = 18
+_EXPECTED_ACCOUNT_TYPE_COUNT = 19
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ def _bootstrap_worker_database():
     Clone verification:
         After the clone, a fresh psycopg2 connection counts rows
         in ``ref.account_types``.  Anything other than the
-        expected 18 means the template was corrupt at clone time
+        expected 19 means the template was corrupt at clone time
         and needs to be rebuilt; another actionable error message
         steers the operator to the fix.
 
@@ -691,7 +691,7 @@ def db(app, setup_database, request):
       * No rows in ``budget.*`` / ``auth.*`` / ``salary.*`` -- the
         template is freshly migrated and seeded with reference
         data only.
-      * Full ref-data seed in ``ref.*`` including the 18
+      * Full ref-data seed in ``ref.*`` including the 19
         ``ref.account_types`` built-ins.
       * In-process ``ref_cache`` and Jinja globals re-seated to
         match the cloned DB's row IDs (which equal the template's

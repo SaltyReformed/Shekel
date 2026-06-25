@@ -12,6 +12,13 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.models.scenario import Scenario
+# Net-worth sum re-exported from the shared kernel (Loop B Phase 1): the
+# private alias is preserved so the section helpers below and the
+# year-end net-worth tests keep calling ``_sum_net_worth_at_period``
+# unchanged while the one definition lives in the kernel.
+from app.services.net_worth_kernel import (
+    sum_net_worth_at_period as _sum_net_worth_at_period,
+)
 from app.services.year_end_summary_service._balances import (
     _balance_from_schedule_at_date,
     _dispatch_account_balance_map,
@@ -211,31 +218,6 @@ def _compute_debt_progress(
         })
 
     return result
-
-
-def _sum_net_worth_at_period(
-    period_id: int, account_data: list[dict],
-) -> Decimal:
-    """Sum net worth across all accounts at a given period.
-
-    Liabilities are subtracted from the total.
-
-    Args:
-        period_id: The pay period ID to look up balances for.
-        account_data: List of dicts with 'balances' (period_id ->
-            Decimal) and 'is_liability' (bool).
-
-    Returns:
-        Net worth at the period.
-    """
-    total = ZERO
-    for data in account_data:
-        bal = data["balances"].get(period_id, ZERO)
-        if data["is_liability"]:
-            total -= abs(bal)
-        else:
-            total += bal
-    return total
 
 
 def _empty_net_worth() -> dict:

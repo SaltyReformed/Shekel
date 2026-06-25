@@ -21,6 +21,7 @@ from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.services import income_service
+from app.services.account_projection import AccountProjectionKind, classify_account
 from app.services.projection_inputs import load_active_deductions_for_accounts
 
 
@@ -139,10 +140,7 @@ def _load_investment_params(
     """
     inv_ids = [
         a.id for a in accounts
-        if a.account_type
-        and getattr(a.account_type, "has_parameters", False)
-        and not a.account_type.has_interest
-        and not a.account_type.has_amortization
+        if classify_account(a) is AccountProjectionKind.INVESTMENT
     ]
     if not inv_ids:
         return {}
@@ -210,10 +208,7 @@ def _load_deductions_by_account(
     """
     inv_ids = [
         a.id for a in accounts
-        if a.account_type
-        and getattr(a.account_type, "has_parameters", False)
-        and not a.account_type.has_interest
-        and not a.account_type.has_amortization
+        if classify_account(a) is AccountProjectionKind.INVESTMENT
     ]
     return load_active_deductions_for_accounts(user_id, inv_ids)
 

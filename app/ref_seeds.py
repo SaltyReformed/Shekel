@@ -23,8 +23,8 @@ eliminates the drift risk that a future migration adding a new ref
 row could be applied in two call sites but not the third.
 
 Each ``ACCT_TYPE_SEEDS`` entry: (name, category_name, has_parameters,
-has_amortization, has_interest, is_pretax, is_liquid, icon_class,
-max_term_months)
+has_amortization, has_interest, is_pretax, is_liquid, has_appreciation,
+icon_class, max_term_months)
 """
 
 from __future__ import annotations
@@ -49,25 +49,26 @@ if TYPE_CHECKING:
 # pylint: disable=line-too-long
 
 ACCT_TYPE_SEEDS = [
-    # name              category      params amort  interest pretax liquid icon               max_term
-    ("Checking",        "Asset",      False, False, False, False, True,  "bi-wallet2",        None),
-    ("Savings",         "Asset",      False, False, False, False, True,  "bi-piggy-bank",     None),
-    ("HYSA",            "Asset",      True,  False, True,  False, True,  "bi-piggy-bank",     None),
-    ("Money Market",    "Asset",      True,  False, True,  False, True,  "bi-cash-stack",     None),
-    ("CD",              "Asset",      True,  False, True,  False, False, "bi-safe",           None),
-    ("HSA",             "Asset",      True,  False, True,  False, False, "bi-heart-pulse",    None),
-    ("Credit Card",     "Liability",  False, False, False, False, False, "bi-credit-card",    None),
-    ("Mortgage",        "Liability",  True,  True,  False, False, False, "bi-house",          600),
-    ("Auto Loan",       "Liability",  True,  True,  False, False, False, "bi-car-front",      120),
-    ("Student Loan",    "Liability",  True,  True,  False, False, False, "bi-mortarboard",    300),
-    ("Personal Loan",   "Liability",  True,  True,  False, False, False, "bi-cash-coin",      120),
-    ("HELOC",           "Liability",  True,  True,  False, False, False, "bi-bank",           360),
-    ("401(k)",          "Retirement", True,  False, False, True,  False, "bi-graph-up-arrow", None),
-    ("Roth 401(k)",     "Retirement", True,  False, False, False, False, "bi-graph-up-arrow", None),
-    ("Traditional IRA", "Retirement", True,  False, False, True,  False, "bi-graph-up-arrow", None),
-    ("Roth IRA",        "Retirement", True,  False, False, False, False, "bi-graph-up-arrow", None),
-    ("Brokerage",       "Investment", True,  False, False, False, False, "bi-bar-chart-line", None),
-    ("529 Plan",        "Investment", True,  False, False, False, False, "bi-mortarboard",    None),
+    # name              category      params amort  interest pretax liquid appr   icon               max_term
+    ("Checking",        "Asset",      False, False, False, False, True,  False, "bi-wallet2",        None),
+    ("Savings",         "Asset",      False, False, False, False, True,  False, "bi-piggy-bank",     None),
+    ("HYSA",            "Asset",      True,  False, True,  False, True,  False, "bi-piggy-bank",     None),
+    ("Money Market",    "Asset",      True,  False, True,  False, True,  False, "bi-cash-stack",     None),
+    ("CD",              "Asset",      True,  False, True,  False, False, False, "bi-safe",           None),
+    ("HSA",             "Asset",      True,  False, True,  False, False, False, "bi-heart-pulse",    None),
+    ("Credit Card",     "Liability",  False, False, False, False, False, False, "bi-credit-card",    None),
+    ("Mortgage",        "Liability",  True,  True,  False, False, False, False, "bi-house",          600),
+    ("Auto Loan",       "Liability",  True,  True,  False, False, False, False, "bi-car-front",      120),
+    ("Student Loan",    "Liability",  True,  True,  False, False, False, False, "bi-mortarboard",    300),
+    ("Personal Loan",   "Liability",  True,  True,  False, False, False, False, "bi-cash-coin",      120),
+    ("HELOC",           "Liability",  True,  True,  False, False, False, False, "bi-bank",           360),
+    ("401(k)",          "Retirement", True,  False, False, True,  False, False, "bi-graph-up-arrow", None),
+    ("Roth 401(k)",     "Retirement", True,  False, False, False, False, False, "bi-graph-up-arrow", None),
+    ("Traditional IRA", "Retirement", True,  False, False, True,  False, False, "bi-graph-up-arrow", None),
+    ("Roth IRA",        "Retirement", True,  False, False, False, False, False, "bi-graph-up-arrow", None),
+    ("Brokerage",       "Investment", True,  False, False, False, False, False, "bi-bar-chart-line", None),
+    ("529 Plan",        "Investment", True,  False, False, False, False, False, "bi-mortarboard",    None),
+    ("Property",        "Asset",      True,  False, False, False, False, True,  "bi-houses",         None),
 ]
 # pylint: enable=line-too-long
 # fmt: on
@@ -148,7 +149,7 @@ def seed_reference_data(session: Session, *, verbose: bool = False) -> None:
     1. ``ref.account_type_categories`` (4 fixed rows: Asset, Liability,
        Retirement, Investment).  Must precede the AccountType seed
        because each AccountType row carries a category FK.
-    2. ``ref.account_types`` from ``ACCT_TYPE_SEEDS`` (18 rows).
+    2. ``ref.account_types`` from ``ACCT_TYPE_SEEDS`` (19 rows).
        Existing rows have their metadata columns UPDATED in place so
        a column-shape change in a future migration propagates
        correctly on next seed; missing rows are INSERTed.
@@ -232,7 +233,7 @@ def _seed_account_type_categories(
 def _seed_account_types(
     session: Session, ref_models: ModuleType, *, verbose: bool = False
 ) -> None:
-    """Upsert the 18 ``AccountType`` rows from ``ACCT_TYPE_SEEDS``.
+    """Upsert the 19 ``AccountType`` rows from ``ACCT_TYPE_SEEDS``.
 
     Missing rows are INSERTed; existing rows have their metadata
     columns refreshed in place so a column-shape change in a future
@@ -252,7 +253,7 @@ def _seed_account_types(
         for c in session.query(ref_models.AccountTypeCategory).all()
     }
     for (name, cat_name, has_params, has_amort,
-         has_int, is_pre, is_liq, icon, max_term) in ACCT_TYPE_SEEDS:
+         has_int, is_pre, is_liq, has_appr, icon, max_term) in ACCT_TYPE_SEEDS:
         existing = (
             session.query(ref_models.AccountType)
             .filter_by(name=name)
@@ -267,6 +268,7 @@ def _seed_account_types(
                 has_interest=has_int,
                 is_pretax=is_pre,
                 is_liquid=is_liq,
+                has_appreciation=has_appr,
                 icon_class=icon,
                 max_term_months=max_term,
             ))
@@ -278,6 +280,7 @@ def _seed_account_types(
             existing.has_interest = has_int
             existing.is_pretax = is_pre
             existing.is_liquid = is_liq
+            existing.has_appreciation = has_appr
             existing.icon_class = icon
             existing.max_term_months = max_term
 

@@ -79,6 +79,7 @@ class AcctTypeEnum(enum.Enum):
     ROTH_IRA = "Roth IRA"
     BROKERAGE = "Brokerage"
     PLAN_529 = "529 Plan"
+    PROPERTY = "Property"
 
 
 class DeductionTimingEnum(enum.Enum):
