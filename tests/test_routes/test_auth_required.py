@@ -200,6 +200,10 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/savings/goals/99999"),
     # savings.delete_goal
     ("POST", "/savings/goals/99999/delete"),
+    # savings.cockpit_section
+    ("GET", "/savings/cockpit"),
+    # savings.cockpit_balance
+    ("GET", "/savings/cockpit/99999/balance"),
 
     # -- loan blueprint --
     # loan.dashboard

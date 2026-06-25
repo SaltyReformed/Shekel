@@ -156,28 +156,107 @@ def _clean_goal_form_data(form_data):
     return data
 
 
+def _cockpit_context(user_id: int) -> dict:
+    """Build the cockpit render context: dashboard data + the chart JSON.
+
+    The single producer + serialization prologue shared by the full-page
+    ``dashboard`` render and the ``cockpit_section`` partial re-render, so
+    both feed the template the identical contract (the money-precise
+    ``net_worth`` figures plus the ``net_worth_chart_json`` the trend
+    canvas reads).  ``float`` is applied only in
+    :func:`_serialize_net_worth_chart`, the Chart.js boundary; every other
+    figure stays ``Decimal``.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        The ``compute_dashboard_data`` dict with ``net_worth_chart_json``
+        added.
+    """
+    ctx = savings_dashboard_service.compute_dashboard_data(user_id)
+    ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
+        ctx["net_worth"]["series"]
+    )
+    return ctx
+
+
 @savings_bp.route("/savings")
 @login_required
 @require_owner
 def dashboard():
-    """Savings dashboard: account balances, goals, and emergency fund metrics.
+    """Savings dashboard: the Net Worth Cockpit, goals, and emergency fund.
 
-    Net-worth cockpit region (Loop B Phase 1): the producer hands back the
-    money-precise ``net_worth`` figures (today totals + change-this-period
-    + the forward trend series); the trend series is serialized to a
-    Chart.js JSON string here at the route boundary (the only place
-    ``float`` is applied) and exposed as ``net_worth_chart_json``, while
-    the ``Decimal`` figures pass through to the template unchanged.  The
-    template rebuild that renders this data is a later phase; the data is
-    made available now without changing the existing rendered output.
+    Renders the full page.  The cockpit region (net-worth hero, the
+    account grid, and the home-equity cards) is wrapped in
+    ``#cockpit-section`` and re-renders on ``balanceChanged`` via
+    :func:`cockpit_section`; the savings goals, emergency-fund coverage,
+    and archived list below it are page-load-only.  The shared context
+    (including the serialized ``net_worth_chart_json``) comes from
+    :func:`_cockpit_context`.
     """
-    ctx = savings_dashboard_service.compute_dashboard_data(current_user.id)
-    net_worth_chart_json = _serialize_net_worth_chart(ctx["net_worth"]["series"])
     return render_template(
-        "savings/dashboard.html",
-        net_worth_chart_json=net_worth_chart_json,
-        **ctx,
+        "savings/dashboard.html", **_cockpit_context(current_user.id),
     )
+
+
+@savings_bp.route("/savings/cockpit")
+@login_required
+@require_owner
+def cockpit_section():
+    """HTMX partial: re-render the Net Worth Cockpit region on balanceChanged.
+
+    The single ``balanceChanged from:body`` swap target for the cockpit's
+    ``#cockpit-section`` (the net-worth hero + chips + trend, the account
+    grid with its group subtotals and the debt summary, and the
+    home-equity cards), so an inline balance edit re-syncs every
+    balance-derived figure in that region at once.  Re-renders
+    ``savings/_cockpit.html`` with the same :func:`_cockpit_context` the
+    page uses, so the swapped-in markup reads the identical contract.
+
+    Non-HTMX requests redirect to the dashboard page (the section is a
+    fragment, not a standalone page), matching ``dashboard.pulse_section``.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("savings.dashboard"))
+
+    return render_template(
+        "savings/_cockpit.html", **_cockpit_context(current_user.id),
+    )
+
+
+@savings_bp.route("/savings/cockpit/<int:account_id>/balance")
+@login_required
+@require_owner
+def cockpit_balance(account_id):
+    """HTMX partial: re-render one account's cockpit balance cell.
+
+    The Cancel / Escape (and 409-conflict retry) revert target for the
+    cockpit's per-card inline anchor editor: ``accounts._anchor_revert_url``
+    maps the editor's ``revert=accounts`` token here, mirroring how
+    ``revert=dashboard`` maps to ``dashboard.balance_section``.  Renders
+    ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>`` cell the
+    editor replaced -- with the resolver ``current_balance`` from the
+    narrow :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
+    producer, so the reverted cell shows the exact figure the grid showed.
+
+    The producer is the IDOR + active gate (as ``balance_section``'s
+    producer is for the dashboard): it returns ``None`` -- a 404 -- for an
+    account that is not among the user's active accounts (not found, not
+    owned, or archived between page load and the revert), satisfying the
+    404-for-both security rule.  Non-HTMX requests redirect to the
+    dashboard page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("savings.dashboard"))
+
+    cell = savings_dashboard_service.compute_account_balance_cell(
+        current_user.id, account_id,
+    )
+    if cell is None:
+        abort(404)
+
+    return render_template("savings/_cockpit_balance.html", **cell)
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])

@@ -582,6 +582,49 @@ class TestTrueUp:
             db.session.refresh(other["account"])
             assert other["account"].current_anchor_balance == orig_balance
 
+    def test_true_up_accounts_revert_skips_as_of_oob(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """With ?revert=accounts, the success response omits the as-of OOB.
+
+        The cockpit is multi-card and has no singleton ``#anchor-as-of``
+        element, and it re-syncs the whole region via ``balanceChanged``, so
+        the out-of-band "as of" snippet (which would orphan-target) is
+        dropped.  The ``balanceChanged`` trigger still fires.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=accounts",
+                data={"anchor_balance": "3210.00"},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+            body = response.data.decode()
+            assert 'id="anchor-as-of"' not in body
+            assert 'hx-swap-oob="true"' not in body
+
+    def test_true_up_grid_default_includes_as_of_oob(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The grid / default success response keeps the #anchor-as-of OOB.
+
+        The single-account grid and dashboard surfaces have an
+        ``#anchor-as-of`` caption to update, so the OOB snippet stays -- the
+        cockpit skip must not regress them.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={"anchor_balance": "3211.00"},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+            body = response.data.decode()
+            assert 'id="anchor-as-of"' in body
+            assert 'hx-swap-oob="true"' in body
+
 
 class TestTrueUpSameDayDuplicate:
     """F-103 / C-22: same-day same-balance double-submit dedupe."""
@@ -4052,6 +4095,78 @@ class TestAnchorTemplatesEmitVersionPin:
             assert "changed by another action" in body.lower()
             assert (
                 f'hx-get="/accounts/{acct_id}/anchor-form?revert=dashboard"'
+                in body
+            )
+
+    def test_anchor_form_accounts_revert_targets_cockpit_balance(
+        self, app, auth_client, seed_user,
+    ):
+        """With ?revert=accounts, the editor reverts to the cockpit card cell.
+
+        Opened from the Net Worth Cockpit's per-card balance, Cancel /
+        Escape must restore THAT card's cell (``savings.cockpit_balance``)
+        rather than the grid display cell -- the multi-card analog of the
+        dashboard ``revert=dashboard`` round-trip.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=accounts"
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            cell_url = f"/savings/cockpit/{acct_id}/balance"
+            assert f'hx-get="{cell_url}"' in body
+            assert f'data-revert-url="{cell_url}"' in body
+            assert f"/accounts/{acct_id}/anchor-display" not in body
+
+    def test_accounts_anchor_form_patch_url_threads_revert(
+        self, app, auth_client, seed_user,
+    ):
+        """The cockpit edit form's hx-patch threads ``revert=accounts``.
+
+        So a 409 conflict response can re-render the conflict cell with the
+        cockpit retry target rather than stranding the card on the grid
+        display cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=accounts"
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert (
+                f'hx-patch="/accounts/{acct_id}/true-up?revert=accounts"'
+                in body
+            )
+
+    def test_accounts_conflict_cell_retry_opener_carries_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The cockpit 409 conflict cell reopens in the cockpit surface.
+
+        A stale-version PATCH carrying ``?revert=accounts`` returns the
+        conflict cell whose retry opener must reopen ``anchor-form`` WITH
+        ``revert=accounts``, so the cockpit card never strands on the grid.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+            _bump_account_version_outside_session(acct_id)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=accounts",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+            assert response.status_code == 409
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
                 in body
             )
 

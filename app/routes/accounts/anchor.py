@@ -201,29 +201,37 @@ def inline_anchor_display(account_id):
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
 
 
+# The non-default surfaces the shared anchor editor can be opened from.
+# The opener names its surface via the ``revert`` query token; only these
+# canonical values are honored (see :func:`_normalize_revert_context`).
+# Each maps to a revert endpoint in :func:`_anchor_revert_url`.
+_REVERT_SURFACES = frozenset({"dashboard", "accounts"})
+
+
 def _normalize_revert_context(raw_revert: str | None) -> str | None:
     """Allowlist-validate the raw ``revert`` token to a canonical value.
 
     The anchor editor is opened from more than one surface, and the
-    opener names its surface via the ``revert`` query token.  Only the
-    ``dashboard`` surface is recognized today; every other value (unset,
-    unknown, an attacker's probe) collapses to ``None`` so the grid's
-    default revert target is used.  Centralizing the allowlist here means
-    the token is validated against the ``dashboard`` literal in exactly
-    one place -- :func:`_anchor_revert_url` (the Cancel / Escape target),
-    the edit form's ``hx-patch`` round-trip token, and the conflict
-    cell's retry opener all consume this normalized value rather than
-    re-checking the raw string -- so the token is never interpolated
-    unvalidated into a URL or template.
+    opener names its surface via the ``revert`` query token.  Two
+    non-default surfaces are recognized -- ``dashboard`` (the dashboard
+    hero balance card) and ``accounts`` (the Net Worth Cockpit's per-card
+    balance cell); every other value (unset, unknown, an attacker's probe)
+    collapses to ``None`` so the grid's default revert target is used.
+    Centralizing the allowlist here means the token is validated against
+    :data:`_REVERT_SURFACES` in exactly one place -- :func:`_anchor_revert_url`
+    (the Cancel / Escape target), the edit form's ``hx-patch`` round-trip
+    token, and the conflict cell's retry opener all consume this normalized
+    value rather than re-checking the raw string -- so the token is never
+    interpolated unvalidated into a URL or template.
 
     Args:
         raw_revert: The ``revert`` query token as received, or ``None``.
 
     Returns:
-        ``"dashboard"`` when the token names the dashboard surface;
-        otherwise ``None`` (the grid default).
+        The canonical surface name when the token names a recognized
+        surface; otherwise ``None`` (the grid default).
     """
-    return "dashboard" if raw_revert == "dashboard" else None
+    return raw_revert if raw_revert in _REVERT_SURFACES else None
 
 
 def _anchor_conflict_response(
@@ -252,6 +260,42 @@ def _anchor_conflict_response(
         ),
         409,
     )
+
+
+def _true_up_success_response(
+    account: Account, revert_context: str | None,
+) -> tuple[str, int, dict[str, str]]:
+    """Compose the grid anchor true-up success response.
+
+    Shared by ``true_up``'s COMMITTED and DUPLICATE_SAME_DAY outcomes
+    (both render the updated display cell and fire ``balanceChanged`` so
+    other surfaces recompute).  The single-account grid and dashboard
+    surfaces append an out-of-band ``#anchor-as-of`` snippet dating the
+    edit; the cockpit (``revert=accounts``) is a MULTI-card surface with no
+    such singleton element and re-syncs the whole region via
+    ``savings.cockpit_section`` on the trigger, so emitting the OOB there
+    would orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
+
+    Args:
+        account: The post-commit account (its ``updated_at`` dates the
+            "as of" snippet).
+        revert_context: The normalized surface token, or ``None``.
+
+    Returns:
+        The ``(body, status, headers)`` tuple Flask returns, carrying the
+        ``HX-Trigger: balanceChanged`` header.
+    """
+    html = render_template(
+        "grid/_anchor_edit.html", account=account, editing=False,
+    )
+    if revert_context == "accounts":
+        return html, 200, {"HX-Trigger": "balanceChanged"}
+    as_of_html = (
+        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
+        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
+        f'</small>'
+    )
+    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
@@ -341,17 +385,7 @@ def true_up(account_id):
             account.id, new_balance, current_period.id,
         )
 
-    html = render_template(
-        "grid/_anchor_edit.html",
-        account=account,
-        editing=False,
-    )
-    as_of_html = (
-        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
-        f'</small>'
-    )
-    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
+    return _true_up_success_response(account, revert_context)
 
 
 def _anchor_revert_url(account_id, revert_context):
@@ -371,6 +405,10 @@ def _anchor_revert_url(account_id, revert_context):
       ``dashboard.balance_section`` (restores the account name, caption,
       and runway the grid display cell lacks; the audit's cancel-path
       stranding fix).
+    * ``accounts`` -- the Net Worth Cockpit's per-card balance cell
+      re-renders via ``savings.cockpit_balance`` (restores that one card's
+      resolver balance; the cockpit is multi-card, so the revert is
+      account-scoped rather than the dashboard's single hero).
     * default / grid -- ``accounts.anchor_display`` (the grid cell).
 
     Args:
@@ -382,6 +420,8 @@ def _anchor_revert_url(account_id, revert_context):
     """
     if revert_context == "dashboard":
         return url_for("dashboard.balance_section")
+    if revert_context == "accounts":
+        return url_for("savings.cockpit_balance", account_id=account_id)
     return url_for("accounts.anchor_display", account_id=account_id)
 
 

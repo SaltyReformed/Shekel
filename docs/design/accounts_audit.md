@@ -460,10 +460,56 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    figures); and the paid-off card's face prompt -> the `Paid Off` badge. No `app/` Python touched;
    full suite 6294.
 
-   **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: NEXT.** Reuse the dashboard's grid
-   anchor editor (`accounts.anchor_form` -> `true_up`, which already fires `balanceChanged`), add an
-   `accounts` revert surface, and wrap the hero, chips, and grid subtotals in one `balanceChanged`
-   region so an edit re-syncs them.
+   **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: DONE 2026-06-25 on dev.** The
+   cockpit's per-card balance is now click-to-edit, reusing the shared grid anchor editor and the
+   single `true_up` -> `apply_anchor_true_up` mutation (no second edit path). The editor opens in the
+   `accounts` surface and re-syncs the whole cockpit region on save. As built:
+
+   - **A third anchor-editor surface, `accounts`.** `_normalize_revert_context` now allowlists
+     `accounts` alongside `dashboard` (a `_REVERT_SURFACES` frozenset); `_anchor_revert_url` maps it
+     to the new `savings.cockpit_balance`; and `grid/_anchor_edit.html` was generalized from a
+     hardcoded `revert='dashboard'`-only branch to thread the normalized `revert_context` token
+     through (the grid / dashboard paths stay byte-for-byte unchanged). The editor is multi-card
+     safe: each card's display cell is the NEW account-scoped `savings/_cockpit_balance.html`
+     (`#acct-balance-<id>`, never the grid's singleton `#anchor-display`), and `true_up` skips the
+     singleton `#anchor-as-of` OOB snippet here (it would orphan-target; the section refresh carries
+     the update). The success-response composition was extracted to `_true_up_success_response`
+     (else the OOB-skip branch trips `too-many-return-statements`).
+   - **One `balanceChanged` refresh region** (developer ruling this session: "Net worth + accounts +
+     equity"). The hero band + chips + trend, the account grid with its group subtotals and the debt
+     summary, and the home-equity cards moved into the NEW `savings/_cockpit.html`, wrapped in
+     `#cockpit-section` with the dashboard's exact `#pulse-section` pattern (`hx-get` ->
+     `savings.cockpit_section`, `hx-trigger="balanceChanged from:body"`, `hx-swap="innerHTML"`). The
+     savings-goal, emergency-fund, and archived tiers stay page-load-only (the dashboard's
+     static-secondary-tier precedent). The page render and the section re-render share one
+     `_cockpit_context` producer (SSOT, no divergence).
+   - **Cancel / Escape revert** restores just the one card's cell via `savings.cockpit_balance`,
+     backed by the narrow `compute_account_balance_cell` producer (reuses `_project_one_account`, so
+     the reverted figure equals the grid card's to the cent). The cell DISPLAYS the resolver
+     `current_balance` while the editor edits the raw anchor, re-synced by the refresh -- the same
+     display-vs-edit split as the dashboard hero.
+   - **The z-index raise is on the balance WRAPPER, not the cell** (caught in live verification, not
+     the suite). The cockpit is the first inline-edit surface INSIDE a `.stretched-link` card;
+     raising only the display cell left the editor form -- which swaps in WITHOUT the raised class
+     -- below the card-link overlay, so the input and Save / Cancel buttons were unclickable (the
+     link swallowed the click). The fix raises the persistent `.acct-card__balance` wrapper
+     (`z-index: 2`), so both the cell AND the editor that replaces it sit above the overlay. The
+     dashboard never hit this (its hero is not in a stretched-link card). The cell keeps a
+     persistent faint pencil (`accounts.css`).
+   - 15 new tests (cockpit routes, the `compute_account_balance_cell` SSOT + IDOR + archived gates,
+     the three `accounts`-surface editor-template round-trips, the OOB-skip-vs-grid-keeps contrast);
+     full suite 6309, `pylint app/` 10.00/10. The temporary "Manage Accounts" header link stays
+     until P4 (the `/accounts` table still owns hard-delete).
+
+   **Live verification (P5 done early for this slice, dev app + Playwright, both themes).** Confirmed
+   on the prod-clone dev DB: clicking a card balance opens the inline editor in place; a save re-syncs
+   the entire region together -- on a Checking edit the net-worth hero, all four chips (assets, change,
+   liquid), the edited card, and the Asset group subtotal all moved by the identical delta (one
+   `balanceChanged` region, SSOT holds); Escape reverts the single cell; both themes render. The editor
+   input + Save / Cancel are confirmed clickable above the stretched-link (elementFromPoint). The
+   cockpit correctly inherits the F-103 same-day same-balance idempotency: re-truing-up a value already
+   used today is a 200 no-op (`DUPLICATE_SAME_DAY`), which is correct, not a bug. The dev account's
+   balance and same-day history were restored after testing.
 
    **P3, charts:** the diverging assets-vs-liabilities bar, per-account sparklines, the Net vs
    assets-and-liabilities toggle, and the 6 / 13 / 26 / All horizon picker. The diverging-bar,

@@ -3709,3 +3709,70 @@ class TestPropertyEquityInContext:
             assert entry["equity"].total_debt == Decimal("0")
             assert entry["equity"].equity == Decimal("300000.00")
             assert entry["equity"].ltv == Decimal("0.0000")
+
+
+class TestAccountBalanceCell:
+    """Tests for compute_account_balance_cell -- the cockpit inline-edit revert producer."""
+
+    def test_cell_balance_matches_grid_card(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The cell's current_balance equals the grid card's (one projection, SSOT).
+
+        The Cancel / Escape revert producer must restore the exact figure
+        the grid card showed, so it reuses the same per-account projection
+        ``compute_dashboard_data`` runs.  Both read the resolver
+        ``current_balance`` for the account, so the reverted cell and the
+        grid card can never disagree.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            acct_id = seed_user["account"].id
+
+            full = savings_dashboard_service.compute_dashboard_data(user_id)
+            grid_balance = next(
+                ad["current_balance"] for ad in full["account_data"]
+                if ad["account"].id == acct_id
+            )
+
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                user_id, acct_id,
+            )
+            assert cell is not None
+            assert cell["account"].id == acct_id
+            assert cell["current_balance"] == grid_balance
+
+    def test_cell_none_for_foreign_account(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """A non-owned account id yields None (the route's 404 / IDOR gate).
+
+        The producer loads only the caller's active accounts, so a second
+        user's account is never found -- enforcing the 404-for-both
+        security rule at the producer rather than a separate ownership query.
+        """
+        with app.app_context():
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                seed_user["user"].id, seed_second_user["account"].id,
+            )
+            assert cell is None
+
+    def test_cell_none_for_archived_account(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An archived (inactive) account yields None.
+
+        The producer loads only active accounts; an account archived between
+        page load and the Cancel / Escape revert is no longer projected, so
+        the producer returns None (a 404) rather than a stale figure.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            account = db.session.get(Account, acct_id)
+            account.is_active = False
+            db.session.commit()
+
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                seed_user["user"].id, acct_id,
+            )
+            assert cell is None

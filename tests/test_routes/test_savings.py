@@ -3336,3 +3336,86 @@ class TestDashboardNetWorthContext:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             assert b"Accounts" in resp.data
+
+
+class TestCockpitSection:
+    """Tests for GET /savings/cockpit -- the balanceChanged refresh fragment."""
+
+    def test_cockpit_section_renders_region_for_htmx(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An HX request returns the cockpit region fragment (hero + cards).
+
+        The region carries the net-worth hero label and the account's
+        click-to-edit balance cell, but NOT the ``#cockpit-section`` wrapper
+        (that lives in the page) -- proving it is the fragment the
+        balanceChanged swap consumes, not the whole page.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                "/savings/cockpit", headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "Net worth" in body
+            assert f'id="acct-balance-{acct_id}"' in body
+            assert 'id="cockpit-section"' not in body
+
+    def test_cockpit_section_non_htmx_redirects_to_dashboard(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-HX request redirects to the page (the section is a fragment)."""
+        with app.app_context():
+            resp = auth_client.get("/savings/cockpit")
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/savings")
+
+
+class TestCockpitBalance:
+    """Tests for GET /savings/cockpit/<id>/balance -- the inline-edit revert cell."""
+
+    def test_cockpit_balance_renders_editable_cell_for_htmx(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An HX request returns the account's click-to-edit balance cell.
+
+        The cell carries its account-scoped id and opens the shared anchor
+        editor in the cockpit (``accounts``) surface, so Cancel / Escape and
+        the save round-trip thread back to this cockpit cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert f'id="acct-balance-{acct_id}"' in body
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
+                in body
+            )
+
+    def test_cockpit_balance_non_htmx_redirects_to_dashboard(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-HX request redirects to the dashboard page."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(f"/savings/cockpit/{acct_id}/balance")
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/savings")
+
+    def test_cockpit_balance_other_users_account_404(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods_today,
+    ):
+        """IDOR: another user's account id returns 404 (not found / not yours)."""
+        with app.app_context():
+            other_acct_id = seed_second_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{other_acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404

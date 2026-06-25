@@ -47,6 +47,7 @@ from app.services.savings_dashboard_service._metrics import (
 )
 from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
+    _project_one_account,
 )
 from app.services.savings_dashboard_service._types import _ProjectionContext
 
@@ -318,6 +319,56 @@ def compute_goal_progress(user_id: int) -> list[dict]:
         user_id, account_data, core.all_periods, net_biweekly_pay,
         active_goals,
     )
+
+
+def compute_account_balance_cell(
+    user_id: int, account_id: int,
+) -> dict | None:
+    """Compute one active account's cockpit balance cell.
+
+    The narrow producer behind ``savings.cockpit_balance`` -- the GET
+    endpoint the cockpit's per-card inline anchor editor reverts to on
+    Cancel / Escape (``accounts._anchor_revert_url`` maps ``revert=accounts``
+    here, mirroring how ``revert=dashboard`` maps to
+    ``dashboard.balance_section``).  It re-renders
+    ``savings/_cockpit_balance.html`` for a single account, so it returns
+    that partial's contract: the ``account`` and its resolver
+    ``current_balance``.
+
+    SSOT with the grid: it runs the SAME load -> param-load -> project
+    pipeline ``compute_dashboard_data`` runs, through the shared
+    :func:`_project_one_account`, restricted to the one account (the
+    param load is scoped to ``[acct]``; per-account projections are
+    independent, so the restriction cannot change the projected figure).
+    A Cancel therefore restores the exact number the card grid showed,
+    never a divergent recompute.
+
+    Args:
+        user_id: Integer ID of the current user (the owner; the caller has
+            already verified ownership of *account_id* via the route's
+            ``get_or_404``).
+        account_id: Integer ID of the account whose balance cell to render.
+
+    Returns:
+        A dict ``{"account": Account, "current_balance": Decimal | None}``,
+        or ``None`` when *account_id* is not among the user's active
+        accounts (e.g. it was archived between page load and the revert),
+        which the caller turns into a 404.
+    """
+    core = _load_dashboard_core_data(user_id)
+    acct = next(
+        (a for a in core.accounts if a.id == account_id), None,
+    )
+    if acct is None:
+        return None
+
+    params = _load_account_params(user_id, [acct])
+    ctx = _build_projection_context(core, params)
+    account_dict = _project_one_account(acct, ctx)
+    return {
+        "account": acct,
+        "current_balance": account_dict["current_balance"],
+    }
 
 
 def _compute_net_worth_section(
