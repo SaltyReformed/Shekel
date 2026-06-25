@@ -24,6 +24,7 @@ from app.services.savings_dashboard_service._data import (
 )
 from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
+    build_trend_periods,
     compute_net_worth_change,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -379,10 +380,11 @@ def _compute_net_worth_section(
     """Assemble the cockpit's net-worth region (Loop B Phase 1).
 
     Combines the today figures (from the already-projected
-    ``account_data``), the change-this-period delta, and the forward
-    net-worth trend series into the single ``net_worth`` context key.
+    ``account_data``), the change-this-period delta, and the net-worth
+    trend series (an honest history tail plus the forward projection, from
+    :func:`build_trend_periods`) into the single ``net_worth`` context key.
 
-    The forward trend and the change delta both read ONE set of dense
+    The trend series and the change delta both read ONE set of dense
     per-account balance maps -- built once here over ALL periods (so the
     entries-aware resolver always has its anchor seed) via
     :func:`build_account_net_worth_maps`, fed by the shared
@@ -392,8 +394,8 @@ def _compute_net_worth_section(
     once here and threaded into the dense-map build.
 
     Degrades gracefully with no current period: the today figures still
-    come from ``account_data``, the series is empty, and the change is
-    ``None`` (a missing comparison, not a zero).
+    come from ``account_data``, the series is empty (``current_index`` 0),
+    and the change is ``None`` (a missing comparison, not a zero).
 
     Args:
         core: The loaded :class:`_DashboardCoreData` (accounts,
@@ -406,8 +408,9 @@ def _compute_net_worth_section(
     Returns:
         dict with ``net_worth``, ``total_assets``, ``total_liabilities``,
         ``liquid``, ``change_this_period`` (``Decimal`` or ``None``), and
-        ``series`` (the forward trend dict, with empty lists when there is
-        no current period).
+        ``series`` (the trend dict -- history tail plus forward projection,
+        carrying the ``current_index`` solid/dashed boundary -- with empty
+        lists when there is no current period).
     """
     today = compute_net_worth_today(account_data)
 
@@ -428,14 +431,18 @@ def _compute_net_worth_section(
         debt_schedules,
     )
 
-    forward_periods = [
-        p for p in core.all_periods
-        if core.current_period is not None
-        and p.period_index >= core.current_period.period_index
-    ]
-    series = compute_net_worth_series(account_maps, forward_periods)
+    trend_periods, current_index, honest_start = build_trend_periods(
+        core.accounts, core.all_periods, core.current_period, debt_schedules,
+    )
+    series = compute_net_worth_series(account_maps, trend_periods)
+    # The solid-history / dashed-projection boundary (and the "Today"
+    # marker): the index of the current period within the trend window.
+    series["current_index"] = current_index
+    # The change delta shares the trend's honest boundary: a period-over-
+    # period change is real only when the prior period is honest (not a
+    # cash dropout or a loan at its original principal).
     change_this_period = compute_net_worth_change(
-        account_maps, core.current_period, core.all_periods,
+        account_maps, core.current_period, core.all_periods, honest_start,
     )
 
     return {

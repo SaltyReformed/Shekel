@@ -3280,7 +3280,7 @@ class TestDashboardNetWorthContext:
 
         The route serializes the Decimal trend to a JSON string with
         parallel ``net`` / ``assets`` / ``liabilities`` float arrays, one
-        ``%b %-d`` label per period, and an integer ``actual_count``.  With
+        ``%b %-d`` label per period, and an integer ``current_index``.  With
         the seed Checking ($1,000) plus an added Savings ($4,000) and flat
         balances, every ``net`` point is ``5000.0`` (the float boundary).
         """
@@ -3300,7 +3300,7 @@ class TestDashboardNetWorthContext:
             chart = json.loads(context["net_worth_chart_json"])
 
             assert set(chart.keys()) == {
-                "labels", "net", "assets", "liabilities", "actual_count",
+                "labels", "net", "assets", "liabilities", "current_index",
             }
             series = context["net_worth"]["series"]
             n = len(series["periods"])
@@ -3313,16 +3313,13 @@ class TestDashboardNetWorthContext:
             assert all(isinstance(v, float) for v in chart["net"])
             assert all(isinstance(v, float) for v in chart["assets"])
             assert all(isinstance(v, float) for v in chart["liabilities"])
-            # Flat $5,000 net worth at every forward point -> 5000.0.
+            # Flat $5,000 net worth at every trend point -> 5000.0.
             assert chart["net"][0] == 5000.0
-            # actual_count is the leading run of already-ended periods,
-            # derived the same way the route does (clock-independent).
-            from datetime import date as _date  # pylint: disable=import-outside-toplevel
-            expected_actual = sum(
-                1 for p in series["periods"] if p["end_date"] <= _date.today()
-            )
-            assert chart["actual_count"] == expected_actual
-            assert isinstance(chart["actual_count"], int)
+            # current_index (the solid/dashed boundary) passes straight
+            # through from the producer's series; an int in [0, n].
+            assert chart["current_index"] == series["current_index"]
+            assert isinstance(chart["current_index"], int)
+            assert 0 <= chart["current_index"] <= n
 
     def test_dashboard_still_renders_with_net_worth_wired(
         self, app, auth_client, seed_user, seed_periods,

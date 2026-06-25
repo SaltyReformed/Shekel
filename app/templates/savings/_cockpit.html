@@ -78,9 +78,35 @@
     </div>
   </div>
   {% if net_worth.series.periods %}
+  {# Trend controls: the Net vs Assets-and-Liabilities series toggle and the
+     6 / 13 / 26 / All forward-horizon picker (default 13).  Both are pure
+     view state -- net_worth_cockpit.js slices and restyles the already
+     money-precise series the canvas carries; no figure is recomputed in
+     JS.  The history tail is always shown; the horizon picks the forward
+     reach. #}
+  <div class="nw-chart-controls">
+    <div class="btn-group btn-group-sm nw-series-toggle" role="group"
+         aria-label="Net worth series">
+      <button type="button" class="btn btn-outline-secondary active"
+              data-nw-series="net" aria-pressed="true">Net</button>
+      <button type="button" class="btn btn-outline-secondary"
+              data-nw-series="split" aria-pressed="false">Assets &amp; Liabilities</button>
+    </div>
+    <div class="btn-group btn-group-sm nw-horizon-picker" role="group"
+         aria-label="Trend horizon (pay periods ahead)">
+      <button type="button" class="btn btn-outline-secondary"
+              data-nw-horizon="6" aria-pressed="false">6</button>
+      <button type="button" class="btn btn-outline-secondary active"
+              data-nw-horizon="13" aria-pressed="true">13</button>
+      <button type="button" class="btn btn-outline-secondary"
+              data-nw-horizon="26" aria-pressed="false">26</button>
+      <button type="button" class="btn btn-outline-secondary"
+              data-nw-horizon="all" aria-pressed="false">All</button>
+    </div>
+  </div>
   <div class="pulse-chart">
     <canvas id="net-worth-chart-canvas" data-chart='{{ net_worth_chart_json }}'
-            role="img" aria-label="Projected net worth trend"></canvas>
+            role="img" aria-label="Net worth trend: solid history, dashed projection"></canvas>
   </div>
   {% endif %}
 </div>

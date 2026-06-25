@@ -3239,32 +3239,41 @@ class TestNetWorthHero:
 class TestNetWorthSeries:
     """Tests for the cockpit's forward net-worth trend series."""
 
-    def test_default_series_length_is_forward_window(
+    def test_default_series_spans_history_tail_and_forward(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Series length equals the forward window (current period onward).
+        """Series leads with the honest history tail, then the forward run.
 
         ``seed_periods_today`` places today in period index 4 of a
-        10-period window, so the forward window (``period_index >= 4``) is
-        indices 4-9 inclusive = 6 periods.  The seed Checking account alone
-        yields a dense balance map over all periods; the series is the
-        current-period-onward slice of it.  The expected length is the
-        fixture-derived literal 6, NOT a value re-derived from the
-        production forward-window logic, so an off-by-one in that logic
-        surfaces here.  (``seed_periods``, a fixed 2026-01-02 window now
-        entirely in the past, has no current period -- it would make this
-        a vacuous ``0 == 0``.)
+        10-period window and anchors the seed Checking account at period
+        index 0.  Checking is a PLAIN (cash) account, so the honest history
+        reaches back to its anchor (index 0): the tail is the 4 elapsed
+        periods (indices 0-3, fewer than the 6-period cap) and the forward
+        run is indices 4-9, so the series spans all 10 periods and
+        ``current_index`` -- the count of leading history points, the
+        solid/dashed boundary -- is 4.  The expected values are
+        fixture-derived literals, NOT re-derived from the production window
+        logic, so an off-by-one there surfaces here.  (``seed_periods``, a
+        fixed 2026-01-02 window now entirely in the past, has no current
+        period -- it would make this a vacuous empty series.)
         """
         with app.app_context():
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
             )["net_worth"]["series"]
 
-            # today in period 4 of 10 -> forward indices 4..9 inclusive = 6
-            assert len(series["periods"]) == 6
-            assert len(series["net"]) == 6
-            assert len(series["assets"]) == 6
-            assert len(series["liabilities"]) == 6
+            # history tail (indices 0-3) + forward (indices 4-9) = 10 points
+            assert len(series["periods"]) == 10
+            assert len(series["net"]) == 10
+            assert len(series["assets"]) == 10
+            assert len(series["liabilities"]) == 10
+            # current period (index 4) sits at position 4: 4 history points
+            # precede it (indices 0, 1, 2, 3).
+            assert series["current_index"] == 4
+            assert [p["period_index"] for p in series["periods"][:4]] == [
+                0, 1, 2, 3,
+            ]
+            assert series["periods"][4]["period_index"] == 4
 
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
@@ -3293,14 +3302,19 @@ class TestNetWorthSeries:
                     series["assets"][i] - series["liabilities"][i]
                 )
 
-    def test_period_zero_net_equals_hero_for_liquid_only(
+    def test_current_period_point_equals_hero_for_liquid_only(
         self, app, db, seed_user, seed_periods,
     ):
-        """For a CHECKING/SAVINGS-only fixture, series[0].net == hero net worth.
+        """For a CHECKING/SAVINGS-only fixture, the current-period series
+        point equals the today hero.
 
-        With no transactions, every balance is flat, so the current
-        period's net worth (series point 0) equals the today hero:
+        With no transactions every balance is flat, so the current
+        period's net worth (``series["net"][current_index]``) equals the
+        today hero:
           Checking 1000.00 + Savings 4000.00 = 5000.00.
+        A flat liquid-only set has the same value at every point, so the
+        history-tail points equal it too -- asserted to lock that the
+        widened window did not skew the figures.
         """
         with app.app_context():
             _add_savings_account(
@@ -3311,19 +3325,24 @@ class TestNetWorthSeries:
                 seed_user["user"].id
             )["net_worth"]
 
-            # 1000.00 + 4000.00 = 5000.00, identical hero and series[0].
+            current = nw["series"]["current_index"]
+            # 1000.00 + 4000.00 = 5000.00, identical hero and current point.
             assert nw["net_worth"] == Decimal("5000.00")
-            assert nw["series"]["net"][0] == Decimal("5000.00")
-            assert nw["series"]["net"][0] == nw["net_worth"]
+            assert nw["series"]["net"][current] == Decimal("5000.00")
+            assert nw["series"]["net"][current] == nw["net_worth"]
+            # Flat liquid-only: every trend point (history tail + forward).
+            assert all(v == Decimal("5000.00") for v in nw["series"]["net"])
 
-    def test_period_zero_diverges_from_hero_for_amortizing_loan(
+    def test_current_period_point_diverges_from_hero_for_amortizing_loan(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For a loan, series point 0 differs from the as-of-today hero.
+        """For a loan, the current-period series point differs from the hero.
 
         The two figures deliberately read DIFFERENT sources, and this test
         guards that they keep doing so (the documented caveat to the
-        liquid-only ``series[0] == hero`` case above):
+        liquid-only ``series[current_index] == hero`` case above).  The
+        current period sits at ``series["current_index"]`` within the trend
+        window (the history tail precedes it):
 
         - The hero (``compute_net_worth_today``) reduces over each
           account's as-of-today ``current_balance``.  The mortgage has no
@@ -3333,9 +3352,9 @@ class TestNetWorthSeries:
           current-period (period-end) value has already paid principal
           DOWN below $240,000 by today.
 
-        Checking $1,000 and a $240,000 mortgage (originated 2025-01-01):
-          hero net      = 1000.00 - 240000.00 = -239000.00 (anchor)
-          series[0] net = 1000.00 - (amortized < 240000.00) > -239000.00
+        Checking $1,000 and a $240,000 mortgage (anchored at index 0):
+          hero net        = 1000.00 - 240000.00 = -239000.00 (anchor)
+          series[current] = 1000.00 - (amortized < 240000.00) > -239000.00
         """
         with app.app_context():
             _add_mortgage_account(
@@ -3346,14 +3365,285 @@ class TestNetWorthSeries:
                 seed_user["user"].id
             )["net_worth"]
 
+            current = nw["series"]["current_index"]
             # Hero uses the as-of-today anchor (no confirmed payments):
             # 1000.00 (checking) - 240000.00 (mortgage) = -239000.00
             assert nw["net_worth"] == Decimal("-239000.00")
-            # Series point 0 uses the schedule (period-end), amortized
-            # below 240000, so net is HIGHER (less liability) and strictly
-            # differs from the hero -- the two-source split is intact.
-            assert nw["series"]["net"][0] > nw["net_worth"]
-            assert nw["series"]["net"][0] != nw["net_worth"]
+            # The current-period series point uses the schedule (period-end),
+            # amortized below 240000, so net is HIGHER (less liability) and
+            # strictly differs from the hero -- the two-source split holds.
+            assert nw["series"]["net"][current] > nw["net_worth"]
+            assert nw["series"]["net"][current] != nw["net_worth"]
+
+
+class TestBuildTrendPeriods:
+    """Tests for the trend's honest history window (build_trend_periods).
+
+    The window leads with a short "actual" history tail then the forward
+    projection.  The tail reaches back only as far as every CASH account
+    (PLAIN / INTEREST -- the kinds whose dense map omits pre-anchor
+    periods) has a real balance, i.e. to the LATEST such anchor, capped at
+    the history cap.  These unit tests drive the helper with synthetic
+    periods + accounts so the window arithmetic is pinned independently of
+    the projection engines.
+    """
+
+    @staticmethod
+    def _period(period_index):
+        """Synthetic PayPeriod stand-in (id, period_index, end_date reads).
+
+        The id is offset (``100 + index``) so an id/index swap in the
+        production code would surface rather than coincide.  ``end_date`` is
+        biweekly-spaced and distinct per index so the loan gate
+        (``_loan_schedule_start_index``, which matches a schedule's first
+        payment_date to a period by ``end_date``) resolves unambiguously.
+        """
+        # pylint: disable=import-outside-toplevel
+        from datetime import timedelta
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=100 + period_index,
+            period_index=period_index,
+            end_date=date(2026, 1, 14) + timedelta(days=14 * period_index),
+        )
+
+    @staticmethod
+    def _account(kind, anchor_period_index, account_id=1):
+        """Synthetic Account whose type flags ``classify_account`` reads.
+
+        ``anchor_period_index`` is mapped to the matching ``_period`` id
+        (``100 + index``); ``None`` leaves the account unanchored.
+        ``account_id`` keys the loan gate's ``debt_schedules`` lookup.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.account_projection import AccountProjectionKind
+        acct_type = SimpleNamespace(
+            has_amortization=kind is AccountProjectionKind.AMORTIZING,
+            has_interest=kind is AccountProjectionKind.INTEREST,
+            has_appreciation=kind is AccountProjectionKind.APPRECIATING,
+            has_parameters=kind is AccountProjectionKind.INVESTMENT,
+        )
+        return SimpleNamespace(
+            id=account_id,
+            account_type=acct_type,
+            current_anchor_period_id=(
+                None if anchor_period_index is None
+                else 100 + anchor_period_index
+            ),
+        )
+
+    @staticmethod
+    def _schedule(first_payment_period_index, periods):
+        """A one-row loan schedule whose first payment falls in a period.
+
+        The row's ``payment_date`` is that period's ``end_date``, so the
+        loan gate resolves the loan's honest start to that period's index.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        return [SimpleNamespace(
+            payment_date=periods[first_payment_period_index].end_date,
+            remaining_balance=Decimal("1000.00"),
+        )]
+
+    def test_tail_reaches_back_to_cash_anchor(self):
+        """History reaches back to the cash account's anchor period.
+
+        Periods 0..9, today at index 5, one PLAIN account anchored at
+        index 2, no loans.  The honest start is the anchor (index 2); the
+        cap (5 - 6 = -1) does not bind, so the window is indices 2..9 (8
+        points) and ``current_index`` is the count below 5 -> indices
+        2, 3, 4 = 3.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [self._account(AccountProjectionKind.PLAIN, 2)]
+
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+
+        assert [p.period_index for p in window] == [2, 3, 4, 5, 6, 7, 8, 9]
+        assert current_index == 3
+        assert honest_start == 2
+
+    def test_no_history_when_cash_anchor_is_current(self):
+        """A cash account anchored at the current period yields no tail.
+
+        PLAIN anchored at index 5, today at index 5: the honest start is 5,
+        so the window is forward-only (indices 5..9) and ``current_index``
+        0.  This is the common case for an actively-trued-up cockpit.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [self._account(AccountProjectionKind.PLAIN, 5)]
+
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+
+        assert [p.period_index for p in window] == [5, 6, 7, 8, 9]
+        assert current_index == 0
+        assert honest_start == 5
+
+    def test_tail_capped_at_history_cap(self):
+        """The history tail is capped even when the cash anchor is older.
+
+        PLAIN anchored at index 0, today at index 9, periods 0..12.  The
+        honest start (0) loses to the cap (9 - 6 = 3), so the tail is
+        indices 3..8 (6 points) and ``current_index`` is 6.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(13)]
+        accounts = [self._account(AccountProjectionKind.PLAIN, 0)]
+
+        window, current_index, _ = build_trend_periods(
+            accounts, periods, periods[9], {},
+        )
+
+        # 6 history points (indices 3..8) then today (9) onward -- the cap
+        # binds even though the cash anchor (index 0) is further back.
+        assert current_index == 6
+        assert window[0].period_index == 3
+
+    def test_no_current_period_is_empty(self):
+        """No current period yields an empty window and indices 0."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [self._account(AccountProjectionKind.PLAIN, 0)]
+
+        assert build_trend_periods(accounts, periods, None, {}) == ([], 0, 0)
+
+    def test_only_cash_kinds_gate_the_history_start(self):
+        """An INVESTMENT's recent anchor does not shorten the history.
+
+        Only PLAIN / INTEREST accounts gate the honest start by anchor
+        (their dense map omits pre-anchor periods).  A PLAIN account is
+        anchored at index 1 and an INVESTMENT at index 4, today at index 5.
+        The honest start is the PLAIN anchor (1), NOT the later investment
+        anchor (4): an investment is defined pre-anchor (reverse-projected),
+        so it must not constrain the window.  Window indices 1..9,
+        ``current_index`` 4.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [
+            self._account(AccountProjectionKind.PLAIN, 1),
+            self._account(AccountProjectionKind.INVESTMENT, 4),
+        ]
+
+        window, current_index, _ = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+
+        assert window[0].period_index == 1
+        assert current_index == 4
+
+    def test_latest_cash_anchor_wins(self):
+        """With two cash accounts the LATEST anchor bounds the history.
+
+        PLAIN at index 1 and PLAIN at index 3, today at index 5: the honest
+        start is the later anchor (3) so no period misses a cash balance.
+        Window indices 3..9, ``current_index`` 2 (indices 3, 4).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [
+            self._account(AccountProjectionKind.PLAIN, 1),
+            self._account(AccountProjectionKind.PLAIN, 3),
+        ]
+
+        window, current_index, _ = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+
+        assert window[0].period_index == 3
+        assert current_index == 2
+
+    def test_loan_schedule_start_gates_history(self):
+        """A loan's today-forward schedule gates the history past the cash.
+
+        A PLAIN account is anchored at index 1, but an AMORTIZING loan's
+        schedule first pays in period 5 (today at index 7).  Pre-schedule
+        periods report the loan's ORIGINAL PRINCIPAL, so the loan gates the
+        honest start at index 5 -- LATER than the cash anchor (1).  Window
+        indices 5..9, ``current_index`` 2 (indices 5, 6).  Without the loan
+        gate the honest start would be the cash anchor (1) and
+        ``current_index`` would be 6, so this pins the loan gate.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [
+            self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
+            self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
+        ]
+        debt_schedules = {8: self._schedule(5, periods)}
+
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[7], debt_schedules,
+        )
+
+        assert honest_start == 5
+        assert current_index == 2
+        assert window[0].period_index == 5
+
+    def test_empty_loan_schedule_does_not_gate(self):
+        """A resolved-but-unpaid loan (empty schedule) does not gate history.
+
+        An empty schedule means the loan sits at its original principal at
+        EVERY period, which IS its real balance (no payments yet), so it is
+        honest throughout and must not gate.  PLAIN anchored at index 1, an
+        AMORTIZING loan with an empty schedule, today at index 7: the honest
+        start stays the cash anchor (1), window indices 1..9,
+        ``current_index`` 6.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [
+            self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
+            self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
+        ]
+        debt_schedules = {8: []}
+
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[7], debt_schedules,
+        )
+
+        assert honest_start == 1
+        assert current_index == 6
+        assert window[0].period_index == 1
 
 
 class TestNetWorthChange:
@@ -3393,8 +3683,10 @@ class TestNetWorthChange:
             },
         ]
         # (500.00 - 80.00) - (300.00 - 100.00) = 420.00 - 200.00 = 220.00
+        # honest_start 0: the prior period (index 0) is honest, so the
+        # change is computed rather than gated to None.
         assert compute_net_worth_change(
-            account_maps, current, [prior, current],
+            account_maps, current, [prior, current], 0,
         ) == Decimal("220.00")
 
     def test_none_at_period_index_zero(self):
@@ -3413,7 +3705,7 @@ class TestNetWorthChange:
             {"balances": {10: Decimal("500.00")}, "is_liability": False},
         ]
         assert compute_net_worth_change(
-            account_maps, current, [current],
+            account_maps, current, [current], 0,
         ) is None
 
     def test_none_when_no_current_period(self):
@@ -3422,7 +3714,36 @@ class TestNetWorthChange:
         from app.services.savings_dashboard_service._net_worth import (
             compute_net_worth_change,
         )
-        assert compute_net_worth_change([], None, []) is None
+        assert compute_net_worth_change([], None, [], 0) is None
+
+    def test_none_when_prior_period_before_honest_start(self):
+        """A prior period before honest_start yields None, not a fake jump.
+
+        The current period is index 5 and an immediately-prior period
+        (index 4) exists with real maps, but ``honest_start`` is 5: index 4
+        is pre-honest (it would read a cash account as absent or a loan at
+        its original principal).  The producer returns ``None`` so the chip
+        shows "--" rather than a fabricated delta -- the change-chip half of
+        the same gate the trend's history uses.  This is the common
+        loan-holder case (a loan's schedule is today-forward, so the prior
+        period is always pre-schedule).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_net_worth_change,
+        )
+        prior = self._period(14, 4)
+        current = self._period(15, 5)
+        account_maps = [
+            {
+                "balances": {14: Decimal("300.00"), 15: Decimal("500.00")},
+                "is_liability": False,
+            },
+        ]
+        # Prior index 4 < honest_start 5 -> None despite a real prior map.
+        assert compute_net_worth_change(
+            account_maps, current, [prior, current], 5,
+        ) is None
 
 
 class TestNetWorthProducerEdgeCases:

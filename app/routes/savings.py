@@ -8,7 +8,6 @@ and deleting savings goals.
 
 import json
 import logging
-from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -55,26 +54,26 @@ def _serialize_net_worth_chart(net_worth_series: dict) -> str:
     :mod:`app.services.savings_dashboard_service._net_worth`) to ``float``
     arrays and the period descriptors' ``end_date`` to ``%b %-d`` labels.
 
-    ``actual_count`` is the number of leading points whose period has
-    already ended (``end_date <= today``): the template uses it to render
-    those points as realized history and the remainder as projection,
-    the same actual-vs-projected split the dashboard pulse chart draws.
+    ``current_index`` (from
+    :func:`~app.services.savings_dashboard_service._net_worth.build_trend_periods`,
+    passed straight through) is the position of the current period within
+    the series: the leading ``current_index`` points are the honest history
+    tail the client draws solid, and the rest are the forward projection it
+    draws dashed and lighter from a "Today" marker at the boundary.  It is
+    also the anchor the client slices the 6 / 13 / 26 / All forward horizon
+    from, always keeping the full history tail.
 
     Args:
         net_worth_series: The ``net_worth["series"]`` dict, with keys
             ``periods`` (list of ``{end_date, period_index}``), ``net``,
-            ``assets``, and ``liabilities``.
+            ``assets``, ``liabilities``, and ``current_index``.
 
     Returns:
         A JSON string ``{"labels": [str], "net": [float], "assets":
-        [float], "liabilities": [float], "actual_count": int}`` for the
+        [float], "liabilities": [float], "current_index": int}`` for the
         ``data-chart`` attribute.
     """
-    today = date.today()
     periods = net_worth_series["periods"]
-    actual_count = sum(
-        1 for point in periods if point["end_date"] <= today
-    )
     return json.dumps({
         "labels": [
             point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
@@ -85,7 +84,7 @@ def _serialize_net_worth_chart(net_worth_series: dict) -> str:
         "liabilities": [
             float(value) for value in net_worth_series["liabilities"]
         ],
-        "actual_count": actual_count,
+        "current_index": net_worth_series["current_index"],
     })
 
 # Fields allowed in goal updates.  Income-relative fields are included

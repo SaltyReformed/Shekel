@@ -193,19 +193,223 @@ def _sum_assets_and_liabilities_at_period(
     return assets, liabilities
 
 
+# Recent-history cap for the net-worth trend's leading "actual" segment.
+# The trend opens with up to this many already-elapsed periods (the solid
+# history the forward projection extends from) before the current period.
+# ~6 periods is ~3 months at the biweekly cadence; the developer's ruling
+# (accounts_audit.md, "forward reach + short tail") fixes a SHORT tail
+# rather than a full-history axis.
+_TREND_HISTORY_PERIODS = 6
+
+# Account kinds whose dense balance map OMITS pre-anchor periods, so they
+# constrain how far back the trend's history can honestly reach.  PLAIN
+# (checking / savings) and INTEREST (HYSA / Money Market / CD / HSA) both
+# carry the running balance forward from the anchor period only
+# (``balance_resolver.balances_for`` /
+# ``balance_calculator.calculate_balances_with_interest`` -- "Must include
+# the anchor period ... pre-anchor periods ... absent from the result"), so
+# a period before such an account's anchor has NO balance for it and it
+# would silently contribute zero to the net-worth sum (cash dropping out of
+# the past).  AMORTIZING loans constrain the window separately (their
+# resolver schedule is today-forward, so pre-schedule periods report the
+# original principal -- see :func:`_loan_schedule_start_index`).  INVESTMENT
+# (reverse growth projection) and APPRECIATING (flat-carry) are defined at
+# every period, so they never constrain it.
+_CASH_GATING_KINDS = frozenset({
+    AccountProjectionKind.PLAIN,
+    AccountProjectionKind.INTEREST,
+})
+
+
+def _loan_schedule_start_index(
+    all_periods: list[PayPeriod], schedule: list | None,
+) -> int | None:
+    """Earliest period_index at which a loan's schedule gives a real balance.
+
+    A loan's resolver schedule is TODAY-forward: it projects from the
+    current resolved balance to payoff, with no rows for the loan's past.
+    :func:`app.services.account_projection.compute_loan_period_balance_map`
+    therefore returns the loan's ORIGINAL PRINCIPAL for every period before
+    the schedule's first payment -- a flat line at the origination amount,
+    not the real amortized balance the loan actually had then.  So a loan
+    is "honest" only from the first period whose ``end_date`` reaches its
+    first scheduled payment onward; before that the trend would show the
+    loan leaping down from its origination balance at "today".
+
+    Returns that first honest ``period_index``, or ``None`` when the loan
+    does not constrain the window: an empty schedule (``[]`` -- a
+    resolved-but-unpaid loan that sits at its original principal at EVERY
+    period, which IS its real balance) or a missing one (``None``), and the
+    degenerate case of a schedule dated entirely after the user's last
+    period.
+
+    Args:
+        all_periods: All of the user's pay periods, ordered by
+            ``period_index``.
+        schedule: The loan's amortization schedule (the
+            :func:`app.services.net_worth_kernel.generate_debt_schedules`
+            entry for it), or ``None``.
+
+    Returns:
+        The first honest ``period_index``, or ``None`` when the loan does
+        not gate the window.
+    """
+    if not schedule:
+        return None
+    first_payment = min(row.payment_date for row in schedule)
+    for period in all_periods:
+        if period.end_date >= first_payment:
+            return period.period_index
+    return None
+
+
+def _honest_history_start_index(
+    accounts: list,
+    all_periods: list[PayPeriod],
+    current_period: PayPeriod,
+    debt_schedules: dict[int, list],
+) -> int:
+    """Earliest period_index whose net worth is real for every account.
+
+    The trend's leading "actual" segment must not show an account's balance
+    as a fallback value in the past.  Two kinds carry such fallbacks:
+
+    - CASH (PLAIN / INTEREST, the kinds in :data:`_CASH_GATING_KINDS`): no
+      balance before the anchor period -- the account would contribute zero
+      (cash dropping out of the past).  Gates at its anchor index.
+    - AMORTIZING loans: the resolver schedule is today-forward, so periods
+      before it report the loan's ORIGINAL PRINCIPAL, not its real past
+      balance (the loan would leap down at "today").  Gates at its
+      schedule-start index (:func:`_loan_schedule_start_index`).
+
+    INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
+    are defined at every period by the same modeling the year-end summary
+    uses, so they do not constrain the window.
+
+    Returns the maximum gating index -- the earliest period at or after
+    which every cash account has a real balance AND every loan is within
+    its schedule -- clamped to not exceed ``current_period``'s index.
+    Returns ``current_period``'s index (no history) when nothing gates
+    earlier, so the trend never fabricates a backward run for an
+    investment-or-property-only set (those are projected, not "actual").
+
+    Args:
+        accounts: The user's active accounts (each with ``account_type``
+            eager-loaded for :func:`classify_account`, an ``id``, and a
+            ``current_anchor_period_id``).
+        all_periods: All of the user's pay periods (maps an anchor period
+            id to its index).
+        current_period: The period containing today (the upper clamp).
+        debt_schedules: account_id -> amortization schedule (from
+            :func:`app.services.net_worth_kernel.generate_debt_schedules`),
+            for the loan gate.
+
+    Returns:
+        The earliest honest history ``period_index`` (``0`` ..
+        ``current_period.period_index``).
+    """
+    index_by_pid = {p.id: p.period_index for p in all_periods}
+    gating_indices: list[int] = []
+    for account in accounts:
+        kind = classify_account(account)
+        if kind in _CASH_GATING_KINDS:
+            if account.current_anchor_period_id in index_by_pid:
+                gating_indices.append(
+                    index_by_pid[account.current_anchor_period_id]
+                )
+        elif kind is AccountProjectionKind.AMORTIZING:
+            loan_start = _loan_schedule_start_index(
+                all_periods, debt_schedules.get(account.id),
+            )
+            if loan_start is not None:
+                gating_indices.append(loan_start)
+    if not gating_indices:
+        return current_period.period_index
+    return min(max(gating_indices), current_period.period_index)
+
+
+def build_trend_periods(
+    accounts: list,
+    all_periods: list[PayPeriod],
+    current_period: PayPeriod | None,
+    debt_schedules: dict[int, list],
+) -> tuple[list[PayPeriod], int, int]:
+    """Build the net-worth trend's window, current index, and honest start.
+
+    The window leads with a short honest "actual" history tail, then the
+    full forward projection::
+
+        [ history tail ]  current period  [ ... forward ... ]
+          solid actual        today          dashed projection
+
+    The tail spans the up-to-:data:`_TREND_HISTORY_PERIODS` periods
+    immediately before the current period, but never earlier than
+    :func:`_honest_history_start_index` -- so at every history point every
+    cash account has a real balance (none drops silently to zero) AND every
+    loan is within its schedule (none sits at its original principal then
+    leaps down at "today").  Because a loan's schedule is today-forward, any
+    user with an amortizing loan has an empty tail (forward-only); the tail
+    shows only for loan-free users whose cash was trued up in the past (e.g.
+    renters), the case the honest tail genuinely serves.
+
+    ALL forward periods are included (not a fixed forward slice): the client
+    selects the 6 / 13 / 26 / All forward horizon from the full series, so
+    the producer serializes once and the picker never re-fetches.
+
+    The honest-start index is returned alongside the window so the
+    change-this-period delta can reuse it (a period-over-period change is
+    only honest when the prior period is within the honest window), keeping
+    the trend and the chip on one boundary.
+
+    Args:
+        accounts: The user's active accounts.
+        all_periods: All of the user's pay periods, ordered by
+            ``period_index``.
+        current_period: The period containing today, or ``None``.
+        debt_schedules: account_id -> amortization schedule, for the loan
+            gate.
+
+    Returns:
+        ``(periods, current_index, honest_start)`` -- ``periods`` is the
+        trend window (history tail + current + forward, chronological),
+        ``current_index`` is the position of the current period within it
+        (the count of leading history points; the solid/dashed split and
+        the "Today" marker key off it), and ``honest_start`` is the earliest
+        honest ``period_index`` (the change delta's gate).  ``([], 0, 0)``
+        when there is no current period (the degraded no-period state).
+    """
+    if current_period is None:
+        return [], 0, 0
+
+    current_idx = current_period.period_index
+    honest_start = _honest_history_start_index(
+        accounts, all_periods, current_period, debt_schedules,
+    )
+    history_start = max(honest_start, current_idx - _TREND_HISTORY_PERIODS)
+    periods = [p for p in all_periods if p.period_index >= history_start]
+    current_index = sum(1 for p in periods if p.period_index < current_idx)
+    return periods, current_index, honest_start
+
+
 def compute_net_worth_series(
     account_maps: list[dict],
-    forward_periods: list[PayPeriod],
+    trend_periods: list[PayPeriod],
 ) -> dict:
-    """Build the forward net-worth trend over the forward window.
+    """Build the net-worth trend over the trend window.
 
-    Reads each forward period's id out of the pre-built dense maps
-    (built over ALL periods by :func:`build_account_net_worth_maps`) and
-    produces parallel ``net`` / ``assets`` / ``liabilities`` series plus
-    the period descriptors the route serializes.  ``net[i]`` equals
-    ``assets[i] - liabilities[i]`` for every ``i`` by construction (the
-    asset-plus / liability-minus split shares one sum with the kernel's
-    net-worth reduction).
+    Reads each trend period's id out of the pre-built dense maps (built
+    over ALL periods by :func:`build_account_net_worth_maps`) and produces
+    parallel ``net`` / ``assets`` / ``liabilities`` series plus the period
+    descriptors the route serializes.  ``net[i]`` equals ``assets[i] -
+    liabilities[i]`` for every ``i`` by construction (the asset-plus /
+    liability-minus split shares one sum with the kernel's net-worth
+    reduction).
+
+    The ``trend_periods`` window (from :func:`build_trend_periods`) is the
+    honest history tail followed by the full forward projection; this
+    producer is window-agnostic -- it sums whatever periods it is given, so
+    widening the window from forward-only to history-plus-forward needed no
+    change here.
 
     Takes the pre-built ``account_maps`` rather than the raw accounts so
     the maps are built exactly once and shared with
@@ -216,20 +420,21 @@ def compute_net_worth_series(
     Args:
         account_maps: The dense ``{balances, is_liability}`` maps from
             :func:`build_account_net_worth_maps`.
-        forward_periods: The forward window (current period onward),
+        trend_periods: The trend window (history tail + current + forward),
             chronological; each must appear in the dense maps' domain.
 
     Returns:
         dict with ``periods`` (list of ``{end_date, period_index}``),
         ``net``, ``assets``, and ``liabilities`` (parallel ``Decimal``
-        lists, one entry per forward period).
+        lists, one entry per trend period).  The orchestrator adds
+        ``current_index`` (the solid/dashed boundary) to this dict.
     """
     periods: list[dict] = []
     net: list[Decimal] = []
     assets: list[Decimal] = []
     liabilities: list[Decimal] = []
 
-    for period in forward_periods:
+    for period in trend_periods:
         period_assets, period_liabilities = _sum_assets_and_liabilities_at_period(
             period.id, account_maps,
         )
@@ -253,16 +458,27 @@ def compute_net_worth_change(
     account_maps: list[dict],
     current_period: PayPeriod | None,
     all_periods: list[PayPeriod],
+    honest_start: int,
 ) -> Decimal | None:
     """Compute the net-worth change from the prior period to the current.
 
     Returns ``NW(current_period) - NW(prior_period)`` where the prior
     period is the one whose ``period_index`` is exactly
-    ``current_period.period_index - 1``.  Returns ``None`` when there is
-    no current period or no such immediately-prior period (e.g. the user
-    is in their earliest period, ``period_index == 0``) -- a missing
-    prior period is structurally different from a zero change, so the
-    caller must not coerce ``None`` to zero.
+    ``current_period.period_index - 1``.
+
+    Returns ``None`` -- a missing comparison the caller must not coerce to
+    zero -- when the change cannot be computed HONESTLY:
+
+    - no current period, or no immediately-prior period (the user is in
+      their earliest period, ``period_index == 0``); or
+    - the prior period is before ``honest_start`` (from
+      :func:`build_trend_periods`): its net worth would read a cash account
+      as absent or a loan at its original principal (the same fallbacks the
+      trend's history gate excludes), so the delta would be a fabricated
+      jump -- e.g. a loan's whole origination-to-now paydown counted as one
+      period.  Because a loan's schedule is today-forward, the prior period
+      is pre-schedule for any loan-holder, so the chip honestly reads "--"
+      for them rather than a wrong figure.
 
     Both net-worth values come from the SAME dense maps the series reads
     (built once by :func:`build_account_net_worth_maps`), through the
@@ -275,15 +491,20 @@ def compute_net_worth_change(
         current_period: The user's current :class:`PayPeriod`, or
             ``None``.
         all_periods: All of the user's pay periods (to locate the prior).
+        honest_start: The earliest honest ``period_index`` (from
+            :func:`build_trend_periods`); the prior period must be at or
+            after it for the change to be real.
 
     Returns:
-        The change as a ``Decimal``, or ``None`` when there is no
+        The change as a ``Decimal``, or ``None`` when there is no honest
         immediately-prior period to compare against.
     """
     if current_period is None:
         return None
 
     prior_index = current_period.period_index - 1
+    if prior_index < honest_start:
+        return None
     prior_period = next(
         (p for p in all_periods if p.period_index == prior_index), None,
     )

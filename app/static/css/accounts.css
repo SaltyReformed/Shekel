@@ -67,6 +67,24 @@
   color: var(--shekel-done);
 }
 
+/* Trend controls: the Net vs Assets-and-Liabilities series toggle and the
+   6 / 13 / 26 / All horizon picker sit in a row above the chart, pushed to
+   opposite ends on a wide band and wrapping on a narrow one.  The buttons
+   themselves are Bootstrap ``.btn-group-sm`` outline buttons (their active
+   state is Bootstrap's ``.active``); only the row layout is bespoke. */
+.nw-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.25rem 1.375rem 0.5rem;
+}
+
+.nw-chart-controls .btn-group {
+  flex: 0 0 auto;
+}
+
 /* =============================================
    ACCOUNT GRID (per-category auto-fit)
    Each category renders its OWN auto-fit grid under its group header, so
