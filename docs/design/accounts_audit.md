@@ -224,6 +224,28 @@ css-tricks.com auto-sizing-columns-css-grid, ishadeed.com css-grid-minmax, nngro
 contextual-menus-guidelines, patternfly.org overflow-menu, baymard.com cards-dashboard-layout,
 domo.com sparkline-chart.
 
+### Current best-practices research (2026-06-24)
+
+Four parallel web sweeps (accounts/net-worth IA and KPIs, financial data-viz, responsive card-grid
+layout, card actions and inline edit) against 2024-2026 sources, run before Loop A. The research
+validates the Net Worth Cockpit; the refinements it surfaced are folded into the rulings and the
+build refinements:
+
+- Net worth as hero with a trend directly under it is the universal pattern (Copilot, Empower,
+  Monarch, Simplifi, Kubera). The most actionable power-user chips are the period change and liquid
+  net worth; Retirement and Investment are asset SUBSETS, not peers, so they must not read as
+  additive to Total Assets.
+- Render actual-vs-projection as one series: solid past, dashed and lighter future, a "Today" marker
+  (FT, Fed SEP, Looker, Peltier). Prefer a diverging or stacked bar over a donut for allocation
+  (Datawrapper, FT): pies hide small differences and liabilities are not part of a positive whole.
+- Use `auto-fit` (not `auto-fill`) so the row fills and empty tracks collapse; keep the
+  `min(280px, 100%)` clamp to avoid narrow-screen overflow; never put a 1/-1 header inside an
+  auto-fit grid.
+- Make the card name the only link (`.stretched-link`) with raised sibling controls; keep frequent
+  actions (Transfer) visible and reserve the kebab for secondary ones; never blur-to-save a money
+  value; match confirmation friction to reversibility (Roselli, Piccalilli, NN/g, PatternFly, WAI
+  APG, Cloudscape, Atlassian).
+
 ## Rebuild decisions (locked 2026-06-24)
 
 Decided by the developer from this audit, before any code. Locked product decisions; do not revisit
@@ -244,6 +266,26 @@ without a new developer ruling.
    category, illiquid, whose balance is the market value the user sets and trues-up, with an
    optional annual appreciation rate. Equity nets against the mortgage automatically. This is a
    prerequisite mini-sprint and also fixes the analytics chart.
+
+Refined from the Loop A round-1 mockups (2026-06-24; scratch, never committed). Direction B
+"Chart-forward" was chosen.
+
+6. **Hero chips:** Total Assets, Total Liabilities, Change this period, Liquid net worth. Retirement
+   is not a hero chip; it folds into Total Assets and is surfaced as the Retirement card group and
+   its subtotal, so the chips never read as additive. Liquid is the sum of `is_liquid` balances.
+7. **Net-worth trend:** one continuous series, solid actual history plus a dashed, lighter forward
+   projection, with a "Today" marker; a Net vs Assets-and-Liabilities series toggle and a 6 / 13 /
+   26 / All horizon picker (13 is the default).
+8. **Allocation:** a diverging assets-vs-liabilities bar (liabilities left, assets right, net at the
+   zero center), each segment paired with a label and value. Chosen over a donut (angle-comparison
+   imprecision; liabilities are not a slice of a positive whole).
+9. **Card actions:** Transfer is a visible quiet button on the card; the kebab carries Edit and
+   Archive (both reversible); hard-Delete moves to the per-account detail page only (still confirm
+   plus fresh-login). The whole card opens the type-specific detail page; the balance is
+   click-to-edit inline.
+10. **Hero layout: direction B (chart-forward)** -- a large net-worth hero with the chips and the
+    diverging bar beside it, then a large full-width forward trend chart, then the account grid,
+    then the savings and debt sections.
 
 ## Home-equity / physical-asset mini-sprint (prerequisite; Opus data-model work)
 
@@ -278,18 +320,42 @@ Shippable independently of the visual rebuild, and it fixes the analytics chart 
 
 ## Chosen direction: "Net Worth Cockpit"
 
-A chart-forward accounts dashboard consistent with the rebuilt "Terminal Road" dashboard. Anatomy
-top to bottom:
+A chart-forward accounts dashboard consistent with the rebuilt "Terminal Road" dashboard, direction
+B (chosen in Loop A, 2026-06-24). Anatomy top to bottom:
 
-1. **Hero band:** Net Worth as the hero figure plus a forward net-worth trend line (13 periods) plus
-   rollup stat chips (Total Assets, Total Liabilities, Retirement). One `balanceChanged` refresh
-   region.
-2. **Accounts surface:** one responsive auto-fit grid; category grouping by inline headers or chips
-   within the single flow. Each card carries a consistent anatomy (name, type icon, balance hero,
-   one secondary line, a sparkline), the whole card resolves to the type-specific Details page, a
-   quiet kebab carries Transfer / Edit / Archive / Delete, and the balance is click-to-edit inline.
+1. **Hero band:** Net Worth as the hero figure, with the chips (Total Assets, Total Liabilities,
+   Change this period, Liquid) and the diverging assets-vs-liabilities bar beside it, then a large
+   full-width forward net-worth trend (solid history, dashed lighter projection, "Today" marker; a
+   Net vs Assets-and-Liabilities toggle; a 6 / 13 / 26 / All horizon). One `balanceChanged` region.
+2. **Accounts surface:** a responsive auto-fit card grid, grouped by category with a subtotal at
+   each group header. Each card: name (the only link), type icon, click-to-edit balance hero, one
+   secondary line, a sparkline where informative, a visible Transfer button, and a kebab (Edit /
+   Archive); the whole card opens the type-specific Details page; hard-Delete is on the detail page.
+   Grid mechanism and accessibility details in "Loop A build refinements" below.
 3. **Savings section:** Emergency Fund coverage plus per-goal trajectory mini-charts.
-4. **Debt section:** Debt Summary tied to the liabilities group.
+4. **Debt section:** Debt Summary (DTI / monthly / rate / payoff trajectory) tied to the liabilities
+   group.
+
+### Loop A build refinements (2026-06-24)
+
+Carried from the best-practices research and the round-1 mockups, to apply in Loop B:
+
+- **Grid mechanism correction.** Render each category as its OWN auto-fit grid with the group header
+  above it, NOT one grid with full-width `grid-column: 1 / -1` headers: a 1/-1 span inside an
+  `auto-fit` grid defeats the empty-track collapse and brings the holes back.
+  `repeat(auto-fit, minmax(min(280px, 100%), 1fr))` per group fills each row; a card `max-width`
+  plus `justify-content: start` keeps a lone card in a sparse category from ballooning.
+- **Card link/edit accessibility.** The account NAME is the only real link (Bootstrap
+  `.stretched-link`); the kebab, the Transfer button, and the click-to-edit balance are raised
+  siblings (`position: relative; z-index`), so the whole-card target works without nesting
+  interactive controls.
+- **Edit affordance.** The balance carries a persistently faint pencil (not hover-only); Enter
+  saves, Escape reverts, blur does NOT auto-save a money value; the 409 conflict cell shows the
+  current server value and refreshes the version id.
+- **Group subtotals.** Each category header shows the group subtotal (the liabilities subtotal in
+  the danger color).
+- **Conditional sparkline.** Show a per-account sparkline only where there is enough history and
+  variation to be informative; otherwise show the figure plus its period delta.
 
 ### Feasibility notes (verified, cited)
 
@@ -320,7 +386,9 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    with tests and the full suite.
 1. **Gate A confirm** (this audit's rebuild decisions).
 2. **Loop A** scratch mockups for the Net Worth Cockpit in /tmp (never committed), screenshot rounds
-   via `tests/manual/shoot.py`, iterate, lock the visual here.
+   via `tests/manual/shoot.py`, iterate, lock the visual here. DONE 2026-06-24: round 1 produced
+   three hero-band directions (A single-canvas, B chart-forward, C compact); the developer chose
+   **B**. Rulings recorded above (Rebuild decisions 6-10; Loop A build refinements).
 3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
    / CSS / JS): net-worth headline plus forward-series producer; the unified template plus
    `accounts.css` plus kebab and inline edit plus charts; `balanceChanged` wiring, the `/accounts`
