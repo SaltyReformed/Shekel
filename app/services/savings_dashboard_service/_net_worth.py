@@ -20,13 +20,18 @@ series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services import net_worth_kernel
+from app.services import home_equity_service, net_worth_kernel
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import _AccountParams
 
@@ -292,3 +297,52 @@ def compute_net_worth_change(
         prior_period.id, account_maps,
     )
     return current_nw - prior_nw
+
+
+def compute_property_equity(
+    accounts: list,
+    scenario_id: int | None,
+    as_of: date,
+) -> list[dict]:
+    """Resolve each Property account's equity for the cockpit equity card.
+
+    Reuses the same producer the Property detail page uses
+    (:func:`app.services.home_equity_service.resolve_home_equity`), so the
+    home-equity and loan-to-value figures here equal that page's and the
+    mortgage leg equals the resolver-derived balance the debt card and the
+    net-worth liability column read -- one figure, never a fork.  Equity
+    itself stays emergent (the net-worth sum is untouched); this only
+    surfaces the home<->mortgage relationship as a glanceable card.
+
+    An account is a Property when the canonical flag-driven classifier
+    (:func:`app.services.account_projection.classify_account`) returns
+    :data:`~app.services.account_projection.AccountProjectionKind.APPRECIATING`,
+    never a raw ``has_appreciation`` re-check -- the single taxonomy the
+    mini-sprint consolidated the inline predicates onto.  An unencumbered
+    Property (no secured loans) is included too: its card reports the full
+    market value as equity at 0% LTV.
+
+    Args:
+        accounts: The user's active accounts.
+        scenario_id: The baseline scenario id for the loan resolver, or
+            ``None`` when the user has no scenario yet (each secured loan
+            then resolves from its anchor with no payment history, exactly
+            as the detail page does).
+        as_of: The as-of date for the loan resolver.
+
+    Returns:
+        A list of ``{account, equity}`` dicts, one per Property account in
+        ``accounts`` order, where ``equity`` is a
+        :class:`~app.services.home_equity_service.HomeEquity` snapshot.
+        Empty when the user has no Property accounts.
+    """
+    result: list[dict] = []
+    for account in accounts:
+        if classify_account(account) is AccountProjectionKind.APPRECIATING:
+            result.append({
+                "account": account,
+                "equity": home_equity_service.resolve_home_equity(
+                    account, scenario_id, as_of,
+                ),
+            })
+    return result

@@ -12,6 +12,7 @@ the loan accounts the debt summary reads.  No Flask imports.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -26,8 +27,10 @@ from app.services.savings_dashboard_service._net_worth import (
     compute_net_worth_change,
     compute_net_worth_series,
     compute_net_worth_today,
+    compute_property_equity,
 )
 from app.services.savings_dashboard_service._display import (
+    _compute_group_subtotals,
     _group_accounts_by_category,
 )
 from app.services.savings_dashboard_service._goals import (
@@ -391,6 +394,43 @@ def _compute_net_worth_section(
     }
 
 
+def _compute_cockpit_grid_section(
+    core: _DashboardCoreData,
+    account_data: list[dict],
+) -> dict:
+    """Assemble the cockpit's account-grid context (Loop B Phase 2).
+
+    Groups the projected accounts by category ONCE and reuses that single
+    structure for both the grid itself and its per-category balance
+    subtotals (so the grouping is never recomputed), and resolves each
+    Property's equity through the shared
+    :func:`app.services.savings_dashboard_service._net_worth.compute_property_equity`
+    producer.  All money math lives here, never in the template.
+
+    Args:
+        core: The loaded :class:`_DashboardCoreData` (its ``accounts`` feed
+            the equity resolver; its ``scenario`` supplies the loan
+            resolver's scenario id, or ``None`` with no baseline scenario).
+        account_data: The per-account projection dicts already computed for
+            the page (the grouping and subtotal source).
+
+    Returns:
+        dict with ``grouped_accounts`` (category label -> projection dicts),
+        ``group_subtotals`` (category label -> ``Decimal`` balance
+        subtotal), and ``property_equity`` (list of ``{account, equity}``
+        for each Property account).
+    """
+    grouped_accounts = _group_accounts_by_category(account_data)
+    scenario_id = core.scenario.id if core.scenario else None
+    return {
+        "grouped_accounts": grouped_accounts,
+        "group_subtotals": _compute_group_subtotals(grouped_accounts),
+        "property_equity": compute_property_equity(
+            core.accounts, scenario_id, date.today(),
+        ),
+    }
+
+
 def compute_dashboard_data(user_id):
     """Compute all data needed by the savings dashboard template.
 
@@ -468,7 +508,10 @@ def compute_dashboard_data(user_id):
 
     return {
         "account_data": account_data,
-        "grouped_accounts": _group_accounts_by_category(account_data),
+        # Grid grouping, per-group subtotals, and Property equity (Loop B
+        # Phase 2): one helper so the grouping happens once and the money
+        # math stays out of the template.
+        **_compute_cockpit_grid_section(core, account_data),
         "goal_data": goal_data,
         "emergency_metrics": emergency_metrics,
         "total_savings": total_savings,

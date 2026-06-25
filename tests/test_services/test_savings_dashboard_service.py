@@ -36,6 +36,9 @@ class TestComputeDashboardData:
                 "archived_accounts", "debt_summary",
                 # Loop B Phase 1: the net-worth cockpit region.
                 "net_worth",
+                # Loop B Phase 2: per-group grid subtotals and the
+                # Property equity card data.
+                "group_subtotals", "property_equity",
             }
             assert set(result.keys()) == expected_keys
 
@@ -3122,6 +3125,33 @@ def _add_mortgage_account(seed_user, anchor_period_id, balance):
     return acct
 
 
+def _add_property_account(seed_user, anchor_period_id, market_value):
+    """Create a Property (appreciating physical asset) anchored to a period.
+
+    The market value is the user-set anchor balance; no appreciation params
+    row is needed for equity (equity reads the anchor value, not the
+    forward projection).
+
+    Returns:
+        The new Property Account.
+    """
+    property_type = (
+        db.session.query(AccountType).filter_by(name="Property").one()
+    )
+    acct = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=property_type.id,
+            name="House",
+            anchor_balance=market_value,
+            anchor_period_id=anchor_period_id,
+        ),
+    )
+    db.session.add(acct)
+    db.session.commit()
+    return acct
+
+
 class TestNetWorthHero:
     """Tests for the cockpit's today net-worth figures.
 
@@ -3501,3 +3531,181 @@ class TestNetWorthProducerEdgeCases:
         assert today["net_worth"] == Decimal("600.00")
         assert today["total_assets"] == Decimal("600.00")
         assert today["liquid"] == Decimal("600.00")
+
+
+class TestGroupSubtotals:
+    """Tests for the per-category grid subtotals (Loop B Phase 2).
+
+    ``group_subtotals`` carries one ``Decimal`` per category in
+    ``grouped_accounts`` -- the sum of that group's account
+    ``current_balance`` figures -- computed in the service so the template
+    never does money math.
+    """
+
+    def test_asset_subtotal_sums_group_balances(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The asset subtotal sums every asset account's current balance.
+
+        The seed Checking ($1,000) plus a $4,000 Savings are both assets;
+        with no transactions each current_balance is its flat anchor, so:
+          asset subtotal = 1000.00 + 4000.00 = 5000.00
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            # 1000.00 (Checking) + 4000.00 (Savings) = 5000.00
+            assert result["group_subtotals"]["asset"] == Decimal("5000.00")
+
+    def test_liability_subtotal_is_positive_owed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A liability group subtotals to the positive owed balance.
+
+        A $240,000 mortgage with no confirmed payments resolves to its
+        origination principal, so the liability subtotal is that positive
+        owed amount.  The template colors it with the danger token; the
+        sign is not negated in the figure (color is the display signal).
+        """
+        with app.app_context():
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            subtotals = result["group_subtotals"]
+            assert subtotals["liability"] == Decimal("240000.00")
+            assert subtotals["liability"] > Decimal("0.00")
+
+    def test_subtotal_keys_match_grouped_accounts(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every grouped category has a subtotal, in the same order.
+
+        The template reads ``group_subtotals[label]`` inside its
+        ``grouped_accounts.items()`` loop, so the key sets and their order
+        must line up exactly.
+        """
+        with app.app_context():
+            _add_savings_account(
+                seed_user, seed_periods[0].id, Decimal("4000.00"),
+            )
+            _add_mortgage_account(
+                seed_user, seed_periods[0].id, Decimal("240000.00"),
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            assert (
+                list(result["group_subtotals"].keys())
+                == list(result["grouped_accounts"].keys())
+            )
+
+    def test_none_balance_counts_as_zero_not_skipped(self):
+        """A None current_balance contributes 0.00 rather than being dropped.
+
+        Direct unit test of the producer: two asset accounts in one group,
+        one $600.00 and one with a None balance (no resolvable
+        current-period figure).  The None account adds nothing (counts as
+        zero), so the subtotal is 600.00 -- the row is not silently dropped
+        in a way that would make a populated group look empty.
+        """
+        # pylint: disable=import-outside-toplevel
+        from collections import OrderedDict
+        from app.services.savings_dashboard_service._display import (
+            _compute_group_subtotals,
+        )
+        grouped = OrderedDict([(
+            "asset",
+            [
+                {"current_balance": Decimal("600.00")},
+                {"current_balance": None},
+            ],
+        )])
+        subtotals = _compute_group_subtotals(grouped)
+        # 600.00 + (None -> 0.00) = 600.00
+        assert subtotals["asset"] == Decimal("600.00")
+
+
+class TestPropertyEquityInContext:
+    """Tests for the cockpit equity card data (Loop B Phase 2).
+
+    ``property_equity`` lists ``{account, equity}`` for each Property
+    account, reusing the Property detail page's home-equity producer so the
+    cockpit equity figure equals the detail page's and the debt card's.
+    """
+
+    def test_property_equity_present_with_linked_mortgage(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A Property secured by a mortgage reports equity = value - debt.
+
+        A $400,000 Property secured by a $240,000 mortgage (no confirmed
+        payments, so the loan resolves to its origination principal):
+          equity = 400000.00 - 240000.00 = 160000.00
+          ltv    = 240000.00 / 400000.00 = 0.6000
+        """
+        with app.app_context():
+            prop = _add_property_account(
+                seed_user, seed_periods_today[0].id, Decimal("400000.00"),
+            )
+            mortgage = _add_mortgage_account(
+                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+            )
+            mortgage.collateral_account_id = prop.id
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            equity_data = result["property_equity"]
+            assert len(equity_data) == 1
+            entry = equity_data[0]
+            assert entry["account"].id == prop.id
+            # 400000.00 - 240000.00 = 160000.00; 240000/400000 = 0.6000
+            assert entry["equity"].market_value == Decimal("400000.00")
+            assert entry["equity"].total_debt == Decimal("240000.00")
+            assert entry["equity"].equity == Decimal("160000.00")
+            assert entry["equity"].ltv == Decimal("0.6000")
+
+    def test_no_property_yields_empty_list(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A user with no Property account gets an empty property_equity list."""
+        with app.app_context():
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            assert result["property_equity"] == []
+
+    def test_unencumbered_property_is_all_equity(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A Property with no secured loan reports its full value as equity.
+
+        A $300,000 Property with no linked mortgage:
+          total_debt = 0; equity = market value = 300000.00; ltv = 0.0000
+        """
+        with app.app_context():
+            prop = _add_property_account(
+                seed_user, seed_periods_today[0].id, Decimal("300000.00"),
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )
+            equity_data = result["property_equity"]
+            assert len(equity_data) == 1
+            entry = equity_data[0]
+            assert entry["account"].id == prop.id
+            assert entry["equity"].total_debt == Decimal("0")
+            assert entry["equity"].equity == Decimal("300000.00")
+            assert entry["equity"].ltv == Decimal("0.0000")

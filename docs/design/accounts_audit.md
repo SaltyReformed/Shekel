@@ -433,12 +433,19 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    **B**. Rulings recorded above (Rebuild decisions 6-10; Loop A build refinements).
 3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
    / CSS / JS): **P1 net-worth headline + forward-series producer DONE** (`e5ecd26`, shared
-   `net_worth_kernel`). REMAINING -- P2 the unified `savings/dashboard.html` + new `accounts.css` +
-   kebab and inline edit (the Property equity card lands here, reusing `home_equity_service`); P3
-   charts (trend + Net/assets toggle + horizon + diverging bar + sparklines); P4 `balanceChanged`
-   wiring + the `/accounts` -> `savings.dashboard` redirect + retire `list.html` + repoint links +
-   relocate hard-delete to the detail page; P5 live verification.
-   **This is where a fresh session resumes.**
+   `net_worth_kernel`). **P2 BACKEND (Opus) DONE 2026-06-25 on dev** -- the cockpit data contract
+   the Fable template consumes: `compute_property_equity` (reuses
+   `home_equity_service.resolve_home_equity` + `classify_account`, never a raw `has_appreciation`
+   re-check) and `_compute_group_subtotals`, both wired into `compute_dashboard_data` via the new
+   `_compute_cockpit_grid_section` helper and exposed as the `property_equity` and `group_subtotals`
+   context keys; 7 new tests, full suite 6294, `pylint app/` 10.00/10. REMAINING -- **P2 (Fable):**
+   the unified `savings/dashboard.html` + new `accounts.css` + kebab and inline edit + the Property
+   equity card, consuming `property_equity` / `group_subtotals`; **P3** charts (trend + Net/assets
+   toggle + horizon + diverging bar + sparklines), whose sparkline-series + diverging-bar
+   serialization is the next Opus backend slice (deferred so its shape follows the real template);
+   **P4** `balanceChanged` wiring + the `/accounts` -> `savings.dashboard` redirect + retire
+   `list.html` + repoint links + relocate hard-delete to the detail page; **P5** live verification.
+   **A fresh session resumes at the Fable P2 template (data is ready) or the P3 backend slice.**
 
 ## Verification (for the build)
 
