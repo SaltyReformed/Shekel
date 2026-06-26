@@ -88,12 +88,28 @@ def _create_other_user_account():
 
 
 class TestAccountList:
-    """Tests for GET /accounts."""
+    """Tests for GET /accounts (the retired table is now a redirect, P4)."""
 
-    def test_list_accounts_renders(self, app, auth_client, seed_user):
-        """GET /accounts renders the accounts page with the user's accounts."""
+    def test_accounts_url_redirects_to_cockpit(self, app, auth_client, seed_user):
+        """GET /accounts 302-redirects to the Net Worth Cockpit.
+
+        Loop B P4 retired the standalone /accounts management table; the
+        endpoint is kept only as a permanent redirect to savings.dashboard
+        so old bookmarks resolve and the unauthenticated-redirect contract
+        stays green.  No list page is rendered here anymore.
+        """
         with app.app_context():
             response = auth_client.get("/accounts")
+
+            assert response.status_code == 302
+            assert response.headers["Location"].endswith("/savings")
+
+    def test_accounts_redirect_lands_on_cockpit_with_accounts(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Following the /accounts redirect shows the user's accounts on the cockpit."""
+        with app.app_context():
+            response = auth_client.get("/accounts", follow_redirects=True)
 
             assert response.status_code == 200
             assert b"Checking" in response.data
@@ -107,6 +123,42 @@ class TestAccountList:
             assert b'name="name"' in response.data
             assert b'name="anchor_balance"' in response.data
             assert b"New Account" in response.data
+
+
+class TestEditFormDangerZone:
+    """The shared edit form hosts hard-delete in a Danger Zone (Loop B P4).
+
+    P4 retired the /accounts table that used to expose hard-delete; the
+    developer ruling (audit decision 12) relocated it to the edit form so
+    every account type can be deleted from one shared surface, including
+    Savings and Credit Card, which have no per-type detail page.
+    """
+
+    def test_edit_form_has_delete_danger_zone(self, app, auth_client, seed_user):
+        """GET /accounts/<id>/edit renders a hard-delete form in the Danger Zone."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+            resp = auth_client.get(f"/accounts/{account_id}/edit")
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Danger Zone" in html
+            # The delete form posts to the hard-delete route for THIS account.
+            assert f"/accounts/{account_id}/hard-delete" in html
+
+    def test_create_form_has_no_danger_zone(self, app, auth_client, seed_user):
+        """GET /accounts/new (create mode) shows no delete affordance.
+
+        The Danger Zone is gated on ``{% if account %}`` so it never appears
+        while creating a brand-new account.
+        """
+        with app.app_context():
+            resp = auth_client.get("/accounts/new")
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Danger Zone" not in html
+            assert "hard-delete" not in html
 
 
 class TestAccountCreate:
@@ -1730,7 +1782,9 @@ class TestAccountCreationRedirects:
     """Tests for post-creation redirect routing.
 
     Parameterized account types redirect to their configuration pages
-    with setup=1.  Non-parameterized types redirect to the accounts list.
+    with setup=1.  Non-parameterized types redirect to the unified
+    accounts cockpit (savings.dashboard), the retired /accounts table's
+    successor (Loop B P4).
     """
 
     def test_hysa_creation_redirects_to_detail(
@@ -1872,10 +1926,10 @@ class TestAccountCreationRedirects:
             assert "/investment" in location
             assert "setup=1" in location
 
-    def test_checking_creation_redirects_to_accounts_list(
+    def test_checking_creation_redirects_to_cockpit(
         self, app, auth_client, seed_user,
     ):
-        """Checking account creation redirects to accounts list without setup param."""
+        """Checking (non-parameterized) creation redirects to the cockpit, no setup param."""
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking"
@@ -1889,13 +1943,13 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert location.endswith("/accounts")
+            assert location.endswith("/savings")
             assert "setup" not in location
 
-    def test_savings_creation_redirects_to_accounts_list(
+    def test_savings_creation_redirects_to_cockpit(
         self, app, auth_client, seed_user,
     ):
-        """Plain savings account creation redirects to accounts list."""
+        """Plain savings account creation redirects to the cockpit."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
@@ -1909,7 +1963,7 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert location.endswith("/accounts")
+            assert location.endswith("/savings")
             assert "setup" not in location
 
     def test_student_loan_creation_redirects_to_loan(
@@ -2205,7 +2259,7 @@ class TestInvestmentDispatch:
         self, app, auth_client, seed_user,
     ):
         """An account type with has_parameters=False gets no params and
-        redirects to the accounts list."""
+        redirects to the cockpit (savings.dashboard)."""
         with app.app_context():
             # Savings has has_parameters=False.
             savings_type = db.session.query(AccountType).filter_by(
@@ -2221,7 +2275,7 @@ class TestInvestmentDispatch:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/accounts" in location
+            assert "/savings" in location
             assert "setup" not in location
 
             acct = db.session.query(Account).filter_by(

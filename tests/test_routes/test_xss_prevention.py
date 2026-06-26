@@ -623,7 +623,11 @@ class TestXSSPrevention:
                 "anchor_balance": "0",
             })
 
-            resp = auth_client.get("/accounts")
+            # The accounts surface is the cockpit after Loop B P4 retired the
+            # /accounts table.  A Savings account has no detail page, so its
+            # name renders in a plain span; every account href on the cockpit
+            # uses the integer id, never the name.
+            resp = auth_client.get("/savings")
             assert resp.status_code == 200
 
             # The text appears (it has no HTML metacharacters to escape).

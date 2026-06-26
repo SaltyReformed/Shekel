@@ -310,6 +310,22 @@ Decided 2026-06-25 while building the P3 trend (slice 3a), after tracing the dat
     analytics Year-End net-worth chart, so its pre-today points likely carry the original-principal
     artifact too -- flagged, separate follow-up.
 
+Decided 2026-06-25 (developer ruling on the P4 hard-delete fork). Locked.
+
+12. **Hard-delete's home: the shared edit form's danger zone.** When P4 retires the `/accounts`
+    table, permanent hard-delete moves into a "Danger Zone" section at the bottom of the shared
+    account edit form (`accounts/form.html`), shown in edit mode only (`{% if account %}`) and
+    reached via each cockpit card's kebab -> Edit. Chosen over decision 9's literal "per-account
+    detail page" because the detail-page route cannot cover every type: Savings and Credit Card (and
+    any plain custom type) have NO detail page -- the card's `detail_endpoint` macro falls through
+    to an empty branch for them -- so a detail-page-only delete would silently make those common
+    types undeletable, a regression from the table. Every type is reachable for Edit via the kebab,
+    so one shared danger zone (DRY) covers all of them; friction stays deliberate (kebab -> Edit ->
+    Danger Zone -> confirm modal -> fresh-login). Archived accounts, which have no kebab in the
+    cockpit, get a direct, equally-gated "Delete permanently" button beside Unarchive in the
+    archived list. The route, its guard chain, the confirm modal, and the `@fresh_login_required`
+    gate are unchanged; only the invoking surface moved.
+
 ## Home-equity / physical-asset mini-sprint (prerequisite; Opus data-model work)
 
 Adds the Property asset type with optional appreciation, wires its projection into the shared
@@ -563,15 +579,28 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    whose projected balance oscillates with paychecks/bills shows that cash-flow rhythm (the magnitude
    is in the secondary line), not only monotonic trends. Live-verified both themes.
 
-   **P4, retire `/accounts` (NEXT; paused for developer review 2026-06-25):** redirect `list_accounts`
-   -> `savings.dashboard` (keep the endpoint so the ~17 redirect call sites do not `BuildError`),
-   repoint those call sites, retire `list.html` (account-type management lives in
-   `settings.show(section='account-types')`, so it is not orphaned), relocate hard-delete off the
-   retired table, and drop the temporary "Manage Accounts" header link. OPEN design fork for the
-   developer: hard-delete's new home -- the shared edit form's danger zone (one template, reachable
-   from every card's kebab Edit; DRY) versus the 5 per-account detail surfaces across 3 blueprints
-   (decision 9's literal "detail page"). The auth-required test stays green (unauthenticated
-   `/accounts` still redirects to login).
+   **P4, retire `/accounts`: DONE 2026-06-25 on dev.** The hard-delete fork was resolved by the
+   developer ruling to the edit-form danger zone (decision 12). As built:
+
+   - Redirect: `list_accounts` became a thin permanent redirect to `savings.dashboard`, kept (not
+     deleted) so external `/accounts` bookmarks resolve and the unauthenticated-redirect contract
+     stays green. The 16 in-app redirects (12 in `crud.py`, 4 wrong-type guards in `detail.py`)
+     repoint directly at `savings.dashboard`. `accounts/list.html` was deleted (nothing else
+     included it).
+   - Hard-delete: an edit-mode-only Danger Zone in `form.html` POSTs to `hard_delete_account` (the
+     confirm modal and fresh-login gate are unchanged). The cockpit's archived list gained a direct,
+     equally-gated delete button (archived cards have no kebab), and the temporary "Manage Accounts"
+     header link became the "Manage Account Types" shortcut the retired table used to host.
+   - Tests: 5 assertions tied to the old behavior were updated (developer-confirmed change: GET
+     `/accounts` now 302s; the non-parameterized create redirect and the detail wrong-type guards
+     land on `/savings`), plus new tests for the redirect contract and the danger zone. Full suite
+     6333 passed, `pylint app/` 10.00/10.
+
+   **Newly UI-orphaned by P4 (flagged, separate cleanup):** `accounts.inline_anchor_update` and its
+   `accounts/_anchor_cell.html` partial were the retired table's inline balance editor; the cockpit
+   edits balances through the shared grid editor (`savings.cockpit_balance` -> `true_up`), so this
+   endpoint keeps its 5 tests (across 4 files) but has no remaining UI entry point. Left live for P4
+   (removing the route + partial + its tests is its own scoped change, not a redirect retirement).
 
    **P5, live verification** (both themes via `shoot.py`, SSOT hand-confirm).
 

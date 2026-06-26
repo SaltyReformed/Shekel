@@ -83,36 +83,20 @@ _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
 @login_required
 @require_owner
 def list_accounts():
-    """List all accounts and account types (two-section page).
+    """Redirect the retired ``/accounts`` table to the unified cockpit.
 
-    Separates accounts into active and archived lists for the UI.
-    Both lists inherit the same ordering (sort_order, name).
-
-    The ``account_types`` listing is scoped to the seeded built-ins
-    plus the current user's own custom types (commit C-28 / F-044).
-    Other owners' custom types are invisible.
+    Loop B P4 retired the standalone management table: the Net Worth
+    Cockpit (``savings.dashboard``) now both displays AND manages
+    accounts -- inline click-to-edit balances, a per-card kebab carrying
+    Edit and Archive, and hard-delete relocated to the shared edit
+    form's danger zone (developer ruling 2026-06-25, audit decision 12).
+    The endpoint is kept as a permanent redirect, not deleted, so that
+    external bookmarks of ``/accounts`` still resolve and the
+    unauthenticated-redirect contract in
+    ``tests/test_routes/test_auth_required.py`` stays green; every
+    in-app caller was repointed directly at ``savings.dashboard``.
     """
-    accounts = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id)
-        .order_by(Account.sort_order, Account.name)
-        .all()
-    )
-    active_accounts = [a for a in accounts if a.is_active]
-    archived_accounts = [a for a in accounts if not a.is_active]
-
-    account_types = _visible_account_types(current_user.id)
-
-    # Account type IDs in use (for the delete guard).
-    types_in_use = account_service.get_account_type_ids_in_use(current_user.id)
-
-    return render_template(
-        "accounts/list.html",
-        active_accounts=active_accounts,
-        archived_accounts=archived_accounts,
-        account_types=account_types,
-        types_in_use=types_in_use,
-    )
+    return redirect(url_for("savings.dashboard"))
 
 
 @accounts_bp.route("/accounts/new", methods=["GET"])
@@ -187,8 +171,9 @@ def _setup_redirect_url(account, kind):
     """Return the post-create redirect URL for a new account.
 
     Parameterized accounts go to their type-specific setup page (the
-    established setup-page pattern); everything else returns to the accounts
-    list.  Resolving the URL here keeps :func:`create_account` within
+    established setup-page pattern); everything else returns to the unified
+    accounts cockpit (``savings.dashboard``, the retired ``/accounts`` table's
+    successor).  Resolving the URL here keeps :func:`create_account` within
     Pylint's branch and return-count limits.
 
     Args:
@@ -206,7 +191,7 @@ def _setup_redirect_url(account, kind):
         return url_for("investment.dashboard", account_id=account.id, setup=1)
     if kind is AccountProjectionKind.APPRECIATING:
         return url_for("accounts.property_detail", account_id=account.id, setup=1)
-    return url_for("accounts.list_accounts")
+    return url_for("savings.dashboard")
 
 
 @accounts_bp.route("/accounts", methods=["POST"])
@@ -429,7 +414,7 @@ def update_account(account_id):
 
     logger.info("Updated account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' updated.", "success")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("savings.dashboard"))
 
 
 @accounts_bp.route("/accounts/<int:account_id>/archive", methods=["POST"])
@@ -468,7 +453,7 @@ def archive_account(account_id):
             "Archive those recurring transfers first.",
             "warning",
         )
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     account.is_active = False
     conflict = commit_or_handle_stale(StaleConflictContext(
@@ -479,13 +464,13 @@ def archive_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect=RedirectTarget("accounts.list_accounts"),
+        redirect=RedirectTarget("savings.dashboard"),
     ))
     if conflict is not None:
         return conflict
     logger.info("Archived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' archived.", "info")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("savings.dashboard"))
 
 
 @accounts_bp.route("/accounts/<int:account_id>/unarchive", methods=["POST"])
@@ -509,13 +494,13 @@ def unarchive_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect=RedirectTarget("accounts.list_accounts"),
+        redirect=RedirectTarget("savings.dashboard"),
     ))
     if conflict is not None:
         return conflict
     logger.info("Unarchived account: %s (id=%d)", account.name, account.id)
     flash(f"Account '{account.name}' unarchived.", "success")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("savings.dashboard"))
 
 
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
@@ -570,7 +555,7 @@ def hard_delete_account(account_id):
             "Delete those recurring transfers first.",
             "warning",
         )
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     # Guard 3: transaction templates with RESTRICT FK.
     blocking_txn_template = (
@@ -584,7 +569,7 @@ def hard_delete_account(account_id):
             "Delete those recurring transactions first.",
             "warning",
         )
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     # Guard 4: transaction history (any non-deleted transaction).
     if archive_helpers.account_has_history(account.id):
@@ -603,11 +588,11 @@ def hard_delete_account(account_id):
                     "This account was changed by another action.  "
                     "Please reload the page and try again."
                 ),
-                redirect=RedirectTarget("accounts.list_accounts"),
+                redirect=RedirectTarget("savings.dashboard"),
             ))
             if conflict is not None:
                 return conflict
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     # All guards passed -- permanently delete.
     # Step 1: delete remaining Transfer rows (soft-deleted or ghost
@@ -659,10 +644,10 @@ def hard_delete_account(account_id):
             "This account was changed by another action.  Please reload "
             "the page and try again."
         ),
-        redirect=RedirectTarget("accounts.list_accounts"),
+        redirect=RedirectTarget("savings.dashboard"),
     ))
     if conflict is not None:
         return conflict
 
     flash(f"Account '{account_name}' permanently deleted.", "info")
-    return redirect(url_for("accounts.list_accounts"))
+    return redirect(url_for("savings.dashboard"))

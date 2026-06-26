@@ -15,12 +15,13 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
   <h4 class="mb-0"><i class="bi bi-wallet2"></i> Accounts</h4>
   <div class="d-flex gap-2 flex-wrap">
-    {# "Manage Accounts" is temporary: card balances are now click-to-edit
-       inline, but the /accounts table still owns hard-delete until P4
-       relocates it to the per-account detail pages and retires the table
-       by redirect. Until then the link stays to avoid a functionality gap. #}
-    <a href="{{ url_for('accounts.list_accounts') }}" class="btn btn-outline-secondary btn-sm">
-      <i class="bi bi-pencil-square"></i> Manage Accounts
+    {# Account-type catalogue management (rename / retype / add custom types)
+       lives in Settings; this shortcut replaced the retired /accounts table's
+       "Manage Account Types" button (P4) so that entry point is not orphaned.
+       Per-account management (balance, Edit, Archive, Delete) now lives on the
+       cards below and their kebab -> Edit danger zone. #}
+    <a href="{{ url_for('settings.show', section='account-types') }}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-sliders"></i> Manage Account Types
     </a>
     <a href="{{ url_for('accounts.new_account') }}" class="btn btn-outline-primary btn-sm">
       <i class="bi bi-plus-circle"></i> New Account
@@ -242,13 +243,32 @@
                 </h6>
                 <small>{{ ad.account.account_type.name if ad.account.account_type else '--' }}</small>
               </div>
-              <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
-                    class="d-inline">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-sm btn-outline-success" title="Unarchive">
-                  <i class="bi bi-arrow-counterclockwise"></i>
-                </button>
-              </form>
+              <div class="d-flex gap-1">
+                <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
+                      class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success"
+                          title="Unarchive {{ ad.account.name }}"
+                          aria-label="Unarchive {{ ad.account.name }}">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                </form>
+                {# Archived accounts have no card kebab or edit-form reach in the
+                   cockpit, so hard-delete is a direct affordance here (P4).  It
+                   is the same route the active cards' Danger Zone uses: confirm
+                   modal + fresh-login gated, and an account that still has
+                   transaction history is archived-not-deleted by the guard. #}
+                <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=ad.account.id) }}"
+                      class="d-inline"
+                      data-confirm="Permanently delete this account and all associated data? This cannot be undone.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger"
+                          title="Delete {{ ad.account.name }} permanently"
+                          aria-label="Delete {{ ad.account.name }} permanently">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </div>
             </div>
             <div class="mt-2">
               <div class="small">Last Balance</div>
