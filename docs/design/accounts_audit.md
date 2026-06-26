@@ -622,7 +622,13 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    live `true_up` / `anchor_form` / `anchor_display` editor and the 9 grid/dashboard/cockpit tests in
    the mixed version-pin class were kept. Sweep clean, `pylint app/` 10.00/10, full suite 6318.
 
-   **P5, live verification** (both themes via `shoot.py`, SSOT hand-confirm).
+   **P5, live verification: DONE 2026-06-26 (Claude's pass).** Desktop and mobile both themes via
+   `shoot.py`; net worth reconciled from `compute_dashboard_data` to the cent; and a non-destructive
+   interaction pass (the P4 redirect, the kebab Edit and Archive, click-to-edit open with the input
+   raised above the stretched-link, then Escape revert) was green at 7 of 7. The home-to-mortgage link
+   got set so the equity card now nets, and the always-blank Change this period chip was removed
+   (decision 13). Developer acceptance, driving real saves and archives with live data, remains the
+   developer's to do.
 
 ## Verification (for the build)
 
