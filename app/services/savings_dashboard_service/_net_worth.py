@@ -103,7 +103,7 @@ def build_account_net_worth_maps(
     scenario: Scenario | None,
     all_periods: list[PayPeriod],
     params: _AccountParams,
-    debt_schedules: dict[int, list],
+    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
 ) -> list[dict]:
     """Build each account's dense balance map plus its liability flag.
 
@@ -132,7 +132,8 @@ def build_account_net_worth_maps(
         params: The batch-loaded :class:`_AccountParams` (the investment
             params map, the per-account deductions, and the engine
             gross-biweekly the growth sub-chain needs).
-        debt_schedules: account_id -> amortization schedule, from
+        debt_schedules: account_id -> :class:`~app.services.net_worth_kernel.DebtSchedule`
+            (schedule + resolver current balance), from
             :func:`app.services.net_worth_kernel.generate_debt_schedules`.
 
     Returns:
@@ -217,7 +218,8 @@ _TREND_HISTORY_PERIODS = 6
 # would silently contribute zero to the net-worth sum (cash dropping out of
 # the past).  AMORTIZING loans constrain the window separately (their
 # resolver schedule is today-forward, so pre-schedule periods report the
-# original principal -- see :func:`_loan_schedule_start_index`).  INVESTMENT
+# current balance held flat -- today's balance, not the loan's real past --
+# see :func:`_loan_schedule_start_index`).  INVESTMENT
 # (reverse growth projection) and APPRECIATING (flat-carry) are defined at
 # every period, so they never constrain it.
 _CASH_GATING_KINDS = frozenset({
@@ -227,31 +229,32 @@ _CASH_GATING_KINDS = frozenset({
 
 
 def _loan_schedule_start_index(
-    all_periods: list[PayPeriod], schedule: list | None,
+    all_periods: list[PayPeriod],
+    schedule_info: "net_worth_kernel.DebtSchedule | None",
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
     A loan's resolver schedule is TODAY-forward: it projects from the
     current resolved balance to payoff, with no rows for the loan's past.
     :func:`app.services.account_projection.compute_loan_period_balance_map`
-    therefore returns the loan's ORIGINAL PRINCIPAL for every period before
-    the schedule's first payment -- a flat line at the origination amount,
-    not the real amortized balance the loan actually had then.  So a loan
-    is "honest" only from the first period whose ``end_date`` reaches its
-    first scheduled payment onward; before that the trend would show the
-    loan leaping down from its origination balance at "today".
+    therefore returns the loan's CURRENT balance, held flat, for every period
+    before the schedule's first payment -- today's balance, not the real
+    amortized balance the loan actually had then.  So a loan is "honest" only
+    from the first period whose ``end_date`` reaches its first scheduled
+    payment onward; before that the trend would carry today's balance flat
+    backward through the loan's real past.
 
     Returns that first honest ``period_index``, or ``None`` when the loan
-    does not constrain the window: an empty schedule (``[]`` -- a
-    resolved-but-unpaid loan that sits at its original principal at EVERY
-    period, which IS its real balance) or a missing one (``None``), and the
-    degenerate case of a schedule dated entirely after the user's last
-    period.
+    does not constrain the window: an empty schedule (a paid-off or
+    fully-resolved loan, whose flat current balance IS its real balance) or a
+    missing one (``None``), and the degenerate case of a schedule dated
+    entirely after the user's last period.
 
     Args:
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
-        schedule: The loan's amortization schedule (the
+        schedule_info: The loan's
+            :class:`~app.services.net_worth_kernel.DebtSchedule` (the
             :func:`app.services.net_worth_kernel.generate_debt_schedules`
             entry for it), or ``None``.
 
@@ -259,9 +262,9 @@ def _loan_schedule_start_index(
         The first honest ``period_index``, or ``None`` when the loan does
         not gate the window.
     """
-    if not schedule:
+    if schedule_info is None or not schedule_info.schedule:
         return None
-    first_payment = min(row.payment_date for row in schedule)
+    first_payment = min(row.payment_date for row in schedule_info.schedule)
     for period in all_periods:
         if period.end_date >= first_payment:
             return period.period_index
@@ -272,7 +275,7 @@ def _honest_history_start_index(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod,
-    debt_schedules: dict[int, list],
+    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
 ) -> int:
     """Earliest period_index whose net worth is real for every account.
 
@@ -283,9 +286,9 @@ def _honest_history_start_index(
       balance before the anchor period -- the account would contribute zero
       (cash dropping out of the past).  Gates at its anchor index.
     - AMORTIZING loans: the resolver schedule is today-forward, so periods
-      before it report the loan's ORIGINAL PRINCIPAL, not its real past
-      balance (the loan would leap down at "today").  Gates at its
-      schedule-start index (:func:`_loan_schedule_start_index`).
+      before it report the loan's CURRENT balance held flat -- today's
+      balance, not its real past balance.  Gates at its schedule-start index
+      (:func:`_loan_schedule_start_index`).
 
     INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
     are defined at every period by the same modeling the year-end summary
@@ -305,7 +308,8 @@ def _honest_history_start_index(
         all_periods: All of the user's pay periods (maps an anchor period
             id to its index).
         current_period: The period containing today (the upper clamp).
-        debt_schedules: account_id -> amortization schedule (from
+        debt_schedules: account_id -> :class:`~app.services.net_worth_kernel.DebtSchedule`
+            (from
             :func:`app.services.net_worth_kernel.generate_debt_schedules`),
             for the loan gate.
 
@@ -337,7 +341,7 @@ def build_trend_periods(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod | None,
-    debt_schedules: dict[int, list],
+    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
 ) -> tuple[list[PayPeriod], int, int]:
     """Build the net-worth trend's window, current index, and honest start.
 
@@ -351,8 +355,9 @@ def build_trend_periods(
     immediately before the current period, but never earlier than
     :func:`_honest_history_start_index` -- so at every history point every
     cash account has a real balance (none drops silently to zero) AND every
-    loan is within its schedule (none sits at its original principal then
-    leaps down at "today").  Because a loan's schedule is today-forward, any
+    loan is within its schedule (none shows today's balance carried flat
+    backward through its real past).  Because a loan's schedule is
+    today-forward, any
     user with an amortizing loan has an empty tail (forward-only); the tail
     shows only for loan-free users whose cash was trued up in the past (e.g.
     renters), the case the honest tail genuinely serves.
@@ -371,8 +376,9 @@ def build_trend_periods(
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
         current_period: The period containing today, or ``None``.
-        debt_schedules: account_id -> amortization schedule, for the loan
-            gate.
+        debt_schedules: account_id ->
+            :class:`~app.services.net_worth_kernel.DebtSchedule`, for the
+            loan gate.
 
     Returns:
         ``(periods, current_index, honest_start)`` -- ``periods`` is the

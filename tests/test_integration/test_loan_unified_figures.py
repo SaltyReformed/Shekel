@@ -227,7 +227,7 @@ def test_per_period_principal_interest_single_source(
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
-        year_end_schedule = debt_schedules[account.id]
+        year_end_schedule = debt_schedules[account.id].schedule
 
         # The two schedules MUST be the same length and identical
         # row-by-row -- year-end derives from the resolver, no
@@ -559,7 +559,7 @@ def test_arm_payoff_date_consistent_across_surfaces(
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
-        ye_schedule = debt_schedules[account.id]
+        ye_schedule = debt_schedules[account.id].schedule
         ye_payoff = (
             ye_schedule[-1].payment_date if ye_schedule else None
         )
