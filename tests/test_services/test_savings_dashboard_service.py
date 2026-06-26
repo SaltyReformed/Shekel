@@ -2659,24 +2659,31 @@ class TestLoanProjectedBalanceDispatcher:
         ]
 
         result = compute_loan_period_balance_map(
-            schedule, periods, original_principal=Decimal("1000.00"),
+            schedule, periods, current_balance=Decimal("1000.00"),
         )
 
         assert result[1] == Decimal("910.00")
         assert result[2] == Decimal("819.00")
         assert result[3] == Decimal("727.00")
 
-    def test_dispatcher_returns_original_principal_before_first_payment(
+    def test_dispatcher_returns_current_balance_before_first_payment(
         self,
     ):
-        """C19-1 (boundary): periods preceding the first payment
-        return original_principal.
+        """C19-1 (boundary): periods preceding the first payment return the
+        loan's current balance, NOT its original principal.
+
+        This is the phantom-net-worth-jump fix: the resolver schedule is
+        today-forward, so a period before the first upcoming payment is at
+        the loan's current balance.  Reporting the origination amount there
+        made the loan leap down to its real balance the moment the first
+        payment landed -- a phantom liability drop / net-worth jump of
+        (original principal - current balance).
 
         Period 1 ends Dec 31, 2025; the first scheduled payment is
-        Jan 15, 2026.  The dispatcher returns the loan's original
-        principal for period 1 because no payment yet lands within
-        its end_date.  Period 2 (ends Jan 31) sits after the Jan 15
-        payment, so it carries the post-payment remaining balance.
+        Jan 15, 2026.  The dispatcher returns the loan's current balance
+        ($1,000.00) for period 1 because no payment yet lands within its
+        end_date.  Period 2 (ends Jan 31) sits after the Jan 15 payment, so
+        it carries the post-payment remaining balance ($910.00).
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
@@ -2707,22 +2714,87 @@ class TestLoanProjectedBalanceDispatcher:
         ]
 
         result = compute_loan_period_balance_map(
-            schedule, periods, original_principal=Decimal("1000.00"),
+            schedule, periods, current_balance=Decimal("1000.00"),
         )
 
         assert result[1] == Decimal("1000.00")
         assert result[2] == Decimal("910.00")
 
-    def test_empty_schedule_returns_original_principal_for_all_periods(
+    def test_no_phantom_jump_from_original_principal(self):
+        """Regression: pre-first-payment periods report the current balance.
+
+        The production bug (a phantom ~$18.5k net-worth jump): the Van Loan's
+        latest anchor was recent, so its resolver schedule first paid on
+        2026-07-22 -- AFTER two forward pay periods.  Those periods reported
+        the loan's ORIGINAL principal ($32,402.45) instead of its current
+        balance ($15,663.59); when the 07-22 payment landed, the liability
+        "snapped" down to ~$15.2k, read as a ~$17.2k net-worth jump in one
+        period.
+
+        With the fix, pre-first-payment periods report the current balance, so
+        the only period-over-period change is the real amortization step
+        (~one payment), never (original principal - current balance).
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+        )
+
+        current_balance = Decimal("15663.59")     # resolver balance today
+        # Today-forward schedule: first payment 2026-07-22, then 2026-08-22 --
+        # the realistic ~$458/mo principal step from the production loan.
+        schedule = [
+            SimpleNamespace(
+                payment_date=date(2026, 7, 22),
+                remaining_balance=Decimal("15205.63"),
+            ),
+            SimpleNamespace(
+                payment_date=date(2026, 8, 22),
+                remaining_balance=Decimal("14745.51"),
+            ),
+        ]
+        # Periods 1 and 2 END before the 07-22 first payment; period 3 ends
+        # after it; period 4 ends after the 08-22 payment.
+        periods = [
+            SimpleNamespace(id=1, start_date=date(2026, 7, 2),
+                            end_date=date(2026, 7, 15), period_index=1),
+            SimpleNamespace(id=2, start_date=date(2026, 7, 16),
+                            end_date=date(2026, 7, 21), period_index=2),
+            SimpleNamespace(id=3, start_date=date(2026, 7, 22),
+                            end_date=date(2026, 7, 29), period_index=3),
+            SimpleNamespace(id=4, start_date=date(2026, 8, 20),
+                            end_date=date(2026, 8, 26), period_index=4),
+        ]
+
+        result = compute_loan_period_balance_map(
+            schedule, periods, current_balance=current_balance,
+        )
+
+        # Pre-first-payment periods: the current balance, NOT $32,402.45.
+        assert result[1] == Decimal("15663.59")
+        assert result[2] == Decimal("15663.59")
+        # The scheduled payments then amortize the balance down.
+        assert result[3] == Decimal("15205.63")
+        assert result[4] == Decimal("14745.51")
+        # The phantom jump is gone: the period-over-period drop across the
+        # first payment is one amortization step ($457.96), NOT
+        # (original principal - current balance) == $32,402.45 - $15,663.59
+        # == $16,738.86.
+        assert result[2] - result[3] == Decimal("457.96")
+
+    def test_empty_schedule_returns_current_balance_for_all_periods(
         self,
     ):
-        """An empty schedule returns original_principal for every period.
+        """An empty schedule returns the current balance for every period.
 
-        Models a brand-new loan with no scheduled rows yet (the
-        resolver short-circuited or the loan has zero remaining
+        Models a loan with no scheduled rows (the resolver
+        short-circuited or the loan is paid off / has zero remaining
         months).  The dispatcher must not raise and must not silently
         drop the period -- the F-21 contract is "always return a
-        Decimal".
+        Decimal" -- and the value is the loan's current balance, not its
+        original principal.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
@@ -2747,7 +2819,7 @@ class TestLoanProjectedBalanceDispatcher:
         ]
 
         result = compute_loan_period_balance_map(
-            [], periods, original_principal=Decimal("1234.56"),
+            [], periods, current_balance=Decimal("1234.56"),
         )
 
         assert result[1] == Decimal("1234.56")
@@ -3438,17 +3510,35 @@ class TestBuildTrendPeriods:
         )
 
     @staticmethod
-    def _schedule(first_payment_period_index, periods):
-        """A one-row loan schedule whose first payment falls in a period.
+    def _debt_schedule(first_payment_period_index, periods):
+        """A one-row loan :class:`DebtSchedule` first paying in a period.
 
         The row's ``payment_date`` is that period's ``end_date``, so the
         loan gate resolves the loan's honest start to that period's index.
+        ``current_balance`` is arbitrary here -- the gate reads only the
+        schedule rows, not the balance.
         """
-        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
-        return [SimpleNamespace(
-            payment_date=periods[first_payment_period_index].end_date,
-            remaining_balance=Decimal("1000.00"),
-        )]
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.net_worth_kernel import DebtSchedule
+        return DebtSchedule(
+            schedule=[SimpleNamespace(
+                payment_date=periods[first_payment_period_index].end_date,
+                remaining_balance=Decimal("1000.00"),
+            )],
+            current_balance=Decimal("1000.00"),
+        )
+
+    @staticmethod
+    def _empty_debt_schedule():
+        """An empty-schedule :class:`DebtSchedule` (a paid-off / resolved loan).
+
+        The gate must NOT constrain the window for such a loan -- its flat
+        current balance is its real balance at every period.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.net_worth_kernel import DebtSchedule
+        return DebtSchedule(schedule=[], current_balance=Decimal("1000.00"))
 
     def test_tail_reaches_back_to_cash_anchor(self):
         """History reaches back to the cash account's anchor period.
@@ -3593,8 +3683,9 @@ class TestBuildTrendPeriods:
 
         A PLAIN account is anchored at index 1, but an AMORTIZING loan's
         schedule first pays in period 5 (today at index 7).  Pre-schedule
-        periods report the loan's ORIGINAL PRINCIPAL, so the loan gates the
-        honest start at index 5 -- LATER than the cash anchor (1).  Window
+        periods report the loan's current balance held flat (today's balance,
+        not its real past), so the loan gates the honest start at index 5 --
+        LATER than the cash anchor (1).  Window
         indices 5..9, ``current_index`` 2 (indices 5, 6).  Without the loan
         gate the honest start would be the cash anchor (1) and
         ``current_index`` would be 6, so this pins the loan gate.
@@ -3609,7 +3700,7 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: self._schedule(5, periods)}
+        debt_schedules = {8: self._debt_schedule(5, periods)}
 
         window, current_index, honest_start = build_trend_periods(
             accounts, periods, periods[7], debt_schedules,
@@ -3622,9 +3713,10 @@ class TestBuildTrendPeriods:
     def test_empty_loan_schedule_does_not_gate(self):
         """A resolved-but-unpaid loan (empty schedule) does not gate history.
 
-        An empty schedule means the loan sits at its original principal at
-        EVERY period, which IS its real balance (no payments yet), so it is
-        honest throughout and must not gate.  PLAIN anchored at index 1, an
+        An empty schedule means the loan sits at its current balance at every
+        period (a paid-off / fully-resolved loan), which IS its real balance,
+        so it is honest throughout and must not gate.  PLAIN anchored at
+        index 1, an
         AMORTIZING loan with an empty schedule, today at index 7: the honest
         start stays the cash anchor (1), window indices 1..9,
         ``current_index`` 6.
@@ -3639,7 +3731,7 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 1, account_id=1),
             self._account(AccountProjectionKind.AMORTIZING, 0, account_id=8),
         ]
-        debt_schedules = {8: []}
+        debt_schedules = {8: self._empty_debt_schedule()}
 
         window, current_index, honest_start = build_trend_periods(
             accounts, periods, periods[7], debt_schedules,

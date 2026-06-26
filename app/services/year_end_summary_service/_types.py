@@ -13,6 +13,7 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
+from app.services.net_worth_kernel import DebtSchedule
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class _ProjectionInputs:
     leaves the one field it does not need untouched.
     """
 
-    debt_schedules: dict[int, list]
+    debt_schedules: dict[int, DebtSchedule]
     investment_params_map: dict[int, InvestmentParams]
     interest_params_map: dict[int, InterestParams]
     deductions_by_account: dict[int, list]

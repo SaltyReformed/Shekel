@@ -30,13 +30,13 @@ year-end adapter unpacks its bundle per account at the call site.
 """
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
@@ -129,26 +129,52 @@ def sum_net_worth_at_period(
     return total
 
 
+@dataclass(frozen=True)
+class DebtSchedule:
+    """A debt account's resolved amortization schedule and current balance.
+
+    Bundles the two outputs of one
+    :func:`app.services.loan_payment_service.resolve_account_loan` call: the
+    amortization ``schedule`` and the resolver-derived ``current_balance``.
+    Carrying them together lets the period-balance map report today's balance
+    -- not the loan's original principal -- for periods before the first
+    upcoming payment, while guaranteeing the schedule and the balance come
+    from the SAME resolution and so cannot drift.
+
+    Attributes:
+        schedule: The loan's :class:`AmortizationRow` list (today-forward:
+            confirmed-history rows plus committed forward rows).  May be empty
+            for a fully-resolved / paid-off loan.
+        current_balance: The resolver's
+            :attr:`~app.services.loan_resolver.LoanState.current_balance` as
+            of today -- the pre-first-payment and empty-schedule fallback.
+    """
+
+    schedule: list
+    current_balance: Decimal
+
+
 def generate_debt_schedules(
     debt_accounts: list,
     scenario_id: int,
-) -> dict[int, list]:
-    """Generate amortization schedules for all debt accounts.
+) -> dict[int, "DebtSchedule"]:
+    """Generate amortization schedules and current balances for debt accounts.
 
-    Runs the loan resolver (E-18 / Commit 13) for each debt account
-    and returns its :class:`AmortizationRow` schedule.  Same schedule
-    the loan dashboard and /savings debt card consume, so mortgage
-    interest, debt progress, and net worth liability all derive
-    from the single resolver output (E-18 / Commit 15).
+    Runs the loan resolver (E-18 / Commit 13) for each debt account and
+    returns its :class:`DebtSchedule` -- the :class:`AmortizationRow` schedule
+    plus the resolver-derived current balance.  Same resolver output the loan
+    dashboard and /savings debt card consume, so mortgage interest, debt
+    progress, and net-worth liability all derive from the single resolver call
+    (E-18 / Commit 15).
 
     Args:
         debt_accounts: Accounts with has_amortization=True.
         scenario_id: Baseline scenario ID for payment history.
 
     Returns:
-        dict mapping account_id to list[AmortizationRow].
+        dict mapping account_id to :class:`DebtSchedule`.
     """
-    schedules: dict[int, list] = {}
+    schedules: dict[int, DebtSchedule] = {}
     today = date.today()
 
     for account in debt_accounts:
@@ -156,32 +182,12 @@ def generate_debt_schedules(
         if resolved is None:
             continue
         _, state = resolved
-        schedules[account.id] = state.schedule
+        schedules[account.id] = DebtSchedule(
+            schedule=state.schedule,
+            current_balance=state.current_balance,
+        )
 
     return schedules
-
-
-def loan_original_principal(account_id: int) -> Decimal:
-    """Return a loan account's original principal, or ZERO if unset.
-
-    The original principal is the schedule's pre-payment balance, used as
-    the balance-before-first-payment fallback by both the net-worth
-    liability column (:func:`build_account_balance_map`) and the year-end
-    debt-progress section (``_compute_debt_progress``).
-
-    Args:
-        account_id: The loan account's ID.
-
-    Returns:
-        Decimal original principal, or ZERO when the account has no
-        :class:`LoanParams` row.
-    """
-    params = (
-        db.session.query(LoanParams)
-        .filter_by(account_id=account_id)
-        .first()
-    )
-    return params.original_principal if params else ZERO
 
 
 def base_account_balance_map(
@@ -251,7 +257,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     scenario: Scenario,
     periods: list,
     *,
-    debt_schedule: list | None,
+    debt_schedule: "DebtSchedule | None",
     investment_params: InvestmentParams | None,
     deductions: list,
     salary_gross_biweekly: Decimal,
@@ -260,7 +266,8 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
 
     The net-worth path.  Dispatches to the correct calculation engine:
 
-    - Amortizing loans: the pre-generated amortization ``debt_schedule``.
+    - Amortizing loans: the pre-generated ``debt_schedule`` (its schedule
+      plus the resolver's current balance).
     - Investment (401k, IRA, etc.): the growth engine, fed by this
       account's ``investment_params`` plus its ``deductions`` and the
       engine ``salary_gross_biweekly``.
@@ -287,10 +294,11 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
-        debt_schedule: This account's pre-generated amortization schedule
-            (the :func:`generate_debt_schedules` entry for it), or
-            ``None`` when the account is not an amortizing loan or has no
-            resolvable schedule.
+        debt_schedule: This account's :class:`DebtSchedule` (the
+            :func:`generate_debt_schedules` entry for it -- its amortization
+            schedule plus the resolver's current balance), or ``None`` when
+            the account is not an amortizing loan or has no resolvable
+            schedule.
         investment_params: This account's
             :class:`~app.models.investment_params.InvestmentParams`, or
             ``None`` when it is not a parameterized investment account.
@@ -313,25 +321,27 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     kind = classify_account(account)
 
     # Amortizing loan accounts: use the pre-generated schedule.  The gate
-    # is membership (``is not None``), NOT truthiness: an EMPTY schedule
-    # ``[]`` is a resolved-but-unpaid loan (LoanParams present, no payment
-    # events) and must route to the loan path -- ``compute_loan_period_
-    # balance_map`` returns the original principal for it -- not fall
-    # through to the entries-aware resolver (which would report the anchor
-    # balance).  ``None`` means "not a resolved amortizing schedule for
+    # is membership (``is not None``), NOT truthiness: a :class:`DebtSchedule`
+    # whose ``schedule`` is EMPTY (``[]`` -- a paid-off or fully-resolved loan
+    # with no remaining rows) still routes to the loan path -- ``compute_loan_
+    # period_balance_map`` returns its current balance for every period -- not
+    # falling through to the entries-aware resolver (which would report the
+    # anchor balance).  ``None`` means "not a resolved amortizing schedule for
     # this account," which correctly falls through.  Both callers pass
-    # ``debt_schedules.get(account.id)``, so absent -> ``None`` -> base
-    # path, present-but-empty -> ``[]`` -> loan path (the pre-move
-    # ``account.id in inputs.debt_schedules`` membership semantics).
+    # ``debt_schedules.get(account.id)``, so absent -> ``None`` -> base path,
+    # present -> a :class:`DebtSchedule` -> loan path.
     if (kind is AccountProjectionKind.AMORTIZING
             and debt_schedule is not None):
-        original = loan_original_principal(account.id)
         # F-21 / Commit 19: route through the shared
         # ``compute_loan_period_balance_map`` so the year-end liability
         # column and the savings-dashboard loan card consume the same
-        # period-end-keyed balance derivation.
+        # period-end-keyed balance derivation.  The schedule's
+        # resolver-derived ``current_balance`` is the pre-first-payment
+        # fallback -- NOT the original principal, which made the loan leap
+        # down to its real balance the moment the first upcoming payment
+        # landed (a phantom liability drop / net-worth jump).
         return compute_loan_period_balance_map(
-            debt_schedule, periods, original,
+            debt_schedule.schedule, periods, debt_schedule.current_balance,
         )
 
     # Investment accounts: use the growth engine.  The base balance
