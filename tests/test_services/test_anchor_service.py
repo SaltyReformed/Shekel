@@ -5,13 +5,13 @@ Unit tests for :mod:`app.services.anchor_service`.  Pins the three
 outcomes of :func:`apply_anchor_true_up` and the non-F-103
 ``IntegrityError`` re-raise contract.
 
-Pre-extraction these branches were covered indirectly by the two
-HTMX-route test suites (``TestTrueUpSameDayDuplicate``,
-``TestTrueUpStaleForm``, ``TestInlineAnchorStaleForm``).  The route
-suites still exercise the wiring; these tests pin the helper's
-contract directly so a future change to either route cannot
-accidentally drift the shared semantics.  Closes the pre-existing
-coverage gap for ``inline_anchor_update``'s F-103 path.
+Pre-extraction these branches were covered indirectly by the grid
+HTMX-route test suites (``TestTrueUpSameDayDuplicate`` and
+``TestTrueUpStaleForm``).  The route suites still exercise the
+wiring; these tests pin the helper's contract directly so a future
+change to the route cannot accidentally drift the shared semantics,
+and they close the pre-existing coverage gap for the F-103 same-day
+idempotency path.
 """
 
 from datetime import date, timedelta

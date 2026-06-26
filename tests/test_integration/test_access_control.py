@@ -12,7 +12,6 @@ vulnerabilities. A 200 response on any test means User B can access
 User A's financial data.
 """
 # pylint: disable=too-many-lines
-import logging
 from datetime import date
 from decimal import Decimal
 
@@ -24,7 +23,6 @@ from app.models.category import Category
 from app.models.pension_profile import PensionProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.utils.log_events import EVT_ACCESS_DENIED_CROSS_USER
 
 
 def _assert_not_found(response, msg=""):
@@ -131,74 +129,6 @@ class TestAccountAccessControl:
                 f"/accounts/{target_id}/unarchive"
             )
             _assert_not_found(response, "POST /accounts/<id>/unarchive")
-
-    def test_inline_anchor_update_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot update User A's anchor balance inline."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.patch(
-                f"/accounts/{target_id}/inline-anchor",
-                data={"anchor_balance": "99999.99"},
-            )
-            _assert_not_found(
-                response, "PATCH /accounts/<id>/inline-anchor",
-            )
-
-    def test_inline_anchor_form_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot view User A's inline anchor edit form."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.get(
-                f"/accounts/{target_id}/inline-anchor-form"
-            )
-            _assert_not_found(
-                response, "GET /accounts/<id>/inline-anchor-form",
-            )
-
-    def test_inline_anchor_form_cross_user_emits_idor_event(
-        self, app, second_auth_client, seed_full_user_data, caplog,
-    ):
-        """A blocked cross-user inline-anchor probe emits the F-144 event.
-
-        deep-hunt #47: the inline anchor/account routes used a hand-rolled
-        ownership check that returned 404 but emitted no log_event, so an
-        owner-vs-owner cross-user probe left no application-tier forensic
-        trail.  Routed through ``get_or_404``, the route now both returns
-        404 AND emits ``access_denied_cross_user``.  ``second_auth_client``
-        is an owner (role server_default=1), so it clears ``require_owner``
-        and the ``get_or_404`` cross-user branch is what denies and logs --
-        the previously-silent path.
-        """
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-        with caplog.at_level(logging.WARNING, logger="app.utils.auth_helpers"):
-            response = second_auth_client.get(
-                f"/accounts/{target_id}/inline-anchor-form"
-            )
-        _assert_not_found(response, "GET inline-anchor-form (cross-user)")
-        events = [getattr(r, "event", None) for r in caplog.records]
-        assert EVT_ACCESS_DENIED_CROSS_USER in events, (
-            "Cross-user inline-anchor-form probe returned 404 but emitted "
-            f"no access_denied_cross_user event; events observed: {events}"
-        )
-
-    def test_inline_anchor_display_blocked(
-        self, app, second_auth_client, seed_full_user_data,
-    ):
-        """User B cannot view User A's inline anchor display."""
-        with app.app_context():
-            target_id = seed_full_user_data["account"].id
-            response = second_auth_client.get(
-                f"/accounts/{target_id}/inline-anchor-display"
-            )
-            _assert_not_found(
-                response,
-                "GET /accounts/<id>/inline-anchor-display",
-            )
 
     def test_true_up_blocked(
         self, app, second_auth_client, seed_full_user_data,

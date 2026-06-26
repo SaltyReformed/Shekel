@@ -3,8 +3,8 @@ Shekel Budget App -- Savings Cockpit: net-worth producer.
 
 The server-side data producer for the Accounts / Net-Worth cockpit's
 net-worth region (Loop B Phase 1): the today figures (net worth, total
-assets, total liabilities, liquid), the forward net-worth trend series,
-and the change-this-period delta.  No Flask imports; every function takes
+assets, total liabilities, liquid) and the forward net-worth trend
+series.  No Flask imports; every function takes
 plain data (the projected account dicts, ORM rows, the loaded parameter
 maps) and returns plain ``Decimal`` / ``dict`` data the route serializes.
 
@@ -20,13 +20,18 @@ series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services import net_worth_kernel
+from app.services import home_equity_service, net_worth_kernel
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import _AccountParams
 
@@ -131,8 +136,12 @@ def build_account_net_worth_maps(
             :func:`app.services.net_worth_kernel.generate_debt_schedules`.
 
     Returns:
-        A list of ``{balances: OrderedDict[int, Decimal], is_liability:
-        bool}`` dicts, one per account that has a dense map.
+        A list of ``{account_id: int, balances: OrderedDict[int, Decimal],
+        is_liability: bool}`` dicts, one per account that has a dense map.
+        The ``account_id`` lets the per-account sparkline producer
+        (:func:`compute_sparklines`) reuse these maps, so the sparklines and
+        the net-worth math read one projection; the net-worth reducers
+        ignore it.
     """
     if scenario is None:
         return []
@@ -149,6 +158,7 @@ def build_account_net_worth_maps(
         if balances is None:
             continue
         result.append({
+            "account_id": account.id,
             "balances": balances,
             "is_liability": _is_liability_account(account),
         })
@@ -188,43 +198,248 @@ def _sum_assets_and_liabilities_at_period(
     return assets, liabilities
 
 
+# Recent-history cap for the net-worth trend's leading "actual" segment.
+# The trend opens with up to this many already-elapsed periods (the solid
+# history the forward projection extends from) before the current period.
+# ~6 periods is ~3 months at the biweekly cadence; the developer's ruling
+# (accounts_audit.md, "forward reach + short tail") fixes a SHORT tail
+# rather than a full-history axis.
+_TREND_HISTORY_PERIODS = 6
+
+# Account kinds whose dense balance map OMITS pre-anchor periods, so they
+# constrain how far back the trend's history can honestly reach.  PLAIN
+# (checking / savings) and INTEREST (HYSA / Money Market / CD / HSA) both
+# carry the running balance forward from the anchor period only
+# (``balance_resolver.balances_for`` /
+# ``balance_calculator.calculate_balances_with_interest`` -- "Must include
+# the anchor period ... pre-anchor periods ... absent from the result"), so
+# a period before such an account's anchor has NO balance for it and it
+# would silently contribute zero to the net-worth sum (cash dropping out of
+# the past).  AMORTIZING loans constrain the window separately (their
+# resolver schedule is today-forward, so pre-schedule periods report the
+# original principal -- see :func:`_loan_schedule_start_index`).  INVESTMENT
+# (reverse growth projection) and APPRECIATING (flat-carry) are defined at
+# every period, so they never constrain it.
+_CASH_GATING_KINDS = frozenset({
+    AccountProjectionKind.PLAIN,
+    AccountProjectionKind.INTEREST,
+})
+
+
+def _loan_schedule_start_index(
+    all_periods: list[PayPeriod], schedule: list | None,
+) -> int | None:
+    """Earliest period_index at which a loan's schedule gives a real balance.
+
+    A loan's resolver schedule is TODAY-forward: it projects from the
+    current resolved balance to payoff, with no rows for the loan's past.
+    :func:`app.services.account_projection.compute_loan_period_balance_map`
+    therefore returns the loan's ORIGINAL PRINCIPAL for every period before
+    the schedule's first payment -- a flat line at the origination amount,
+    not the real amortized balance the loan actually had then.  So a loan
+    is "honest" only from the first period whose ``end_date`` reaches its
+    first scheduled payment onward; before that the trend would show the
+    loan leaping down from its origination balance at "today".
+
+    Returns that first honest ``period_index``, or ``None`` when the loan
+    does not constrain the window: an empty schedule (``[]`` -- a
+    resolved-but-unpaid loan that sits at its original principal at EVERY
+    period, which IS its real balance) or a missing one (``None``), and the
+    degenerate case of a schedule dated entirely after the user's last
+    period.
+
+    Args:
+        all_periods: All of the user's pay periods, ordered by
+            ``period_index``.
+        schedule: The loan's amortization schedule (the
+            :func:`app.services.net_worth_kernel.generate_debt_schedules`
+            entry for it), or ``None``.
+
+    Returns:
+        The first honest ``period_index``, or ``None`` when the loan does
+        not gate the window.
+    """
+    if not schedule:
+        return None
+    first_payment = min(row.payment_date for row in schedule)
+    for period in all_periods:
+        if period.end_date >= first_payment:
+            return period.period_index
+    return None
+
+
+def _honest_history_start_index(
+    accounts: list,
+    all_periods: list[PayPeriod],
+    current_period: PayPeriod,
+    debt_schedules: dict[int, list],
+) -> int:
+    """Earliest period_index whose net worth is real for every account.
+
+    The trend's leading "actual" segment must not show an account's balance
+    as a fallback value in the past.  Two kinds carry such fallbacks:
+
+    - CASH (PLAIN / INTEREST, the kinds in :data:`_CASH_GATING_KINDS`): no
+      balance before the anchor period -- the account would contribute zero
+      (cash dropping out of the past).  Gates at its anchor index.
+    - AMORTIZING loans: the resolver schedule is today-forward, so periods
+      before it report the loan's ORIGINAL PRINCIPAL, not its real past
+      balance (the loan would leap down at "today").  Gates at its
+      schedule-start index (:func:`_loan_schedule_start_index`).
+
+    INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
+    are defined at every period by the same modeling the year-end summary
+    uses, so they do not constrain the window.
+
+    Returns the maximum gating index -- the earliest period at or after
+    which every cash account has a real balance AND every loan is within
+    its schedule -- clamped to not exceed ``current_period``'s index.
+    Returns ``current_period``'s index (no history) when nothing gates
+    earlier, so the trend never fabricates a backward run for an
+    investment-or-property-only set (those are projected, not "actual").
+
+    Args:
+        accounts: The user's active accounts (each with ``account_type``
+            eager-loaded for :func:`classify_account`, an ``id``, and a
+            ``current_anchor_period_id``).
+        all_periods: All of the user's pay periods (maps an anchor period
+            id to its index).
+        current_period: The period containing today (the upper clamp).
+        debt_schedules: account_id -> amortization schedule (from
+            :func:`app.services.net_worth_kernel.generate_debt_schedules`),
+            for the loan gate.
+
+    Returns:
+        The earliest honest history ``period_index`` (``0`` ..
+        ``current_period.period_index``).
+    """
+    index_by_pid = {p.id: p.period_index for p in all_periods}
+    gating_indices: list[int] = []
+    for account in accounts:
+        kind = classify_account(account)
+        if kind in _CASH_GATING_KINDS:
+            if account.current_anchor_period_id in index_by_pid:
+                gating_indices.append(
+                    index_by_pid[account.current_anchor_period_id]
+                )
+        elif kind is AccountProjectionKind.AMORTIZING:
+            loan_start = _loan_schedule_start_index(
+                all_periods, debt_schedules.get(account.id),
+            )
+            if loan_start is not None:
+                gating_indices.append(loan_start)
+    if not gating_indices:
+        return current_period.period_index
+    return min(max(gating_indices), current_period.period_index)
+
+
+def build_trend_periods(
+    accounts: list,
+    all_periods: list[PayPeriod],
+    current_period: PayPeriod | None,
+    debt_schedules: dict[int, list],
+) -> tuple[list[PayPeriod], int, int]:
+    """Build the net-worth trend's window, current index, and honest start.
+
+    The window leads with a short honest "actual" history tail, then the
+    full forward projection::
+
+        [ history tail ]  current period  [ ... forward ... ]
+          solid actual        today          dashed projection
+
+    The tail spans the up-to-:data:`_TREND_HISTORY_PERIODS` periods
+    immediately before the current period, but never earlier than
+    :func:`_honest_history_start_index` -- so at every history point every
+    cash account has a real balance (none drops silently to zero) AND every
+    loan is within its schedule (none sits at its original principal then
+    leaps down at "today").  Because a loan's schedule is today-forward, any
+    user with an amortizing loan has an empty tail (forward-only); the tail
+    shows only for loan-free users whose cash was trued up in the past (e.g.
+    renters), the case the honest tail genuinely serves.
+
+    ALL forward periods are included (not a fixed forward slice): the client
+    selects the 6 / 13 / 26 / All forward horizon from the full series, so
+    the producer serializes once and the picker never re-fetches.
+
+    The honest-start index (the earliest period whose net worth is real for
+    every account) is returned alongside the window; it is the boundary the
+    history tail is clamped back to, exposed so a caller can reason about
+    where the solid history legitimately begins.
+
+    Args:
+        accounts: The user's active accounts.
+        all_periods: All of the user's pay periods, ordered by
+            ``period_index``.
+        current_period: The period containing today, or ``None``.
+        debt_schedules: account_id -> amortization schedule, for the loan
+            gate.
+
+    Returns:
+        ``(periods, current_index, honest_start)`` -- ``periods`` is the
+        trend window (history tail + current + forward, chronological),
+        ``current_index`` is the position of the current period within it
+        (the count of leading history points; the solid/dashed split and
+        the "Today" marker key off it), and ``honest_start`` is the earliest
+        honest ``period_index`` (the change delta's gate).  ``([], 0, 0)``
+        when there is no current period (the degraded no-period state).
+    """
+    if current_period is None:
+        return [], 0, 0
+
+    current_idx = current_period.period_index
+    honest_start = _honest_history_start_index(
+        accounts, all_periods, current_period, debt_schedules,
+    )
+    history_start = max(honest_start, current_idx - _TREND_HISTORY_PERIODS)
+    periods = [p for p in all_periods if p.period_index >= history_start]
+    current_index = sum(1 for p in periods if p.period_index < current_idx)
+    return periods, current_index, honest_start
+
+
 def compute_net_worth_series(
     account_maps: list[dict],
-    forward_periods: list[PayPeriod],
+    trend_periods: list[PayPeriod],
 ) -> dict:
-    """Build the forward net-worth trend over the forward window.
+    """Build the net-worth trend over the trend window.
 
-    Reads each forward period's id out of the pre-built dense maps
-    (built over ALL periods by :func:`build_account_net_worth_maps`) and
-    produces parallel ``net`` / ``assets`` / ``liabilities`` series plus
-    the period descriptors the route serializes.  ``net[i]`` equals
-    ``assets[i] - liabilities[i]`` for every ``i`` by construction (the
-    asset-plus / liability-minus split shares one sum with the kernel's
-    net-worth reduction).
+    Reads each trend period's id out of the pre-built dense maps (built
+    over ALL periods by :func:`build_account_net_worth_maps`) and produces
+    parallel ``net`` / ``assets`` / ``liabilities`` series plus the period
+    descriptors the route serializes.  ``net[i]`` equals ``assets[i] -
+    liabilities[i]`` for every ``i`` by construction (the asset-plus /
+    liability-minus split shares one sum with the kernel's net-worth
+    reduction).
+
+    The ``trend_periods`` window (from :func:`build_trend_periods`) is the
+    honest history tail followed by the full forward projection; this
+    producer is window-agnostic -- it sums whatever periods it is given, so
+    widening the window from forward-only to history-plus-forward needed no
+    change here.
 
     Takes the pre-built ``account_maps`` rather than the raw accounts so
-    the maps are built exactly once and shared with
-    :func:`compute_net_worth_change` (the locked build-once invariant);
-    the orchestrator builds them via
-    :func:`build_account_net_worth_maps` and threads them into both.
+    the maps are built exactly once and shared with the per-account
+    sparklines (the locked build-once invariant); the orchestrator builds
+    them via :func:`build_account_net_worth_maps` and threads them into
+    both.
 
     Args:
         account_maps: The dense ``{balances, is_liability}`` maps from
             :func:`build_account_net_worth_maps`.
-        forward_periods: The forward window (current period onward),
+        trend_periods: The trend window (history tail + current + forward),
             chronological; each must appear in the dense maps' domain.
 
     Returns:
         dict with ``periods`` (list of ``{end_date, period_index}``),
         ``net``, ``assets``, and ``liabilities`` (parallel ``Decimal``
-        lists, one entry per forward period).
+        lists, one entry per trend period).  The orchestrator adds
+        ``current_index`` (the solid/dashed boundary) to this dict.
     """
     periods: list[dict] = []
     net: list[Decimal] = []
     assets: list[Decimal] = []
     liabilities: list[Decimal] = []
 
-    for period in forward_periods:
+    for period in trend_periods:
         period_assets, period_liabilities = _sum_assets_and_liabilities_at_period(
             period.id, account_maps,
         )
@@ -244,51 +459,171 @@ def compute_net_worth_series(
     }
 
 
-def compute_net_worth_change(
-    account_maps: list[dict],
-    current_period: PayPeriod | None,
-    all_periods: list[PayPeriod],
-) -> Decimal | None:
-    """Compute the net-worth change from the prior period to the current.
+def compute_property_equity(
+    accounts: list,
+    scenario_id: int | None,
+    as_of: date,
+) -> list[dict]:
+    """Resolve each Property account's equity for the cockpit equity card.
 
-    Returns ``NW(current_period) - NW(prior_period)`` where the prior
-    period is the one whose ``period_index`` is exactly
-    ``current_period.period_index - 1``.  Returns ``None`` when there is
-    no current period or no such immediately-prior period (e.g. the user
-    is in their earliest period, ``period_index == 0``) -- a missing
-    prior period is structurally different from a zero change, so the
-    caller must not coerce ``None`` to zero.
+    Reuses the same producer the Property detail page uses
+    (:func:`app.services.home_equity_service.resolve_home_equity`), so the
+    home-equity and loan-to-value figures here equal that page's and the
+    mortgage leg equals the resolver-derived balance the debt card and the
+    net-worth liability column read -- one figure, never a fork.  Equity
+    itself stays emergent (the net-worth sum is untouched); this only
+    surfaces the home<->mortgage relationship as a glanceable card.
 
-    Both net-worth values come from the SAME dense maps the series reads
-    (built once by :func:`build_account_net_worth_maps`), through the
-    kernel's :func:`~app.services.net_worth_kernel.sum_net_worth_at_period`,
-    so the change can never disagree with the series' endpoints.
+    An account is a Property when the canonical flag-driven classifier
+    (:func:`app.services.account_projection.classify_account`) returns
+    :data:`~app.services.account_projection.AccountProjectionKind.APPRECIATING`,
+    never a raw ``has_appreciation`` re-check -- the single taxonomy the
+    mini-sprint consolidated the inline predicates onto.  An unencumbered
+    Property (no secured loans) is included too: its card reports the full
+    market value as equity at 0% LTV.
 
     Args:
-        account_maps: The dense ``{balances, is_liability}`` maps from
-            :func:`build_account_net_worth_maps`.
-        current_period: The user's current :class:`PayPeriod`, or
-            ``None``.
-        all_periods: All of the user's pay periods (to locate the prior).
+        accounts: The user's active accounts.
+        scenario_id: The baseline scenario id for the loan resolver, or
+            ``None`` when the user has no scenario yet (each secured loan
+            then resolves from its anchor with no payment history, exactly
+            as the detail page does).
+        as_of: The as-of date for the loan resolver.
 
     Returns:
-        The change as a ``Decimal``, or ``None`` when there is no
-        immediately-prior period to compare against.
+        A list of ``{account, equity}`` dicts, one per Property account in
+        ``accounts`` order, where ``equity`` is a
+        :class:`~app.services.home_equity_service.HomeEquity` snapshot.
+        Empty when the user has no Property accounts.
     """
-    if current_period is None:
-        return None
+    result: list[dict] = []
+    for account in accounts:
+        if classify_account(account) is AccountProjectionKind.APPRECIATING:
+            result.append({
+                "account": account,
+                "equity": home_equity_service.resolve_home_equity(
+                    account, scenario_id, as_of,
+                ),
+            })
+    return result
 
-    prior_index = current_period.period_index - 1
-    prior_period = next(
-        (p for p in all_periods if p.period_index == prior_index), None,
-    )
-    if prior_period is None:
-        return None
 
-    current_nw = net_worth_kernel.sum_net_worth_at_period(
-        current_period.id, account_maps,
-    )
-    prior_nw = net_worth_kernel.sum_net_worth_at_period(
-        prior_period.id, account_maps,
-    )
-    return current_nw - prior_nw
+def compute_allocation(grouped_accounts, group_subtotals) -> dict:
+    """Split the category subtotals into the diverging allocation bar's sides.
+
+    The cockpit's allocation bar (rebuild decision 8) is a diverging
+    assets-vs-liabilities bar: the asset-side category subtotals stack on
+    the right, the liability total on the left, with the net-worth gap read
+    as the difference in their extents.  This producer classifies each
+    category group as asset or liability by its account type's category id
+    (via :func:`_is_liability_account`, never a label string) and pairs it
+    with the group's already-computed balance subtotal, so the bar, the grid
+    subtotals, and the net-worth chips all read one set of figures.
+
+    Segments with a non-positive subtotal are dropped: a zero group is an
+    invisible segment, and a negative one (a rare overdrawn category) would
+    distort the stacked bar -- it is already netted into the chips' totals.
+    The route adds each segment's float width percentage at the presentation
+    boundary; the ``value`` figures stay ``Decimal``.
+
+    Args:
+        grouped_accounts: The ``OrderedDict`` from
+            :func:`~app.services.savings_dashboard_service._display._group_accounts_by_category`
+            (category label -> list of per-account projection dicts), in
+            display order.
+        group_subtotals: The ``OrderedDict`` from
+            :func:`~app.services.savings_dashboard_service._display._compute_group_subtotals`
+            (category label -> ``Decimal`` balance subtotal), keyed
+            identically.
+
+    Returns:
+        A dict ``{"assets": [{"label", "value"}], "liabilities": [{"label",
+        "value"}]}`` where each ``value`` is the group's ``Decimal``
+        subtotal, assets in display order.  Empty lists when no group
+        qualifies.
+    """
+    assets: list[dict] = []
+    liabilities: list[dict] = []
+    for label, accounts in grouped_accounts.items():
+        value = group_subtotals[label]
+        if value <= ZERO:
+            continue
+        # All accounts in a group share one category (grouped by
+        # category_id), so the first classifies the group -- by id, never a
+        # label string.
+        if accounts and _is_liability_account(accounts[0]["account"]):
+            liabilities.append({"label": label, "value": value})
+        else:
+            assets.append({"label": label, "value": value})
+    return {"assets": assets, "liabilities": liabilities}
+
+
+# Per-account sparkline window + the "informative" thresholds (rebuild
+# decision: a sparkline only where it reads as a trend, else the figure +
+# its projected line).
+_SPARKLINE_PERIODS = 13                       # forward points (~6 months)
+_SPARKLINE_MIN_POINTS = 4                      # fewer can't read as a trend
+_SPARKLINE_REL_THRESHOLD = Decimal("0.005")   # 0.5% of the account's magnitude
+_SPARKLINE_ABS_FLOOR = Decimal("1.00")        # never informative under $1 spread
+
+
+def _is_informative(series: list[Decimal]) -> bool:
+    """Return whether a sparkline series reads as a trend worth drawing.
+
+    Informative means at least :data:`_SPARKLINE_MIN_POINTS` points AND a
+    max-min spread above ``max(_SPARKLINE_ABS_FLOOR, _SPARKLINE_REL_THRESHOLD
+    * the account's magnitude)``.  So a flat account (checking with no
+    projected movement, a flat-carried Property) is omitted -- its card shows
+    the figure + projected line rather than a deceptively flat line -- while
+    a trending one (a loan amortizing down, an investment growing) is drawn.
+    The relative threshold keeps the test scale-free: a $200 wobble is noise
+    on a $400k mortgage but a real move on a $2k account.
+
+    Args:
+        series: The forward balance series (``Decimal``) for one account.
+
+    Returns:
+        ``True`` when the series has enough points and enough variation.
+    """
+    if len(series) < _SPARKLINE_MIN_POINTS:
+        return False
+    spread = max(series) - min(series)
+    magnitude = max((abs(value) for value in series), default=ZERO)
+    threshold = max(_SPARKLINE_ABS_FLOOR, _SPARKLINE_REL_THRESHOLD * magnitude)
+    return spread > threshold
+
+
+def compute_sparklines(
+    account_maps: list[dict], forward_periods: list[PayPeriod],
+) -> dict[int, list[Decimal]]:
+    """Build each informative account's forward sparkline series.
+
+    Reuses the dense per-account balance maps already built for the
+    net-worth trend (:func:`build_account_net_worth_maps`), so the sparkline
+    and the net-worth math read ONE projection rather than two that could
+    drift.  Slices each account's forward window (up to
+    :data:`_SPARKLINE_PERIODS` points from the current period) and keeps only
+    the accounts whose window is informative (:func:`_is_informative`); a
+    flat account is omitted so its card falls back to the figure + projected
+    line.
+
+    Args:
+        account_maps: The dense maps from
+            :func:`build_account_net_worth_maps`, each carrying
+            ``account_id`` and ``balances``.
+        forward_periods: The forward window (current period onward),
+            chronological.
+
+    Returns:
+        ``{account_id: [Decimal, ...]}`` -- the forward balance series for
+        each informative account; empty when none qualify.  The route
+        normalizes each series to SVG geometry.
+    """
+    window = forward_periods[:_SPARKLINE_PERIODS]
+    result: dict[int, list[Decimal]] = {}
+    for data in account_maps:
+        balances = data["balances"]
+        series = [balances[p.id] for p in window if p.id in balances]
+        if _is_informative(series):
+            result[data["account_id"]] = series
+    return result

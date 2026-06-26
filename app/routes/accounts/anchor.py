@@ -1,26 +1,28 @@
 """
 Shekel Budget App -- Anchor Balance Edit Routes
 
-Anchor-balance true-up endpoints for both the accounts list (inline)
-and the grid.  Split out of the historical monolithic
-``app/routes/accounts.py`` in Commit 21 of the financial-calculation
-audit follow-up (F-1); behaviour preserved verbatim from the
-pre-split file.
+The grid and Net Worth Cockpit anchor-balance true-up endpoints,
+split out of the historical monolithic ``app/routes/accounts.py`` in
+Commit 21 of the financial-calculation audit follow-up (F-1).  The
+retired ``/accounts`` table's inline balance editor also lived here
+until the Net Worth Cockpit replaced that table; the cockpit reuses
+the grid editor below, so only that family remains.
 
-Both endpoint families route the actual mutation, history-row
-append, conditional entries reconcile, and commit through
-:func:`app.services.anchor_service.apply_anchor_true_up` so the
+``true_up`` routes the actual mutation, history-row append,
+conditional entries reconcile, and commit through
+:func:`app.services.anchor_service.apply_anchor_true_up`, so the
 C-17 / F-009 optimistic-lock contract and the F-103 / C-22 same-day
-same-balance idempotency rules cannot drift between the two
-surfaces.  This module is therefore deliberately thin: it owns the
-HTTP-shaped concerns (form validation, version_id pre-flush check,
-HTMX-fragment rendering, HX-Trigger header composition) and
-delegates the database mutation to the shared service.
+same-balance idempotency rules live in exactly one place.  This
+module is therefore deliberately thin: it owns the HTTP-shaped
+concerns (form validation, version_id pre-flush check, HTMX-fragment
+rendering, HX-Trigger header composition) and delegates the database
+mutation to the shared service.
 
-The grid's ``true_up`` differs from ``inline_anchor_update`` in
-three response-layer details (template name, ``account=`` vs
-``acct=`` template kwarg, OOB-swap "as-of" snippet + HX-Trigger).
-The outcomes returned by the service are otherwise byte-equivalent.
+The editor opens from three surfaces -- the grid cell, the dashboard
+balance card, and the cockpit per-card cell -- each threaded through
+as a normalized ``revert`` token so Cancel / Escape and a 409
+conflict re-render the correct opener (see
+:func:`_normalize_revert_context`).
 """
 
 import logging
@@ -28,14 +30,11 @@ from decimal import Decimal
 
 from flask import jsonify, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm.exc import StaleDataError
 
-from app import ref_cache
-from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.services import anchor_service, entry_service, pay_period_service
+from app.services import anchor_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -44,186 +43,40 @@ from app.utils.dates import to_display_tz
 logger = logging.getLogger(__name__)
 
 
-# ── Inline Anchor Balance Edit (Accounts List) ────────────────────
-
-
-@accounts_bp.route("/accounts/<int:account_id>/inline-anchor", methods=["PATCH"])
-@login_required
-@require_owner
-def inline_anchor_update(account_id):
-    """HTMX endpoint: update anchor balance inline from the accounts list.
-
-    Optimistic locking (commit C-17 / F-009): the form ships
-    ``version_id`` as a hidden input set to the row's counter at
-    render time.  A submitted value that no longer matches
-    ``Account.version_id`` causes the handler to render the
-    ``_anchor_cell.html`` partial in conflict mode and return 409
-    Conflict, which HTMX swaps in place of the form so the user
-    sees the latest balance and can retry.  The same partial is
-    rendered when SQLAlchemy raises ``StaleDataError`` at flush
-    time, so a concurrent in-flight commit produces an identical
-    UX to a long-stale form.
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Not found", 404
-
-    errors = _anchor_schema.validate(request.form)
-    if errors:
-        return jsonify(errors=errors), 400
-
-    data = _anchor_schema.load(request.form)
-    new_balance = Decimal(str(data["anchor_balance"]))
-
-    submitted_version = data.get("version_id")
-    if submitted_version is not None and submitted_version != account.version_id:
-        logger.info(
-            "Stale-form conflict on inline_anchor_update id=%d "
-            "(submitted=%d, current=%d)",
-            account_id, submitted_version, account.version_id,
-        )
-        return (
-            render_template(
-                "accounts/_anchor_cell.html",
-                acct=account, editing=False, conflict=True,
-            ),
-            409,
-        )
-
-    current_period = pay_period_service.get_current_period(current_user.id)
-
-    # Apply the true-up through the canonical helper.  The two paths
-    # converge on the same outcome enum so the response composition
-    # at the bottom of the function is shared.  No-current-period is
-    # the legacy degenerate branch: write the cache column, keep the
-    # existing anchor period assignment, append NO history row (no
-    # period to anchor to), and otherwise run the same conditional
-    # entries reconcile + commit.  Post-Commit-3 every user with an
-    # account has at least one pay period, and post-auto-generation
-    # they have ~2 years of forward periods; this branch fires only
-    # when the user has periods none of which contain today (e.g.
-    # they generated only historical periods).
-    if current_period is None:
-        account.current_anchor_balance = new_balance
-        checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-        try:
-            if account.account_type_id == checking_type_id:
-                entry_service.clear_entries_for_anchor_true_up(
-                    current_user.id, account.id,
-                )
-            db.session.commit()
-            outcome = AnchorTrueUpOutcome.COMMITTED
-        except StaleDataError:
-            db.session.rollback()
-            logger.info(
-                "Stale-data conflict on inline_anchor_update id=%d "
-                "(no-current-period path)", account_id,
-            )
-            outcome = AnchorTrueUpOutcome.STALE_CONFLICT
-    else:
-        # Canonical anchor true-up path: route the mutation, history-
-        # row append, conditional entries reconcile, and commit through
-        # the single authoritative helper so the C-17 optimistic lock
-        # and the F-103 / C-22 same-day same-balance idempotency rules
-        # cannot drift between this endpoint and the grid ``true_up``
-        # endpoint below.  See ``app/services/anchor_service.py`` for
-        # the contract.
-        outcome = anchor_service.apply_anchor_true_up(
-            account=account,
-            new_balance=new_balance,
-            anchor_period=current_period,
-            user_id=current_user.id,
-        )
-
-    if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
-        # Re-fetch a fresh, post-conflict copy so the partial renders
-        # the winner's balance, not the loser's rolled-back in-memory
-        # value.
-        account = db.session.get(Account, account_id)
-        return (
-            render_template(
-                "accounts/_anchor_cell.html",
-                acct=account, editing=False, conflict=True,
-            ),
-            409,
-        )
-
-    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
-        # F-103 idempotent success: the prior request committed the
-        # same value this request was trying to submit.  Re-fetch and
-        # render the (already-current) balance.
-        account = db.session.get(Account, account_id)
-        return render_template(
-            "accounts/_anchor_cell.html", acct=account, editing=False,
-        )
-
-    # COMMITTED: refresh the in-memory account so the rendered partial
-    # shows the row's post-commit state (notably ``updated_at`` which
-    # the audit-trigger refreshes server-side).
-    db.session.refresh(account)
-    logger.info(
-        "Inline anchor update: account %d set to $%s",
-        account.id, new_balance,
-    )
-    return render_template(
-        "accounts/_anchor_cell.html", acct=account, editing=False,
-    )
-
-
-@accounts_bp.route("/accounts/<int:account_id>/inline-anchor-form", methods=["GET"])
-@login_required
-@require_owner
-def inline_anchor_form(account_id):
-    """HTMX partial: show inline anchor balance edit form on accounts list."""
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Not found", 404
-
-    return render_template(
-        "accounts/_anchor_cell.html", acct=account, editing=True,
-    )
-
-
-@accounts_bp.route("/accounts/<int:account_id>/inline-anchor-display", methods=["GET"])
-@login_required
-@require_owner
-def inline_anchor_display(account_id):
-    """HTMX partial: show anchor balance display on accounts list."""
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Not found", 404
-
-    return render_template(
-        "accounts/_anchor_cell.html", acct=account, editing=False,
-    )
-
-
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
+
+
+# The non-default surfaces the shared anchor editor can be opened from.
+# The opener names its surface via the ``revert`` query token; only these
+# canonical values are honored (see :func:`_normalize_revert_context`).
+# Each maps to a revert endpoint in :func:`_anchor_revert_url`.
+_REVERT_SURFACES = frozenset({"dashboard", "accounts"})
 
 
 def _normalize_revert_context(raw_revert: str | None) -> str | None:
     """Allowlist-validate the raw ``revert`` token to a canonical value.
 
     The anchor editor is opened from more than one surface, and the
-    opener names its surface via the ``revert`` query token.  Only the
-    ``dashboard`` surface is recognized today; every other value (unset,
-    unknown, an attacker's probe) collapses to ``None`` so the grid's
-    default revert target is used.  Centralizing the allowlist here means
-    the token is validated against the ``dashboard`` literal in exactly
-    one place -- :func:`_anchor_revert_url` (the Cancel / Escape target),
-    the edit form's ``hx-patch`` round-trip token, and the conflict
-    cell's retry opener all consume this normalized value rather than
-    re-checking the raw string -- so the token is never interpolated
-    unvalidated into a URL or template.
+    opener names its surface via the ``revert`` query token.  Two
+    non-default surfaces are recognized -- ``dashboard`` (the dashboard
+    hero balance card) and ``accounts`` (the Net Worth Cockpit's per-card
+    balance cell); every other value (unset, unknown, an attacker's probe)
+    collapses to ``None`` so the grid's default revert target is used.
+    Centralizing the allowlist here means the token is validated against
+    :data:`_REVERT_SURFACES` in exactly one place -- :func:`_anchor_revert_url`
+    (the Cancel / Escape target), the edit form's ``hx-patch`` round-trip
+    token, and the conflict cell's retry opener all consume this normalized
+    value rather than re-checking the raw string -- so the token is never
+    interpolated unvalidated into a URL or template.
 
     Args:
         raw_revert: The ``revert`` query token as received, or ``None``.
 
     Returns:
-        ``"dashboard"`` when the token names the dashboard surface;
-        otherwise ``None`` (the grid default).
+        The canonical surface name when the token names a recognized
+        surface; otherwise ``None`` (the grid default).
     """
-    return "dashboard" if raw_revert == "dashboard" else None
+    return raw_revert if raw_revert in _REVERT_SURFACES else None
 
 
 def _anchor_conflict_response(
@@ -252,6 +105,42 @@ def _anchor_conflict_response(
         ),
         409,
     )
+
+
+def _true_up_success_response(
+    account: Account, revert_context: str | None,
+) -> tuple[str, int, dict[str, str]]:
+    """Compose the grid anchor true-up success response.
+
+    Shared by ``true_up``'s COMMITTED and DUPLICATE_SAME_DAY outcomes
+    (both render the updated display cell and fire ``balanceChanged`` so
+    other surfaces recompute).  The single-account grid and dashboard
+    surfaces append an out-of-band ``#anchor-as-of`` snippet dating the
+    edit; the cockpit (``revert=accounts``) is a MULTI-card surface with no
+    such singleton element and re-syncs the whole region via
+    ``savings.cockpit_section`` on the trigger, so emitting the OOB there
+    would orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
+
+    Args:
+        account: The post-commit account (its ``updated_at`` dates the
+            "as of" snippet).
+        revert_context: The normalized surface token, or ``None``.
+
+    Returns:
+        The ``(body, status, headers)`` tuple Flask returns, carrying the
+        ``HX-Trigger: balanceChanged`` header.
+    """
+    html = render_template(
+        "grid/_anchor_edit.html", account=account, editing=False,
+    )
+    if revert_context == "accounts":
+        return html, 200, {"HX-Trigger": "balanceChanged"}
+    as_of_html = (
+        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
+        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
+        f'</small>'
+    )
+    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
@@ -305,14 +194,14 @@ def true_up(account_id):
     if current_period is None:
         return "No current pay period found", 400
 
-    # Canonical anchor true-up path: see ``inline_anchor_update`` and
-    # ``app/services/anchor_service.py`` for the shared rationale.
-    # ``true_up`` differs from the inline endpoint in three places:
-    # (1) the template (``grid/_anchor_edit.html`` and the ``account=``
-    # kwarg rather than ``acct=``), (2) the success response appends
-    # an OOB "as-of" snippet, and (3) the success response carries an
-    # ``HX-Trigger: balanceChanged`` header so other grid cells
-    # recompute.  The outcomes are otherwise byte-equivalent.
+    # Canonical anchor true-up path: route the mutation, history-row
+    # append, conditional entries reconcile, and commit through the
+    # single authoritative helper (``anchor_service.apply_anchor_true_up``)
+    # so the C-17 optimistic lock and the F-103 / C-22 same-day
+    # same-balance idempotency rules cannot drift.  The success-response
+    # composition (the updated cell, the optional OOB "as-of" snippet,
+    # and the ``HX-Trigger: balanceChanged`` header) lives in
+    # ``_true_up_success_response``.
     outcome = anchor_service.apply_anchor_true_up(
         account=account,
         new_balance=new_balance,
@@ -341,17 +230,7 @@ def true_up(account_id):
             account.id, new_balance, current_period.id,
         )
 
-    html = render_template(
-        "grid/_anchor_edit.html",
-        account=account,
-        editing=False,
-    )
-    as_of_html = (
-        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
-        f'</small>'
-    )
-    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
+    return _true_up_success_response(account, revert_context)
 
 
 def _anchor_revert_url(account_id, revert_context):
@@ -371,6 +250,10 @@ def _anchor_revert_url(account_id, revert_context):
       ``dashboard.balance_section`` (restores the account name, caption,
       and runway the grid display cell lacks; the audit's cancel-path
       stranding fix).
+    * ``accounts`` -- the Net Worth Cockpit's per-card balance cell
+      re-renders via ``savings.cockpit_balance`` (restores that one card's
+      resolver balance; the cockpit is multi-card, so the revert is
+      account-scoped rather than the dashboard's single hero).
     * default / grid -- ``accounts.anchor_display`` (the grid cell).
 
     Args:
@@ -382,6 +265,8 @@ def _anchor_revert_url(account_id, revert_context):
     """
     if revert_context == "dashboard":
         return url_for("dashboard.balance_section")
+    if revert_context == "accounts":
+        return url_for("savings.cockpit_balance", account_id=account_id)
     return url_for("accounts.anchor_display", account_id=account_id)
 
 

@@ -2,7 +2,7 @@
 {# Anchor balance -- toggles between display and edit mode.
    Expected context: account, editing (bool), conflict (bool, optional),
    revert_context (str|None, optional -- the normalized surface token that
-   opened the editor, e.g. 'dashboard').
+   opened the editor, e.g. 'dashboard' or 'accounts').
 
    When conflict=True, the editor was attempting an update against a
    stale version_id and the route returned 409.  The display cell
@@ -14,11 +14,14 @@
 
    ``revert_context`` is threaded through every reopen path (the edit
    form's hx-patch and the conflict cell's retry hx-get) so a conflict
-   raised from the dashboard balance card reopens the editor back in the
-   dashboard surface rather than stranding the card on the grid display
-   cell.  Unset / None is the grid default and keeps both URLs token-free,
-   so the grid path stays byte-for-byte unchanged. #}
-{% set is_dashboard_revert = (revert_context is defined and revert_context == 'dashboard') %}
+   raised from a non-grid surface (the dashboard balance card, the cockpit
+   card cell) reopens the editor back in that surface rather than
+   stranding the card on the grid display cell.  The token is already
+   allowlist-normalized by accounts._normalize_revert_context, so it is
+   safe to pass straight into url_for.  Unset / None is the grid default
+   and keeps both URLs token-free, so the grid path stays byte-for-byte
+   unchanged. #}
+{% set revert_token = revert_context if revert_context is defined else none %}
 {% if editing %}
 {# Edit mode: input field with save on Enter.
    ``revert_url`` is the GET endpoint Cancel / Escape swaps back in.  It
@@ -33,8 +36,8 @@
    target. #}
 {% set revert_url = revert_url
    or url_for('accounts.anchor_display', account_id=account.id) %}
-{% if is_dashboard_revert %}
-{% set true_up_url = url_for('accounts.true_up', account_id=account.id, revert='dashboard') %}
+{% if revert_token %}
+{% set true_up_url = url_for('accounts.true_up', account_id=account.id, revert=revert_token) %}
 {% else %}
 {% set true_up_url = url_for('accounts.true_up', account_id=account.id) %}
 {% endif %}
@@ -71,8 +74,8 @@
    ``revert`` token (dashboard only) so a conflict cell rendered for the
    dashboard surface reopens the editor back in the dashboard, not the
    grid. #}
-{% if is_dashboard_revert %}
-{% set reopen_url = url_for('accounts.anchor_form', account_id=account.id, revert='dashboard') %}
+{% if revert_token %}
+{% set reopen_url = url_for('accounts.anchor_form', account_id=account.id, revert=revert_token) %}
 {% else %}
 {% set reopen_url = url_for('accounts.anchor_form', account_id=account.id) %}
 {% endif %}

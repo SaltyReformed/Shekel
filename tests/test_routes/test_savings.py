@@ -365,7 +365,7 @@ class TestDashboard:
             # seed_user only has a checking account -- no savings accounts.
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"Accounts Dashboard" in resp.data
+            assert b"Accounts" in resp.data
             assert b"No savings goals yet" in resp.data
 
     def test_dashboard_with_goals(self, app, auth_client, seed_user, seed_periods):
@@ -428,18 +428,20 @@ class TestDashboard:
             # be notably higher than $50,000. If growth is NOT applied,
             # the balance stays flat at $50,000 (the bug).
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 50000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # Dashboard shows 3 milestones (3-month, 6-month, 1-year) at offsets
-            # 6, 13, 26 periods from current. With 7% annual return on $50k,
-            # all 3 milestones exceed $50,000 (~$50.8k, ~$51.7k, ~$53.5k).
-            assert len(amounts_int) == 3, (
-                "Expected 3 milestone projections > $50,000 with 7% growth, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (the
+            # furthest horizon, 1 year). With 7% annual return on $50k the
+            # 1-year projection (~$53.5k) is the largest dollar figure on the
+            # page -- above the ~$51k net-worth band (checking $1k + the $50k
+            # account summed at today's balances, NOT the projection) and the
+            # $50k anchor -- so max > $52k proves growth was applied (a flat
+            # balance would leave the max at the $51k band total).
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 52000, (
+                "Expected the 1-year projection to exceed $52,000 with 7% "
+                f"growth; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_investment_account_includes_contributions(
@@ -474,18 +476,18 @@ class TestDashboard:
             # on $50k, projections should be substantially higher than growth-only.
             # Growth-only 1yr ~$53,500. With contributions (~$18k/yr), ~$71k+.
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 60000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # 3 milestones at offsets 6, 13, 26. With $500/period employee +
-            # ~$192/period employer (5% of $100k/26) + 7% growth on $50k:
-            # 3-month ~$55k (<$60k), 6-month ~$61k (>$60k), 1-year ~$72k (>$60k)
-            assert len(amounts_int) == 2, (
-                "Expected 2 milestone projections > $60,000 with contributions, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (1 year).
+            # With $500/period employee + ~$192/period employer (5% of $100k/26)
+            # + 7% growth on $50k, the 1-year projection is ~$72k -- well above
+            # both the growth-only baseline (~$53.5k) and the ~$51k net-worth
+            # band -- so max > $60k proves the contributions are included.
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 60000, (
+                "Expected the 1-year projection to exceed $60,000 with "
+                f"contributions; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_employer_contribution_without_employee_deduction(
@@ -553,18 +555,18 @@ class TestDashboard:
             # With 5% employer on $3846/period (~$5k/yr) + 7% growth on $50k,
             # 1-year should be ~$58k+. Without employer, growth-only ~$53.5k.
             amounts = re.findall(r'\$([0-9,]+)', html)
-            amounts_int = [
-                int(a.replace(',', ''))
-                for a in amounts
-                if int(a.replace(',', '')) > 54000
-            ]
+            amounts_int = [int(a.replace(',', '')) for a in amounts]
 
-            # 3 milestones at offsets 6, 13, 26. With 5% employer flat on
-            # $100k/26 (~$192/period) + 7% growth on $50k, no employee deduction:
-            # 3-month ~$52k (<$54k), 6-month ~$54.3k (>$54k), 1-year ~$58.7k (>$54k)
-            assert len(amounts_int) == 2, (
-                "Expected 2 milestone projections > $54,000 with employer contribution, "
-                f"but found {len(amounts_int)}. Amounts on page: {amounts}"
+            # The cockpit card shows ONE consolidated projection line (1 year).
+            # With 5% employer flat on $100k/26 (~$192/period) + 7% growth on
+            # $50k and no employee deduction, the 1-year projection is ~$58.7k --
+            # above the growth-only baseline (~$53.5k) and the ~$51k net-worth
+            # band -- so max > $55k proves the employer contribution is included.
+            assert amounts_int, f"no dollar amounts rendered; page: {html[:300]}"
+            assert max(amounts_int) > 55000, (
+                "Expected the 1-year projection to exceed $55,000 with the "
+                f"employer contribution; largest amount was ${max(amounts_int):,}. "
+                f"Amounts on page: {amounts}"
             )
 
     def test_dashboard_requires_login(self, app, client, seed_user):
@@ -2480,7 +2482,13 @@ class TestAccountArchivalDashboard:
     def test_paid_off_shows_archive_prompt(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Paid-off loan card has a prominent 'Archive' prompt."""
+        """Paid-off loan card shows the 'Paid Off' badge and an archive action.
+
+        The Net Worth Cockpit rebuild moved archive off the card face into
+        the per-card kebab (audit Surface 2 / decision 9); a paid-off loan is
+        now signalled by the 'Paid Off' badge, and the archive affordance is
+        the kebab's archive form (its action URL asserted below).
+        """
         with app.app_context():
             acct = _create_small_loan(seed_user, name="Paid Off Archival")
             _make_confirmed_transfer(
@@ -2494,7 +2502,7 @@ class TestAccountArchivalDashboard:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "This loan is paid off" in html
+            assert "Paid Off" in html
             assert f"/accounts/{acct.id}/archive" in html
 
     def test_archived_account_no_projections(
@@ -3262,8 +3270,6 @@ class TestDashboardNetWorthContext:
             assert net_worth["total_liabilities"] == Decimal("0.00")
             assert net_worth["net_worth"] == Decimal("5000.00")
             assert net_worth["liquid"] == Decimal("5000.00")
-            # Flat balances -> zero change vs the prior period.
-            assert net_worth["change_this_period"] == Decimal("0.00")
 
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,
@@ -3272,7 +3278,7 @@ class TestDashboardNetWorthContext:
 
         The route serializes the Decimal trend to a JSON string with
         parallel ``net`` / ``assets`` / ``liabilities`` float arrays, one
-        ``%b %-d`` label per period, and an integer ``actual_count``.  With
+        ``%b %-d`` label per period, and an integer ``current_index``.  With
         the seed Checking ($1,000) plus an added Savings ($4,000) and flat
         balances, every ``net`` point is ``5000.0`` (the float boundary).
         """
@@ -3292,7 +3298,7 @@ class TestDashboardNetWorthContext:
             chart = json.loads(context["net_worth_chart_json"])
 
             assert set(chart.keys()) == {
-                "labels", "net", "assets", "liabilities", "actual_count",
+                "labels", "net", "assets", "liabilities", "current_index",
             }
             series = context["net_worth"]["series"]
             n = len(series["periods"])
@@ -3305,16 +3311,13 @@ class TestDashboardNetWorthContext:
             assert all(isinstance(v, float) for v in chart["net"])
             assert all(isinstance(v, float) for v in chart["assets"])
             assert all(isinstance(v, float) for v in chart["liabilities"])
-            # Flat $5,000 net worth at every forward point -> 5000.0.
+            # Flat $5,000 net worth at every trend point -> 5000.0.
             assert chart["net"][0] == 5000.0
-            # actual_count is the leading run of already-ended periods,
-            # derived the same way the route does (clock-independent).
-            from datetime import date as _date  # pylint: disable=import-outside-toplevel
-            expected_actual = sum(
-                1 for p in series["periods"] if p["end_date"] <= _date.today()
-            )
-            assert chart["actual_count"] == expected_actual
-            assert isinstance(chart["actual_count"], int)
+            # current_index (the solid/dashed boundary) passes straight
+            # through from the producer's series; an int in [0, n].
+            assert chart["current_index"] == series["current_index"]
+            assert isinstance(chart["current_index"], int)
+            assert 0 <= chart["current_index"] <= n
 
     def test_dashboard_still_renders_with_net_worth_wired(
         self, app, auth_client, seed_user, seed_periods,
@@ -3327,4 +3330,171 @@ class TestDashboardNetWorthContext:
         with app.app_context():
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"Accounts Dashboard" in resp.data
+            assert b"Accounts" in resp.data
+
+
+class TestAllocationBar:
+    """Tests for the diverging allocation bar's width serialization + render."""
+
+    def test_widths_scale_to_the_larger_side(self):
+        """Each segment's pct is value/scale*100 with scale = the max side.
+
+        Assets total 50,000 and liabilities 100,000, so the scale is
+        100,000: the liability fills its half (100%) and the assets read
+        proportionally shorter (20% + 30% of their half).  ``float`` only at
+        this boundary; the values stay ``Decimal``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_allocation_bar
+        allocation = {
+            "assets": [
+                {"label": "asset", "value": Decimal("20000.00")},
+                {"label": "retirement", "value": Decimal("30000.00")},
+            ],
+            "liabilities": [
+                {"label": "liability", "value": Decimal("100000.00")},
+            ],
+        }
+
+        result = _serialize_allocation_bar(allocation)
+
+        # scale = max(50000, 100000) = 100000
+        assert result["assets"][0]["pct"] == 20.0   # 20000/100000*100
+        assert result["assets"][1]["pct"] == 30.0   # 30000/100000*100
+        assert result["liabilities"][0]["pct"] == 100.0
+        assert all(isinstance(s["pct"], float) for s in result["assets"])
+        # values pass through unchanged as Decimal.
+        assert result["assets"][0]["value"] == Decimal("20000.00")
+
+    def test_empty_allocation_is_no_segments(self):
+        """With no segments the serializer returns empty lists (no div/0)."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_allocation_bar
+        assert _serialize_allocation_bar(
+            {"assets": [], "liabilities": []},
+        ) == {"assets": [], "liabilities": []}
+
+    def test_renders_bar_and_legend_in_page(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The /savings page renders the allocation bar + legend.
+
+        The seed Checking ($1,000) is an asset, so the bar has at least one
+        asset segment and the legend tier is present.
+        """
+        with app.app_context():
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            assert b"nw-alloc__bar" in resp.data
+            assert b"nw-alloc__legend" in resp.data
+
+
+class TestSparklines:
+    """Tests for the per-account sparkline SVG-geometry serialization."""
+
+    def test_normalizes_series_to_inverted_svg_polyline(self):
+        """A series maps to evenly-spaced x and an inverted y in the viewBox.
+
+        Three descending points (100 -> 50 -> 0) draw a falling line: the
+        high value sits at the top (y 0) and the low at the bottom (y 28),
+        with x evenly spaced across the 100-wide box.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_sparklines
+        result = _serialize_sparklines({
+            7: [Decimal("100"), Decimal("50"), Decimal("0")],
+        })
+        # low=0, span=100, last=2:
+        #  i0 v100 -> x 0,   y 28 - 28 = 0
+        #  i1 v50  -> x 50,  y 28 - 14 = 14
+        #  i2 v0   -> x 100, y 28 - 0  = 28
+        assert result[7] == "0.00,0.00 50.00,14.00 100.00,28.00"
+
+    def test_empty_sparklines_serialize_to_empty(self):
+        """No informative accounts -> no polylines."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_sparklines
+        assert _serialize_sparklines({}) == {}
+
+
+class TestCockpitSection:
+    """Tests for GET /savings/cockpit -- the balanceChanged refresh fragment."""
+
+    def test_cockpit_section_renders_region_for_htmx(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An HX request returns the cockpit region fragment (hero + cards).
+
+        The region carries the net-worth hero label and the account's
+        click-to-edit balance cell, but NOT the ``#cockpit-section`` wrapper
+        (that lives in the page) -- proving it is the fragment the
+        balanceChanged swap consumes, not the whole page.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                "/savings/cockpit", headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "Net worth" in body
+            assert f'id="acct-balance-{acct_id}"' in body
+            assert 'id="cockpit-section"' not in body
+
+    def test_cockpit_section_non_htmx_redirects_to_dashboard(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-HX request redirects to the page (the section is a fragment)."""
+        with app.app_context():
+            resp = auth_client.get("/savings/cockpit")
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/savings")
+
+
+class TestCockpitBalance:
+    """Tests for GET /savings/cockpit/<id>/balance -- the inline-edit revert cell."""
+
+    def test_cockpit_balance_renders_editable_cell_for_htmx(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An HX request returns the account's click-to-edit balance cell.
+
+        The cell carries its account-scoped id and opens the shared anchor
+        editor in the cockpit (``accounts``) surface, so Cancel / Escape and
+        the save round-trip thread back to this cockpit cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert f'id="acct-balance-{acct_id}"' in body
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
+                in body
+            )
+
+    def test_cockpit_balance_non_htmx_redirects_to_dashboard(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-HX request redirects to the dashboard page."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(f"/savings/cockpit/{acct_id}/balance")
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/savings")
+
+    def test_cockpit_balance_other_users_account_404(
+        self, app, auth_client, seed_user, seed_second_user, seed_periods_today,
+    ):
+        """IDOR: another user's account id returns 404 (not found / not yours)."""
+        with app.app_context():
+            other_acct_id = seed_second_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{other_acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404

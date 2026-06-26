@@ -152,7 +152,7 @@ def interest_detail(account_id):
     # Verify this is an interest-bearing account type.
     if not account.account_type or not account.account_type.has_interest:
         flash("This account type does not support interest parameters.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     params = (
         db.session.query(InterestParams)
@@ -249,7 +249,7 @@ def update_interest_params(account_id):
 
     if not account.account_type or not account.account_type.has_interest:
         flash("This account type does not support interest parameters.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     errors = _interest_params_schema.validate(request.form)
     if errors:
@@ -335,7 +335,7 @@ def property_detail(account_id):
     # Verify this is an appreciating physical-asset account type.
     if not account.account_type or not account.account_type.has_appreciation:
         flash("This account type does not track appreciation.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     params = (
         db.session.query(AssetAppreciationParams)
@@ -378,7 +378,7 @@ def update_appreciation_params(account_id):
 
     if not account.account_type or not account.account_type.has_appreciation:
         flash("This account type does not track appreciation.", "warning")
-        return redirect(url_for("accounts.list_accounts"))
+        return redirect(url_for("savings.dashboard"))
 
     errors = _appreciation_params_schema.validate(request.form)
     if errors:

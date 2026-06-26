@@ -226,7 +226,7 @@ class TestDashboardGrouping:
         """Empty state renders the dashboard page with navigation elements.
 
         When no active accounts exist, the page should still render the
-        Accounts Dashboard heading and action buttons (New Account, etc.).
+        Accounts heading and action buttons (New Account, etc.).
         """
         # Deactivate the default checking account.
         seed_user["account"].is_active = False
@@ -236,7 +236,7 @@ class TestDashboardGrouping:
         client.post("/login", data={"email": "test@shekel.local", "password": "testpass"})
         resp = client.get("/savings")
         assert resp.status_code == 200
-        assert b"Accounts Dashboard" in resp.data
+        assert b"Accounts" in resp.data
         assert b"New Account" in resp.data
 
     def test_emergency_fund_uses_is_liquid(
@@ -536,10 +536,16 @@ class TestAccountHardDelete:
             assert resp.status_code == 404
             assert db.session.get(Account, other_id) is not None
 
-    def test_list_separates_active_and_archived_accounts(
-        self, app, auth_client, seed_user, db,
+    def test_cockpit_separates_active_and_archived_accounts(
+        self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """C-5A.5-28: List page shows active and archived in separate sections."""
+        """C-5A.5-28: The cockpit shows active and archived in separate sections.
+
+        After Loop B P4 the standalone /accounts table was retired; the
+        active-vs-archived split now lives on the unified cockpit
+        (savings.dashboard): active accounts render as cards, archived
+        accounts in the collapsed "Archived Accounts (N)" section.
+        """
         with app.app_context():
             # seed_user["account"] is active by default.
             archived = _create_savings_account(
@@ -548,15 +554,15 @@ class TestAccountHardDelete:
             archived.is_active = False
             db.session.commit()
 
-            resp = auth_client.get("/accounts")
+            resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Active account in main table.
+            # Active account appears as a cockpit card.
             assert "Checking" in html
 
             # Archived section with count indicator.
-            assert "Archived (1)" in html
+            assert "Archived Accounts (1)" in html
             assert "Archived Savings" in html
 
     def test_hard_delete_account_with_history_already_archived(

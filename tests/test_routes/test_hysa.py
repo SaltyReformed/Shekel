@@ -129,12 +129,16 @@ class TestHysaDetailView:
         assert resp.status_code == 404
 
     def test_hysa_detail_wrong_type(self, auth_client, seed_user, db):
-        """Non-HYSA account → redirect to accounts list with warning."""
+        """Non-HYSA account → redirect to the cockpit with a warning.
+
+        The wrong-type guard's redirect target moved from the retired
+        /accounts table to savings.dashboard in Loop B P4.
+        """
         # seed_user already has a checking account.
         account = seed_user["account"]
         resp = auth_client.get(f"/accounts/{account.id}/interest")
         assert resp.status_code == 302
-        assert "/accounts" in resp.headers.get("Location", "")
+        assert "/savings" in resp.headers.get("Location", "")
 
     def test_hysa_detail_login_required(self, client, db):
         """Unauthenticated → redirect to login."""
@@ -280,7 +284,7 @@ class TestHysaNegativePaths:
             data={"apy": "0.04500", "compounding_frequency_id": ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY)},
         )
         assert resp.status_code == 302
-        assert "/accounts" in resp.headers.get("Location", "")
+        assert "/savings" in resp.headers.get("Location", "")
         resp2 = auth_client.get(resp.headers["Location"])
         assert b"does not support interest parameters" in resp2.data
 

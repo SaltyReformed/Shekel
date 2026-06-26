@@ -208,7 +208,6 @@ def true_up_balance(account_id):
     """Append a dated balance true-up :class:`LoanAnchorEvent` (E-18 D-C / Commit 16).
 
     Mirrors the checking-account anchor true-up UX (see
-    :func:`app.routes.accounts.inline_anchor_update` and
     :func:`app.routes.accounts.true_up`) for loan accounts.  The user
     asserts "the lender reports my balance is $X as of date D"; the
     handler appends a single ``user_trueup`` event and the resolver

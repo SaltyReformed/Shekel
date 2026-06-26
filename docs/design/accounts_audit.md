@@ -270,9 +270,10 @@ without a new developer ruling.
 Refined from the Loop A round-1 mockups (2026-06-24; scratch, never committed). Direction B
 "Chart-forward" was chosen.
 
-6. **Hero chips:** Total Assets, Total Liabilities, Change this period, Liquid net worth. Retirement
-   is not a hero chip; it folds into Total Assets and is surfaced as the Retirement card group and
-   its subtotal, so the chips never read as additive. Liquid is the sum of `is_liquid` balances.
+6. **Hero chips:** Total Assets, Total Liabilities, Liquid net worth (originally also "Change this
+   period," removed 2026-06-26 -- decision 13). Retirement is not a hero chip; it folds into Total
+   Assets and is surfaced as the Retirement card group and its subtotal, so the chips never read as
+   additive. Liquid is the sum of `is_liquid` balances.
 7. **Net-worth trend:** one continuous series, solid actual history plus a dashed, lighter forward
    projection, with a "Today" marker; a Net vs Assets-and-Liabilities series toggle and a 6 / 13 /
    26 / All horizon picker (13 is the default).
@@ -286,6 +287,60 @@ Refined from the Loop A round-1 mockups (2026-06-24; scratch, never committed). 
 10. **Hero layout: direction B (chart-forward)** -- a large net-worth hero with the chips and the
     diverging bar beside it, then a large full-width forward trend chart, then the account grid,
     then the savings and debt sections.
+
+Decided 2026-06-25 while building the P3 trend (slice 3a), after tracing the data model. Locked.
+
+11. **Trend window, history honesty, and the change chip.** The trend horizon picker (6 / 13 / 26 /
+    All) controls the FORWARD reach; a short honest history tail (cap 6 periods) leads it. Honest
+    history is gated to periods where EVERY account has a real balance, because two kinds carry
+    fallbacks in the past: cash (PLAIN / INTEREST) has no balance before its anchor
+    (`balance_resolver.balances_for` omits pre-anchor periods, so the account would contribute
+    zero), and amortizing loans have a TODAY-forward resolver schedule so pre-schedule periods
+    report the loan's ORIGINAL PRINCIPAL (`account_projection.compute_loan_period_balance_map`),
+    which would make the loan leap down at "today". So the tail reaches back only to the latest cash
+    anchor and the latest loan schedule-start. **Structural consequence (developer-accepted):**
+    because loan schedules are today-forward, any user with an amortizing loan has an EMPTY tail --
+    the trend is forward-only for them, and the solid-history / Today marker shows only for
+    loan-free users whose cash was trued up in the past (e.g. renters). There is no honest
+    per-period historical net worth at pay-period granularity without a larger feature
+    (reconstructing from the dated `AccountAnchorHistory` true-ups); deferred. The
+    **"Change this period" chip** shares this one honest boundary: it compared the current period to
+    the immediately-prior one, but for a loan-holder the prior period is pre-schedule, so it counted
+    the loan's whole origination-to-now paydown as one period (a fake +$16,994 live). It now reads
+    "--" (returns `None`) whenever the prior period is not honest. The same engine backs the
+    analytics Year-End net-worth chart, so its pre-today points likely carry the original-principal
+    artifact too -- flagged, separate follow-up.
+
+Decided 2026-06-25 (developer ruling on the P4 hard-delete fork). Locked.
+
+12. **Hard-delete's home: the shared edit form's danger zone.** When P4 retires the `/accounts`
+    table, permanent hard-delete moves into a "Danger Zone" section at the bottom of the shared
+    account edit form (`accounts/form.html`), shown in edit mode only (`{% if account %}`) and
+    reached via each cockpit card's kebab -> Edit. Chosen over decision 9's literal "per-account
+    detail page" because the detail-page route cannot cover every type: Savings and Credit Card (and
+    any plain custom type) have NO detail page -- the card's `detail_endpoint` macro falls through
+    to an empty branch for them -- so a detail-page-only delete would silently make those common
+    types undeletable, a regression from the table. Every type is reachable for Edit via the kebab,
+    so one shared danger zone (DRY) covers all of them; friction stays deliberate (kebab -> Edit ->
+    Danger Zone -> confirm modal -> fresh-login). Archived accounts, which have no kebab in the
+    cockpit, get a direct, equally-gated "Delete permanently" button beside Unarchive in the
+    archived list. The route, its guard chain, the confirm modal, and the `@fresh_login_required`
+    gate are unchanged; only the invoking surface moved.
+
+Decided 2026-06-26 (developer ruling). Locked.
+
+13. **The "Change this period" hero chip is removed.** Decision 11 made the chip read "--" whenever
+    the prior period is not honest. Because an amortizing loan's resolver schedule is today-forward,
+    `_honest_history_start_index` always clamps `honest_start` to the current period for any
+    loan-holder, so the chip is structurally always "--" for the developer (who holds a Mortgage and
+    a Van Loan). A chip that can never show a value for its user is noise, so it was removed along
+    with its sole producer (`compute_net_worth_change`) and that producer's tests. The honest
+    boundary it shared with the trend stays: `honest_start` still gates the trend's solid-history
+    tail; it is simply no longer consumed by a change figure. The hero band now carries three chips
+    (Total Assets, Total Liabilities, Liquid). The chip did still render a real value for loan-free
+    profiles (e.g. renters whose cash was trued up in the past); removing it drops that, accepted
+    because the user is a loan-holder. Resurrectable from git if the deferred per-period historical
+    net-worth feature (reconstructing from `AccountAnchorHistory`) ever lands.
 
 ## Home-equity / physical-asset mini-sprint (prerequisite; Opus data-model work)
 
@@ -364,9 +419,9 @@ A chart-forward accounts dashboard consistent with the rebuilt "Terminal Road" d
 B (chosen in Loop A, 2026-06-24). Anatomy top to bottom:
 
 1. **Hero band:** Net Worth as the hero figure, with the chips (Total Assets, Total Liabilities,
-   Change this period, Liquid) and the diverging assets-vs-liabilities bar beside it, then a large
-   full-width forward net-worth trend (solid history, dashed lighter projection, "Today" marker; a
-   Net vs Assets-and-Liabilities toggle; a 6 / 13 / 26 / All horizon). One `balanceChanged` region.
+   Liquid) and the diverging assets-vs-liabilities bar beside it, then a large full-width forward
+   net-worth trend (solid history, dashed lighter projection, "Today" marker; a Net vs
+   Assets-and-Liabilities toggle; a 6 / 13 / 26 / All horizon). One `balanceChanged` region.
 2. **Accounts surface:** a responsive auto-fit card grid, grouped by category with a subtotal at
    each group header. Each card: name (the only link), type icon, click-to-edit balance hero, one
    secondary line, a sparkline where informative, a visible Transfer button, and a kebab (Edit /
@@ -421,18 +476,159 @@ Carried from the best-practices research and the round-1 mockups, to apply in Lo
 
 Follows `docs/design/overhaul_plan.md`, "Process per screen":
 
-0. **Mini-sprint** (ships first or in parallel): Property type plus `AssetAppreciationParams` plus
-   migration plus the appreciation projection plus the form field plus the analytics chart verified,
-   with tests and the full suite.
+0. **Mini-sprint** -- DONE 2026-06-25 (commit `95714e0`, PR #42, live on prod): the Property type,
+   `AssetAppreciationParams`, the migration, the `APPRECIATING` projection, the Property detail
+   page, the home<->mortgage link, and the analytics-chart fix; 32 tests, full suite green. See the
+   "Implemented" subsection above for the as-built design (the form field became a setup page; the
+   collateral link and equity card are net-new beyond Decision 5).
 1. **Gate A confirm** (this audit's rebuild decisions).
 2. **Loop A** scratch mockups for the Net Worth Cockpit in /tmp (never committed), screenshot rounds
    via `tests/manual/shoot.py`, iterate, lock the visual here. DONE 2026-06-24: round 1 produced
    three hero-band directions (A single-canvas, B chart-forward, C compact); the developer chose
    **B**. Rulings recorded above (Rebuild decisions 6-10; Loop A build refinements).
-3. **Loop B** (gated, full suite per phase; Opus for services / routes / tests, Fable for templates
-   / CSS / JS): net-worth headline plus forward-series producer; the unified template plus
-   `accounts.css` plus kebab and inline edit plus charts; `balanceChanged` wiring, the `/accounts`
-   redirect, retire `list.html`, repoint links; then live verification.
+3. **Loop B** (gated, full suite per phase).
+   **P1 net-worth headline and forward-series producer DONE** (`e5ecd26`, shared
+   `net_worth_kernel`). **P2 BACKEND (Opus) DONE 2026-06-25 on dev** -- the cockpit data contract
+   the template consumes: `compute_property_equity` (reuses
+   `home_equity_service.resolve_home_equity` and `classify_account`, never a raw `has_appreciation`
+   re-check) and `_compute_group_subtotals`, wired into `compute_dashboard_data` via
+   `_compute_cockpit_grid_section` and exposed as the `property_equity` and `group_subtotals`
+   context keys; full suite 6294, `pylint app/` 10.00/10.
+
+   The Fable model is unavailable with no restore ETA (developer note 2026-06-25), so the template,
+   CSS, and JS work originally slated for Fable is now Opus's, re-sliced into smaller gated commits.
+
+   **P2 slice 1, static read-only cockpit and trend chart: DONE 2026-06-25 on dev.** Rewrote
+   `app/templates/savings/dashboard.html` to the cockpit anatomy: the net-worth hero, the four
+   chips, the forward net-worth trend chart, a per-category auto-fit grid with group subtotals, the
+   Property home-equity cards, the savings and debt sections, and a per-card kebab carrying Edit and
+   Archive. New `app/static/css/accounts.css` (linked between `dashboard.css` and `utilities.css`)
+   and `app/static/js/net_worth_cockpit.js` (the trend via the shared `ShekelChart` factory). Reuses
+   the dashboard's `.pulse-*` chip, hero, and chart vocabulary; consumes `net_worth`,
+   `grouped_accounts`, `group_subtotals`, `property_equity`, and the already-serialized
+   `net_worth_chart_json`. Read-only this slice: no balance edit yet, so the header keeps a
+   temporary "Manage Accounts" link until slice
+   2. The card balance is the resolver `current_balance` (SSOT with the headline and the subtotals),
+   and account icons are monochrome so the accent stays the only non-money chroma. Six redesign-driven,
+   developer-approved test updates: the `Accounts Dashboard` -> `Accounts` rename; the three investment
+   milestone-count tests reworked to assert `max(projection)` (robust to the net-worth band's aggregate
+   figures); and the paid-off card's face prompt -> the `Paid Off` badge. No `app/` Python touched;
+   full suite 6294.
+
+   **P2 slice 2, click-to-edit balance and `balanceChanged` refresh: DONE 2026-06-25 on dev.** The
+   cockpit's per-card balance is now click-to-edit, reusing the shared grid anchor editor and the
+   single `true_up` -> `apply_anchor_true_up` mutation (no second edit path). The editor opens in the
+   `accounts` surface and re-syncs the whole cockpit region on save. As built:
+
+   - **A third anchor-editor surface, `accounts`.** `_normalize_revert_context` now allowlists
+     `accounts` alongside `dashboard` (a `_REVERT_SURFACES` frozenset); `_anchor_revert_url` maps it
+     to the new `savings.cockpit_balance`; and `grid/_anchor_edit.html` was generalized from a
+     hardcoded `revert='dashboard'`-only branch to thread the normalized `revert_context` token
+     through (the grid / dashboard paths stay byte-for-byte unchanged). The editor is multi-card
+     safe: each card's display cell is the NEW account-scoped `savings/_cockpit_balance.html`
+     (`#acct-balance-<id>`, never the grid's singleton `#anchor-display`), and `true_up` skips the
+     singleton `#anchor-as-of` OOB snippet here (it would orphan-target; the section refresh carries
+     the update). The success-response composition was extracted to `_true_up_success_response`
+     (else the OOB-skip branch trips `too-many-return-statements`).
+   - **One `balanceChanged` refresh region** (developer ruling this session: "Net worth + accounts +
+     equity"). The hero band + chips + trend, the account grid with its group subtotals and the debt
+     summary, and the home-equity cards moved into the NEW `savings/_cockpit.html`, wrapped in
+     `#cockpit-section` with the dashboard's exact `#pulse-section` pattern (`hx-get` ->
+     `savings.cockpit_section`, `hx-trigger="balanceChanged from:body"`, `hx-swap="innerHTML"`). The
+     savings-goal, emergency-fund, and archived tiers stay page-load-only (the dashboard's
+     static-secondary-tier precedent). The page render and the section re-render share one
+     `_cockpit_context` producer (SSOT, no divergence).
+   - **Cancel / Escape revert** restores just the one card's cell via `savings.cockpit_balance`,
+     backed by the narrow `compute_account_balance_cell` producer (reuses `_project_one_account`, so
+     the reverted figure equals the grid card's to the cent). The cell DISPLAYS the resolver
+     `current_balance` while the editor edits the raw anchor, re-synced by the refresh -- the same
+     display-vs-edit split as the dashboard hero.
+   - **The z-index raise is on the balance WRAPPER, not the cell** (caught in live verification, not
+     the suite). The cockpit is the first inline-edit surface INSIDE a `.stretched-link` card;
+     raising only the display cell left the editor form -- which swaps in WITHOUT the raised class
+     -- below the card-link overlay, so the input and Save / Cancel buttons were unclickable (the
+     link swallowed the click). The fix raises the persistent `.acct-card__balance` wrapper
+     (`z-index: 2`), so both the cell AND the editor that replaces it sit above the overlay. The
+     dashboard never hit this (its hero is not in a stretched-link card). The cell keeps a
+     persistent faint pencil (`accounts.css`).
+   - 15 new tests (cockpit routes, the `compute_account_balance_cell` SSOT + IDOR + archived gates,
+     the three `accounts`-surface editor-template round-trips, the OOB-skip-vs-grid-keeps contrast);
+     full suite 6309, `pylint app/` 10.00/10. The temporary "Manage Accounts" header link stays
+     until P4 (the `/accounts` table still owns hard-delete).
+
+   **Live verification (P5 done early for this slice, dev app + Playwright, both themes).** Confirmed
+   on the prod-clone dev DB: clicking a card balance opens the inline editor in place; a save re-syncs
+   the entire region together -- on a Checking edit the net-worth hero, all four chips (assets, change,
+   liquid), the edited card, and the Asset group subtotal all moved by the identical delta (one
+   `balanceChanged` region, SSOT holds); Escape reverts the single cell; both themes render. The editor
+   input + Save / Cancel are confirmed clickable above the stretched-link (elementFromPoint). The
+   cockpit correctly inherits the F-103 same-day same-balance idempotency: re-truing-up a value already
+   used today is a 200 no-op (`DUPLICATE_SAME_DAY`), which is correct, not a bug. The dev account's
+   balance and same-day history were restored after testing.
+
+   **P3, charts.** Re-sliced by feature (each full-stack, gated) rather than backend-first: 3a the
+   net-worth trend, 3b the diverging allocation bar, 3c the conditional sparklines.
+
+   **P3 slice 3a, net-worth trend: DONE 2026-06-25 on dev (`7cae046`).** The solid-history vs
+   dashed-projection split, the Today marker, the Net vs Assets-and-Liabilities toggle, and the
+   `6 / 13 / 26 / All` horizon picker (default 13). Built to the developer's rulings this session
+   (rebuild decision 11 below). The trend series was widened from forward-only to an honest history
+   tail plus the full forward projection, carrying a `current_index` boundary (the solid/dashed split,
+   the Today marker, and the client's forward-slice anchor); the client slices the horizon and toggles
+   the series in JS (no money math -- only slice, restyle, format), so the producer serializes once.
+   The change-this-period chip was fixed (decision 11; later removed -- decision 13). Full suite 6318,
+   `pylint app/` 10.00/10, biome
+   - djlint clean, code-reviewer no Critical/High/Medium, live-verified both themes.
+
+   **P3 slice 3b, allocation bar: DONE 2026-06-25 on dev (`638fedc`).** The category-stacked diverging
+   assets-vs-liabilities bar (decision 8) in the hero band -- the asset-side category subtotals stacked
+   right, the liability total left, each block labeled name + value, from the existing
+   `group_subtotals` + `net_worth`. `compute_allocation` splits by category id (never a label string);
+   `_serialize_allocation_bar` adds the float widths (scaled to the larger side); the reused
+   `progress_bar.js` applies them. Live-verified both themes.
+
+   **P3 slice 3c, conditional sparklines: DONE 2026-06-25 on dev (`10d8b80`).** A per-account
+   server-rendered SVG sparkline above the card's secondary line, only where informative (>= 4 points
+   AND a min-max spread above `max($1, 0.5% of magnitude)`); a flat account shows just the figure +
+   projected line. The producer (`compute_sparklines`) REUSES the dense maps already built for the
+   net-worth trend (`build_account_net_worth_maps` now carries `account_id`); `_serialize_sparklines`
+   normalizes to an SVG polyline. Developer ruling: the rule stays spread-based, so a cash account
+   whose projected balance oscillates with paychecks/bills shows that cash-flow rhythm (the magnitude
+   is in the secondary line), not only monotonic trends. Live-verified both themes.
+
+   **P4, retire `/accounts`: DONE 2026-06-25 on dev.** The hard-delete fork was resolved by the
+   developer ruling to the edit-form danger zone (decision 12). As built:
+
+   - Redirect: `list_accounts` became a thin permanent redirect to `savings.dashboard`, kept (not
+     deleted) so external `/accounts` bookmarks resolve and the unauthenticated-redirect contract
+     stays green. The 16 in-app redirects (12 in `crud.py`, 4 wrong-type guards in `detail.py`)
+     repoint directly at `savings.dashboard`. `accounts/list.html` was deleted (nothing else
+     included it).
+   - Hard-delete: an edit-mode-only Danger Zone in `form.html` POSTs to `hard_delete_account` (the
+     confirm modal and fresh-login gate are unchanged). The cockpit's archived list gained a direct,
+     equally-gated delete button (archived cards have no kebab), and the temporary "Manage Accounts"
+     header link became the "Manage Account Types" shortcut the retired table used to host.
+   - Tests: 5 assertions tied to the old behavior were updated (developer-confirmed change: GET
+     `/accounts` now 302s; the non-parameterized create redirect and the detail wrong-type guards
+     land on `/savings`), plus new tests for the redirect contract and the danger zone. Full suite
+     6333 passed, `pylint app/` 10.00/10.
+
+   **UI-orphan cleanup (DONE 2026-06-25, follow-up to P4):** the retired table's inline balance editor
+   -- `inline_anchor_update` plus its `inline_anchor_form` / `inline_anchor_display` GET partners and
+   the `accounts/_anchor_cell.html` partial -- was removed in full, since the cockpit edits balances
+   through the shared grid editor (`savings.cockpit_balance` -> `true_up`). All three inline routes,
+   the partial, 12 test methods + 3 `test_auth_required` matrix rows + 5 `TEST_PLAN.md` rows, 6
+   now-unused imports, and 7 stale docstring `:func:` cross-references across 6 live files went; the
+   live `true_up` / `anchor_form` / `anchor_display` editor and the 9 grid/dashboard/cockpit tests in
+   the mixed version-pin class were kept. Sweep clean, `pylint app/` 10.00/10, full suite 6318.
+
+   **P5, live verification: DONE 2026-06-26 (Claude's pass).** Desktop and mobile both themes via
+   `shoot.py`; net worth reconciled from `compute_dashboard_data` to the cent; and a non-destructive
+   interaction pass (the P4 redirect, the kebab Edit and Archive, click-to-edit open with the input
+   raised above the stretched-link, then Escape revert) was green at 7 of 7. The home-to-mortgage link
+   got set so the equity card now nets, and the always-blank Change this period chip was removed
+   (decision 13). Developer acceptance, driving real saves and archives with live data, remains the
+   developer's to do.
 
 ## Verification (for the build)
 

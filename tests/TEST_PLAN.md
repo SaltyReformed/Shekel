@@ -453,13 +453,8 @@ contribution, savings metrics, and count_periods_until all covered.
 
 | Category | Tests Needed                                                            | Status                                          |
 | -------- | ----------------------------------------------------------------------- | ----------------------------------------------- |
-| HP       | PATCH `/accounts/<id>/inline-anchor` -- updates balance, returns partial | ✅ `test_inline_anchor_update`                  |
-| HP       | GET `/accounts/<id>/inline-anchor-form` -- returns edit partial          | ✅ `test_inline_anchor_form_returns_partial`    |
-| HP       | GET `/accounts/<id>/inline-anchor-display` -- returns display partial    | ✅ `test_inline_anchor_display_returns_partial` |
 | HP       | PATCH `/accounts/<id>/true-up` -- updates balance, creates history entry | ✅ `test_true_up_updates_balance`               |
 | SP       | PATCH `/accounts/<id>/true-up` -- no current period → 400                | ✅ `test_true_up_no_current_period`             |
-| SP       | PATCH `/accounts/<id>/inline-anchor` -- invalid amount → 400             | ✅ `test_inline_anchor_invalid_amount`          |
-| IDOR     | PATCH `/accounts/<id>/inline-anchor` -- other user's account → 404       | ✅ `test_inline_anchor_other_users_account`     |
 | IDOR     | PATCH `/accounts/<id>/true-up` -- other user's account → 404             | ✅ `test_true_up_other_users_account`           |
 | FIN      | True-up creates `AccountAnchorHistory` audit record                     | ✅ `test_true_up_updates_balance` (combined)    |
 

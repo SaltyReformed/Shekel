@@ -40,10 +40,12 @@ Module map:
   ``compute_debt_summary`` (the narrow debt-card producer behind the
   dashboard's debt track; deep-hunt #82),
   ``compute_debt_principal_progress`` (the narrow principal-paid fraction
-  producer behind the dashboard's debt track marker; Loop B B-1), and
+  producer behind the dashboard's debt track marker; Loop B B-1),
   ``compute_goal_progress`` (the narrow savings-goal producer behind the
-  dashboard's savings tracks).  The dashboard consumers all live in
-  ``dashboard_pulse_service.compute_tracks_section``.
+  dashboard's savings tracks), and ``compute_account_balance_cell`` (the
+  narrow per-account producer behind the cockpit's inline-edit Cancel /
+  Escape revert, ``savings.cockpit_balance``).  The dashboard tracks
+  consumers all live in ``dashboard_pulse_service.compute_tracks_section``.
 """
 
 # Re-export the public entry points so consumers that
@@ -51,6 +53,7 @@ Module map:
 # ``app/routes/savings.py`` and ``dashboard_service``) resolve
 # them without an edit.
 from app.services.savings_dashboard_service._orchestrator import (
+    compute_account_balance_cell,
     compute_dashboard_data,
     compute_debt_principal_progress,
     compute_debt_summary,
@@ -58,6 +61,7 @@ from app.services.savings_dashboard_service._orchestrator import (
 )
 
 __all__ = [
+    "compute_account_balance_cell",
     "compute_dashboard_data",
     "compute_debt_principal_progress",
     "compute_debt_summary",

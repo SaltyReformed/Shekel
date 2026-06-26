@@ -88,12 +88,28 @@ def _create_other_user_account():
 
 
 class TestAccountList:
-    """Tests for GET /accounts."""
+    """Tests for GET /accounts (the retired table is now a redirect, P4)."""
 
-    def test_list_accounts_renders(self, app, auth_client, seed_user):
-        """GET /accounts renders the accounts page with the user's accounts."""
+    def test_accounts_url_redirects_to_cockpit(self, app, auth_client, seed_user):
+        """GET /accounts 302-redirects to the Net Worth Cockpit.
+
+        Loop B P4 retired the standalone /accounts management table; the
+        endpoint is kept only as a permanent redirect to savings.dashboard
+        so old bookmarks resolve and the unauthenticated-redirect contract
+        stays green.  No list page is rendered here anymore.
+        """
         with app.app_context():
             response = auth_client.get("/accounts")
+
+            assert response.status_code == 302
+            assert response.headers["Location"].endswith("/savings")
+
+    def test_accounts_redirect_lands_on_cockpit_with_accounts(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Following the /accounts redirect shows the user's accounts on the cockpit."""
+        with app.app_context():
+            response = auth_client.get("/accounts", follow_redirects=True)
 
             assert response.status_code == 200
             assert b"Checking" in response.data
@@ -107,6 +123,42 @@ class TestAccountList:
             assert b'name="name"' in response.data
             assert b'name="anchor_balance"' in response.data
             assert b"New Account" in response.data
+
+
+class TestEditFormDangerZone:
+    """The shared edit form hosts hard-delete in a Danger Zone (Loop B P4).
+
+    P4 retired the /accounts table that used to expose hard-delete; the
+    developer ruling (audit decision 12) relocated it to the edit form so
+    every account type can be deleted from one shared surface, including
+    Savings and Credit Card, which have no per-type detail page.
+    """
+
+    def test_edit_form_has_delete_danger_zone(self, app, auth_client, seed_user):
+        """GET /accounts/<id>/edit renders a hard-delete form in the Danger Zone."""
+        with app.app_context():
+            account_id = seed_user["account"].id
+            resp = auth_client.get(f"/accounts/{account_id}/edit")
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Danger Zone" in html
+            # The delete form posts to the hard-delete route for THIS account.
+            assert f"/accounts/{account_id}/hard-delete" in html
+
+    def test_create_form_has_no_danger_zone(self, app, auth_client, seed_user):
+        """GET /accounts/new (create mode) shows no delete affordance.
+
+        The Danger Zone is gated on ``{% if account %}`` so it never appears
+        while creating a brand-new account.
+        """
+        with app.app_context():
+            resp = auth_client.get("/accounts/new")
+
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Danger Zone" not in html
+            assert "hard-delete" not in html
 
 
 class TestAccountCreate:
@@ -407,92 +459,6 @@ class TestAccountArchive:
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
 
 
-class TestInlineAnchor:
-    """Tests for HTMX inline anchor balance endpoints on accounts list."""
-
-    def test_inline_anchor_update(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /accounts/<id>/inline-anchor updates the balance."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "2500.00"},
-            )
-
-            assert response.status_code == 200
-
-            acct = db.session.get(Account, account_id)
-            assert acct.current_anchor_balance == Decimal("2500.00")
-
-    def test_inline_anchor_form_returns_partial(
-        self, app, auth_client, seed_user
-    ):
-        """GET /accounts/<id>/inline-anchor-form returns the edit partial."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.get(
-                f"/accounts/{account_id}/inline-anchor-form"
-            )
-
-            assert response.status_code == 200
-            assert b'name="anchor_balance"' in response.data
-            assert b"1000.00" in response.data
-
-    def test_inline_anchor_display_returns_partial(
-        self, app, auth_client, seed_user
-    ):
-        """GET /accounts/<id>/inline-anchor-display returns the display partial."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.get(
-                f"/accounts/{account_id}/inline-anchor-display"
-            )
-
-            assert response.status_code == 200
-            assert b"$1,000.00" in response.data
-            assert b"font-mono" in response.data
-
-    def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):
-        """PATCH /accounts/<id>/inline-anchor with invalid amount returns 400 with errors JSON."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "not-a-number"},
-            )
-
-            assert response.status_code == 400
-            body = response.get_json()
-            assert "errors" in body, "400 response must contain validation errors"
-
-    def test_inline_anchor_other_users_account(
-        self, app, auth_client, seed_user
-    ):
-        """PATCH /accounts/<id>/inline-anchor for another user's account returns 404.
-
-        IDOR write-path: must verify the anchor balance was not changed.
-        """
-        with app.app_context():
-            other = _create_other_user_account()
-            orig_balance = other["account"].current_anchor_balance
-
-            response = auth_client.patch(
-                f"/accounts/{other['account'].id}/inline-anchor",
-                data={"anchor_balance": "9999.00"},
-            )
-
-            assert response.status_code == 404
-
-            # Prove no state change occurred.
-            db.session.expire_all()
-            db.session.refresh(other["account"])
-            assert other["account"].current_anchor_balance == orig_balance
-
-
 class TestTrueUp:
     """Tests for the grid anchor balance true-up endpoints."""
 
@@ -581,6 +547,49 @@ class TestTrueUp:
             db.session.expire_all()
             db.session.refresh(other["account"])
             assert other["account"].current_anchor_balance == orig_balance
+
+    def test_true_up_accounts_revert_skips_as_of_oob(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """With ?revert=accounts, the success response omits the as-of OOB.
+
+        The cockpit is multi-card and has no singleton ``#anchor-as-of``
+        element, and it re-syncs the whole region via ``balanceChanged``, so
+        the out-of-band "as of" snippet (which would orphan-target) is
+        dropped.  The ``balanceChanged`` trigger still fires.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=accounts",
+                data={"anchor_balance": "3210.00"},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+            body = response.data.decode()
+            assert 'id="anchor-as-of"' not in body
+            assert 'hx-swap-oob="true"' not in body
+
+    def test_true_up_grid_default_includes_as_of_oob(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The grid / default success response keeps the #anchor-as-of OOB.
+
+        The single-account grid and dashboard surfaces have an
+        ``#anchor-as-of`` caption to update, so the OOB snippet stays -- the
+        cockpit skip must not regress them.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={"anchor_balance": "3211.00"},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+            body = response.data.decode()
+            assert 'id="anchor-as-of"' in body
+            assert 'hx-swap-oob="true"' in body
 
 
 class TestTrueUpSameDayDuplicate:
@@ -1687,7 +1696,9 @@ class TestAccountCreationRedirects:
     """Tests for post-creation redirect routing.
 
     Parameterized account types redirect to their configuration pages
-    with setup=1.  Non-parameterized types redirect to the accounts list.
+    with setup=1.  Non-parameterized types redirect to the unified
+    accounts cockpit (savings.dashboard), the retired /accounts table's
+    successor (Loop B P4).
     """
 
     def test_hysa_creation_redirects_to_detail(
@@ -1829,10 +1840,10 @@ class TestAccountCreationRedirects:
             assert "/investment" in location
             assert "setup=1" in location
 
-    def test_checking_creation_redirects_to_accounts_list(
+    def test_checking_creation_redirects_to_cockpit(
         self, app, auth_client, seed_user,
     ):
-        """Checking account creation redirects to accounts list without setup param."""
+        """Checking (non-parameterized) creation redirects to the cockpit, no setup param."""
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking"
@@ -1846,13 +1857,13 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert location.endswith("/accounts")
+            assert location.endswith("/savings")
             assert "setup" not in location
 
-    def test_savings_creation_redirects_to_accounts_list(
+    def test_savings_creation_redirects_to_cockpit(
         self, app, auth_client, seed_user,
     ):
-        """Plain savings account creation redirects to accounts list."""
+        """Plain savings account creation redirects to the cockpit."""
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings"
@@ -1866,7 +1877,7 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert location.endswith("/accounts")
+            assert location.endswith("/savings")
             assert "setup" not in location
 
     def test_student_loan_creation_redirects_to_loan(
@@ -2162,7 +2173,7 @@ class TestInvestmentDispatch:
         self, app, auth_client, seed_user,
     ):
         """An account type with has_parameters=False gets no params and
-        redirects to the accounts list."""
+        redirects to the cockpit (savings.dashboard)."""
         with app.app_context():
             # Savings has has_parameters=False.
             savings_type = db.session.query(AccountType).filter_by(
@@ -2178,7 +2189,7 @@ class TestInvestmentDispatch:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/accounts" in location
+            assert "/savings" in location
             assert "setup" not in location
 
             acct = db.session.query(Account).filter_by(
@@ -3638,69 +3649,6 @@ class TestTrueUpStaleForm:
             assert acct.version_id == v0 + 1
 
 
-class TestInlineAnchorStaleForm:
-    """``inline_anchor_update`` (PATCH /accounts/<id>/inline-anchor) optimistic locking."""
-
-    def test_inline_anchor_succeeds_with_matching_version(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A matching ``version_id`` updates the balance and bumps the counter."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            v0 = db.session.get(Account, acct_id).version_id
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/inline-anchor",
-                data={
-                    "anchor_balance": "2500.00",
-                    "version_id": str(v0),
-                },
-            )
-
-            assert response.status_code == 200
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == Decimal("2500.00")
-            assert acct.version_id == v0 + 1
-
-    def test_inline_anchor_returns_409_on_stale_version(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A stale ``version_id`` returns 409 with the conflict partial."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-
-            _bump_account_version_outside_session(acct_id)
-            db.session.expire_all()
-            balance_before = db.session.get(Account, acct_id).current_anchor_balance
-            history_count_before = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            )
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/inline-anchor",
-                data={
-                    "anchor_balance": "9999.99",
-                    "version_id": str(stale_version),
-                },
-            )
-
-            assert response.status_code == 409
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert "text-warning" in body
-
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == balance_before
-            assert (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            ) == history_count_before
-
-
 class TestUpdateAccountStaleForm:
     """``update_account`` (POST /accounts/<id>) optimistic locking on the full edit form."""
 
@@ -4055,22 +4003,77 @@ class TestAnchorTemplatesEmitVersionPin:
                 in body
             )
 
-    def test_inline_anchor_form_includes_version_pin(
+    def test_anchor_form_accounts_revert_targets_cockpit_balance(
         self, app, auth_client, seed_user,
     ):
-        """GET /accounts/<id>/inline-anchor-form ships ``version_id`` to the client."""
+        """With ?revert=accounts, the editor reverts to the cockpit card cell.
+
+        Opened from the Net Worth Cockpit's per-card balance, Cancel /
+        Escape must restore THAT card's cell (``savings.cockpit_balance``)
+        rather than the grid display cell -- the multi-card analog of the
+        dashboard ``revert=dashboard`` round-trip.
+        """
         with app.app_context():
             acct_id = seed_user["account"].id
-            current_version = db.session.get(Account, acct_id).version_id
-
             response = auth_client.get(
-                f"/accounts/{acct_id}/inline-anchor-form"
+                f"/accounts/{acct_id}/anchor-form?revert=accounts"
             )
-
             assert response.status_code == 200
             body = response.data.decode()
-            assert 'name="version_id"' in body
-            assert f'value="{current_version}"' in body
+            cell_url = f"/savings/cockpit/{acct_id}/balance"
+            assert f'hx-get="{cell_url}"' in body
+            assert f'data-revert-url="{cell_url}"' in body
+            assert f"/accounts/{acct_id}/anchor-display" not in body
+
+    def test_accounts_anchor_form_patch_url_threads_revert(
+        self, app, auth_client, seed_user,
+    ):
+        """The cockpit edit form's hx-patch threads ``revert=accounts``.
+
+        So a 409 conflict response can re-render the conflict cell with the
+        cockpit retry target rather than stranding the card on the grid
+        display cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=accounts"
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert (
+                f'hx-patch="/accounts/{acct_id}/true-up?revert=accounts"'
+                in body
+            )
+
+    def test_accounts_conflict_cell_retry_opener_carries_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The cockpit 409 conflict cell reopens in the cockpit surface.
+
+        A stale-version PATCH carrying ``?revert=accounts`` returns the
+        conflict cell whose retry opener must reopen ``anchor-form`` WITH
+        ``revert=accounts``, so the cockpit card never strands on the grid.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+            _bump_account_version_outside_session(acct_id)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=accounts",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+            assert response.status_code == 409
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
+                in body
+            )
 
     def test_account_edit_form_includes_version_pin(
         self, app, auth_client, seed_user,

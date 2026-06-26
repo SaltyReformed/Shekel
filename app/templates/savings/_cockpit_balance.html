@@ -1,0 +1,41 @@
+{% from "_money_macros.html" import money %}
+{# Cockpit per-card balance cell: the click-to-edit anchor control for one
+   account in the Net Worth Cockpit grid.  Rendered both inside the grid
+   (savings/_cockpit.html) and standalone by savings.cockpit_balance (the
+   Cancel / Escape and 409-retry revert target).
+
+   Context: account (Account), current_balance (Decimal | None -- the
+   resolver as-of-today balance the card shows; None when no current
+   period resolves a figure, rendered as a non-editable dash).
+
+   Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
+   account-scoped because the cockpit is multi-card):
+     * Clicking (or Enter / Space via the global data-keyboard-activate
+       handler in app.js) swaps in the shared grid anchor editor
+       (accounts.anchor_form?revert=accounts), which REPLACES this cell.
+       Cancel / Escape revert here via savings.cockpit_balance; a save
+       fires balanceChanged and the enclosing #cockpit-section re-renders,
+       re-syncing this cell with the hero and the group subtotals.
+     * The editor edits the RAW anchor balance; this cell DISPLAYS the
+       resolver current_balance.  They re-sync on the section refresh --
+       the same display-vs-edit split the dashboard hero uses.
+   The id is account-scoped so N cards never collide, and the cell is
+   raised above the card's .stretched-link (accounts.css) so the click
+   opens the editor instead of following the card link. #}
+{% if current_balance is not none %}
+<div id="acct-balance-{{ account.id }}"
+     class="acct-card__num acct-card__num--edit font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}"
+     hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='accounts') }}"
+     hx-target="this"
+     hx-swap="outerHTML"
+     role="button"
+     tabindex="0"
+     data-keyboard-activate
+     aria-label="{{ account.name }} balance: {{ money(current_balance, cents=false) }}. Click to edit."
+     title="Click to update balance">
+  {{ money(current_balance) }}
+  <i class="bi bi-pencil-square acct-card__edit-icon" aria-hidden="true"></i>
+</div>
+{% else %}
+<div class="acct-card__num font-mono">--</div>
+{% endif %}

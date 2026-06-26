@@ -114,9 +114,14 @@ class TestAccountsIsolation:
     def test_user_a_manage_accounts(
         self, app, auth_client, seed_full_user_data, seed_full_second_user_data
     ):
-        """User A's accounts page does not contain User B's account IDs."""
+        """User A's accounts cockpit does not contain User B's account IDs.
+
+        The /accounts management table was retired in Loop B P4; per-account
+        management (incl. the Edit link) now lives on the cockpit cards at
+        savings.dashboard, so the isolation check moved there.
+        """
         with app.app_context():
-            response = auth_client.get("/accounts")
+            response = auth_client.get("/savings")
             assert response.status_code == 200
 
             # Positive: User A's account edit URL is present.
@@ -135,9 +140,14 @@ class TestAccountsIsolation:
     def test_user_b_manage_accounts(
         self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
     ):
-        """User B's accounts page does not contain User A's account IDs."""
+        """User B's accounts cockpit does not contain User A's account IDs.
+
+        The /accounts management table was retired in Loop B P4; per-account
+        management (incl. the Edit link) now lives on the cockpit cards at
+        savings.dashboard, so the isolation check moved there.
+        """
         with app.app_context():
-            response = second_auth_client.get("/accounts")
+            response = second_auth_client.get("/savings")
             assert response.status_code == 200
 
             # Positive: User B's account edit URL is present.

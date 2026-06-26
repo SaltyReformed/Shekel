@@ -8,7 +8,6 @@ and deleting savings goals.
 
 import json
 import logging
-from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -55,26 +54,26 @@ def _serialize_net_worth_chart(net_worth_series: dict) -> str:
     :mod:`app.services.savings_dashboard_service._net_worth`) to ``float``
     arrays and the period descriptors' ``end_date`` to ``%b %-d`` labels.
 
-    ``actual_count`` is the number of leading points whose period has
-    already ended (``end_date <= today``): the template uses it to render
-    those points as realized history and the remainder as projection,
-    the same actual-vs-projected split the dashboard pulse chart draws.
+    ``current_index`` (from
+    :func:`~app.services.savings_dashboard_service._net_worth.build_trend_periods`,
+    passed straight through) is the position of the current period within
+    the series: the leading ``current_index`` points are the honest history
+    tail the client draws solid, and the rest are the forward projection it
+    draws dashed and lighter from a "Today" marker at the boundary.  It is
+    also the anchor the client slices the 6 / 13 / 26 / All forward horizon
+    from, always keeping the full history tail.
 
     Args:
         net_worth_series: The ``net_worth["series"]`` dict, with keys
             ``periods`` (list of ``{end_date, period_index}``), ``net``,
-            ``assets``, and ``liabilities``.
+            ``assets``, ``liabilities``, and ``current_index``.
 
     Returns:
         A JSON string ``{"labels": [str], "net": [float], "assets":
-        [float], "liabilities": [float], "actual_count": int}`` for the
+        [float], "liabilities": [float], "current_index": int}`` for the
         ``data-chart`` attribute.
     """
-    today = date.today()
     periods = net_worth_series["periods"]
-    actual_count = sum(
-        1 for point in periods if point["end_date"] <= today
-    )
     return json.dumps({
         "labels": [
             point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
@@ -85,8 +84,89 @@ def _serialize_net_worth_chart(net_worth_series: dict) -> str:
         "liabilities": [
             float(value) for value in net_worth_series["liabilities"]
         ],
-        "actual_count": actual_count,
+        "current_index": net_worth_series["current_index"],
     })
+
+
+def _serialize_allocation_bar(allocation: dict) -> dict:
+    """Add each allocation segment's diverging-bar width percentage.
+
+    The presentation boundary for the allocation bar: the only place
+    ``float`` enters (each segment's ``value`` stays ``Decimal`` for the
+    money macro).  Both sides scale to one shared maximum --
+    ``max(total assets, total liabilities)`` -- so the larger side fills its
+    half of the bar and the smaller reads proportionally shorter, making the
+    net-worth gap (the difference in extents) legible.  Each segment's width
+    is then a percentage of its half: ``value / scale * 100``.
+
+    Args:
+        allocation: The producer dict from
+            :func:`~app.services.savings_dashboard_service._net_worth.compute_allocation`
+            (``{"assets": [...], "liabilities": [...]}``, ``Decimal``
+            values).
+
+    Returns:
+        The same structure with a ``pct`` (``float`` 0-100) added to each
+        segment; all ``pct`` are ``0.0`` when both sides are empty (scale
+        zero), so the template renders an empty bar rather than dividing by
+        zero.
+    """
+    asset_total = sum(seg["value"] for seg in allocation["assets"])
+    liability_total = sum(seg["value"] for seg in allocation["liabilities"])
+    scale = max(asset_total, liability_total)
+
+    def _with_pct(segments: list[dict]) -> list[dict]:
+        return [
+            {
+                **seg,
+                "pct": float(seg["value"] / scale * 100) if scale > 0 else 0.0,
+            }
+            for seg in segments
+        ]
+
+    return {
+        "assets": _with_pct(allocation["assets"]),
+        "liabilities": _with_pct(allocation["liabilities"]),
+    }
+
+
+# Sparkline SVG geometry: the normalized polyline viewBox the cards draw in.
+_SPARK_VIEW_W = 100
+_SPARK_VIEW_H = 28
+
+
+def _serialize_sparklines(sparklines: dict) -> dict:
+    """Normalize each account's sparkline series to an SVG polyline string.
+
+    The presentation boundary for the per-account sparklines: the only place
+    ``float`` enters for them.  A sparkline is a SHAPE, not a value (the
+    money figures are rendered by the macro), so this maps each series to
+    evenly-spaced x and a y inverted into the ``_SPARK_VIEW_W`` x
+    ``_SPARK_VIEW_H`` viewBox (SVG y grows downward, so a rising balance
+    rises on screen).  The producer only passes informative series (spread
+    above a positive floor), so ``max != min`` and there is no
+    divide-by-zero.
+
+    Args:
+        sparklines: ``{account_id: [Decimal series]}`` from
+            :func:`~app.services.savings_dashboard_service._net_worth.compute_sparklines`.
+
+    Returns:
+        ``{account_id: "x0,y0 x1,y1 ..."}`` -- the ``<polyline>`` points for
+        each account's sparkline.
+    """
+    points_by_id = {}
+    for account_id, series in sparklines.items():
+        low = float(min(series))
+        span = float(max(series)) - low
+        last = len(series) - 1
+        coords = []
+        for index, value in enumerate(series):
+            x = (index / last) * _SPARK_VIEW_W if last else 0.0
+            y = _SPARK_VIEW_H - ((float(value) - low) / span) * _SPARK_VIEW_H
+            coords.append(f"{x:.2f},{y:.2f}")
+        points_by_id[account_id] = " ".join(coords)
+    return points_by_id
 
 # Fields allowed in goal updates.  Income-relative fields are included
 # so mode changes propagate correctly.
@@ -156,28 +236,113 @@ def _clean_goal_form_data(form_data):
     return data
 
 
+def _cockpit_context(user_id: int) -> dict:
+    """Build the cockpit render context: dashboard data + the chart JSON.
+
+    The single producer + serialization prologue shared by the full-page
+    ``dashboard`` render and the ``cockpit_section`` partial re-render, so
+    both feed the template the identical contract (the money-precise
+    ``net_worth`` figures, the ``net_worth_chart_json`` the trend canvas
+    reads, the ``allocation`` segments' diverging-bar widths, and the
+    ``sparkline_points`` SVG polylines).  ``float`` is applied only in the
+    three serializers (:func:`_serialize_net_worth_chart`, the Chart.js
+    boundary; :func:`_serialize_allocation_bar`, the allocation-width
+    boundary; and :func:`_serialize_sparklines`, the sparkline-geometry
+    boundary); every other figure stays ``Decimal``.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        The ``compute_dashboard_data`` dict with ``net_worth_chart_json``
+        added, ``allocation`` replaced by its width-annotated form, and
+        ``sparkline_points`` (``{account_id: svg points}``) added.
+    """
+    ctx = savings_dashboard_service.compute_dashboard_data(user_id)
+    ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
+        ctx["net_worth"]["series"]
+    )
+    ctx["allocation"] = _serialize_allocation_bar(ctx["allocation"])
+    ctx["sparkline_points"] = _serialize_sparklines(ctx["sparklines"])
+    return ctx
+
+
 @savings_bp.route("/savings")
 @login_required
 @require_owner
 def dashboard():
-    """Savings dashboard: account balances, goals, and emergency fund metrics.
+    """Savings dashboard: the Net Worth Cockpit, goals, and emergency fund.
 
-    Net-worth cockpit region (Loop B Phase 1): the producer hands back the
-    money-precise ``net_worth`` figures (today totals + change-this-period
-    + the forward trend series); the trend series is serialized to a
-    Chart.js JSON string here at the route boundary (the only place
-    ``float`` is applied) and exposed as ``net_worth_chart_json``, while
-    the ``Decimal`` figures pass through to the template unchanged.  The
-    template rebuild that renders this data is a later phase; the data is
-    made available now without changing the existing rendered output.
+    Renders the full page.  The cockpit region (net-worth hero, the
+    account grid, and the home-equity cards) is wrapped in
+    ``#cockpit-section`` and re-renders on ``balanceChanged`` via
+    :func:`cockpit_section`; the savings goals, emergency-fund coverage,
+    and archived list below it are page-load-only.  The shared context
+    (including the serialized ``net_worth_chart_json``) comes from
+    :func:`_cockpit_context`.
     """
-    ctx = savings_dashboard_service.compute_dashboard_data(current_user.id)
-    net_worth_chart_json = _serialize_net_worth_chart(ctx["net_worth"]["series"])
     return render_template(
-        "savings/dashboard.html",
-        net_worth_chart_json=net_worth_chart_json,
-        **ctx,
+        "savings/dashboard.html", **_cockpit_context(current_user.id),
     )
+
+
+@savings_bp.route("/savings/cockpit")
+@login_required
+@require_owner
+def cockpit_section():
+    """HTMX partial: re-render the Net Worth Cockpit region on balanceChanged.
+
+    The single ``balanceChanged from:body`` swap target for the cockpit's
+    ``#cockpit-section`` (the net-worth hero + chips + trend, the account
+    grid with its group subtotals and the debt summary, and the
+    home-equity cards), so an inline balance edit re-syncs every
+    balance-derived figure in that region at once.  Re-renders
+    ``savings/_cockpit.html`` with the same :func:`_cockpit_context` the
+    page uses, so the swapped-in markup reads the identical contract.
+
+    Non-HTMX requests redirect to the dashboard page (the section is a
+    fragment, not a standalone page), matching ``dashboard.pulse_section``.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("savings.dashboard"))
+
+    return render_template(
+        "savings/_cockpit.html", **_cockpit_context(current_user.id),
+    )
+
+
+@savings_bp.route("/savings/cockpit/<int:account_id>/balance")
+@login_required
+@require_owner
+def cockpit_balance(account_id):
+    """HTMX partial: re-render one account's cockpit balance cell.
+
+    The Cancel / Escape (and 409-conflict retry) revert target for the
+    cockpit's per-card inline anchor editor: ``accounts._anchor_revert_url``
+    maps the editor's ``revert=accounts`` token here, mirroring how
+    ``revert=dashboard`` maps to ``dashboard.balance_section``.  Renders
+    ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>`` cell the
+    editor replaced -- with the resolver ``current_balance`` from the
+    narrow :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
+    producer, so the reverted cell shows the exact figure the grid showed.
+
+    The producer is the IDOR + active gate (as ``balance_section``'s
+    producer is for the dashboard): it returns ``None`` -- a 404 -- for an
+    account that is not among the user's active accounts (not found, not
+    owned, or archived between page load and the revert), satisfying the
+    404-for-both security rule.  Non-HTMX requests redirect to the
+    dashboard page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("savings.dashboard"))
+
+    cell = savings_dashboard_service.compute_account_balance_cell(
+        current_user.id, account_id,
+    )
+    if cell is None:
+        abort(404)
+
+    return render_template("savings/_cockpit_balance.html", **cell)
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
