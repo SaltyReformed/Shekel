@@ -136,8 +136,12 @@ def build_account_net_worth_maps(
             :func:`app.services.net_worth_kernel.generate_debt_schedules`.
 
     Returns:
-        A list of ``{balances: OrderedDict[int, Decimal], is_liability:
-        bool}`` dicts, one per account that has a dense map.
+        A list of ``{account_id: int, balances: OrderedDict[int, Decimal],
+        is_liability: bool}`` dicts, one per account that has a dense map.
+        The ``account_id`` lets the per-account sparkline producer
+        (:func:`compute_sparklines`) reuse these maps, so the sparklines and
+        the net-worth math read one projection; the net-worth reducers
+        ignore it.
     """
     if scenario is None:
         return []
@@ -154,6 +158,7 @@ def build_account_net_worth_maps(
         if balances is None:
             continue
         result.append({
+            "account_id": account.id,
             "balances": balances,
             "is_liability": _is_liability_account(account),
         })
@@ -617,3 +622,74 @@ def compute_allocation(grouped_accounts, group_subtotals) -> dict:
         else:
             assets.append({"label": label, "value": value})
     return {"assets": assets, "liabilities": liabilities}
+
+
+# Per-account sparkline window + the "informative" thresholds (rebuild
+# decision: a sparkline only where it reads as a trend, else the figure +
+# its projected line).
+_SPARKLINE_PERIODS = 13                       # forward points (~6 months)
+_SPARKLINE_MIN_POINTS = 4                      # fewer can't read as a trend
+_SPARKLINE_REL_THRESHOLD = Decimal("0.005")   # 0.5% of the account's magnitude
+_SPARKLINE_ABS_FLOOR = Decimal("1.00")        # never informative under $1 spread
+
+
+def _is_informative(series: list[Decimal]) -> bool:
+    """Return whether a sparkline series reads as a trend worth drawing.
+
+    Informative means at least :data:`_SPARKLINE_MIN_POINTS` points AND a
+    max-min spread above ``max(_SPARKLINE_ABS_FLOOR, _SPARKLINE_REL_THRESHOLD
+    * the account's magnitude)``.  So a flat account (checking with no
+    projected movement, a flat-carried Property) is omitted -- its card shows
+    the figure + projected line rather than a deceptively flat line -- while
+    a trending one (a loan amortizing down, an investment growing) is drawn.
+    The relative threshold keeps the test scale-free: a $200 wobble is noise
+    on a $400k mortgage but a real move on a $2k account.
+
+    Args:
+        series: The forward balance series (``Decimal``) for one account.
+
+    Returns:
+        ``True`` when the series has enough points and enough variation.
+    """
+    if len(series) < _SPARKLINE_MIN_POINTS:
+        return False
+    spread = max(series) - min(series)
+    magnitude = max((abs(value) for value in series), default=ZERO)
+    threshold = max(_SPARKLINE_ABS_FLOOR, _SPARKLINE_REL_THRESHOLD * magnitude)
+    return spread > threshold
+
+
+def compute_sparklines(
+    account_maps: list[dict], forward_periods: list[PayPeriod],
+) -> dict[int, list[Decimal]]:
+    """Build each informative account's forward sparkline series.
+
+    Reuses the dense per-account balance maps already built for the
+    net-worth trend (:func:`build_account_net_worth_maps`), so the sparkline
+    and the net-worth math read ONE projection rather than two that could
+    drift.  Slices each account's forward window (up to
+    :data:`_SPARKLINE_PERIODS` points from the current period) and keeps only
+    the accounts whose window is informative (:func:`_is_informative`); a
+    flat account is omitted so its card falls back to the figure + projected
+    line.
+
+    Args:
+        account_maps: The dense maps from
+            :func:`build_account_net_worth_maps`, each carrying
+            ``account_id`` and ``balances``.
+        forward_periods: The forward window (current period onward),
+            chronological.
+
+    Returns:
+        ``{account_id: [Decimal, ...]}`` -- the forward balance series for
+        each informative account; empty when none qualify.  The route
+        normalizes each series to SVG geometry.
+    """
+    window = forward_periods[:_SPARKLINE_PERIODS]
+    result: dict[int, list[Decimal]] = {}
+    for data in account_maps:
+        balances = data["balances"]
+        series = [balances[p.id] for p in window if p.id in balances]
+        if _is_informative(series):
+            result[data["account_id"]] = series
+    return result

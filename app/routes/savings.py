@@ -129,6 +129,45 @@ def _serialize_allocation_bar(allocation: dict) -> dict:
         "liabilities": _with_pct(allocation["liabilities"]),
     }
 
+
+# Sparkline SVG geometry: the normalized polyline viewBox the cards draw in.
+_SPARK_VIEW_W = 100
+_SPARK_VIEW_H = 28
+
+
+def _serialize_sparklines(sparklines: dict) -> dict:
+    """Normalize each account's sparkline series to an SVG polyline string.
+
+    The presentation boundary for the per-account sparklines: the only place
+    ``float`` enters for them.  A sparkline is a SHAPE, not a value (the
+    money figures are rendered by the macro), so this maps each series to
+    evenly-spaced x and a y inverted into the ``_SPARK_VIEW_W`` x
+    ``_SPARK_VIEW_H`` viewBox (SVG y grows downward, so a rising balance
+    rises on screen).  The producer only passes informative series (spread
+    above a positive floor), so ``max != min`` and there is no
+    divide-by-zero.
+
+    Args:
+        sparklines: ``{account_id: [Decimal series]}`` from
+            :func:`~app.services.savings_dashboard_service._net_worth.compute_sparklines`.
+
+    Returns:
+        ``{account_id: "x0,y0 x1,y1 ..."}`` -- the ``<polyline>`` points for
+        each account's sparkline.
+    """
+    points_by_id = {}
+    for account_id, series in sparklines.items():
+        low = float(min(series))
+        span = float(max(series)) - low
+        last = len(series) - 1
+        coords = []
+        for index, value in enumerate(series):
+            x = (index / last) * _SPARK_VIEW_W if last else 0.0
+            y = _SPARK_VIEW_H - ((float(value) - low) / span) * _SPARK_VIEW_H
+            coords.append(f"{x:.2f},{y:.2f}")
+        points_by_id[account_id] = " ".join(coords)
+    return points_by_id
+
 # Fields allowed in goal updates.  Income-relative fields are included
 # so mode changes propagate correctly.
 _GOAL_UPDATE_FIELDS = frozenset({
@@ -204,23 +243,27 @@ def _cockpit_context(user_id: int) -> dict:
     ``dashboard`` render and the ``cockpit_section`` partial re-render, so
     both feed the template the identical contract (the money-precise
     ``net_worth`` figures, the ``net_worth_chart_json`` the trend canvas
-    reads, and the ``allocation`` segments' diverging-bar widths).  ``float``
-    is applied only in the two serializers (:func:`_serialize_net_worth_chart`,
-    the Chart.js boundary, and :func:`_serialize_allocation_bar`, the
-    allocation-width boundary); every other figure stays ``Decimal``.
+    reads, the ``allocation`` segments' diverging-bar widths, and the
+    ``sparkline_points`` SVG polylines).  ``float`` is applied only in the
+    three serializers (:func:`_serialize_net_worth_chart`, the Chart.js
+    boundary; :func:`_serialize_allocation_bar`, the allocation-width
+    boundary; and :func:`_serialize_sparklines`, the sparkline-geometry
+    boundary); every other figure stays ``Decimal``.
 
     Args:
         user_id: Integer ID of the current user.
 
     Returns:
         The ``compute_dashboard_data`` dict with ``net_worth_chart_json``
-        added and ``allocation`` replaced by its width-annotated form.
+        added, ``allocation`` replaced by its width-annotated form, and
+        ``sparkline_points`` (``{account_id: svg points}``) added.
     """
     ctx = savings_dashboard_service.compute_dashboard_data(user_id)
     ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
         ctx["net_worth"]["series"]
     )
     ctx["allocation"] = _serialize_allocation_bar(ctx["allocation"])
+    ctx["sparkline_points"] = _serialize_sparklines(ctx["sparklines"])
     return ctx
 
 

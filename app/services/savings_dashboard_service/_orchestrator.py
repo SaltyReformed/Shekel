@@ -30,6 +30,7 @@ from app.services.savings_dashboard_service._net_worth import (
     compute_net_worth_series,
     compute_net_worth_today,
     compute_property_equity,
+    compute_sparklines,
 )
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
@@ -378,16 +379,18 @@ def _compute_net_worth_section(
     params: _AccountParams,
     account_data: list[dict],
 ) -> dict:
-    """Assemble the cockpit's net-worth region (Loop B Phase 1).
+    """Assemble the cockpit's net-worth region + the per-account sparklines.
 
-    Combines the today figures (from the already-projected
-    ``account_data``), the change-this-period delta, and the net-worth
-    trend series (an honest history tail plus the forward projection, from
-    :func:`build_trend_periods`) into the single ``net_worth`` context key.
+    One producer over a single build of the dense per-account balance maps
+    (Loop B Phase 1 net worth + slice 3c sparklines): the today figures
+    (from the already-projected ``account_data``), the change-this-period
+    delta, the net-worth trend series (an honest history tail plus the
+    forward projection, from :func:`build_trend_periods`), and the
+    per-account forward sparklines all derive from that one projection so
+    they cannot drift onto two copies of the math.
 
-    The trend series and the change delta both read ONE set of dense
-    per-account balance maps -- built once here over ALL periods (so the
-    entries-aware resolver always has its anchor seed) via
+    The maps are built once here over ALL periods (so the entries-aware
+    resolver always has its anchor seed) via
     :func:`build_account_net_worth_maps`, fed by the shared
     :mod:`app.services.net_worth_kernel` (the same math the year-end
     net-worth trend uses, including the investment growth sub-chain).
@@ -396,7 +399,8 @@ def _compute_net_worth_section(
 
     Degrades gracefully with no current period: the today figures still
     come from ``account_data``, the series is empty (``current_index`` 0),
-    and the change is ``None`` (a missing comparison, not a zero).
+    the change is ``None`` (a missing comparison, not a zero), and the
+    sparklines are empty (no forward window).
 
     Args:
         core: The loaded :class:`_DashboardCoreData` (accounts,
@@ -407,11 +411,14 @@ def _compute_net_worth_section(
             for the page (the source of the today figures).
 
     Returns:
-        dict with ``net_worth``, ``total_assets``, ``total_liabilities``,
-        ``liquid``, ``change_this_period`` (``Decimal`` or ``None``), and
-        ``series`` (the trend dict -- history tail plus forward projection,
-        carrying the ``current_index`` solid/dashed boundary -- with empty
-        lists when there is no current period).
+        ``(net_worth, sparklines)``.  ``net_worth`` is a dict with
+        ``net_worth``, ``total_assets``, ``total_liabilities``, ``liquid``,
+        ``change_this_period`` (``Decimal`` or ``None``), and ``series`` (the
+        trend dict -- history tail plus forward projection, carrying the
+        ``current_index`` solid/dashed boundary -- with empty lists when
+        there is no current period).  ``sparklines`` is ``{account_id:
+        [Decimal, ...]}`` -- the forward series for each informative account,
+        which the route normalizes to SVG geometry.
     """
     today = compute_net_worth_today(account_data)
 
@@ -446,11 +453,21 @@ def _compute_net_worth_section(
         account_maps, core.current_period, core.all_periods, honest_start,
     )
 
+    # Per-account sparklines (slice 3c) reuse these dense maps -- one
+    # projection for the net-worth math AND the card trends.  The forward
+    # window is the same current-period-onward run the trend projects.
+    forward_periods = [
+        p for p in core.all_periods
+        if core.current_period is not None
+        and p.period_index >= core.current_period.period_index
+    ]
+    sparklines = compute_sparklines(account_maps, forward_periods)
+
     return {
         **today,
         "change_this_period": change_this_period,
         "series": series,
-    }
+    }, sparklines
 
 
 def _compute_cockpit_grid_section(
@@ -569,8 +586,12 @@ def compute_dashboard_data(user_id):
         account_data, params.escrow_map, current_breakdown,
     )
 
-    # ── Net-worth cockpit region (Loop B Phase 1) ──────────────
-    net_worth = _compute_net_worth_section(core, params, account_data)
+    # ── Net-worth cockpit region + per-account sparklines ──────
+    # One producer over the build-once dense maps: the net-worth region
+    # (Loop B Phase 1) and the per-account card sparklines (slice 3c).
+    net_worth, sparklines = _compute_net_worth_section(
+        core, params, account_data,
+    )
 
     return {
         "account_data": account_data,
@@ -586,4 +607,5 @@ def compute_dashboard_data(user_id):
         "archived_accounts": _load_archived_accounts(user_id),
         "debt_summary": debt_summary,
         "net_worth": net_worth,
+        "sparklines": sparklines,
     }

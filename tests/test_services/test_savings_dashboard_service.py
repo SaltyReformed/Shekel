@@ -41,6 +41,8 @@ class TestComputeDashboardData:
                 "group_subtotals", "property_equity",
                 # Loop B P3 slice 3b: the diverging allocation bar split.
                 "allocation",
+                # Loop B P3 slice 3c: the per-account card sparklines.
+                "sparklines",
             }
             assert set(result.keys()) == expected_keys
 
@@ -4041,6 +4043,111 @@ class TestComputeAllocation:
 
             assert [s["label"] for s in alloc["assets"]] == ["asset"]
             assert alloc["liabilities"] == []
+
+
+class TestComputeSparklines:
+    """Tests for the conditional per-account sparkline producer."""
+
+    @staticmethod
+    def _period(period_id):
+        """Synthetic PayPeriod stand-in (only ``id`` is read)."""
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        return SimpleNamespace(id=period_id)
+
+    @staticmethod
+    def _map(account_id, balances):
+        """One dense-map entry as build_account_net_worth_maps emits it."""
+        return {
+            "account_id": account_id,
+            "balances": balances,
+            "is_liability": False,
+        }
+
+    def test_trending_account_is_included(self):
+        """An account whose forward balance moves enough gets a series.
+
+        A loan amortizing 10000 -> 8000 over five periods is a 20% spread,
+        far above the 0.5% relative threshold, so it is informative and the
+        full window series is returned.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_sparklines,
+        )
+        periods = [self._period(i) for i in range(1, 6)]
+        account_maps = [self._map(7, {
+            1: Decimal("10000"), 2: Decimal("9500"), 3: Decimal("9000"),
+            4: Decimal("8500"), 5: Decimal("8000"),
+        })]
+
+        result = compute_sparklines(account_maps, periods)
+
+        assert result[7] == [
+            Decimal("10000"), Decimal("9500"), Decimal("9000"),
+            Decimal("8500"), Decimal("8000"),
+        ]
+
+    def test_flat_account_is_excluded(self):
+        """A flat account (zero spread) is omitted -> figure fallback."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_sparklines,
+        )
+        periods = [self._period(i) for i in range(1, 6)]
+        account_maps = [self._map(3, {i: Decimal("5000") for i in range(1, 6)})]
+
+        assert compute_sparklines(account_maps, periods) == {}
+
+    def test_too_few_points_excluded(self):
+        """Fewer than the 4-point minimum cannot read as a trend."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_sparklines,
+        )
+        periods = [self._period(i) for i in range(1, 4)]  # 3 points
+        account_maps = [self._map(9, {
+            1: Decimal("100"), 2: Decimal("200"), 3: Decimal("300"),
+        })]
+
+        assert compute_sparklines(account_maps, periods) == {}
+
+    def test_small_wobble_below_relative_threshold_excluded(self):
+        """A spread under 0.5% of the account's magnitude is not a trend.
+
+        Magnitude ~400,100 -> threshold 0.005 * 400,100 = 2,000.50; the
+        100-wide wobble is below it, so a big account barely moving is
+        treated as flat (the relative threshold keeps the test scale-free).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_sparklines,
+        )
+        periods = [self._period(i) for i in range(1, 6)]
+        account_maps = [self._map(5, {
+            1: Decimal("400000"), 2: Decimal("400050"), 3: Decimal("400100"),
+            4: Decimal("400050"), 5: Decimal("400000"),
+        })]
+
+        assert compute_sparklines(account_maps, periods) == {}
+
+    def test_window_is_capped_to_the_sparkline_period_count(self):
+        """The series is sliced to at most _SPARKLINE_PERIODS forward points.
+
+        With 20 forward periods of a clearly-trending account, the returned
+        series is capped at the 13-period window rather than the full run.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            _SPARKLINE_PERIODS,
+            compute_sparklines,
+        )
+        periods = [self._period(i) for i in range(1, 21)]  # 20 periods
+        balances = {i: Decimal(str(1000 * i)) for i in range(1, 21)}
+        account_maps = [self._map(8, balances)]
+
+        result = compute_sparklines(account_maps, periods)
+
+        assert len(result[8]) == _SPARKLINE_PERIODS
 
 
 class TestPropertyEquityInContext:

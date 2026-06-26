@@ -221,6 +221,21 @@
           {% endwith %}
         </div>
 
+        {# Conditional sparkline (decision 9): an informative account (a
+           loan amortizing, an investment growing -- see compute_sparklines)
+           draws its forward trajectory as a server-normalized SVG polyline
+           ABOVE the secondary line; a flat account omits it and shows just
+           the figure + projected line.  The shape carries no money (the
+           value lives in the secondary line); non-scaling-stroke keeps it
+           crisp under the stretched viewBox. #}
+        {% if ad.account.id in sparkline_points %}
+        <svg class="acct-spark" viewBox="0 0 100 28" preserveAspectRatio="none"
+             role="img" aria-label="{{ ad.account.name }} projected balance trend">
+          <polyline class="acct-spark__line"
+                    points="{{ sparkline_points[ad.account.id] }}"></polyline>
+        </svg>
+        {% endif %}
+
         {% if ad.loan_params is defined and ad.loan_params %}
         <div class="acct-card__secondary">
           Monthly Payment <span class="font-mono">{{ money(ad.monthly_payment) }}</span>

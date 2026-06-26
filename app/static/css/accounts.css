@@ -358,6 +358,28 @@
   color: var(--shekel-text-secondary);
 }
 
+/* Conditional per-account sparkline (decision 9): the account's forward
+   balance trajectory, drawn only where it reads as a trend (the producer
+   filters flat accounts).  preserveAspectRatio="none" stretches the 100x28
+   viewBox to the card width; non-scaling-stroke keeps the line crisp despite
+   the stretch. */
+.acct-spark {
+  display: block;
+  width: 100%;
+  height: 1.5rem;
+  margin: 0.125rem 0 0.0625rem;
+  overflow: visible;
+}
+
+.acct-spark__line {
+  fill: none;
+  stroke: var(--shekel-accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
 /* Raised above the stretched link so they remain independently
    clickable (Loop A card link/edit accessibility refinement). */
 .acct-card__actions {

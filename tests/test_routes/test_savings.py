@@ -3391,6 +3391,34 @@ class TestAllocationBar:
             assert b"nw-alloc__legend" in resp.data
 
 
+class TestSparklines:
+    """Tests for the per-account sparkline SVG-geometry serialization."""
+
+    def test_normalizes_series_to_inverted_svg_polyline(self):
+        """A series maps to evenly-spaced x and an inverted y in the viewBox.
+
+        Three descending points (100 -> 50 -> 0) draw a falling line: the
+        high value sits at the top (y 0) and the low at the bottom (y 28),
+        with x evenly spaced across the 100-wide box.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_sparklines
+        result = _serialize_sparklines({
+            7: [Decimal("100"), Decimal("50"), Decimal("0")],
+        })
+        # low=0, span=100, last=2:
+        #  i0 v100 -> x 0,   y 28 - 28 = 0
+        #  i1 v50  -> x 50,  y 28 - 14 = 14
+        #  i2 v0   -> x 100, y 28 - 0  = 28
+        assert result[7] == "0.00,0.00 50.00,14.00 100.00,28.00"
+
+    def test_empty_sparklines_serialize_to_empty(self):
+        """No informative accounts -> no polylines."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_sparklines
+        assert _serialize_sparklines({}) == {}
+
+
 class TestCockpitSection:
     """Tests for GET /savings/cockpit -- the balanceChanged refresh fragment."""
 
