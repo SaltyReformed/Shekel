@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
+from app.services.net_worth_kernel import DebtSchedule
 from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
@@ -149,7 +150,7 @@ def _assemble_income_result(
 
 def _compute_mortgage_interest(
     year: int,
-    debt_schedules: dict[int, list],
+    debt_schedules: dict[int, DebtSchedule],
 ) -> Decimal:
     """Sum mortgage/loan interest paid during the calendar year.
 
@@ -162,7 +163,8 @@ def _compute_mortgage_interest(
 
     Args:
         year: Calendar year to sum interest for.
-        debt_schedules: account_id -> list[AmortizationRow] mapping
+        debt_schedules: account_id ->
+            :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
             from _generate_debt_schedules().
 
     Returns:
@@ -170,8 +172,8 @@ def _compute_mortgage_interest(
     """
     total_interest = ZERO
 
-    for schedule in debt_schedules.values():
-        for row in schedule:
+    for debt in debt_schedules.values():
+        for row in debt.schedule:
             if row.payment_date.year == year:
                 total_interest += row.interest
 

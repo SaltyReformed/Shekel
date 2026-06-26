@@ -159,45 +159,89 @@ def is_payroll_deduction_funded(
     return account_type_id in funded_ids
 
 
+def balance_from_schedule_at_date(
+    sorted_schedule: list,
+    target: date,
+    current_balance: Decimal,
+) -> Decimal:
+    """Remaining balance after the last scheduled payment on or before *target*.
+
+    Walks *sorted_schedule* (chronological by ``payment_date``) and returns
+    the ``remaining_balance`` of the latest row whose ``payment_date`` is on
+    or before *target*.  When no row qualifies -- *target* precedes the
+    schedule's first payment -- returns *current_balance*.
+
+    *current_balance* (the loan's resolver-derived balance as of today), NOT
+    its original principal, is the correct pre-schedule value: the resolver
+    builds a TODAY-forward schedule from the current balance, so a date before
+    the first upcoming payment is simply at today's balance.  Reporting the
+    origination amount there made the loan leap down from its original
+    principal the moment the first payment landed -- a phantom liability drop,
+    and net-worth jump, of (original principal - current balance).
+
+    The shared primitive behind both :func:`compute_loan_period_balance_map`
+    (per-period) and the year-end debt-progress section (at Jan 1 / Dec 31),
+    so the two cannot drift on how a loan balance is read from a schedule.
+
+    Args:
+        sorted_schedule: Non-empty ``AmortizationRow`` list sorted ascending
+            by ``payment_date``.
+        target: The date to read the balance at.
+        current_balance: The loan's resolver-derived current balance, used
+            when *target* precedes the first scheduled payment.
+
+    Returns:
+        The ``Decimal`` remaining balance at *target*.
+    """
+    balance = current_balance
+    for row in sorted_schedule:
+        if row.payment_date <= target:
+            balance = row.remaining_balance
+        else:
+            break
+    return balance
+
+
 def compute_loan_period_balance_map(
     schedule: list,
     periods: list,
-    original_principal: Decimal,
+    current_balance: Decimal,
 ) -> "OrderedDict[int, Decimal]":
     """Map an amortization schedule to per-period remaining balances.
 
     For each ``PayPeriod`` in *periods*, returns the
     :attr:`~app.services.amortization_engine.AmortizationRow.remaining_balance`
     from the last schedule row whose ``payment_date`` is on or before
-    ``period.end_date``.  Periods entirely before the first scheduled
-    payment return *original_principal*.
+    ``period.end_date``.  Periods before the schedule's first payment -- and
+    every period when the schedule is empty -- return *current_balance*.
 
-    Period-end-keyed is the project's canonical loan-balance
-    derivation as of F-21 / Commit 19 of
-    ``remediation_follow_up_plan.md`` -- it answers "what does the
-    borrower owe AFTER the payment due in this period?"  Pre-F-21,
-    the savings dashboard ran a parallel target-month-first walk over
-    ``state.schedule`` (last row on-or-before
-    ``date(target_year, target_month, 1)``) which answered the
-    slightly different question "what is owed BEFORE any payment due
-    on or after the target month start?" and produced cents-precise
-    drift between the savings 3 / 6 / 12-month projected balances and
-    the year-end net-worth liability / debt-progress sections.  Both
-    consumers now route through this dispatcher.
+    *current_balance* is the loan's resolver-derived balance as of today
+    (:attr:`~app.services.loan_resolver.LoanState.current_balance`), NOT its
+    original principal.  The resolver's schedule is TODAY-forward, so a period
+    before the first upcoming payment is at today's balance; reporting the
+    origination amount there made the loan leap down to its real balance when
+    the first payment landed -- a phantom liability drop / net-worth jump of
+    (original principal - current balance).  An empty schedule (a paid-off or
+    fully-resolved loan with no remaining rows) likewise sits at its current
+    balance at every period.
 
-    Body is the verbatim move (with rename) of
-    ``year_end_summary_service._schedule_to_period_balance_map``
-    pre-Commit-19; that function is deleted.
+    Period-end-keyed is the project's canonical loan-balance derivation as of
+    F-21 / Commit 19 of ``remediation_follow_up_plan.md`` -- it answers "what
+    does the borrower owe AFTER the payment due in this period?"  The savings
+    cockpit and the year-end net-worth / debt-progress sections all route
+    through this producer and the shared
+    :func:`balance_from_schedule_at_date`, so their loan balances cannot drift.
 
     Args:
         schedule: List of
             :class:`~app.services.amortization_engine.AmortizationRow`
-            sorted chronologically.  Empty schedules return
-            *original_principal* for every period.
+            sorted chronologically.  An empty schedule returns
+            *current_balance* for every period.
         periods: List of :class:`~app.models.pay_period.PayPeriod`
             objects.  Order does not matter; the map keys by
             ``period.id``.
-        original_principal: Balance before any scheduled payment.
+        current_balance: The loan's resolver-derived current balance, the
+            pre-first-payment and empty-schedule fallback.
 
     Returns:
         ``OrderedDict`` mapping ``period.id`` to ``Decimal``
@@ -207,7 +251,7 @@ def compute_loan_period_balance_map(
 
     if not schedule:
         for period in periods:
-            balances[period.id] = original_principal
+            balances[period.id] = current_balance
         return balances
 
     # Defensive sort -- the resolver emits chronological schedules,
@@ -215,13 +259,9 @@ def compute_loan_period_balance_map(
     sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
 
     for period in periods:
-        bal = original_principal
-        for row in sorted_schedule:
-            if row.payment_date <= period.end_date:
-                bal = row.remaining_balance
-            else:
-                break
-        balances[period.id] = bal
+        balances[period.id] = balance_from_schedule_at_date(
+            sorted_schedule, period.end_date, current_balance,
+        )
 
     return balances
 

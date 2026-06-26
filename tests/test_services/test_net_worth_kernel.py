@@ -200,24 +200,24 @@ class TestBuildAccountBalanceMap:
             assert balances[current.id] < Decimal("240000.00")
             assert balances[current.id] > Decimal("0.00")
 
-    def test_amortizing_empty_schedule_uses_original_principal(
+    def test_amortizing_empty_schedule_uses_current_balance(
         self, app, db, seed_user, seed_periods,
     ):
-        """An amortizing loan with an EMPTY schedule holds its principal.
+        """An amortizing loan with an EMPTY schedule holds its current balance.
 
-        A loan that resolves to an empty schedule (LoanParams present, no
-        payment events) must still route to the loan path and return its
-        ORIGINAL PRINCIPAL at every period, NOT fall through to the
-        entries-aware resolver (which would report the anchor balance).
-        The dispatch gate is membership (``debt_schedule is not None``),
-        not truthiness: an empty list ``[]`` is a resolved-but-unpaid loan,
-        distinct from ``None`` (not a resolved amortizing schedule).
+        A :class:`DebtSchedule` whose ``schedule`` is empty (a paid-off or
+        fully-resolved loan with no remaining rows) must still route to the
+        loan path and return its resolver-derived CURRENT balance at every
+        period, NOT fall through to the entries-aware resolver (which would
+        report the anchor balance).  The dispatch gate is membership
+        (``debt_schedule is not None``), not the schedule's truthiness: a
+        DebtSchedule carrying ``[]`` is distinct from ``None`` (not a
+        resolved amortizing schedule).
 
-        The anchor balance is deliberately set to $200,000 -- different
-        from the $240,000 original principal -- so the loan path ($240,000
-        original principal) is distinguishable from the resolver path
-        (the $200,000 flat anchor).  Pre-fix (truthiness gate) the empty
-        list fell through and this read $200,000.
+        The DebtSchedule's current_balance is deliberately set to $240,000 --
+        different from the $200,000 account anchor -- so the loan path
+        ($240,000 current balance) is distinguishable from the resolver
+        fallthrough (the $200,000 flat anchor).
         """
         # Pylint: import-outside-toplevel -- the date / LoanParams models
         # load inside the test, the file-wide deferred-import convention
@@ -258,14 +258,16 @@ class TestBuildAccountBalanceMap:
 
             balances = net_worth_kernel.build_account_balance_map(
                 acct, scenario, all_periods,
-                debt_schedule=[],
+                debt_schedule=net_worth_kernel.DebtSchedule(
+                    schedule=[], current_balance=Decimal("240000.00"),
+                ),
                 investment_params=None,
                 deductions=[],
                 salary_gross_biweekly=Decimal("0.00"),
             )
 
             assert balances is not None
-            # Empty schedule -> loan path -> original principal $240,000 at
+            # Empty schedule -> loan path -> current balance $240,000 at
             # every period, NOT the $200,000 anchor (resolver fallthrough).
             assert balances[current.id] == Decimal("240000.00")
             assert balances[all_periods[-1].id] == Decimal("240000.00")

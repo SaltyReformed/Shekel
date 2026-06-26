@@ -31,7 +31,6 @@ from app.services.net_worth_kernel import (
     _load_shadow_contributions,
     base_account_balance_map as _base_account_balance_map,
     generate_debt_schedules as _generate_debt_schedules,
-    loan_original_principal as _loan_original_principal,
 )
 from app.services.year_end_summary_service._types import _ProjectionInputs
 
@@ -43,53 +42,15 @@ ZERO = Decimal("0")
 # deliberate (pylint ``unused-import`` otherwise flags them, since it
 # cannot see the cross-module consumers).
 __all__ = [
-    "_balance_from_schedule_at_date",
     "_base_account_balance_map",
     "_compute_interest_for_year",
     "_compute_pre_anchor_interest",
     "_dispatch_account_balance_map",
     "_generate_debt_schedules",
     "_load_shadow_contributions",
-    "_loan_original_principal",
     "_settled_net_by_period",
     "_sum_shadow_income",
 ]
-
-
-def _balance_from_schedule_at_date(
-    schedule: list,
-    target: date,
-    original_principal: Decimal,
-) -> Decimal:
-    """Return the loan balance at a given date from an amortization schedule.
-
-    Finds the last schedule row whose payment_date is on or before
-    the target date and returns its remaining_balance.  If the target
-    is before the first payment, returns the original principal.
-
-    Args:
-        schedule: List of AmortizationRow produced by
-            ``replay_schedule`` + ``project_forward`` (or any
-            chronologically ordered schedule the engine emits).
-        target: The date to look up the balance for.
-        original_principal: The loan's original principal (balance
-            before any payments).
-
-    Returns:
-        Decimal remaining balance at the target date.
-    """
-    if not schedule:
-        return original_principal
-
-    best_balance = original_principal
-    for row in schedule:
-        if row.payment_date <= target:
-            best_balance = row.remaining_balance
-        else:
-            # Schedule is chronological; no need to check further.
-            break
-
-    return best_balance
 
 
 def _dispatch_account_balance_map(

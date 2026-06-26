@@ -12,17 +12,17 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.models.scenario import Scenario
+from app.services.account_projection import balance_from_schedule_at_date
 # Net-worth sum re-exported from the shared kernel (Loop B Phase 1): the
 # private alias is preserved so the section helpers below and the
 # year-end net-worth tests keep calling ``_sum_net_worth_at_period``
 # unchanged while the one definition lives in the kernel.
 from app.services.net_worth_kernel import (
+    DebtSchedule,
     sum_net_worth_at_period as _sum_net_worth_at_period,
 )
 from app.services.year_end_summary_service._balances import (
-    _balance_from_schedule_at_date,
     _dispatch_account_balance_map,
-    _loan_original_principal,
 )
 from app.services.year_end_summary_service._periods import (
     _find_period_before_date,
@@ -168,7 +168,7 @@ def _compute_monthly_values(
 def _compute_debt_progress(
     year: int,
     debt_accounts: list,
-    debt_schedules: dict[int, list],
+    debt_schedules: dict[int, DebtSchedule],
 ) -> list[dict]:
     """Compute principal paid for each debt account during the year.
 
@@ -180,7 +180,8 @@ def _compute_debt_progress(
     Args:
         year: Target calendar year.
         debt_accounts: Accounts with has_amortization=True.
-        debt_schedules: account_id -> list[AmortizationRow] mapping
+        debt_schedules: account_id ->
+            :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
             from _generate_debt_schedules().
 
     Returns:
@@ -192,20 +193,28 @@ def _compute_debt_progress(
 
     result = []
     for account in debt_accounts:
-        schedule = debt_schedules.get(account.id)
-        if not schedule:
+        schedule_info = debt_schedules.get(account.id)
+        if schedule_info is None or not schedule_info.schedule:
             continue
 
-        original = _loan_original_principal(account.id)
+        # The pre-schedule fallback is the loan's resolver-derived current
+        # balance (NOT its original principal): the schedule is today-forward,
+        # so a date before the first upcoming payment is at today's balance.
+        # The shared producer (compute_loan_period_balance_map) uses the same
+        # helper and fallback, so the cockpit and this section cannot drift.
+        sorted_schedule = sorted(
+            schedule_info.schedule, key=lambda r: r.payment_date,
+        )
+        current_balance = schedule_info.current_balance
 
         # Jan 1 balance = balance at end of prior year, BEFORE any
         # payments in the target year.  Use Dec 31 of the prior year
         # so a Jan 1 payment is not counted in the starting balance.
-        jan1_bal = _balance_from_schedule_at_date(
-            schedule, date(year - 1, 12, 31), original,
+        jan1_bal = balance_from_schedule_at_date(
+            sorted_schedule, date(year - 1, 12, 31), current_balance,
         )
-        dec31_bal = _balance_from_schedule_at_date(
-            schedule, date(year, 12, 31), original,
+        dec31_bal = balance_from_schedule_at_date(
+            sorted_schedule, date(year, 12, 31), current_balance,
         )
         principal_paid = jan1_bal - dec31_bal
 
