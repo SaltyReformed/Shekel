@@ -62,16 +62,6 @@
         </div>
       </div>
       <div class="pulse-chip">
-        <div class="pulse-chip__label">Change this period</div>
-        {% if net_worth.change_this_period is not none %}
-        <div class="pulse-chip__value font-mono{% if net_worth.change_this_period > 0 %} nw-amount--pos{% elif net_worth.change_this_period < 0 %} nw-amount--neg{% endif %}">
-          {%- if net_worth.change_this_period > 0 %}+{% endif %}{{ money(net_worth.change_this_period) }}
-        </div>
-        {% else %}
-        <div class="pulse-chip__value text-muted">--</div>
-        {% endif %}
-      </div>
-      <div class="pulse-chip">
         <div class="pulse-chip__label">Liquid</div>
         <div class="pulse-chip__value font-mono">{{ money(net_worth.liquid) }}</div>
       </div>

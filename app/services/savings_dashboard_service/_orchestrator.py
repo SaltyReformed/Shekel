@@ -26,7 +26,6 @@ from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
     build_trend_periods,
     compute_allocation,
-    compute_net_worth_change,
     compute_net_worth_series,
     compute_net_worth_today,
     compute_property_equity,
@@ -383,11 +382,11 @@ def _compute_net_worth_section(
 
     One producer over a single build of the dense per-account balance maps
     (Loop B Phase 1 net worth + slice 3c sparklines): the today figures
-    (from the already-projected ``account_data``), the change-this-period
-    delta, the net-worth trend series (an honest history tail plus the
-    forward projection, from :func:`build_trend_periods`), and the
-    per-account forward sparklines all derive from that one projection so
-    they cannot drift onto two copies of the math.
+    (from the already-projected ``account_data``), the net-worth trend
+    series (an honest history tail plus the forward projection, from
+    :func:`build_trend_periods`), and the per-account forward sparklines all
+    derive from that one projection so they cannot drift onto two copies of
+    the math.
 
     The maps are built once here over ALL periods (so the entries-aware
     resolver always has its anchor seed) via
@@ -413,10 +412,10 @@ def _compute_net_worth_section(
     Returns:
         ``(net_worth, sparklines)``.  ``net_worth`` is a dict with
         ``net_worth``, ``total_assets``, ``total_liabilities``, ``liquid``,
-        ``change_this_period`` (``Decimal`` or ``None``), and ``series`` (the
-        trend dict -- history tail plus forward projection, carrying the
-        ``current_index`` solid/dashed boundary -- with empty lists when
-        there is no current period).  ``sparklines`` is ``{account_id:
+        and ``series`` (the trend dict -- history tail plus forward
+        projection, carrying the ``current_index`` solid/dashed boundary --
+        with empty lists when there is no current period).  ``sparklines``
+        is ``{account_id:
         [Decimal, ...]}`` -- the forward series for each informative account,
         which the route normalizes to SVG geometry.
     """
@@ -439,19 +438,13 @@ def _compute_net_worth_section(
         debt_schedules,
     )
 
-    trend_periods, current_index, honest_start = build_trend_periods(
+    trend_periods, current_index, _ = build_trend_periods(
         core.accounts, core.all_periods, core.current_period, debt_schedules,
     )
     series = compute_net_worth_series(account_maps, trend_periods)
     # The solid-history / dashed-projection boundary (and the "Today"
     # marker): the index of the current period within the trend window.
     series["current_index"] = current_index
-    # The change delta shares the trend's honest boundary: a period-over-
-    # period change is real only when the prior period is honest (not a
-    # cash dropout or a loan at its original principal).
-    change_this_period = compute_net_worth_change(
-        account_maps, core.current_period, core.all_periods, honest_start,
-    )
 
     # Per-account sparklines (slice 3c) reuse these dense maps -- one
     # projection for the net-worth math AND the card trends.  The forward
@@ -465,7 +458,6 @@ def _compute_net_worth_section(
 
     return {
         **today,
-        "change_this_period": change_this_period,
         "series": series,
     }, sparklines
 

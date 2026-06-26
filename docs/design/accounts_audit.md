@@ -270,9 +270,10 @@ without a new developer ruling.
 Refined from the Loop A round-1 mockups (2026-06-24; scratch, never committed). Direction B
 "Chart-forward" was chosen.
 
-6. **Hero chips:** Total Assets, Total Liabilities, Change this period, Liquid net worth. Retirement
-   is not a hero chip; it folds into Total Assets and is surfaced as the Retirement card group and
-   its subtotal, so the chips never read as additive. Liquid is the sum of `is_liquid` balances.
+6. **Hero chips:** Total Assets, Total Liabilities, Liquid net worth (originally also "Change this
+   period," removed 2026-06-26 -- decision 13). Retirement is not a hero chip; it folds into Total
+   Assets and is surfaced as the Retirement card group and its subtotal, so the chips never read as
+   additive. Liquid is the sum of `is_liquid` balances.
 7. **Net-worth trend:** one continuous series, solid actual history plus a dashed, lighter forward
    projection, with a "Today" marker; a Net vs Assets-and-Liabilities series toggle and a 6 / 13 /
    26 / All horizon picker (13 is the default).
@@ -325,6 +326,21 @@ Decided 2026-06-25 (developer ruling on the P4 hard-delete fork). Locked.
     cockpit, get a direct, equally-gated "Delete permanently" button beside Unarchive in the
     archived list. The route, its guard chain, the confirm modal, and the `@fresh_login_required`
     gate are unchanged; only the invoking surface moved.
+
+Decided 2026-06-26 (developer ruling). Locked.
+
+13. **The "Change this period" hero chip is removed.** Decision 11 made the chip read "--" whenever
+    the prior period is not honest. Because an amortizing loan's resolver schedule is today-forward,
+    `_honest_history_start_index` always clamps `honest_start` to the current period for any
+    loan-holder, so the chip is structurally always "--" for the developer (who holds a Mortgage and
+    a Van Loan). A chip that can never show a value for its user is noise, so it was removed along
+    with its sole producer (`compute_net_worth_change`) and that producer's tests. The honest
+    boundary it shared with the trend stays: `honest_start` still gates the trend's solid-history
+    tail; it is simply no longer consumed by a change figure. The hero band now carries three chips
+    (Total Assets, Total Liabilities, Liquid). The chip did still render a real value for loan-free
+    profiles (e.g. renters whose cash was trued up in the past); removing it drops that, accepted
+    because the user is a loan-holder. Resurrectable from git if the deferred per-period historical
+    net-worth feature (reconstructing from `AccountAnchorHistory`) ever lands.
 
 ## Home-equity / physical-asset mini-sprint (prerequisite; Opus data-model work)
 
@@ -403,9 +419,9 @@ A chart-forward accounts dashboard consistent with the rebuilt "Terminal Road" d
 B (chosen in Loop A, 2026-06-24). Anatomy top to bottom:
 
 1. **Hero band:** Net Worth as the hero figure, with the chips (Total Assets, Total Liabilities,
-   Change this period, Liquid) and the diverging assets-vs-liabilities bar beside it, then a large
-   full-width forward net-worth trend (solid history, dashed lighter projection, "Today" marker; a
-   Net vs Assets-and-Liabilities toggle; a 6 / 13 / 26 / All horizon). One `balanceChanged` region.
+   Liquid) and the diverging assets-vs-liabilities bar beside it, then a large full-width forward
+   net-worth trend (solid history, dashed lighter projection, "Today" marker; a Net vs
+   Assets-and-Liabilities toggle; a 6 / 13 / 26 / All horizon). One `balanceChanged` region.
 2. **Accounts surface:** a responsive auto-fit card grid, grouped by category with a subtotal at
    each group header. Each card: name (the only link), type icon, click-to-edit balance hero, one
    secondary line, a sparkline where informative, a visible Transfer button, and a kebab (Edit /
@@ -560,7 +576,8 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    tail plus the full forward projection, carrying a `current_index` boundary (the solid/dashed split,
    the Today marker, and the client's forward-slice anchor); the client slices the horizon and toggles
    the series in JS (no money math -- only slice, restyle, format), so the producer serializes once.
-   The change-this-period chip was fixed (decision 11). Full suite 6318, `pylint app/` 10.00/10, biome
+   The change-this-period chip was fixed (decision 11; later removed -- decision 13). Full suite 6318,
+   `pylint app/` 10.00/10, biome
    - djlint clean, code-reviewer no Critical/High/Medium, live-verified both themes.
 
    **P3 slice 3b, allocation bar: DONE 2026-06-25 on dev (`638fedc`).** The category-stacked diverging

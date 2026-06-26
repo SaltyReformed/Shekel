@@ -55,16 +55,11 @@
   margin: 0.25rem 0 0 1.25rem;
 }
 
-/* Money-state coloring for chip values that carry a sign meaning
-   (liabilities are money owed; the period change is a gain or a loss).
-   The chip background stays neutral; only the figure takes the state
+/* Money-state coloring for the liabilities chip value (money owed).
+   The chip background stays neutral; only the figure takes the danger
    color, so the band reads calm rather than alarmed. */
 .nw-amount--neg {
   color: var(--shekel-danger);
-}
-
-.nw-amount--pos {
-  color: var(--shekel-done);
 }
 
 /* Trend controls: the Net vs Assets-and-Liabilities series toggle and the

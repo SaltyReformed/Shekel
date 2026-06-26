@@ -3270,8 +3270,6 @@ class TestDashboardNetWorthContext:
             assert net_worth["total_liabilities"] == Decimal("0.00")
             assert net_worth["net_worth"] == Decimal("5000.00")
             assert net_worth["liquid"] == Decimal("5000.00")
-            # Flat balances -> zero change vs the prior period.
-            assert net_worth["change_this_period"] == Decimal("0.00")
 
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,

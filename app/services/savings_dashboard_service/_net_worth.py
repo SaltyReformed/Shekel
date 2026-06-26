@@ -3,8 +3,8 @@ Shekel Budget App -- Savings Cockpit: net-worth producer.
 
 The server-side data producer for the Accounts / Net-Worth cockpit's
 net-worth region (Loop B Phase 1): the today figures (net worth, total
-assets, total liabilities, liquid), the forward net-worth trend series,
-and the change-this-period delta.  No Flask imports; every function takes
+assets, total liabilities, liquid) and the forward net-worth trend
+series.  No Flask imports; every function takes
 plain data (the projected account dicts, ORM rows, the loaded parameter
 maps) and returns plain ``Decimal`` / ``dict`` data the route serializes.
 
@@ -361,10 +361,10 @@ def build_trend_periods(
     selects the 6 / 13 / 26 / All forward horizon from the full series, so
     the producer serializes once and the picker never re-fetches.
 
-    The honest-start index is returned alongside the window so the
-    change-this-period delta can reuse it (a period-over-period change is
-    only honest when the prior period is within the honest window), keeping
-    the trend and the chip on one boundary.
+    The honest-start index (the earliest period whose net worth is real for
+    every account) is returned alongside the window; it is the boundary the
+    history tail is clamped back to, exposed so a caller can reason about
+    where the solid history legitimately begins.
 
     Args:
         accounts: The user's active accounts.
@@ -417,10 +417,10 @@ def compute_net_worth_series(
     change here.
 
     Takes the pre-built ``account_maps`` rather than the raw accounts so
-    the maps are built exactly once and shared with
-    :func:`compute_net_worth_change` (the locked build-once invariant);
-    the orchestrator builds them via
-    :func:`build_account_net_worth_maps` and threads them into both.
+    the maps are built exactly once and shared with the per-account
+    sparklines (the locked build-once invariant); the orchestrator builds
+    them via :func:`build_account_net_worth_maps` and threads them into
+    both.
 
     Args:
         account_maps: The dense ``{balances, is_liability}`` maps from
@@ -457,72 +457,6 @@ def compute_net_worth_series(
         "assets": assets,
         "liabilities": liabilities,
     }
-
-
-def compute_net_worth_change(
-    account_maps: list[dict],
-    current_period: PayPeriod | None,
-    all_periods: list[PayPeriod],
-    honest_start: int,
-) -> Decimal | None:
-    """Compute the net-worth change from the prior period to the current.
-
-    Returns ``NW(current_period) - NW(prior_period)`` where the prior
-    period is the one whose ``period_index`` is exactly
-    ``current_period.period_index - 1``.
-
-    Returns ``None`` -- a missing comparison the caller must not coerce to
-    zero -- when the change cannot be computed HONESTLY:
-
-    - no current period, or no immediately-prior period (the user is in
-      their earliest period, ``period_index == 0``); or
-    - the prior period is before ``honest_start`` (from
-      :func:`build_trend_periods`): its net worth would read a cash account
-      as absent or a loan at its original principal (the same fallbacks the
-      trend's history gate excludes), so the delta would be a fabricated
-      jump -- e.g. a loan's whole origination-to-now paydown counted as one
-      period.  Because a loan's schedule is today-forward, the prior period
-      is pre-schedule for any loan-holder, so the chip honestly reads "--"
-      for them rather than a wrong figure.
-
-    Both net-worth values come from the SAME dense maps the series reads
-    (built once by :func:`build_account_net_worth_maps`), through the
-    kernel's :func:`~app.services.net_worth_kernel.sum_net_worth_at_period`,
-    so the change can never disagree with the series' endpoints.
-
-    Args:
-        account_maps: The dense ``{balances, is_liability}`` maps from
-            :func:`build_account_net_worth_maps`.
-        current_period: The user's current :class:`PayPeriod`, or
-            ``None``.
-        all_periods: All of the user's pay periods (to locate the prior).
-        honest_start: The earliest honest ``period_index`` (from
-            :func:`build_trend_periods`); the prior period must be at or
-            after it for the change to be real.
-
-    Returns:
-        The change as a ``Decimal``, or ``None`` when there is no honest
-        immediately-prior period to compare against.
-    """
-    if current_period is None:
-        return None
-
-    prior_index = current_period.period_index - 1
-    if prior_index < honest_start:
-        return None
-    prior_period = next(
-        (p for p in all_periods if p.period_index == prior_index), None,
-    )
-    if prior_period is None:
-        return None
-
-    current_nw = net_worth_kernel.sum_net_worth_at_period(
-        current_period.id, account_maps,
-    )
-    prior_nw = net_worth_kernel.sum_net_worth_at_period(
-        prior_period.id, account_maps,
-    )
-    return current_nw - prior_nw
 
 
 def compute_property_equity(
