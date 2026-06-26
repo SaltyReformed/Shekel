@@ -25,7 +25,7 @@ repos:
         args:
           - app/
           - --fail-under=10
-          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance
       - id: pylint-scripts
         name: pylint scripts/ (10.00/10 floor)
         entry: pylint
@@ -40,7 +40,7 @@ repos:
         args:
           - scripts/
           - --fail-under=10
-          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance
       - id: pylint-cross-tree-duplicates
         name: cross-tree duplicate-code (app/ + scripts/)
         entry: pylint

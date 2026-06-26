@@ -114,7 +114,7 @@ def _compute_base_balances(acct, kind, acct_interest_params, ctx):
     return balances, current_bal
 
 
-def _loan_projected_horizons(schedule, all_periods, original_principal, today):
+def _loan_projected_horizons(schedule, all_periods, current_balance, today):
     """Project a loan's balance at the 3 / 6 / 12-month horizons.
 
     Routes through the shared ``compute_loan_period_balance_map`` (F-21 /
@@ -131,7 +131,14 @@ def _loan_projected_horizons(schedule, all_periods, original_principal, today):
     Args:
         schedule: The resolver's amortization schedule.
         all_periods: All pay periods for the user.
-        original_principal: The loan's original principal (keys the map).
+        current_balance: The loan's resolver-derived current balance
+            (``LoanState.current_balance``), used by the shared map as the
+            pre-first-payment / empty-schedule fallback.  It must NOT be the
+            original principal: the schedule is today-forward, so a horizon
+            before the first upcoming payment -- or any horizon of a paid-off
+            loan whose schedule is empty -- sits at today's balance, and
+            reporting the origination amount there overstates the projected
+            liability by (original principal - current balance).
         today: The reference date the horizon offsets advance from.
 
     Returns:
@@ -140,7 +147,7 @@ def _loan_projected_horizons(schedule, all_periods, original_principal, today):
         with no matching period.
     """
     balance_map = compute_loan_period_balance_map(
-        schedule, all_periods, original_principal,
+        schedule, all_periods, current_balance,
     )
     projected = {}
     for label, month_offset in [
@@ -226,7 +233,7 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id, all_periods):
     )
     projected = _loan_projected_horizons(
         state.schedule, all_periods,
-        acct_loan_params.original_principal, today,
+        state.current_balance, today,
     )
     return _LoanAccountResult(
         current_balance=state.current_balance,

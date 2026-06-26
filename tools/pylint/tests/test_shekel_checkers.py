@@ -12,6 +12,7 @@ from pylint.testutils import CheckerTestCase, MessageTest
 
 from shekel_checkers import (
     ShekelDisableRationaleChecker,
+    ShekelLoanBalanceSourceChecker,
     ShekelMoneyChecker,
     ShekelRefNameChecker,
 )
@@ -431,3 +432,105 @@ class TestShekelDisableRationaleChecker(CheckerTestCase):
         )
         with self.assertNoMessages():
             self.checker.process_module(module)
+
+
+class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
+    """The loan balance-map fallback must be the resolver balance, not a stored column.
+
+    ``compute_loan_period_balance_map`` / ``balance_from_schedule_at_date`` take
+    the loan's resolver-derived ``current_balance`` as the pre-first-payment /
+    empty-schedule fallback; passing a stored column (``original_principal`` /
+    ``current_principal``) is the recurring net-worth bug (F-21 / PR #44). Every
+    flagged form is paired with the conforming call that must NOT fire.
+    """
+
+    CHECKER_CLASS = ShekelLoanBalanceSourceChecker
+
+    def test_flags_original_principal_attribute(self) -> None:
+        """compute_loan_period_balance_map(..., params.original_principal): the PR #44 bug."""
+        node = astroid.extract_node(
+            "compute_loan_period_balance_map(schedule, periods, params.original_principal)",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-original-principal-as-balance", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_original_principal_on_other_producer(self) -> None:
+        """balance_from_schedule_at_date(..., params.original_principal) is flagged too."""
+        node = astroid.extract_node(
+            "balance_from_schedule_at_date(sorted_schedule, target, params.original_principal)",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-original-principal-as-balance", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_bare_name_original_principal(self) -> None:
+        """The bare-name parameter form (the live /savings bug pre-fix) is flagged."""
+        node = astroid.extract_node(
+            "compute_loan_period_balance_map(schedule, periods, original_principal)",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-original-principal-as-balance", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_current_principal_keyword(self) -> None:
+        """The demoted current_principal column passed by the current_balance keyword is flagged."""
+        node = astroid.extract_node(
+            "compute_loan_period_balance_map(schedule, periods, "
+            "current_balance=acct.current_principal)",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-original-principal-as-balance", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_qualified_producer_call(self) -> None:
+        """The attribute-call form (module.compute_loan_period_balance_map) is flagged."""
+        node = astroid.extract_node(
+            "account_projection.compute_loan_period_balance_map("
+            "schedule, periods, params.original_principal)",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-original-principal-as-balance", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_current_balance_attribute(self) -> None:
+        """The resolver-derived state.current_balance is the correct fallback; not flagged."""
+        node = astroid.extract_node(
+            "compute_loan_period_balance_map(schedule, periods, state.current_balance)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_bare_current_balance_name(self) -> None:
+        """A bare current_balance local (the year-end form) is the correct fallback; not flagged."""
+        node = astroid.extract_node(
+            "balance_from_schedule_at_date(sorted_schedule, target, current_balance)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_ignores_original_principal_to_other_function(self) -> None:
+        """original_principal passed to an unrelated function is not this checker's concern."""
+        node = astroid.extract_node(
+            "build_rate_periods(terms, params.original_principal)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_ignores_call_without_balance_argument(self) -> None:
+        """A producer call missing the balance argument is not flagged and does not crash."""
+        node = astroid.extract_node(
+            "compute_loan_period_balance_map(schedule, periods)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)

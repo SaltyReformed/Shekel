@@ -3127,6 +3127,109 @@ class TestInvestmentHorizons:
         }
 
 
+class TestLoanProjectedHorizons:
+    """F-21 / PR #44: pin the loan-branch 3/6/12 horizon fallback source.
+
+    ``_loan_projected_horizons`` routes through the shared
+    ``compute_loan_period_balance_map``, whose pre-first-payment /
+    empty-schedule fallback must be the resolver-derived CURRENT balance, not
+    the loan's original principal.  Passing the original principal there (the
+    pre-fix /savings call site) overstated the projected liability the moment a
+    horizon preceded the first upcoming payment -- the same defect PR #44 fixed
+    on the net-worth trend and now guarded by the
+    ``shekel-original-principal-as-balance`` checker.  Unlike the index-based
+    ``_investment_horizons`` above, this branch keys the dispatch by date (first
+    of month at today + 3/6/12), so the synthetic periods carry a
+    ``start_date`` / ``end_date`` interval.
+    """
+
+    @staticmethod
+    def _row(payment_date, remaining_balance):
+        """Synthetic amortization row (only payment_date + remaining_balance read)."""
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            payment_date=payment_date, remaining_balance=remaining_balance,
+        )
+
+    @staticmethod
+    def _monthly_periods(start_year, start_month, count):
+        """``count`` consecutive month-long synthetic periods (id, index, date interval)."""
+        # pylint: disable=import-outside-toplevel
+        from calendar import monthrange
+        from datetime import date as _date
+        from types import SimpleNamespace
+        periods = []
+        year, month = start_year, start_month
+        for index in range(count):
+            periods.append(SimpleNamespace(
+                id=index + 1,
+                period_index=index,
+                start_date=_date(year, month, 1),
+                end_date=_date(year, month, monthrange(year, month)[1]),
+            ))
+            month += 1
+            if month > 12:
+                month, year = 1, year + 1
+        return periods
+
+    def test_pre_first_payment_horizon_uses_current_balance(self):
+        """A horizon before the first schedule row reports current_balance, not original principal.
+
+        today = 2026-06-15, so the horizon targets are 2026-09-01 (3mo),
+        2026-12-01 (6mo), 2027-06-01 (1yr).  The loan's only row is dated
+        2026-11-15 (remaining_balance $15,000.00).  The 3-month target precedes
+        that row, so its balance is the fallback: the resolver current_balance
+        $15,663.59, NOT the original principal $32,402.45 the pre-fix tile
+        passed.  The 6-month and 1-year targets fall after the row, so they
+        read its $15,000.00 remaining balance.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._projections import (
+            _loan_projected_horizons,
+        )
+        today = date(2026, 6, 15)
+        periods = self._monthly_periods(2026, 6, 14)  # 2026-06 .. 2027-07
+        current_balance = Decimal("15663.59")
+        schedule = [self._row(date(2026, 11, 15), Decimal("15000.00"))]
+
+        projected = _loan_projected_horizons(
+            schedule, periods, current_balance, today,
+        )
+
+        # 3-month target (2026-09-01) precedes the row -> resolver current
+        # balance, never the $32,402.45 original-principal leap.
+        assert projected["3 months"] == current_balance
+        assert projected["3 months"] != Decimal("32402.45")
+        # 6-month (2026-12-01) and 1-year (2027-06-01) land on/after the row.
+        assert projected["6 months"] == Decimal("15000.00")
+        assert projected["1 year"] == Decimal("15000.00")
+
+    def test_empty_schedule_horizons_use_current_balance(self):
+        """A paid-off / empty-schedule loan reports current_balance at every horizon.
+
+        With no schedule rows, every horizon falls back; the value must be the
+        resolver current_balance ($15,663.59), never the original principal
+        ($32,402.45) -- the empty-schedule path the pre-fix /savings call site
+        would have surfaced as the origination amount.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._projections import (
+            _loan_projected_horizons,
+        )
+        today = date(2026, 6, 15)
+        periods = self._monthly_periods(2026, 6, 14)
+        current_balance = Decimal("15663.59")
+
+        projected = _loan_projected_horizons([], periods, current_balance, today)
+
+        assert projected == {
+            "3 months": current_balance,
+            "6 months": current_balance,
+            "1 year": current_balance,
+        }
+
+
 # ── Net-Worth Cockpit Producer Tests (Loop B Phase 1) ───────────────
 
 

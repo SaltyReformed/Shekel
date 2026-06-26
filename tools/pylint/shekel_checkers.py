@@ -25,6 +25,13 @@ Rules implemented:
   (banker's). ``app/utils/money.py`` mandates monetary rounding go through
   ``round_money`` (``ROUND_HALF_UP``); this locks the rule that the
   financial_calculations audit's E-26 / HIGH-04 remediation established.
+* ``shekel-original-principal-as-balance`` (W9905): flags passing a stored loan
+  column (``original_principal`` / ``current_principal``) as the
+  pre-first-payment / empty-schedule fallback to
+  ``compute_loan_period_balance_map`` or ``balance_from_schedule_at_date``. That
+  fallback must be the resolver-derived ``current_balance``; a stored column
+  makes a loan's projected balance leap to its real value when the first payment
+  lands -- the recurring net-worth defect fixed in F-21 / Commit 19 and PR #44.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -81,6 +88,23 @@ _RATIONALE_MARKER = "Pylint:"
 # form -- cannot evade the rationale gate: pylint honors the directive
 # anywhere in the comment, so the checker must see everything pylint sees.
 _DISABLE_RE = re.compile(r"#.*?pylint:\s*disable=([\w,\-]+)")
+
+# Loan period-balance map producers in app/services/account_projection.py. Both
+# take the loan's resolver-derived CURRENT balance as the pre-first-payment /
+# empty-schedule fallback -- their third positional argument, keyword
+# ``current_balance``.
+_LOAN_BALANCE_MAP_FUNCS = frozenset(
+    {"compute_loan_period_balance_map", "balance_from_schedule_at_date"},
+)
+_LOAN_BALANCE_ARG_INDEX = 2
+_LOAN_BALANCE_ARG_KEYWORD = "current_balance"
+# The two demoted, non-authoritative loan columns (app/models/loan_params.py):
+# ``original_principal`` is immutable origination state and ``current_principal``
+# is a non-authoritative seed. Neither is the live balance the resolver derives,
+# so neither may be the fallback above.
+_NON_AUTHORITATIVE_LOAN_BALANCE = frozenset(
+    {"original_principal", "current_principal"},
+)
 
 
 def _is_decimal_call(node: nodes.Call) -> bool:
@@ -183,6 +207,53 @@ def _has_explicit_rounding(node: nodes.Call) -> bool:
     if len(node.args) >= 2:
         return True
     return any(kw.arg == _ROUNDING_KEYWORD for kw in node.keywords or [])
+
+
+def _is_loan_balance_map_call(node: nodes.Call) -> bool:
+    """Return True if ``node`` calls a loan period-balance map producer.
+
+    Matches the bare-name import form (``compute_loan_period_balance_map(...)``)
+    and the attribute form (``account_projection.balance_from_schedule_at_date(...)``)
+    alike, mirroring ``_is_decimal_call``; name matching keeps the checker fast,
+    and these identifiers are distinctive enough to carry no collision risk.
+    """
+    func = node.func
+    if isinstance(func, nodes.Name):
+        return func.name in _LOAN_BALANCE_MAP_FUNCS
+    if isinstance(func, nodes.Attribute):
+        return func.attrname in _LOAN_BALANCE_MAP_FUNCS
+    return False
+
+
+def _loan_balance_argument(node: nodes.Call) -> nodes.NodeNG | None:
+    """Return the balance/fallback argument of a loan balance-map call, or None.
+
+    The balance is the third positional argument or the ``current_balance``
+    keyword; ``None`` when the call supplies neither (a ``*args`` or partial call
+    the checker cannot statically inspect, which is not reported).
+    """
+    if len(node.args) > _LOAN_BALANCE_ARG_INDEX:
+        return node.args[_LOAN_BALANCE_ARG_INDEX]
+    for keyword in node.keywords or []:
+        if keyword.arg == _LOAN_BALANCE_ARG_KEYWORD:
+            return keyword.value
+    return None
+
+
+def _is_non_authoritative_loan_balance(node: nodes.NodeNG) -> bool:
+    """Return True if ``node`` reads a demoted loan column, not the live balance.
+
+    Matches the attribute form ``params.original_principal`` and the bare-name
+    parameter form ``original_principal`` / ``current_principal`` that fed the
+    F-21 / PR #44 bug. A ``current_balance`` name or a ``.current_balance``
+    attribute -- the resolver-derived value -- is the correct argument and is not
+    matched.
+    """
+    if isinstance(node, nodes.Attribute):
+        return node.attrname in _NON_AUTHORITATIVE_LOAN_BALANCE
+    if isinstance(node, nodes.Name):
+        return node.name in _NON_AUTHORITATIVE_LOAN_BALANCE
+    return False
 
 
 class ShekelMoneyChecker(BaseChecker):
@@ -444,6 +515,49 @@ class ShekelDisableRationaleChecker(BaseRawFileChecker):
         return all(rule in text for rule in rules)
 
 
+class ShekelLoanBalanceSourceChecker(BaseChecker):
+    """Forbid a stored loan column where the resolver's current balance belongs."""
+
+    name = "shekel-loan-balance-source"
+    msgs = {
+        "W9905": (
+            "Loan balance-map fallback is a stored loan column "
+            "(original_principal / current_principal); pass the resolver-derived "
+            "current_balance instead",
+            "shekel-original-principal-as-balance",
+            "compute_loan_period_balance_map and balance_from_schedule_at_date "
+            "(app/services/account_projection.py) take the loan's CURRENT balance "
+            "as the pre-first-payment / empty-schedule fallback. The schedule is "
+            "today-forward, so a period before the first upcoming payment -- and "
+            "every period of a paid-off loan whose schedule is empty -- sits at "
+            "today's balance. LoanParams.original_principal (immutable origination "
+            "state) and current_principal (a demoted, non-authoritative seed) are "
+            "NOT that balance; the resolver is (loan_resolver.resolve_loan -> "
+            "LoanState.current_balance). Passing a stored column makes the loan "
+            "leap down to its real balance the moment the first payment lands -- a "
+            "phantom liability drop and net-worth jump of (original principal - "
+            "current balance). This is the recurring defect fixed in F-21 / "
+            "Commit 19 and PR #44; the fallback must come from the same resolver "
+            "call that produced the schedule.",
+        ),
+    }
+
+    def visit_call(self, node: nodes.Call) -> None:
+        """Flag a loan balance-map call whose fallback argument is a stored column.
+
+        ``node`` is every call expression; only a call to one of the two loan
+        balance-map producers whose statically-readable balance argument reads
+        ``original_principal`` / ``current_principal`` is reported.
+        """
+        if not _is_loan_balance_map_call(node):
+            return
+        balance_arg = _loan_balance_argument(node)
+        if balance_arg is not None and _is_non_authoritative_loan_balance(
+            balance_arg,
+        ):
+            self.add_message("shekel-original-principal-as-balance", node=node)
+
+
 def register(linter) -> None:
     """Register the Shekel checkers with the pylint ``linter`` (plugin entry point).
 
@@ -453,3 +567,4 @@ def register(linter) -> None:
     linter.register_checker(ShekelMoneyChecker(linter))
     linter.register_checker(ShekelRefNameChecker(linter))
     linter.register_checker(ShekelDisableRationaleChecker(linter))
+    linter.register_checker(ShekelLoanBalanceSourceChecker(linter))
