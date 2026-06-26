@@ -459,92 +459,6 @@ class TestAccountArchive:
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
 
 
-class TestInlineAnchor:
-    """Tests for HTMX inline anchor balance endpoints on accounts list."""
-
-    def test_inline_anchor_update(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /accounts/<id>/inline-anchor updates the balance."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "2500.00"},
-            )
-
-            assert response.status_code == 200
-
-            acct = db.session.get(Account, account_id)
-            assert acct.current_anchor_balance == Decimal("2500.00")
-
-    def test_inline_anchor_form_returns_partial(
-        self, app, auth_client, seed_user
-    ):
-        """GET /accounts/<id>/inline-anchor-form returns the edit partial."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.get(
-                f"/accounts/{account_id}/inline-anchor-form"
-            )
-
-            assert response.status_code == 200
-            assert b'name="anchor_balance"' in response.data
-            assert b"1000.00" in response.data
-
-    def test_inline_anchor_display_returns_partial(
-        self, app, auth_client, seed_user
-    ):
-        """GET /accounts/<id>/inline-anchor-display returns the display partial."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.get(
-                f"/accounts/{account_id}/inline-anchor-display"
-            )
-
-            assert response.status_code == 200
-            assert b"$1,000.00" in response.data
-            assert b"font-mono" in response.data
-
-    def test_inline_anchor_invalid_amount(self, app, auth_client, seed_user):
-        """PATCH /accounts/<id>/inline-anchor with invalid amount returns 400 with errors JSON."""
-        with app.app_context():
-            account_id = seed_user["account"].id
-
-            response = auth_client.patch(
-                f"/accounts/{account_id}/inline-anchor",
-                data={"anchor_balance": "not-a-number"},
-            )
-
-            assert response.status_code == 400
-            body = response.get_json()
-            assert "errors" in body, "400 response must contain validation errors"
-
-    def test_inline_anchor_other_users_account(
-        self, app, auth_client, seed_user
-    ):
-        """PATCH /accounts/<id>/inline-anchor for another user's account returns 404.
-
-        IDOR write-path: must verify the anchor balance was not changed.
-        """
-        with app.app_context():
-            other = _create_other_user_account()
-            orig_balance = other["account"].current_anchor_balance
-
-            response = auth_client.patch(
-                f"/accounts/{other['account'].id}/inline-anchor",
-                data={"anchor_balance": "9999.00"},
-            )
-
-            assert response.status_code == 404
-
-            # Prove no state change occurred.
-            db.session.expire_all()
-            db.session.refresh(other["account"])
-            assert other["account"].current_anchor_balance == orig_balance
-
-
 class TestTrueUp:
     """Tests for the grid anchor balance true-up endpoints."""
 
@@ -3735,69 +3649,6 @@ class TestTrueUpStaleForm:
             assert acct.version_id == v0 + 1
 
 
-class TestInlineAnchorStaleForm:
-    """``inline_anchor_update`` (PATCH /accounts/<id>/inline-anchor) optimistic locking."""
-
-    def test_inline_anchor_succeeds_with_matching_version(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A matching ``version_id`` updates the balance and bumps the counter."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            v0 = db.session.get(Account, acct_id).version_id
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/inline-anchor",
-                data={
-                    "anchor_balance": "2500.00",
-                    "version_id": str(v0),
-                },
-            )
-
-            assert response.status_code == 200
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == Decimal("2500.00")
-            assert acct.version_id == v0 + 1
-
-    def test_inline_anchor_returns_409_on_stale_version(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A stale ``version_id`` returns 409 with the conflict partial."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-
-            _bump_account_version_outside_session(acct_id)
-            db.session.expire_all()
-            balance_before = db.session.get(Account, acct_id).current_anchor_balance
-            history_count_before = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            )
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/inline-anchor",
-                data={
-                    "anchor_balance": "9999.99",
-                    "version_id": str(stale_version),
-                },
-            )
-
-            assert response.status_code == 409
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert "text-warning" in body
-
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == balance_before
-            assert (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            ) == history_count_before
-
-
 class TestUpdateAccountStaleForm:
     """``update_account`` (POST /accounts/<id>) optimistic locking on the full edit form."""
 
@@ -4223,23 +4074,6 @@ class TestAnchorTemplatesEmitVersionPin:
                 f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
                 in body
             )
-
-    def test_inline_anchor_form_includes_version_pin(
-        self, app, auth_client, seed_user,
-    ):
-        """GET /accounts/<id>/inline-anchor-form ships ``version_id`` to the client."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            current_version = db.session.get(Account, acct_id).version_id
-
-            response = auth_client.get(
-                f"/accounts/{acct_id}/inline-anchor-form"
-            )
-
-            assert response.status_code == 200
-            body = response.data.decode()
-            assert 'name="version_id"' in body
-            assert f'value="{current_version}"' in body
 
     def test_account_edit_form_includes_version_pin(
         self, app, auth_client, seed_user,

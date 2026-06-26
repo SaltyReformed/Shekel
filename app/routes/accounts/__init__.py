@@ -24,9 +24,9 @@ Module map:
   (``list_accounts``, ``new_account``, ``create_account``,
   ``edit_account``, ``update_account``, ``archive_account``,
   ``unarchive_account``, ``hard_delete_account``).
-* :mod:`app.routes.accounts.anchor` -- Inline anchor-balance editors
-  on the accounts list and the grid anchor true-up endpoints; both
-  consumers of :func:`app.services.anchor_service.apply_anchor_true_up`.
+* :mod:`app.routes.accounts.anchor` -- The grid and Net Worth Cockpit
+  anchor true-up endpoints, consumers of
+  :func:`app.services.anchor_service.apply_anchor_true_up`.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages

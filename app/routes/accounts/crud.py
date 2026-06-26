@@ -310,10 +310,10 @@ def update_account(account_id):
 
     The form payload also accepts ``anchor_balance`` and writes it
     through with the same ``AccountAnchorHistory`` audit trail as
-    :func:`true_up` and :func:`inline_anchor_update`, so all three
-    anchor-balance edit paths stay consistent.  Like those two, this
-    route is owner-only but no longer step-up gated: anchor balances
-    are reversible, version-locked values, not credentials.
+    :func:`true_up`, so both anchor-balance edit paths stay
+    consistent.  Like that route, this route is owner-only but no
+    longer step-up gated: anchor balances are reversible,
+    version-locked values, not credentials.
 
     Optimistic locking (commit C-17 / F-009) operates in two layers:
 

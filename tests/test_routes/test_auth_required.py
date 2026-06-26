@@ -97,12 +97,6 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/accounts/99999/archive"),
     # accounts.unarchive_account
     ("POST", "/accounts/99999/unarchive"),
-    # accounts.inline_anchor_update
-    ("PATCH", "/accounts/99999/inline-anchor"),
-    # accounts.inline_anchor_form
-    ("GET", "/accounts/99999/inline-anchor-form"),
-    # accounts.inline_anchor_display
-    ("GET", "/accounts/99999/inline-anchor-display"),
     # accounts.create_account_type
     ("POST", "/accounts/types"),
     # accounts.update_account_type

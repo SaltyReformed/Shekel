@@ -596,11 +596,14 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
      land on `/savings`), plus new tests for the redirect contract and the danger zone. Full suite
      6333 passed, `pylint app/` 10.00/10.
 
-   **Newly UI-orphaned by P4 (flagged, separate cleanup):** `accounts.inline_anchor_update` and its
-   `accounts/_anchor_cell.html` partial were the retired table's inline balance editor; the cockpit
-   edits balances through the shared grid editor (`savings.cockpit_balance` -> `true_up`), so this
-   endpoint keeps its 5 tests (across 4 files) but has no remaining UI entry point. Left live for P4
-   (removing the route + partial + its tests is its own scoped change, not a redirect retirement).
+   **UI-orphan cleanup (DONE 2026-06-25, follow-up to P4):** the retired table's inline balance editor
+   -- `inline_anchor_update` plus its `inline_anchor_form` / `inline_anchor_display` GET partners and
+   the `accounts/_anchor_cell.html` partial -- was removed in full, since the cockpit edits balances
+   through the shared grid editor (`savings.cockpit_balance` -> `true_up`). All three inline routes,
+   the partial, 12 test methods + 3 `test_auth_required` matrix rows + 5 `TEST_PLAN.md` rows, 6
+   now-unused imports, and 7 stale docstring `:func:` cross-references across 6 live files went; the
+   live `true_up` / `anchor_form` / `anchor_display` editor and the 9 grid/dashboard/cockpit tests in
+   the mixed version-pin class were kept. Sweep clean, `pylint app/` 10.00/10, full suite 6318.
 
    **P5, live verification** (both themes via `shoot.py`, SSOT hand-confirm).
 

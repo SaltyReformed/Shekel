@@ -4,7 +4,7 @@ The roadmap and durable status record for the full UI/UX overhaul (visual rebuil
 functionality -- NOT a reskin). This document answers "what is the plan, what is done, what is
 next"; it deliberately contains no design content of its own.
 
-Last updated: 2026-06-24.
+Last updated: 2026-06-25.
 
 ## Where things live
 
@@ -109,17 +109,20 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
   colors re-resolve on theme toggle) and content-hash `v=` static URL versioning (cache busting in
   both deploy modes). Only residue: manifest icon paths are unversioned strings; meta theme-color
   deferred to the Scope B selector work.
-- Accounts P4 orphan (created 2026-06-25): retiring `accounts/list.html` left the old inline balance
-  editor `accounts.inline_anchor_update` (`app/routes/accounts/anchor.py`) and its
-  `accounts/_anchor_cell.html` partial UI-orphaned. The cockpit edits balances through the grid
-  editor (`savings.cockpit_balance` -> `true_up`), so the older PATCH endpoint has no remaining
-  caller; it was left live (not deleted) in P4 because it still passes 5 tests across 4 files
-  (`test_accounts.py::TestInlineAnchor` + `test_inline_anchor_update`,
-  `test_access_control.py::test_inline_anchor_update_blocked`, the `test_auth_required.py` route
-  matrix row, the `test_anchor_service.py` coverage note; plus a `TEST_PLAN.md` row). Cleanup =
-  delete the route + the partial + those tests and drop the `anchor_service.py` and `loan/params.py`
-  docstring references; first re-confirm nothing else renders `_anchor_cell.html` (only `anchor.py`
-  does today). Opus scope (route + tests). Not started.
+- Accounts P4 orphan (created 2026-06-25, DONE 2026-06-25): retiring `accounts/list.html` left the
+  old inline balance editor and its `accounts/_anchor_cell.html` partial UI-orphaned. Removed in
+  full. The real scope was ~2.5x this note's first estimate of "5 tests + 2 docstrings": the partial
+  cannot be deleted while its two GET partners (`inline_anchor_form` / `inline_anchor_display`)
+  still render it, so all three inline routes went, plus the partial, 12 test methods + 3
+  parametrized `test_auth_required` matrix rows + 5 `TEST_PLAN.md` rows, 6 now-unused imports (4 in
+  `anchor.py`, 2 in `test_access_control.py`), and 7 stale docstring `:func:` cross-references
+  across 6 live files (the `anchor.py` module docstring + its `true_up` comment,
+  `accounts/__init__.py`, `account.py`, `crud.py`, `loan/params.py`, `anchor_service.py`, plus the
+  `test_anchor_service.py` docstring). The live grid + cockpit editor (`true_up` / `anchor_form` /
+  `anchor_display` + the revert helpers) and the 9 grid/dashboard/cockpit tests in the mixed
+  `TestAnchorTemplatesEmitVersionPin` class were kept. Sweep clean (zero references in any tracked
+  file), `pylint app/` 10.00/10, full suite 6318; net -462 lines. The gitignored
+  `tests/.fixture-profile/main.csv` timing cache was left as-is (it regenerates).
 - A5 (grid audit): quick-create has no name field for ad-hoc rows -- Opus scope (create
   schema/route).
 - D1/D2 (grid audit, noted-not-prioritized): period-nav simplification; friendlier

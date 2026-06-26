@@ -10,9 +10,8 @@ D-C).  Both call sites switch on the same
 composition is uniform.
 
 The checking-anchor path -- :func:`apply_anchor_true_up` -- backs the
-two HTMX anchor-edit endpoints (``inline_anchor_update`` from the
-accounts list and ``true_up`` from the grid).  They share an
-identical transactional core:
+grid and Net Worth Cockpit HTMX anchor-edit endpoint (``true_up``).
+Its transactional core:
 
   1. Mutate ``account.current_anchor_balance`` and
      ``current_anchor_period_id``.

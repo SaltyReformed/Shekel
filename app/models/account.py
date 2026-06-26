@@ -154,12 +154,12 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     on ``(account_id, pay_period_id, anchor_balance,
     ((created_at AT TIME ZONE 'UTC')::date))`` rejects a second row
     with identical values inserted on the same calendar day.  This
-    is the database-level backstop for ``true_up`` and
-    ``inline_anchor_update`` double-submits: a network retry, a
-    double-click on the Save button, or the back-and-resubmit
-    pattern would otherwise create two consecutive history rows with
-    the same anchor_balance, polluting the audit trail with entries
-    that record nothing the prior row did not already record.
+    is the database-level backstop for ``true_up`` double-submits:
+    a network retry, a double-click on the Save button, or the
+    back-and-resubmit pattern would otherwise create two consecutive
+    history rows with the same anchor_balance, polluting the audit
+    trail with entries that record nothing the prior row did not
+    already record.
 
     The index intentionally includes ``anchor_balance`` so two
     legitimate true-ups on the same day -- the user noticed an
