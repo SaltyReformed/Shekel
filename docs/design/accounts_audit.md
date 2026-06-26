@@ -547,18 +547,31 @@ Follows `docs/design/overhaul_plan.md`, "Process per screen":
    The change-this-period chip was fixed (decision 11). Full suite 6318, `pylint app/` 10.00/10, biome
    - djlint clean, code-reviewer no Critical/High/Medium, live-verified both themes.
 
-   **P3 slice 3b, allocation bar (NEXT):** a category-stacked diverging assets-vs-liabilities bar
-   (decision 8) in the hero band -- the asset-side category subtotals stacked right, the liability
-   total left, each block labeled name + value, from the existing `group_subtotals` + `net_worth`
-   (widths as float pct at the serialization boundary).
+   **P3 slice 3b, allocation bar: DONE 2026-06-25 on dev (`638fedc`).** The category-stacked diverging
+   assets-vs-liabilities bar (decision 8) in the hero band -- the asset-side category subtotals stacked
+   right, the liability total left, each block labeled name + value, from the existing
+   `group_subtotals` + `net_worth`. `compute_allocation` splits by category id (never a label string);
+   `_serialize_allocation_bar` adds the float widths (scaled to the larger side); the reused
+   `progress_bar.js` applies them. Live-verified both themes.
 
-   **P3 slice 3c, conditional sparklines:** a per-account sparkline only where informative (>= ~4
-   points AND min-max spread above a small relative threshold); otherwise the figure + its period
-   delta.
+   **P3 slice 3c, conditional sparklines: DONE 2026-06-25 on dev (`10d8b80`).** A per-account
+   server-rendered SVG sparkline above the card's secondary line, only where informative (>= 4 points
+   AND a min-max spread above `max($1, 0.5% of magnitude)`); a flat account shows just the figure +
+   projected line. The producer (`compute_sparklines`) REUSES the dense maps already built for the
+   net-worth trend (`build_account_net_worth_maps` now carries `account_id`); `_serialize_sparklines`
+   normalizes to an SVG polyline. Developer ruling: the rule stays spread-based, so a cash account
+   whose projected balance oscillates with paychecks/bills shows that cash-flow rhythm (the magnitude
+   is in the secondary line), not only monotonic trends. Live-verified both themes.
 
-   **P4, retire `/accounts`:** redirect `list_accounts` -> `savings.dashboard`, repoint the redirect
-   call sites, retire `list.html`, relocate hard-delete to the detail pages, and drop the temporary
-   "Manage Accounts" link.
+   **P4, retire `/accounts` (NEXT; paused for developer review 2026-06-25):** redirect `list_accounts`
+   -> `savings.dashboard` (keep the endpoint so the ~17 redirect call sites do not `BuildError`),
+   repoint those call sites, retire `list.html` (account-type management lives in
+   `settings.show(section='account-types')`, so it is not orphaned), relocate hard-delete off the
+   retired table, and drop the temporary "Manage Accounts" header link. OPEN design fork for the
+   developer: hard-delete's new home -- the shared edit form's danger zone (one template, reachable
+   from every card's kebab Edit; DRY) versus the 5 per-account detail surfaces across 3 blueprints
+   (decision 9's literal "detail page"). The auth-required test stays green (unauthenticated
+   `/accounts` still redirects to login).
 
    **P5, live verification** (both themes via `shoot.py`, SSOT hand-confirm).
 
