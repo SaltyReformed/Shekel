@@ -39,6 +39,8 @@ class TestComputeDashboardData:
                 # Loop B Phase 2: per-group grid subtotals and the
                 # Property equity card data.
                 "group_subtotals", "property_equity",
+                # Loop B P3 slice 3b: the diverging allocation bar split.
+                "allocation",
             }
             assert set(result.keys()) == expected_keys
 
@@ -3954,6 +3956,91 @@ class TestGroupSubtotals:
         subtotals = _compute_group_subtotals(grouped)
         # 600.00 + (None -> 0.00) = 600.00
         assert subtotals["asset"] == Decimal("600.00")
+
+
+class TestComputeAllocation:
+    """Tests for the diverging allocation bar's asset/liability split."""
+
+    @staticmethod
+    def _acct(category_id):
+        """One account_data dict whose account has the given category id."""
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        return {
+            "account": SimpleNamespace(
+                account_type=SimpleNamespace(category_id=category_id),
+            ),
+        }
+
+    def test_splits_by_category_id_not_label(self, app):
+        """Groups classify as asset vs liability by category id, not label.
+
+        Asset and Retirement groups go to the asset side (in display
+        order); the Liability group to the liability side -- decided by the
+        account type's category id via the shared classifier, never the
+        'liability' label string.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctCategoryEnum
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_allocation,
+        )
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            liab_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
+            ret_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+            grouped = {
+                "asset": [self._acct(asset_id)],
+                "liability": [self._acct(liab_id)],
+                "retirement": [self._acct(ret_id)],
+            }
+            subtotals = {
+                "asset": Decimal("5000.00"),
+                "liability": Decimal("12000.00"),
+                "retirement": Decimal("30000.00"),
+            }
+
+            alloc = compute_allocation(grouped, subtotals)
+
+            assert [s["label"] for s in alloc["assets"]] == [
+                "asset", "retirement",
+            ]
+            assert [s["value"] for s in alloc["assets"]] == [
+                Decimal("5000.00"), Decimal("30000.00"),
+            ]
+            assert [s["label"] for s in alloc["liabilities"]] == ["liability"]
+            assert alloc["liabilities"][0]["value"] == Decimal("12000.00")
+
+    def test_drops_zero_and_negative_subtotal_groups(self, app):
+        """A zero or negative group subtotal is dropped from the bar.
+
+        A zero asset group is an invisible segment and a negative one (a
+        rare overdrawn category) would distort the stacked bar; both are
+        already netted into the chips' totals, so the bar omits them.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctCategoryEnum
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_allocation,
+        )
+        with app.app_context():
+            asset_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
+            ret_id = ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)
+            inv_id = ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)
+            grouped = {
+                "asset": [self._acct(asset_id)],
+                "retirement": [self._acct(ret_id)],
+                "investment": [self._acct(inv_id)],
+            }
+            subtotals = {
+                "asset": Decimal("5000.00"),
+                "retirement": Decimal("0.00"),
+                "investment": Decimal("-100.00"),
+            }
+
+            alloc = compute_allocation(grouped, subtotals)
+
+            assert [s["label"] for s in alloc["assets"]] == ["asset"]
+            assert alloc["liabilities"] == []
 
 
 class TestPropertyEquityInContext:

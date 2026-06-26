@@ -567,3 +567,53 @@ def compute_property_equity(
                 ),
             })
     return result
+
+
+def compute_allocation(grouped_accounts, group_subtotals) -> dict:
+    """Split the category subtotals into the diverging allocation bar's sides.
+
+    The cockpit's allocation bar (rebuild decision 8) is a diverging
+    assets-vs-liabilities bar: the asset-side category subtotals stack on
+    the right, the liability total on the left, with the net-worth gap read
+    as the difference in their extents.  This producer classifies each
+    category group as asset or liability by its account type's category id
+    (via :func:`_is_liability_account`, never a label string) and pairs it
+    with the group's already-computed balance subtotal, so the bar, the grid
+    subtotals, and the net-worth chips all read one set of figures.
+
+    Segments with a non-positive subtotal are dropped: a zero group is an
+    invisible segment, and a negative one (a rare overdrawn category) would
+    distort the stacked bar -- it is already netted into the chips' totals.
+    The route adds each segment's float width percentage at the presentation
+    boundary; the ``value`` figures stay ``Decimal``.
+
+    Args:
+        grouped_accounts: The ``OrderedDict`` from
+            :func:`~app.services.savings_dashboard_service._display._group_accounts_by_category`
+            (category label -> list of per-account projection dicts), in
+            display order.
+        group_subtotals: The ``OrderedDict`` from
+            :func:`~app.services.savings_dashboard_service._display._compute_group_subtotals`
+            (category label -> ``Decimal`` balance subtotal), keyed
+            identically.
+
+    Returns:
+        A dict ``{"assets": [{"label", "value"}], "liabilities": [{"label",
+        "value"}]}`` where each ``value`` is the group's ``Decimal``
+        subtotal, assets in display order.  Empty lists when no group
+        qualifies.
+    """
+    assets: list[dict] = []
+    liabilities: list[dict] = []
+    for label, accounts in grouped_accounts.items():
+        value = group_subtotals[label]
+        if value <= ZERO:
+            continue
+        # All accounts in a group share one category (grouped by
+        # category_id), so the first classifies the group -- by id, never a
+        # label string.
+        if accounts and _is_liability_account(accounts[0]["account"]):
+            liabilities.append({"label": label, "value": value})
+        else:
+            assets.append({"label": label, "value": value})
+    return {"assets": assets, "liabilities": liabilities}

@@ -25,6 +25,7 @@ from app.services.savings_dashboard_service._data import (
 from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
     build_trend_periods,
+    compute_allocation,
     compute_net_worth_change,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -459,9 +460,10 @@ def _compute_cockpit_grid_section(
     """Assemble the cockpit's account-grid context (Loop B Phase 2).
 
     Groups the projected accounts by category ONCE and reuses that single
-    structure for both the grid itself and its per-category balance
-    subtotals (so the grouping is never recomputed), and resolves each
-    Property's equity through the shared
+    structure for the grid itself, its per-category balance subtotals, and
+    the diverging allocation bar's asset/liability split (so the grouping is
+    never recomputed), and resolves each Property's equity through the
+    shared
     :func:`app.services.savings_dashboard_service._net_worth.compute_property_equity`
     producer.  All money math lives here, never in the template.
 
@@ -475,14 +477,20 @@ def _compute_cockpit_grid_section(
     Returns:
         dict with ``grouped_accounts`` (category label -> projection dicts),
         ``group_subtotals`` (category label -> ``Decimal`` balance
-        subtotal), and ``property_equity`` (list of ``{account, equity}``
-        for each Property account).
+        subtotal), ``allocation`` (the diverging bar's ``{"assets", "liabilities"}``
+        segment lists, ``Decimal`` values; the route adds the widths), and
+        ``property_equity`` (list of ``{account, equity}`` for each Property
+        account).
     """
     grouped_accounts = _group_accounts_by_category(account_data)
+    group_subtotals = _compute_group_subtotals(grouped_accounts)
     scenario_id = core.scenario.id if core.scenario else None
     return {
         "grouped_accounts": grouped_accounts,
-        "group_subtotals": _compute_group_subtotals(grouped_accounts),
+        "group_subtotals": group_subtotals,
+        # The diverging allocation bar's asset/liability split (decision 8),
+        # from the same grouping + subtotals (the route adds the widths).
+        "allocation": compute_allocation(grouped_accounts, group_subtotals),
         "property_equity": compute_property_equity(
             core.accounts, scenario_id, date.today(),
         ),

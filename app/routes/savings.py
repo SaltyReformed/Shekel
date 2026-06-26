@@ -87,6 +87,48 @@ def _serialize_net_worth_chart(net_worth_series: dict) -> str:
         "current_index": net_worth_series["current_index"],
     })
 
+
+def _serialize_allocation_bar(allocation: dict) -> dict:
+    """Add each allocation segment's diverging-bar width percentage.
+
+    The presentation boundary for the allocation bar: the only place
+    ``float`` enters (each segment's ``value`` stays ``Decimal`` for the
+    money macro).  Both sides scale to one shared maximum --
+    ``max(total assets, total liabilities)`` -- so the larger side fills its
+    half of the bar and the smaller reads proportionally shorter, making the
+    net-worth gap (the difference in extents) legible.  Each segment's width
+    is then a percentage of its half: ``value / scale * 100``.
+
+    Args:
+        allocation: The producer dict from
+            :func:`~app.services.savings_dashboard_service._net_worth.compute_allocation`
+            (``{"assets": [...], "liabilities": [...]}``, ``Decimal``
+            values).
+
+    Returns:
+        The same structure with a ``pct`` (``float`` 0-100) added to each
+        segment; all ``pct`` are ``0.0`` when both sides are empty (scale
+        zero), so the template renders an empty bar rather than dividing by
+        zero.
+    """
+    asset_total = sum(seg["value"] for seg in allocation["assets"])
+    liability_total = sum(seg["value"] for seg in allocation["liabilities"])
+    scale = max(asset_total, liability_total)
+
+    def _with_pct(segments: list[dict]) -> list[dict]:
+        return [
+            {
+                **seg,
+                "pct": float(seg["value"] / scale * 100) if scale > 0 else 0.0,
+            }
+            for seg in segments
+        ]
+
+    return {
+        "assets": _with_pct(allocation["assets"]),
+        "liabilities": _with_pct(allocation["liabilities"]),
+    }
+
 # Fields allowed in goal updates.  Income-relative fields are included
 # so mode changes propagate correctly.
 _GOAL_UPDATE_FIELDS = frozenset({
@@ -161,22 +203,24 @@ def _cockpit_context(user_id: int) -> dict:
     The single producer + serialization prologue shared by the full-page
     ``dashboard`` render and the ``cockpit_section`` partial re-render, so
     both feed the template the identical contract (the money-precise
-    ``net_worth`` figures plus the ``net_worth_chart_json`` the trend
-    canvas reads).  ``float`` is applied only in
-    :func:`_serialize_net_worth_chart`, the Chart.js boundary; every other
-    figure stays ``Decimal``.
+    ``net_worth`` figures, the ``net_worth_chart_json`` the trend canvas
+    reads, and the ``allocation`` segments' diverging-bar widths).  ``float``
+    is applied only in the two serializers (:func:`_serialize_net_worth_chart`,
+    the Chart.js boundary, and :func:`_serialize_allocation_bar`, the
+    allocation-width boundary); every other figure stays ``Decimal``.
 
     Args:
         user_id: Integer ID of the current user.
 
     Returns:
         The ``compute_dashboard_data`` dict with ``net_worth_chart_json``
-        added.
+        added and ``allocation`` replaced by its width-annotated form.
     """
     ctx = savings_dashboard_service.compute_dashboard_data(user_id)
     ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
         ctx["net_worth"]["series"]
     )
+    ctx["allocation"] = _serialize_allocation_bar(ctx["allocation"])
     return ctx
 
 

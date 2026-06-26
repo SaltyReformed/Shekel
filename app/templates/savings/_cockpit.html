@@ -77,6 +77,50 @@
       </div>
     </div>
   </div>
+
+  {# ── Allocation: a diverging assets-vs-liabilities bar (decision 8) ────
+     Asset-category subtotals stack rightward from the center, the liability
+     total extends left, both scaled to one shared max so the net-worth gap
+     reads as the difference in their extents.  Widths come from the route's
+     float pct via progress_bar.js (data-progress-pct); the values stay
+     Decimal through the money macro.  Asset categories are graduated accent
+     tints, liabilities the danger token, and the legend names + values each
+     segment (decision 8: "each segment paired with a label and value"). #}
+  {% if allocation.assets or allocation.liabilities %}
+  <div class="nw-alloc">
+    <div class="nw-alloc__bar" role="img"
+         aria-label="Assets versus liabilities allocation">
+      <div class="nw-alloc__half nw-alloc__half--liab">
+        {% for seg in allocation.liabilities %}
+        <div class="nw-alloc__seg nw-alloc__seg--liab" data-progress-pct="{{ seg.pct }}"
+             title="{{ seg.label|title }}: {{ money(seg.value) }}"></div>
+        {% endfor %}
+      </div>
+      <div class="nw-alloc__half nw-alloc__half--asset">
+        {% for seg in allocation.assets %}
+        <div class="nw-alloc__seg nw-alloc__seg--a{{ loop.index0 }}"
+             data-progress-pct="{{ seg.pct }}"
+             title="{{ seg.label|title }}: {{ money(seg.value) }}"></div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="nw-alloc__legend">
+      {% for seg in allocation.assets %}
+      <span class="nw-alloc__legend-item">
+        <i class="nw-alloc__swatch nw-alloc__swatch--a{{ loop.index0 }}"></i>
+        {{ seg.label|title }} <span class="font-mono">{{ money(seg.value) }}</span>
+      </span>
+      {% endfor %}
+      {% for seg in allocation.liabilities %}
+      <span class="nw-alloc__legend-item">
+        <i class="nw-alloc__swatch nw-alloc__swatch--liab"></i>
+        {{ seg.label|title }} <span class="font-mono">{{ money(seg.value) }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {% if net_worth.series.periods %}
   {# Trend controls: the Net vs Assets-and-Liabilities series toggle and the
      6 / 13 / 26 / All forward-horizon picker (default 13).  Both are pure

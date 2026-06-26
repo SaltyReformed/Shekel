@@ -86,6 +86,113 @@
 }
 
 /* =============================================
+   ALLOCATION BAR (diverging assets vs liabilities)
+   A single bar split at the center: the liability total grows left, the
+   asset-category subtotals stack right, both scaled to one shared max so
+   the net-worth gap reads as the difference in extents (decision 8).
+   Segment widths are applied by progress_bar.js from data-progress-pct.
+   ============================================= */
+.nw-alloc {
+  padding: 0 1.375rem 0.625rem;
+}
+
+.nw-alloc__bar {
+  position: relative;
+  display: flex;
+  height: 0.875rem;
+  border-radius: 0.3125rem;
+  overflow: hidden;
+  background: var(--shekel-border-subtle);
+}
+
+/* The two halves meet at the center (50%); liabilities fill from the center
+   leftward, assets from the center rightward. */
+.nw-alloc__half {
+  flex: 1 1 50%;
+  display: flex;
+  min-width: 0;
+}
+
+.nw-alloc__half--liab {
+  justify-content: flex-end;
+}
+
+.nw-alloc__half--asset {
+  justify-content: flex-start;
+}
+
+/* A faint tick where the two sides meet. */
+.nw-alloc__bar::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--shekel-surface);
+  transform: translateX(-0.5px);
+}
+
+.nw-alloc__seg {
+  height: 100%;
+  /* width: applied by progress_bar.js from data-progress-pct (% of half) */
+}
+
+/* Liabilities: money owed -> the danger token.  Asset categories are
+   graduated tints of the accent (the Steel Ink accent is the only non-money
+   chroma) so the composition is visible while staying monochrome; the
+   legend names each.  a0..a3 = asset, retirement, investment, other in
+   display order.  Each color is defined once for both the bar segment and
+   its legend swatch. */
+.nw-alloc__seg--liab,
+.nw-alloc__swatch--liab {
+  background: var(--shekel-danger);
+}
+
+.nw-alloc__seg--a0,
+.nw-alloc__swatch--a0 {
+  background: color-mix(in srgb, var(--shekel-accent) 92%, var(--shekel-surface));
+}
+
+.nw-alloc__seg--a1,
+.nw-alloc__swatch--a1 {
+  background: color-mix(in srgb, var(--shekel-accent) 70%, var(--shekel-surface));
+}
+
+.nw-alloc__seg--a2,
+.nw-alloc__swatch--a2 {
+  background: color-mix(in srgb, var(--shekel-accent) 52%, var(--shekel-surface));
+}
+
+.nw-alloc__seg--a3,
+.nw-alloc__swatch--a3 {
+  background: color-mix(in srgb, var(--shekel-accent) 38%, var(--shekel-surface));
+}
+
+/* Legend: each segment paired with its label and Decimal value. */
+.nw-alloc__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 0.4375rem;
+  font-size: 0.75rem;
+  color: var(--shekel-text-secondary);
+}
+
+.nw-alloc__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.nw-alloc__swatch {
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 0.1875rem;
+}
+
+/* =============================================
    ACCOUNT GRID (per-category auto-fit)
    Each category renders its OWN auto-fit grid under its group header, so
    empty tracks collapse and there are no trailing holes; more cards flow
