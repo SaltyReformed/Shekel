@@ -388,13 +388,20 @@ def _compute_net_worth_section(
     derive from that one projection so they cannot drift onto two copies of
     the math.
 
-    The maps are built once here over ALL periods (so the entries-aware
+    The maps are built once over ALL periods (so the entries-aware
     resolver always has its anchor seed) via
-    :func:`build_account_net_worth_maps`, fed by the shared
-    :mod:`app.services.net_worth_kernel` (the same math the year-end
-    net-worth trend uses, including the investment growth sub-chain).
-    The amortization schedules for the user's loan accounts are generated
-    once here and threaded into the dense-map build.
+    :func:`build_account_net_worth_maps`, which routes through the
+    :mod:`app.services.balance_at` seam -- the same per-kind math the
+    year-end net-worth trend uses, including the investment growth
+    sub-chain.  The seam owns its input assembly, so it re-loads the
+    investment params, deductions, engine gross, and loan schedules that
+    ``params`` already carries for these accounts; that duplicated read is
+    the deliberate, correctness-neutral cost of the single-source-of-truth
+    invariant the seam enforces (threading pre-assembled inputs back in
+    would re-leak the assembly the seam exists to centralize).  The
+    amortization schedules generated below therefore feed only the
+    honest-history gate (:func:`build_trend_periods`), which reads each
+    loan's first-payment date -- the data the balance maps do not carry.
 
     Degrades gracefully with no current period: the today figures still
     come from ``account_data``, the series is empty (``current_index`` 0),
@@ -421,9 +428,11 @@ def _compute_net_worth_section(
     """
     today = compute_net_worth_today(account_data)
 
-    # Loan accounts (those carrying a LoanParams row) drive the
-    # amortization-schedule path of the dense-map build; generate their
-    # schedules once.
+    # The honest-history gate (build_trend_periods ->
+    # _loan_schedule_start_index) reads each loan's first-payment date out of
+    # its schedule rows -- data the balance maps do not carry -- so generate
+    # the loan schedules here for the gate.  (The dense-map build assembles
+    # its own inside the seam; see this function's docstring.)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
@@ -434,8 +443,7 @@ def _compute_net_worth_section(
     )
 
     account_maps = build_account_net_worth_maps(
-        core.accounts, core.scenario, core.all_periods, params,
-        debt_schedules,
+        core.accounts, core.scenario, core.all_periods,
     )
 
     trend_periods, current_index, _ = build_trend_periods(

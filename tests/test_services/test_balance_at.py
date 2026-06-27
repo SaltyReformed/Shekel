@@ -52,9 +52,6 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 from app.services.savings_dashboard_service._data import _load_account_params
-from app.services.savings_dashboard_service._net_worth import (
-    build_account_net_worth_maps,
-)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from tests._test_helpers import (
@@ -445,14 +442,18 @@ class TestBuildMaps:
     def test_mixed_set_matches_net_worth_maps(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For a mixed account set, build_maps equals build_account_net_worth_maps.
+        """For a mixed account set, build_maps equals the kernel dispatch.
 
-        The savings orchestrator threads ``_load_account_params`` and
-        ``generate_debt_schedules`` into ``build_account_net_worth_maps``;
+        Pre-reroute the savings net-worth producer assembled
+        ``_load_account_params`` + ``generate_debt_schedules`` and fed them
+        to the kernel's ``build_account_balance_map`` per account inline;
         the seam internalizes that assembly.  For every account, the seam's
-        per-id map must equal the canonical producer's ``balances`` entry,
-        which also locks the deduction-scoping rule (both scope to the
-        InvestmentParams map's keys).
+        per-id map must equal that direct kernel dispatch under the
+        orchestrator's manual assembly, which also locks the
+        deduction-scoping rule (both scope to the InvestmentParams map's
+        keys).  The oracle is the direct kernel call, NOT the rerouted
+        ``build_account_net_worth_maps`` (which now delegates to
+        ``build_maps`` -- comparing against it would be tautological).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -485,13 +486,27 @@ class TestBuildMaps:
             debt_schedules = net_worth_kernel.generate_debt_schedules(
                 loan_accounts, scenario.id,
             )
-            net_worth_maps = build_account_net_worth_maps(
-                accounts, scenario, periods, params, debt_schedules,
-            )
-            expected_by_id = {
-                entry["account_id"]: entry["balances"]
-                for entry in net_worth_maps
-            }
+            # Independent oracle: the kernel dispatch the savings net-worth
+            # producer ran inline pre-reroute, fed by the orchestrator's
+            # manual assembly.  This is what build_account_net_worth_maps did
+            # before delegating to the seam; reproducing it here keeps the
+            # comparison non-tautological -- it proves the seam's internal
+            # assembly reproduces the manual assembly account-for-account.
+            expected_by_id = {}
+            for account in accounts:
+                balances = net_worth_kernel.build_account_balance_map(
+                    account, scenario, periods,
+                    debt_schedule=debt_schedules.get(account.id),
+                    investment_params=params.investment_params_map.get(
+                        account.id,
+                    ),
+                    deductions=params.deductions_by_account.get(
+                        account.id, [],
+                    ),
+                    salary_gross_biweekly=params.salary_gross_biweekly,
+                )
+                if balances is not None:
+                    expected_by_id[account.id] = balances
 
             seam_maps = balance_at.build_maps(accounts, scenario, periods)
 
