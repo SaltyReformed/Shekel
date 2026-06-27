@@ -8,9 +8,13 @@ cargo-cult-disable noise the rules exist to prevent.
 """
 
 import astroid
+from astroid import nodes
 from pylint.testutils import CheckerTestCase, MessageTest
 
 from shekel_checkers import (
+    _BALANCE_PRODUCERS,
+    _BALANCE_SEAM_MODULES,
+    ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
     ShekelLoanBalanceSourceChecker,
     ShekelMoneyChecker,
@@ -531,6 +535,257 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
         """A producer call missing the balance argument is not flagged and does not crash."""
         node = astroid.extract_node(
             "compute_loan_period_balance_map(schedule, periods)",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+
+class TestShekelBalanceSeamChecker(CheckerTestCase):
+    """``shekel-balance-producer-bypass``: balances come through the seam only.
+
+    Every screen must obtain an account's balance through
+    ``app.services.balance_at``; only the seam and the engine cluster it
+    composes (balance_resolver, balance_calculator, account_projection,
+    growth_engine, net_worth_kernel) may call a balance producer directly. The
+    rule keys off the ENCLOSING module (``node.root().name``), so each case is
+    parsed inside a named module via :func:`astroid.parse` (``module_name=``)
+    rather than the bare :func:`astroid.extract_node` the shape-only checkers
+    use -- that yields an empty module name. Every flagged form is paired with
+    the conforming form that must NOT fire, and two register-bound loops assert
+    the fence covers EVERY guarded producer and EVERY allowlisted module.
+    """
+
+    CHECKER_CLASS = ShekelBalanceSeamChecker
+
+    @staticmethod
+    def _producer_call(call_source: str, module_name: str) -> nodes.Call:
+        """Return the Call node for *call_source* parsed inside *module_name*.
+
+        The enclosing module's name drives the seam allowlist check, so it is
+        set explicitly. The snippet is a single assignment, so the module
+        body's one statement carries the call under test as its value -- no
+        nested calls, so the node is unambiguous.
+        """
+        module = astroid.parse(
+            f"result = {call_source}\n", module_name=module_name,
+        )
+        return module.body[0].value
+
+    def test_flags_attribute_producer_from_consumer(self) -> None:
+        """A route calling balance_resolver.balances_for directly is flagged."""
+        node = self._producer_call(
+            "balance_resolver.balances_for(account, scenario_id, periods)",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("balances_for",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_bare_name_producer_from_consumer(self) -> None:
+        """A bare-imported producer call from a consumer is flagged.
+
+        Uses compute_loan_period_balance_map -- imported and called by its bare
+        name, the form net_worth_kernel itself uses internally.
+        """
+        node = self._producer_call(
+            "compute_loan_period_balance_map(schedule, periods, current_balance)",
+            "app.services.savings_dashboard_service._projections",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("compute_loan_period_balance_map",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_private_investment_builder_from_consumer(self) -> None:
+        """The private _build_investment_balance_map is guarded too: no reaching past the seam."""
+        node = self._producer_call(
+            "net_worth_kernel._build_investment_balance_map("
+            "account, params, scenario, periods)",
+            "app.services.investment_dashboard_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("_build_investment_balance_map",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_every_guarded_producer_from_a_consumer(self) -> None:
+        """EVERY name in _BALANCE_PRODUCERS is flagged when called from a consumer.
+
+        Binds the test to the producer set itself, so a name added to (or
+        dropped from) the frozenset is automatically covered -- the fence is
+        only as strong as that set is complete.
+        """
+        for producer in sorted(_BALANCE_PRODUCERS):
+            node = self._producer_call(
+                f"{producer}(account, scenario, periods)", "app.routes.grid",
+            )
+            with self.assertAddsMessages(
+                MessageTest(
+                    "shekel-balance-producer-bypass",
+                    node=node,
+                    args=(producer,),
+                ),
+                ignore_position=True,
+            ):
+                self.checker.visit_call(node)
+
+    def test_allows_producer_from_seam(self) -> None:
+        """The seam itself (app.services.balance_at) may call a producer; not flagged."""
+        node = self._producer_call(
+            "balance_resolver.balances_for(account, scenario_id, periods)",
+            "app.services.balance_at",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_producer_from_every_engine_cluster_module(self) -> None:
+        """Each allowlisted engine-cluster module may call a producer (they compose each other).
+
+        The companion to the every-producer loop: asserts the allowlist covers
+        every module the seam's documented dependency direction names, so
+        narrowing the set would surface here rather than as a surprise W9906 on
+        an engine module. The allowlist holds fully-qualified names, so each is
+        used directly as the enclosing module.
+        """
+        for module_name in sorted(_BALANCE_SEAM_MODULES):
+            node = self._producer_call(
+                "compute_loan_period_balance_map(schedule, periods, current_balance)",
+                module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_call(node)
+
+    def test_allows_producer_from_cluster_package_submodule(self) -> None:
+        """A submodule of a cluster module (if one is split into a package) stays inside the fence.
+
+        Locks the package-prefix match in :func:`_in_balance_seam_cluster`: a
+        future ``app/services/balance_resolver/_core.py`` resolves to
+        ``app.services.balance_resolver._core`` and must remain exempt.
+        """
+        node = self._producer_call(
+            "balances_for(account, scenario_id, periods)",
+            "app.services.balance_resolver._core",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_flags_same_basename_in_another_package(self) -> None:
+        """A same-named module in another package is NOT exempted (no silent bypass by collision).
+
+        The fence keys off the FULL module path, so a hypothetical
+        ``app/routes/balance_at.py`` -- basename ``balance_at`` -- is still
+        flagged for a direct producer call. This is the false-negative the
+        basename-only match would have allowed.
+        """
+        node = self._producer_call(
+            "balance_resolver.balances_for(account, scenario_id, periods)",
+            "app.routes.balance_at",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("balances_for",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_producer_in_unresolvable_module(self) -> None:
+        """An empty / unresolvable module name fails closed: the producer call is flagged.
+
+        Locks the documented fail-closed behavior of
+        :func:`_in_balance_seam_cluster` -- when the module name cannot be
+        resolved, the safe direction for a fence is to flag, not exempt.
+        """
+        node = self._producer_call(
+            "balances_for(account, scenario_id, periods)", "",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("balances_for",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_seam_entry_call_from_consumer(self) -> None:
+        """A consumer calling the seam's own balance_map entry is the sanctioned path; not flagged.
+
+        ``balance_map`` is a seam entry point, not a guarded producer, so the
+        attribute name does not match -- this is exactly how every rerouted
+        consumer now reads balances.
+        """
+        node = self._producer_call(
+            "balance_at.balance_map(account, scenario, periods)",
+            "app.routes.grid",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_project_balance_from_consumer(self) -> None:
+        """project_balance is a rich primitive, not a producer; not flagged.
+
+        It returns ProjectedBalance contribution/growth detail the seam
+        composes, so a chart consumer may call it directly.
+        """
+        node = self._producer_call(
+            "growth_engine.project_balance(account, params, scenario, periods)",
+            "app.services.investment_dashboard_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_resolve_loan_from_consumer(self) -> None:
+        """resolve_loan returns the rich LoanState, not a balance map; never flagged."""
+        node = self._producer_call(
+            "loan_resolver.resolve_loan(account, scenario_id)",
+            "app.routes.loan._helpers",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_investment_base_balance_map_from_consumer(self) -> None:
+        """The pre-growth seed accessor stays callable by growth consumers; never flagged.
+
+        ``net_worth_kernel.investment_base_balance_map`` returns the cash-basis
+        seed a forward growth projection compounds from -- a projection INPUT,
+        not the modeled balance the seam displays. The investment / retirement
+        dashboards and the year-end savings projection read it directly (so they
+        never call the fenced cash producer), so guarding it would false-flag
+        those sanctioned consumers. This locks that exclusion: if the name is
+        ever added to _BALANCE_PRODUCERS, this fails (and the every-producer loop
+        would then require it flagged), forcing the decision into the open.
+        """
+        node = self._producer_call(
+            "net_worth_kernel.investment_base_balance_map(account, scenario, periods)",
+            "app.services.investment_dashboard_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_ignores_unrelated_call_from_consumer(self) -> None:
+        """A call to some unrelated function is not this checker's concern."""
+        node = self._producer_call(
+            "build_rate_periods(terms, principal)", "app.routes.grid",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
