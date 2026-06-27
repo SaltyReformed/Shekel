@@ -315,3 +315,7 @@ load). The extended oracle is the gate every reroute commit must keep green.
 - Removing the presentation gates (`_CASH_GATING_KINDS`, `_loan_schedule_start_index`,
   `_honest_history_start_index`) -- they are presentation logic, kept per the fitness doc.
 - Fencing `project_balance` / `resolve_loan` (rich primitives, kept outside the seam by design).
+- The kind-correct-grid + interest-line feature (surfacing real interest accrual for an HYSA grid
+  account, instead of the cash-flow view Commit 8 ships). Discovered during Commit 8 and deferred as
+  a scoped follow-up the seam makes a clean flip: see
+  `followup_kind_correct_grid_interest.md`.
