@@ -587,6 +587,12 @@ from app.models.ref import (
 )
 from app.services import account_service
 from app.services.auth_service import hash_password
+from tests._test_helpers import (
+    create_loan_account,
+    insert_trueup_event,
+    make_appreciating_account,
+    make_investment_account,
+)
 
 
 # --- App & DB Fixtures ---------------------------------------------------
@@ -1153,6 +1159,133 @@ def auth_client(app, db, client, seed_user):
     return client
 
 
+def _build_cross_page_calendar_periods(db, user):
+    """Build 36 calendar-monthly pay periods for the cross-page lock fixtures.
+
+    The shared period-construction step behind ``seed_cross_page_account``
+    and every per-kind cross-page fixture (loan / property / investment /
+    secured).  Creates one period per calendar month spanning
+    ``[today.year - 1, today.year + 1]`` (``period_index`` 1..36, sitting
+    cleanly above the ``seed_user`` bootstrap at index 0), then returns the
+    full ordered period list and the anchor period (the calendar month
+    containing today).
+
+    Monthly (not biweekly) periods are deliberate: the anchor period's
+    ``end_date`` IS a calendar month-end, so the C9-3 boundary invariant of
+    :func:`balance_resolver.balance_as_of_date` makes the calendar surface's
+    projected month-end balance equal the resolver's anchor-period balance
+    for the same data.  The anchor being the month containing today also
+    lets ``pay_period_service.get_current_period`` land on it with no
+    date-mock plumbing.
+
+    The ``seed_user`` bootstrap pay period is left in place rather than
+    deleted via ``_drop_seed_user_bootstrap``: deleting it cascades the
+    ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and forces an
+    autoflush UPDATE on the account anchor mid-flush, which races the
+    just-flushed new pay periods on stricter autoflush orderings (observed:
+    ``ForeignKeyViolation`` on ``current_anchor_period_id``).  Keeping the
+    bootstrap is benign for the lock: it is a 2024 pre-anchor period every
+    surface skips (the resolver only emits balances from the anchor period
+    forward, and grid / dashboard / savings / accounts all key off
+    ``get_current_period``, which matches today's month, not the bootstrap).
+
+    Args:
+        db: The SQLAlchemy ``db`` fixture.
+        user: The owning :class:`~app.models.user.User` (its ``id`` scopes
+            the periods).
+
+    Returns:
+        ``(all_periods, anchor_period)`` -- the user's full period list
+        ordered by ``period_index`` (bootstrap at 0 plus the 36 monthly
+        periods) and the anchor period containing today.
+    """
+    today = date.today()
+    first_year = today.year - 1
+    period_index = 1
+    created = []
+    for year in range(first_year, first_year + 3):
+        for month in range(1, 13):
+            start = date(year, month, 1)
+            # last day of month: subtract one from the first of next month
+            # (December rolls to next year).
+            if month == 12:
+                next_first = date(year + 1, 1, 1)
+            else:
+                next_first = date(year, month + 1, 1)
+            end = next_first - timedelta(days=1)
+            period = PayPeriod(
+                user_id=user.id,
+                start_date=start,
+                end_date=end,
+                period_index=period_index,
+            )
+            db.session.add(period)
+            created.append(period)
+            period_index += 1
+    db.session.commit()
+
+    # The anchor period is the calendar month containing today.  The
+    # created list runs chronologically from January of ``first_year``, so
+    # today's month sits at index ``12 + (today.month - 1)``.
+    anchor_period = created[12 + (today.month - 1)]
+    assert anchor_period.start_date <= today <= anchor_period.end_date, (
+        f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
+        f"does not contain today={today}; fixture invariant broken"
+    )
+
+    all_periods = (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=user.id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+    return all_periods, anchor_period
+
+
+def _neutralize_seed_checking(db, seed_user, anchor_period):
+    """Re-anchor the ``seed_user`` Checking account to $0 at *anchor_period*.
+
+    The per-kind cross-page fixtures isolate a single non-cash account so
+    the AGGREGATE surfaces (year-end net worth, the savings net-worth
+    trend) reflect ONLY that account.  ``seed_user`` always provisions one
+    Checking account at a $1,000 anchor, so this neutralises it: it appends
+    a $0 ``AccountAnchorHistory`` row at *anchor_period* (latest-wins by
+    ``created_at``, so ``resolve_anchor`` returns $0) and re-points the
+    account's anchor cache to the same period and balance.  A $0 asset
+    anchored at the current period contributes 0 to every net-worth sum
+    from the current period forward and gates the trend at the current
+    period, so the per-kind account's value stands alone.
+
+    The account is re-fetched by primary key because the period-build
+    commit expires every object loaded upstream in ``seed_user``; setting
+    attributes on an expired instance does not reliably re-mark the row
+    dirty in every SQLAlchemy ORM mode (the same refetch
+    ``seed_cross_page_account`` performs for its own anchor override).
+
+    Args:
+        db: The SQLAlchemy ``db`` fixture.
+        seed_user: The ``seed_user`` fixture dict.
+        anchor_period: The period to re-anchor the Checking account to (the
+            current / anchor period of the per-kind fixture).
+    """
+    # Pylint: ``import-outside-toplevel`` -- Account is intentionally not
+    # imported at conftest top (every fixture builds accounts via the
+    # canonical factory); load it lazily, as seed_cross_page_account does.
+    # pylint: disable=import-outside-toplevel
+    from app.models.account import Account, AccountAnchorHistory
+
+    account = db.session.get(Account, seed_user["account"].id)
+    db.session.add(AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=anchor_period.id,
+        anchor_balance=Decimal("0.00"),
+        notes="per-kind cross-page fixture: neutralize seed checking to $0",
+    ))
+    account.current_anchor_balance = Decimal("0.00")
+    account.current_anchor_period_id = anchor_period.id
+    db.session.flush()
+
+
 @pytest.fixture()
 def seed_cross_page_account(app, db, seed_user):
     """Factory fixture for the PT-01 cross-page balance equality lock (HIGH-01).
@@ -1227,72 +1360,11 @@ def seed_cross_page_account(app, db, seed_user):
         account = seed_user["account"]
         scenario = seed_user["scenario"]
 
-        # Build 36 calendar-monthly periods spanning today's year +/- 1.
-        # ``period_index`` starts at 1 so they sit cleanly above the
-        # ``seed_user`` bootstrap (index 0, dated 2024-01).  The
-        # bootstrap is left in place rather than deleted via
-        # ``_drop_seed_user_bootstrap``: deleting it cascades the
-        # ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and
-        # forces an autoflush UPDATE on the account anchor mid-flush,
-        # which races the just-flushed new pay periods on stricter
-        # autoflush orderings (observed: ``ForeignKeyViolation`` on
-        # ``current_anchor_period_id``).  Keeping the bootstrap is
-        # equivalent for HIGH-01 lock purposes because it is a 2024
-        # pre-anchor period that every surface skips: the resolver
-        # only emits balances from the anchor period forward, the
-        # year-end's pre-target-year period lookup either falls on
-        # one of our 2025 monthly periods or returns the bootstrap
-        # (whose entry in ``balances`` is absent so the
-        # ``balances.get(..., ZERO)`` short-circuit yields the
-        # neutral zero), and the grid / dashboard / /savings /
-        # /accounts surfaces all key off
-        # ``pay_period_service.get_current_period`` which matches
-        # today's calendar-month period, not the 2024 bootstrap.
-        today = date.today()
-        first_year = today.year - 1
-        period_index = 1
-        created = []
-        for year in range(first_year, first_year + 3):
-            for month in range(1, 13):
-                start = date(year, month, 1)
-                # last day of month: subtract one from the first of
-                # next month (December rolls to next year).
-                if month == 12:
-                    next_first = date(year + 1, 1, 1)
-                else:
-                    next_first = date(year, month + 1, 1)
-                end = next_first - timedelta(days=1)
-                period = PayPeriod(
-                    user_id=user.id,
-                    start_date=start,
-                    end_date=end,
-                    period_index=period_index,
-                )
-                db.session.add(period)
-                created.append(period)
-                period_index += 1
-        db.session.commit()
-
-        # The anchor period is the calendar month containing today.
-        # ``today.month`` is 1..12 and the created list contains
-        # months chronologically starting at January of ``first_year``,
-        # so today's month is at index ``12 + (today.month - 1)``.
-        anchor_period = created[12 + (today.month - 1)]
-        assert anchor_period.start_date <= today <= anchor_period.end_date, (
-            f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
-            f"does not contain today={today}; fixture invariant broken"
-        )
-
-        # Build the ordered period list every surface consumes via
-        # ``pay_period_service.get_all_periods``.  Includes the 2024
-        # bootstrap at index 0 plus our 36 monthly periods at
-        # indices 1..36; the bootstrap is pre-anchor and benign for
-        # every surface (see the rationale block above).
-        all_periods = (
-            db.session.query(PayPeriod)
-            .filter_by(user_id=user.id)
-            .order_by(PayPeriod.period_index)
-            .all()
+        # Build the calendar-monthly period grid and locate the anchor
+        # month containing today via the shared period builder (which also
+        # documents why the seed_user bootstrap is deliberately kept).
+        all_periods, anchor_period = _build_cross_page_calendar_periods(
+            db, user,
         )
 
         # Override the anchor balance and matching history row.  The
@@ -1396,6 +1468,211 @@ def seed_cross_page_account(app, db, seed_user):
         }
 
     return _build
+
+
+@pytest.fixture()
+def cross_page_loan_ctx(db, seed_user):
+    """Single isolated amortizing loan for the cross-page equality lock.
+
+    Builds the shared calendar-monthly period grid, neutralises the
+    seed_user Checking account to $0 (so the AGGREGATE surfaces -- year-end
+    net worth, the savings net-worth trend -- reflect the loan alone), then
+    creates ONE amortizing loan whose original principal P differs from its
+    trued-up current balance C: ``create_loan_account`` sets P = $240,000 at
+    origination, and an ``insert_trueup_event`` dated today asserts C =
+    $200,000.  The trueup makes the resolver schedule today-forward (first
+    payment next month), so every period up to and including the anchor
+    reports C held flat -- NEVER P.  ``C != P`` is what makes the boundary
+    assertion non-tautological (returning P at a pre-payment period is the
+    exact historical bug PR #44 / aba0242 fixed).
+
+    Returns a ctx dict mirroring ``seed_cross_page_account`` plus ``C``,
+    ``P``, and ``pre_anchor_period`` (a period strictly before the anchor,
+    where the balance map must equal C and not P).
+    """
+    # Pylint: ``import-outside-toplevel`` -- LoanParams is loaded lazily,
+    # the Account-class convention this conftest follows (no model packages
+    # imported at module top).
+    # pylint: disable=import-outside-toplevel
+    from app.models.loan_params import LoanParams
+
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    today = date.today()
+    original_principal = Decimal("240000.00")  # P
+    current_balance = Decimal("200000.00")     # C (trued up today); C != P
+    loan = create_loan_account(
+        seed_user, db.session, name="Cross-Page Loan",
+        principal=original_principal, term=360,
+        origination_date=date(today.year - 1, 1, 1),
+    )
+    params = db.session.query(LoanParams).filter_by(account_id=loan.id).one()
+    insert_trueup_event(params, current_balance, anchor_date=today)
+    db.session.commit()
+
+    # Pre-anchor period: the period immediately before the anchor (current)
+    # period.  The trueup is dated today and the loan's first scheduled
+    # payment is next month, so this period reports C held flat -- the
+    # boundary the bug used to fill with the original principal P.
+    anchor_pos = next(
+        i for i, p in enumerate(all_periods) if p.id == anchor_period.id
+    )
+    pre_anchor_period = all_periods[anchor_pos - 1]
+
+    return {
+        "user_id": user.id,
+        "account": loan,
+        "account_id": loan.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "C": current_balance,
+        "P": original_principal,
+        "pre_anchor_period": pre_anchor_period,
+    }
+
+
+@pytest.fixture()
+def cross_page_property_ctx(db, seed_user):
+    """Single isolated appreciating Property, anchor == current period.
+
+    Builds the shared period grid, neutralises the seed_user Checking to
+    $0, then creates ONE Property whose user-set market value is V =
+    $400,000, anchored at the current period.  Anchor == current means the
+    flat carry and the forward appreciation coincide at today, so the
+    /savings tile, the home-equity market value, the year-end asset
+    aggregate, and the net-worth trend all read V.  Returns a ctx dict
+    mirroring ``seed_cross_page_account`` plus ``V``.
+    """
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    value = Decimal("400000.00")  # V
+    prop = make_appreciating_account(
+        seed_user, db.session, anchor_period, value, Decimal("0.03000"),
+    )
+
+    return {
+        "user_id": user.id,
+        "account": prop,
+        "account_id": prop.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "V": value,
+    }
+
+
+@pytest.fixture()
+def cross_page_investment_ctx(db, seed_user):
+    """Single isolated Investment, anchor == current period, no contribution.
+
+    Builds the shared period grid, neutralises the seed_user Checking to
+    $0, then creates ONE 401(k) whose balance is V = $100,000, anchored at
+    the current period, with no employer match and no contribution feed.
+    Anchor == current with no current-period contribution means the
+    /savings tile, the investment dashboard, the year-end asset aggregate,
+    and the net-worth trend all read the anchor balance V (the growth
+    projection re-applies nothing at the anchor period itself).  Returns a
+    ctx dict mirroring ``seed_cross_page_account`` plus ``V``.
+    """
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    value = Decimal("100000.00")  # V
+    inv = make_investment_account(seed_user, db.session, anchor_period, value)
+
+    return {
+        "user_id": user.id,
+        "account": inv,
+        "account_id": inv.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "V": value,
+    }
+
+
+@pytest.fixture()
+def cross_page_secured_ctx(db, seed_user):
+    """Property (PV) secured by a mortgage (MC) for the home-equity relationship.
+
+    Builds the shared period grid, neutralises the seed_user Checking to
+    $0, then creates ONE Property (market value PV = $400,000, anchored at
+    the current period) and ONE mortgage trued up to current balance MC =
+    $250,000 today, linked via ``mortgage.collateral_account_id =
+    property.id`` so the property's ``secured_loans`` backref lists the
+    mortgage.  The relationship under test: market value (PV) minus total
+    secured debt (MC) is the equity, which must equal the year-end
+    net-worth aggregate and the trend's net at the current period.  Returns
+    PV, MC, and both account handles plus the standard period keys.
+    """
+    # Pylint: ``import-outside-toplevel`` -- Account / LoanParams are loaded
+    # lazily, the Account-class convention this conftest follows (no model
+    # packages imported at module top).
+    # pylint: disable=import-outside-toplevel
+    from app.models.account import Account
+    from app.models.loan_params import LoanParams
+
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    today = date.today()
+    property_value = Decimal("400000.00")    # PV
+    mortgage_balance = Decimal("250000.00")  # MC
+    prop = make_appreciating_account(
+        seed_user, db.session, anchor_period, property_value,
+        Decimal("0.03000"),
+    )
+    mortgage = create_loan_account(
+        seed_user, db.session, name="Cross-Page Mortgage",
+        principal=Decimal("300000.00"), term=360,
+        origination_date=date(today.year - 1, 1, 1),
+    )
+    params = db.session.query(LoanParams).filter_by(
+        account_id=mortgage.id,
+    ).one()
+    insert_trueup_event(params, mortgage_balance, anchor_date=today)
+    # Re-fetch the mortgage by primary key so setting the collateral FK
+    # reliably marks the row dirty (the create_loan_account commit expired
+    # it, the same refetch reason as _neutralize_seed_checking).
+    mortgage = db.session.get(Account, mortgage.id)
+    mortgage.collateral_account_id = prop.id
+    db.session.commit()
+
+    return {
+        "user_id": user.id,
+        "property_account": prop,
+        "property_account_id": prop.id,
+        "mortgage_account": mortgage,
+        "mortgage_account_id": mortgage.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "PV": property_value,
+        "MC": mortgage_balance,
+    }
 
 
 @pytest.fixture()

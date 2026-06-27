@@ -59,14 +59,19 @@ Test IDs are C11-1..C11-6 mapping to the remediation plan's
 Commit 11 specification.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from app.services import (
+    balance_at,
     balance_resolver,
     calendar_service,
     dashboard_service,
+    home_equity_service,
+    investment_dashboard_service,
+    loan_payment_service,
     savings_dashboard_service,
     year_end_summary_service,
 )
@@ -301,6 +306,42 @@ def _all_surface_values(ctx):
     return {name: reader(ctx) for name, reader in _SURFACE_READERS.items()}
 
 
+def _assert_surfaces_equal(surface_values, expected, label):
+    """Assert every surface in *surface_values* returns the identical *expected*.
+
+    The one dual-assert behind every cross-page equality test -- the cash
+    matrix here AND the per-kind locks (loan / property / investment /
+    secured) -- and the seam-injection negative controls that drive it:
+
+      (a) every surface equals *expected*, with a message naming the
+          offending surface and its value; and
+      (b) the set of all surface values is exactly ``{expected}`` (the
+          cross-page invariant -- no two surfaces produced different
+          Decimals, even if none individually missed *expected*).
+
+    *label* names the case in every message so a failure -- real or
+    injected by a negative control -- points at the surface, its value, and
+    the case.  The message shape is what the negative controls assert on
+    (the patched surface name and its wrong value both appear), so it must
+    stay stable.
+
+    Args:
+        surface_values: ``{surface_name: Decimal}`` from a reader dict.
+        expected: The single Decimal every surface must return.
+        label: A short case label woven into each assertion message.
+    """
+    for name, value in surface_values.items():
+        assert value == expected, (
+            f"surface {name!r} returned {value!r}; expected {expected!r} "
+            f"for {label}.  All surface values: {surface_values!r}"
+        )
+    unique_values = set(surface_values.values())
+    assert unique_values == {expected}, (
+        f"surfaces produced more than one Decimal ({unique_values!r}) "
+        f"for {label} -- this is the cross-page divergence HIGH-01 locks"
+    )
+
+
 # ── C11-1..C11-4: all surfaces equal across the parameter matrix ───
 
 
@@ -360,23 +401,12 @@ class TestCrossPageBalanceEquality:
 
             surface_values = _all_surface_values(ctx)
 
+            # Dual-assert (every surface == expected AND the set is a
+            # singleton) via the shared helper, so the cash matrix and the
+            # per-kind locks fire the identical cross-page invariant.
             expected = case["expected_balance"]
-            for name, value in surface_values.items():
-                assert value == expected, (
-                    f"surface {name!r} returned {value!r}; "
-                    f"expected {expected!r} for case {case['id']!r}.  "
-                    f"All surface values: {surface_values!r}"
-                )
-
-            # Distinct asserts above already prove pairwise equality
-            # transitively, but the explicit set-of-one check below
-            # documents the cross-page invariant at the call site so
-            # a future reader sees what HIGH-01 protects against.
-            unique_values = set(surface_values.values())
-            assert unique_values == {expected}, (
-                f"surfaces produced more than one Decimal "
-                f"({unique_values!r}) for case {case['id']!r} -- "
-                f"this is the cross-page divergence HIGH-01 locks"
+            _assert_surfaces_equal(
+                surface_values, expected, f"case {case['id']!r}",
             )
 
             # Route-level wiring: every HTTP surface returns 200 for
@@ -591,20 +621,17 @@ class TestSeamInjectionLock:
                 _SURFACE_READERS, "savings", _broken_savings_reader,
             )
 
-            # Run the same equality logic the positive test runs.
-            # Expect AssertionError -- the seam re-introduction must
-            # be caught.  If this raises something else, the lock is
-            # broken in a different way and the test must still fail
-            # loudly (no broad ``except``).
+            # Run the same equality logic the positive test runs, through
+            # the shared helper.  Expect AssertionError -- the seam
+            # re-introduction must be caught.  If this raises something
+            # else, the lock is broken in a different way and the test must
+            # still fail loudly (no broad ``except``).
             with pytest.raises(AssertionError) as excinfo:
-                surface_values = _all_surface_values(ctx)
-                expected = case["expected_balance"]
-                for name, value in surface_values.items():
-                    assert value == expected, (
-                        f"surface {name!r} returned {value!r}; "
-                        f"expected {expected!r} for case {case['id']!r}.  "
-                        f"All surface values: {surface_values!r}"
-                    )
+                _assert_surfaces_equal(
+                    _all_surface_values(ctx),
+                    case["expected_balance"],
+                    f"case {case['id']!r}",
+                )
 
             # The AssertionError must name the savings surface and
             # the divergent Decimal -- if it does not, the equality
@@ -620,4 +647,444 @@ class TestSeamInjectionLock:
                 "seam-injection negative control fired AssertionError "
                 "but the message did not reference the divergent "
                 f"Decimal 114.29: {excinfo.value!r}"
+            )
+
+
+# ── Per-kind cross-page locks: loan / property / investment / secured ──
+#
+# The cash matrix above locks the five checking surfaces.  These classes
+# extend the same cross-page contract to the recompute-at-read kinds the
+# balance_at seam (Level 1) will reroute -- loan, property (appreciating),
+# investment -- plus the property<->mortgage home-equity relationship.  Each
+# per-kind fixture isolates ONE account of that kind (the seed_user checking
+# is neutralised to $0) because two of the surfaces (year-end net worth and
+# the savings net-worth trend) are AGGREGATE-only: they sum over ALL of the
+# user's accounts, so a single-account fixture is the only way to read one
+# kind's contribution.  Each reader encapsulates the surface's sign
+# convention so the equality assertion stays uniform: the loan year-end
+# reader negates the liability aggregate, the loan trend reader reads the
+# (positive) ``liabilities`` lane, and the asset readers read ``assets``.
+
+
+def _match_account_data(dashboard_data, account_id):
+    """Return the single ``/savings`` account_data entry for *account_id*.
+
+    The shared per-account tile lookup the per-kind savings readers reuse;
+    asserts exactly one entry matched so a missing or duplicated account
+    fails loudly rather than silently reading the wrong tile.
+    """
+    matches = [
+        ad for ad in dashboard_data["account_data"]
+        if ad["account"].id == account_id
+    ]
+    assert len(matches) == 1, (
+        f"/savings account_data did not surface exactly one entry for "
+        f"account_id={account_id}: matched {len(matches)}"
+    )
+    return matches[0]
+
+
+def _net_worth_series(ctx):
+    """Return the ``/savings`` net-worth trend series dict for the user.
+
+    Carries the parallel ``net`` / ``assets`` / ``liabilities`` lists plus
+    ``current_index`` (the position of today's period in the trend window);
+    the per-kind trend readers index into it at ``current_index``.
+    """
+    data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
+    return data["net_worth"]["series"]
+
+
+def _year_end_month_balance(ctx):
+    """Return year-end net worth at the anchor month (the aggregate input).
+
+    With a single isolated account this equals that account's signed
+    contribution to net worth at the anchor period: ``+balance`` for an
+    asset, ``-abs(balance)`` for a liability (the loan reader negates it
+    back to a positive balance).
+    """
+    summary = year_end_summary_service.compute_year_end_summary(
+        ctx["user_id"], ctx["year"],
+    )
+    return summary["net_worth"]["monthly_values"][ctx["month"] - 1]["balance"]
+
+
+def _savings_tile_value(ctx):
+    """Read the ``/savings`` per-account tile current_balance for the account.
+
+    Shared by all three single-account kinds (loan / property / investment):
+    the per-account tile is a positive balance regardless of kind, so one
+    reader serves every kind's ``savings`` surface.
+    """
+    data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
+    return _match_account_data(data, ctx["account_id"])["current_balance"]
+
+
+def _trend_assets_value(ctx):
+    """Read the net-worth trend's ``assets`` lane at the current index."""
+    series = _net_worth_series(ctx)
+    return series["assets"][series["current_index"]]
+
+
+def _trend_liabilities_value(ctx):
+    """Read the net-worth trend's ``liabilities`` lane at the current index.
+
+    ``liabilities[i]`` is the positive magnitude ``abs(balance)``, so for an
+    isolated loan it equals the loan's current balance directly.
+    """
+    series = _net_worth_series(ctx)
+    return series["liabilities"][series["current_index"]]
+
+
+def _asset_year_end_value(ctx):
+    """Year-end balance for an isolated ASSET (its positive contribution)."""
+    return _year_end_month_balance(ctx)
+
+
+def _loan_year_end_value(ctx):
+    """Year-end balance for an isolated LOAN, negated to the positive balance.
+
+    The year-end aggregate subtracts a liability as ``-abs(balance)``, so an
+    isolated loan yields ``-C``; negating recovers the positive ``C`` every
+    other loan surface reports, keeping the equality assertion uniform.
+    """
+    return -_year_end_month_balance(ctx)
+
+
+def _loan_detail_value(ctx):
+    """Read the loan-detail balance (``resolve_account_loan`` current_balance).
+
+    The service-level equivalent of ``GET /accounts/<id>/loan``: the
+    resolver's ``LoanState.current_balance`` as of today, a positive amount
+    owed.
+    """
+    resolved = loan_payment_service.resolve_account_loan(
+        ctx["account_id"], ctx["scenario_id"], date.today(),
+    )
+    assert resolved is not None, (
+        f"resolve_account_loan returned None for loan "
+        f"account_id={ctx['account_id']}"
+    )
+    _params, state = resolved
+    return state.current_balance
+
+
+def _property_detail_value(ctx):
+    """Read the property-detail home-equity market value (the anchor balance).
+
+    The service-level equivalent of ``GET /accounts/<id>/property``:
+    ``resolve_home_equity(...).market_value`` is the property's
+    ``current_anchor_balance``; with no secured loans its ``total_debt`` is
+    zero, so market value alone is the cross-page value.
+    """
+    return home_equity_service.resolve_home_equity(
+        ctx["account"], ctx["scenario_id"], date.today(),
+    ).market_value
+
+
+def _investment_dashboard_value(ctx):
+    """Read the investment-dashboard producer current_balance for the account."""
+    return investment_dashboard_service.compute_dashboard_data(
+        ctx["user_id"], ctx["account"],
+    )["current_balance"]
+
+
+# Per-kind reader dicts.  Each maps a surface name to a reader returning the
+# SAME canonical positive quantity (the account's balance), so one
+# ``_assert_surfaces_equal`` call locks every kind.  The shared
+# ``_savings_tile_value`` serves the ``savings`` surface in all three.
+_LOAN_SURFACE_READERS = {
+    "savings": _savings_tile_value,
+    "loan_detail": _loan_detail_value,
+    "year_end": _loan_year_end_value,
+    "net_worth_trend": _trend_liabilities_value,
+}
+_PROPERTY_SURFACE_READERS = {
+    "savings": _savings_tile_value,
+    "property_detail": _property_detail_value,
+    "year_end": _asset_year_end_value,
+    "net_worth_trend": _trend_assets_value,
+}
+_INVESTMENT_SURFACE_READERS = {
+    "savings": _savings_tile_value,
+    "investment_dashboard": _investment_dashboard_value,
+    "year_end": _asset_year_end_value,
+    "net_worth_trend": _trend_assets_value,
+}
+
+
+class TestLoanCrossPageEquality:
+    """Every loan surface reports the same positive current balance C.
+
+    A single isolated amortizing loan (current balance C, original principal
+    P, with C != P) must report C identically on the /savings tile, the
+    loan-detail producer, the negated year-end liability aggregate, and the
+    net-worth trend's liabilities at today.  The boundary assertion
+    additionally locks the pre-payment-period rule (PR #44 / aba0242): the
+    balance seam must return C -- the current balance held flat -- at a
+    pre-anchor period, NEVER the original principal P.
+    """
+
+    def test_all_surfaces_equal(self, app, cross_page_loan_ctx, auth_client):
+        """Every loan surface returns C; the pre-anchor balance is C, not P.
+
+        C = $200,000 (trued up today) and P = $240,000 (origination
+        principal) differ, so the boundary assertion is falsifiable: a
+        producer that returned the original principal at the pre-payment
+        boundary would yield P there, failing ``== C``.  All four cross-page
+        surfaces read C at today.
+        """
+        with app.app_context():
+            ctx = cross_page_loan_ctx
+            expected = ctx["C"]  # the trued-up current balance
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _LOAN_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(surface_values, expected, "loan kind")
+
+            # Boundary lock: the balance seam holds the current balance C
+            # flat at a pre-anchor period; returning the original principal
+            # P there is the exact PR #44 / aba0242 bug.  C != P is what
+            # makes this non-tautological (verified by the second assert).
+            balances = balance_at.balance_map(
+                ctx["account"], ctx["scenario"], ctx["all_periods"],
+            )
+            pre_balance = balances[ctx["pre_anchor_period"].id]
+            assert pre_balance == ctx["C"], (
+                f"pre-anchor balance {pre_balance!r} != current balance "
+                f"{ctx['C']!r}; the loan pre-payment boundary regressed"
+            )
+            assert pre_balance != ctx["P"], (
+                f"pre-anchor balance {pre_balance!r} == original principal "
+                f"{ctx['P']!r}; this is the exact PR #44 boundary bug"
+            )
+
+            # Route wiring: the loan detail page renders without raising.
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/loan")
+            assert resp.status_code == 200, (
+                f"/accounts/<id>/loan returned {resp.status_code} for the "
+                "loan kind"
+            )
+
+
+class TestPropertyCrossPageEquality:
+    """Every property surface reports the same market value V.
+
+    A single isolated appreciating Property (market value V, anchored at the
+    current period so the flat carry and the appreciation projection
+    coincide at today) must report V identically on the /savings tile, the
+    home-equity market value (total_debt zero -- no secured loans), the
+    year-end asset aggregate, and the net-worth trend's assets at today.
+    """
+
+    def test_all_surfaces_equal(
+        self, app, cross_page_property_ctx, auth_client,
+    ):
+        """Every property surface returns V at today.
+
+        V = $400,000, anchored at the current period.  The /savings tile,
+        the home-equity market value, the year-end asset aggregate, and the
+        net-worth trend assets all read V.
+        """
+        with app.app_context():
+            ctx = cross_page_property_ctx
+            expected = ctx["V"]
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _PROPERTY_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(surface_values, expected, "property kind")
+
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/property")
+            assert resp.status_code == 200, (
+                f"/accounts/<id>/property returned {resp.status_code} for "
+                "the property kind"
+            )
+
+
+class TestInvestmentCrossPageEquality:
+    """Every investment surface reports the same balance V.
+
+    A single isolated Investment (balance V, anchored at the current period
+    with no current-period contribution, so the growth projection re-applies
+    nothing at the anchor period) must report V identically on the /savings
+    tile, the investment dashboard, the year-end asset aggregate, and the
+    net-worth trend's assets at today.
+
+    Scope note: at anchor==current all four surfaces legitimately resolve
+    through the same base producer (the resolver's current-period balance),
+    so this class is a four-surface WIRING lock at the agreement point, not a
+    cross-producer divergence lock the way the loan boundary is.  The
+    cross-producer investment lock -- where the model-from-anchor kernel
+    value (the anchor compounded forward to today) diverges from the
+    cash-basis tile -- requires an anchor-in-past fixture that diverges on
+    today's code, so it is added alongside the savings-tile reroute (the
+    Model-from-anchor unification), not here.  The growth math itself is
+    covered by tests/test_services/test_balance_at.py.
+    """
+
+    def test_all_surfaces_equal(
+        self, app, cross_page_investment_ctx, auth_client,
+    ):
+        """Every investment surface returns V at today.
+
+        V = $100,000, anchored at the current period with no contribution.
+        The /savings tile, the investment dashboard, the year-end asset
+        aggregate, and the net-worth trend assets all read V.
+        """
+        with app.app_context():
+            ctx = cross_page_investment_ctx
+            expected = ctx["V"]
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _INVESTMENT_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(
+                surface_values, expected, "investment kind",
+            )
+
+            # Route wiring: the investment detail page renders without
+            # raising (parity with the loan and property route checks above).
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/investment")
+            assert resp.status_code == 200, (
+                f"/accounts/<id>/investment returned {resp.status_code} for "
+                "the investment kind"
+            )
+
+
+class TestSecuredHomeEquityEquality:
+    """The property<->mortgage home-equity relationship reconciles across surfaces.
+
+    Unlike the single-value kinds this is a RELATIONSHIP: a property (market
+    value PV) secured by a mortgage (current balance MC).  Three legs must
+    agree across surfaces -- the property leg (market value == the property's
+    /savings tile == PV), the mortgage leg (total secured debt == the
+    mortgage's /savings tile == the loan-detail balance == MC), and the
+    equity (PV - MC == the year-end net-worth aggregate == the net-worth
+    trend's net at today).
+    """
+
+    def test_equity_relationship(self, app, cross_page_secured_ctx):
+        """market_value == PV, total_debt == MC, equity == PV - MC everywhere.
+
+        PV = $400,000, MC = $250,000, so equity = $150,000.  The home-equity
+        producer's market_value / total_debt / equity reconcile to the
+        /savings tiles, the loan-detail balance, the year-end aggregate, and
+        the net-worth trend net.
+        """
+        with app.app_context():
+            ctx = cross_page_secured_ctx
+            pv, mc = ctx["PV"], ctx["MC"]
+            equity = home_equity_service.resolve_home_equity(
+                ctx["property_account"], ctx["scenario_id"], date.today(),
+            )
+            dashboard = savings_dashboard_service.compute_dashboard_data(
+                ctx["user_id"],
+            )
+            prop_tile = _match_account_data(
+                dashboard, ctx["property_account_id"],
+            )["current_balance"]
+            mortgage_tile = _match_account_data(
+                dashboard, ctx["mortgage_account_id"],
+            )["current_balance"]
+            resolved = loan_payment_service.resolve_account_loan(
+                ctx["mortgage_account_id"], ctx["scenario_id"], date.today(),
+            )
+            assert resolved is not None, "securing mortgage did not resolve"
+            # resolved is (LoanParams, LoanState); the loan-detail balance is
+            # the state's current_balance (index 1).
+            loan_detail = resolved[1].current_balance
+
+            # Property leg: market value == the property tile == PV.
+            assert equity.market_value == prop_tile == pv, (
+                f"property leg disagreed: market_value={equity.market_value!r}, "
+                f"savings_tile={prop_tile!r}, PV={pv!r}"
+            )
+            # Mortgage leg: total secured debt == the mortgage tile == the
+            # loan-detail balance == MC.
+            assert (
+                equity.total_debt == mortgage_tile == loan_detail == mc
+            ), (
+                f"mortgage leg disagreed: total_debt={equity.total_debt!r}, "
+                f"savings_tile={mortgage_tile!r}, "
+                f"loan_detail={loan_detail!r}, MC={mc!r}"
+            )
+            # Equity == year-end net worth == trend net == PV - MC.
+            year_end_nw = _year_end_month_balance(ctx)
+            series = dashboard["net_worth"]["series"]
+            trend_net = series["net"][series["current_index"]]
+            # PV - MC = 400000.00 - 250000.00 = 150000.00.
+            assert equity.equity == year_end_nw == trend_net == (pv - mc), (
+                f"equity disagreed: equity={equity.equity!r}, "
+                f"year_end_nw={year_end_nw!r}, trend_net={trend_net!r}, "
+                f"PV-MC={(pv - mc)!r}"
+            )
+
+
+class TestPerKindSeamInjectionLock:
+    """Each per-kind cross-page lock catches an injected single-surface divergence.
+
+    The per-kind analogue of :class:`TestSeamInjectionLock`: monkeypatching
+    ONE reader in a kind's reader dict to return a deliberately wrong
+    Decimal must make :func:`_assert_surfaces_equal` raise an AssertionError
+    naming the patched surface and the wrong value.  Without this a per-kind
+    equality test that happened to read the same producer twice would still
+    report green.  Parametrised over the three single-value kinds to stay
+    DRY.
+    """
+
+    _WRONG = Decimal("-99999.99")  # no fixture balance equals this
+
+    # One per-kind negative-control case: (ctx fixture name, that kind's
+    # reader dict, the ctx key holding the true balance, the surface to
+    # break).  Bundled into a single parametrize value so the test stays a
+    # cohesive 5-argument method rather than threading four parallel
+    # parametrize columns.
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            ("cross_page_loan_ctx", _LOAN_SURFACE_READERS, "C", "savings"),
+            ("cross_page_property_ctx", _PROPERTY_SURFACE_READERS, "V", "savings"),
+            (
+                "cross_page_investment_ctx", _INVESTMENT_SURFACE_READERS,
+                "V", "savings",
+            ),
+        ],
+        ids=["loan", "property", "investment"],
+    )
+    def test_injected_divergence_is_caught(self, app, request, monkeypatch, spec):
+        """Patching one reader to a wrong Decimal makes the lock fire on it.
+
+        The patched surface reports ``_WRONG`` while every other surface
+        reports the kind's true balance, so :func:`_assert_surfaces_equal`
+        must raise an AssertionError whose message names the patched surface
+        and the wrong value -- proving the lock bites on a real
+        single-surface regression, not a coincidence.
+        """
+        ctx_fixture, readers, expected_key, patched_surface = spec
+        ctx = request.getfixturevalue(ctx_fixture)
+        expected = ctx[expected_key]
+        with app.app_context():
+
+            def _broken_reader(_ctx):
+                """Return a deliberately wrong Decimal for the patched surface."""
+                return self._WRONG
+
+            monkeypatch.setitem(readers, patched_surface, _broken_reader)
+            surface_values = {
+                name: reader(ctx) for name, reader in readers.items()
+            }
+
+            with pytest.raises(AssertionError) as excinfo:
+                _assert_surfaces_equal(surface_values, expected, ctx_fixture)
+
+            message = str(excinfo.value)
+            assert repr(patched_surface) in message, (
+                f"AssertionError did not name the patched surface "
+                f"{patched_surface!r}: {message!r}"
+            )
+            assert str(self._WRONG) in message, (
+                f"AssertionError did not name the wrong value "
+                f"{self._WRONG!r}: {message!r}"
             )

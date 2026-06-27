@@ -29,14 +29,11 @@ import pytest
 from app import ref_cache
 from app.enums import (
     CompoundingFrequencyEnum,
-    EmployerContributionTypeEnum,
     StatusEnum,
     TxnTypeEnum,
 )
 from app.models.account import Account
-from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
-from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, CalcMethod, DeductionTiming
@@ -65,6 +62,8 @@ from tests._test_helpers import (
     insert_origination_event,
     insert_origination_rate,
     insert_trueup_event,
+    make_appreciating_account,
+    make_investment_account,
     make_salary_profile,
 )
 
@@ -134,42 +133,6 @@ def _make_mortgage(
     return acct, params
 
 
-def _make_401k(
-    db, seed_user, anchor_period, balance, name="401k",
-    employer_type="none", match_pct=None, match_cap_pct=None,
-):
-    """Create a 401(k) account (INVESTMENT) with InvestmentParams (7% return).
-
-    ``name`` is parameterised so a test can seed two 401(k)s without
-    colliding on the ``(user_id, name)`` unique constraint.  ``employer_type``
-    / ``match_pct`` / ``match_cap_pct`` configure the employer-contribution
-    formula (default: no employer contribution).
-    """
-    inv_type = db.session.query(AccountType).filter_by(name="401(k)").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=inv_type.id,
-            name=name,
-            anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    db.session.add(InvestmentParams(
-        account_id=acct.id,
-        assumed_annual_return=Decimal("0.07000"),
-        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
-            EmployerContributionTypeEnum(employer_type),
-        ),
-        employer_match_percentage=match_pct,
-        employer_match_cap_percentage=match_cap_pct,
-    ))
-    db.session.commit()
-    return acct
-
-
 def _add_flat_deduction(db, profile, account, amount):
     """Add an active flat pre-tax paycheck deduction targeting *account*.
 
@@ -194,29 +157,6 @@ def _add_flat_deduction(db, profile, account, amount):
     db.session.add(ded)
     db.session.flush()
     return ded
-
-
-def _make_property(db, seed_user, anchor_period, balance, rate):
-    """Create a Property account (APPRECIATING) with AssetAppreciationParams."""
-    property_type = (
-        db.session.query(AccountType).filter_by(name="Property").one()
-    )
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=property_type.id,
-            name="House",
-            anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    db.session.add(AssetAppreciationParams(
-        account_id=acct.id, annual_appreciation_rate=rate,
-    ))
-    db.session.commit()
-    return acct
 
 
 class TestBalanceMapCash:
@@ -405,7 +345,9 @@ class TestBalanceMapInvestment:
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
-            inv = _make_401k(db, seed_user, current, Decimal("10000.00"))
+            inv = make_investment_account(
+                seed_user, db.session, current, Decimal("10000.00"),
+            )
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
             deductions = load_active_deductions_for_accounts(
@@ -437,7 +379,7 @@ class TestBalanceMapInvestment:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            inv = _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
+            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
             deductions = load_active_deductions_for_accounts(
@@ -477,8 +419,8 @@ class TestBalanceMapProperty:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            prop = _make_property(
-                db, seed_user, periods[2], Decimal("400000.00"),
+            prop = make_appreciating_account(
+                seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
             gross = income_service.get_current_gross_biweekly(user_id)
@@ -522,9 +464,9 @@ class TestBuildMaps:
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
-            _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
-            _make_property(
-                db, seed_user, periods[2], Decimal("400000.00"),
+            make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
+            make_appreciating_account(
+                seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
 
@@ -648,7 +590,7 @@ class TestBalanceAt:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            inv = _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
+            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
             as_of = periods[6].start_date  # independently known: in period 6
 
             seam = balance_at.balance_at(inv, scenario, as_of)
@@ -673,8 +615,8 @@ class TestBalanceAt:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            prop = _make_property(
-                db, seed_user, periods[2], Decimal("400000.00"),
+            prop = make_appreciating_account(
+                seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
             as_of = periods[6].start_date  # independently known: in period 6
@@ -788,7 +730,7 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            inv = _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
+            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             baseline = balance_at.balance_map(inv, scenario, periods)
 
@@ -839,13 +781,14 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            inv_match = _make_401k(
-                db, seed_user, periods[2], Decimal("10000.00"),
+            inv_match = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
                 name="401k Match", employer_type="match",
                 match_pct=Decimal("0.5000"), match_cap_pct=Decimal("0.0600"),
             )
-            inv_none = _make_401k(
-                db, seed_user, periods[2], Decimal("10000.00"), name="401k None",
+            inv_none = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
+                name="401k None",
             )
             profile = make_salary_profile(seed_user, db.session)
             db.session.flush()
@@ -948,7 +891,7 @@ class TestBalanceAtDegrade:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            inv = _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
+            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             seam = balance_at.balance_at(inv, scenario, date(2000, 1, 1))
             expected = round_money(
@@ -978,9 +921,9 @@ class TestAmountOverridesScope:
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
-            inv = _make_401k(db, seed_user, periods[2], Decimal("10000.00"))
-            prop = _make_property(
-                db, seed_user, periods[2], Decimal("400000.00"),
+            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
+            prop = make_appreciating_account(
+                seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
             overrides = {999999: Decimal("99999.00")}
