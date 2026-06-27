@@ -194,6 +194,8 @@ def base_account_balance_map(
     account: Account,
     scenario: Scenario,
     periods: list,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one account WITHOUT dispatch inputs.
 
@@ -209,6 +211,16 @@ def base_account_balance_map(
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net / loan-derive map (Workstream B), forwarded
+            verbatim to whichever cash producer this account routes to
+            (:func:`~app.services.balance_calculator.calculate_balances_with_interest`
+            for the interest path,
+            :func:`~app.services.balance_resolver.balances_for` for the
+            plain path).  Default ``None`` lets each producer build its own
+            live override map internally, byte-identical to the prior
+            behavior; the ``balance_at`` seam threads the grid's pre-built
+            map through here for grid parity.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -238,6 +250,7 @@ def base_account_balance_map(
             periods=periods,
             transactions=transactions,
             interest_params=account.interest_params,
+            amount_overrides=amount_overrides,
         )
         return balances
 
@@ -249,6 +262,7 @@ def base_account_balance_map(
     # cannot disagree with the grid for the same input.
     return balance_resolver.balances_for(
         account, scenario.id, periods,
+        amount_overrides=amount_overrides,
     ).balances
 
 
@@ -261,6 +275,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     investment_params: InvestmentParams | None,
     deductions: list,
     salary_gross_biweekly: Decimal,
+    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one account, dispatching on type.
 
@@ -280,15 +295,16 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     call it without constructing that year-end-specific value object; the
     year-end adapter unpacks its bundle per account at the call site.
 
-    Pylint: ``too-many-arguments`` (7/5) -- the keyword-only group is
+    Pylint: ``too-many-arguments`` (8/5) -- the keyword-only group is
     this account's four independent projection inputs (its schedule, its
-    investment params, its deductions, the engine gross-biweekly).  They
-    are not a cohesive named concept that would survive as a value
-    object; the year-end ``_ProjectionInputs`` bundle that previously
-    carried them is the year-end package's own, and re-creating a
-    kernel-specific bundle no other caller shares would be the stamp
-    coupling the standards reject.  Keyword-only keeps the call sites
-    self-documenting (and exempts the positional-count rule).
+    investment params, its deductions, the engine gross-biweekly) plus the
+    cash-path ``amount_overrides`` passthrough.  They are not a cohesive
+    named concept that would survive as a value object; the year-end
+    ``_ProjectionInputs`` bundle that previously carried the first four is
+    the year-end package's own, and re-creating a kernel-specific bundle no
+    other caller shares would be the stamp coupling the standards reject.
+    Keyword-only keeps the call sites self-documenting (and exempts the
+    positional-count rule).
 
     Args:
         account: The account to project.
@@ -306,6 +322,18 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             growth engine's contribution feed; adapted internally).
         salary_gross_biweekly: Raise-aware engine gross per pay period
             (the employer-match cap basis).
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net / loan-derive map (Workstream B).  Threaded ONLY
+            through the base / cash fall-through
+            (:func:`base_account_balance_map`).  The map only ever contains
+            cash-account transaction ids (salary income + loan-transfer
+            shadows); the investment branch's base IS a transaction sum but
+            it independently builds its own live overrides inside
+            ``balances_for``, and the loan / appreciation branches derive
+            from schedules and growth curves -- so forwarding this cash
+            override to any non-cash branch would match no id and is
+            intentionally omitted.  Default ``None`` preserves the prior
+            behavior byte-identical.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -361,8 +389,67 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     if kind is AccountProjectionKind.APPRECIATING:
         return _build_appreciation_balance_map(account, scenario, periods)
 
-    # Interest-bearing and plain accounts share the base path.
-    return base_account_balance_map(account, scenario, periods)
+    # Interest-bearing and plain accounts share the base path, and it is the
+    # only branch that forwards ``amount_overrides``: the override map only
+    # carries cash-account transaction ids, so no non-cash branch above would
+    # match any of them (the investment base builds its own live overrides
+    # inside ``balances_for``).
+    return base_account_balance_map(
+        account, scenario, periods, amount_overrides=amount_overrides,
+    )
+
+
+def account_balance_map_from_inputs(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    inputs,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
+) -> "OrderedDict[int, Decimal] | None":
+    """Unpack a per-set projection bundle for one account and dispatch.
+
+    The single unpack-and-dispatch site shared by the ``balance_at`` seam's
+    :func:`app.services.balance_at._account_balance_map` and the year-end
+    adapter's ``_dispatch_account_balance_map`` in
+    :mod:`app.services.year_end_summary_service._balances`.  The two were
+    byte-identical (R0801: both sliced a four-field bundle for one account
+    and called :func:`build_account_balance_map`), so the unpack lives here
+    once, in the engine cluster both consumers already import.
+
+    ``inputs`` is duck-typed: any bundle exposing ``debt_schedules``,
+    ``investment_params_map``, ``deductions_by_account``, and
+    ``salary_gross_biweekly`` qualifies.  The seam's
+    :class:`app.services.balance_at._AssembledInputs` and the year-end
+    package's ``_ProjectionInputs`` both satisfy this contract (the latter
+    carries extra fields this helper does not read).  It is intentionally
+    left unannotated: the two concrete bundle types live in consumer
+    packages this engine module must not import (the dependency direction),
+    so the structural contract is documented here rather than expressed by a
+    shared type.
+
+    Args:
+        account: The account to project.
+        scenario: The baseline scenario.
+        periods: The pay periods to project over.
+        inputs: The per-set projection bundle (see the duck-typed contract
+            above).
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
+            forwarded to the kernel's cash path; ``None`` (year-end and the
+            net-worth batch) never applies live overrides.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance, or None when the
+        account has no anchor period.
+    """
+    return build_account_balance_map(
+        account, scenario, periods,
+        debt_schedule=inputs.debt_schedules.get(account.id),
+        investment_params=inputs.investment_params_map.get(account.id),
+        deductions=inputs.deductions_by_account.get(account.id, []),
+        salary_gross_biweekly=inputs.salary_gross_biweekly,
+        amount_overrides=amount_overrides,
+    )
 
 
 def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-many-positional-arguments

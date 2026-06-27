@@ -61,15 +61,20 @@ def _dispatch_account_balance_map(
 ) -> dict | None:
     """Compute period_id -> balance for one account, dispatching on type.
 
-    Thin adapter (Loop B Phase 1): unpacks the year-end
-    ``_ProjectionInputs`` bundle into the per-account parameters
+    Thin adapter (Loop B Phase 1): delegates to the shared
+    :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
+    which unpacks the year-end ``_ProjectionInputs`` bundle into the
+    per-account parameters
     :func:`app.services.net_worth_kernel.build_account_balance_map`
     takes -- this account's debt schedule, its
     :class:`~app.models.investment_params.InvestmentParams`, its
     deductions, and the engine gross-biweekly -- so the kernel owns the
     dispatch math (amortization schedule / growth engine / interest /
     plain resolver) and the year-end net-worth section and the savings
-    cockpit cannot drift onto two copies of it.
+    cockpit cannot drift onto two copies of it.  The unpack itself is
+    shared with the ``balance_at`` seam (R0801: it was duplicated here and
+    in the seam's ``_account_balance_map``); year-end never applies live
+    amount overrides, so it passes none.
 
     Args:
         account: The account to project.
@@ -83,12 +88,8 @@ def _dispatch_account_balance_map(
         OrderedDict mapping period_id to Decimal balance, or None if the
         account has no anchor period.
     """
-    return net_worth_kernel.build_account_balance_map(
-        account, scenario, periods,
-        debt_schedule=inputs.debt_schedules.get(account.id),
-        investment_params=inputs.investment_params_map.get(account.id),
-        deductions=inputs.deductions_by_account.get(account.id, []),
-        salary_gross_biweekly=inputs.salary_gross_biweekly,
+    return net_worth_kernel.account_balance_map_from_inputs(
+        account, scenario, periods, inputs,
     )
 
 
