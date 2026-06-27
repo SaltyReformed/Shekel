@@ -952,6 +952,57 @@ class TestInvestmentCrossPageEquality:
                 "the investment kind"
             )
 
+    def test_anchor_in_past_tile_adopts_modeled_value(
+        self, app, cross_page_investment_past_anchor_ctx,
+    ):
+        """The /savings tile adopts the model-from-anchor value at today.
+
+        The Level 1 cross-producer investment lock the class docstring above
+        defers to the savings-tile reroute.  With the investment anchored 6
+        months in the past at a 7% return, the kernel's model-from-anchor map
+        compounds the $100,000 opening balance forward to today.  After the
+        reroute the /savings tile, the year-end asset aggregate, and the
+        net-worth trend all read that SAME modeled value at today -- and it is
+        strictly greater than the flat $100,000 cash-basis carry the
+        pre-reroute tile showed, which is what makes the lock non-tautological
+        (an unrerouted tile would read the flat $100,000 and fail).
+
+        The investment-dashboard surface is intentionally excluded: its
+        headline still reads the cash-basis end-of-current-period balance
+        (``balance_resolver.balances_for``) until the dashboards commit
+        reroutes it, at which point it joins this lock.
+        """
+        with app.app_context():
+            ctx = cross_page_investment_past_anchor_ctx
+
+            # The canonical model-from-anchor value at today, read straight
+            # from the seam (the producer the rerouted tile now reads).
+            modeled = balance_at.balance_map(
+                ctx["account"], ctx["scenario"], ctx["all_periods"],
+            )[ctx["current_period"].id]
+
+            # Non-tautological: the modeled balance compounded above the flat
+            # cash-basis carry, so a tile still reading the flat value fails.
+            assert modeled > ctx["V0"], (
+                f"modeled balance {modeled!r} did not compound above the flat "
+                f"anchor {ctx['V0']!r}; the divergence this lock needs is "
+                "absent"
+            )
+
+            # Every kernel-modeled surface reads that same value at today.
+            modeled_readers = {
+                "savings": _savings_tile_value,
+                "year_end": _asset_year_end_value,
+                "net_worth_trend": _trend_assets_value,
+            }
+            surface_values = {
+                name: reader(ctx) for name, reader in modeled_readers.items()
+            }
+            _assert_surfaces_equal(
+                surface_values, modeled,
+                "investment kind (anchor-in-past, model-from-anchor)",
+            )
+
 
 class TestSecuredHomeEquityEquality:
     """The property<->mortgage home-equity relationship reconciles across surfaces.

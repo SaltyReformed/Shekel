@@ -1,166 +1,92 @@
 """
 Shekel Budget App -- Savings Dashboard: per-account balance projections.
 
-Dispatches each account to the appropriate projection engine -- the loan
-resolver for loans, the growth engine for investments, and the canonical
-balance calculator for everything else -- and assembles the per-account
-dict the dashboard template renders.  No Flask imports.
+Assembles the per-account dict the dashboard template renders.  Every
+non-loan account's balance over time comes from the single
+:mod:`app.services.balance_at` seam (cash, interest-bearing, investment, and
+appreciating-property accounts each dispatch per kind inside it); a loan tile
+instead reads the loan resolver directly for its rich figures -- current
+balance, monthly payment, rate, payoff -- and shows no projected horizons.
+No Flask imports.
 """
 
+from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.services import (
-    balance_calculator,
-    balance_resolver,
-    growth_engine,
-    loan_resolver,
-)
+from app.services import balance_at, loan_resolver
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
-    compute_loan_period_balance_map,
-    find_period_containing_date,
-)
-from app.services.investment_projection import (
-    adapt_deductions,
-    current_period_transfer_contribution,
 )
 from app.services.loan_payment_service import load_loan_context
-from app.services.projection_inputs import build_investment_projection_inputs
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
 
 
-def _compute_base_balances(acct, kind, acct_interest_params, ctx):
-    """Compute the base per-period balance map and current balance.
+def _account_balance_maps(accounts, ctx):
+    """Build the balance_at seam maps for the NON-LOAN accounts in ONE batch.
 
-    Interest-bearing accounts (with a params row) layer interest on top
-    of the base calculation; every other account routes through the
-    canonical entries-aware resolver.  Loan and investment accounts
-    still get a balances map here, but their ``current_balance`` is
-    overridden later from the amortization / growth projection.
+    The per-account tile loop reads each non-loan balance out of this single
+    dict instead of calling the seam once per account.  ``build_maps``
+    assembles the seam's inputs (debt schedules, investment params,
+    deductions, and the engine gross-biweekly) ONCE over the whole set, so
+    the paycheck-engine gross fetch and the input queries do NOT scale with
+    the account count -- the N+1 avoidance ``build_maps`` exists for.  Loans
+    are excluded: the loan tile reads the resolver directly
+    (:func:`_compute_loan_account`), never the seam.
+
+    Returns an empty dict when there is no baseline scenario (the seam raises
+    on a ``None`` scenario by contract, so this caller owns the legitimate
+    empty state) -- every non-loan tile then degrades to its anchor balance.
 
     Args:
-        acct: The Account instance.
-        kind: The account's :class:`AccountProjectionKind`.
-        acct_interest_params: The account's InterestParams row, or None.
+        accounts: The accounts being projected (loans are filtered out).
+        ctx: The shared :class:`_ProjectionContext` (its ``scenario`` and
+            ``all_periods`` feed the seam).
+
+    Returns:
+        ``{account_id: OrderedDict period_id -> Decimal}`` for the non-loan
+        accounts that have a map; an account the seam omits (no anchor
+        period) is simply absent.
+    """
+    if ctx.scenario is None:
+        return {}
+    non_loan_accounts = [
+        acct for acct in accounts
+        if acct.id not in ctx.params.loan_params_map
+    ]
+    return balance_at.build_maps(
+        non_loan_accounts, ctx.scenario, ctx.all_periods,
+    )
+
+
+def _current_balance_from_map(balances, acct, ctx):
+    """Read the current-period balance from a seam map, anchor as fallback.
+
+    Preserves the pre-seam ``_compute_base_balances`` contract exactly: with
+    a current period, the tile shows that period's balance from the map --
+    which is ``None`` when the map omits it (a cash account whose anchor is
+    after the current period: cash balances are not carried backward
+    pre-anchor), and that ``None`` is the deliberate "no balance here yet"
+    state the hero and goal reducers already treat as zero.  With no current
+    period at all, it falls back to the account's stored anchor balance.
+
+    Args:
+        balances: The seam's period_id -> balance map (possibly empty).
+        acct: The account whose ``current_anchor_balance`` is the
+            no-current-period fallback.
         ctx: The shared :class:`_ProjectionContext`.
 
     Returns:
-        ``(balances, current_bal)`` -- the period-id-keyed balance map
-        and the current-period balance (falling back to the anchor
-        balance when there is no current period).
+        The current-period ``Decimal`` balance, or ``None`` when a current
+        period exists but the map omits it.
     """
-    anchor_balance = acct.current_anchor_balance or Decimal("0.00")
-    anchor_period_id = acct.current_anchor_period_id or (
-        ctx.current_period.id if ctx.current_period else None
-    )
-    scenario_id = ctx.scenario_id
-
-    balances = {}
-    # MED-01 / S6-03: one flag-driven classifier shared with the
-    # year-end summary's ``_get_account_balance_map``.  The
-    # ``interest_params`` row presence still guards the interest path so
-    # an account that flags ``has_interest=True`` but has no params row
-    # falls through to the canonical resolver (the pre-Commit-28 behavior
-    # the param-map-presence check delivered as a happy accident; the
-    # classifier preserves it explicitly).
-    if kind is AccountProjectionKind.INTEREST and acct_interest_params:
-        # HYSA / interest-bearing path.  Continues to layer interest on
-        # top of the base balance calculation.  Entry-aware reduction
-        # for any envelope expenses on this account is applied
-        # unconditionally by ``_entry_aware_amount`` post-Commit-5 (the
-        # seam was removed at the math layer: an unloaded ``entries``
-        # relationship now lazy-loads via the SQLAlchemy descriptor
-        # rather than silently degrading to ``effective_amount``).
-        if anchor_period_id:
-            acct_transactions = [
-                txn for txn in ctx.all_transactions
-                if txn.account_id == acct.id
-            ]
-            balances, _ = balance_calculator.calculate_balances_with_interest(
-                anchor_balance=anchor_balance,
-                anchor_period_id=anchor_period_id,
-                periods=ctx.all_periods,
-                transactions=acct_transactions,
-                interest_params=acct_interest_params,
-            )
-    elif scenario_id is not None:
-        # Non-interest checking / savings / loan / investment accounts
-        # route through the canonical entries-aware producer (CRIT-01 /
-        # F-009 / E-25).  ``balances_for`` owns its own transaction query
-        # with ``selectinload(Transaction.entries)`` and resolves the
-        # anchor via the dated ``AccountAnchorHistory`` source of truth,
-        # so the per-tile checking balance no longer silently disagrees
-        # with the grid (symptom #1: $160 on grid vs $114.29 here
-        # pre-fix, because /savings did not eager-load entries and
-        # ``_entry_aware_amount`` returned ``effective_amount``
-        # unchanged).  Loan and investment accounts still compute a
-        # ``balances`` map here, but ``current_bal`` is overridden below
-        # from the amortization / growth projection; the resolver call
-        # is cheap and uniform.
-        result = balance_resolver.balances_for(
-            acct, scenario_id, ctx.all_periods,
-        )
-        balances = result.balances
-
-    current_bal = (
-        balances.get(ctx.current_period.id)
-        if ctx.current_period else anchor_balance
-    )
-    return balances, current_bal
-
-
-def _loan_projected_horizons(schedule, all_periods, current_balance, today):
-    """Project a loan's balance at the 3 / 6 / 12-month horizons.
-
-    Routes through the shared ``compute_loan_period_balance_map`` (F-21 /
-    Commit 19) so the dashboard's projected balances agree to the cent
-    with the year-end net-worth liability and debt-progress sections
-    (both consumers read the same period-end-keyed map).  Pre-F-21 this
-    site ran a parallel target-month-first walk over the schedule that
-    answered a slightly different question and produced cents-precise
-    drift across the two surfaces; see ``F-21`` in
-    ``docs/audits/financial_calculations/remediation_follow_up.md`` and
-    ``account_projection.compute_loan_period_balance_map`` for the
-    locked semantic.
-
-    Args:
-        schedule: The resolver's amortization schedule.
-        all_periods: All pay periods for the user.
-        current_balance: The loan's resolver-derived current balance
-            (``LoanState.current_balance``), used by the shared map as the
-            pre-first-payment / empty-schedule fallback.  It must NOT be the
-            original principal: the schedule is today-forward, so a horizon
-            before the first upcoming payment -- or any horizon of a paid-off
-            loan whose schedule is empty -- sits at today's balance, and
-            reporting the origination amount there overstates the projected
-            liability by (original principal - current balance).
-        today: The reference date the horizon offsets advance from.
-
-    Returns:
-        Dict mapping a horizon label ("3 months" / "6 months" /
-        "1 year") to the projected period-end balance, omitting horizons
-        with no matching period.
-    """
-    balance_map = compute_loan_period_balance_map(
-        schedule, all_periods, current_balance,
-    )
-    projected = {}
-    for label, month_offset in [
-        ("3 months", 3), ("6 months", 6), ("1 year", 12),
-    ]:
-        target_m = today.month + month_offset
-        target_y = today.year + (target_m - 1) // 12
-        target_m = (target_m - 1) % 12 + 1
-        target_dt = date(target_y, target_m, 1)
-        target_period = find_period_containing_date(all_periods, target_dt)
-        if target_period is not None and target_period.id in balance_map:
-            projected[label] = balance_map[target_period.id]
-    return projected
+    if ctx.current_period is None:
+        return acct.current_anchor_balance or Decimal("0.00")
+    return balances.get(ctx.current_period.id)
 
 
 def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
@@ -197,22 +123,27 @@ def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
     return ever_state.current_balance == Decimal("0.00")
 
 
-def _compute_loan_account(acct, acct_loan_params, scenario_id, all_periods):
-    """Resolve current balance, payment, payoff, and projection for a loan.
+def _compute_loan_account(acct, acct_loan_params, scenario_id):
+    """Resolve current balance, payment, rate, and payoff for a loan.
 
-    Loads the loan context (payments + escrow + rate changes) and runs
-    the loan resolver (E-18 / Commit 13), which is the source of truth
-    for current_balance, monthly_payment, schedule, and payoff_date --
-    the same dollar figures rendered on the loan card and the year-end
-    net-worth liability.  The resolver-derived ``current_balance``
-    replaces the stored ``LoanParams.current_principal`` read that pre-
-    E-18 produced the F-008 stored-vs-engine divergence on this tile.
+    Loads the loan context (payments + escrow + rate changes) and runs the
+    loan resolver (E-18 / Commit 13), the source of truth for
+    current_balance, monthly_payment, current_rate, and payoff_date -- the
+    same dollar figures rendered on the loan card and the year-end net-worth
+    liability.  The resolver-derived ``current_balance`` replaces the stored
+    ``LoanParams.current_principal`` read that pre-E-18 produced the F-008
+    stored-vs-engine divergence on this tile.
+
+    The loan tile renders Monthly Payment + payoff date, not projected
+    balance horizons, and the loan's net-worth contribution is produced by
+    the net-worth section through the :mod:`app.services.balance_at` seam, so
+    this resolver call is the loan tile's only balance source -- the tile
+    does NOT also read the seam (which would resolve the loan a second time).
 
     Args:
         acct: The loan Account instance.
         acct_loan_params: The account's LoanParams.
         scenario_id: The baseline scenario id (or None).
-        all_periods: All pay periods for the user.
 
     Returns:
         A :class:`_LoanAccountResult` with the resolver-derived figures.
@@ -223,24 +154,18 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id, all_periods):
         .filter_by(account_id=acct.id)
         .all()
     )
-    today = date.today()
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
             acct_loan_params, anchor_events,
             loan_ctx.payments, loan_ctx.rate_changes,
         ),
-        today,
-    )
-    projected = _loan_projected_horizons(
-        state.schedule, all_periods,
-        state.current_balance, today,
+        date.today(),
     )
     return _LoanAccountResult(
         current_balance=state.current_balance,
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
-        projected=projected,
         is_paid_off=_loan_ever_paid_off(
             acct_loan_params, anchor_events, loan_ctx,
         ),
@@ -280,158 +205,60 @@ def _compute_needs_setup(
     return False
 
 
-def _investment_horizons(projection, all_periods, current_period):
-    """Map a growth projection to the 3 / 6 / 12-month horizon balances.
-
-    Args:
-        projection: The growth engine's per-period projection.
-        all_periods: All pay periods for the user.
-        current_period: The current :class:`PayPeriod`.
-
-    Returns:
-        Dict mapping a horizon label to the projected end balance,
-        omitting horizons that fall outside the projection.
-    """
-    balance_map = {pb.period_id: pb.end_balance for pb in projection}
-    return project_balance_horizons(current_period, all_periods, balance_map)
-
-
-def _project_investment(acct, investment_params, current_bal, ctx):
-    """Compute growth projections for an investment/retirement account.
-
-    *current_bal* is the entries-aware END-of-current-period balance.  The
-    projection window includes the current period and the growth engine
-    re-applies that period's contribution, so the seed removes the current
-    period's own transfer contribution first (and uses the strictly-before
-    YTD seed) to leave the current period's contribution and growth applied
-    exactly once.  Other current-period balance movements (expenses,
-    deposits) stay in the seed because the engine never re-creates them
-    (deep-quality-hunt #9 / #10; this savings-dashboard site shares the
-    root cause the register recorded only for the investment and
-    retirement dashboards).
-    """
-    acct_deductions = ctx.params.deductions_by_account.get(acct.id, [])
-    adapted_deductions = adapt_deductions(acct_deductions)
-    acct_contributions = [
-        t for t in ctx.all_shadow_income
-        if t.account_id == acct.id
-    ]
-
-    inputs = build_investment_projection_inputs(
-        investment_params, adapted_deductions, acct_contributions,
-        ctx.all_periods, ctx.current_period,
-        ctx.params.salary_gross_biweekly,
-    )
-
-    future_periods = [
-        p for p in ctx.all_periods
-        if p.period_index >= ctx.current_period.period_index
-    ]
-    if not future_periods:
-        return {}
-
-    seed = current_bal - current_period_transfer_contribution(
-        acct_contributions, ctx.current_period,
-    )
-    projection = growth_engine.project_balance(
-        current_balance=seed,
-        assumed_annual_return=investment_params.assumed_annual_return,
-        periods=future_periods,
-        periodic_contribution=inputs.periodic_contribution,
-        employer_params=inputs.employer_params,
-        annual_contribution_limit=inputs.annual_contribution_limit,
-        ytd_contributions_start=inputs.ytd_contributions_seed,
-    )
-    return _investment_horizons(
-        projection, ctx.all_periods, ctx.current_period,
-    )
-
-
-def _project_appreciation(acct, current_bal, balances, ctx):
-    """Compute the 3 / 6 / 12-month horizons for an appreciating asset.
-
-    The Property's market value (*current_bal*, the entries-aware
-    end-of-current-period balance) compounds forward at its annual
-    appreciation rate via the growth engine with no contributions, and the
-    standard horizon picker maps the projection to the 3 / 6 / 12-month
-    labels.  Unlike :func:`_project_investment` there is no contribution to
-    remove from the seed -- a home is valued, not funded.
-
-    Degrades to the flat horizons over *balances* when the appreciation
-    params row is absent (Property created, rate not set) or there are no
-    future periods.
-
-    Args:
-        acct: The Property Account (its ``asset_appreciation_params``
-            backref carries the annual rate).
-        current_bal: The entries-aware end-of-current-period balance.
-        balances: The flat base balance map (the degrade fallback).
-        ctx: The shared :class:`_ProjectionContext`.
-
-    Returns:
-        Dict mapping a horizon label to the projected end balance.
-    """
-    params = acct.asset_appreciation_params
-    future_periods = [
-        p for p in ctx.all_periods
-        if p.period_index >= ctx.current_period.period_index
-    ]
-    if params is None or not future_periods:
-        return project_balance_horizons(
-            ctx.current_period, ctx.all_periods, balances,
-        )
-    projection = growth_engine.project_balance(
-        current_balance=current_bal,
-        assumed_annual_return=params.annual_appreciation_rate,
-        periods=future_periods,
-    )
-    return _investment_horizons(
-        projection, ctx.all_periods, ctx.current_period,
-    )
-
-
-def _project_one_account(acct, ctx):
+def _project_one_account(acct, ctx, balance_maps):
     """Compute the projection dict for a single account.
 
-    Dispatches to the appropriate projection engine based on account
-    type: the loan resolver for loans, the growth engine for
-    investments, and the canonical balance calculator for everything
-    else.
+    Every non-loan account reads its balance from the one
+    :mod:`app.services.balance_at` seam, via the pre-built *balance_maps*
+    batch: the current-period balance and the 3 / 6 / 12-month horizons both
+    come from that single per-kind map (cash and interest unchanged from the
+    prior entries-aware producer; an investment and an appreciating property
+    now report the model-from-anchor value the net-worth trend and year-end
+    summary already use).  A loan tile instead reads the loan resolver
+    directly -- a rich-primitive consumer for its current balance, payment,
+    rate, and payoff -- and shows no projected horizons, so it is absent from
+    *balance_maps* (the seam is never consulted for a loan, avoiding a second
+    resolution of the same loan).
 
     Args:
         acct: The Account instance.
         ctx: The shared :class:`_ProjectionContext`.
+        balance_maps: ``{account_id: balance map}`` from
+            :func:`_account_balance_maps` -- the batch-built seam maps for the
+            non-loan accounts.  A loan, and a non-loan account the seam omits
+            (no anchor period), are absent and read as an empty map.
 
     Returns:
         A dict with keys: account, current_balance, projected,
         needs_setup, is_paid_off, plus optional type-specific params
         (interest_params / investment_params / loan_params +
-        monthly_payment + payoff_date).
+        monthly_payment + current_rate + payoff_date).
     """
     kind = classify_account(acct)
     acct_interest_params = ctx.params.interest_params_map.get(acct.id)
     acct_loan_params = ctx.params.loan_params_map.get(acct.id)
     acct_investment_params = ctx.params.investment_params_map.get(acct.id)
 
-    balances, current_bal = _compute_base_balances(
-        acct, kind, acct_interest_params, ctx,
+    loan_result = (
+        _compute_loan_account(
+            acct, acct_loan_params,
+            ctx.scenario.id if ctx.scenario else None,
+        )
+        if acct_loan_params else None
     )
 
-    loan_result = None
-    if acct_loan_params:
-        loan_result = _compute_loan_account(
-            acct, acct_loan_params, ctx.scenario_id,
-            ctx.all_periods,
-        )
+    if loan_result is not None:
+        # Loan tile: a loan-resolver (rich-primitive) consumer.  The seam is
+        # not consulted -- current_balance is the as-of-today LoanState
+        # balance, and the tile renders payment + payoff, not horizons.
         current_bal = loan_result.current_balance
-        projected = loan_result.projected
-    elif acct_investment_params and ctx.current_period:
-        projected = _project_investment(
-            acct, acct_investment_params, current_bal, ctx,
-        )
-    elif kind is AccountProjectionKind.APPRECIATING and ctx.current_period:
-        projected = _project_appreciation(acct, current_bal, balances, ctx)
+        projected = {}
     else:
+        # Every non-loan kind reads its per-period balance map out of the one
+        # batch the seam already built, then picks the current balance and the
+        # horizons out of that single map.
+        balances = balance_maps.get(acct.id) or OrderedDict()
+        current_bal = _current_balance_from_map(balances, acct, ctx)
         projected = project_balance_horizons(
             ctx.current_period, ctx.all_periods, balances,
         )
@@ -466,13 +293,21 @@ def _project_one_account(acct, ctx):
 def _compute_account_projections(accounts, ctx):
     """Compute balance projections for each account.
 
+    Builds the non-loan balance maps ONCE via :func:`_account_balance_maps`
+    (so the seam's input assembly -- including the paycheck-engine gross
+    fetch -- runs a single time for the whole set, not once per account),
+    then projects each account against that shared batch.
+
     Args:
         accounts: List of Account model instances.
-        ctx: The shared :class:`_ProjectionContext` bundling the
-            pre-loaded transactions, periods, current period, and
-            type-specific parameter maps.
+        ctx: The shared :class:`_ProjectionContext` bundling the periods,
+            current period, baseline scenario, and type-specific parameter
+            maps.
 
     Returns:
         A list of per-account dicts (see :func:`_project_one_account`).
     """
-    return [_project_one_account(acct, ctx) for acct in accounts]
+    balance_maps = _account_balance_maps(accounts, ctx)
+    return [
+        _project_one_account(acct, ctx, balance_maps) for acct in accounts
+    ]

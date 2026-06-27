@@ -13,6 +13,7 @@ from app.services import (
     account_service,
     growth_engine,
     net_worth_kernel,
+    pay_period_service,
     savings_dashboard_service,
 )
 from app.services.account_projection import (
@@ -155,7 +156,18 @@ class TestSavingsDashboardProjection:
     """The savings dashboard projects a Property without error."""
 
     def test_property_horizons_and_no_setup_badge(self, app, db, seed_user, seed_periods_today):
-        """A configured Property gets forward horizons and no 'needs setup' badge."""
+        """A past-anchored Property tile reports its model-from-anchor value, no badge.
+
+        The Property is anchored at ``seed_periods_today[0]`` -- three periods
+        before today's period (period 4 per the fixture) -- with a 3% rate, so
+        the Level 1 ``balance_at`` seam compounds its $400,000 market value
+        forward to today.  The tile's ``current_balance`` therefore ADOPTS the
+        model-from-anchor value the net-worth trend and year-end summary
+        already report (developer-authorized; the pre-seam tile showed the
+        flat market value here).  It equals the canonical net-worth kernel's
+        appreciation map at the current period and is strictly above the flat
+        $400,000 anchor, and the configured params row fires no setup badge.
+        """
         with app.app_context():
             acct = _make_property(
                 db, seed_user, seed_periods_today, seed_periods_today[0],
@@ -168,11 +180,24 @@ class TestSavingsDashboardProjection:
                 ad for ad in data["account_data"]
                 if ad["account"].id == acct.id
             )
-            # The appreciation branch ran without error and reports the
-            # market value as the current balance (appreciation shows in the
-            # forward horizons; this fixture's periods do not reach the
-            # 3/6/12-month marks, so ``projected`` is an empty-but-valid map).
-            assert entry["current_balance"] == Decimal("400000.00")
+            # The tile adopts the model-from-anchor value: the canonical
+            # net-worth kernel's appreciation map at the current period (read
+            # the SAME way the dashboard does, via get_current_period, rather
+            # than a fixture-index guess).  Cross-checked against the kernel
+            # producer (not a pinned magic number) and asserted strictly above
+            # the flat $400,000 the pre-seam tile showed, so the appreciation
+            # is provably applied.  gross/deductions are irrelevant on the
+            # appreciation path, so a 0 gross reproduces the tile's map exactly.
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            modeled_map = net_worth_kernel.build_account_balance_map(
+                acct, seed_user["scenario"], seed_periods_today,
+                debt_schedule=None, investment_params=None,
+                deductions=[], salary_gross_biweekly=Decimal("0.00"),
+            )
+            assert entry["current_balance"] == modeled_map[current_period.id]
+            assert entry["current_balance"] > Decimal("400000.00")
             assert isinstance(entry["projected"], dict)
             # The params row exists, so no "needs setup" affordance fires --
             # the regression the classifier fix guards against.

@@ -1610,6 +1610,69 @@ def cross_page_investment_ctx(db, seed_user):
 
 
 @pytest.fixture()
+def cross_page_investment_past_anchor_ctx(db, seed_user):
+    """Single isolated Investment anchored 6 monthly periods IN THE PAST.
+
+    The model-from-anchor divergence fixture the Level 1 savings-tile reroute
+    (the :mod:`app.services.balance_at` seam) unlocks.  A 401(k) with opening
+    balance ``V0`` = $100,000 and a 7% assumed return
+    (``make_investment_account``), anchored 6 monthly periods BEFORE today's
+    period, with no contribution feed -- so the only post-anchor movement is
+    compounding.  The cash-basis carry holds ``V0`` flat to today; the
+    kernel's model-from-anchor map compounds ``V0`` forward to today, so the
+    modeled balance at the current period is STRICTLY GREATER than ``V0``.
+    That gap is what makes the cross-producer lock non-tautological: before
+    the reroute the /savings tile read the flat ``V0`` while the year-end and
+    net-worth-trend surfaces read the modeled value, and the reroute makes the
+    tile adopt the modeled value the other kernel surfaces already report.
+
+    Contrast ``cross_page_investment_ctx`` (anchor == current), where the flat
+    carry and the projection coincide so every surface reads ``V0`` and there
+    is no divergence to lock.
+
+    The seed_user Checking is neutralised to $0 so the AGGREGATE surfaces
+    (year-end net worth, the savings net-worth trend) reflect the investment
+    alone.  Returns a ctx dict mirroring the other per-kind fixtures plus
+    ``V0`` (the flat cash-basis carry) and ``current_period`` (today's period,
+    where every surface is read); ``anchor_period`` here is today's period
+    (the dashboard's current period), NOT the account's past anchor.
+    """
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    # Anchor the investment 6 monthly periods before today's period so the
+    # model-from-anchor map compounds it forward across that gap.  The grid
+    # puts today's period well above index 6 (bootstrap at 0, then 12 prior
+    # monthly periods before today's month), so ``anchor_pos - 6`` is always a
+    # real past period.
+    anchor_pos = next(
+        i for i, p in enumerate(all_periods) if p.id == anchor_period.id
+    )
+    past_anchor_period = all_periods[anchor_pos - 6]
+
+    opening_balance = Decimal("100000.00")  # V0 -- the flat cash-basis carry
+    inv = make_investment_account(
+        seed_user, db.session, past_anchor_period, opening_balance,
+    )
+
+    return {
+        "user_id": user.id,
+        "account": inv,
+        "account_id": inv.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "current_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "V0": opening_balance,
+    }
+
+
+@pytest.fixture()
 def cross_page_secured_ctx(db, seed_user):
     """Property (PV) secured by a mortgage (MC) for the home-equity relationship.
 

@@ -49,7 +49,6 @@ from app.services.savings_dashboard_service._metrics import (
 )
 from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
-    _project_one_account,
 )
 from app.services.savings_dashboard_service._types import _ProjectionContext
 
@@ -66,10 +65,9 @@ def _build_projection_context(
 ) -> _ProjectionContext:
     """Assemble the request-scoped projection context from loaded data.
 
-    One definition of the core-data -> context mapping (notably the
-    baseline-scenario ``None`` fallback) shared by both public entry
-    points so the full dashboard build and the narrow debt producer
-    cannot project against different inputs.
+    One definition of the core-data -> context mapping shared by both
+    public entry points so the full dashboard build and the narrow debt
+    producer cannot project against different inputs.
 
     Args:
         core: The :class:`_DashboardCoreData` from
@@ -80,15 +78,16 @@ def _build_projection_context(
     Returns:
         The :class:`_ProjectionContext` the projection dispatch reads.
     """
-    # scenario_id is request-scoped (off the baseline scenario), not an
-    # account-type parameter, so it rides on the context, not in params.
+    # The baseline scenario is request-scoped (not an account-type
+    # parameter), so it rides on the context, not in params.  The Scenario
+    # object itself is carried (not just its id) because the balance_at seam
+    # each non-loan tile reads through takes the Scenario; the loan path
+    # derives ``scenario.id`` for the resolver.
     return _ProjectionContext(
-        all_transactions=core.all_transactions,
-        all_shadow_income=core.all_shadow_income,
         all_periods=core.all_periods,
         current_period=core.current_period,
         params=params,
-        scenario_id=core.scenario.id if core.scenario else None,
+        scenario=core.scenario,
     )
 
 
@@ -339,7 +338,7 @@ def compute_account_balance_cell(
 
     SSOT with the grid: it runs the SAME load -> param-load -> project
     pipeline ``compute_dashboard_data`` runs, through the shared
-    :func:`_project_one_account`, restricted to the one account (the
+    :func:`_compute_account_projections`, restricted to the one account (the
     param load is scoped to ``[acct]``; per-account projections are
     independent, so the restriction cannot change the projected figure).
     A Cancel therefore restores the exact number the card grid showed,
@@ -366,7 +365,10 @@ def compute_account_balance_cell(
 
     params = _load_account_params(user_id, [acct])
     ctx = _build_projection_context(core, params)
-    account_dict = _project_one_account(acct, ctx)
+    # Route through the shared projection (which batch-builds the seam maps)
+    # restricted to the one account, so the Cancel revert restores the exact
+    # number the card grid showed.
+    account_dict = _compute_account_projections([acct], ctx)[0]
     return {
         "account": acct,
         "current_balance": account_dict["current_balance"],
