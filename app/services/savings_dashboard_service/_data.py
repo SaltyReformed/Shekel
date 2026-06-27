@@ -16,14 +16,15 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
-from app.models.investment_params import InvestmentParams
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services import income_service, pay_period_service
-from app.services.account_projection import AccountProjectionKind, classify_account
-from app.services.projection_inputs import load_active_deductions_for_accounts
+from app.services.projection_inputs import (
+    load_active_deductions_for_accounts,
+    load_investment_params_for_accounts,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.savings_dashboard_service._types import (
     _AccountParams,
@@ -157,20 +158,12 @@ def _load_account_params(
         ).all():
             interest_params_map[hp.account_id] = hp
 
-    # Investment/retirement accounts use the growth engine.  The canonical
-    # classifier owns the taxonomy, so a parameterised physical asset
-    # (Property -> APPRECIATING) is correctly excluded from the
-    # InvestmentParams load here rather than re-deriving "by elimination".
-    investment_params_map = {}
-    inv_account_ids = [
-        a.id for a in accounts
-        if classify_account(a) is AccountProjectionKind.INVESTMENT
-    ]
-    if inv_account_ids:
-        for ip in db.session.query(InvestmentParams).filter(
-            InvestmentParams.account_id.in_(inv_account_ids)
-        ).all():
-            investment_params_map[ip.account_id] = ip
+    # Investment/retirement accounts use the growth engine.  The shared
+    # loader owns the canonical-classifier filter + InvestmentParams
+    # query (its single home; the balance_at seam will share it), so a
+    # parameterised physical asset (Property -> APPRECIATING) is
+    # correctly excluded there rather than re-derived "by elimination".
+    investment_params_map = load_investment_params_for_accounts(accounts)
 
     # F-22 / Commit 18: shared deduction batch loader; replaces the
     # filter-shape duplicate that previously lived inline here and in

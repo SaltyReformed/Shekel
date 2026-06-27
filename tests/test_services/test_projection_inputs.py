@@ -37,6 +37,7 @@ from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
     load_active_deductions_for_accounts,
+    load_investment_params_for_accounts,
 )
 
 
@@ -429,3 +430,110 @@ class TestLoadActiveDeductionsHelpers:
             )
             assert ctx["acct_a_id"] in result
             assert bare_acct.id not in result
+
+
+class TestLoadInvestmentParamsForAccounts:
+    """Query-shape tests for the investment-params batch loader.
+
+    Level 1 balance-seam prep (DRY): this loader is the single home for
+    the "which accounts get an :class:`InvestmentParams` row?" decision,
+    scoped by the canonical classifier rather than by elimination.  Uses
+    the live test DB with a mixed account set seeded inside the test's
+    ``app.app_context()`` so the inserts share the test's session.
+    """
+
+    def test_returns_only_investment_accounts_with_a_params_row(
+        self, app, db, seed_user,
+    ):
+        """Map holds exactly the INVESTMENT account that has a params row.
+
+        Locks the classifier predicate
+        (``classify_account(a) is AccountProjectionKind.INVESTMENT``):
+        the loader must scope membership by the classifier, NOT by "does
+        this account happen to have an InvestmentParams row?".  Mixed
+        input set, all owned by ``seed_user``:
+
+        - a 401(k) (classifier -> INVESTMENT) WITH an
+          :class:`InvestmentParams` row -> present, keyed by account_id.
+        - a Checking account (classifier -> PLAIN) that ALSO has an
+          InvestmentParams row -> still excluded, because the classifier
+          filters it out before the query runs.  If the predicate were
+          dropped, the widened query would find this row and leak it
+          into the result, failing the keys assertion below -- that is
+          why the excluded account is deliberately given a row.
+        - a second 401(k) (INVESTMENT) with NO params row -> absent,
+          because the query finds no matching row for it.
+        """
+        from app.enums import AcctTypeEnum
+        from app.models.account import Account
+        from app.models.investment_params import InvestmentParams
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bootstrap_period_id = seed_user["bootstrap_period"].id
+            k401_type_id = ref_cache.acct_type_id(AcctTypeEnum.K401)
+            checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
+
+            inv_with_params = Account(
+                user_id=user_id, name="401k With Params",
+                account_type_id=k401_type_id,
+                current_anchor_balance=Decimal("0.00"),
+                current_anchor_period_id=bootstrap_period_id,
+            )
+            checking = Account(
+                user_id=user_id, name="Everyday Checking",
+                account_type_id=checking_type_id,
+                current_anchor_balance=Decimal("0.00"),
+                current_anchor_period_id=bootstrap_period_id,
+            )
+            inv_without_params = Account(
+                user_id=user_id, name="401k No Params",
+                account_type_id=k401_type_id,
+                current_anchor_balance=Decimal("0.00"),
+                current_anchor_period_id=bootstrap_period_id,
+            )
+            db.session.add_all(
+                [inv_with_params, checking, inv_without_params],
+            )
+            db.session.flush()
+
+            none_type_id = ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.NONE,
+            )
+            # Seed a params row on BOTH the INVESTMENT account and the
+            # classifier-excluded Checking account.  The checking row is
+            # the predicate trip-wire: only the classifier filter keeps
+            # it out of the result, so dropping that filter would widen
+            # the query, leak the checking row in, and fail the keys
+            # assertion below.
+            db.session.add_all([
+                InvestmentParams(
+                    account_id=inv_with_params.id,
+                    assumed_annual_return=Decimal("0.07000"),
+                    employer_contribution_type_id=none_type_id,
+                ),
+                InvestmentParams(
+                    account_id=checking.id,
+                    assumed_annual_return=Decimal("0.07000"),
+                    employer_contribution_type_id=none_type_id,
+                ),
+            ])
+            db.session.flush()
+
+            result = load_investment_params_for_accounts(
+                [inv_with_params, checking, inv_without_params],
+            )
+
+            # Exactly the investment-with-params account, keyed by id;
+            # the Checking account is filtered by the classifier (despite
+            # having a row) and the params-less 401(k) has no row.
+            assert set(result.keys()) == {inv_with_params.id}
+            assert result[inv_with_params.id].account_id == inv_with_params.id
+            assert (
+                result[inv_with_params.id].assumed_annual_return
+                == Decimal("0.07000")
+            )
+
+    def test_empty_accounts_returns_empty_dict(self, app):
+        """Empty input returns {} without issuing an IN () query."""
+        with app.app_context():
+            assert load_investment_params_for_accounts([]) == {}
