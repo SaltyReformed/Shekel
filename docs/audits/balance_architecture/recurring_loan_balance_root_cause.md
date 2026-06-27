@@ -272,10 +272,10 @@ such -- not an existing branch or a prior plan.
   `scripts/hooks/post-edit-python.sh`, `.pylintrc`, `.claude/commands/standards.md`,
   `CLAUDE.md` -- wire `shekel-original-principal-as-balance` into the `--fail-on`
   gates and the checker enumerations.
-- `docs/audits/financial_calculations/recurring_loan_balance_root_cause.md` -- this
+- `docs/audits/balance_architecture/recurring_loan_balance_root_cause.md` -- this
   document.
 
 See [project_balance_projection_architecture] and
 [project_loan_balance_self_calculation] in the agent memory for the longer history,
-and `remediation_follow_up.md` (F-21 / Commit 19) for the consolidation this defect
-descends from.
+and `docs/audits/financial_calculations/remediation_follow_up.md` (F-21 / Commit 19) for
+the consolidation this defect descends from.
