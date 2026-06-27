@@ -41,6 +41,7 @@ from app.models.transaction import Transaction
 from app.services import (
     account_service,
     balance_at,
+    balance_calculator,
     balance_resolver,
     income_service,
     net_worth_kernel,
@@ -1058,3 +1059,279 @@ class TestBalanceMapEdgeCases:
                 current_anchor_period_id=None,
             )
             assert balance_at.balance_map(no_anchor, scenario, periods) is None
+
+
+class TestCashFlowView:
+    """``cash_balance_map`` / ``cash_balance_at`` -- the pure-cash view.
+
+    The single-account cash-flow surfaces (the budget grid, obligations
+    panel, calendar, and checking-detail page) read these instead of the
+    kind-correct ``balance_map`` / ``balance_at``: they must show the
+    account's pure transaction running-balance regardless of its kind, so
+    the projected balance reconciles with the surface's own transaction
+    rows.  These tests prove (1) the cash entries reproduce the canonical
+    producers verbatim -- including the ``stale_anchor_warning`` flag the
+    grid banner reads -- and (2) they do NOT dispatch by kind: an INTEREST
+    account's cash map omits the interest the kind-correct map accrues,
+    which is the whole reason these entries exist (Level-1 Commit 8).
+    """
+
+    def test_cash_balance_map_equals_balances_for(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """cash_balance_map returns the producer's BalanceResult verbatim.
+
+        Both the balances map and the stale-anchor flag must match
+        ``balance_resolver.balances_for`` for the same account / scenario /
+        periods -- the cash entry is a thin fence-compliant pass-through.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+
+            seam = balance_at.cash_balance_map(account, scenario, periods)
+            expected = balance_resolver.balances_for(
+                account, scenario.id, periods,
+            )
+            assert seam.balances == expected.balances
+            assert seam.stale_anchor_warning == expected.stale_anchor_warning
+
+    def test_cash_map_omits_interest_unlike_kind_correct_map(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """For an HYSA, the cash map is the no-interest running balance.
+
+        ``cash_balance_map`` must NOT accrue interest (it is the cash-flow
+        view): its values equal the entries-aware ``balances_for`` and stay
+        flat at the $5,000 anchor (no transactions), strictly below the
+        kind-correct ``balance_map`` which routes the HYSA through
+        ``calculate_balances_with_interest``.  This is the divergence the
+        cash entry fences: a HYSA grid account whose balance row accrued
+        interest would break the grid's balance-vs-subtotal invariant.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+
+            cash = balance_at.cash_balance_map(hysa, scenario, periods)
+            kind_correct = balance_at.balance_map(hysa, scenario, periods)
+            plain = balance_resolver.balances_for(
+                hysa, scenario.id, periods,
+            ).balances
+
+            # Cash view == the no-interest producer, exactly.
+            assert cash.balances == plain
+            # No transactions + no interest -> flat at the anchor.
+            assert cash.balances[periods[-1].id] == Decimal("5000.00")
+            # The kind-correct view accrues interest strictly above it.
+            assert kind_correct[periods[-1].id] > cash.balances[periods[-1].id]
+
+    def test_cash_balance_map_passes_stale_anchor_warning(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A settled post-anchor txn surfaces stale_anchor_warning via the seam.
+
+        The grid reads this flag for its stale-anchor banner.  The seed
+        account is anchored at ``periods[0]``; a RECEIVED (is_settled)
+        income row in a later period sets the flag, and cash_balance_map
+        must carry it through identically to ``balances_for``.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            add_txn(
+                db.session, seed_user, periods[3], "Deposit", "500.00",
+                status_enum=StatusEnum.RECEIVED, is_income=True,
+            )
+            db.session.commit()
+
+            seam = balance_at.cash_balance_map(account, scenario, periods)
+            expected = balance_resolver.balances_for(
+                account, scenario.id, periods,
+            )
+            assert seam.stale_anchor_warning is True
+            assert seam.stale_anchor_warning == expected.stale_anchor_warning
+
+    def test_cash_balance_map_threads_amount_overrides(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """cash_balance_map forwards amount_overrides to the producer (grid parity).
+
+        The grid threads its pre-built live projected-income map through the
+        cash entry; the override must reach ``balances_for`` and move the
+        number ($1,000 anchor + a $9,999 override on the period-5 bonus).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            bonus = add_txn(
+                db.session, seed_user, periods[5], "Bonus", "100.00",
+                is_income=True,
+            )
+            db.session.commit()
+            overrides = {bonus.id: Decimal("9999.00")}
+
+            seam = balance_at.cash_balance_map(
+                account, scenario, periods, amount_overrides=overrides,
+            )
+            expected = balance_resolver.balances_for(
+                account, scenario.id, periods, amount_overrides=overrides,
+            )
+            assert seam.balances == expected.balances
+            # $1,000 anchor + $9,999 override (not the stored $100) = $10,999.
+            assert seam.balances[periods[5].id] == Decimal("10999.00")
+
+    def test_cash_balance_at_equals_balance_as_of_date(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """cash_balance_at delegates to balance_as_of_date verbatim."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            as_of = periods[5].start_date
+
+            seam = balance_at.cash_balance_at(account, scenario, as_of)
+            expected = balance_resolver.balance_as_of_date(
+                account, scenario.id, as_of,
+            )
+            assert seam == expected
+
+    def test_cash_balance_at_is_no_interest_for_hysa(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """cash_balance_at is the no-interest scalar even for an HYSA.
+
+        Mirrors the map case: the scalar cash view equals
+        ``balance_as_of_date`` (which never layers interest) and stays flat
+        at the anchor for a transaction-free HYSA -- the calendar's
+        month-end figure must be this cash-flow balance, not an
+        interest-accrued one.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+            as_of = periods[-1].end_date
+
+            cash = balance_at.cash_balance_at(hysa, scenario, as_of)
+            assert cash == balance_resolver.balance_as_of_date(
+                hysa, scenario.id, as_of,
+            )
+            # No transactions, no interest -> flat at the anchor.
+            assert cash == Decimal("5000.00")
+
+    def test_cash_entries_raise_on_none_scenario(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Both cash entries fail loud on a None scenario (C1 contract)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            as_of = periods[5].start_date
+
+            with pytest.raises(ValueError):
+                balance_at.cash_balance_map(account, None, periods)
+            with pytest.raises(ValueError):
+                balance_at.cash_balance_at(account, None, as_of)
+
+
+class TestInterestDetailRerouteParity:
+    """The interest_detail reroute preserves the prior producer's numbers.
+
+    interest_detail is the one materially-changed path in Commit 8: it
+    swapped a single SoT-anchored
+    ``balance_calculator.calculate_balances_with_interest`` call for
+    ``balance_at.balance_map`` (the kernel's interest path, cache-anchored)
+    plus ``net_worth_kernel.interest_by_period_for_account``.  In the normal
+    case (the anchor cache equals the dated ``AccountAnchorHistory`` SoT --
+    what every factory-built account has) the two paths MUST produce
+    identical period balances AND identical per-period interest.  This pins
+    that behavior-preservation with a real, non-flat projection, so a future
+    drift between the kernel interest path and the route's old contract is
+    caught (the cross-page oracle has no interest-bearing surface).
+    """
+
+    def test_seam_path_equals_old_producer_path(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """balance_map + interest accessor == the old calculate_balances_with_interest.
+
+        Seeds an HYSA (5% APY) anchored at ``periods[0]`` with a $1,000
+        deposit at ``periods[3]`` so the running balance moves and interest
+        accrues on it.  The NEW route path (``balance_map`` for balances,
+        ``interest_by_period_for_account`` for interest) must equal the OLD
+        route path (one ``calculate_balances_with_interest`` call seeded from
+        the dated-SoT anchor over the account's transactions), proving the
+        SoT->cache anchor switch and the two-call split changed no number.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
+            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+            db.session.add(Transaction(
+                account_id=hysa.id,
+                pay_period_id=periods[3].id,
+                scenario_id=scenario.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Deposit",
+                transaction_type_id=income_type_id,
+                estimated_amount=Decimal("1000.00"),
+            ))
+            db.session.commit()
+            params = (
+                db.session.query(InterestParams)
+                .filter_by(account_id=hysa.id)
+                .one()
+            )
+
+            # OLD interest_detail path: the dated-SoT anchor over the
+            # account's transactions, scoped exactly as the (now deleted)
+            # ``_load_account_transactions`` helper scoped them.
+            anchor = balance_resolver.resolve_anchor(hysa, scenario.id)
+            old_txns = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == hysa.id,
+                    Transaction.pay_period_id.in_([p.id for p in periods]),
+                    Transaction.scenario_id == scenario.id,
+                    Transaction.is_deleted.is_(False),
+                )
+                .all()
+            )
+            old_balances, old_interest = (
+                balance_calculator.calculate_balances_with_interest(
+                    anchor_balance=anchor.balance,
+                    anchor_period_id=anchor.period.id,
+                    periods=periods,
+                    transactions=old_txns,
+                    interest_params=params,
+                )
+            )
+
+            # NEW interest_detail path: the seam + the kernel interest accessor.
+            new_balances = balance_at.balance_map(hysa, scenario, periods)
+            new_interest = net_worth_kernel.interest_by_period_for_account(
+                hysa, scenario, periods, params,
+            )
+
+            assert new_balances == old_balances
+            assert new_interest == old_interest
+            # The projection is real, not flat: interest accrued and the
+            # deposit raised the balance, so the equivalence is non-trivial.
+            assert any(v > Decimal("0.00") for v in new_interest.values())
+            # $8,000 anchor + $1,000 deposit + accrued interest.
+            assert new_balances[periods[-1].id] > Decimal("9000.00")

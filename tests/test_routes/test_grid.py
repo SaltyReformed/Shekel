@@ -4493,7 +4493,7 @@ class TestGridPeriodSubtotalCanonical:
         )
 
     def test_grid_balance_computation_routed_through_resolver(self):
-        """Static guard: grid balance computation routes through ``balance_resolver``.
+        """Static guard: grid balance computation routes through the balance-at seam.
 
         F-6 lock.  The cross-page balance-equality regression test
         (``tests/test_integration/test_cross_page_balance_equality.py``,
@@ -4502,14 +4502,26 @@ class TestGridPeriodSubtotalCanonical:
         re-runs ``balance_resolver.balances_for`` itself rather than
         parsing the rendered HTML.  A regression that re-introduces a
         hand-rolled balance loop in ``app/routes/grid.py`` (or that
-        swaps the canonical entries-aware producer for the bare
-        entries-blind ``balance_calculator.calculate_balances``) would
-        therefore drift silently.  This static lock closes that gap.
+        swaps the seam for the bare entries-blind
+        ``balance_calculator.calculate_balances``) would therefore drift
+        silently.  This static lock closes that gap.
+
+        Updated for Level-1 Commit 8: the grid now reads balances through
+        the balance-at seam's CASH-FLOW entry
+        (``balance_at.cash_balance_map``), which delegates to the
+        canonical entries-aware ``balance_resolver.balances_for``.  The
+        cash-flow entry -- not the kind-correct ``balance_map`` -- is
+        required: the grid account may be interest-bearing, and accruing
+        interest into the balance row while the subtotal row stays
+        transaction-based would break the
+        ``balances[p] - balances[p-1] == subtotals[p].net`` invariant
+        (``TestSubtotalReconciliation`` locks that separately).
 
         Two assertions:
-          1. ``balance_resolver.balances_for`` must still appear in
-             ``app/routes/grid.py`` (positive: the E-25 / Commit 5
-             canonical-producer wiring is intact).
+          1. ``balance_at.cash_balance_map`` must appear in
+             ``app/routes/grid.py`` (positive: the Commit-8 seam wiring
+             is intact and it is the cash-flow entry, not a direct
+             producer call or the kind-correct ``balance_map``).
           2. ``balance_calculator.calculate_balances(`` (the bare
              entries-blind producer) must NOT appear -- the entries-
              aware reduction in ``_entry_aware_amount`` is the F-009 /
@@ -4525,18 +4537,20 @@ class TestGridPeriodSubtotalCanonical:
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
         grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
-        assert "balance_resolver.balances_for" in grid_source, (
+        assert "balance_at.cash_balance_map" in grid_source, (
             "app/routes/grid.py no longer calls "
-            "``balance_resolver.balances_for`` -- regression on the "
-            "E-25 / Commit 5 canonical-producer contract.  Route the "
-            "balance computation through ``balance_resolver`` instead "
-            "of a hand-rolled loop or the bare entries-blind producer."
+            "``balance_at.cash_balance_map`` -- regression on the "
+            "Level-1 Commit 8 balance-at seam contract.  Route the grid "
+            "balance computation through the seam's cash-flow entry "
+            "instead of a hand-rolled loop, a direct producer call, or "
+            "the kind-correct ``balance_map`` (which would accrue "
+            "interest into the balance row)."
         )
         assert "balance_calculator.calculate_balances(" not in grid_source, (
             "app/routes/grid.py imports the bare entries-blind "
             "``balance_calculator.calculate_balances`` -- this bypasses "
             "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
-            "``balance_resolver.balances_for`` instead."
+            "``balance_at.cash_balance_map`` instead."
         )
 
     def test_obligations_has_no_period_subtotal_loop(self):

@@ -3102,7 +3102,7 @@ class TestCheckingDetailCanonicalProducer:
             assert resp.data.count(b"$0.00") >= 2
 
     def test_accounts_checking_balance_routed_through_resolver(self):
-        """Static guard: checking-detail balance routes through ``balance_resolver``.
+        """Static guard: detail-page balances route through the balance-at seam.
 
         F-6 lock, sibling of
         ``test_grid_balance_computation_routed_through_resolver``.
@@ -3111,24 +3111,31 @@ class TestCheckingDetailCanonicalProducer:
         Commit 11 of the main remediation) cannot catch a route-handler
         bypass of the canonical producer because its /accounts reader
         re-runs ``balance_resolver.balances_for`` itself rather than
-        parsing the rendered HTML.  A regression that swaps the
-        ``checking_detail`` route's call to the bare entries-blind
-        producer ``balance_calculator.calculate_balances`` (re-opening
-        the F-009 / CRIT-01 silent-degrade seam) would drift silently
-        through that lock.  This static guard closes the gap.
+        parsing the rendered HTML.  A regression that swaps the detail
+        routes to the bare entries-blind producer
+        ``balance_calculator.calculate_balances`` (re-opening the F-009 /
+        CRIT-01 silent-degrade seam) would drift silently through that
+        lock.  This static guard closes the gap.
+
+        Updated for Level-1 Commit 8: both detail routes now read balances
+        through the balance-at seam -- ``checking_detail`` via the
+        cash-flow entry ``balance_at.cash_balance_map`` and
+        ``interest_detail`` via the kind-correct ``balance_at.balance_map``
+        (plus the kernel's ``interest_by_period_for_account`` for the
+        interest figure) -- which delegate to the canonical entries-aware
+        producers.  The route no longer calls ``balance_resolver`` or
+        ``balance_calculator`` for balances directly.
 
         Two assertions:
-          1. ``balance_resolver.balances_for`` must still appear in
-             the accounts detail-route file (positive: the E-25 /
-             Commit 5 + Commit 7 canonical-producer wiring on
+          1. ``balance_at.cash_balance_map`` must appear in the accounts
+             detail-route file (positive: the Commit-8 seam wiring on
              ``checking_detail`` is intact).
           2. ``balance_calculator.calculate_balances(`` (the bare
-             entries-blind producer) must NOT appear in the file.
-             ``calculate_balances_with_interest(`` is a distinct
-             symbol -- it is the legitimate producer for the
-             ``interest_detail`` route and will not match this
-             anti-pattern because the open-paren anchors the substring
-             to the bare function name.
+             entries-blind producer) must NOT appear in the file -- the
+             open-paren anchors the substring to the bare function name,
+             so neither it nor the (now also absent)
+             ``calculate_balances_with_interest(`` can re-open the
+             entries-blind seam.
 
         File path note: Commit 21 of the follow-up remediation (F-1)
         split the monolithic ``app/routes/accounts.py`` into a per-
@@ -3141,22 +3148,19 @@ class TestCheckingDetailCanonicalProducer:
         accounts_source = Path(
             "app/routes/accounts/detail.py",
         ).read_text(encoding="utf-8")
-        assert "balance_resolver.balances_for" in accounts_source, (
+        assert "balance_at.cash_balance_map" in accounts_source, (
             "app/routes/accounts/detail.py no longer calls "
-            "``balance_resolver.balances_for`` -- regression on the "
-            "E-25 / Commit 5 + Commit 7 canonical-producer contract.  "
-            "Route the checking-detail balance computation through "
-            "``balance_resolver`` instead of a hand-rolled loop or "
-            "the bare entries-blind producer."
+            "``balance_at.cash_balance_map`` -- regression on the "
+            "Level-1 Commit 8 balance-at seam contract.  Route the "
+            "checking-detail balance computation through the seam's "
+            "cash-flow entry instead of a hand-rolled loop or a direct "
+            "producer call."
         )
         assert "balance_calculator.calculate_balances(" not in accounts_source, (
             "app/routes/accounts/detail.py imports the bare entries-blind "
             "``balance_calculator.calculate_balances`` -- this bypasses "
-            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
-            "``balance_resolver.balances_for`` instead.  Note: "
-            "``calculate_balances_with_interest`` is a distinct legitimate "
-            "producer for the interest-bearing detail route and does "
-            "not match this guard."
+            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use the "
+            "``balance_at`` seam instead."
         )
 
 

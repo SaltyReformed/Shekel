@@ -25,8 +25,8 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services import balance_at
 from app.services.account_resolver import resolve_analytics_account
-from app.services.balance_resolver import balance_as_of_date
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import (
@@ -581,10 +581,16 @@ def _compute_month_end_balance(
     month: int,
     scenario: Scenario,
 ) -> Decimal:
-    """Project the checking balance at the true calendar month-end (E-27).
+    """Project the account's cash-flow balance at the calendar month-end (E-27).
 
-    Routes through :func:`~app.services.balance_resolver.balance_as_of_date`
-    at the actual last day of the month.  This is the HIGH-02 / W-277
+    Routes through the balance-at seam's cash-flow scalar
+    :func:`~app.services.balance_at.cash_balance_at` (Level-1 Commit 8),
+    which delegates to ``balance_resolver.balance_as_of_date``, at the
+    actual last day of the month.  The cash-flow entry (not the
+    kind-correct :func:`~app.services.balance_at.balance_at`) keeps this a
+    pure transaction running-balance that reconciles with the day cells the
+    calendar renders for the same month; the analytics account can be any
+    kind via an explicit ``account_id``.  This is the HIGH-02 / W-277
     fix: pre-remediation the calendar walked a separate code path
     that (a) selected the last pay period whose ``end_date`` was on or
     before the calendar month-end (up to ~13 days stale when the
@@ -606,4 +612,4 @@ def _compute_month_end_balance(
         :func:`~app.utils.money.round_money` inside the resolver.
     """
     last_day = date(year, month, calendar.monthrange(year, month)[1])
-    return balance_as_of_date(account, scenario.id, last_day)
+    return balance_at.cash_balance_at(account, scenario, last_day)
