@@ -955,22 +955,23 @@ class TestInvestmentCrossPageEquality:
     def test_anchor_in_past_tile_adopts_modeled_value(
         self, app, cross_page_investment_past_anchor_ctx,
     ):
-        """The /savings tile adopts the model-from-anchor value at today.
+        """The /savings tile AND the investment dashboard adopt the modeled value.
 
         The Level 1 cross-producer investment lock the class docstring above
         defers to the savings-tile reroute.  With the investment anchored 6
         months in the past at a 7% return, the kernel's model-from-anchor map
-        compounds the $100,000 opening balance forward to today.  After the
-        reroute the /savings tile, the year-end asset aggregate, and the
-        net-worth trend all read that SAME modeled value at today -- and it is
-        strictly greater than the flat $100,000 cash-basis carry the
-        pre-reroute tile showed, which is what makes the lock non-tautological
-        (an unrerouted tile would read the flat $100,000 and fail).
+        compounds the $100,000 opening balance forward to today.  The /savings
+        tile, the investment-dashboard headline, the year-end asset aggregate,
+        and the net-worth trend all read that SAME modeled value at today --
+        and it is strictly greater than the flat $100,000 cash-basis carry the
+        pre-reroute surfaces showed, which is what makes the lock
+        non-tautological (an unrerouted surface would read the flat $100,000
+        and fail).
 
-        The investment-dashboard surface is intentionally excluded: its
-        headline still reads the cash-basis end-of-current-period balance
-        (``balance_resolver.balances_for``) until the dashboards commit
-        reroutes it, at which point it joins this lock.
+        The investment-dashboard headline now reads the model-from-anchor
+        balance through the ``balance_at`` seam (the dashboards-commit
+        reroute), so it joins this lock.  Its forward growth chart still seeds
+        from the cash basis -- a separate figure, not asserted here.
         """
         with app.app_context():
             ctx = cross_page_investment_past_anchor_ctx
@@ -989,9 +990,11 @@ class TestInvestmentCrossPageEquality:
                 "absent"
             )
 
-            # Every kernel-modeled surface reads that same value at today.
+            # Every kernel-modeled surface -- now including the investment
+            # dashboard headline -- reads that same value at today.
             modeled_readers = {
                 "savings": _savings_tile_value,
+                "investment_dashboard": _investment_dashboard_value,
                 "year_end": _asset_year_end_value,
                 "net_worth_trend": _trend_assets_value,
             }

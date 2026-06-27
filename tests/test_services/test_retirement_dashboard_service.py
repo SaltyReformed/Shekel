@@ -27,11 +27,14 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services import (
     account_service,
+    balance_at,
     balance_resolver,
+    growth_engine,
     pay_period_service,
     paycheck_calculator,
     retirement_dashboard_service,
 )
+from tests._test_helpers import make_investment_account
 
 
 class TestComputeGapData:
@@ -528,6 +531,117 @@ class TestRetirementProjectionEntryAware:
             assert target["current_balance"] == producer.balances[
                 current_period.id
             ]
+
+
+class TestRetirementAnchorInPastModeledHeadlineCashSeed:
+    """Anchor-in-past retirement account: modeled headline, cash-basis seed.
+
+    The Level 1 dashboards reroute made the displayed per-account
+    ``current_balance`` the model-from-anchor value (so it agrees with the
+    /savings net-worth tile and the /investment dashboard), while the
+    forward growth projection still seeds from the CASH basis -- the modeled
+    value already compounded the anchor forward to today, so seeding the
+    projection from it would re-grow (double-count) the current period.
+
+    Every other retirement test anchors at the CURRENT period, where the
+    modeled value and the cash basis coincide, so the decouple is invisible
+    to them.  This locks the DIVERGENT anchor-in-past case: a future swap of
+    the displayed (``balance_map``) and seed (``seed_map``) maps -- which
+    would either show the wrong headline OR re-introduce growth-on-growth in
+    the projection -- fails here.
+    """
+
+    def test_displayed_modeled_projection_seeds_cash(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """current_balance == modeled; projected_balance seeds from cash V0.
+
+        A 401(k) opening at V0 = $100,000, 7% return, no contributions,
+        anchored at the FIRST seeded period while today falls in period 4 --
+        so the anchor is in the past and the model-from-anchor map compounds
+        V0 forward to today, STRICTLY ABOVE the flat $100,000 cash carry.
+
+        Two locks, both falsifiable because the modeled value diverges from
+        V0:
+
+          * ``current_balance`` equals the seam's model-from-anchor value at
+            today (``balance_at.balance_map[current_period]``) -- the
+            DISPLAYED headline is modeled, not the flat cash carry.
+          * ``projected_balance`` equals the growth engine re-run from the
+            CASH basis V0 over the same forward periods, and does NOT equal
+            the run seeded from the modeled value -- the projection seeds
+            from cash, so the current period's growth is applied once, not
+            twice.
+
+        ``seed_user`` sets no retirement horizon (``planned_retirement_date``
+        is None, no pensions), so the projection runs over the real
+        current-period-forward run; with no deductions / employer match the
+        engine inputs are its defaults, so the reconstruction is exact.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            scenario = seed_user["scenario"]
+            v0 = Decimal("100000.00")
+            past_anchor = seed_periods_today[0]
+            acct = make_investment_account(
+                seed_user, db.session, past_anchor, v0, name="Past 401k",
+            )
+
+            all_periods = pay_period_service.get_all_periods(user.id)
+            current_period = pay_period_service.get_current_period(user.id)
+            assert current_period is not None
+            assert acct.current_anchor_period_id == past_anchor.id
+            assert past_anchor.period_index < current_period.period_index, (
+                "fixture regressed: the anchor must be strictly before today"
+            )
+
+            # The seam's model-from-anchor value at today (the figure the
+            # rerouted headline now reads), strictly above the flat carry.
+            modeled = balance_at.balance_map(
+                acct, scenario, all_periods,
+            )[current_period.id]
+            assert modeled > v0, (
+                f"modeled {modeled!r} did not compound above the flat anchor "
+                f"{v0!r}; the divergence this lock needs is absent"
+            )
+
+            # _project_one_account runs project_balance over the real
+            # current-period-forward run (no retirement horizon -> no
+            # synthetic periods); with no contributions / employer match the
+            # other engine kwargs are their defaults.  Seeding from V0 (cash)
+            # and from the modeled value give DIFFERENT end balances, so the
+            # equality below is non-tautological.
+            forward_periods = [
+                p for p in all_periods
+                if p.period_index >= current_period.period_index
+            ]
+            expected_cash = growth_engine.project_balance(
+                current_balance=v0,
+                assumed_annual_return=Decimal("0.07000"),
+                periods=forward_periods,
+            )[-1].end_balance
+            expected_modeled = growth_engine.project_balance(
+                current_balance=modeled,
+                assumed_annual_return=Decimal("0.07000"),
+                periods=forward_periods,
+            )[-1].end_balance
+            assert expected_cash != expected_modeled, (
+                "cash and modeled seeds must diverge for a non-tautological "
+                "lock"
+            )
+
+            result = retirement_dashboard_service.compute_gap_data(user.id)
+            target = next(
+                p for p in result["retirement_account_projections"]
+                if p["account"].id == acct.id
+            )
+
+            # Displayed headline is the modeled value.
+            assert target["current_balance"] == modeled
+            # Forward projection seeds from the CASH basis, not the modeled
+            # headline (a modeled seed would be growth-on-growth).
+            assert target["projected_balance"] == expected_cash
+            assert target["projected_balance"] != expected_modeled
 
 
 # ── C20: retirement zero-is-a-value, not "missing" (CRIT-04) ─────────

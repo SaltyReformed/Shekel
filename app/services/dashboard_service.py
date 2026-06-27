@@ -37,7 +37,7 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_at, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
@@ -63,10 +63,11 @@ def compute_balance_section(user_id: int) -> dict:
     as-of-today ``balance`` and the ``account_id`` the control needs.
 
     The ``balance`` is the canonical as-of-today projected checking
-    balance from ``balance_resolver.balance_as_of_date`` -- the exact
-    figure the pulse hero shows -- so the reverted fragment and the main
-    pulse region agree to the cent.  When no period contains today the
-    resolver cannot project to today, so the raw anchor balance is used
+    balance from the ``balance_at`` seam (``balance_at.balance_at``, whose
+    cash path delegates to ``balance_resolver.balance_as_of_date``) -- the
+    exact figure the pulse hero shows -- so the reverted fragment and the
+    main pulse region agree to the cent.  When no period contains today the
+    seam cannot project to today, so the raw anchor balance is used
     (the editor is only reachable with a current period in practice; this
     keeps the helper total).
 
@@ -82,9 +83,7 @@ def compute_balance_section(user_id: int) -> dict:
         return {"hero": None}
 
     if current_period is not None:
-        balance = balance_resolver.balance_as_of_date(
-            account, scenario.id, date.today(),
-        )
+        balance = balance_at.balance_at(account, scenario, date.today())
     else:
         balance = account.current_anchor_balance or _ZERO
 

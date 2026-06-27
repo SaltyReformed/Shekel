@@ -561,18 +561,22 @@ def investment_base_balance_map(
     penny-for-penny with the figure the grid and every cash surface render
     for the same rows.
 
-    Shared by the two investment growth projections so neither re-derives
-    the seed: the net-worth investment sub-chain
+    Shared by every investment growth projection so none re-derives the
+    seed: the net-worth investment sub-chain
     (:func:`_build_investment_balance_map`, which forward/reverse-projects
-    growth off it) and the year-end savings-progress projection
+    growth off it), the year-end savings-progress projection
     (:func:`app.services.year_end_summary_service._savings._project_investment_for_year`,
-    which re-projects each calendar year from this cash basis).  The
-    savings-progress consumer must seed from THIS pre-growth map, not the
-    growth-modeled :func:`balance_map` the ``balance_at`` seam returns for
-    an investment account -- seeding from the modeled balance would compound
-    growth on top of growth.  Exposed from the engine cluster precisely so
-    that consumer can read the seed without calling the fenced cash
-    producer directly.
+    which re-projects each calendar year from this cash basis), and the
+    investment / retirement dashboard forward projections
+    (``investment_dashboard_service._resolve_seed_balance`` and
+    ``retirement_dashboard_service._resolve_balance_maps``, whose growth
+    chart seeds from this cash basis while the DISPLAYED headline reads the
+    modeled :func:`balance_map`).  Each must seed from THIS pre-growth map,
+    not the growth-modeled :func:`balance_map` the ``balance_at`` seam
+    returns for an investment account -- seeding from the modeled balance
+    would compound growth on top of growth (re-grow the current period).
+    Exposed from the engine cluster precisely so those consumers can read
+    the seed without calling the fenced cash producer directly.
 
     Args:
         account: The investment account.
