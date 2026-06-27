@@ -271,3 +271,31 @@ class TestBuildAccountBalanceMap:
             # every period, NOT the $200,000 anchor (resolver fallthrough).
             assert balances[current.id] == Decimal("240000.00")
             assert balances[all_periods[-1].id] == Decimal("240000.00")
+
+
+class TestInterestByPeriodForAccount:
+    """Tests for ``interest_by_period_for_account`` (interest-earned accessor).
+
+    The interest VALUE behavior (an account's per-period accrual matching
+    the calculator) is locked end-to-end by the HYSA savings-progress
+    tests in ``test_year_end_summary_service.py``, the accessor's only
+    consumer.  This pins the contract those tests cannot reach: the
+    no-anchor short-circuit that returns the empty map.
+    """
+
+    def test_no_anchor_period_returns_empty(self, app, db, seed_user):
+        """An account with no anchor period earns no projectable interest.
+
+        A stand-in with ``current_anchor_period_id = None`` short-circuits
+        before any engine call to the empty map, so the year-end consumer's
+        year-filtered sum is ``Decimal("0")`` -- the prior inline
+        ``current_anchor_period_id is None -> ZERO`` early-out, preserved.
+        """
+        # Pylint: import-outside-toplevel -- deferred so the stand-in type
+        # is built only inside the test (the file-wide convention).
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            account = SimpleNamespace(current_anchor_period_id=None)
+            assert net_worth_kernel.interest_by_period_for_account(
+                account, object(), [], None,
+            ) == {}

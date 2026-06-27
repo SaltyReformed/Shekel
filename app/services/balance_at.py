@@ -206,7 +206,18 @@ def _assemble_inputs(
         ) if investment_params_map else {}
     )
 
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(user_id)
+    # Same investment-only scoping as the deductions above: the gross is the
+    # employer-match cap basis the growth engine consumes ONLY on the
+    # investment branch of ``build_account_balance_map``, so a set with no
+    # investment account never reads it.  Skipping the paycheck-engine fetch
+    # there keeps a single-account ``balance_map`` for a cash / interest / loan
+    # account free of the engine run (the value would be unused), so routing
+    # those reads through the seam stays as cheap as the prior direct producer
+    # call -- no O(N) paycheck regression in the year-end savings-progress loop.
+    salary_gross_biweekly = (
+        income_service.get_current_gross_biweekly(user_id)
+        if investment_params_map else ZERO
+    )
 
     return _AssembledInputs(
         debt_schedules=debt_schedules,
@@ -434,12 +445,19 @@ def balance_at(
             [account], scenario.id,
         ).get(account.id)
         if debt_schedule is not None:
-            # Returned verbatim (no re-round): the schedule rows and
-            # current_balance are already cent-quantized by the resolver, so
-            # balance_at agrees penny-exact with balance_map for the period
-            # containing as_of.
+            # Defensive sort before the walk, mirroring the period-map
+            # sibling ``compute_loan_period_balance_map``: the resolver emits
+            # chronological schedules, but ``balance_from_schedule_at_date``'s
+            # ``else: break`` REQUIRES ascending ``payment_date`` order, so
+            # the scalar path must not silently rely on the producer's order
+            # while the per-period path defends against it (the two would
+            # drift on a future out-of-order schedule).  Returned verbatim
+            # (no re-round): the schedule rows and current_balance are already
+            # cent-quantized by the resolver, so balance_at agrees penny-exact
+            # with balance_map for the period containing as_of.
             return balance_from_schedule_at_date(
-                debt_schedule.schedule, as_of, debt_schedule.current_balance,
+                sorted(debt_schedule.schedule, key=lambda r: r.payment_date),
+                as_of, debt_schedule.current_balance,
             )
         # No resolvable schedule: degrade to the cash producer over the
         # loan's own transaction rows (documented above).

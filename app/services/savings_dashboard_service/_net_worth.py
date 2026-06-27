@@ -23,8 +23,6 @@ the orchestrator builds them and threads the result into both producers.
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import AcctCategoryEnum
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.services import balance_at, home_equity_service, net_worth_kernel
@@ -32,32 +30,18 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+# The asset/liability rule and the net-worth account-data builder live in
+# the shared adapter so this cockpit and the year-end summary assemble
+# net-worth data one way; ``_is_liability_account`` keeps its local name
+# (this module's other net-worth helpers call it) as an alias over the one
+# definition.
+from app.services.net_worth_account_data import (
+    is_liability_account as _is_liability_account,
+    to_net_worth_account_data,
+)
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 
 ZERO = Decimal("0.00")
-
-
-def _is_liability_account(account) -> bool:
-    """Return whether an account's type is in the LIABILITY category.
-
-    Classifies by the account type's integer ``category_id`` against the
-    cached LIABILITY category id (IDs for logic, never a ``.name``
-    string).  An account with no ``account_type`` (degenerate / partially
-    loaded) is treated as a non-liability asset, matching the year-end
-    net-worth section's ``account_type is not None`` guard.
-
-    Args:
-        account: The :class:`~app.models.account.Account` to classify.
-
-    Returns:
-        ``True`` when the account's type's category is LIABILITY,
-        ``False`` otherwise.
-    """
-    liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-    return (
-        account.account_type is not None
-        and account.account_type.category_id == liability_cat_id
-    )
 
 
 def compute_net_worth_today(account_data: list[dict]) -> dict:
@@ -150,17 +134,7 @@ def build_account_net_worth_maps(
         return []
 
     balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
-    result: list[dict] = []
-    for account in accounts:
-        balances = balance_maps.get(account.id)
-        if balances is None:
-            continue
-        result.append({
-            "account_id": account.id,
-            "balances": balances,
-            "is_liability": _is_liability_account(account),
-        })
-    return result
+    return to_net_worth_account_data(accounts, balance_maps)
 
 
 def _sum_assets_and_liabilities_at_period(

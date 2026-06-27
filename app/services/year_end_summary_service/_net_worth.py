@@ -9,10 +9,8 @@ import calendar
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import AcctCategoryEnum
 from app.models.scenario import Scenario
-from app.services.account_projection import balance_from_schedule_at_date
+from app.services import balance_at, net_worth_account_data
 # Net-worth sum re-exported from the shared kernel (Loop B Phase 1): the
 # private alias is preserved so the section helpers below and the
 # year-end net-worth tests keep calling ``_sum_net_worth_at_period``
@@ -21,17 +19,11 @@ from app.services.net_worth_kernel import (
     DebtSchedule,
     sum_net_worth_at_period as _sum_net_worth_at_period,
 )
-from app.services.year_end_summary_service._balances import (
-    _dispatch_account_balance_map,
-)
 from app.services.year_end_summary_service._periods import (
     _find_period_before_date,
     _get_month_end_periods,
 )
-from app.services.year_end_summary_service._types import (
-    _ProjectionInputs,
-    _YearContext,
-)
+from app.services.year_end_summary_service._types import _YearContext
 
 ZERO = Decimal("0")
 
@@ -39,7 +31,6 @@ ZERO = Decimal("0")
 def _compute_net_worth(
     accounts: list,
     year_ctx: _YearContext,
-    inputs: _ProjectionInputs,
 ) -> dict:
     """Compute net worth at 12 monthly endpoints for the year.
 
@@ -47,20 +38,17 @@ def _compute_net_worth(
     month's last day, then sums all account balances at that period.
     Liability accounts contribute negative values.
 
-    Uses the balance calculator for checking/savings, interest
-    calculator for HYSA-type accounts, amortization schedule for loan
-    accounts, and growth engine for investment accounts.  The per-account
-    balance derivation reads ``inputs.debt_schedules`` and the investment
-    trio (``investment_params_map`` / ``deductions_by_account`` /
-    ``salary_gross_biweekly``).
+    The per-account balances come from the :mod:`app.services.balance_at`
+    seam (:func:`_build_account_data`), so this section reads the same
+    per-kind math -- the balance calculator for checking/savings, the
+    interest calculator for HYSA-type accounts, the amortization schedule
+    for loans, and the growth engine for investments -- as the savings
+    cockpit's net-worth trend and the cross-page balance oracle.
 
     Args:
         accounts: All active user accounts.
         year_ctx: The target year plus its scenario and the full ordered
             period list (used for anchor-based projection).
-        inputs: Pre-loaded projection parameter maps; this section reads
-            ``debt_schedules`` and the investment trio and leaves
-            ``interest_params_map`` untouched.
 
     Returns:
         dict with monthly_values (list of 12 {month, month_name,
@@ -73,7 +61,7 @@ def _compute_net_worth(
 
     month_end_periods = _get_month_end_periods(year, all_periods)
     account_data = _build_account_data(
-        accounts, year_ctx.scenario, all_periods, inputs,
+        accounts, year_ctx.scenario, all_periods,
     )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
@@ -99,39 +87,35 @@ def _build_account_data(
     accounts: list,
     scenario: Scenario,
     all_periods: list,
-    inputs: _ProjectionInputs,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
+
+    Asks the :mod:`app.services.balance_at` seam for every account's dense
+    per-period balance map (the seam owns the input assembly -- debt
+    schedules, investment params, deductions, engine gross -- so this
+    section no longer pre-assembles them), then pairs each with its
+    liability flag through the shared
+    :func:`app.services.net_worth_account_data.to_net_worth_account_data`
+    adapter -- the SAME builder the savings cockpit's net-worth region
+    uses, so the two surfaces assemble net-worth account data one way.
+    Accounts with no anchor period are omitted by the seam, matching the
+    prior ``balances is None`` skip.
 
     Args:
         accounts: All active user accounts.
         scenario: Baseline scenario.
-        all_periods: All user pay periods.
-        inputs: Pre-loaded projection parameter maps forwarded to
-            :func:`_dispatch_account_balance_map` (``debt_schedules``
-            selects the amortization-schedule path for debt accounts; the
-            investment trio drives the growth-engine path for investment
-            accounts).
+        all_periods: All user pay periods (the dense domain; the seam
+            builds over ALL periods so the entries-aware resolver has its
+            anchor seed).
 
     Returns:
-        List of dicts with 'balances' and 'is_liability' keys.
+        List of ``{account_id, balances, is_liability}`` dicts (the
+        net-worth reducers read only ``balances`` / ``is_liability``).
     """
-    liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-    result = []
-    for account in accounts:
-        balances = _dispatch_account_balance_map(
-            account, scenario, all_periods, inputs,
-        )
-        if balances is None:
-            continue
-        result.append({
-            "balances": balances,
-            "is_liability": (
-                account.account_type is not None
-                and account.account_type.category_id == liability_cat_id
-            ),
-        })
-    return result
+    balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
+    return net_worth_account_data.to_net_worth_account_data(
+        accounts, balance_maps,
+    )
 
 
 def _compute_monthly_values(
@@ -169,20 +153,38 @@ def _compute_debt_progress(
     year: int,
     debt_accounts: list,
     debt_schedules: dict[int, DebtSchedule],
+    scenario: Scenario,
 ) -> list[dict]:
     """Compute principal paid for each debt account during the year.
 
-    Uses the pre-generated amortization schedules to find the loan
-    balance at Jan 1 and Dec 31 of the target year.  This matches the
-    amortization engine used by the loan dashboard, ensuring consistent
-    values.
+    Principal paid = the loan balance at Dec 31 of the PRIOR year (the
+    starting balance, before any payment in the target year) minus the
+    balance at Dec 31 of the target year.  Both balances come from the
+    :mod:`app.services.balance_at` seam
+    (:func:`app.services.balance_at.balance_at`) -- the single
+    date-precise loan-balance accessor, walking the loan's resolver
+    schedule to the exact date and falling back to the resolver's current
+    balance before the first upcoming payment (NOT the original principal).
+    Reading through the seam keeps this section, the savings cockpit loan
+    card, and the net-worth liability column on ONE loan-balance
+    derivation so they cannot drift.
+
+    ``debt_schedules`` is consulted ONLY as the membership gate: a loan
+    with no resolved schedule (no ``LoanParams`` row) or an empty schedule
+    (paid off / fully resolved) has no meaningful principal-paid figure and
+    is skipped, exactly as before.  For each surviving loan the seam
+    re-resolves the schedule to read its balance; that re-resolution is the
+    deliberate, correctness-neutral cost of the seam owning the balance
+    read -- it calls the same resolver that built ``debt_schedules``, on the
+    same clock, so the figures are identical.
 
     Args:
         year: Target calendar year.
         debt_accounts: Accounts with has_amortization=True.
         debt_schedules: account_id ->
             :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
-            from _generate_debt_schedules().
+            from _generate_debt_schedules(); the membership gate only.
+        scenario: Baseline scenario (scopes the seam's loan resolution).
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
@@ -197,24 +199,14 @@ def _compute_debt_progress(
         if schedule_info is None or not schedule_info.schedule:
             continue
 
-        # The pre-schedule fallback is the loan's resolver-derived current
-        # balance (NOT its original principal): the schedule is today-forward,
-        # so a date before the first upcoming payment is at today's balance.
-        # The shared producer (compute_loan_period_balance_map) uses the same
-        # helper and fallback, so the cockpit and this section cannot drift.
-        sorted_schedule = sorted(
-            schedule_info.schedule, key=lambda r: r.payment_date,
-        )
-        current_balance = schedule_info.current_balance
-
         # Jan 1 balance = balance at end of prior year, BEFORE any
         # payments in the target year.  Use Dec 31 of the prior year
         # so a Jan 1 payment is not counted in the starting balance.
-        jan1_bal = balance_from_schedule_at_date(
-            sorted_schedule, date(year - 1, 12, 31), current_balance,
+        jan1_bal = balance_at.balance_at(
+            account, scenario, date(year - 1, 12, 31),
         )
-        dec31_bal = balance_from_schedule_at_date(
-            sorted_schedule, date(year, 12, 31), current_balance,
+        dec31_bal = balance_at.balance_at(
+            account, scenario, date(year, 12, 31),
         )
         principal_paid = jan1_bal - dec31_bal
 

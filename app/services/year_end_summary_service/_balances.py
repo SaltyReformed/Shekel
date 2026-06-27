@@ -18,21 +18,19 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.scenario import Scenario
-from app.services import balance_calculator, net_worth_kernel
+from app.services import net_worth_kernel
 from app.services.interest_projection import calculate_interest
 # Re-exported from the kernel so the year-end savings-progress section
-# (:mod:`._savings`) and the net-worth section (:mod:`._net_worth`) keep
-# their existing ``from ._balances import ...`` paths after the Loop B
-# Phase 1 move, and the loan-unified-figures integration test keeps
-# calling ``_balances._generate_debt_schedules``.  The kernel is the one
+# (:mod:`._savings`) keeps its existing ``from ._balances import
+# _load_shadow_contributions`` path after the Loop B Phase 1 move, and the
+# orchestrator and the loan-unified-figures integration test keep calling
+# ``_balances._generate_debt_schedules``.  The kernel is the one
 # definition; these names are stable aliases over it (listed in
 # ``__all__`` so the re-export is intentional, not an unused import).
 from app.services.net_worth_kernel import (
     _load_shadow_contributions,
-    base_account_balance_map as _base_account_balance_map,
     generate_debt_schedules as _generate_debt_schedules,
 )
-from app.services.year_end_summary_service._types import _ProjectionInputs
 
 ZERO = Decimal("0")
 
@@ -42,55 +40,13 @@ ZERO = Decimal("0")
 # deliberate (pylint ``unused-import`` otherwise flags them, since it
 # cannot see the cross-module consumers).
 __all__ = [
-    "_base_account_balance_map",
     "_compute_interest_for_year",
     "_compute_pre_anchor_interest",
-    "_dispatch_account_balance_map",
     "_generate_debt_schedules",
     "_load_shadow_contributions",
     "_settled_net_by_period",
     "_sum_shadow_income",
 ]
-
-
-def _dispatch_account_balance_map(
-    account: Account,
-    scenario: Scenario,
-    periods: list,
-    inputs: _ProjectionInputs,
-) -> dict | None:
-    """Compute period_id -> balance for one account, dispatching on type.
-
-    Thin adapter (Loop B Phase 1): delegates to the shared
-    :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
-    which unpacks the year-end ``_ProjectionInputs`` bundle into the
-    per-account parameters
-    :func:`app.services.net_worth_kernel.build_account_balance_map`
-    takes -- this account's debt schedule, its
-    :class:`~app.models.investment_params.InvestmentParams`, its
-    deductions, and the engine gross-biweekly -- so the kernel owns the
-    dispatch math (amortization schedule / growth engine / interest /
-    plain resolver) and the year-end net-worth section and the savings
-    cockpit cannot drift onto two copies of it.  The unpack itself is
-    shared with the ``balance_at`` seam (R0801: it was duplicated here and
-    in the seam's ``_account_balance_map``); year-end never applies live
-    amount overrides, so it passes none.
-
-    Args:
-        account: The account to project.
-        scenario: The baseline scenario.
-        periods: All user pay periods.
-        inputs: Pre-loaded projection parameter maps (MED-01 / S6-06):
-            ``debt_schedules`` selects the schedule path for debt accounts
-            and the investment trio drives the growth-engine path.
-
-    Returns:
-        OrderedDict mapping period_id to Decimal balance, or None if the
-        account has no anchor period.
-    """
-    return net_worth_kernel.account_balance_map_from_inputs(
-        account, scenario, periods, inputs,
-    )
 
 
 def _sum_shadow_income(
@@ -127,8 +83,13 @@ def _compute_interest_for_year(
 ) -> Decimal:
     """Compute total interest earned on an account during the year.
 
-    Calls calculate_balances_with_interest() and sums the interest
-    from periods whose start_date falls in the target year.
+    Reads the per-period interest from the engine cluster's
+    :func:`app.services.net_worth_kernel.interest_by_period_for_account`
+    accessor -- interest earned is rich projection detail, not a
+    balance-at-T figure the ``balance_at`` seam exposes -- and sums the
+    periods whose ``start_date`` falls in the target year.  A None-anchor
+    account yields the empty interest map, so the sum is ``ZERO`` (the
+    prior inline early-out, now owned by the accessor).
 
     Args:
         account: Interest-bearing account.
@@ -140,20 +101,8 @@ def _compute_interest_for_year(
     Returns:
         Decimal total interest earned in the year.
     """
-    if account.current_anchor_period_id is None:
-        return ZERO
-
-    transactions = net_worth_kernel.load_account_period_transactions(
-        account.id, scenario.id, [p.id for p in all_periods],
-    )
-
-    anchor_balance = account.current_anchor_balance or ZERO
-    _, interest_by_period = balance_calculator.calculate_balances_with_interest(
-        anchor_balance=anchor_balance,
-        anchor_period_id=account.current_anchor_period_id,
-        periods=all_periods,
-        transactions=transactions,
-        interest_params=interest_params,
+    interest_by_period = net_worth_kernel.interest_by_period_for_account(
+        account, scenario, all_periods, interest_params,
     )
 
     total = ZERO
