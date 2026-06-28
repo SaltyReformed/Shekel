@@ -185,7 +185,7 @@
    inline style attributes; see progress_bar.js for the pattern). */
 .street__axis {
   position: relative;
-  height: 7.25rem;
+  height: 8rem;
   margin: 0.375rem 0.5rem;
 }
 
@@ -219,6 +219,11 @@
 
 .street__event--overdue::before { background: var(--shekel-danger); }
 .street__event--soon::before { background: var(--shekel-credit); }
+
+/* A bill due on the period-end date shares the terminus point; the
+   terminus ring marks it, so this station drops its duplicate dot and its
+   label is pinned below the line (the terminus label sits above). */
+.street__event--at-end::before { display: none; }
 
 .street__event-label {
   position: absolute;
@@ -258,13 +263,50 @@
   font-weight: 600;
 }
 
-.street__event--overdue .street__event-amt { color: var(--shekel-danger); }
-.street__event--soon .street__event-amt { color: var(--shekel-credit); }
-/* Over-budget envelopes keep the red dual-amount signal the retired
-   list carried (color pairs with the dual amount, not color alone). */
-.street__event--over .street__event-amt {
+/* Street stations: each dated day is one dot whose label stacks that
+   day's bills as compact name + amount rows, so bills sharing a due date
+   never overlap on a single point. The label block is anchored above or
+   below the line by .street__event(--below) and grows away from it. */
+.street__station-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.625rem;
+  line-height: 1.2;
+}
+
+.street__station-amt {
+  font-weight: 600;
+}
+
+.street__event--overdue .street__station-amt { color: var(--shekel-danger); }
+.street__event--soon .street__station-amt { color: var(--shekel-credit); }
+
+/* Over-budget envelope keeps the red dual-amount signal (color pairs with
+   the dual amount, not color alone). */
+.street__station-item--over .street__station-amt {
   color: var(--shekel-danger);
   font-weight: 700;
+}
+
+/* The day's overdue flag / "+N more" overflow, on one shared meta line so
+   a busy station stays within the band. */
+.street__station-meta {
+  display: flex;
+  justify-content: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+}
+
+.street__station-overdue {
+  color: var(--shekel-danger);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.street__station-more {
+  color: var(--shekel-text-muted);
 }
 
 .street__today {

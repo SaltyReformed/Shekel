@@ -124,22 +124,41 @@
     </span>
   </div>
   <div class="street__axis">
-    {% for ev in pulse.due_soon | rejectattr("undated") %}
-    {% set state = 'overdue' if ev.days_until_due is not none and ev.days_until_due < 0
-       else ('soon' if ev.days_until_due is not none and ev.days_until_due <= 3
+    {% for st in pulse.due_soon_stations %}
+    {% set state = 'overdue' if st.days_until_due is not none and st.days_until_due < 0
+       else ('soon' if st.days_until_due is not none and st.days_until_due <= 3
        else 'normal') %}
-    <div class="street__event street__event--{{ state }}{% if loop.index0 is odd %} street__event--below{% endif %}{% if ev.entry_over_budget %} street__event--over{% endif %}"
-         data-day="{{ ev.day_offset }}">
+    {# A station is one day: its dot carries the shared due-date state, and
+       its label stacks that day's bills (one compact name + amount row
+       each), so bills sharing a due date no longer overlap on one point.
+       Bills past the visible cap collapse into a "+N more" line; the grid
+       carries their detail. #}
+    {# A bill due on the period-end date shares the period-end terminus's
+       exact point.  Pin it below the line (the terminus label sits above)
+       and drop its duplicate dot -- the terminus ring already marks the
+       point -- so the two no longer overlap. #}
+    {% set at_end = st.day_offset == pulse.street.days_total %}
+    <div class="street__event street__event--{{ state }}{% if at_end %} street__event--below street__event--at-end{% elif loop.index0 is odd %} street__event--below{% endif %}"
+         data-day="{{ st.day_offset }}">
       <span class="street__event-label">
-        {{ ev.name }}
-        <span class="street__event-amt font-mono">
-          {%- if ev.is_tracked|default(false) and ev.entry_total is not none -%}
-          {{ money(ev.entry_total) }} / {{ money(ev.amount) }}
-          {%- else -%}
-          {{ money(ev.amount) }}
-          {%- endif -%}
-          {%- if state == 'overdue' %} &middot; overdue{% endif -%}
+        {% for ev in st.visible_items %}
+        <span class="street__station-item{% if ev.entry_over_budget %} street__station-item--over{% endif %}">
+          <span class="street__station-name">{{ ev.name }}</span>
+          <span class="street__station-amt font-mono">
+            {%- if ev.is_tracked|default(false) and ev.entry_total is not none -%}
+            {{ money(ev.entry_total) }} / {{ money(ev.amount) }}
+            {%- else -%}
+            {{ money(ev.amount) }}
+            {%- endif -%}
+          </span>
         </span>
+        {% endfor %}
+        {% if state == 'overdue' or st.extra_count > 0 %}
+        <span class="street__station-meta">
+          {%- if state == 'overdue' %}<span class="street__station-overdue">overdue</span>{% endif -%}
+          {%- if st.extra_count > 0 %}<span class="street__station-more">+{{ st.extra_count }} more</span>{% endif -%}
+        </span>
+        {% endif %}
       </span>
     </div>
     {% endfor %}
