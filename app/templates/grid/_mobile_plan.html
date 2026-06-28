@@ -41,6 +41,11 @@
                                   Decimal | None].  When the value
                                   is None for a given period_id, the
                                   balance line is omitted.
+     plan_increments           -- (optional) dict[period_id ->
+                                  Decimal | None] per-period interest
+                                  accrual.  When it carries a value the
+                                  recap adds "Interest <amount>" (INTEREST
+                                  grid account only); None -> omitted.
      low_balance_threshold     -- (optional) int/Decimal.  When the
                                   projected balance is below this
                                   but >= 0, the balance gets the
@@ -112,6 +117,14 @@
                 <span class="{{ 'balance-negative' if subtotal.net < 0 else '' }}">
                   {{ money(subtotal.net, cents=false) }}
                 </span>
+                {# Interest accrual -- shown only for an INTEREST grid account
+                   (plan_increments carries a value), so Net + Interest
+                   explains the projected-balance change. #}
+                {% set _inc = plan_increments.get(period.id) if plan_increments is defined else none %}
+                {% if _inc is not none %}
+                &middot;
+                Interest {{ money(_inc, cents=false) }}
+                {% endif %}
               </small>
             {% endif %}
           </div>

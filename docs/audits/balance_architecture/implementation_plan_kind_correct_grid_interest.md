@@ -195,7 +195,27 @@ all review-driven:
   both walks; Decimal-only, no float; Flask-free.
 - **Gates:** `pylint app/ --fail-on=...` clean; `./scripts/test.sh tests/test_services/test_balance_at.py -v` green.
 
-### Commit 2 -- Grid desktop: kind-correct balance + accrual row
+### Commit 2 -- Grid desktop + mobile: kind-correct balance + accrual row
+
+**Status: DONE (2026-06-28, dev) -- MERGED with Commit 3 (mobile).** Desktop and mobile could not
+be split: `index` computes ONE `balances` map that grid.html renders for both the desktop table and
+the mobile cards, so making it interest-accrued affects both at once -- a desktop-only commit would
+leave the mobile Plan tab showing accrued balances with cash-only subtotals and no Interest line (a
+reconciliation gap). So this commit does both surfaces. Deviations from the entry below, all sound:
+- **No `accrual_label` helper / per-kind label.** Scope is INTEREST only (Decision 3), so the row
+  label is the static string "Interest", hardcoded in the templates like the sibling "Net Cash
+  Flow" / "Projected End Balance" labels -- no route-side label computation.
+- **`_build_grid_balances` returns `(grid_view, anchor_balance)`**, not a 4-tuple: threading the
+  cohesive `GridBalanceView` (balances + increments + stale) keeps `_build_plan_view` at <= 5 args
+  (the bundle-a-cohesive-concept rule) and lets both maps be sliced symmetrically inside it.
+- **Income-basis threading:** `balance_row` and `mobile_this_period_summary` build + thread the live
+  override map via a new shared `_grid_amount_overrides` helper, so an interest account's refreshed
+  figures use live income (matching the full render) rather than the stored estimate
+  `grid_balance_view` falls back to on a bare None.
+- **Mobile:** the Interest bar is added to `_mobile_tp_summary.html` (covers the This-Period tab via
+  its include + the refresh endpoint) and the Plan recap gains an "Interest" figure via
+  `plan_increments`. 5 route tests (desktop render, balance-row refresh, mobile summary refresh,
+  PLAIN-absent x2); 207 in test_grid.py, pylint 10.00.
 
 **Goal:** the desktop grid footer shows the kind-correct balance and the accrual row for a
 non-loan, non-plain grid account.

@@ -34,6 +34,9 @@
      balances     -- (optional) dict[period_id -> Decimal | None].
                      Absent or missing the key -> the Projected
                      Balance card is omitted.
+     increments   -- (optional) dict[period_id -> Decimal | None] per-period
+                     interest accrual; when it carries a value for the period
+                     the Interest bar renders (INTEREST grid account only).
      account      -- (optional) the grid Account, for the self-refresh
                      url_for's ``account_id``.  ``None`` for the
                      zero-accounts edge.
@@ -61,6 +64,19 @@
       {{ money(net, cents=false) }}
     </span>
   </div>
+
+  {# --- Interest accrual (INTEREST grid account only) ---
+       Rendered only when ``increments`` carries a value for this period,
+       which the balance-at seam populates exclusively for an INTEREST grid
+       account; for every other kind it is empty and this bar is omitted.
+       Sits between Net Cash Flow and Projected Balance so the accrual that
+       lifts the balance beyond the cash flow is visible. #}
+  {% if increments is defined and increments.get(period.id) is not none %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row interest-row">
+    <span class="fw-bold small"><i class="bi bi-percent" aria-hidden="true"></i> Interest</span>
+    <span class="font-mono fw-bold text-success">{{ money(increments[period.id], cents=false) }}</span>
+  </div>
+  {% endif %}
 
   {# --- Projected End Balance (requires balances) --- #}
   {% if balances is defined %}
