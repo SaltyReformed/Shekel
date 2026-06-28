@@ -32,7 +32,6 @@ from app.services import (
     balance_at,
     growth_engine,
     income_service,
-    net_worth_kernel,
     pay_period_service,
     paycheck_calculator,
     pension_calculator,
@@ -821,13 +820,13 @@ def _resolve_balance_maps(
       /investment dashboard at today (the cross-page invariant: an account
       anchored in the past shows its modeled market value, not the flat
       cash-basis contribution total).
-    * **seed** -- the cash-basis (pre-growth) balance from the kernel's
-      shared seed accessor
-      (:func:`~app.services.net_worth_kernel.investment_base_balance_map`),
-      which the forward growth projection seeds from.  Seeding from the
-      modeled balance would re-grow the current period (the modeled value
-      already compounded the anchor forward to today); the seam-fenced
-      accessor keeps the direct producer call out of this consumer.
+    * **seed** -- the cash-basis (pre-growth) balance from the balance_at
+      seam's seed accessor
+      (:func:`~app.services.balance_at.investment_seed_map`), which the
+      forward growth projection seeds from.  Seeding from the modeled balance
+      would re-grow the current period (the modeled value already compounded
+      the anchor forward to today); reading the seed through the seam (not the
+      raw producer) keeps this consumer behind the W9906 fence.
 
     Both are empty when there is no scenario or no periods (each account
     then falls back to its anchor balance in :func:`_project_one_account`).
@@ -843,7 +842,7 @@ def _resolve_balance_maps(
         return {}, {}
     modeled_maps = balance_at.build_maps(ctx.accounts, scenario, ctx.all_periods)
     cash_maps = {
-        acct.id: net_worth_kernel.investment_base_balance_map(
+        acct.id: balance_at.investment_seed_map(
             acct, scenario, ctx.all_periods,
         )
         for acct in ctx.accounts

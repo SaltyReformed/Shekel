@@ -48,7 +48,6 @@ from app.services import (
     balance_at,
     growth_engine,
     income_service,
-    net_worth_kernel,
     pay_period_service,
 )
 from app.services.account_projection import is_payroll_deduction_funded
@@ -214,17 +213,18 @@ def _resolve_seed_balance(
     """Return the cash-basis balance the forward growth projection seeds from.
 
     The contributed / transacted END-of-current-period balance with NO
-    modeled growth layered on, read from the kernel's shared cash-basis
+    modeled growth layered on, read from the balance_at seam's cash-basis
     seed accessor
-    (:func:`~app.services.net_worth_kernel.investment_base_balance_map`) --
-    the same cash basis the grid and every cash surface render.  The growth
-    projection compounds FROM this, not from the modeled headline
+    (:func:`~app.services.balance_at.investment_seed_map`) -- the same cash
+    basis the grid and every cash surface render.  The growth projection
+    compounds FROM this, not from the modeled headline
     (:func:`_resolve_current_balance`): the modeled value already grew the
     anchor forward to today, so seeding the projection from it would re-grow
     -- double-count -- the current period's growth.  This mirrors
     deep-quality-hunt #9 (which keeps the per-period CONTRIBUTION applied
-    once) for the per-period GROWTH.  The seam-fenced kernel accessor keeps
-    the direct balance-producer call out of this consumer.  Falls back to
+    once) for the per-period GROWTH.  Reading the seed through the seam (not
+    the raw producer) keeps this consumer behind the W9906 fence.  Falls back
+    to
     :attr:`Account.current_anchor_balance` when no baseline scenario is
     configured, the account has no anchor period, or no period covers today.
     """
@@ -233,7 +233,7 @@ def _resolve_seed_balance(
             or account.current_anchor_period_id is None
             or current_period is None):
         return anchor_balance
-    balances = net_worth_kernel.investment_base_balance_map(
+    balances = balance_at.investment_seed_map(
         account, scenario, all_periods,
     )
     return balances.get(current_period.id, anchor_balance)

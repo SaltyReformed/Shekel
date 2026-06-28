@@ -509,6 +509,50 @@ def balance_at(
     )
 
 
+def investment_seed_map(
+    account: Account, scenario: Scenario, periods: list,
+) -> "OrderedDict[int, Decimal]":
+    """Return an investment's cash-basis (pre-growth) SEED map.
+
+    The transaction-sum balance an investment account holds from its anchor
+    plus contributions, with NO modeled growth layered on.  This is NOT a
+    balance to DISPLAY -- that is :func:`balance_map`, which layers the
+    modeled growth on top.  It is the projection INPUT a forward growth chart
+    compounds FROM: the investment / retirement dashboards' growth curves and
+    the year-end savings-progress re-projection each seed off this pre-growth
+    map, so none re-derives the seed and -- critically -- none seeds off the
+    already-modeled :func:`balance_map` (which would compound growth on top of
+    growth, re-growing the current period).
+
+    The seam owns this read (delegating to
+    :func:`~app.services.net_worth_kernel.investment_base_balance_map`) so
+    that EVERY balance map -- the modeled one a screen DISPLAYS and the
+    pre-growth one a chart SEEDS from -- flows through this one module, and the
+    raw kernel producer stays fenced behind the W9906 seam checker.  A consumer
+    that needs the seed reads it HERE, never the kernel function directly; the
+    distinct name (``investment_seed_map`` vs ``balance_map``) is the signal
+    that its value is a projection seed, not a balance to render.
+
+    Args:
+        account: The investment account.
+        scenario: The baseline scenario (its id scopes the resolver).
+        periods: The pay periods to span (ordered by ``period_index``; must
+            include the anchor so the resolver has its running seed).
+
+    Returns:
+        The ``OrderedDict`` period_id -> Decimal cash-basis (pre-growth)
+        balance.
+
+    Raises:
+        ValueError: When ``scenario`` is None -- callers that resolve a
+            nullable baseline must guard first.
+    """
+    _require_scenario(scenario)
+    return net_worth_kernel.investment_base_balance_map(
+        account, scenario, periods,
+    )
+
+
 # ── Cash-flow view (no per-kind dispatch) ───────────────────────────
 #
 # The single-account cash-flow surfaces -- the budget grid, the obligations

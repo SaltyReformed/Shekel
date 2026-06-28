@@ -398,6 +398,43 @@ class TestBalanceMapInvestment:
             assert seam[periods[0].id] < seam[periods[2].id]
             assert seam[periods[-1].id] > seam[periods[2].id]
 
+    def test_investment_seed_map_is_cash_basis_pre_growth(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """investment_seed_map is the kernel cash-basis seed, below the modeled map.
+
+        The seam's seed accessor delegates to the kernel's
+        ``investment_base_balance_map`` verbatim (one definition of the
+        pre-growth seed), and that seed is the CASH BASIS -- anchor carried
+        flat, NO modeled growth -- so it sits strictly below the growth-modeled
+        ``balance_map`` at every post-anchor period.  Seeding a growth chart
+        from the modeled map instead would compound growth on growth; this pins
+        the seed as the pre-growth figure the chart consumers must read.  (The
+        kernel producer is fenced behind the seam now -- ``investment_seed_map``
+        is the only sanctioned read -- so this also documents the wrapper's
+        contract.)
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
+            )
+
+            seed = balance_at.investment_seed_map(inv, scenario, periods)
+            # Delegation parity: the seam returns the kernel seed verbatim.
+            assert seed == net_worth_kernel.investment_base_balance_map(
+                inv, scenario, periods,
+            )
+            # Cash basis: anchor $10,000.00 carried flat (no contributions, no
+            # modeled growth) at every post-anchor period.
+            assert seed[periods[2].id] == Decimal("10000.00")
+            assert seed[periods[-1].id] == Decimal("10000.00")
+            # Strictly below the growth-modeled map -- the seed is pre-growth.
+            modeled = balance_at.balance_map(inv, scenario, periods)
+            assert modeled[periods[-1].id] > seed[periods[-1].id]
+
 
 class TestBalanceMapProperty:
     """``balance_map`` reproduces the kernel appreciation path (APPRECIATING)."""

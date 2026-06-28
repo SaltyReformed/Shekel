@@ -763,20 +763,44 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_call(node)
 
-    def test_allows_investment_base_balance_map_from_consumer(self) -> None:
-        """The pre-growth seed accessor stays callable by growth consumers; never flagged.
+    def test_flags_investment_base_balance_map_from_consumer(self) -> None:
+        """The cash-basis seed accessor IS guarded: a consumer call is flagged.
 
-        ``net_worth_kernel.investment_base_balance_map`` returns the cash-basis
-        seed a forward growth projection compounds from -- a projection INPUT,
-        not the modeled balance the seam displays. The investment / retirement
-        dashboards and the year-end savings projection read it directly (so they
-        never call the fenced cash producer), so guarding it would false-flag
-        those sanctioned consumers. This locks that exclusion: if the name is
-        ever added to _BALANCE_PRODUCERS, this fails (and the every-producer loop
-        would then require it flagged), forcing the decision into the open.
+        Closing the fence hole made ``net_worth_kernel.investment_base_balance_map``
+        a guarded producer.  It returns a DISPLAY-shaped cash-basis (pre-growth)
+        map -- the one balance-map accessor a consumer could have rendered as a
+        real balance (the investment understatement bug the seam exists to
+        kill).  A consumer reaching it directly is now flagged; the sanctioned
+        seed read is the seam entry (see the next test).  This is also covered
+        by ``test_flags_every_guarded_producer_from_a_consumer``; kept explicit
+        because the prose comment in ``shekel_checkers.py`` names it.
         """
         node = self._producer_call(
             "net_worth_kernel.investment_base_balance_map(account, scenario, periods)",
+            "app.services.investment_dashboard_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("investment_base_balance_map",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_investment_seed_map_seam_entry_from_consumer(self) -> None:
+        """The seam's investment_seed_map is the compliant seed read; never flagged.
+
+        After the fence hole closed, the sanctioned consumers (investment /
+        retirement / year-end growth) read the cash-basis seed through
+        ``balance_at.investment_seed_map`` instead of the now-guarded kernel
+        producer.  That seam entry is NOT a producer name, so a consumer calling
+        it is never flagged -- the fence-compliant path the reroute put every
+        seed consumer on.
+        """
+        node = self._producer_call(
+            "balance_at.investment_seed_map(account, scenario, periods)",
             "app.services.investment_dashboard_service",
         )
         with self.assertNoMessages():

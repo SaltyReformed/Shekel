@@ -17,14 +17,12 @@ from app.services.investment_projection import (
 )
 from app.services.projection_inputs import build_investment_projection_inputs
 # ``get_anchor_period_index`` moved to the shared kernel (Loop B Phase 1);
-# the private alias keeps this module's call site unchanged.
-# ``investment_base_balance_map`` is the kernel's cash-basis seed accessor:
-# the investment growth re-projection below compounds from that pre-growth
-# basis, NOT the growth-modeled ``balance_at`` map (which would compound
-# growth on growth), so it reads the seed from the engine cluster directly.
+# the private alias keeps this module's call site unchanged.  The cash-basis
+# investment SEED is read via the ``balance_at`` seam
+# (``investment_seed_map``), NOT the kernel producer directly, so this
+# consumer stays behind the W9906 fence (see the call site below).
 from app.services.net_worth_kernel import (
     get_anchor_period_index as _get_anchor_period_index,
-    investment_base_balance_map,
 )
 from app.services.year_end_summary_service._balances import (
     _compute_interest_for_year,
@@ -191,10 +189,11 @@ def _project_investment_for_year(
     # modeled growth): this projection re-compounds growth from Jan 1 each
     # year, so it must start from the pre-growth basis, not the
     # growth-modeled ``balance_at`` map (which would compound growth on
-    # growth).  ``investment_base_balance_map`` is the kernel's shared seed
+    # growth).  ``balance_at.investment_seed_map`` is the seam's shared seed
     # accessor -- the same cash basis the net-worth investment sub-chain
-    # compounds from -- so both investment projections start identically.
-    balances = investment_base_balance_map(
+    # compounds from -- so both investment projections start identically, and
+    # this consumer reads the seed through the seam (W9906 fence).
+    balances = balance_at.investment_seed_map(
         account, year_ctx.scenario, all_periods,
     )
 

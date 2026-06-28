@@ -38,8 +38,9 @@ Rules implemented:
   ``calculate_balances`` / ``calculate_balances_with_interest``,
   ``compute_loan_period_balance_map``, ``balance_from_schedule_at_date``,
   ``build_account_balance_map``, ``base_account_balance_map``,
-  ``account_balance_map_from_inputs``, ``_build_investment_balance_map``,
-  ``_build_appreciation_balance_map``) directly. The seam owns all four per-kind
+  ``account_balance_map_from_inputs``, ``investment_base_balance_map``,
+  ``_build_investment_balance_map``, ``_build_appreciation_balance_map``)
+  directly. The seam owns all four per-kind
   balance-at-T boundary rules (cash / loan / investment / property) in ONE
   tested place; a consumer re-inventing that boundary is how the
   loan/investment balance-bug family kept recurring across files for months
@@ -136,19 +137,23 @@ _NON_AUTHORITATIVE_LOAN_BALANCE = frozenset(
 # not a balance map) and stay callable by the chart and loan-route consumers by
 # design.
 #
-# Two engine-cluster accessors that DO return a balance map are excluded by the
-# same SRP line, and must NOT be added here:
-#   * ``net_worth_kernel.investment_base_balance_map`` -- the cash-basis
-#     PRE-GROWTH seed a forward growth projection compounds from. It is exposed
-#     expressly so the investment / retirement / year-end growth consumers read
-#     the seed WITHOUT calling the fenced cash producer directly; they display
-#     the modeled balance via the seam's balance_map, and seed their charts off
-#     this pre-growth map. Guarding it would false-flag those sanctioned
-#     consumers (and break pylint 10.00).
+# ``investment_base_balance_map`` IS guarded (below).  It returns a
+# DISPLAY-shaped cash-basis (pre-growth) map -- the one balance-map accessor a
+# consumer could have rendered as if it were a real balance (the investment
+# understatement bug the seam exists to kill), so the seam wraps it as
+# ``balance_at.investment_seed_map`` and the chart-seed consumers (investment /
+# retirement / year-end growth) read the seed through THAT seam entry.  The
+# kernel producer itself is fenced to the cluster, so every balance map -- the
+# modeled one a screen displays AND the pre-growth one a chart seeds from --
+# now flows through the seam (the plan's "full fence, zero exceptions").
+# ``test_flags_investment_base_balance_map_from_consumer`` locks the guard.
+#
+# One engine-cluster accessor that DOES return a per-period map is still
+# excluded by the SRP line, and must NOT be added here:
 #   * ``interest_by_period_for_account`` -- interest EARNED per period, not a
-#     balance-at-T figure.
-# The seam owns the balance to DISPLAY at time T; these own a projection INPUT.
-# ``test_allows_investment_base_balance_map_from_consumer`` locks the exclusion.
+#     balance-at-T figure.  The seam owns the balance to DISPLAY at time T;
+#     this owns a projection INPUT (and is semantically distinct, not a
+#     balance map a consumer could mistake for one).
 _BALANCE_PRODUCERS = frozenset({
     "balances_for",
     "balance_as_of_date",
@@ -159,6 +164,7 @@ _BALANCE_PRODUCERS = frozenset({
     "build_account_balance_map",
     "base_account_balance_map",
     "account_balance_map_from_inputs",
+    "investment_base_balance_map",
     "_build_investment_balance_map",
     "_build_appreciation_balance_map",
 })
