@@ -104,19 +104,6 @@ from app.utils.money import round_money
 
 ZERO = Decimal("0")
 
-# The two kinds whose balances are materialized transaction sums (cash):
-# PLAIN (checking / savings) and INTEREST (HYSA / Money Market / CD / HSA).
-# :func:`balance_at` routes them to the date-precise cash producer
-# (:func:`~app.services.balance_resolver.balance_as_of_date`); the loan and
-# investment / property kinds are period-granular (their model is
-# period-keyed) and route through :func:`balance_map` instead.  Named here
-# (not a bare two-branch ``or``) so the "these are the cash kinds" decision
-# is explicit and single-sourced within the seam.
-_CASH_KINDS = frozenset({
-    AccountProjectionKind.PLAIN,
-    AccountProjectionKind.INTEREST,
-})
-
 
 @dataclass(frozen=True)
 class _AssembledInputs:
@@ -414,9 +401,11 @@ def balance_at(
     The scalar-at-a-date producer, dispatched by
     :func:`~app.services.account_projection.classify_account`:
 
-    * **PLAIN / INTEREST (cash)** -> the date-precise
+    * **PLAIN (checking / plain savings)** -> the date-precise
       :func:`~app.services.balance_resolver.balance_as_of_date`, which owns
-      its own period loading and intra-period entry-date precision.
+      its own period loading and intra-period entry-date precision.  PLAIN is
+      the only kind whose KIND-CORRECT balance IS its transaction balance, so
+      the scalar can answer it date-precisely.
     * **AMORTIZING (loan)** -> the loan's resolver schedule via
       :func:`~app.services.account_projection.balance_from_schedule_at_date`
       (the remaining balance after the last payment on or before *as_of*,
@@ -425,17 +414,23 @@ def balance_at(
       returned nothing -- e.g. a loan with no anchor event yet), it falls
       back to :func:`~app.services.balance_resolver.balance_as_of_date` over
       the loan's own rows, the same generic degrade any account would get.
-    * **INVESTMENT / APPRECIATING** -> the value of :func:`balance_map` at
-      the period containing *as_of* (these kinds are period-granular: their
-      model is period-keyed, so a date resolves to its period).
+    * **INTEREST / INVESTMENT / APPRECIATING** -> the value of
+      :func:`balance_map` at the period containing *as_of* (these kinds are
+      period-granular: their model is period-keyed, so a date resolves to its
+      period).  INTEREST is here -- NOT on the cash path -- so the scalar
+      stays consistent with the map: an HYSA's kind-correct balance ACCRUES
+      interest (``balance_at(d) == balance_map[period containing d]``); a
+      caller that wants the no-interest transaction balance of an
+      interest-bearing account asks :func:`cash_balance_at` instead.
 
-    Granularity note: cash and loan are DATE-precise -- cash sums dated rows
+    Granularity note: PLAIN and loan are DATE-precise -- PLAIN sums dated rows
     up to *as_of*, and the loan walks its amortization schedule to the exact
-    *as_of* date.  INVESTMENT / APPRECIATING are period-granular: they answer
-    "what is the balance at the end of the period containing *as_of*?"  This
-    matches how each kind is actually stored.
+    *as_of* date.  INTEREST / INVESTMENT / APPRECIATING are period-granular:
+    they answer "what is the balance at the end of the period containing
+    *as_of*?"  This matches how each kind is actually stored.
 
-    Out-of-range / no-map behavior (INVESTMENT / APPRECIATING): when *as_of*
+    Out-of-range / no-map behavior (INTEREST / INVESTMENT / APPRECIATING):
+    when *as_of*
     falls before the user's entire pay-period horizon (no period contains or
     precedes it) or the account has no projectable map, the seam returns the
     canonical anchor balance from
@@ -463,7 +458,13 @@ def balance_at(
     _require_scenario(scenario)
     kind = classify_account(account)
 
-    if kind in _CASH_KINDS:
+    # PLAIN is the only kind whose kind-correct balance IS its transaction
+    # balance, so it alone takes the date-precise cash producer.  INTEREST is
+    # NOT here: its kind-correct balance accrues interest, so it falls through
+    # to the period-granular ``balance_map`` path below -- keeping the scalar
+    # consistent with the map for an HYSA (the no-interest transaction balance
+    # is ``cash_balance_at``'s job, not this kind-correct scalar's).
+    if kind is AccountProjectionKind.PLAIN:
         return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
 
     if kind is AccountProjectionKind.AMORTIZING:
@@ -489,17 +490,20 @@ def balance_at(
         # loan's own transaction rows (documented above).
         return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
 
-    # INVESTMENT / APPRECIATING: locate the period containing as_of and read
-    # the period-keyed map's value there.
+    # INTEREST / INVESTMENT / APPRECIATING: locate the period containing as_of
+    # and read the period-keyed map's value there.  INTEREST routes here (not
+    # the cash branch above) so the scalar accrues interest in step with
+    # balance_map for an HYSA.
     periods = pay_period_service.get_all_periods(account.user_id)
     balances = balance_map(account, scenario, periods)
     target_period = find_period_containing_date(periods, as_of)
     if balances is not None and target_period is not None:
         located = balances.get(target_period.id)
         if located is not None:
-            # Returned verbatim (no re-round): the growth / appreciation end
-            # balances are already cent-quantized from round_money'd
-            # components, so balance_at == balance_map[period] penny-exact.
+            # Returned verbatim (no re-round): the interest / growth /
+            # appreciation end balances are already cent-quantized from
+            # round_money'd components, so balance_at == balance_map[period]
+            # penny-exact.
             return located
 
     # as_of precedes the user's pay-period horizon, or the account has no

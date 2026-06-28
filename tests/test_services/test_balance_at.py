@@ -603,6 +603,44 @@ class TestBalanceAt:
             )
             assert seam == expected
 
+    def test_interest_accrues_equals_period_map_not_cash(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """For an HYSA, balance_at accrues interest (== balance_map), NOT cash.
+
+        The kind-correct scalar must agree with the kind-correct MAP for an
+        interest-bearing account: both accrue.  Anchor a 5% APY HYSA at
+        ``periods[2]`` with no transactions, then value it at ``periods[6]``
+        (4 periods of accrual later).  ``balance_at`` reads the
+        period-granular ``balance_map`` value at the containing period --
+        strictly above the flat $5,000.00 cash carry that
+        ``balance_as_of_date`` (and ``cash_balance_at``) return for the same
+        date.  Asserting that divergence is what locks the scalar onto the
+        accruing path: were INTEREST routed back to the cash producer (the
+        pre-fix behavior), ``balance_at`` would equal the cash value and this
+        test fails.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
+            as_of = periods[6].start_date  # independently known: in period 6
+
+            seam = balance_at.balance_at(hysa, scenario, as_of)
+            full_map = balance_at.balance_map(hysa, scenario, periods)
+            # Kind-correct scalar == kind-correct map at the containing period.
+            assert seam == full_map[periods[6].id]
+            # And it ACCRUES: strictly above the flat no-interest cash carry
+            # (anchor $5,000.00 with no rows) the cash producer returns for the
+            # same date -- the Fork-B lock that the scalar is not on the cash
+            # path for INTEREST.
+            cash = balance_resolver.balance_as_of_date(
+                hysa, scenario.id, as_of,
+            )
+            assert cash == Decimal("5000.00")
+            assert seam > cash
+
     def test_loan_equals_schedule_lookup(
         self, app, db, seed_user, seed_periods_today,
     ):
