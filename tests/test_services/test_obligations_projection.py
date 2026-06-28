@@ -3,8 +3,9 @@ Tests for ``app.services.obligations_projection`` (DH cash-flow panel).
 
 ``project_cash_flow`` replaces the old flat ``/obligations`` net-cash-flow
 scalar with a grid-reconciled projection of the default account's balance:
-the value reuses ``balance_resolver.balances_for`` so it equals the grid's
-Projected End Balance footer.  These tests lock:
+the value reuses the balance-at seam's ``grid_balance_view`` (the grid
+footer's producer), so a PLAIN account equals the grid footer and an INTEREST
+account accrues interest like the grid.  These tests lock:
 
   * ``None`` when the user has no baseline scenario (setup-incomplete);
   * ``now_balance`` is the resolved anchor, and a transaction-free user
@@ -23,7 +24,8 @@ from decimal import Decimal
 from app.models.account import AccountAnchorHistory
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import obligations_projection, pay_period_service
+from app.services import balance_at, obligations_projection, pay_period_service
+from tests._test_helpers import create_hysa_account, set_default_grid_account
 
 
 # -- Helpers ----------------------------------------------------------------
@@ -115,6 +117,47 @@ class TestProjectCashFlow:
             assert result.twelve_month.balance == Decimal("1500.00")
             assert result.negative_period_count == 0
             assert result.direction == "flat"
+
+    def test_interest_default_account_markers_accrue_interest(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An INTEREST default grid account's markers accrue interest.
+
+        With a $100,000 HYSA as the default grid account and no transactions,
+        the cash-flow view would hold every marker flat at the anchor; routing
+        the panel through ``grid_balance_view`` instead accrues interest, so
+        the end marker sits ABOVE the anchor and the panel reports "growing".
+        The end marker equals the seam's interest-accrued end balance
+        (cross-checked, not hand-guessed), proving the panel reconciles with
+        the grid footer for an interest account.
+        """
+        with app.app_context():
+            hysa = create_hysa_account(
+                seed_user, db.session, seed_periods_today[0],
+                Decimal("100000.00"),
+            )
+            settings = set_default_grid_account(
+                db.session, seed_user["user"].id, hysa.id,
+            )
+            scenario = seed_user["scenario"]
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            view = balance_at.grid_balance_view(hysa, scenario, all_periods)
+
+            result = obligations_projection.project_cash_flow(
+                seed_user["user"].id, settings,
+            )
+
+            assert result is not None
+            assert result.account_name == "HYSA"
+            assert result.now_balance == Decimal("100000.00")
+            # Interest accrues forward: the end marker clears the anchor and
+            # equals the seam's interest-accrued balance at the last period.
+            assert result.end.balance == view.balances[all_periods[-1].id]
+            assert result.end.balance > Decimal("100000.00")
+            assert result.direction == "growing"
+            assert result.negative_period_count == 0
 
     def test_direction_growing_with_climbing_balance(
         self, app, db, seed_user, seed_periods_today,

@@ -25,13 +25,16 @@ and trends upward across years (raises compound): its sign depends on
 the averaging window.
 
 This producer replaces that scalar with a projection that reuses the
-grid's exact resolution + balance engine, so the obligations panel
-reconciles with the grid by construction: the same Checking-by-default
-account, the same baseline scenario, the same balance-at seam cash-flow
-walk (``balance_at.cash_balance_map``, the grid's producer too -- raise-aware
-income, entry-aware expenses, transfer-symmetric).  It surfaces the
-projected end balance now, in ~12 months, and at the end of the
-projection, plus how many periods dip below zero.
+grid's resolution + balance engine via the same balance-at seam kind-aware
+grid view (``balance_at.grid_balance_view``, the grid footer's producer
+too): a PLAIN default account reconciles with the grid footer by
+construction (raise-aware income, entry-aware expenses, transfer-symmetric);
+an INTEREST default account accrues interest like the grid -- but on STORED
+income, since the panel passes no live override map, so it can lag the grid
+footer's live figure for a salary-fed HYSA (see ``project_cash_flow``'s
+income-basis note; the grid is the precise surface).  It surfaces the
+projected end balance now, in ~12 months, and at the end of the projection,
+plus how many periods dip below zero.
 
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 inputs are plain data (user id + an optional ``UserSettings`` row),
@@ -75,11 +78,13 @@ class BalanceMarker:
 class CashFlowProjection:
     """Immutable grid-reconciled cash-flow projection for one account.
 
-    Returned by :func:`project_cash_flow`.  Every balance is a projected
-    END balance produced by the balance-at seam's cash-flow entry
-    :func:`app.services.balance_at.cash_balance_map`, so the figures match
-    the ``/grid`` Projected End Balance footer for the same account and
-    scenario.
+    Returned by :func:`project_cash_flow`.  Every balance is a projected END
+    balance produced by the balance-at seam's kind-aware grid view
+    :func:`app.services.balance_at.grid_balance_view`: cash-flow for a PLAIN
+    account (matching the ``/grid`` Projected End Balance footer), or
+    interest-accrued for an INTEREST account (on STORED income -- see
+    :func:`project_cash_flow` -- so it can lag the grid's live-income footer
+    for a salary-fed HYSA).
 
     Attributes:
         account_name: Display name of the projected account (the grid's
@@ -159,13 +164,18 @@ def project_cash_flow(
     """Project the grid-default account's balance for the obligations panel.
 
     Resolves the same baseline scenario and default account the ``/grid``
-    page uses, then walks the balance-at seam's cash-flow entry
-    :func:`balance_at.cash_balance_map` over the user's full pay-period
-    set so the returned balances are byte-identical to the grid's
-    Projected End Balance footer (raise-aware income via the live
-    paycheck recompute, entry-aware expenses, transfer-symmetric).
+    page uses, then walks the balance-at seam's kind-aware grid view
+    :func:`balance_at.grid_balance_view` over the user's full pay-period set.
+    A PLAIN default account -- the common case -- routes through the cash path
+    and is byte-identical to the prior ``cash_balance_map`` behavior, matching
+    the grid footer (raise-aware income via the live paycheck recompute,
+    entry-aware expenses, transfer-symmetric).  An INTEREST default account
+    accrues interest; the panel passes no override map, so that path uses
+    STORED income (see the income-basis note below) and can lag the grid
+    footer's live figure for a salary-fed HYSA -- the grid is the precise
+    surface for that.
 
-    The full period set is passed to ``cash_balance_map`` (not just the
+    The full period set is passed to ``grid_balance_view`` (not just the
     current-and-forward slice) because the engine seeds its running
     balance at the anchor period and skips any period before it; a
     forward-only slice that omitted the anchor would yield an empty map.
@@ -197,7 +207,20 @@ def project_cash_flow(
         return None
 
     all_periods = pay_period_service.get_all_periods(user_id)
-    balances = balance_at.cash_balance_map(
+    # Kind-aware balance via the seam (the kind-correct-grid feature): an
+    # INTEREST default account's markers accrue interest, matching the grid
+    # footer; every other kind is the cash-flow running-balance, unchanged.
+    # The panel shows balance MARKERS only (no per-period subtotal row to
+    # reconcile against), so it consumes ``.balances`` and ignores the view's
+    # accrual / stale-anchor fields.  Income basis: ``grid_balance_view`` with
+    # no override map uses STORED income on the interest path (it does not
+    # auto-build a live map there, unlike the cash path).  For this summary
+    # panel that is acceptable -- it differs from the grid's live figure only
+    # when salary is direct-deposited into a HYSA that is also the default grid
+    # account AND its stored estimate is stale; the grid footer is the precise
+    # surface for that.  A PLAIN default account (the common case) routes
+    # through the cash path and stays byte-identical to before.
+    balances = balance_at.grid_balance_view(
         account, scenario, all_periods,
     ).balances
     now_balance = balance_resolver.resolve_anchor(account, scenario.id).balance

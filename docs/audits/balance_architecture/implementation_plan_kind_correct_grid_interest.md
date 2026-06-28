@@ -271,6 +271,16 @@ non-loan, non-plain grid account.
 
 ### Commit 4 -- Obligations panel: kind-aware balances
 
+**Status: DONE (2026-06-28, dev).** `project_cash_flow` reads
+`balance_at.grid_balance_view(...).balances`; an INTEREST default grid account's markers now accrue
+interest (matching the grid footer), every other kind is byte-identical (PLAIN routes through the
+cash path -- the existing flat-anchor / growing / negative-count tests still pass unchanged).
+`now_balance` stays `resolve_anchor`. Income-basis note (documented in the code): with no override
+map the interest path uses STORED income; for this markers-only summary panel that is acceptable (it
+differs from the grid's live figure only for salary direct-deposited into a HYSA-as-default-grid with
+a stale estimate -- the grid footer is the precise surface). 1 new test (HYSA markers accrue,
+cross-checked vs the seam); 6 in test_obligations_projection.py, pylint 10.00.
+
 **Goal:** the dashboard obligations panel reconciles with the grid footer for a non-loan default
 grid account.
 
