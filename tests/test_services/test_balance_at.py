@@ -1406,3 +1406,284 @@ class TestInterestDetailRerouteParity:
             assert any(v > Decimal("0.00") for v in new_interest.values())
             # $8,000 anchor + $1,000 deposit + accrued interest.
             assert new_balances[periods[-1].id] > Decimal("9000.00")
+
+
+def _assert_grid_view_reconciles(account, scenario, periods, view):
+    """Assert the kind-aware view's three rows reconcile to the cent.
+
+    For every adjacent pair of projected periods the displayed balance delta
+    must equal the transaction subtotal net plus the accrual increment --
+    the by-construction invariant
+    ``balances[p] - balances[q] == period_subtotal[p].net + increments[p]``
+    (the E-25 invariant carries the cash leg; the accrual carries the rest).
+    Only meaningful for an accruing account (``increments`` populated).
+    """
+    subtotals = balance_resolver.period_subtotals(account, scenario.id, periods)
+    items = list(view.balances.items())
+    assert len(items) >= 2, "need >= 2 projected periods to reconcile a delta"
+    for (_prev_id, prev_bal), (pid, bal) in zip(items, items[1:]):
+        assert bal - prev_bal == subtotals[pid].net + view.increments[pid], (
+            f"period {pid}: balance delta {bal - prev_bal} != net "
+            f"{subtotals[pid].net} + increment {view.increments[pid]}"
+        )
+
+
+class TestGridBalanceView:
+    """``grid_balance_view`` -- the kind-aware grid + obligations view."""
+
+    def test_plain_is_cash_flow_with_no_accrual(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A PLAIN account returns the cash-flow view verbatim, no accrual."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+
+            view = balance_at.grid_balance_view(account, scenario, periods)
+            cash = balance_at.cash_balance_map(account, scenario, periods)
+
+            assert view.balances == cash.balances
+            assert view.stale_anchor_warning == cash.stale_anchor_warning
+            # No accrual row for a plain cash account.
+            assert view.increments == {}
+
+    def test_loan_stays_cash_flow_no_accrual(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan grid account stays on the cash-flow view (no accrual row).
+
+        Loans cannot reconcile on a transaction grid (payments land as
+        income while the balance is schedule-driven), so ``grid_balance_view``
+        leaves them on the cash-flow view exactly like a PLAIN account -- no
+        kind-correct walk, no accrual row.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            mortgage, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("240000.00"),
+                date(2024, 1, 1),
+            )
+
+            view = balance_at.grid_balance_view(mortgage, scenario, periods)
+            cash = balance_at.cash_balance_map(mortgage, scenario, periods)
+
+            assert view.balances == cash.balances
+            assert view.increments == {}
+
+    def test_interest_balances_kind_correct_and_reconcile(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An HYSA shows the interest-accrued balance + a reconciling accrual.
+
+        Seeds a 5% HYSA anchored at ``periods[0]`` with a $1,000 deposit at
+        ``periods[3]`` so the cash flow is non-trivial (net != 0) AND interest
+        accrues on top.  The displayed balances are the rounded kind-correct
+        map; the per-period accrual reconciles the rows to the cent; and the
+        telescoped total accrual equals the kernel's interest within a cent
+        (proving it is real interest, not a residual absorbing a bug).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
+            db.session.add(Transaction(
+                account_id=hysa.id,
+                pay_period_id=periods[3].id,
+                scenario_id=scenario.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Deposit",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("1000.00"),
+            ))
+            db.session.commit()
+
+            view = balance_at.grid_balance_view(hysa, scenario, periods)
+            kc = balance_at.balance_map(hysa, scenario, periods)
+            cash = balance_at.cash_balance_map(hysa, scenario, periods)
+
+            # Displayed balances are the rounded kind-correct (interest-accrued)
+            # map, strictly above the no-interest cash balance by the horizon.
+            assert set(view.balances.keys()) == set(cash.balances.keys())
+            for pid in view.balances:
+                assert view.balances[pid] == round_money(kc[pid])
+            assert view.balances[periods[-1].id] > cash.balances[periods[-1].id]
+
+            # Rows reconcile to the cent (net + accrual == balance delta).
+            _assert_grid_view_reconciles(hysa, scenario, periods, view)
+
+            # The accrual is real interest: the telescoped total equals the
+            # final premium and matches the kernel's interest within a cent
+            # (the two round on slightly different paths).
+            params = (
+                db.session.query(InterestParams)
+                .filter_by(account_id=hysa.id).one()
+            )
+            kernel_interest = net_worth_kernel.interest_by_period_for_account(
+                hysa, scenario, periods, params,
+            )
+            total_accrual = sum(view.increments.values())
+            assert total_accrual == (
+                view.balances[periods[-1].id] - cash.balances[periods[-1].id]
+            )
+            assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
+            assert total_accrual > Decimal("0.00")
+
+    def test_investment_stays_cash_flow_no_accrual(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An investment grid account stays on the cash-flow view (no accrual).
+
+        Investment balances are projection-driven (the growth engine), not a
+        sum of the account's transactions, so an ad-hoc grid row would not
+        move a kind-correct balance -- the same projection-vs-transaction
+        mismatch that excludes loans.  By decision (INTEREST-only grid
+        accrual) an investment grid account therefore shows the cash-flow
+        running-balance with no accrual row, exactly like PLAIN and AMORTIZING.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
+            )
+
+            view = balance_at.grid_balance_view(inv, scenario, periods)
+            cash = balance_at.cash_balance_map(inv, scenario, periods)
+
+            assert view.balances == cash.balances
+            assert view.increments == {}
+            # It is the cash-flow (transaction) balance, NOT the growth-modeled
+            # one: balance_map accrues growth above the flat cash basis at the
+            # horizon, and the grid view deliberately does not.
+            modeled = balance_at.balance_map(inv, scenario, periods)
+            assert view.balances[periods[-1].id] < modeled[periods[-1].id]
+
+    def test_property_stays_cash_flow_no_accrual(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A property grid account stays on the cash-flow view (no accrual).
+
+        Property balances are appreciation-projected, not a sum of
+        transactions, so (like loans and investments) a property grid account
+        shows the cash-flow running-balance -- the flat market value -- with no
+        accrual row, per the INTEREST-only grid-accrual decision.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            prop = make_appreciating_account(
+                seed_user, db.session, periods[2], Decimal("400000.00"),
+                Decimal("0.03000"),
+            )
+
+            view = balance_at.grid_balance_view(prop, scenario, periods)
+            cash = balance_at.cash_balance_map(prop, scenario, periods)
+
+            assert view.balances == cash.balances
+            assert view.increments == {}
+            # Cash-flow (flat market value), NOT the appreciated projection.
+            modeled = balance_at.balance_map(prop, scenario, periods)
+            assert view.balances[periods[-1].id] < modeled[periods[-1].id]
+
+    def test_none_scenario_raises(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """grid_balance_view fails loud on a None scenario (seam contract)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            with pytest.raises(ValueError):
+                balance_at.grid_balance_view(seed_user["account"], None, periods)
+
+    def test_accruing_kc_none_degrades_to_cash(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """An accruing account whose kind-correct map is None degrades to cash.
+
+        ``balance_map`` documents a ``None`` return for an account with no
+        anchor period.  The NOT NULL anchor columns make that unreachable for
+        a real account, so the seam's fall-through is guarded behavior, not a
+        live path; it is exercised here by forcing the ``None`` return.
+        ``grid_balance_view`` must then return the cash-flow view with no
+        accrual row, never raise.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+
+            cash = balance_at.cash_balance_map(hysa, scenario, periods)
+            # Force the documented (NOT-NULL-unreachable) None return.
+            monkeypatch.setattr(balance_at, "balance_map", lambda *a, **k: None)
+            view = balance_at.grid_balance_view(hysa, scenario, periods)
+
+            assert view.balances == cash.balances
+            assert view.increments == {}
+
+    def test_interest_increment_pure_when_live_differs_from_stored(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """INTEREST accrual stays pure interest when live income != stored (M1).
+
+        Regression guard for the income-basis trap the ``None`` normalization
+        fixes: an INTEREST account's cash walk auto-builds a live income map
+        from ``None`` while its kc walk (calculate_balances_with_interest)
+        uses stored income -- so if the two were left to diverge the premium
+        would absorb the income recompute instead of being pure interest.
+        Forces live ($1,500) != stored ($1,000) on a real income transaction
+        and asserts, via the default ``None`` path, that the total accrual
+        still equals the kernel's interest (both on one stored basis); a
+        regression to a live cash baseline would skew it by the $500 delta.
+
+        (Only INTEREST is exercised: investment / property contributions are
+        not live-recomputed -- the live seam covers salary income and
+        loan-transfer shadows -- so live == stored there and the trap cannot
+        arise; their walks are also both live from ``None`` regardless.)
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+            income_txn = Transaction(
+                account_id=hysa.id,
+                pay_period_id=periods[3].id,
+                scenario_id=scenario.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Paycheck deposit",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("1000.00"),
+            )
+            db.session.add(income_txn)
+            db.session.commit()
+
+            # Force live != stored: the live seam revalues this income at
+            # $1,500 (vs the $1,000 stored).  Both the cash walk and the kc
+            # walk must end up on ONE basis or the premium is polluted.
+            monkeypatch.setattr(
+                income_service, "live_projected_net",
+                lambda uid, sid, txns: {income_txn.id: Decimal("1500.00")},
+            )
+
+            view = balance_at.grid_balance_view(hysa, scenario, periods)
+            params = (
+                db.session.query(InterestParams)
+                .filter_by(account_id=hysa.id).one()
+            )
+            kernel_interest = net_worth_kernel.interest_by_period_for_account(
+                hysa, scenario, periods, params,
+            )
+            # Pure interest: the total accrual matches the kernel's interest
+            # within a cent.  A live cash baseline (the M1 bug) would skew the
+            # premium by the $500 income delta and blow this tolerance.
+            total_accrual = sum(view.increments.values())
+            assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
+            assert total_accrual > Decimal("0.00")
