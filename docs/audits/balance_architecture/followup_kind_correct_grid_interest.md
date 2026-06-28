@@ -1,8 +1,28 @@
 # Follow-up: kind-correct grid balances + interest line
 
-**Status:** Deferred (decided 2026-06-27, during Level-1 Commit 8). Not started.
+**Status:** IMPLEMENTED on `dev` 2026-06-28 (scope narrowed to INTEREST -- see below). Not yet PR'd
+to `main`. Implementation plan + per-commit log:
+`implementation_plan_kind_correct_grid_interest.md`.
 **Enabled by:** the Level-1 balance-at seam (`app/services/balance_at.py`); see
 `implementation_plan_level1_balance_seam.md`.
+
+**What shipped (4 commits on `dev`):**
+- `6f0610b` -- the `balance_at.grid_balance_view` seam (kind-aware view: interest-accrued balance +
+  per-period accrual for INTEREST, cash-flow for every other kind).
+- `d6eddd8` -- grid desktop + mobile: the read-only "Interest" row + interest-accrued projected
+  balance for an INTEREST grid account.
+- `65fae78` -- the dashboard obligations panel routes through the same seam view.
+- (final) -- docs + full-suite gate (6394 passed, pylint 10.00).
+
+**Scope decision (revised 2026-06-28):** grid accrual is **INTEREST only**. The original brief below
+framed PLAIN / INTEREST / INVESTMENT / APPRECIATING as one "cash basis + increment" family; that is
+true only for PLAIN and INTEREST. INVESTMENT and APPRECIATING are projection-driven (growth /
+appreciation engine, NOT a transaction sum), so an ad-hoc grid row would not move their projected
+balance -- the same projection-vs-transaction mismatch that excludes loans. The developer chose to
+leave INVESTMENT / APPRECIATING / AMORTIZING on the cash-flow view (their modeled value lives on the
+/savings cockpit + detail pages). The implementation plan's known-limitation note records the full
+rationale. The historical brief below is preserved as written on 2026-06-27.
+
 **Size:** a multi-surface feature comparable to the whole Level-1 reroute (Commits 4-8), NOT a
 behavior-preserving reroute.
 

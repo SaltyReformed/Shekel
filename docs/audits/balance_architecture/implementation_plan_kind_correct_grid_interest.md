@@ -298,7 +298,23 @@ grid account.
   byte-identical.
 - **Gates:** pylint clean; targeted obligations test green.
 
-### Commit 5 -- Cross-page reconciliation lock, full suite, manual verify, docs
+### Commit 5 -- Reconciliation lock, full suite, docs
+
+**Status: DONE (2026-06-28, dev).** Full suite **6394 passed** alone; `pylint app/` 10.00, zero
+W9906. Docs updated (`followup_kind_correct_grid_interest.md` -> Implemented; this plan; memories).
+**Deviation from the entry below (documented, sound):** no NEW oracle test was added. The three-way
+reconciliation `balance[p] - balance[p-1] == period_subtotal[p].net + increment[p]` is already locked
+at the seam-test level by `tests/test_services/test_balance_at.py::TestGridBalanceView`
+(`_assert_grid_view_reconciles`, run with a real deposit so net != 0 -- the same service level as the
+cash `TestSubtotalReconciliation`), and `grid_balance_view.balances == round_money(balance_map)` ties
+the grid to the canonical kind-correct producer that `/savings`, year-end, and `interest_detail` all
+consume (whose cross-surface agreement the existing Level-1 oracle + `TestInterestDetailRerouteParity`
+already lock). A new oracle test would duplicate that coverage (rule 13). Adding a full INTEREST
+*surface* to the cross-page oracle (savings tile / year-end / interest_detail interest agreement)
+remains the tracked **Level-1 follow-up** ("the cross-page oracle has no interest-bearing surface"),
+orthogonal to this grid feature. Manual prod-clone verification: OFFERED to the developer (the
+automated coverage -- seam + route + obligations, all cross-checked against the seam -- is
+comprehensive); the dev->main PR is the remaining ship step.
 
 **Goal:** lock the new three-way reconciliation in the cross-page oracle, prove the whole feature on
 real data, and record it.
