@@ -23,42 +23,25 @@ the orchestrator builds them and threads the result into both producers.
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import AcctCategoryEnum
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services import home_equity_service, net_worth_kernel
+from app.services import balance_at, home_equity_service, net_worth_kernel
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+# The asset/liability rule and the net-worth account-data builder live in
+# the shared adapter so this cockpit and the year-end summary assemble
+# net-worth data one way; ``_is_liability_account`` keeps its local name
+# (this module's other net-worth helpers call it) as an alias over the one
+# definition.
+from app.services.net_worth_account_data import (
+    is_liability_account as _is_liability_account,
+    to_net_worth_account_data,
+)
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
-from app.services.savings_dashboard_service._types import _AccountParams
 
 ZERO = Decimal("0.00")
-
-
-def _is_liability_account(account) -> bool:
-    """Return whether an account's type is in the LIABILITY category.
-
-    Classifies by the account type's integer ``category_id`` against the
-    cached LIABILITY category id (IDs for logic, never a ``.name``
-    string).  An account with no ``account_type`` (degenerate / partially
-    loaded) is treated as a non-liability asset, matching the year-end
-    net-worth section's ``account_type is not None`` guard.
-
-    Args:
-        account: The :class:`~app.models.account.Account` to classify.
-
-    Returns:
-        ``True`` when the account's type's category is LIABILITY,
-        ``False`` otherwise.
-    """
-    liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
-    return (
-        account.account_type is not None
-        and account.account_type.category_id == liability_cat_id
-    )
 
 
 def compute_net_worth_today(account_data: list[dict]) -> dict:
@@ -102,68 +85,56 @@ def build_account_net_worth_maps(
     accounts: list,
     scenario: Scenario | None,
     all_periods: list[PayPeriod],
-    params: _AccountParams,
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
 ) -> list[dict]:
     """Build each account's dense balance map plus its liability flag.
 
-    The single, build-once point for the per-account dense maps the
-    forward trend and the change delta both read.  Each map is built via
-    :func:`app.services.net_worth_kernel.build_account_balance_map` over
-    ALL periods (never a forward sub-window): the entries-aware resolver
-    behind the plain / investment paths must include the anchor period to
-    seed its running balance (``balance_resolver.balances_for`` -- "Must
-    include the anchor period"), so a forward-only period list would
-    starve a pre-anchor or current-period account of its seed.  The
-    forward consumers read the periods they want back out of the dense
-    map by id.
+    The net-worth shape adapter over the balance-at seam.  It asks
+    :func:`app.services.balance_at.build_maps` for every account's dense
+    period balance map and pairs each with the account's liability flag,
+    producing the single build-once structure the forward trend and the
+    per-account sparklines both read.  The seam owns the input assembly
+    (the debt schedules, investment params, deductions, and engine
+    gross-biweekly), so this producer no longer pre-assembles them; the
+    seam deliberately returns balances only (liability classification is
+    not a balance concern), so this consumer adds ``is_liability`` itself.
 
-    Returns the same ``{balances, is_liability}`` shape
-    :func:`app.services.net_worth_kernel.sum_net_worth_at_period`
-    consumes.  Accounts with no anchor period (no dense map) are omitted,
-    matching the year-end section's ``balances is None`` skip.
+    The seam builds each map over ALL periods (never a forward sub-window):
+    the entries-aware resolver behind the plain / investment paths must
+    include the anchor period to seed its running balance
+    (``balance_resolver.balances_for`` -- "Must include the anchor
+    period"), so a forward-only period list would starve a pre-anchor or
+    current-period account of its seed.  The forward consumers read the
+    periods they want back out of the dense map by id.
+
+    Returns the same ``{account_id, balances, is_liability}`` shape
+    :func:`compute_net_worth_series` (via
+    :func:`_sum_assets_and_liabilities_at_period`) and
+    :func:`compute_sparklines` consume.  Accounts with no anchor period (no
+    dense map) are omitted by the seam, matching the year-end section's
+    ``balances is None`` skip.
 
     Args:
         accounts: The user's active accounts.
-        scenario: The baseline scenario, or ``None``.  With no scenario
-            the kernel's resolver path cannot run, so an empty list is
-            returned (the degraded no-scenario state).
+        scenario: The baseline scenario, or ``None``.  With no scenario the
+            seam's resolver path cannot run, so an empty list is returned
+            (the degraded no-scenario state) WITHOUT calling the seam --
+            the seam raises on a ``None`` scenario by contract, and this
+            caller owns the legitimate empty state.
         all_periods: All of the user's pay periods (the dense domain).
-        params: The batch-loaded :class:`_AccountParams` (the investment
-            params map, the per-account deductions, and the engine
-            gross-biweekly the growth sub-chain needs).
-        debt_schedules: account_id -> :class:`~app.services.net_worth_kernel.DebtSchedule`
-            (schedule + resolver current balance), from
-            :func:`app.services.net_worth_kernel.generate_debt_schedules`.
 
     Returns:
         A list of ``{account_id: int, balances: OrderedDict[int, Decimal],
-        is_liability: bool}`` dicts, one per account that has a dense map.
-        The ``account_id`` lets the per-account sparkline producer
-        (:func:`compute_sparklines`) reuse these maps, so the sparklines and
-        the net-worth math read one projection; the net-worth reducers
-        ignore it.
+        is_liability: bool}`` dicts, one per account that has a dense map,
+        in ``accounts`` order.  The ``account_id`` lets the per-account
+        sparkline producer (:func:`compute_sparklines`) reuse these maps, so
+        the sparklines and the net-worth math read one projection; the
+        net-worth reducers ignore it.
     """
     if scenario is None:
         return []
 
-    result: list[dict] = []
-    for account in accounts:
-        balances = net_worth_kernel.build_account_balance_map(
-            account, scenario, all_periods,
-            debt_schedule=debt_schedules.get(account.id),
-            investment_params=params.investment_params_map.get(account.id),
-            deductions=params.deductions_by_account.get(account.id, []),
-            salary_gross_biweekly=params.salary_gross_biweekly,
-        )
-        if balances is None:
-            continue
-        result.append({
-            "account_id": account.id,
-            "balances": balances,
-            "is_liability": _is_liability_account(account),
-        })
-    return result
+    balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
+    return to_net_worth_account_data(accounts, balance_maps)
 
 
 def _sum_assets_and_liabilities_at_period(

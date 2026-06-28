@@ -49,7 +49,6 @@ from app.services.savings_dashboard_service._metrics import (
 )
 from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
-    _project_one_account,
 )
 from app.services.savings_dashboard_service._types import _ProjectionContext
 
@@ -66,10 +65,9 @@ def _build_projection_context(
 ) -> _ProjectionContext:
     """Assemble the request-scoped projection context from loaded data.
 
-    One definition of the core-data -> context mapping (notably the
-    baseline-scenario ``None`` fallback) shared by both public entry
-    points so the full dashboard build and the narrow debt producer
-    cannot project against different inputs.
+    One definition of the core-data -> context mapping shared by both
+    public entry points so the full dashboard build and the narrow debt
+    producer cannot project against different inputs.
 
     Args:
         core: The :class:`_DashboardCoreData` from
@@ -80,15 +78,16 @@ def _build_projection_context(
     Returns:
         The :class:`_ProjectionContext` the projection dispatch reads.
     """
-    # scenario_id is request-scoped (off the baseline scenario), not an
-    # account-type parameter, so it rides on the context, not in params.
+    # The baseline scenario is request-scoped (not an account-type
+    # parameter), so it rides on the context, not in params.  The Scenario
+    # object itself is carried (not just its id) because the balance_at seam
+    # each non-loan tile reads through takes the Scenario; the loan path
+    # derives ``scenario.id`` for the resolver.
     return _ProjectionContext(
-        all_transactions=core.all_transactions,
-        all_shadow_income=core.all_shadow_income,
         all_periods=core.all_periods,
         current_period=core.current_period,
         params=params,
-        scenario_id=core.scenario.id if core.scenario else None,
+        scenario=core.scenario,
     )
 
 
@@ -163,7 +162,7 @@ def _project_loan_accounts(
         ``_compute_debt_summary``'s no-loan ``None`` inside the full build.
     """
     core = _load_dashboard_core_data(user_id)
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
@@ -200,10 +199,8 @@ def compute_debt_summary(user_id: int) -> dict | None:
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
-        projections and the breakdown's paycheck-engine call;
-        ``_load_account_params``'s gross-biweekly engine call has
-        already run by then -- the deliberate price of sharing the
-        loaders verbatim).
+        projections and the breakdown's paycheck-engine call -- the
+        debt summary needs neither).
     """
     projected = _project_loan_accounts(user_id)
     if projected is None:
@@ -300,7 +297,7 @@ def compute_goal_progress(user_id: int) -> list[dict]:
     if not active_goals:
         return []
 
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
     goal_account_ids = {goal.account_id for goal in active_goals}
     goal_accounts = [
         acct for acct in core.accounts if acct.id in goal_account_ids
@@ -339,7 +336,7 @@ def compute_account_balance_cell(
 
     SSOT with the grid: it runs the SAME load -> param-load -> project
     pipeline ``compute_dashboard_data`` runs, through the shared
-    :func:`_project_one_account`, restricted to the one account (the
+    :func:`_compute_account_projections`, restricted to the one account (the
     param load is scoped to ``[acct]``; per-account projections are
     independent, so the restriction cannot change the projected figure).
     A Cancel therefore restores the exact number the card grid showed,
@@ -364,9 +361,12 @@ def compute_account_balance_cell(
     if acct is None:
         return None
 
-    params = _load_account_params(user_id, [acct])
+    params = _load_account_params([acct])
     ctx = _build_projection_context(core, params)
-    account_dict = _project_one_account(acct, ctx)
+    # Route through the shared projection (which batch-builds the seam maps)
+    # restricted to the one account, so the Cancel revert restores the exact
+    # number the card grid showed.
+    account_dict = _compute_account_projections([acct], ctx)[0]
     return {
         "account": acct,
         "current_balance": account_dict["current_balance"],
@@ -388,13 +388,20 @@ def _compute_net_worth_section(
     derive from that one projection so they cannot drift onto two copies of
     the math.
 
-    The maps are built once here over ALL periods (so the entries-aware
+    The maps are built once over ALL periods (so the entries-aware
     resolver always has its anchor seed) via
-    :func:`build_account_net_worth_maps`, fed by the shared
-    :mod:`app.services.net_worth_kernel` (the same math the year-end
-    net-worth trend uses, including the investment growth sub-chain).
-    The amortization schedules for the user's loan accounts are generated
-    once here and threaded into the dense-map build.
+    :func:`build_account_net_worth_maps`, which routes through the
+    :mod:`app.services.balance_at` seam -- the same per-kind math the
+    year-end net-worth trend uses, including the investment growth
+    sub-chain.  The seam owns its input assembly, so it re-loads the
+    investment params, deductions, engine gross, and loan schedules that
+    ``params`` already carries for these accounts; that duplicated read is
+    the deliberate, correctness-neutral cost of the single-source-of-truth
+    invariant the seam enforces (threading pre-assembled inputs back in
+    would re-leak the assembly the seam exists to centralize).  The
+    amortization schedules generated below therefore feed only the
+    honest-history gate (:func:`build_trend_periods`), which reads each
+    loan's first-payment date -- the data the balance maps do not carry.
 
     Degrades gracefully with no current period: the today figures still
     come from ``account_data``, the series is empty (``current_index`` 0),
@@ -421,9 +428,11 @@ def _compute_net_worth_section(
     """
     today = compute_net_worth_today(account_data)
 
-    # Loan accounts (those carrying a LoanParams row) drive the
-    # amortization-schedule path of the dense-map build; generate their
-    # schedules once.
+    # The honest-history gate (build_trend_periods ->
+    # _loan_schedule_start_index) reads each loan's first-payment date out of
+    # its schedule rows -- data the balance maps do not carry -- so generate
+    # the loan schedules here for the gate.  (The dense-map build assembles
+    # its own inside the seam; see this function's docstring.)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
@@ -434,8 +443,7 @@ def _compute_net_worth_section(
     )
 
     account_maps = build_account_net_worth_maps(
-        core.accounts, core.scenario, core.all_periods, params,
-        debt_schedules,
+        core.accounts, core.scenario, core.all_periods,
     )
 
     trend_periods, current_index, _ = build_trend_periods(
@@ -525,7 +533,7 @@ def compute_dashboard_data(user_id):
     core = _load_dashboard_core_data(user_id)
 
     # ── Load account-type-specific parameters ───────────────────
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
 
     # ── Compute per-account projections ─────────────────────────
     ctx = _build_projection_context(core, params)
@@ -534,14 +542,13 @@ def compute_dashboard_data(user_id):
     # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
     # One income producer feeds every income-derived figure on the
     # page: the income-relative-goal trajectory's net biweekly pay AND
-    # the DTI denominator's gross monthly income.  Pre-Commit-26 the
-    # DTI path took ``params.salary_gross_biweekly`` (the off-engine
-    # raw ``annual_salary / pay_periods`` recompute) and silently dropped
-    # any applicable ``SalaryRaise`` rows, so a user with a 3% recurring
-    # raise saw a DTI computed against a denominator ~$260/mo too low
-    # (audit worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
-    # Routing both consumers through ``calculate_paycheck`` for the
-    # current period makes the engine the single source of truth.
+    # the DTI denominator's gross monthly income.  Both route through
+    # ``calculate_paycheck`` for the current period so the engine is the
+    # single source of truth.  Pre-Commit-26 the DTI path used an
+    # off-engine raw ``annual_salary / pay_periods`` recompute that
+    # silently dropped any applicable ``SalaryRaise`` rows, so a user with
+    # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
+    # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_breakdown = _get_current_paycheck_breakdown(
         user_id, core.all_periods, core.current_period,
     )

@@ -23,8 +23,12 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import dashboard_service
-from tests._test_helpers import add_txn as _add_txn
+from app.services import balance_at, dashboard_service
+from tests._test_helpers import (
+    add_txn as _add_txn,
+    make_investment_account,
+    set_default_grid_account,
+)
 
 
 # ── Entry-tracked bill row, single declared base (E-21 / MED-03) ────
@@ -352,3 +356,42 @@ class TestComputeBalanceSection:
             assert hero["account_id"] == seed_user["account"].id
             # No transactions: as-of-today balance == anchor == $1,000.00.
             assert hero["balance"] == Decimal("1000.00")
+
+    def test_investment_grid_account_hero_shows_cash_not_modeled(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An investment grid account's hero is the cash carry, not modeled growth.
+
+        Regression lock for the Level-1 ``balance_at`` seam reroute: this
+        fragment is the same spending-account runway figure the pulse hero
+        shows, so it must read the CASH-FLOW scalar (``cash_balance_at``), not
+        the kind-correct ``balance_at`` scalar (which compounds an
+        investment).  ``resolve_grid_account`` can return any kind, so make a
+        401(k) (7% return) the user's default grid account, anchored
+        $100,000.00 at ``seed_periods[0]`` with no contributions: the cash
+        carry to today is a flat $100,000.00, while the kind-correct scalar
+        reads STRICTLY ABOVE it.  The fragment must show the flat cash carry.
+        """
+        with app.app_context():
+            inv = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("100000.00"),
+            )
+            set_default_grid_account(
+                db.session, seed_user["user"].id, inv.id,
+            )
+
+            scenario = seed_user["scenario"]
+            # The kind-correct scalar (the bug's hero) compounds the anchor
+            # forward; assert the divergence is real before locking the fix.
+            modeled = balance_at.balance_at(inv, scenario, date(2026, 3, 20))
+            assert modeled > Decimal("100000.00")
+
+            result = dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )
+            hero = result["hero"]
+            assert hero["account_id"] == inv.id
+            # Anchor $100,000.00 carried flat to today with no contributions
+            # -> the cash carry, NOT the compounded modeled value.
+            assert hero["balance"] == Decimal("100000.00")
+            assert hero["balance"] != modeled

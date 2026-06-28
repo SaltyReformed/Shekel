@@ -7,16 +7,19 @@ accounts.  Split out of the historical monolithic
 audit follow-up (F-1); behaviour preserved verbatim from the
 pre-split file.
 
-Both detail pages route balance computation through the canonical
-entries-aware producer (E-25 / Commit 5 +
-``balance_resolver.balances_for``) so the silent-degrade seam
-fixed by CRIT-01 / F-009 cannot reappear here.  The F-6 static
-guard in :mod:`tests.test_routes.test_accounts` pins this contract
-by asserting that ``balance_resolver.balances_for`` appears in the
-file and the bare entries-blind producer
-``calculate_balances`` (in ``balance_calculator``) does not.  When
-the split in Commit 21 moved ``checking_detail`` into this module,
-the F-6 guard's file-path reference was updated to point here.
+Both detail pages route balance computation through the balance-at
+seam (Level-1 Commit 8): ``checking_detail`` via the cash-flow entry
+``balance_at.cash_balance_map`` and ``interest_detail`` via the
+kind-correct ``balance_at.balance_map`` plus the kernel's
+``interest_by_period_for_account`` accessor.  Both seam entries
+delegate to the canonical entries-aware producers, so the
+silent-degrade seam fixed by CRIT-01 / F-009 cannot reappear here.
+The F-6 static guard in :mod:`tests.test_routes.test_accounts` pins
+this contract by asserting that the seam (``balance_at.``) is used and
+the bare entries-blind producer ``calculate_balances`` (in
+``balance_calculator``) is not.  When the split in Commit 21 moved
+``checking_detail`` into this module, the F-6 guard's file-path
+reference was updated to point here.
 """
 
 from __future__ import annotations
@@ -28,7 +31,6 @@ from typing import TYPE_CHECKING
 
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.orm import selectinload
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
@@ -37,12 +39,12 @@ from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
-from app.models.transaction import Transaction
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
-    balance_calculator,
+    balance_at,
     balance_resolver,
     home_equity_service,
+    net_worth_kernel,
     pay_period_service,
 )
 from app.services.scenario_resolver import get_baseline_scenario
@@ -57,7 +59,6 @@ if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
     from app.models.pay_period import PayPeriod
-    from app.models.scenario import Scenario
     from app.services.balance_resolver import AnchorPoint
 
 logger = logging.getLogger(__name__)
@@ -106,35 +107,6 @@ def _build_period_data(
                 )
             rows.append(row)
     return rows
-
-
-def _load_account_transactions(
-    account: Account, scenario: Scenario | None, all_periods: list[PayPeriod]
-) -> list[Transaction]:
-    """Load this account's non-deleted transactions for the projection window.
-
-    Scoped to the account, the given scenario, and the supplied periods,
-    with ``Transaction.entries`` eager-loaded so the entries-aware
-    reduction in ``_entry_aware_amount`` applies unconditionally (closing
-    the CRIT-01 / F-009 silent-degrade seam this route used to share with
-    /savings).  Returns ``[]`` when there is no scenario or no periods.
-    """
-    period_ids = [p.id for p in all_periods]
-    if not scenario or not period_ids:
-        return []
-    transactions = (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.scenario_id == scenario.id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-    # pylint: enable=duplicate-code
-    return transactions
 
 
 # ── Interest Detail & Params ──────────────────────────────────────
@@ -194,22 +166,35 @@ def interest_detail(account_id):
     # unreachable (CLAUDE.md rule 1: do it right, no shortcuts).
     anchor = balance_resolver.resolve_anchor(account, scenario.id) if scenario else None
 
-    # Interest layering flows through ``calculate_balances_with_interest``
-    # below (MED-01 / Commit 28: a single canonical resolver, not the old
-    # dual interest/no-interest dispatcher).  The entries-aware per-account
-    # transaction load (CRIT-01 / F-009 silent-degrade seam) is
-    # encapsulated in ``_load_account_transactions``.
-    acct_transactions = _load_account_transactions(account, scenario, all_periods)
-
     balances = {}
     interest_by_period = {}
     if anchor is not None:
-        balances, interest_by_period = balance_calculator.calculate_balances_with_interest(
-            anchor_balance=anchor.balance,
-            anchor_period_id=anchor.period.id,
-            periods=all_periods,
-            transactions=acct_transactions,
-            interest_params=params,
+        # Balances and per-period interest route through the balance-at
+        # seam and the engine-cluster interest accessor (Level-1 Commit 8),
+        # so this route calls no balance producer directly.  The
+        # KIND-CORRECT ``balance_map`` is the right entry here: the route is
+        # gated to interest-bearing account types, so it dispatches to the
+        # interest-accrual path -- the same
+        # ``calculate_balances_with_interest`` walk the route ran inline
+        # before (entries-aware via the closed CRIT-01 / F-009 seam).
+        # Interest EARNED is rich projection detail, not a balance-at-T
+        # figure, so it comes from ``interest_by_period_for_account`` (the
+        # fenced kernel accessor that shares that same interest walk), not a
+        # second producer call.
+        #
+        # Anchor source: the seam's interest path seeds from the Account
+        # ``current_anchor_*`` cache columns (the kernel's contract),
+        # whereas ``anchor`` here is the dated ``AccountAnchorHistory`` SoT
+        # (``resolve_anchor``).  In the normal case the two agree.  In the
+        # detected-and-logged cache-divergence state (``resolve_anchor``
+        # reconciles the cache to the history SoT and logs
+        # ``EVT_ANCHOR_CACHE_RECONCILED``) the projection now matches the
+        # year-end interest section and the savings cockpit (both also
+        # cache-seeded) instead of the SoT -- the consistent trade for
+        # routing every interest balance through the one seam.
+        balances = balance_at.balance_map(account, scenario, all_periods) or {}
+        interest_by_period = net_worth_kernel.interest_by_period_for_account(
+            account, scenario, all_periods, params,
         )
 
     current_bal = _current_period_balance(balances, current_period, anchor)
@@ -418,13 +403,15 @@ def checking_detail(account_id):
 
     Shows the current anchor balance and projected balances at
     3, 6, and 12-month intervals.  Balances flow through the
-    canonical entries-aware producer (E-25 / Commit 5):
-    ``balance_resolver.balances_for`` owns the transaction query
-    (always ``selectinload``s entries so the entry-aware reduction
-    in ``_entry_aware_amount`` applies unconditionally) and the
-    anchor resolution (dated ``AccountAnchorHistory`` source of
-    truth, never NULL post-Commit-3).  Routing through this single
-    producer is the structural fix for CRIT-01 / symptom #5: pre-
+    balance-at seam's cash-flow entry ``balance_at.cash_balance_map``
+    (Level-1 Commit 8), which delegates to the canonical entries-aware
+    producer ``balance_resolver.balances_for`` (E-25 / Commit 5): it
+    owns the transaction query (always ``selectinload``s entries so the
+    entry-aware reduction in ``_entry_aware_amount`` applies
+    unconditionally) and the anchor resolution (dated
+    ``AccountAnchorHistory`` source of truth, never NULL
+    post-Commit-3).  Routing through this single producer is the
+    structural fix for CRIT-01 / symptom #5: pre-
     fix the same tuple yielded $160.00 on the grid (entries
     eager-loaded) and $114.29 here (entries unloaded -> silent
     degrade to ``effective_amount`` -- $45.71 of already-cleared
@@ -446,24 +433,24 @@ def checking_detail(account_id):
 
     scenario = get_baseline_scenario(user_id)
 
-    # Route balance projection through the canonical entries-aware
-    # producer (E-25, Commit 5).  ``balances_for`` resolves the anchor
-    # via the dated ``AccountAnchorHistory`` SoT (E-19, Commit 4), so
-    # the legacy NULL-anchor fallback (which substituted the current
-    # period when the anchor column was unset) is dead code post-
-    # Commit-3 and is deleted rather than left unreachable
-    # (CLAUDE.md rule 1).  The
-    # ``scenario is None`` and ``no pay periods`` guards are kept --
-    # both are legitimately empty-state inputs (a fixture without a
-    # baseline scenario, a freshly-registered user with no generated
-    # periods) and the template renders cleanly when ``balances`` is
-    # empty.
+    # Route balance projection through the balance-at seam's cash-flow
+    # entry (Level-1 Commit 8), which delegates to the canonical
+    # entries-aware producer (E-25, Commit 5).  Checking is a PLAIN (cash)
+    # account, so ``cash_balance_map`` is the pure transaction
+    # running-balance -- identical to the prior direct producer call.  The
+    # anchor is still resolved via the dated ``AccountAnchorHistory`` SoT
+    # (E-19, Commit 4) for the header and the current-period fallback; the
+    # legacy NULL-anchor fallback (which substituted the current period
+    # when the anchor column was unset) is dead code post-Commit-3 and was
+    # deleted rather than left unreachable (CLAUDE.md rule 1).  The
+    # ``scenario is None`` and ``no pay periods`` guards are kept -- both
+    # are legitimately empty-state inputs (a fixture without a baseline
+    # scenario, a freshly-registered user with no generated periods) and
+    # the template renders cleanly when ``balances`` is empty.
     balances = {}
     anchor = None
     if scenario is not None and all_periods:
-        result = balance_resolver.balances_for(
-            account, scenario.id, all_periods,
-        )
+        result = balance_at.cash_balance_map(account, scenario, all_periods)
         balances = result.balances
         anchor = balance_resolver.resolve_anchor(account, scenario.id)
 

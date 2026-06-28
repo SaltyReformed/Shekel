@@ -9,10 +9,12 @@
 # Two-tier response:
 #   * Hard block (exit 2, fed back to Claude) on real errors (E/F) and the custom
 #     checkers: the financial-correctness rules (shekel-decimal-from-float,
-#     shekel-refname-compare, shekel-bare-money-quantize) and
+#     shekel-refname-compare, shekel-bare-money-quantize,
+#     shekel-original-principal-as-balance, shekel-balance-producer-bypass) and
 #     shekel-disable-rationale (every disable must carry a standard Pylint:
-#     why-comment). These have zero violations in the current tree, so this never
-#     false-blocks correct code; it catches a regression the instant it is typed.
+#     why-comment). These have zero violations in the current tree, so this
+#     never false-blocks correct code; it catches a regression the instant it
+#     is typed.
 #   * Smell tier: once the 10.00/10 lock-in sentinel
 #     (scripts/hooks/ENFORCE_PYLINT_FLOOR) exists -- it has since 2026-06-09 --
 #     remaining smells/conventions ALSO hard-block. app/ and scripts/ are at
@@ -63,7 +65,7 @@ esac
 
 # Hard-block tier: errors and the custom financial-correctness rules.
 guard="$(pylint "$FILE" --score=no --disable=all \
-    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale 2>&1)"
+    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass 2>&1)"
 if [ -n "$guard" ]; then
     {
         echo "Blocking issue in $FILE (error or financial-correctness rule)."

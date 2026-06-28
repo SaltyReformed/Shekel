@@ -13,28 +13,26 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services.net_worth_kernel import DebtSchedule
 
 
 @dataclass(frozen=True)
 class _ProjectionInputs:
-    """Pre-loaded per-account parameter maps the section helpers project against.
+    """Pre-loaded parameter maps the savings-progress helpers project against.
 
-    Bundles the maps loaded once in :func:`_load_common_data` (plus the
-    amortization schedules built in :func:`_build_summary`) so the
-    net-worth and savings-progress helpers forward a single cohesive
-    object down the projection call chain instead of the four or five
-    parallel keyword arguments they previously threaded by hand
-    (MED-01 / S6-06).
+    Bundles the parameter maps loaded once in :func:`_load_common_data`
+    so the savings-progress helpers forward a single cohesive object down
+    the projection call chain instead of the parallel keyword arguments
+    they previously threaded by hand (MED-01 / S6-06).
 
-    The net-worth chain reads ``debt_schedules`` and the investment trio
-    (``investment_params_map`` / ``deductions_by_account`` /
-    ``salary_gross_biweekly``); the savings-progress chain reads
-    ``interest_params_map`` and the same investment trio.  Each chain
-    leaves the one field it does not need untouched.
+    The savings-progress chain reads ``interest_params_map`` /
+    ``investment_params_map`` (the per-account dispatch) and the
+    investment growth inputs ``deductions_by_account`` /
+    ``salary_gross_biweekly``.  The net-worth section no longer reads this
+    bundle: it routes through the :mod:`app.services.balance_at` seam,
+    which owns its own input assembly -- including the debt schedules this
+    bundle used to carry for the now-removed amortization-dispatch path.
     """
 
-    debt_schedules: dict[int, DebtSchedule]
     investment_params_map: dict[int, InvestmentParams]
     interest_params_map: dict[int, InterestParams]
     deductions_by_account: dict[int, list]

@@ -36,6 +36,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -190,10 +191,66 @@ def generate_debt_schedules(
     return schedules
 
 
+def _account_interest_projection(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    interest_params: InterestParams,
+    amount_overrides: "dict[int, Decimal] | None" = None,
+) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
+    """Run the interest-layered balance walk for one account.
+
+    The single home for the "load this account's transactions and run
+    :func:`~app.services.balance_calculator.calculate_balances_with_interest`
+    over them" sequence shared by the interest BALANCE path
+    (:func:`base_account_balance_map`, which keeps the balances and
+    discards the interest) and the interest-EARNED accessor
+    (:func:`interest_by_period_for_account`, which keeps the interest and
+    discards the balances).  Folding the two into one helper keeps the
+    transaction-scope query, the anchor-balance coalesce, and the
+    calculator kwargs identical between the balance figure a screen
+    renders and the interest figure the year-end savings-progress section
+    reports -- they cannot drift onto two copies of the same walk (R0801).
+
+    Args:
+        account: The interest-bearing account.  Its ``current_anchor_*``
+            columns seed the walk; the caller is responsible for the
+            no-anchor guard.
+        scenario: The baseline scenario (its id scopes the transaction
+            query).
+        periods: The pay periods to walk (ordered by ``period_index``).
+        interest_params: The account's
+            :class:`~app.models.interest_params.InterestParams` (APY +
+            compounding frequency) the calculator layers interest from.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
+            forwarded verbatim to the calculator; ``None`` (the year-end
+            interest path) preserves the stored-amount behavior.
+
+    Returns:
+        ``(balances, interest_by_period)`` -- the calculator's two outputs
+        verbatim: the period_id -> Decimal end-balance map (interest
+        layered in) and the period_id -> Decimal interest-earned map.
+    """
+    transactions = load_account_period_transactions(
+        account.id, scenario.id, [p.id for p in periods],
+    )
+    anchor_balance = account.current_anchor_balance or ZERO
+    return balance_calculator.calculate_balances_with_interest(
+        anchor_balance=anchor_balance,
+        anchor_period_id=account.current_anchor_period_id,
+        periods=periods,
+        transactions=transactions,
+        interest_params=interest_params,
+        amount_overrides=amount_overrides,
+    )
+
+
 def base_account_balance_map(
     account: Account,
     scenario: Scenario,
     periods: list,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one account WITHOUT dispatch inputs.
 
@@ -209,6 +266,16 @@ def base_account_balance_map(
         account: The account to project.
         scenario: The baseline scenario.
         periods: All user pay periods.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net / loan-derive map (Workstream B), forwarded
+            verbatim to whichever cash producer this account routes to
+            (:func:`~app.services.balance_calculator.calculate_balances_with_interest`
+            for the interest path,
+            :func:`~app.services.balance_resolver.balances_for` for the
+            plain path).  Default ``None`` lets each producer build its own
+            live override map internally, byte-identical to the prior
+            behavior; the ``balance_at`` seam threads the grid's pre-built
+            map through here for grid parity.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -228,16 +295,9 @@ def base_account_balance_map(
     if (kind is AccountProjectionKind.INTEREST
             and hasattr(account, "interest_params")
             and account.interest_params):
-        transactions = load_account_period_transactions(
-            account.id, scenario.id, [p.id for p in periods],
-        )
-        anchor_balance = account.current_anchor_balance or ZERO
-        balances, _ = balance_calculator.calculate_balances_with_interest(
-            anchor_balance=anchor_balance,
-            anchor_period_id=account.current_anchor_period_id,
-            periods=periods,
-            transactions=transactions,
-            interest_params=account.interest_params,
+        balances, _ = _account_interest_projection(
+            account, scenario, periods, account.interest_params,
+            amount_overrides,
         )
         return balances
 
@@ -249,7 +309,54 @@ def base_account_balance_map(
     # cannot disagree with the grid for the same input.
     return balance_resolver.balances_for(
         account, scenario.id, periods,
+        amount_overrides=amount_overrides,
     ).balances
+
+
+def interest_by_period_for_account(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    interest_params: InterestParams,
+) -> dict[int, Decimal]:
+    """Return period_id -> interest earned for an interest-bearing account.
+
+    The engine-cluster accessor the year-end savings-progress section
+    (:func:`app.services.year_end_summary_service._balances._compute_interest_for_year`)
+    reads instead of calling
+    :func:`~app.services.balance_calculator.calculate_balances_with_interest`
+    directly: interest EARNED is rich projection detail, not a
+    balance-at-T figure, so it is not a ``balance_at`` seam concern, yet
+    the producer that computes it is fenced to the engine cluster.  This
+    accessor keeps that producer call inside the kernel (where it belongs
+    with :func:`base_account_balance_map`, which shares the same
+    :func:`_account_interest_projection` walk) while the year-end consumer
+    sees only the interest map it needs.
+
+    A None-anchor account earns no projectable interest (the walk produces
+    no balances to layer interest on), returned as the empty map so the
+    caller's year-filtered sum is ``Decimal("0")`` -- matching the prior
+    inline ``current_anchor_period_id is None -> ZERO`` early-out.
+
+    Args:
+        account: The interest-bearing account.
+        scenario: The baseline scenario (its id scopes the transaction
+            query).
+        periods: All user pay periods (the walk domain; the caller
+            filters to the periods whose interest it wants).
+        interest_params: The account's
+            :class:`~app.models.interest_params.InterestParams`.
+
+    Returns:
+        ``dict`` mapping period_id to the ``Decimal`` interest earned in
+        that period; ``{}`` when the account has no anchor period.
+    """
+    if account.current_anchor_period_id is None:
+        return {}
+    _, interest_by_period = _account_interest_projection(
+        account, scenario, periods, interest_params,
+    )
+    return interest_by_period
 
 
 def build_account_balance_map(  # pylint: disable=too-many-arguments
@@ -261,6 +368,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     investment_params: InvestmentParams | None,
     deductions: list,
     salary_gross_biweekly: Decimal,
+    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one account, dispatching on type.
 
@@ -280,15 +388,16 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     call it without constructing that year-end-specific value object; the
     year-end adapter unpacks its bundle per account at the call site.
 
-    Pylint: ``too-many-arguments`` (7/5) -- the keyword-only group is
+    Pylint: ``too-many-arguments`` (8/5) -- the keyword-only group is
     this account's four independent projection inputs (its schedule, its
-    investment params, its deductions, the engine gross-biweekly).  They
-    are not a cohesive named concept that would survive as a value
-    object; the year-end ``_ProjectionInputs`` bundle that previously
-    carried them is the year-end package's own, and re-creating a
-    kernel-specific bundle no other caller shares would be the stamp
-    coupling the standards reject.  Keyword-only keeps the call sites
-    self-documenting (and exempts the positional-count rule).
+    investment params, its deductions, the engine gross-biweekly) plus the
+    cash-path ``amount_overrides`` passthrough.  They are not a cohesive
+    named concept that would survive as a value object; the year-end
+    ``_ProjectionInputs`` bundle that previously carried the first four is
+    the year-end package's own, and re-creating a kernel-specific bundle no
+    other caller shares would be the stamp coupling the standards reject.
+    Keyword-only keeps the call sites self-documenting (and exempts the
+    positional-count rule).
 
     Args:
         account: The account to project.
@@ -306,6 +415,18 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             growth engine's contribution feed; adapted internally).
         salary_gross_biweekly: Raise-aware engine gross per pay period
             (the employer-match cap basis).
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net / loan-derive map (Workstream B).  Threaded ONLY
+            through the base / cash fall-through
+            (:func:`base_account_balance_map`).  The map only ever contains
+            cash-account transaction ids (salary income + loan-transfer
+            shadows); the investment branch's base IS a transaction sum but
+            it independently builds its own live overrides inside
+            ``balances_for``, and the loan / appreciation branches derive
+            from schedules and growth curves -- so forwarding this cash
+            override to any non-cash branch would match no id and is
+            intentionally omitted.  Default ``None`` preserves the prior
+            behavior byte-identical.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -361,8 +482,112 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     if kind is AccountProjectionKind.APPRECIATING:
         return _build_appreciation_balance_map(account, scenario, periods)
 
-    # Interest-bearing and plain accounts share the base path.
-    return base_account_balance_map(account, scenario, periods)
+    # Interest-bearing and plain accounts share the base path, and it is the
+    # only branch that forwards ``amount_overrides``: the override map only
+    # carries cash-account transaction ids, so no non-cash branch above would
+    # match any of them (the investment base builds its own live overrides
+    # inside ``balances_for``).
+    return base_account_balance_map(
+        account, scenario, periods, amount_overrides=amount_overrides,
+    )
+
+
+def account_balance_map_from_inputs(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    inputs,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
+) -> "OrderedDict[int, Decimal] | None":
+    """Unpack a per-set projection bundle for one account and dispatch.
+
+    The ``balance_at`` seam's unpack-and-dispatch site
+    (:func:`app.services.balance_at._account_balance_map` calls it for both
+    the single-account and batch paths): it slices the four projection
+    inputs :func:`build_account_balance_map` needs for *account* out of a
+    pre-assembled bundle and calls it.  Kept here in the engine cluster,
+    beside the dispatcher it feeds, so the bundle-field-to-kwarg slice rule
+    lives with :func:`build_account_balance_map` rather than in the seam.
+    (Until the year-end summary was rerouted through the seam its adapter
+    sliced an identical bundle here too -- the R0801 the shared site
+    closed; the seam is now the sole caller.)
+
+    ``inputs`` is duck-typed: any bundle exposing ``debt_schedules``,
+    ``investment_params_map``, ``deductions_by_account``, and
+    ``salary_gross_biweekly`` qualifies.  The seam's
+    :class:`app.services.balance_at._AssembledInputs` satisfies this
+    contract.  It is intentionally left unannotated: that concrete bundle
+    type lives in a consumer package this engine module must not import
+    (the dependency direction), so the structural contract is documented
+    here rather than expressed by a shared type.
+
+    Args:
+        account: The account to project.
+        scenario: The baseline scenario.
+        periods: The pay periods to project over.
+        inputs: The per-set projection bundle (see the duck-typed contract
+            above).
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
+            forwarded to the kernel's cash path; ``None`` (year-end and the
+            net-worth batch) never applies live overrides.
+
+    Returns:
+        OrderedDict mapping period_id to Decimal balance, or None when the
+        account has no anchor period.
+    """
+    return build_account_balance_map(
+        account, scenario, periods,
+        debt_schedule=inputs.debt_schedules.get(account.id),
+        investment_params=inputs.investment_params_map.get(account.id),
+        deductions=inputs.deductions_by_account.get(account.id, []),
+        salary_gross_biweekly=inputs.salary_gross_biweekly,
+        amount_overrides=amount_overrides,
+    )
+
+
+def investment_base_balance_map(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+) -> "OrderedDict[int, Decimal]":
+    """Return an investment account's cash-basis (pre-growth) balance map.
+
+    The transaction-sum balance an investment account holds from its
+    anchor plus contributions, with NO modeled growth layered on -- the
+    seed a forward growth projection compounds from.  It is the canonical
+    entries-aware producer's map verbatim
+    (:func:`~app.services.balance_resolver.balances_for`), so it agrees
+    penny-for-penny with the figure the grid and every cash surface render
+    for the same rows.
+
+    Shared by every investment growth projection so none re-derives the
+    seed: the net-worth investment sub-chain
+    (:func:`_build_investment_balance_map`, which forward/reverse-projects
+    growth off it), the year-end savings-progress projection
+    (:func:`app.services.year_end_summary_service._savings._project_investment_for_year`,
+    which re-projects each calendar year from this cash basis), and the
+    investment / retirement dashboard forward projections
+    (``investment_dashboard_service._resolve_seed_balance`` and
+    ``retirement_dashboard_service._resolve_balance_maps``, whose growth
+    chart seeds from this cash basis while the DISPLAYED headline reads the
+    modeled :func:`balance_map`).  Each must seed from THIS pre-growth map,
+    not the growth-modeled :func:`balance_map` the ``balance_at`` seam
+    returns for an investment account -- seeding from the modeled balance
+    would compound growth on top of growth (re-grow the current period).
+    Exposed from the engine cluster precisely so those consumers can read
+    the seed without calling the fenced cash producer directly.
+
+    Args:
+        account: The investment account.
+        scenario: The baseline scenario (its id scopes the resolver).
+        periods: The pay periods to span (ordered by ``period_index``;
+            must include the anchor so the resolver has its running seed).
+
+    Returns:
+        The ``OrderedDict`` period_id -> Decimal cash-basis balance.
+    """
+    return balance_resolver.balances_for(account, scenario.id, periods).balances
 
 
 def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -413,10 +638,10 @@ def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-man
     # resolves the anchor via the dated ``AccountAnchorHistory`` SoT,
     # and routes through the same engine math as the grid -- so the
     # base balance feeding the growth projection here is identical to
-    # the figure rendered on the grid and other surfaces.
-    base_balances = balance_resolver.balances_for(
-        account, scenario.id, periods,
-    ).balances
+    # the figure rendered on the grid and other surfaces.  Via the
+    # shared seed accessor so the year-end savings-progress projection
+    # compounds from the SAME cash basis (one definition of the seed).
+    base_balances = investment_base_balance_map(account, scenario, periods)
 
     # Find the anchor period's index to split pre/post-anchor.
     anchor_idx = get_anchor_period_index(account, periods)

@@ -16,13 +16,15 @@ from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
-from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.services import income_service
 from app.services.account_projection import AccountProjectionKind, classify_account
-from app.services.projection_inputs import load_active_deductions_for_accounts
+from app.services.projection_inputs import (
+    load_active_deductions_for_accounts,
+    load_investment_params_for_accounts,
+)
 
 
 def _load_common_data(
@@ -112,7 +114,9 @@ def _load_common_data(
             if a.account_type and a.account_type.has_amortization
         ],
         "savings_accounts": savings_accounts,
-        "investment_params_map": _load_investment_params(savings_accounts),
+        "investment_params_map": load_investment_params_for_accounts(
+            savings_accounts,
+        ),
         "interest_params_map": _load_interest_params(savings_accounts),
         "deductions_by_account": _load_deductions_by_account(
             savings_accounts, user_id,
@@ -121,36 +125,6 @@ def _load_common_data(
             user_id, scenario,
         ),
     }
-
-
-def _load_investment_params(
-    accounts: list,
-) -> dict[int, InvestmentParams]:
-    """Batch-load InvestmentParams for investment/retirement accounts.
-
-    Filters to accounts whose account_type has has_parameters=True and
-    does not have has_interest or has_amortization (i.e., investment
-    and retirement accounts that use the growth engine).
-
-    Args:
-        accounts: List of Account objects with loaded account_type.
-
-    Returns:
-        dict mapping account_id to InvestmentParams.
-    """
-    inv_ids = [
-        a.id for a in accounts
-        if classify_account(a) is AccountProjectionKind.INVESTMENT
-    ]
-    if not inv_ids:
-        return {}
-
-    params_list = (
-        db.session.query(InvestmentParams)
-        .filter(InvestmentParams.account_id.in_(inv_ids))
-        .all()
-    )
-    return {p.account_id: p for p in params_list}
 
 
 def _load_interest_params(

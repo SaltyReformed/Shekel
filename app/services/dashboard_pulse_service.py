@@ -35,9 +35,10 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_at, pay_period_service
 from app.services.dashboard_service import (
     _DEFAULT_STALENESS_DAYS,
     _get_last_anchor_date,
@@ -104,20 +105,34 @@ def compute_pulse_section(user_id: int) -> dict | None:
     all_periods = pay_period_service.get_all_periods(user_id)
     next_period = pay_period_service.get_next_period(current_period)
 
-    # ONE projection walk over ALL periods: ``balances_for`` carries the
-    # running balance forward from the anchor period, so the period list
-    # MUST include the anchor period (a forward-only slice that excludes
-    # it yields an empty map -- the engine has no seed).  The chart slices
-    # the current-period-forward tail to 13 points and the trough scans
-    # the whole forward tail.  The trough horizon is the entire forward
-    # run -- the retired negative-projection alert's full multi-year reach,
-    # but DELIBERATELY INCLUDING the current period the alert skipped
-    # (``start_date <= today``): the chart's first plotted point is the
-    # current period's end balance, so the labeled "lowest point ahead"
-    # must be able to coincide with it rather than understating the worst
-    # visible dip.
-    end_balances = balance_resolver.balances_for(
-        account, scenario.id, all_periods,
+    # ONE projection walk over ALL periods through the ``balance_at`` seam's
+    # CASH-FLOW view (``cash_balance_map``).  The dashboard account is
+    # ``resolve_grid_account``'s pick and may be ANY kind (a user can point
+    # the dashboard at an HYSA, or the fallback can land on a non-checking
+    # account), and this region is the spending-account runway -- so it reads
+    # the pure transaction running balance, NOT the kind-correct
+    # ``balance_map`` (which would accrue interest into an HYSA's chart,
+    # amortize a loan, or compound an investment, diverging from the grid
+    # that deliberately keeps the SAME account on the cash-flow view, and
+    # inflating the "lowest point ahead" so a real future dip below zero
+    # could be hidden).  The cash map carries the running balance forward
+    # from the anchor period, so the period list MUST include the anchor
+    # period (a forward-only slice that excludes it yields an empty map --
+    # the engine has no seed).  The chart slices the current-period-forward
+    # tail to 13 points and the trough scans the whole forward tail.  The
+    # trough horizon is the entire forward run -- the retired
+    # negative-projection alert's full multi-year reach, but DELIBERATELY
+    # INCLUDING the current period the alert skipped (``start_date <=
+    # today``): the chart's first plotted point is the current period's end
+    # balance, so the labeled "lowest point ahead" must be able to coincide
+    # with it rather than understating the worst visible dip.
+    # ``cash_balance_map`` resolves the anchor through the dated history SoT
+    # (reconciling the ``current_anchor_period_id`` cache-divergence edge the
+    # kind-correct map would have degraded to an empty chart), so its
+    # ``balances`` is always a populated map; the chart / trough / peak keep
+    # their existing missing-key skips for any period the resolver omits.
+    end_balances = balance_at.cash_balance_map(
+        account, scenario, all_periods,
     ).balances
     forward_periods = [
         p for p in all_periods
@@ -138,7 +153,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     )
 
     return {
-        "hero": _pulse_hero(account, scenario.id, current_period, settings),
+        "hero": _pulse_hero(account, scenario, current_period, settings),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
         "trough": _pulse_trough(
             forward_periods, end_balances, current_period,
@@ -156,17 +171,22 @@ def compute_pulse_section(user_id: int) -> dict | None:
 
 def _pulse_hero(
     account: Account,
-    scenario_id: int,
+    scenario: Scenario,
     current_period: PayPeriod,
     settings: UserSettings | None,
 ) -> dict:
     """Build the pulse hero block: the as-of-today balance and its captions.
 
-    The headline ``balance`` is the as-of-today projected checking
-    balance from the canonical ``balance_resolver.balance_as_of_date``
-    producer -- the exact figure ``dashboard_service.compute_balance_section``
-    shows -- so the hero, the chart's first point, and the balance card
-    all agree.  Net pay is retired (data-value pass); only the
+    The headline ``balance`` is the as-of-today projected cash-flow
+    balance from the ``balance_at`` seam's cash-flow scalar
+    (``balance_at.cash_balance_at``) -- the exact figure
+    ``dashboard_service.compute_balance_section`` shows (it reads the same
+    cash-flow scalar) -- so the hero, the chart's first point, and the
+    balance card all agree.  The cash-flow view (NOT the kind-correct
+    ``balance_at`` scalar, which would accrue interest / amortize / compound)
+    is deliberate: the account is ``resolve_grid_account``'s any-kind pick,
+    and the chart the hero must agree with reads ``cash_balance_map`` for the
+    same reason.  Net pay is retired (data-value pass); only the
     next-paycheck DATE survives.
 
     ``is_stale`` is ``True`` when the anchor has never been set OR its
@@ -175,8 +195,9 @@ def _pulse_hero(
     rebuild moves the signal onto the "last updated" caption).
 
     Args:
-        account: The resolved checking account.
-        scenario_id: The baseline scenario id.
+        account: The resolved dashboard account (``resolve_grid_account``'s
+            pick; may be any kind).
+        scenario: The baseline scenario.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
 
@@ -185,9 +206,7 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    balance = balance_resolver.balance_as_of_date(
-        account, scenario_id, date.today(),
-    )
+    balance = balance_at.cash_balance_at(account, scenario, date.today())
     # One fetch of the raw anchor instant, two truncations: staleness
     # counts days in the UTC frame (storage convention, unchanged), the
     # caption shows the day in the user's display timezone so a late-

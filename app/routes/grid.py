@@ -24,6 +24,7 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import (
+    balance_at,
     balance_resolver,
     grid_view_service,
     pay_period_admin,
@@ -111,8 +112,9 @@ class _GridContext(NamedTuple):
         current_period: The user's current pay period (the natural
             leftmost column when ``start_offset == 0``).
         periods: The visible period slice (length ``num_periods``).
-        all_periods: All periods from anchor forward; the canonical
-            producer :func:`balance_resolver.balances_for` walks this
+        all_periods: All periods from anchor forward; the balance-at
+            seam's cash-flow entry
+            :func:`app.services.balance_at.cash_balance_map` walks this
             list to project balances.
     """
 
@@ -228,17 +230,26 @@ def _load_grid_transactions(account, scenario, all_periods):
 def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
     """Compute the anchor balance and the period-end balance projection.
 
-    Routes through the canonical entries-aware producer
-    :func:`balance_resolver.balances_for` (E-25 / Commit 5).  The
-    producer owns its own query (it always ``selectinload``s entries
-    so the entries-aware reduction in ``_entry_aware_amount`` applies
-    unconditionally), which is the structural fix for CRIT-01 /
-    F-009.  The grid additionally keeps its own ``all_transactions``
-    query (in :func:`_load_grid_transactions`) for display purposes:
-    the route needs the ``template`` eager-load for row-key generation
-    and the same entries for ``entry_sums`` / cell rendering, neither
-    of which is in ``balances_for``'s remit.  The double-query cost
-    is a one-extra SELECT trade for the seam-removal guarantee.
+    Routes through the balance-at seam's cash-flow entry
+    :func:`app.services.balance_at.cash_balance_map` (Level-1 Commit 8),
+    which delegates to the canonical entries-aware producer
+    ``balance_resolver.balances_for`` (E-25 / Commit 5): it owns its own
+    query (always ``selectinload``s entries so the entries-aware reduction
+    in ``_entry_aware_amount`` applies unconditionally, the structural fix
+    for CRIT-01 / F-009) and returns the ``stale_anchor_warning`` flag
+    alongside the balances.  The cash-flow entry -- NOT the kind-correct
+    :func:`~app.services.balance_at.balance_map` -- is deliberate: the grid
+    account may be an interest / loan / investment account
+    (``resolve_grid_account`` can return any kind), and the grid's balance
+    row must stay a pure transaction running-balance so it reconciles with
+    the transaction-based subtotal row
+    (``balances[p] - balances[p-1] == subtotals[p].net``).  The grid
+    additionally keeps its own ``all_transactions`` query (in
+    :func:`_load_grid_transactions`) for display purposes: the route needs
+    the ``template`` eager-load for row-key generation and the same entries
+    for ``entry_sums`` / cell rendering, neither of which is in the
+    producer's remit.  The double-query cost is a one-extra SELECT trade
+    for the seam guarantee.
 
     Returns the 3-tuple ``(balances, stale_anchor_warning,
     anchor_balance)``.  No-account state returns an empty balance map
@@ -252,8 +263,8 @@ def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
     )
 
     if account is not None:
-        balance_result = balance_resolver.balances_for(
-            account, scenario.id, all_periods,
+        balance_result = balance_at.cash_balance_map(
+            account, scenario, all_periods,
             amount_overrides=amount_overrides,
         )
         return (
@@ -777,13 +788,16 @@ def balance_row():
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
 
-    # Balances via the canonical entries-aware producer (E-25 / Commit 5).
-    # The producer owns the transaction query, so this HTMX partial no
-    # longer needs its own ``selectinload(entries)`` query: that
-    # responsibility moved into ``balance_resolver.balances_for``.
+    # Balances + stale-anchor flag via the balance-at seam's cash-flow
+    # entry (Level-1 Commit 8), which delegates to the canonical
+    # entries-aware producer (E-25 / Commit 5).  The producer owns the
+    # transaction query, so this HTMX partial needs no
+    # ``selectinload(entries)`` query of its own; the cash-flow entry
+    # (not the kind-correct ``balance_map``) keeps the balance row a pure
+    # transaction running-balance, matching the subtotal row.
     if window.account is not None:
-        balance_result = balance_resolver.balances_for(
-            window.account, window.scenario.id, all_periods,
+        balance_result = balance_at.cash_balance_map(
+            window.account, window.scenario, all_periods,
         )
         balances = balance_result.balances
         stale_anchor_warning = balance_result.stale_anchor_warning
@@ -903,8 +917,10 @@ def mobile_this_period_summary():
 
     all_periods = pay_period_service.get_all_periods(user_id)
     if base.account is not None:
-        balances = balance_resolver.balances_for(
-            base.account, base.scenario.id, all_periods,
+        # Cash-flow balance via the seam (Level-1 Commit 8); the mobile
+        # summary shows the same transaction running-balance as the grid.
+        balances = balance_at.cash_balance_map(
+            base.account, base.scenario, all_periods,
         ).balances
     else:
         balances = OrderedDict()

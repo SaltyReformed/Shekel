@@ -90,7 +90,14 @@ class TestInvestmentDashboard:
     def test_dashboard_with_params(self, auth_client, seed_user, db, seed_periods_today):
         """GET returns 200 with params and projection data."""
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
+        # Anchor stays at the factory's current period (cache AND the
+        # AccountAnchorHistory row in sync).  The headline now reads the
+        # model-from-anchor balance through the balance_at seam, and at
+        # anchor==current that equals the $50,000 cash basis.  The old
+        # ``current_anchor_period_id = seed_periods_today[0]`` override set
+        # ONLY the cache, not the history row the resolver reads -- a
+        # divergence the prior cash-basis fallback masked but the modeled
+        # map cannot, and which never matched a real (factory-built) account.
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200

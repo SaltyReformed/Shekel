@@ -1644,6 +1644,56 @@ class TestSavingsProgress:
         assert entry["employer_contributions"] == ZERO
         assert entry["investment_growth"] == ZERO
 
+    def test_property_appreciates_in_savings_progress(
+        self, app, db, seed_full_user_data,
+    ):
+        """A rate-configured Property reports its COMPOUNDED value here.
+
+        Authorized behavior change (developer-confirmed): the
+        savings-progress section reads each account's balance through the
+        ``balance_at`` seam, so a Property with an appreciation rate now
+        reports its compounded market value -- matching the year-end
+        net-worth section and the savings-cockpit tile -- instead of the
+        pre-seam flat market value (which reported jan1 == dec31 ==
+        anchor).
+
+        A $400,000 home anchored at the first period at 3%/yr compounds
+        upward across 2026, so its Dec 31 balance strictly exceeds both its
+        Jan 1 balance and its $400,000 set value (the OLD flat path reported
+        exactly $400,000 for both, so each ``>`` below would have been an
+        equality and fails on the old code).  Appreciation is neither a
+        contribution nor "growth" in this section, so those columns stay $0.
+        """
+        # Pylint: import-outside-toplevel -- the shared appreciating-asset
+        # builder loads inside the test, the file-wide deferred-import
+        # convention for ``_test_helpers``.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            make_appreciating_account,
+        )
+        data = seed_full_user_data
+        user = data["user"]
+        periods = data["periods"]
+
+        anchor_value = Decimal("400000.00")
+        make_appreciating_account(
+            data, db.session, periods[0], anchor_value, Decimal("0.03000"),
+        )
+
+        result = compute_year_end_summary(user.id, YEAR)
+        entry = next(
+            (s for s in result["savings_progress"]
+             if s["account_name"] == "House"),
+            None,
+        )
+        assert entry is not None, "Property not in savings_progress"
+        # Compounded, not flat carry: appreciates across the year and ends
+        # strictly above the $400,000 set market value (OLD: == $400,000).
+        assert entry["dec31_balance"] > entry["jan1_balance"]
+        assert entry["dec31_balance"] > anchor_value
+        # No appreciation column: the growth shows as a balance delta only.
+        assert entry["investment_growth"] == ZERO
+        assert entry["employer_contributions"] == ZERO
+
     def test_savings_contributions_from_shadows(
         self, app, db, seed_full_user_data,
     ):

@@ -67,7 +67,10 @@ def _build_summary(
     """Compute each section and assemble the final summary dict.
 
     Generates amortization schedules once for all debt accounts and
-    shares them across mortgage interest, debt progress, and net worth.
+    shares them across the mortgage-interest and debt-progress sections
+    (the membership gate for the latter).  The net-worth section reads
+    balances through the :mod:`app.services.balance_at` seam, which owns
+    its own schedule assembly, so it is not fed these schedules.
 
     Args:
         user_id: The authenticated user's ID.
@@ -77,22 +80,22 @@ def _build_summary(
             sanctioned W-052 load-once bag and stays whole at this
             top-level assembly site, where it is packed into the two
             cohesive bundles passed down the projection chains: the
-            ``_ProjectionInputs`` parameter maps and the ``_YearContext``
-            period/scenario context (MED-01 / S6-06 -- the section
-            helpers below take those bundles instead of the opaque bag).
+            ``_ProjectionInputs`` parameter maps (the savings-progress
+            section) and the ``_YearContext`` period/scenario context
+            (MED-01 / S6-06 -- the section helpers below take those bundles
+            instead of the opaque bag).
 
     Returns:
         Fully assembled year-end summary dict.
     """
     # Pre-compute amortization schedules with properly prepared payments
-    # (escrow subtracted, biweekly overlaps redistributed).  Shared by
-    # mortgage interest, debt progress, and net worth sections.
+    # (escrow subtracted, biweekly overlaps redistributed).  Shared by the
+    # mortgage-interest section and the debt-progress membership gate.
     debt_schedules = _generate_debt_schedules(
         ctx["debt_accounts"], scenario.id,
     )
 
     inputs = _ProjectionInputs(
-        debt_schedules=debt_schedules,
         investment_params_map=ctx["investment_params_map"],
         interest_params_map=ctx["interest_params_map"],
         deductions_by_account=ctx["deductions_by_account"],
@@ -120,10 +123,10 @@ def _build_summary(
             user_id, year, ctx["year_period_ids"], scenario.id,
         ),
         "net_worth": _compute_net_worth(
-            ctx["accounts"], year_ctx, inputs,
+            ctx["accounts"], year_ctx,
         ),
         "debt_progress": _compute_debt_progress(
-            year, ctx["debt_accounts"], debt_schedules,
+            year, ctx["debt_accounts"], debt_schedules, scenario,
         ),
         "savings_progress": _compute_savings_progress(
             ctx["savings_accounts"], year_ctx, inputs,

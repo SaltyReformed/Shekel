@@ -27,11 +27,11 @@ the averaging window.
 This producer replaces that scalar with a projection that reuses the
 grid's exact resolution + balance engine, so the obligations panel
 reconciles with the grid by construction: the same Checking-by-default
-account, the same baseline scenario, the same
-``balance_resolver.balances_for`` walk (raise-aware income, entry-aware
-expenses, transfer-symmetric).  It surfaces the projected end balance
-now, in ~12 months, and at the end of the projection, plus how many
-periods dip below zero.
+account, the same baseline scenario, the same balance-at seam cash-flow
+walk (``balance_at.cash_balance_map``, the grid's producer too -- raise-aware
+income, entry-aware expenses, transfer-symmetric).  It surfaces the
+projected end balance now, in ~12 months, and at the end of the
+projection, plus how many periods dip below zero.
 
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 inputs are plain data (user id + an optional ``UserSettings`` row),
@@ -44,7 +44,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_at, balance_resolver, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -76,9 +76,10 @@ class CashFlowProjection:
     """Immutable grid-reconciled cash-flow projection for one account.
 
     Returned by :func:`project_cash_flow`.  Every balance is a projected
-    END balance produced by :func:`balance_resolver.balances_for`, so the
-    figures match the ``/grid`` Projected End Balance footer for the same
-    account and scenario.
+    END balance produced by the balance-at seam's cash-flow entry
+    :func:`app.services.balance_at.cash_balance_map`, so the figures match
+    the ``/grid`` Projected End Balance footer for the same account and
+    scenario.
 
     Attributes:
         account_name: Display name of the projected account (the grid's
@@ -158,13 +159,13 @@ def project_cash_flow(
     """Project the grid-default account's balance for the obligations panel.
 
     Resolves the same baseline scenario and default account the ``/grid``
-    page uses, then walks
-    :func:`balance_resolver.balances_for` over the user's full pay-period
+    page uses, then walks the balance-at seam's cash-flow entry
+    :func:`balance_at.cash_balance_map` over the user's full pay-period
     set so the returned balances are byte-identical to the grid's
     Projected End Balance footer (raise-aware income via the live
     paycheck recompute, entry-aware expenses, transfer-symmetric).
 
-    The full period set is passed to ``balances_for`` (not just the
+    The full period set is passed to ``cash_balance_map`` (not just the
     current-and-forward slice) because the engine seeds its running
     balance at the anchor period and skips any period before it; a
     forward-only slice that omitted the anchor would yield an empty map.
@@ -196,8 +197,8 @@ def project_cash_flow(
         return None
 
     all_periods = pay_period_service.get_all_periods(user_id)
-    balances = balance_resolver.balances_for(
-        account, scenario.id, all_periods,
+    balances = balance_at.cash_balance_map(
+        account, scenario, all_periods,
     ).balances
     now_balance = balance_resolver.resolve_anchor(account, scenario.id).balance
 

@@ -490,6 +490,104 @@ def create_savings_account(
     return account
 
 
+def create_hysa_account(
+    seed_user, db_session, anchor_period, balance,
+    apy=Decimal("0.05000"), name="HYSA",
+):
+    """Create an HYSA account (INTEREST) with InterestParams (default 5% APY daily).
+
+    The shared interest-bearing-account builder (promoted from the
+    balance-seam suite's per-file ``_make_hysa`` copy) so the dashboard,
+    seam, and net-worth suites build an INTEREST account through one home
+    rather than each re-inlining the ``AccountType`` lookup +
+    ``create_account`` + ``InterestParams`` block.  Routes the account
+    through the canonical ``account_service.create_account`` factory (so it
+    gets its origination ``AccountAnchorHistory`` row), then attaches the
+    ``InterestParams`` row (APY + daily compounding) that makes the account
+    classify INTEREST.  Commits before returning so the account is fully
+    resolvable.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to
+            anchor the account against; its ``id`` becomes the account's
+            ``current_anchor_period_id``.
+        balance: The opening anchor balance (Decimal -- construct from a
+            string per the coding standard).
+        apy: The annual percentage yield as a Decimal fraction (default
+            ``Decimal("0.05000")`` for 5%).
+        name: The account name (default ``"HYSA"``).
+
+    Returns:
+        The created HYSA :class:`~app.models.account.Account`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models lazily, the same way the loan / investment helpers do.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import CompoundingFrequencyEnum
+    from app.models.interest_params import InterestParams
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    hysa_type = db_session.query(AccountType).filter_by(name="HYSA").one()
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=hysa_type.id,
+            name=name,
+            anchor_balance=balance,
+            anchor_period_id=anchor_period.id,
+        ),
+    )
+    db_session.add(account)
+    db_session.flush()
+    db_session.add(InterestParams(
+        account_id=account.id,
+        apy=apy,
+        compounding_frequency_id=ref_cache.compounding_frequency_id(
+            CompoundingFrequencyEnum.DAILY,
+        ),
+    ))
+    db_session.commit()
+    return account
+
+
+def set_default_grid_account(db_session, user_id, account_id):
+    """Point a user's default grid account at *account_id* (re-queried, flushed).
+
+    Sets ``UserSettings.default_grid_account_id`` so
+    ``account_resolver.resolve_grid_account``'s tier-1 picks this account --
+    the way a test makes the dashboard / grid render a NON-checking account.
+    Re-queries the live ``UserSettings`` row rather than mutating the
+    ``seed_user["settings"]`` object directly: the account factories above
+    (:func:`create_hysa_account`, :func:`make_investment_account`, ...) commit
+    internally, which detaches the fixture's settings instance, so a write to
+    it would be silently dropped.  Flushes so the change is visible to the
+    producer under test in the same session.
+
+    Args:
+        db_session: The test ``db.session``.
+        user_id: The user whose default grid account to set.
+        account_id: The account id to point the default at.
+
+    Returns:
+        The live :class:`~app.models.user.UserSettings` row, updated.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention the factory helpers above follow.
+    from app.models.user import UserSettings
+
+    settings = (
+        db_session.query(UserSettings).filter_by(user_id=user_id).first()
+    )
+    settings.default_grid_account_id = account_id
+    db_session.flush()
+    return settings
+
+
 def make_salary_profile(
     seed_user, db_session, name="Test Salary",
     annual_salary=None, state_code="NC",
@@ -950,3 +1048,126 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     db_session.add(template)
     db_session.flush()
     return template
+
+
+def make_appreciating_account(seed_user, db_session, anchor_period, balance, rate):
+    """Create a Property account (APPRECIATING) with AssetAppreciationParams.
+
+    The shared appreciating-asset builder for the balance-seam parity
+    suite and the cross-page balance-equality lock (promoted from the
+    per-suite ``_make_property`` copies).  Routes the account through the
+    canonical ``account_service.create_account`` factory (so it gets its
+    origination ``AccountAnchorHistory`` row), then attaches the
+    ``AssetAppreciationParams`` row that carries the annual appreciation
+    rate so the account classifies APPRECIATING.  Commits before
+    returning so the account is fully resolvable.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to
+            anchor the account against; its ``id`` becomes the account's
+            ``current_anchor_period_id``.
+        balance: The user-set market value, used as the anchor balance
+            (Decimal -- construct from a string per the coding standard).
+        rate: The annual appreciation rate as a Decimal fraction (e.g.
+            ``Decimal("0.03000")`` for 3%).
+
+    Returns:
+        The created Property :class:`~app.models.account.Account`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models lazily, the same way the loan helpers above do.
+    # pylint: disable=import-outside-toplevel
+    from app.models.asset_appreciation_params import AssetAppreciationParams
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    property_type = (
+        db_session.query(AccountType).filter_by(name="Property").one()
+    )
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=property_type.id,
+            name="House",
+            anchor_balance=balance,
+            anchor_period_id=anchor_period.id,
+        ),
+    )
+    db_session.add(account)
+    db_session.flush()
+    db_session.add(AssetAppreciationParams(
+        account_id=account.id, annual_appreciation_rate=rate,
+    ))
+    db_session.commit()
+    return account
+
+
+def make_investment_account(
+    seed_user, db_session, anchor_period, balance, name="401k",
+    employer_type="none", match_pct=None, match_cap_pct=None,
+):
+    """Create a 401(k) account (INVESTMENT) with InvestmentParams (7% return).
+
+    The shared investment-account builder for the balance-seam parity
+    suite and the cross-page balance-equality lock (promoted from the
+    per-suite ``_make_401k`` copies).  Routes the account through the
+    canonical ``account_service.create_account`` factory, then attaches an
+    ``InvestmentParams`` row (7% assumed annual return) so the account
+    classifies INVESTMENT.  Commits before returning so the account is
+    fully resolvable.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to
+            anchor the account against; its ``id`` becomes the account's
+            ``current_anchor_period_id``.
+        balance: The opening anchor balance (Decimal -- construct from a
+            string per the coding standard).
+        name: The account name (default ``"401k"``); parameterised so a
+            caller can seed two investment accounts for one user without
+            colliding on the ``(user_id, name)`` unique constraint.
+        employer_type: The :class:`~app.enums.EmployerContributionTypeEnum`
+            value (default ``"none"`` -- no employer contribution).
+        match_pct: Employer match percentage (Decimal) or ``None``.
+        match_cap_pct: Employer match cap percentage (Decimal) or ``None``.
+
+    Returns:
+        The created 401(k) :class:`~app.models.account.Account`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models lazily, the same way the loan helpers above do.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import EmployerContributionTypeEnum
+    from app.models.investment_params import InvestmentParams
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    inv_type = db_session.query(AccountType).filter_by(name="401(k)").one()
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=inv_type.id,
+            name=name,
+            anchor_balance=balance,
+            anchor_period_id=anchor_period.id,
+        ),
+    )
+    db_session.add(account)
+    db_session.flush()
+    db_session.add(InvestmentParams(
+        account_id=account.id,
+        assumed_annual_return=Decimal("0.07000"),
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum(employer_type),
+        ),
+        employer_match_percentage=match_pct,
+        employer_match_cap_percentage=match_cap_pct,
+    ))
+    db_session.commit()
+    return account

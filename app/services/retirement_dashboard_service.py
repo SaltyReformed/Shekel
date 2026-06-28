@@ -24,11 +24,12 @@ from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
+from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
     account_service,
-    balance_resolver,
+    balance_at,
     growth_engine,
     income_service,
     pay_period_service,
@@ -146,7 +147,7 @@ class _RetirementProjectionContext:
     """Read-only inputs shared by the per-account projection helpers.
 
     Built by :func:`_build_projection_context` and threaded through
-    :func:`_load_projection_batch`, :func:`_resolve_current_balances`,
+    :func:`_load_projection_batch`, :func:`_resolve_balance_maps`,
     and :func:`_project_one_account` so the projection takes one
     parameter instead of eight.  All fields are inputs (no derived
     state); the once-loaded batch data lives in :class:`_ProjectionBatch`.
@@ -191,11 +192,21 @@ class _ProjectionBatch:
             as the employer-match cap basis.
         synthetic_periods: Projection periods from today to the planned
             retirement date (empty when no horizon is set).
-        balance_map: Canonical entries-aware END-of-current-period balance
-            keyed by account ID (the displayed current balance).  The
-            forward-projection seed is derived per account in
-            :func:`_project_one_account` by removing the current period's
-            own transfer contribution (deep-quality-hunt #14).
+        balance_map: The model-from-anchor END-of-current-period balance
+            keyed by account ID -- the DISPLAYED current balance (and the
+            weight in ``compute_slider_defaults``' return-rate average),
+            read from the :mod:`app.services.balance_at` seam so it agrees
+            with the /savings net-worth tile and the /investment dashboard
+            (an account anchored in the past shows its modeled market
+            value, not the flat cash-basis contribution total).
+        seed_map: The CASH-BASIS END-of-current-period balance keyed by
+            account ID -- the pre-growth contribution total the forward
+            growth projection seeds from (NOT the modeled ``balance_map``).
+            Seeding from the modeled balance would re-grow the current
+            period, since the modeled value already compounded the anchor
+            forward to today; the per-account seed additionally removes the
+            current period's own transfer contribution (deep-quality-hunt
+            #14).
     """
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
@@ -203,6 +214,7 @@ class _ProjectionBatch:
     salary_gross_biweekly: Decimal
     synthetic_periods: list[growth_engine.SyntheticPeriod]
     balance_map: dict[int, Decimal]
+    seed_map: dict[int, Decimal]
 
 
 def _resolve_swr_fraction(settings):
@@ -777,59 +789,103 @@ def _load_projection_batch(
             end_date=ctx.planned_retirement_date,
         )
 
-    balance_map = _resolve_current_balances(ctx, period_ids)
+    # The displayed per-account balance is the model-from-anchor value (so
+    # it agrees with /savings and the /investment dashboard); the forward
+    # projection seeds from the cash basis instead.  Both read the one
+    # baseline scenario, resolved once here.
+    scenario = get_baseline_scenario(ctx.user_id)
+    balance_map, seed_map = _resolve_balance_maps(ctx, scenario)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
         salary_gross_biweekly=salary_gross_biweekly,
         synthetic_periods=synthetic_periods,
         balance_map=balance_map,
+        seed_map=seed_map,
     )
 
 
-def _resolve_current_balances(
-    ctx: _RetirementProjectionContext, period_ids: list[int],
-) -> dict[int, Decimal]:
-    """Resolve each account's canonical entries-aware current balance.
+def _resolve_balance_maps(
+    ctx: _RetirementProjectionContext, scenario: Scenario | None,
+) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+    """Resolve each account's ``(displayed, seed)`` current balances.
 
-    Uses :func:`balance_resolver.balances_for` (E-25 / CRIT-01 / F-009 /
-    R-1: Commit 8) so each account's "current balance" input to the gap
-    calculation matches the figure rendered on the grid and the
-    /investment dashboard for the same inputs.  This is the
-    END-of-current-period balance; the forward-projection seed is derived
-    from it per account in :func:`_project_one_account` by removing the
-    current period's own transfer contribution (deep-quality-hunt #14).
-    Falls back to the stored anchor balance when no baseline scenario
-    exists, there are no periods, or the account's anchor period is unset.
+    Returns two account-ID maps, both at the current period:
+
+    * **displayed** -- the model-from-anchor balance from the
+      :mod:`app.services.balance_at` seam
+      (:func:`~app.services.balance_at.build_maps`), so the per-account
+      "current balance" (and the weight in :func:`compute_slider_defaults`'
+      return-rate average) matches the /savings net-worth tile and the
+      /investment dashboard at today (the cross-page invariant: an account
+      anchored in the past shows its modeled market value, not the flat
+      cash-basis contribution total).
+    * **seed** -- the cash-basis (pre-growth) balance from the balance_at
+      seam's seed accessor
+      (:func:`~app.services.balance_at.investment_seed_map`), which the
+      forward growth projection seeds from.  Seeding from the modeled balance
+      would re-grow the current period (the modeled value already compounded
+      the anchor forward to today); reading the seed through the seam (not the
+      raw producer) keeps this consumer behind the W9906 fence.
+
+    Both are empty when there is no scenario or no periods (each account
+    then falls back to its anchor balance in :func:`_project_one_account`).
 
     Args:
         ctx: The read-only projection context.
-        period_ids: The user's pay-period IDs (empty -> anchor-only).
+        scenario: The baseline scenario, or ``None``.
 
     Returns:
-        A mapping of account ID to current balance.
+        ``(displayed_by_account, seed_by_account)``.
     """
-    scenario = get_baseline_scenario(ctx.user_id)
-    balance_map = {}
-    # F-12 sibling: ``scenario`` is a SQLAlchemy row -> explicit
-    # ``is not None`` (post-CRIT-04 convention).
-    # ``Account.current_anchor_balance`` is NOT NULL so no ``or
-    # Decimal("0")`` fallback is needed -- the prior truthiness was dead
-    # defence on a stored zero.
-    if scenario is not None and period_ids:
-        for acct in ctx.accounts:
-            anchor = acct.current_anchor_balance
-            if acct.current_anchor_period_id is not None:
-                bals = balance_resolver.balances_for(
-                    acct, scenario.id, ctx.all_periods,
-                ).balances
-                balance_map[acct.id] = (
-                    bals.get(ctx.current_period.id, anchor)
-                    if ctx.current_period else anchor
-                )
-            else:
-                balance_map[acct.id] = anchor
-    return balance_map
+    if scenario is None or not ctx.all_periods:
+        return {}, {}
+    modeled_maps = balance_at.build_maps(ctx.accounts, scenario, ctx.all_periods)
+    cash_maps = {
+        acct.id: balance_at.investment_seed_map(
+            acct, scenario, ctx.all_periods,
+        )
+        for acct in ctx.accounts
+        if acct.current_anchor_period_id is not None
+    }
+    return (
+        _pick_current_period_balances(ctx, modeled_maps),
+        _pick_current_period_balances(ctx, cash_maps),
+    )
+
+
+def _pick_current_period_balances(
+    ctx: _RetirementProjectionContext,
+    maps_by_account: dict[int, dict[int, Decimal]],
+) -> dict[int, Decimal]:
+    """Pick each account's current-period balance from its per-period map.
+
+    The shared current-period extractor for the two maps
+    :func:`_resolve_balance_maps` builds (model-from-anchor and cash-basis):
+    each is a per-account ``period_id -> balance`` map read at the current
+    period.  An account absent from *maps_by_account* (no anchor period, so
+    the seam / accessor omitted it) or with no current period falls back to
+    its stored anchor balance -- ``current_anchor_balance`` is NOT NULL, so
+    no ``or Decimal("0")`` guard is needed (the prior truthiness was dead
+    defence on a stored zero).
+
+    Args:
+        ctx: The read-only projection context.
+        maps_by_account: ``{account_id: period_id -> Decimal}`` for the
+            accounts the producer returned a map for.
+
+    Returns:
+        A mapping of account ID to its current-period balance.
+    """
+    result: dict[int, Decimal] = {}
+    for acct in ctx.accounts:
+        anchor = acct.current_anchor_balance
+        per_period = maps_by_account.get(acct.id)
+        if per_period is not None and ctx.current_period is not None:
+            result[acct.id] = per_period.get(ctx.current_period.id, anchor)
+        else:
+            result[acct.id] = anchor
+    return result
 
 
 def _project_one_account(
@@ -877,15 +933,20 @@ def _project_one_account(
             t for t in batch.contributions
             if t.account_id == acct.id
         ]
-        # Seed the forward projection from the end-of-current balance with
-        # the current period's own transfer contribution removed: the
+        # Seed the forward projection from the CASH-BASIS end-of-current
+        # balance (``batch.seed_map``), NOT the modeled ``balance`` headline:
+        # the modeled value already compounded the anchor forward to today,
+        # so seeding from it would re-grow the current period.  The current
+        # period's own transfer contribution is removed because the
         # projection window includes the current period and the engine
-        # re-applies that contribution, so subtracting it first leaves it
-        # applied once.  Other current-period balance movements stay in the
-        # seed because the engine never re-creates them (deep-quality-hunt
-        # #14).
-        seed = balance - current_period_transfer_contribution(
-            acct_contributions, ctx.current_period,
+        # re-applies it, so subtracting it first leaves it applied once.
+        # Other current-period movements stay in the seed because the engine
+        # never re-creates them (deep-quality-hunt #14).
+        seed = (
+            batch.seed_map.get(acct.id, acct.current_anchor_balance)
+            - current_period_transfer_contribution(
+                acct_contributions, ctx.current_period,
+            )
         )
         inputs = build_investment_projection_inputs(
             params, adapted_deductions, acct_contributions,

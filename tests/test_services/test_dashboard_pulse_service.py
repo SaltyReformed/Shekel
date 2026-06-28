@@ -36,14 +36,17 @@ from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
-from app.services import pay_period_service
+from app.services import balance_at, pay_period_service
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_entry,
     create_envelope_txn,
+    create_hysa_account,
     create_loan_account,
     create_savings_account,
+    make_investment_account,
     make_salary_profile,
+    set_default_grid_account,
 )
 
 
@@ -1001,6 +1004,117 @@ class TestHeroChartIdentity:
                 result["chart"]["points"][0]["end_date"]
                 == current.end_date
             )
+
+
+# ── Cash-flow view for an any-kind grid account (seam reroute lock) ──
+
+
+class TestPulseCashFlowViewForAnyKindGridAccount:
+    """The pulse reads the CASH-FLOW view regardless of the grid account's kind.
+
+    Regression lock for the Level-1 ``balance_at`` seam reroute.
+    ``resolve_grid_account`` may return ANY kind -- a user can point the
+    dashboard at an HYSA, or the fallback can land on a loan / investment --
+    but the pulse is the spending-account runway, so the chart, the "lowest
+    point ahead" trough, and the hero must show the PURE TRANSACTION running
+    balance, never the kind-correct balance that accrues interest (HYSA),
+    amortizes (loan), or compounds (investment).  The reroute briefly wired
+    the chart to ``balance_map`` and the hero to the kind-correct
+    ``balance_at`` scalar; every prior pulse test used a PLAIN checking
+    account, where the cash-flow and kind-correct views coincide, so the
+    divergence went uncaught.  These cases pin a non-cash grid account so a
+    regression to the kind-correct entries fails loudly.
+    """
+
+    def test_hysa_grid_account_chart_and_trough_show_cash_not_interest(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An HYSA grid account's chart + trough are cash, not accrued interest.
+
+        Make a fresh HYSA (5% APY, daily) the user's default grid account,
+        anchored $50,000.00 at ``seed_periods[0]`` (2026-01-02) with NO
+        transactions, so the pure-cash running balance is a FLAT $50,000.00 at
+        every forward period (anchor carried forward; no interest, no rows).
+        The kind-correct map -- what the bug rendered -- compounds 5% APY
+        across the ~2.5 months to the current period, so it reads STRICTLY
+        ABOVE $50,000.00.  The chart and trough must show the flat cash value;
+        had they kept the kind-correct map, the inflated "lowest point ahead"
+        would hide a real future dip below zero.
+        """
+        with app.app_context():
+            hysa = create_hysa_account(
+                seed_user, db.session, seed_periods[0], Decimal("50000.00"),
+            )
+            set_default_grid_account(
+                db.session, seed_user["user"].id, hysa.id,
+            )
+
+            scenario = seed_user["scenario"]
+            current = seed_periods[_CURRENT_IDX]
+            cash = balance_at.cash_balance_map(
+                hysa, scenario, seed_periods,
+            ).balances
+            accrued = balance_at.balance_map(hysa, scenario, seed_periods)
+
+            # The cash truth is hand-computable: anchor carried flat, no rows,
+            # no interest -> $50,000.00 at the current period.
+            assert cash[current.id] == Decimal("50000.00")
+            # Divergence is real (non-vacuous): 5% APY daily over the ~2.5
+            # months from the period-0 anchor to the current period accrues
+            # interest, so the kind-correct map exceeds the flat cash carry.
+            assert accrued[current.id] > Decimal("50000.00")
+
+            section = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+
+            # Every charted point is the flat cash value, never the accrued
+            # one (a revert to ``balance_map`` would make these == accrued).
+            points_by_date = {
+                p["end_date"]: p["balance"] for p in section["chart"]["points"]
+            }
+            for period in seed_periods[_CURRENT_IDX:]:
+                assert points_by_date[period.end_date] == Decimal("50000.00")
+                assert points_by_date[period.end_date] != accrued[period.id]
+
+            # The "lowest point ahead" is the flat cash $50,000.00, not the
+            # interest-inflated minimum the kind-correct map would have shown.
+            assert section["trough"]["balance"] == Decimal("50000.00")
+
+    def test_investment_grid_account_hero_shows_cash_not_modeled(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An investment grid account's hero is the cash carry, not modeled growth.
+
+        Make a 401(k) (7% assumed return) the user's default grid account,
+        anchored $100,000.00 at ``seed_periods[0]`` with NO contributions, so
+        the pure-cash running balance to today is a FLAT $100,000.00.  The
+        kind-correct ``balance_at`` scalar -- what the bug's hero used --
+        compounds that forward, reading STRICTLY ABOVE $100,000.00 at the
+        current period.  The hero must show the cash carry (the runway view),
+        matching the chart and the grid for the same account.
+        """
+        with app.app_context():
+            inv = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("100000.00"),
+            )
+            set_default_grid_account(
+                db.session, seed_user["user"].id, inv.id,
+            )
+
+            scenario = seed_user["scenario"]
+            # The kind-correct scalar (the bug's hero) compounds the anchor
+            # forward; assert the divergence is real before locking the fix.
+            modeled = balance_at.balance_at(inv, scenario, _TODAY)
+            assert modeled > Decimal("100000.00")
+
+            section = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            # The hero is the cash carry: anchor $100,000.00 carried flat to
+            # today with no contributions -> $100,000.00, not the modeled value.
+            assert section["hero"]["balance"] == Decimal("100000.00")
+            assert section["hero"]["balance"] != modeled
 
 
 # ── compute_pulse_section degraded states ───────────────────────────

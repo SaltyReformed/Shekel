@@ -37,7 +37,7 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_resolver, pay_period_service
+from app.services import balance_at, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.scenario_resolver import get_baseline_scenario
@@ -62,13 +62,21 @@ def compute_balance_section(user_id: int) -> dict:
     dict shaped like the pulse hero: a ``hero`` sub-dict carrying the
     as-of-today ``balance`` and the ``account_id`` the control needs.
 
-    The ``balance`` is the canonical as-of-today projected checking
-    balance from ``balance_resolver.balance_as_of_date`` -- the exact
-    figure the pulse hero shows -- so the reverted fragment and the main
-    pulse region agree to the cent.  When no period contains today the
-    resolver cannot project to today, so the raw anchor balance is used
-    (the editor is only reachable with a current period in practice; this
-    keeps the helper total).
+    The ``balance`` is the canonical as-of-today projected cash-flow
+    balance from the ``balance_at`` seam's cash-flow scalar
+    (``balance_at.cash_balance_at``, which delegates to
+    ``balance_resolver.balance_as_of_date`` for EVERY account kind) -- the
+    exact figure the pulse hero shows -- so the reverted fragment and the
+    main pulse region agree to the cent.  This surface reads the CASH-FLOW
+    view (the pure transaction running balance), not the kind-correct
+    ``balance_at`` scalar: the dashboard account is ``resolve_grid_account``'s
+    pick, which may be ANY kind (a user can point the dashboard at an HYSA,
+    or the fallback can land on a non-checking account), and the kind-correct
+    scalar would accrue interest / amortize / compound for those -- diverging
+    from the grid, which deliberately keeps the same account on the cash-flow
+    view.  When no period contains today the seam cannot project to today, so
+    the raw anchor balance is used (the editor is only reachable with a
+    current period in practice; this keeps the helper total).
 
     Args:
         user_id: The current user's id.
@@ -82,9 +90,7 @@ def compute_balance_section(user_id: int) -> dict:
         return {"hero": None}
 
     if current_period is not None:
-        balance = balance_resolver.balance_as_of_date(
-            account, scenario.id, date.today(),
-        )
+        balance = balance_at.cash_balance_at(account, scenario, date.today())
     else:
         balance = account.current_anchor_balance or _ZERO
 

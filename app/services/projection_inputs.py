@@ -34,6 +34,10 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.investment_projection import (
     InvestmentInputs,
     calculate_investment_inputs,
@@ -128,6 +132,58 @@ def _active_deductions_query(user_id: int, account_ids: list[int]):
             PaycheckDeduction.is_active.is_(True),
         )
     )
+
+
+def load_investment_params_for_accounts(
+    accounts: list[Account],
+) -> dict[int, InvestmentParams]:
+    """Return :class:`InvestmentParams` keyed by id for INVESTMENT accounts.
+
+    The single home for the investment-params batch load: the savings
+    dashboard's :func:`_load_account_params` built this map inline pre-seam,
+    and the forthcoming ``balance_at`` seam (Level 1 of the
+    balance-architecture work) shares this loader so the "which accounts
+    get an InvestmentParams row?" decision lives in exactly one place
+    instead of being re-derived per surface.
+
+    Membership is decided by the canonical classifier
+    (:func:`app.services.account_projection.classify_account`), never by
+    elimination: only accounts the classifier marks
+    :data:`~app.services.account_projection.AccountProjectionKind.INVESTMENT`
+    are loaded.  This deliberately excludes a parameterised physical
+    asset -- a Property classifies as
+    :data:`~app.services.account_projection.AccountProjectionKind.APPRECIATING`
+    and carries its own params, so it must not be pulled in here.  An
+    account whose ``account_type`` is unloaded / ``None`` classifies as
+    PLAIN and is skipped.
+
+    Args:
+        accounts: Account model instances to scope to, each with its
+            ``account_type`` relationship available for the classifier
+            (the consumer is expected to have loaded it; the classifier
+            issues no queries).  An empty list -- or a list containing
+            no INVESTMENT accounts -- returns an empty dict without
+            issuing an ``IN ()`` query against PostgreSQL.
+
+    Returns:
+        Dict mapping ``account_id`` -> :class:`InvestmentParams`.
+        INVESTMENT accounts that have no params row are absent from the
+        dict; callers should use ``dict.get(id)``.
+    """
+    inv_account_ids = [
+        a.id for a in accounts
+        if classify_account(a) is AccountProjectionKind.INVESTMENT
+    ]
+    if not inv_account_ids:
+        return {}
+    params_map: dict[int, InvestmentParams] = {}
+    for ip in (
+        db.session.query(InvestmentParams)
+        .filter(InvestmentParams.account_id.in_(inv_account_ids))
+        .all()
+    ):
+        params_map[ip.account_id] = ip
+    return params_map
 
 
 def load_shadow_income_contributions_for_accounts(
@@ -277,9 +333,11 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
 __all__ = [
     "Account",
     "InvestmentInputs",
+    "InvestmentParams",
     "build_investment_projection_inputs",
     "load_active_deductions_for_account",
     "load_active_deductions_for_accounts",
+    "load_investment_params_for_accounts",
     "load_shadow_income_contributions_for_account",
     "load_shadow_income_contributions_for_accounts",
 ]

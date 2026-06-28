@@ -45,7 +45,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transfer_template import TransferTemplate
 from app.models.user import UserSettings
 from app.services import (
-    balance_resolver,
+    balance_at,
     growth_engine,
     income_service,
     pay_period_service,
@@ -105,19 +105,29 @@ class _ProjectionContext:
             valid dashboard state (the projection and chart degrade to
             empty containers); the growth-chart fragment guards it out
             earlier and never reaches a context with ``params is None``.
-        current_balance: The canonical entries-aware END-of-current-period
-            balance (E-25 / CRIT-01 / F-009 / R-1: Commit 8) -- the
-            displayed "current balance" tile.
-        projection_seed: ``current_balance`` with the current period's own
-            transfer contribution removed.  The growth projection seeds
-            from this, not ``current_balance``, while still including the
-            current period in its window: the engine re-applies that
-            contribution for the current period, so subtracting it from the
-            seed first leaves it applied exactly once (deep-quality-hunt
-            #9).  Only the transfer contribution is removed -- every other
-            current-period movement (expenses, deposits) stays, because the
-            engine never re-creates those.  It is also the base of the
-            chart's cumulative-contribution series.
+        current_balance: The model-from-anchor END-of-current-period
+            balance from the :mod:`app.services.balance_at` seam -- the
+            displayed "current balance" tile, which agrees to the cent with
+            the /savings net-worth tile, the year-end asset aggregate, and
+            the net-worth trend (an anchor-in-past investment shows its
+            modeled market value, not the flat cash-basis contribution
+            total).  DISPLAY ONLY: the projection seeds from the cash basis
+            instead (see ``projection_seed``).
+        projection_seed: The CASH-BASIS end-of-current-period balance (the
+            pre-growth contribution total from
+            :func:`_resolve_seed_balance`, NOT the modeled
+            ``current_balance``) with the current period's own transfer
+            contribution removed.  The growth projection seeds from this
+            while still including the current period in its window: the
+            engine re-applies that contribution for the current period, so
+            subtracting it from the seed first leaves it applied exactly
+            once (deep-quality-hunt #9).  Seeding from the cash basis (not
+            the modeled headline, which already grew the anchor forward to
+            today) likewise leaves the current period's GROWTH applied
+            exactly once.  Only the transfer contribution is removed --
+            every other current-period movement (expenses, deposits) stays,
+            because the engine never re-creates those.  It is also the base
+            of the chart's cumulative-contribution series.
         inputs: The :class:`InvestmentInputs` the growth engine needs
             (periodic contribution, employer params, annual contribution
             limit, YTD contributions).
@@ -165,26 +175,67 @@ def _resolve_current_balance(
     current_period,
     all_periods: list,
 ) -> Decimal:
-    """Return the canonical entries-aware "current balance" for *account*.
+    """Return the model-from-anchor "current balance" headline for *account*.
 
-    Routes through :func:`balance_resolver.balances_for` (E-25 /
-    CRIT-01 / F-009 / R-1: Commit 8) so the dashboard's "current
-    balance" tile cannot disagree with the grid for the same
-    account / scenario / period.  This is the END-of-current-period
-    balance; the forward-projection seed is derived from it in
-    :func:`_load_projection_context` by removing the current period's
-    own transfer contribution (deep-quality-hunt #9).  Falls back to
-    :attr:`Account.current_anchor_balance` when no scenario is
-    configured or the anchor period is unset.
+    The displayed "current balance" tile, read from the
+    :mod:`app.services.balance_at` seam
+    (:func:`~app.services.balance_at.balance_map`) at the current period.
+    Routing through the seam makes the headline agree to the cent with the
+    /savings net-worth tile, the year-end asset aggregate, and the
+    net-worth trend for the same account at today (the cross-page balance
+    invariant): an investment anchored in the past shows its modeled market
+    value -- the anchor compounded forward to today -- not the flat
+    cash-basis contribution total it showed pre-Level-1.
+
+    This is the DISPLAYED figure only.  The forward growth projection seeds
+    from the cash-basis balance instead (:func:`_resolve_seed_balance`):
+    the modeled value already includes the anchor-to-today growth, so
+    seeding the projection from it would re-grow -- double-count -- the
+    current period.  Falls back to :attr:`Account.current_anchor_balance`
+    when no baseline scenario is configured, the account has no anchor
+    period, or no period covers today.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    if scenario is None or account.current_anchor_period_id is None:
+    if scenario is None or current_period is None:
         return anchor_balance
-    balances = balance_resolver.balances_for(
-        account, scenario.id, all_periods,
-    ).balances
-    if current_period is None:
+    balances = balance_at.balance_map(account, scenario, all_periods)
+    if balances is None:
         return anchor_balance
+    return balances.get(current_period.id, anchor_balance)
+
+
+def _resolve_seed_balance(
+    account: Account,
+    scenario,
+    current_period,
+    all_periods: list,
+) -> Decimal:
+    """Return the cash-basis balance the forward growth projection seeds from.
+
+    The contributed / transacted END-of-current-period balance with NO
+    modeled growth layered on, read from the balance_at seam's cash-basis
+    seed accessor
+    (:func:`~app.services.balance_at.investment_seed_map`) -- the same cash
+    basis the grid and every cash surface render.  The growth projection
+    compounds FROM this, not from the modeled headline
+    (:func:`_resolve_current_balance`): the modeled value already grew the
+    anchor forward to today, so seeding the projection from it would re-grow
+    -- double-count -- the current period's growth.  This mirrors
+    deep-quality-hunt #9 (which keeps the per-period CONTRIBUTION applied
+    once) for the per-period GROWTH.  Reading the seed through the seam (not
+    the raw producer) keeps this consumer behind the W9906 fence.  Falls back
+    to
+    :attr:`Account.current_anchor_balance` when no baseline scenario is
+    configured, the account has no anchor period, or no period covers today.
+    """
+    anchor_balance = account.current_anchor_balance or Decimal("0.00")
+    if (scenario is None
+            or account.current_anchor_period_id is None
+            or current_period is None):
+        return anchor_balance
+    balances = balance_at.investment_seed_map(
+        account, scenario, all_periods,
+    )
     return balances.get(current_period.id, anchor_balance)
 
 
@@ -222,8 +273,12 @@ def _load_projection_context(
         A :class:`_ProjectionContext` carrying the seven per-account
         values the projection primitives and card builders consume.
     """
+    scenario = get_baseline_scenario(user_id)
+    # The headline tile shows the model-from-anchor balance (so it agrees
+    # with /savings and the net-worth trend); the forward projection seeds
+    # from the cash basis instead, so the two are resolved separately.
     current_balance = _resolve_current_balance(
-        account, get_baseline_scenario(user_id), current_period, all_periods,
+        account, scenario, current_period, all_periods,
     )
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
@@ -235,14 +290,21 @@ def _load_projection_context(
     acct_contributions = load_shadow_income_contributions_for_account(
         account.id, [p.id for p in all_periods],
     )
-    # Seed for the forward projection: the end-of-current balance with the
-    # current period's own transfer contribution removed, so the engine --
-    # which re-applies that contribution when its window includes the
-    # current period -- does not double-count it (deep-quality-hunt #9).
-    # Other current-period balance movements (expenses, deposits) stay in
-    # the seed because the engine never re-creates them.
-    projection_seed = current_balance - current_period_transfer_contribution(
-        acct_contributions, current_period,
+    # Seed for the forward projection: the CASH-BASIS end-of-current balance
+    # (:func:`_resolve_seed_balance`, NOT the modeled ``current_balance``
+    # headline) with the current period's own transfer contribution removed,
+    # so the engine -- which re-applies that contribution when its window
+    # includes the current period -- does not double-count it
+    # (deep-quality-hunt #9).  Seeding from the cash basis (the modeled
+    # headline already grew the anchor forward to today) likewise leaves the
+    # current period's GROWTH applied exactly once.  Other current-period
+    # balance movements (expenses, deposits) stay in the seed because the
+    # engine never re-creates them.
+    projection_seed = (
+        _resolve_seed_balance(account, scenario, current_period, all_periods)
+        - current_period_transfer_contribution(
+            acct_contributions, current_period,
+        )
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,

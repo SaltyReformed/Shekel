@@ -111,7 +111,7 @@ jobs:
       # ── 3. Cache pip dependencies ────────────────────────────────
       # Speeds up subsequent runs by caching downloaded packages.
       - name: Cache pip packages
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
@@ -126,12 +126,14 @@ jobs:
 
       # ── 5. Run pylint ────────────────────────────────────────────
       # Layered pylint gate:
-      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale:
+      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass:
       #     always fail on errors (E), fatals (F), and the project's custom
       #     checkers (tools/pylint/shekel_checkers.py, loaded via .pylintrc) --
       #     the financial-correctness rules (decimal-from-float, refname-compare,
-      #     bare-money-quantize) and disable-rationale (every `# pylint: disable=`
-      #     must carry a standard `Pylint:` why-comment) -- even if the score
+      #     bare-money-quantize, original-principal-as-balance), disable-rationale
+      #     (every `# pylint: disable=` must carry a standard `Pylint:`
+      #     why-comment), and balance-producer-bypass (every balance read must go
+      #     through the app.services.balance_at seam) -- even if the score
       #     stays above the threshold.  These have zero violations today, so this
       #     only ever catches a regression -- it cannot turn the current green
       #     build red.
@@ -140,7 +142,7 @@ jobs:
       #     that drops the score fails the build.  Enforced locally by the Stop
       #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
+        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass --output-format=colorized
 
       # ── 5a. Lint scripts/ ────────────────────────────────────────
       # Same layered gate for the operational CLI scripts.  scripts/
@@ -152,7 +154,7 @@ jobs:
       # gate cross-tree duplicate-code is a separate open decision in
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
-        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale --output-format=colorized
+        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
@@ -230,7 +232,7 @@ jobs:
           python-version: "3.14"
 
       - name: Cache pip packages
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}

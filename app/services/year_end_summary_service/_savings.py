@@ -10,19 +10,21 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.services import growth_engine
+from app.services import balance_at, growth_engine
 from app.services.investment_projection import (
     adapt_deductions,
     build_contribution_timeline,
 )
 from app.services.projection_inputs import build_investment_projection_inputs
 # ``get_anchor_period_index`` moved to the shared kernel (Loop B Phase 1);
-# the private alias keeps this module's call site unchanged.
+# the private alias keeps this module's call site unchanged.  The cash-basis
+# investment SEED is read via the ``balance_at`` seam
+# (``investment_seed_map``), NOT the kernel producer directly, so this
+# consumer stays behind the W9906 fence (see the call site below).
 from app.services.net_worth_kernel import (
     get_anchor_period_index as _get_anchor_period_index,
 )
 from app.services.year_end_summary_service._balances import (
-    _base_account_balance_map,
     _compute_interest_for_year,
     _compute_pre_anchor_interest,
     _load_shadow_contributions,
@@ -118,7 +120,7 @@ def _savings_progress_for_account(
             )
         )
     elif int_params:
-        balances = _base_account_balance_map(account, scenario, all_periods)
+        balances = balance_at.balance_map(account, scenario, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -133,7 +135,7 @@ def _savings_progress_for_account(
             account, int_params, scenario, all_periods, year,
         )
     else:
-        balances = _base_account_balance_map(account, scenario, all_periods)
+        balances = balance_at.balance_map(account, scenario, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -183,8 +185,15 @@ def _project_investment_for_year(
     """
     all_periods = year_ctx.all_periods
 
-    # Get base balance from the balance calculator (anchor + transactions).
-    balances = _base_account_balance_map(
+    # Seed from the CASH-BASIS balance map (anchor + contributions, no
+    # modeled growth): this projection re-compounds growth from Jan 1 each
+    # year, so it must start from the pre-growth basis, not the
+    # growth-modeled ``balance_at`` map (which would compound growth on
+    # growth).  ``balance_at.investment_seed_map`` is the seam's shared seed
+    # accessor -- the same cash basis the net-worth investment sub-chain
+    # compounds from -- so both investment projections start identically, and
+    # this consumer reads the seed through the seam (W9906 fence).
+    balances = balance_at.investment_seed_map(
         account, year_ctx.scenario, all_periods,
     )
 
