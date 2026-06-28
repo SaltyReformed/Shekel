@@ -198,3 +198,45 @@ class CompoundingFrequencyEnum(enum.Enum):
     DAILY = "daily"
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
+
+
+class LedgerAccountClassEnum(enum.Enum):
+    """Ledger account class values for the double-entry posting ledger.
+
+    The five fundamental accounting classes (Build-Order Step 2).  Values
+    match ``ref.ledger_account_classes.name``.  Asset and Expense are
+    debit-normal; Liability, Income, and Equity are credit-normal -- the
+    natural-balance side is stored as the ``is_debit_normal`` boolean on
+    each row and read via ``ref_cache.ledger_class_is_debit_normal``,
+    never inferred from these member names.
+    """
+
+    ASSET = "Asset"
+    LIABILITY = "Liability"
+    INCOME = "Income"
+    EXPENSE = "Expense"
+    EQUITY = "Equity"
+
+
+class PostingKindEnum(enum.Enum):
+    """Posting-leg kind values for ``budget.account_postings``.
+
+    Step 2 carries only ``transfer`` (a transfer's two balanced legs);
+    later Build-Order steps add ``income``, ``expense``, ``principal``,
+    ``interest`` and similar kinds via data migrations.  Values match
+    ``ref.posting_kinds.name``.
+    """
+
+    TRANSFER = "transfer"
+
+
+class PostingSourceEnum(enum.Enum):
+    """Journal-entry source-event values for ``budget.journal_entries``.
+
+    Step 2 carries only ``transfer`` (the source event is a settled
+    transfer); later steps add ``transaction``, ``loan_payment``,
+    ``paycheck`` and ``credit_payback`` via data migrations.  Values match
+    ``ref.posting_sources.name``.
+    """
+
+    TRANSFER = "transfer"

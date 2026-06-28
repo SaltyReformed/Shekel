@@ -437,3 +437,97 @@ class CompoundingFrequency(db.Model):
 
     def __repr__(self):
         return f"<CompoundingFrequency {self.name}>"
+
+
+class LedgerAccountClass(db.Model):
+    """Ledger account class reference: Asset, Liability, Income, Expense, Equity.
+
+    The five fundamental accounting classes for the double-entry posting
+    ledger (Build-Order Step 2).  Every ``budget.ledger_accounts`` row
+    carries a ``class_id`` FK to one of these rows; the class fixes how a
+    reader later interprets that account's accumulated posting balance.
+
+    ``is_debit_normal`` captures the natural-balance side as a boolean so
+    application code branches on a single column instead of comparing
+    against a set of class names:
+
+        is_debit_normal -- TRUE for classes whose balance increases on a
+                           debit (Asset, Expense); FALSE for classes whose
+                           balance increases on a credit (Liability,
+                           Income, Equity).  A reader presents a
+                           credit-normal account's natural balance by
+                           negating its accumulated debit-positive posting
+                           sum.  No ``server_default``: the value is an
+                           intrinsic property of each class, set explicitly
+                           by every seed and insert, so a forgotten value
+                           must fail loud (NOT NULL) rather than silently
+                           default to a wrong-but-valid FALSE.
+
+    Application code resolves these via
+    ``ref_cache.ledger_account_class_id`` and reads the natural-balance
+    side via the ``ref_cache.ledger_class_is_debit_normal`` meta accessor,
+    branching on the integer ID and the cached boolean -- never the string
+    ``name`` -- matching the project-wide ``ref-table: IDs for logic,
+    strings for display only`` invariant.
+    """
+
+    __tablename__ = "ledger_account_classes"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(12), unique=True, nullable=False)
+    is_debit_normal = db.Column(db.Boolean, nullable=False)
+
+    def __repr__(self):
+        return f"<LedgerAccountClass {self.name}>"
+
+
+class PostingKind(db.Model):
+    """Posting-leg kind reference: the nature of a single ledger leg.
+
+    Tags every ``budget.account_postings`` row with the kind of economic
+    event the leg represents.  Step 2 seeds the single value ``transfer``;
+    later Build-Order steps INSERT additional kinds (``income``,
+    ``expense``, ``principal``, ``interest``, ``contribution``, ``tax``,
+    ...) via their own migrations -- new values are data, never schema.
+
+    Application code resolves these via ``ref_cache.posting_kind_id`` and
+    compares against the integer ID -- never the string ``name`` --
+    matching the project-wide ``ref-table: IDs for logic, strings for
+    display only`` invariant.
+    """
+
+    __tablename__ = "posting_kinds"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<PostingKind {self.name}>"
+
+
+class PostingSource(db.Model):
+    """Journal-entry source-event reference: the kind of event that posted.
+
+    Tags every ``budget.journal_entries`` row with the kind of source
+    event that produced it, independently of the concrete (nullable)
+    source FK the entry also carries.  Step 2 seeds the single value
+    ``transfer``; later steps INSERT ``transaction``, ``loan_payment``,
+    ``paycheck``, ``credit_payback`` via their own migrations -- new
+    values are data, never schema.
+
+    Application code resolves these via ``ref_cache.posting_source_id``
+    and compares against the integer ID -- never the string ``name`` --
+    matching the project-wide ``ref-table: IDs for logic, strings for
+    display only`` invariant.
+    """
+
+    __tablename__ = "posting_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<PostingSource {self.name}>"

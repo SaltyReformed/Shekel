@@ -133,6 +133,25 @@ _REF_TABLE_SEEDS = (
     # the promotion migration backfills name->id 1:1.
     ("EmployerContributionType", ["none", "flat_percentage", "match"]),
     ("CompoundingFrequency", ["daily", "monthly", "quarterly"]),
+    # Posting-ledger ref tables (Build-Order Step 2, Commit 1).
+    # ``LedgerAccountClass`` carries the logic-bearing ``is_debit_normal``
+    # boolean (TRUE for Asset/Expense, FALSE for the credit-normal
+    # classes), so its entries are dicts like ``Status`` above; the
+    # migration ``f5037400dc5e`` inline-seeds the identical rows so a
+    # freshly upgraded DB resolves the new enums before this idempotent
+    # reseed runs.  ``PostingKind`` / ``PostingSource`` seed only
+    # ``transfer`` in Step 2; later steps INSERT additional values via
+    # their own migrations.  Names match the enum ``.value`` strings in
+    # ``app/enums.py`` exactly.
+    ("LedgerAccountClass", [
+        {"name": "Asset",     "is_debit_normal": True},
+        {"name": "Liability", "is_debit_normal": False},
+        {"name": "Income",    "is_debit_normal": False},
+        {"name": "Expense",   "is_debit_normal": True},
+        {"name": "Equity",    "is_debit_normal": False},
+    ]),
+    ("PostingKind", ["transfer"]),
+    ("PostingSource", ["transfer"]),
 )
 # pylint: enable=line-too-long
 # fmt: on
