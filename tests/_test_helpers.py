@@ -635,6 +635,84 @@ def ledger_accounts_for_account(db_session, account_id):
     )
 
 
+_UNSET_PAID_AT = object()
+
+
+def create_settled_transfer(
+    seed_user, db_session, from_account, to_account, period,
+    amount=Decimal("100.00"), actual_amount=None,
+    paid_at=_UNSET_PAID_AT, name=None,
+):
+    """Create an ad-hoc transfer and settle it (Paid), returning the parent.
+
+    The shared "settled transfer with two real shadows" builder for the
+    posting-ledger (Build-Order Step 2) backfill / lifecycle suites.  Routes
+    the whole thing through ``transfer_service`` -- the sole transfer writer --
+    so the parent transfer plus its expense/income shadow transactions obey
+    every transfer invariant (two balanced shadows, amounts/status/period
+    mirrored), exactly as production produces them.  The transfer is created
+    Projected, then transitioned to Paid via ``update_transfer`` (the same
+    ``mark_done`` chokepoint the route uses).
+
+    Flushes via the service; the caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict (supplies ``user_id`` and
+            the baseline scenario).
+        db_session: The test ``db.session`` (unused directly -- the service
+            owns the session -- but accepted so call sites read uniformly).
+        from_account: The :class:`~app.models.account.Account` money leaves
+            (the expense shadow lands here).
+        to_account: The account money enters (the income shadow lands here).
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transfer (and both shadows) in.
+        amount: The transfer amount (Decimal); also the shadows'
+            ``estimated_amount``.  Defaults to ``Decimal("100.00")``.
+        actual_amount: When not ``None``, the settled actual amount mirrored
+            to both shadows (so their ``effective_amount`` becomes this, not
+            ``amount``).  Defaults to ``None`` (effective == estimated ==
+            amount).
+        paid_at: The settle timestamp written to both shadows.  Defaults to
+            ``db.func.now()`` (the realistic ``mark_done`` value); pass
+            ``None`` explicitly to settle with a NULL ``paid_at`` (the
+            historical state the backfill's period-start fallback covers).
+        name: Optional transfer display name.
+
+    Returns:
+        The settled (Paid) parent :class:`~app.models.transfer.Transfer`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.extensions import db
+    from app.services import transfer_service
+
+    transfer = transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=from_account.id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            category_id=None,
+            name=name,
+        ),
+    )
+    update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
+    update_kwargs["paid_at"] = (
+        db.func.now() if paid_at is _UNSET_PAID_AT else paid_at
+    )
+    if actual_amount is not None:
+        update_kwargs["actual_amount"] = actual_amount
+    transfer_service.update_transfer(
+        transfer.id, seed_user["user"].id, **update_kwargs
+    )
+    return transfer
+
+
 def set_default_grid_account(db_session, user_id, account_id):
     """Point a user's default grid account at *account_id* (re-queried, flushed).
 
