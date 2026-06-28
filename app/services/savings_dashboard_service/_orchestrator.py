@@ -162,7 +162,7 @@ def _project_loan_accounts(
         ``_compute_debt_summary``'s no-loan ``None`` inside the full build.
     """
     core = _load_dashboard_core_data(user_id)
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
@@ -199,10 +199,8 @@ def compute_debt_summary(user_id: int) -> dict | None:
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
-        projections and the breakdown's paycheck-engine call;
-        ``_load_account_params``'s gross-biweekly engine call has
-        already run by then -- the deliberate price of sharing the
-        loaders verbatim).
+        projections and the breakdown's paycheck-engine call -- the
+        debt summary needs neither).
     """
     projected = _project_loan_accounts(user_id)
     if projected is None:
@@ -299,7 +297,7 @@ def compute_goal_progress(user_id: int) -> list[dict]:
     if not active_goals:
         return []
 
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
     goal_account_ids = {goal.account_id for goal in active_goals}
     goal_accounts = [
         acct for acct in core.accounts if acct.id in goal_account_ids
@@ -363,7 +361,7 @@ def compute_account_balance_cell(
     if acct is None:
         return None
 
-    params = _load_account_params(user_id, [acct])
+    params = _load_account_params([acct])
     ctx = _build_projection_context(core, params)
     # Route through the shared projection (which batch-builds the seam maps)
     # restricted to the one account, so the Cancel revert restores the exact
@@ -535,7 +533,7 @@ def compute_dashboard_data(user_id):
     core = _load_dashboard_core_data(user_id)
 
     # ── Load account-type-specific parameters ───────────────────
-    params = _load_account_params(user_id, core.accounts)
+    params = _load_account_params(core.accounts)
 
     # ── Compute per-account projections ─────────────────────────
     ctx = _build_projection_context(core, params)
@@ -544,14 +542,13 @@ def compute_dashboard_data(user_id):
     # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
     # One income producer feeds every income-derived figure on the
     # page: the income-relative-goal trajectory's net biweekly pay AND
-    # the DTI denominator's gross monthly income.  Pre-Commit-26 the
-    # DTI path took ``params.salary_gross_biweekly`` (the off-engine
-    # raw ``annual_salary / pay_periods`` recompute) and silently dropped
-    # any applicable ``SalaryRaise`` rows, so a user with a 3% recurring
-    # raise saw a DTI computed against a denominator ~$260/mo too low
-    # (audit worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
-    # Routing both consumers through ``calculate_paycheck`` for the
-    # current period makes the engine the single source of truth.
+    # the DTI denominator's gross monthly income.  Both route through
+    # ``calculate_paycheck`` for the current period so the engine is the
+    # single source of truth.  Pre-Commit-26 the DTI path used an
+    # off-engine raw ``annual_salary / pay_periods`` recompute that
+    # silently dropped any applicable ``SalaryRaise`` rows, so a user with
+    # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
+    # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_breakdown = _get_current_paycheck_breakdown(
         user_id, core.all_periods, core.current_period,
     )

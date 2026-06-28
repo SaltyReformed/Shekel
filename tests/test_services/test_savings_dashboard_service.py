@@ -2071,12 +2071,13 @@ class TestDTIRaiseAware:
         # Guard 1b: negative lock -- neither entry point nor the shared
         # DTI applier may read the off-engine ``salary_gross_biweekly``,
         # by either the legacy dict subscript
-        # ``params["salary_gross_biweekly"]`` or the current dataclass
-        # attribute ``params.salary_gross_biweekly`` (``params`` became
-        # the frozen ``_AccountParams`` in the type-precision quality
-        # pass; the attribute form is the access a regression would now
-        # use).  ``compute_debt_summary`` is scanned too so the narrow
-        # #82 path cannot regress independently.
+        # ``params["salary_gross_biweekly"]`` or the dataclass attribute
+        # ``params.salary_gross_biweekly``.  That field was REMOVED from
+        # ``_AccountParams`` in the balance-seam cleanup (the seam assembles
+        # the gross itself, so carrying it here was dead state), so a
+        # regression would have to re-add the field AND read it here; this
+        # AST guard catches that second step.  ``compute_debt_summary`` is
+        # scanned too so the narrow #82 path cannot regress independently.
         dti_fn_names = {
             "compute_dashboard_data",
             "compute_debt_summary",

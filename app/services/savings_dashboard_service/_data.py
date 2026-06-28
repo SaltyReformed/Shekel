@@ -15,9 +15,8 @@ from app.models.interest_params import InterestParams
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.services import income_service, pay_period_service
+from app.services import pay_period_service
 from app.services.projection_inputs import (
-    load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
 )
 from app.services.scenario_resolver import get_baseline_scenario
@@ -93,14 +92,18 @@ def _load_loan_params_and_escrow(accounts):
     return loan_params_map, escrow_map
 
 
-def _load_account_params(
-    user_id: int, accounts: list[Account],
-) -> _AccountParams:
+def _load_account_params(accounts: list[Account]) -> _AccountParams:
     """Batch-load all account-type-specific parameters.
 
-    Returns an :class:`_AccountParams` with the six account-type
-    parameter maps (each keyed by ``account_id``) the projection loop
-    reads.  This is the single place all six are constructed.
+    Returns an :class:`_AccountParams` with the four account-type parameter
+    maps (each keyed by ``account_id``) the projection loop reads.  This is
+    the single place all four are constructed.
+
+    The deductions and engine-gross inputs the growth projection needs are
+    NOT loaded here: each per-account tile delegates its projection to the
+    :mod:`app.services.balance_at` seam, which assembles those itself from the
+    shared loaders, so loading them here was a dead per-request deductions
+    query + paycheck-engine call no consumer read.
     """
     interest_params_map = {}
     interest_account_ids = [
@@ -114,37 +117,17 @@ def _load_account_params(
             interest_params_map[hp.account_id] = hp
 
     # Investment/retirement accounts use the growth engine.  The shared
-    # loader owns the canonical-classifier filter + InvestmentParams
-    # query (its single home; the balance_at seam will share it), so a
-    # parameterised physical asset (Property -> APPRECIATING) is
-    # correctly excluded there rather than re-derived "by elimination".
+    # loader owns the canonical-classifier filter + InvestmentParams query
+    # (its single home, shared with the balance_at seam), so a parameterised
+    # physical asset (Property -> APPRECIATING) is correctly excluded there
+    # rather than re-derived "by elimination".
     investment_params_map = load_investment_params_for_accounts(accounts)
-
-    # F-22 / Commit 18: shared deduction batch loader; replaces the
-    # filter-shape duplicate that previously lived inline here and in
-    # retirement_dashboard_service / year_end_summary_service.
-    deductions_by_account = load_active_deductions_for_accounts(
-        user_id, list(investment_params_map.keys()),
-    ) if investment_params_map else {}
-
-    # F-20 / MED-06 / F-032: raise-aware gross-biweekly from the
-    # paycheck engine, not the off-engine
-    # ``annual_salary / pay_periods_per_year`` recompute which silently
-    # dropped any applicable SalaryRaise row.  ``income_service`` wraps
-    # ``calculate_paycheck`` so this producer agrees with the engine
-    # value the DTI denominator (and every other income-derived
-    # surface) consumes downstream.
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id,
-    )
 
     loan_params_map, escrow_map = _load_loan_params_and_escrow(accounts)
 
     return _AccountParams(
         interest_params_map=interest_params_map,
         investment_params_map=investment_params_map,
-        deductions_by_account=deductions_by_account,
-        salary_gross_biweekly=salary_gross_biweekly,
         loan_params_map=loan_params_map,
         escrow_map=escrow_map,
     )

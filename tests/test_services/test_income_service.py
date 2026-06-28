@@ -35,6 +35,7 @@ from app.models.tax_config import StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
+    balance_at,
     balance_resolver,
     income_service,
     pay_period_service,
@@ -43,7 +44,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.services.tax_config_service import load_tax_configs
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, make_investment_account
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -545,14 +546,21 @@ class TestConsumerIntegration:
             canonical = income_service.get_current_gross_biweekly(user_id)
             assert canonical == _RAISE_APPLIED_GROSS
 
-            # Savings consumer: routed through income_service via
-            # ``_load_account_params`` (in the package's ``_data``
-            # sub-module after the Phase 2 split).  ``accounts`` is read
-            # but the salary value is independent of any account.
-            savings_params = savings_dashboard_service._data._load_account_params(
-                user_id, accounts=[],
+            # Savings consumer: after the Level-1 balance-seam reroute the
+            # savings package no longer loads the gross itself -- each
+            # investment tile delegates its projection to the ``balance_at``
+            # seam, which assembles the engine gross in ``_assemble_inputs``
+            # (loaded ONLY when the set has an investment account, the seam's
+            # investment-only scoping).  So the savings consumer's gross now
+            # routes seam -> income_service; lock it at the seam's assembly
+            # point.  A real INVESTMENT account must be in the set or the seam
+            # skips the gross fetch by design (and returns ZERO).
+            inv = make_investment_account(
+                seed_user, db.session, seed_periods_today[0],
+                Decimal("10000.00"),
             )
-            assert savings_params.salary_gross_biweekly == canonical
+            seam_inputs = balance_at._assemble_inputs([inv], scenario)
+            assert seam_inputs.salary_gross_biweekly == canonical
 
             # Year-end consumer: thin delegator over income_service
             # (moved to the ._data sub-module in the Phase 2 split).

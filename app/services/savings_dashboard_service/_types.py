@@ -17,7 +17,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.scenario import Scenario
 
 
@@ -43,16 +42,19 @@ class _AccountParams:
     """Batch-loaded, account-type-specific parameter maps for the loop.
 
     Built once per request by :func:`_load_account_params` -- the single
-    place all six maps are constructed -- and read per account inside the
+    place all four maps are constructed -- and read per account inside the
     projection loop.  Each map is keyed by ``account_id``.  Request-scoped
-    state that is not an account-type parameter (the baseline
-    ``scenario``) lives on :class:`_ProjectionContext`, not here.
+    state that is not an account-type parameter (the baseline ``scenario``)
+    lives on :class:`_ProjectionContext`, not here.  The growth projection's
+    deductions and engine-gross inputs are NOT carried here: each per-account
+    tile delegates its projection to the :mod:`app.services.balance_at` seam,
+    which assembles those itself, so holding them on this bundle was dead
+    state (a per-load deductions query + paycheck-engine call no consumer
+    read).
     """
 
     interest_params_map: dict[int, InterestParams]
     investment_params_map: dict[int, InvestmentParams]
-    deductions_by_account: dict[int, list[PaycheckDeduction]]
-    salary_gross_biweekly: Decimal
     loan_params_map: dict[int, LoanParams]
     escrow_map: dict[int, list[EscrowComponent]]
 

@@ -501,13 +501,26 @@ class TestBuildMaps:
                 .all()
             )
 
-            # Assemble the inputs exactly as the orchestrator does.
-            params = _load_account_params(user_id, accounts)
+            # Assemble the inputs the way the balance_at seam does, so the
+            # per-account kernel dispatch below is fed the same inputs
+            # build_maps feeds the kernel internally.
+            params = _load_account_params(accounts)
             loan_accounts = [
                 a for a in accounts if a.id in params.loan_params_map
             ]
             debt_schedules = net_worth_kernel.generate_debt_schedules(
                 loan_accounts, scenario.id,
+            )
+            # Deductions + engine gross are no longer on _AccountParams (the
+            # seam assembles them); source them from the same shared loaders
+            # the seam uses, with its investment-only deduction scoping.
+            inv_ids = list(params.investment_params_map.keys())
+            deductions_by_account = (
+                load_active_deductions_for_accounts(user_id, inv_ids)
+                if inv_ids else {}
+            )
+            salary_gross_biweekly = income_service.get_current_gross_biweekly(
+                user_id,
             )
             # Independent oracle: the kernel dispatch the savings net-worth
             # producer ran inline pre-reroute, fed by the orchestrator's
@@ -523,10 +536,8 @@ class TestBuildMaps:
                     investment_params=params.investment_params_map.get(
                         account.id,
                     ),
-                    deductions=params.deductions_by_account.get(
-                        account.id, [],
-                    ),
-                    salary_gross_biweekly=params.salary_gross_biweekly,
+                    deductions=deductions_by_account.get(account.id, []),
+                    salary_gross_biweekly=salary_gross_biweekly,
                 )
                 if balances is not None:
                     expected_by_id[account.id] = balances

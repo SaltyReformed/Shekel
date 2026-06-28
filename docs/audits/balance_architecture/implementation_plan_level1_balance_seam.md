@@ -377,10 +377,13 @@ regression**, since fixed, plus coverage/clarity gaps and two latent design deci
   property -- the same kind-correct class as the authorized investment change, applied consistently
   and tested (`test_appreciation_projection.py`, `test_property_appreciates_in_savings_progress`).
   This is correct and intentional; the original plan's verification text named only investment.
-- **Deferred cleanup (not in this plan):** the savings package's `_AccountParams.deductions_by_account`
-  / `salary_gross_biweekly` fields are vestigial after the reroute (the seam re-assembles its own
-  inputs) but still computed each /savings load to satisfy the C17-4 cross-consumer gross test.
-  Dropping them + re-homing that assertion onto the seam's gross is a clean follow-up.
+- **Vestigial-field cleanup -- DONE (2026-06-27).** The savings package's
+  `_AccountParams.deductions_by_account` / `salary_gross_biweekly` fields were vestigial after the
+  reroute (the seam re-assembles its own inputs) but still computed each /savings load (a dead
+  deductions query + paycheck-engine call). Dropped both fields and both loads;
+  `_load_account_params` now builds only the four maps it feeds and no longer takes `user_id`. The
+  C17-4 cross-consumer gross lock was re-homed onto the seam's assembly point
+  (`balance_at._assemble_inputs([investment], scenario).salary_gross_biweekly == the engine value`).
 
 ### Verification status
 
