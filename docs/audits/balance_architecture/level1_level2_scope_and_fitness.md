@@ -612,9 +612,23 @@ To re-verify the fitness pillar in one command:
 
 ## Status
 
-Investigation complete; no application code was written for it. The developer has chosen Option D
-(see the Decision section) and intends to build toward it following the recommended build order,
-starting with the Level 1 seam. This document is the architecture-of-record for that effort,
-alongside `recurring_loan_balance_root_cause.md`. Each build-order step should be taken as its own
+Investigation complete; the developer has chosen Option D (see the Decision section) and is building
+toward it following the recommended build order. This document is the architecture-of-record for that
+effort, alongside `recurring_loan_balance_root_cause.md`. Each build-order step is taken as its own
 explicitly-scoped implementation plan, gated by the cross-page equality oracle (extended to every
 account kind in step 1) and the full suite.
+
+**Build-Order Step 1 (Level 1: the `balance_at` seam + W9906 no-bypass checker + per-kind cross-page
+oracle) -- DONE (2026-06-27)** on `feat/level1-balance-seam`. Locked decisions held: investment
+seeding is Model-from-anchor, and the fence is a FULL fence -- every balance read in `app/` routes
+through `app.services.balance_at`, including the investment cash-basis SEED (the seam's
+`investment_seed_map` wraps the kernel producer, which is itself now guarded by W9906, so there is no
+display-shaped balance map a consumer can reach outside the seam). The seam grew two refinements
+beyond the original three-entry plan: (a) a CASH-FLOW view (`cash_balance_map` / `cash_balance_at`)
+distinct from the KIND-CORRECT view, for the single-account surfaces whose projected balance must
+reconcile with their own transaction rows (grid / calendar / obligations / checking detail); and
+(b) the kind-correct scalar accrues interest for an INTEREST account (consistent with the map), with
+date-precise cash reserved for the explicit cash-flow scalar. The implementation plan
+(`implementation_plan_level1_balance_seam.md`) carries the full per-commit record and the Commit-10
+adversarial-review outcome. The presentation gates and the deferred kind-correct-grid feature
+(`followup_kind_correct_grid_interest.md`) remain as the fitness doc planned.

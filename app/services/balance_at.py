@@ -305,12 +305,21 @@ def balance_map(
     path :func:`build_maps` runs per account, so single- and batch-assembly
     cannot drift.
 
-    ``amount_overrides`` passes straight through to the kernel's cash path
-    (and there to :func:`~app.services.balance_resolver.balances_for`) for
-    grid parity; it is NOT auto-applied, so a non-grid caller's behavior is
-    unchanged.  The loan / investment / appreciation kinds ignore it -- the
-    override map only carries cash-account transaction ids, so it matches
-    nothing off the cash path.
+    ``amount_overrides`` passes straight through the kind dispatch to the
+    cash path (and there to
+    :func:`~app.services.balance_resolver.balances_for`); it is NOT
+    auto-applied, so omitting it is unchanged.  The loan / investment /
+    appreciation kinds ignore it -- the override map only carries cash-account
+    transaction ids, so it matches nothing off the cash path.  NO production
+    caller passes it today: the budget grid (the only live-override consumer)
+    reads the cash-flow view (:func:`cash_balance_map`), not this kind-correct
+    one.  The parameter is kept -- and parity-tested in
+    ``tests/test_services/test_balance_at.py`` -- as the seam-ready hook for
+    the DEFERRED kind-correct-grid + interest-line feature (the clean flip
+    ``cash_balance_map`` -> ``balance_map`` in
+    ``docs/audits/balance_architecture/followup_kind_correct_grid_interest.md``),
+    so landing that feature is a one-call change, not a re-thread of the whole
+    dispatch.
 
     Args:
         account: The account to project.  Its ``user_id`` scopes the
@@ -320,9 +329,11 @@ def balance_map(
         periods: The pay periods to project over, ordered by
             ``period_index``.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net / loan-derive map (the grid threads its pre-built
-            map here).  Default ``None`` lets the cash producer build its
-            own live overrides, byte-identical to the prior behavior.
+            projected-net / loan-derive map, forwarded to the cash path for an
+            interest / plain account.  Default ``None`` lets the cash producer
+            build its own live overrides, byte-identical to the prior
+            behavior.  No production caller passes it today (see above); it is
+            the hook for the deferred kind-correct-grid feature.
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
@@ -480,8 +491,15 @@ def balance_at(
             # while the per-period path defends against it (the two would
             # drift on a future out-of-order schedule).  Returned verbatim
             # (no re-round): the schedule rows and current_balance are already
-            # cent-quantized by the resolver, so balance_at agrees penny-exact
-            # with balance_map for the period containing as_of.
+            # cent-quantized by the resolver.  This loan scalar is DATE-precise
+            # (it walks to the exact as_of), per the granularity note above, so
+            # it equals balance_map's value for the containing period ONLY when
+            # as_of is that period's end_date; for a mid-period as_of with a
+            # scheduled payment still ahead in the period it (correctly) reads
+            # higher than the period-end map value.  Do NOT "simplify" this to
+            # read the period map -- that would discard the date precision the
+            # year-end debt-progress (a Dec 31 as_of, generally mid-period)
+            # depends on.
             return balance_from_schedule_at_date(
                 sorted(debt_schedule.schedule, key=lambda r: r.payment_date),
                 as_of, debt_schedule.current_balance,

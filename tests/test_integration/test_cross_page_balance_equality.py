@@ -189,11 +189,16 @@ def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
     The grid route renders ``balance_result.balances[period.id]`` per
-    visible-period cell; this helper reproduces that exact lookup so a
-    future grid template change does not silently weaken the assertion.
+    visible-period cell, where ``balance_result`` now comes from the seam's
+    cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8).
+    Reading through that SAME seam entry -- not the raw ``balances_for``
+    producer beneath it -- keeps this surface reader on the production path,
+    so a regression in the seam's cash view (not just the producer) is caught
+    here, and the reader is no longer a byte-identical twin of the
+    ``balances_for`` calls in the per-kind locks.
     """
-    result = balance_resolver.balances_for(
-        ctx["account"], ctx["scenario_id"], ctx["all_periods"],
+    result = balance_at.cash_balance_map(
+        ctx["account"], ctx["scenario"], ctx["all_periods"],
     )
     return result.balances[ctx["anchor_period"].id]
 
@@ -235,15 +240,15 @@ def _savings_value(ctx):
 def _accounts_checking_value(ctx):
     """Read the /accounts checking-detail surface's current balance.
 
-    Mirrors the route's local: ``current_bal = balances.get(current_period.id)``
-    where ``current_period`` is today's period and ``balances`` comes
-    from ``balance_resolver.balances_for``.  The fixture pins
-    ``today`` inside the anchor period, so ``current_period.id ==
-    anchor_period.id`` and the value displayed equals
-    ``balances[anchor_period.id]``.
+    Mirrors the route's local ``current_bal = result.balances.get(current_period.id)``
+    where ``result`` now comes from the seam's cash-flow entry
+    ``balance_at.cash_balance_map`` (Level-1 Commit 8) -- the same seam call
+    the checking-detail route makes.  The fixture pins ``today`` inside the
+    anchor period, so ``current_period.id == anchor_period.id`` and the value
+    displayed equals ``balances[anchor_period.id]``.
     """
-    result = balance_resolver.balances_for(
-        ctx["account"], ctx["scenario_id"], ctx["all_periods"],
+    result = balance_at.cash_balance_map(
+        ctx["account"], ctx["scenario"], ctx["all_periods"],
     )
     return result.balances[ctx["anchor_period"].id]
 
@@ -982,12 +987,26 @@ class TestInvestmentCrossPageEquality:
                 ctx["account"], ctx["scenario"], ctx["all_periods"],
             )[ctx["current_period"].id]
 
-            # Non-tautological: the modeled balance compounded above the flat
-            # cash-basis carry, so a tile still reading the flat value fails.
-            assert modeled > ctx["V0"], (
-                f"modeled balance {modeled!r} did not compound above the flat "
-                f"anchor {ctx['V0']!r}; the divergence this lock needs is "
-                "absent"
+            # Non-tautological AND magnitude-bounded: the modeled balance must
+            # compound strictly ABOVE the flat cash-basis carry (so a tile
+            # still reading the flat value fails) but stay BELOW a full year of
+            # growth at the 7% assumed return -- the anchor is ~6 months in the
+            # past, so any correct model-from-anchor value sits in (V0, V0 *
+            # 1.07).  Both bounds are hand-computed and independent of the
+            # growth engine's per-period day-count convention; the EXACT value
+            # is calendar-relative (the fixture builds its periods from today),
+            # so it is pinned penny-exact -- with its arithmetic -- in
+            # tests/test_services/test_balance_at.py (the anchor-in-past
+            # kernel-equality cases), not here.  The upper bound is what an
+            # "all surfaces == seam" check alone could not give: it catches a
+            # shared over-compounding bug (wrong period count or rate) in the
+            # seam and every rerouted surface at once.
+            v0 = ctx["V0"]
+            assert v0 < modeled < v0 * Decimal("1.07"), (
+                f"modeled balance {modeled!r} fell outside the hand-computed "
+                f"(V0, V0*1.07) band for a ~6-month 7% projection from {v0!r}: "
+                "expected strictly above the flat carry but below one full "
+                "year's growth"
             )
 
             # Every kernel-modeled surface -- now including the investment

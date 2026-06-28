@@ -28,7 +28,6 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
-    CompoundingFrequencyEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -57,6 +56,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from tests._test_helpers import (
     add_txn,
+    create_hysa_account,
     insert_origination_event,
     insert_origination_rate,
     insert_trueup_event,
@@ -67,28 +67,13 @@ from tests._test_helpers import (
 
 
 def _make_hysa(db, seed_user, anchor_period, balance):
-    """Create an HYSA account (INTEREST) with InterestParams (5% APY daily)."""
-    hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=hysa_type.id,
-            name="HYSA",
-            anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    db.session.add(InterestParams(
-        account_id=acct.id,
-        apy=Decimal("0.05000"),
-        compounding_frequency_id=ref_cache.compounding_frequency_id(
-            CompoundingFrequencyEnum.DAILY,
-        ),
-    ))
-    db.session.commit()
-    return acct
+    """Create an HYSA account (INTEREST) via the shared factory (5% APY daily).
+
+    Thin adapter over :func:`tests._test_helpers.create_hysa_account` that
+    keeps this suite's ``(db, seed_user, ...)`` call convention while the HYSA
+    construction itself lives in the one shared home.
+    """
+    return create_hysa_account(seed_user, db.session, anchor_period, balance)
 
 
 def _make_mortgage(

@@ -319,3 +319,83 @@ load). The extended oracle is the gate every reroute commit must keep green.
   account, instead of the cash-flow view Commit 8 ships). Discovered during Commit 8 and deferred as
   a scoped follow-up the seam makes a clean flip: see
   `followup_kind_correct_grid_interest.md`.
+
+---
+
+## Completion record (Commit 10 -- final gate + adversarial review, 2026-06-27)
+
+**DONE.** Full suite **6373 passed** (run alone); `pylint app/` **10.00/10** with every `--fail-on`
+checker; W9906 **zero-bypass** across `app/` + `scripts/`. No migration (Level 1 is a service-layer
+change; Definition-of-Done item 7 is N/A). Commits 1-9 landed as planned; Commit 10 added the
+adversarial-review fixes below.
+
+### Adversarial review (five specialist passes + reconciliation)
+
+Verdict: the architecture is sound -- the four per-kind boundary rules are implemented as documented,
+no float-on-money, no silent excepts, the Model-from-anchor headline change is applied consistently,
+and the fence is genuinely zero-bypass. The review found **one real financial-correctness
+regression**, since fixed, plus coverage/clarity gaps and two latent design decisions.
+
+- **HIGH -- the main dashboard accrued interest into the spending-account runway (FIXED).** Commit 7
+  rerouted the dashboard pulse chart/trough/peak and both heroes (`dashboard_pulse_service`,
+  `dashboard_service`) to the KIND-CORRECT `balance_map` / `balance_at` -- but it was written BEFORE
+  Commit 8 invented the cash-flow view, and Commit 8 never came back. The dashboard account is
+  `resolve_grid_account`'s any-kind pick and this region is the runway, so for an HYSA grid account
+  the chart accrued interest, **inflating the "lowest point ahead" trough and hiding a real future
+  dip below zero**; the heroes diverged for a loan/investment grid account. Every prior dashboard
+  test used a PLAIN account (where the two views coincide), so it shipped silently. Fixed by routing
+  all three reads through `cash_balance_at` / `cash_balance_map`; locked by 3 regression tests
+  (HYSA + investment grid accounts) verified to fail on the buggy code.
+- **Coverage/clarity (FIXED):** added `tests/test_utils/test_period_projections.py` (the /savings +
+  /accounts horizon display had ZERO coverage after a test deletion); routed the cross-page oracle's
+  two cash readers through the seam (they had bypassed it via `balances_for`); added an
+  engine-independent magnitude band to the anchor-in-past investment oracle case; corrected a
+  misleading "penny-exact with balance_map" loan comment and the `amount_overrides` docstring (it is
+  the hook for the deferred kind-correct-grid feature, not "grid parity"); promoted `create_hysa_account`
+  and `set_default_grid_account` to shared test helpers (DRY).
+
+### Two design decisions resolved (developer-approved)
+
+1. **Fence hole CLOSED.** `net_worth_kernel.investment_base_balance_map` returned a DISPLAY-shaped
+   cash-basis map and was excluded from W9906 -- the one balance-map accessor a consumer could have
+   rendered as a real balance. The seam now owns it via `balance_at.investment_seed_map`; the three
+   chart-seed consumers (investment / retirement / year-end growth) read the seed through the seam,
+   and the kernel producer is now W9906-guarded. The fence is now the "full fence, zero exceptions"
+   the plan promised. (`interest_by_period_for_account` stays excluded -- it is interest EARNED, a
+   projection input, semantically not a balance map.)
+2. **Kind-correct scalar made consistent for INTEREST.** `balance_at` (scalar) routed an HYSA to the
+   date-precise CASH value while `balance_map` accrued interest -- the two kind-correct entries
+   disagreed in value for an HYSA. The scalar now routes INTEREST through the period-granular map
+   (accrues), so `balance_at(d) == balance_map[period containing d]`; the no-interest transaction
+   balance is `cash_balance_at`'s job. No production caller hit the scalar for an INTEREST account
+   (year-end uses it for loans only), so this was latent; fixed for future-proofing.
+
+### Notes / follow-ups
+
+- **Property headline also adopts Model-from-anchor.** The savings tile AND year-end savings-progress
+  show an appreciating property's compounded value (not the flat cash carry) for a past-anchor
+  property -- the same kind-correct class as the authorized investment change, applied consistently
+  and tested (`test_appreciation_projection.py`, `test_property_appreciates_in_savings_progress`).
+  This is correct and intentional; the original plan's verification text named only investment.
+- **Deferred cleanup (not in this plan):** the savings package's `_AccountParams.deductions_by_account`
+  / `salary_gross_biweekly` fields are vestigial after the reroute (the seam re-assembles its own
+  inputs) but still computed each /savings load to satisfy the C17-4 cross-consumer gross test.
+  Dropping them + re-homing that assertion onto the seam's gross is a clean follow-up.
+
+### Verification status
+
+Automated coverage is the gate and is comprehensive: the per-kind parity suite
+(`test_balance_at.py`), the extended cross-page oracle (every account kind, routed through the seam),
+the dashboard cash-flow regression tests (HYSA + investment grid accounts), and the W9906 checker
+tests all pass in the 6373-test run, and the dashboard regression tests were verified to FAIL on the
+pre-fix code. The intended displayed-number changes are pinned by tests:
+`test_appreciation_projection.py` / `test_property_appreciates_in_savings_progress` (Model-from-anchor
+property), the oracle's anchor-in-past investment case (Model-from-anchor investment), and the new
+dashboard tests (cash-flow runway for a non-PLAIN grid account).
+
+RECOMMENDED final check (not yet performed -- developer or a `/verify` run): in BOTH themes on the dev
+container, load /grid, /savings (net-worth cockpit), the year-end summary, /calendar, /dashboard, and
+the investment + retirement dashboards, and confirm every number is unchanged EXCEPT the authorized
+Model-from-anchor headlines (investment AND property) for a past-anchor account and the corrected
+dashboard runway for a non-PLAIN grid account (now the cash-flow balance, matching the grid). Seed a
+past-anchor HYSA as the default grid account to eyeball the runway fix.
