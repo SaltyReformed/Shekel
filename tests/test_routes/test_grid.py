@@ -18,10 +18,18 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services import pay_period_service
-from app.services import account_service
+from app.services import (
+    account_service,
+    balance_at,
+    income_service,
+    pay_period_service,
+)
 
-from tests._test_helpers import field_is_disabled, freeze_today
+from tests._test_helpers import (
+    create_hysa_account,
+    field_is_disabled,
+    freeze_today,
+)
 
 
 class TestGridView:
@@ -6650,3 +6658,175 @@ class TestMobileJumpToPeriod:
         assert "#mobile-this-period" in src
         # form.submit() is what turns the change into a GET to /grid.
         assert "form.submit()" in src
+
+
+class TestGridInterestAccrual:
+    """The grid accrues interest + shows an Interest row for an INTEREST account.
+
+    The kind-correct-grid feature: when the grid is pointed at an
+    interest-bearing account (HYSA / Money Market / CD / HSA) the projected
+    balance accrues interest and a read-only "Interest" row explains the part
+    of the balance change the transactions do not.  Every other account kind
+    keeps the cash-flow view with no accrual row.
+    """
+
+    def test_interest_account_shows_accrual_row_and_accrued_balance(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An HYSA grid account renders the Interest row + interest-accrued balance.
+
+        Seeds a $100,000 HYSA at 5% APY with no transactions: the cash-flow
+        balance would sit flat at the $100,000 anchor, so any balance above it
+        is interest the grid now accrues.  The route must render the seam's
+        interest-accrued current-period balance and the per-period Interest
+        row figure (cross-checked against the seam so the numbers are not
+        hand-guessed).
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        scenario = seed_user["scenario"]
+        user_id = seed_user["user"].id
+        all_periods = pay_period_service.get_all_periods(user_id)
+        current = pay_period_service.get_current_period(user_id)
+        # Seam truth the route must render (current is the leftmost visible col).
+        view = balance_at.grid_balance_view(hysa, scenario, all_periods)
+        accrued = view.balances[current.id]
+        interest = view.increments[current.id]
+
+        resp = auth_client.get(f"/grid?account_id={hysa.id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # The read-only accrual row renders for an interest grid account.
+        assert "interest-row" in html
+        # Interest accrues: the current-period balance exceeds the $100,000
+        # anchor, and the grid renders exactly the seam's accrued figure.
+        assert accrued > Decimal("100000.00")
+        assert f"${accrued:,.0f}" in html
+        # The per-period interest is positive and rendered in the Interest row.
+        assert interest > Decimal("0.00")
+        assert f"${interest:,.0f}" in html
+
+    def test_plain_account_has_no_accrual_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The default checking (PLAIN) grid shows no Interest accrual row."""
+        resp = auth_client.get("/grid")
+        assert resp.status_code == 200
+        assert b"interest-row" not in resp.data
+
+    def test_interest_account_balance_row_refresh_shows_accrual_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The balance-row HTMX refresh renders the Interest row for an HYSA.
+
+        The self-refresh endpoint must reproduce the full render's accrual row
+        (it threads its own live override map), so a mark-paid that fires
+        ``balanceChanged`` keeps the Interest row and the accrued balance
+        current instead of reverting to the cash-flow view.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        resp = auth_client.get(
+            f"/grid/balance-row?periods=6&offset=0&account_id={hysa.id}",
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "interest-row" in html
+        assert "Projected End Balance" in html
+
+    def test_mobile_summary_refresh_shows_interest_for_hysa(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The mobile This-Period summary refresh shows the Interest bar (HYSA).
+
+        The self-refreshing mobile summary endpoint must reproduce the
+        interest accrual (it threads its own live override map), so a mobile
+        mark-paid that fires ``mobileCardSettled`` keeps the Interest bar
+        instead of reverting to the cash-flow view.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        current = pay_period_service.get_current_period(seed_user["user"].id)
+        resp = auth_client.get(
+            f"/grid/this-period-summary?period_id={current.id}"
+            f"&account_id={hysa.id}",
+        )
+        assert resp.status_code == 200
+        assert b"interest-row" in resp.data
+
+    def test_mobile_summary_refresh_no_interest_for_plain(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The mobile This-Period summary refresh shows no Interest bar (PLAIN)."""
+        current = pay_period_service.get_current_period(seed_user["user"].id)
+        resp = auth_client.get(
+            f"/grid/this-period-summary?period_id={current.id}",
+        )
+        assert resp.status_code == 200
+        assert b"interest-row" not in resp.data
+
+    def test_refresh_uses_live_income_matching_full_render(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The balance-row refresh uses LIVE income, matching the full render.
+
+        The whole reason the refresh endpoints thread their own live override
+        map (``_grid_amount_overrides``) is that ``grid_balance_view`` falls
+        back to the STORED estimate on a bare ``None`` for the interest path;
+        without threading, a refresh after a mark-paid would revert an
+        interest account's balance to the stored figure while the full page
+        shows the live one -- a flicker.  Forces live ($5,000) != stored
+        ($1,000) on an income transaction and asserts the live-income accrued
+        balance (the seam's value under the same live map) appears in BOTH the
+        full ``/grid`` render AND the ``/grid/balance-row`` refresh.  Under a
+        broken (stored) refresh the live figure would be absent.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
+        )
+        scenario = seed_user["scenario"]
+        user_id = seed_user["user"].id
+        status = db.session.query(Status).filter_by(name="Projected").one()
+        income_type = (
+            db.session.query(TransactionType).filter_by(name="Income").one()
+        )
+        income = Transaction(
+            account_id=hysa.id,
+            pay_period_id=seed_periods_today[2].id,
+            scenario_id=scenario.id,
+            status_id=status.id,
+            name="Paycheck",
+            transaction_type_id=income_type.id,
+            estimated_amount=Decimal("1000.00"),
+        )
+        db.session.add(income)
+        db.session.commit()
+
+        # The live recompute revalues this income at $5,000 (vs $1,000 stored).
+        monkeypatch.setattr(
+            income_service, "live_projected_net",
+            lambda uid, sid, txns: {income.id: Decimal("5000.00")},
+        )
+        all_periods = pay_period_service.get_all_periods(user_id)
+        current = pay_period_service.get_current_period(user_id)
+        # The seam's accrued balance under the SAME live map the route builds.
+        live_view = balance_at.grid_balance_view(
+            hysa, scenario, all_periods,
+            amount_overrides={income.id: Decimal("5000.00")},
+        )
+        accrued_live = live_view.balances[current.id]
+        # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
+        # balance clears the $10,000 anchor + the live deposit.
+        assert accrued_live > Decimal("15000.00")
+
+        full = auth_client.get(f"/grid?account_id={hysa.id}").data.decode()
+        refresh = auth_client.get(
+            f"/grid/balance-row?periods=6&offset=0&account_id={hysa.id}",
+        ).data.decode()
+        # Both surfaces render the live-income accrued balance -- no flicker.
+        assert f"${accrued_live:,.0f}" in full
+        assert f"${accrued_live:,.0f}" in refresh

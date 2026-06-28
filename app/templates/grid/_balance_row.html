@@ -30,6 +30,9 @@
 
    Expected context: periods, balances, account, num_periods,
    start_offset, low_balance_threshold, stale_anchor_warning, oob.
+   increments -- (optional) dict[period_id -> Decimal] per-period interest
+   accrual; when non-empty (INTEREST grid account) the read-only Interest
+   row renders above Projected End Balance.
 #}
 {% if oob %}
 <template>
@@ -46,6 +49,27 @@
        aria-atomic="true">
   {% from "grid/_grid_row_macros.html" import mstart %}
   {% from "_money_macros.html" import money %}
+  {# Read-only accrual row -- the interest the projected balance earns that
+     the transaction rows do not explain.  Rendered ONLY when ``increments``
+     is non-empty, which the balance-at seam populates exclusively for an
+     INTEREST grid account; for every other kind it is empty and this row is
+     omitted.  By construction balances[p] - balances[p-1] == subtotals[p].net
+     + increments[p], so the three rows reconcile to the cent.  Sits directly
+     above Projected End Balance so the Net Cash Flow -> Interest -> Balance
+     chain reads top to bottom. #}
+  {% if increments %}
+  <tr class="accrual-row interest-row">
+    <td class="sticky-col">
+      <i class="bi bi-percent" aria-hidden="true"></i> Interest
+    </td>
+    {% for period in periods %}
+      {% set inc = increments.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
+        {% if inc is not none %}{{ money(inc, cents=false) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
   <tr class="balance-row-summary fw-bold">
     <td class="sticky-col">
       <i class="bi bi-bank"></i> Projected End Balance
