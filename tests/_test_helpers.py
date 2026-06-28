@@ -555,6 +555,86 @@ def create_hysa_account(
     return account
 
 
+# Default opening anchor balance for ledger-account-suite accounts.  The
+# Build-Order Step 2 suites never assert on a balance (Commit 2 touches no
+# balance math), so a single fixed value keeps the shared factory at four
+# parameters and the call sites free of an irrelevant amount.
+_LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
+
+
+def create_account_of_type(seed_user, db_session, type_name, name):
+    """Create an account of any built-in type via the canonical factory.
+
+    The shared "build an account of type X" helper for the ledger-account
+    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
+    ``AccountSpec`` + ``create_account`` block is not copied per file (a
+    duplicate-code finding).  ``create_account`` fires the Step-2
+    ledger-account sync hook, so the returned account already carries its
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance is a
+    fixed sentinel (the suites assert on ledger pairing, never on balance)
+    and the anchor period is resolved by the factory from the user's pay
+    periods.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
+            ``"Mortgage"``, ``"401(k)"``).
+        name: The account name.
+
+    Returns:
+        The created :class:`~app.models.account.Account` (flushed,
+        uncommitted).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models / service lazily, the same way the factory helpers above do.
+    # pylint: disable=import-outside-toplevel
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    acct_type = (
+        db_session.query(AccountType).filter_by(name=type_name).one()
+    )
+    return account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=name,
+            anchor_balance=_LEDGER_SUITE_ANCHOR_BALANCE,
+        ),
+    )
+
+
+def ledger_accounts_for_account(db_session, account_id):
+    """Return every ``LedgerAccount`` linked to *account_id*.
+
+    Shared by the ledger-account model / service / backfill suites so the
+    one-line lookup is not re-inlined per file (a duplicate-code finding).
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id whose linked ledger accounts to
+            fetch.
+
+    Returns:
+        list[:class:`~app.models.ledger_account.LedgerAccount`] -- the
+        linked rows (zero or one in normal operation; the partial unique
+        index permits at most one).
+    """
+    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # convention as the helpers above (no app symbols imported at module
+    # load); load the model lazily here.
+    # pylint: disable=import-outside-toplevel
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(account_id=account_id)
+        .all()
+    )
+
+
 def set_default_grid_account(db_session, user_id, account_id):
     """Point a user's default grid account at *account_id* (re-queried, flushed).
 

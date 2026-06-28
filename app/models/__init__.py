@@ -41,6 +41,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
+from app.models.ledger_account import LedgerAccount
 from app.models.savings_goal import SavingsGoal
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
@@ -102,6 +103,7 @@ __all__ = [
     "TransactionEntry",
     "TransferTemplate",
     "Transfer",
+    "LedgerAccount",
     "SavingsGoal",
     "InterestParams",
     "LoanParams",
