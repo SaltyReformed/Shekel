@@ -105,30 +105,35 @@ def compute_pulse_section(user_id: int) -> dict | None:
     all_periods = pay_period_service.get_all_periods(user_id)
     next_period = pay_period_service.get_next_period(current_period)
 
-    # ONE projection walk over ALL periods through the ``balance_at`` seam:
-    # the seam's cash map carries the running balance forward from the
-    # anchor period, so the period list MUST include the anchor period (a
-    # forward-only slice that excludes it yields an empty map -- the engine
-    # has no seed).  The chart slices the current-period-forward tail to 13
-    # points and the trough scans the whole forward tail.  The trough
-    # horizon is the entire forward run -- the retired negative-projection
-    # alert's full multi-year reach, but DELIBERATELY INCLUDING the current
-    # period the alert skipped (``start_date <= today``): the chart's first
-    # plotted point is the current period's end balance, so the labeled
-    # "lowest point ahead" must be able to coincide with it rather than
-    # understating the worst visible dip.  The seam returns ``None`` only
-    # when the account has no anchor period -- the cache-divergence edge
-    # (the ``current_anchor_period_id`` cache cleared while the history row
-    # the resolver reads is still present; logged, unreachable in
-    # production).  The empty-map fallback degrades the chart / trough / peak
-    # to no points (their existing missing-key skips).  The hero is NOT empty
-    # in that edge: it reads ``balance_at.balance_at``, whose cash path
-    # reconciles the balance from the history row -- so the region shows the
-    # reconciled hero balance with an empty chart, a safe degradation rather
-    # than a wrong number.
-    end_balances = balance_at.balance_map(account, scenario, all_periods)
-    if end_balances is None:
-        end_balances = {}
+    # ONE projection walk over ALL periods through the ``balance_at`` seam's
+    # CASH-FLOW view (``cash_balance_map``).  The dashboard account is
+    # ``resolve_grid_account``'s pick and may be ANY kind (a user can point
+    # the dashboard at an HYSA, or the fallback can land on a non-checking
+    # account), and this region is the spending-account runway -- so it reads
+    # the pure transaction running balance, NOT the kind-correct
+    # ``balance_map`` (which would accrue interest into an HYSA's chart,
+    # amortize a loan, or compound an investment, diverging from the grid
+    # that deliberately keeps the SAME account on the cash-flow view, and
+    # inflating the "lowest point ahead" so a real future dip below zero
+    # could be hidden).  The cash map carries the running balance forward
+    # from the anchor period, so the period list MUST include the anchor
+    # period (a forward-only slice that excludes it yields an empty map --
+    # the engine has no seed).  The chart slices the current-period-forward
+    # tail to 13 points and the trough scans the whole forward tail.  The
+    # trough horizon is the entire forward run -- the retired
+    # negative-projection alert's full multi-year reach, but DELIBERATELY
+    # INCLUDING the current period the alert skipped (``start_date <=
+    # today``): the chart's first plotted point is the current period's end
+    # balance, so the labeled "lowest point ahead" must be able to coincide
+    # with it rather than understating the worst visible dip.
+    # ``cash_balance_map`` resolves the anchor through the dated history SoT
+    # (reconciling the ``current_anchor_period_id`` cache-divergence edge the
+    # kind-correct map would have degraded to an empty chart), so its
+    # ``balances`` is always a populated map; the chart / trough / peak keep
+    # their existing missing-key skips for any period the resolver omits.
+    end_balances = balance_at.cash_balance_map(
+        account, scenario, all_periods,
+    ).balances
     forward_periods = [
         p for p in all_periods
         if p.period_index >= current_period.period_index
@@ -172,11 +177,16 @@ def _pulse_hero(
 ) -> dict:
     """Build the pulse hero block: the as-of-today balance and its captions.
 
-    The headline ``balance`` is the as-of-today projected checking
-    balance from the ``balance_at`` seam (``balance_at.balance_at``) -- the
-    exact figure ``dashboard_service.compute_balance_section`` shows (it
-    reads the same seam) -- so the hero, the chart's first point, and the
-    balance card all agree.  Net pay is retired (data-value pass); only the
+    The headline ``balance`` is the as-of-today projected cash-flow
+    balance from the ``balance_at`` seam's cash-flow scalar
+    (``balance_at.cash_balance_at``) -- the exact figure
+    ``dashboard_service.compute_balance_section`` shows (it reads the same
+    cash-flow scalar) -- so the hero, the chart's first point, and the
+    balance card all agree.  The cash-flow view (NOT the kind-correct
+    ``balance_at`` scalar, which would accrue interest / amortize / compound)
+    is deliberate: the account is ``resolve_grid_account``'s any-kind pick,
+    and the chart the hero must agree with reads ``cash_balance_map`` for the
+    same reason.  Net pay is retired (data-value pass); only the
     next-paycheck DATE survives.
 
     ``is_stale`` is ``True`` when the anchor has never been set OR its
@@ -185,7 +195,8 @@ def _pulse_hero(
     rebuild moves the signal onto the "last updated" caption).
 
     Args:
-        account: The resolved checking account.
+        account: The resolved dashboard account (``resolve_grid_account``'s
+            pick; may be any kind).
         scenario: The baseline scenario.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
@@ -195,7 +206,7 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    balance = balance_at.balance_at(account, scenario, date.today())
+    balance = balance_at.cash_balance_at(account, scenario, date.today())
     # One fetch of the raw anchor instant, two truncations: staleness
     # counts days in the UTC frame (storage convention, unchanged), the
     # caption shows the day in the user's display timezone so a late-
