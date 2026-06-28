@@ -946,6 +946,158 @@ class TestPulseDueSoon:
             assert [b["name"] for b in result["due_soon"]] == ["Early", "Late"]
 
 
+# ── Due-soon stations: per-day grouping for the street axis ─────────
+
+
+class TestPulseDueSoonStations:
+    """The dated due-soon rows grouped into one station per calendar day.
+
+    Bills sharing a due_date share a day_offset and so must collapse into a
+    single street station (one dot, a stacked label) instead of overlapping
+    on one point.  The visible cap is 3: a station shows up to three bills,
+    then reports the rest as ``extra_count`` for a "+N more" line.
+    """
+
+    def test_same_day_bills_collapse_into_one_station(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Four bills on one due date -> one station, three shown, one extra.
+
+        Current period 5 starts 2026-03-13.  Four bills due 2026-03-15 share
+        day_offset = (03-15 - 03-13).days = 2.  With the cap at 3, the
+        station shows the first three by name and folds the fourth into
+        extra_count.
+        """
+        with app.app_context():
+            for name in ("A bill", "B bill", "C bill", "D bill"):
+                _add_expense(
+                    db.session, seed_user, seed_periods[_CURRENT_IDX],
+                    name, "10.00", due_date=date(2026, 3, 15),
+                )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            stations = result["due_soon_stations"]
+            assert len(stations) == 1
+            station = stations[0]
+            assert station["day_offset"] == 2  # (03-15 - 03-13).days
+            assert station["count"] == 4
+            # Cap is 3: first three by name shown, fourth folded away.
+            assert [b["name"] for b in station["visible_items"]] == [
+                "A bill", "B bill", "C bill",
+            ]
+            assert station["extra_count"] == 1  # 4 - 3
+
+    def test_distinct_days_form_separate_axis_ordered_stations(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Bills on different due dates make one station each, in axis order.
+
+        A bill due 2026-03-22 (day_offset 9) and one due 2026-03-15
+        (day_offset 2) yield two stations ordered by day_offset [2, 9].
+        """
+        with app.app_context():
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Later", "10.00", due_date=date(2026, 3, 22),
+            )
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Earlier", "10.00", due_date=date(2026, 3, 15),
+            )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            stations = result["due_soon_stations"]
+            # day_offset 2 = (03-15 - 03-13); day_offset 9 = (03-22 - 03-13).
+            assert [s["day_offset"] for s in stations] == [2, 9]
+            assert [s["count"] for s in stations] == [1, 1]
+            assert all(s["extra_count"] == 0 for s in stations)
+            assert stations[0]["visible_items"][0]["name"] == "Earlier"
+            assert stations[1]["visible_items"][0]["name"] == "Later"
+
+    def test_single_bill_station_has_no_overflow(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """One dated bill -> a one-item station with extra_count 0."""
+        with app.app_context():
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Solo", "10.00", due_date=date(2026, 3, 18),
+            )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            stations = result["due_soon_stations"]
+            assert len(stations) == 1
+            assert stations[0]["count"] == 1
+            assert len(stations[0]["visible_items"]) == 1
+            assert stations[0]["extra_count"] == 0
+
+    def test_station_carries_shared_days_until_due(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The station's days_until_due is the bills' shared value.
+
+        Two bills due 2026-03-22 with frozen today 2026-03-20 each have
+        days_until_due = (03-22 - 03-20).days = 2; the station reports that
+        single value (it drives the dot's overdue/soon/normal state).
+        """
+        with app.app_context():
+            for name in ("First", "Second"):
+                _add_expense(
+                    db.session, seed_user, seed_periods[_CURRENT_IDX],
+                    name, "10.00", due_date=date(2026, 3, 22),
+                )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            station = result["due_soon_stations"][0]
+            assert station["days_until_due"] == 2  # (03-22 - 03-20).days
+            assert all(
+                b["days_until_due"] == 2 for b in station["visible_items"]
+            )
+
+    def test_undated_bills_excluded_from_stations(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Undated rows stay off the axis but remain in due_soon (shelf).
+
+        An undated bill has no day_offset, so it forms no station, but it
+        still appears in the flat due_soon list the "anytime this period"
+        shelf renders.
+        """
+        with app.app_context():
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Dated", "10.00", due_date=date(2026, 3, 18),
+            )
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Undated", "10.00", due_date=None,
+            )
+            db.session.commit()
+
+            result = dashboard_pulse_service.compute_pulse_section(
+                seed_user["user"].id,
+            )
+            stations = result["due_soon_stations"]
+            # Only the dated bill forms a station.
+            assert len(stations) == 1
+            assert stations[0]["visible_items"][0]["name"] == "Dated"
+            # The undated bill is still on the flat list (shelf intact).
+            undated = [b for b in result["due_soon"] if b["undated"]]
+            assert [b["name"] for b in undated] == ["Undated"]
+
+
 # ── The hero == first chart point identity ──────────────────────────
 
 
@@ -1138,14 +1290,14 @@ class TestPulseSectionDegraded:
     def test_has_all_region_keys_when_populated(
         self, app, seed_user, seed_periods, db,
     ):
-        """A populated pulse section carries exactly the seven region keys."""
+        """A populated pulse section carries exactly the eight region keys."""
         with app.app_context():
             result = dashboard_pulse_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert set(result.keys()) == {
                 "hero", "chart", "trough", "peak",
-                "still_due", "street", "due_soon",
+                "still_due", "street", "due_soon", "due_soon_stations",
             }
 
 

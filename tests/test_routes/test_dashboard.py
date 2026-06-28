@@ -488,6 +488,35 @@ class TestDashboardPulseRendering:
             # The next-period bill's ROW is NOT on the dashboard (grid only).
             assert "Next Period Bill" not in html
 
+    def test_bill_due_on_period_end_does_not_overlap_terminus(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """A bill due on the period-end date is pinned clear of the terminus.
+
+        Such a bill's day_offset equals days_total, so its station sits on
+        the exact point as the "period ends / end balance" terminus marker.
+        The street pins that station below the line and drops its duplicate
+        dot (the ``street__event--at-end`` modifier), so the bill and the
+        terminus no longer print on top of each other.
+        """
+        with app.app_context():
+            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            _add_txn(
+                db.session, seed_user, cur, "End Day Bill", "250.00",
+                due_date=cur.end_date,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The end-date bill renders with the at-end modifier that pins it
+            # below the line and drops its duplicate dot.
+            assert "street__event--at-end" in html
+            assert "End Day Bill" in html
+            # The terminus marker is still present (now clear of the bill).
+            assert "period ends" in html
+
 
 # ── Hero captions: staleness, money-macro negative formatting ───────
 

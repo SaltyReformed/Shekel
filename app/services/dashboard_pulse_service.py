@@ -31,6 +31,7 @@ Pure aggregation service -- no Flask imports, no database writes.
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from itertools import groupby
 
 from app.extensions import db
 from app.models.account import Account
@@ -58,6 +59,14 @@ _ZERO = Decimal("0")
 # timeframe; data-value pass, Gate B amendments).  Fewer points render
 # when fewer periods exist.
 _CHART_HORIZON_PERIODS = 13
+
+# Most rows a single street station shows before collapsing the remainder
+# into a "+N more" line.  Several bills regularly share one due date
+# (groceries, gas, spending money budgeted every paycheck), so a day is a
+# station -- one dot whose label stacks that day's bills.  This caps the
+# stack height so a busy day cannot overflow the fixed-height band; the
+# rest of the day's detail lives on the grid (the "Open in grid" link).
+_STREET_STATION_MAX_VISIBLE = 3
 
 
 # ── Pulse producer (canvas + street + due-soon) ────────────────────
@@ -88,7 +97,12 @@ def compute_pulse_section(user_id: int) -> dict | None:
       * ``still_due`` -- see :func:`_pulse_still_due`.
       * ``street`` -- see :func:`_pulse_street` (the current period's
         day-span and today's offset within it).
-      * ``due_soon`` -- see :func:`_pulse_due_soon`.
+      * ``due_soon`` -- see :func:`_pulse_due_soon` (the flat bill list;
+        the template's "anytime this period" shelf reads its undated
+        rows).
+      * ``due_soon_stations`` -- see :func:`_pulse_due_soon_stations` (the
+        dated rows grouped per day for the street axis, so bills sharing a
+        due date render as one station instead of overlapping).
 
     Args:
         user_id: Integer ID of the current user.
@@ -152,6 +166,8 @@ def compute_pulse_section(user_id: int) -> dict | None:
         account.id, scenario.id, period_ids,
     )
 
+    due_soon = _pulse_due_soon(unpaid_rows, current_period)
+
     return {
         "hero": _pulse_hero(account, scenario, current_period, settings),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
@@ -165,7 +181,8 @@ def compute_pulse_section(user_id: int) -> dict | None:
             unpaid_rows, current_period, next_period,
         ),
         "street": _pulse_street(current_period),
-        "due_soon": _pulse_due_soon(unpaid_rows, current_period),
+        "due_soon": due_soon,
+        "due_soon_stations": _pulse_due_soon_stations(due_soon),
     }
 
 
@@ -605,6 +622,55 @@ def _pulse_due_soon(
         )
     )
     return due_soon
+
+
+def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
+    """Group the dated due-soon rows into per-day street stations.
+
+    The street band positions each dated row at ``(day_offset / days) *
+    100%``; rows sharing a ``due_date`` share a ``day_offset`` and so land
+    on the same point.  Rendering one label per row there stacks them on a
+    single pixel (the original overlap bug).  Instead a *day* is one
+    station: a single dot whose label lists that day's bills.
+
+    The input is the :func:`_pulse_due_soon` output, already sorted
+    ``(undated, due_date, name)``.  Dated rows therefore lead the list in
+    chronological order and ``day_offset`` is monotonic across them, so
+    consecutive grouping by ``day_offset`` yields one entry per calendar
+    day in axis order.  Undated rows (``day_offset`` ``None``) are dropped
+    here -- they belong on the "anytime this period" shelf, not the axis.
+
+    Every row in a station shares one ``due_date``, hence one
+    ``days_until_due`` (carried on the station for the dot's overdue /
+    soon / normal state) -- it is read from the first member.  The visible
+    rows are capped at :data:`_STREET_STATION_MAX_VISIBLE`; any remainder
+    is reported as ``extra_count`` for a "+N more" line.
+
+    Args:
+        due_soon: The sorted bill-dict list from :func:`_pulse_due_soon`.
+
+    Returns:
+        One station dict per dated day, in axis order, each with keys
+        ``day_offset`` (int), ``days_until_due`` (int | None), ``count``
+        (int -- total bills that day), ``visible_items`` (the capped
+        bill-dict list), and ``extra_count`` (int -- bills beyond the cap).
+    """
+    dated = [bill for bill in due_soon if not bill["undated"]]
+
+    stations: list[dict] = []
+    for day_offset, members in groupby(dated, key=lambda b: b["day_offset"]):
+        group = list(members)
+        count = len(group)
+        stations.append(
+            {
+                "day_offset": day_offset,
+                "days_until_due": group[0]["days_until_due"],
+                "count": count,
+                "visible_items": group[:_STREET_STATION_MAX_VISIBLE],
+                "extra_count": max(0, count - _STREET_STATION_MAX_VISIBLE),
+            }
+        )
+    return stations
 
 
 def _utc_day(last_anchor_dt: datetime | None) -> date | None:
