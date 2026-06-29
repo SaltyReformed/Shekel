@@ -456,6 +456,88 @@ class TestAccountArchive:
             assert b"An account with that name already exists." in response2.data
 
 
+class TestHardDeletePostingLedgerGuard:
+    """Hard-delete archives an account with surviving posting-ledger history.
+
+    Regression for the Build-Order Step 2 / Commit 5 cascade-imbalance hole:
+    settling a transfer writes balanced journal entries onto both accounts'
+    ledgers, and those entries survive a transfer hard-delete
+    (``journal_entries.transfer_id`` SET NULL).  Hard-deleting a participating
+    account would then CASCADE-delete only ITS legs, stranding the paired legs
+    as unbalanced single-leg entries (the balanced trigger does not fire on
+    DELETE).  Guard 5 in ``hard_delete_account`` archives the account instead,
+    keeping every ledger entry balanced.
+    """
+
+    def test_hard_delete_archives_account_with_surviving_postings(
+        self, app, auth_client, seed_user,
+    ):
+        """An account with ledger postings (its transfer gone) archives, not deletes.
+
+        Sequence: settle a $100 transfer between two fresh accounts (auto-posts
+        a balanced entry), hard-delete the transfer (shadows go; the settle +
+        reversal entries survive with transfer_id nulled, legs on both
+        ledgers), then hard-delete the source account.  It has no transaction
+        history but does have ledger postings, so Guard 5 archives it: the
+        source ledger account is NOT deleted, no leg is orphaned, and every
+        surviving journal entry still has >= 2 legs summing to zero.
+        """
+        from app.models.journal_entry import JournalEntry, Posting
+        from app.services import transfer_service
+        from app.utils import archive_helpers
+        from tests._test_helpers import (
+            create_account_of_type,
+            create_settled_transfer,
+        )
+
+        with app.app_context():
+            source = create_account_of_type(
+                seed_user, db.session, "Checking", "Cascade Source",
+            )
+            dest = create_account_of_type(
+                seed_user, db.session, "Savings", "Cascade Dest",
+            )
+            db.session.commit()
+            transfer = create_settled_transfer(
+                seed_user, db.session, source, dest,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            db.session.commit()
+
+            # Hard-delete the transfer: the shadows are removed, but the
+            # balanced settle + reversal entries survive (transfer_id nulled),
+            # with legs on both ledgers.  The source account now has NO
+            # transaction history but DOES have ledger postings.
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=False,
+            )
+            db.session.commit()
+            assert archive_helpers.account_has_history(source.id) is False
+            assert archive_helpers.account_has_ledger_postings(source.id) is True
+
+            response = auth_client.post(
+                f"/accounts/{source.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"posting-ledger history" in response.data
+            # Archived, NOT deleted: the account row survives, inactive.
+            acct = db.session.get(Account, source.id)
+            assert acct is not None
+            assert acct.is_active is False
+            # No orphaned legs: every surviving entry still balances.
+            entries = db.session.query(JournalEntry).all()
+            assert len(entries) >= 2
+            for entry in entries:
+                legs = (
+                    db.session.query(Posting)
+                    .filter_by(journal_entry_id=entry.id)
+                    .all()
+                )
+                assert len(legs) >= 2
+                assert sum(leg.amount for leg in legs) == Decimal("0.00")
+
+
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
 
 

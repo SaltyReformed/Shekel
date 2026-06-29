@@ -503,6 +503,41 @@ def unarchive_account(account_id):
     return redirect(url_for("savings.dashboard"))
 
 
+def _archive_instead_of_delete(account, account_id, reason):
+    """Archive an account with history worth preserving, instead of deleting.
+
+    The shared outcome of the hard-delete history guards (transaction history
+    and posting-ledger history): flash *reason*, flip ``is_active`` to False
+    idempotently, and commit under the optimistic lock.  Returns the Flask
+    response the caller returns directly.
+
+    Args:
+        account: The owned Account being archived.
+        account_id: Its id (for the stale-conflict log label and redirect).
+        reason: The user-facing flash message explaining the archive.
+
+    Returns:
+        A Flask redirect response, or the stale-conflict response when a
+        concurrent update bumped the row's version.
+    """
+    flash(reason, "warning")
+    if account.is_active:
+        account.is_active = False
+        conflict = commit_or_handle_stale(StaleConflictContext(
+            logger=logger,
+            log_label="hard_delete_account archive-fallback",
+            log_id=account_id,
+            flash_message=(
+                "This account was changed by another action.  "
+                "Please reload the page and try again."
+            ),
+            redirect=RedirectTarget("savings.dashboard"),
+        ))
+        if conflict is not None:
+            return conflict
+    return redirect(url_for("savings.dashboard"))
+
+
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
 @login_required
 @require_owner
@@ -520,6 +555,10 @@ def hard_delete_account(account_id):
          same FK reason.
       4. History check -- any non-deleted Transaction referencing this
          account triggers archive-instead-of-delete.
+      5. Posting-ledger check -- any posting on this account's linked
+         ledger account (a settled transfer's immutable entries, which
+         survive a transfer delete) triggers archive-instead-of-delete,
+         even when no transaction history remains.
 
     Permanent delete cleanup:
       After all guards pass, remaining RESTRICT-FK rows must be
@@ -573,26 +612,28 @@ def hard_delete_account(account_id):
 
     # Guard 4: transaction history (any non-deleted transaction).
     if archive_helpers.account_has_history(account.id):
-        flash(
+        return _archive_instead_of_delete(
+            account, account_id,
             f"'{account.name}' has transaction history and cannot be permanently "
             "deleted. It has been archived instead.",
-            "warning",
         )
-        if account.is_active:
-            account.is_active = False
-            conflict = commit_or_handle_stale(StaleConflictContext(
-                logger=logger,
-                log_label="hard_delete_account archive-fallback",
-                log_id=account_id,
-                flash_message=(
-                    "This account was changed by another action.  "
-                    "Please reload the page and try again."
-                ),
-                redirect=RedirectTarget("savings.dashboard"),
-            ))
-            if conflict is not None:
-                return conflict
-        return redirect(url_for("savings.dashboard"))
+
+    # Guard 5: posting-ledger history (Build-Order Step 2).  A settled
+    # transfer wrote balanced journal entries onto this account's linked
+    # ledger account; they are immutable history that survives a transfer
+    # delete (``journal_entries.transfer_id`` SET NULL), so the account can
+    # still hold posting legs after its transactions are gone (e.g. its ad-hoc
+    # transfer was hard-deleted).  Hard-deleting it would CASCADE-delete only
+    # its own legs and strand the paired legs as unbalanced single-leg entries
+    # (the balanced trigger does not fire on DELETE), so archive instead --
+    # restoring the LedgerAccount cascade-imbalance impossibility premise
+    # (``app/models/ledger_account.py``).
+    if archive_helpers.account_has_ledger_postings(account.id):
+        return _archive_instead_of_delete(
+            account, account_id,
+            f"'{account.name}' has posting-ledger history and cannot be "
+            "permanently deleted. It has been archived instead.",
+        )
 
     # All guards passed -- permanently delete.
     # Step 1: delete remaining Transfer rows (soft-deleted or ghost
