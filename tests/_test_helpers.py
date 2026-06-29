@@ -5,6 +5,8 @@ Underscore-prefixed module name keeps pytest from collecting it as a
 test file.  Import functions from here in test modules that need them.
 """
 
+import importlib.util
+import pathlib
 import re
 import sys
 
@@ -635,13 +637,71 @@ def ledger_accounts_for_account(db_session, account_id):
     )
 
 
+def load_migration_module(filename):
+    """Load an Alembic migration module by filename via importlib.
+
+    ``migrations/versions`` has no ``__init__``, so a migration cannot be
+    imported as an ordinary package member.  This loads one by absolute path so
+    a test can invoke a migration's module-level helpers directly (e.g. the
+    posting-ledger backfill's ``_backfill_settled_transfers``).  Shared by the
+    posting-ledger backfill suite and the Commit-6 reconciliation oracle so the
+    importlib boilerplate lives in one place (a duplicate-code finding).
+
+    Args:
+        filename: The migration module's filename (e.g.
+            ``"db239773c2fd_create_journal_entries_account_postings_.py"``),
+            resolved under ``<repo>/migrations/versions``.
+
+    Returns:
+        The loaded migration module object.
+    """
+    versions_dir = (
+        pathlib.Path(__file__).resolve().parents[1] / "migrations" / "versions"
+    )
+    path = versions_dir / filename
+    spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def clear_postings_for_transfer(transfer_id):
+    """Delete a transfer's posted journal entries and legs (raw SQL).
+
+    The posting ledger is append-only (the ORM blocks deletes on
+    ``budget.journal_entries`` / ``budget.account_postings``), so this clears a
+    transfer's auto-posted entries via raw SQL.  Used by the posting-ledger
+    suites to reproduce the pre-ledger historical state the Commit-3 backfill
+    targets: Commit 5 auto-posts on settle, so a settled transfer already
+    carries go-forward postings; clearing them lets the backfill genuinely
+    re-post (rather than no-opping on its ``NOT EXISTS`` guard).  Legs are
+    deleted before the header for explicitness (the FK CASCADE would do it
+    either way).  Commits.
+
+    Args:
+        transfer_id: The transfer whose posted entries and legs to remove.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+
+    db.session.execute(db.text(
+        "DELETE FROM budget.account_postings WHERE journal_entry_id IN "
+        "(SELECT id FROM budget.journal_entries WHERE transfer_id = :t)"
+    ), {"t": transfer_id})
+    db.session.execute(db.text(
+        "DELETE FROM budget.journal_entries WHERE transfer_id = :t"
+    ), {"t": transfer_id})
+    db.session.commit()
+
+
 _UNSET_PAID_AT = object()
 
 
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), actual_amount=None,
-    paid_at=_UNSET_PAID_AT, name=None,
+    paid_at=_UNSET_PAID_AT, name=None, scenario=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
@@ -677,6 +737,11 @@ def create_settled_transfer(
             ``None`` explicitly to settle with a NULL ``paid_at`` (the
             historical state the backfill's period-start fallback covers).
         name: Optional transfer display name.
+        scenario: The :class:`~app.models.scenario.Scenario` to place the
+            transfer (and both shadows) in.  Defaults to ``None``, which uses
+            the seed user's baseline scenario (``seed_user["scenario"]``);
+            pass a non-baseline scenario to exercise multi-scenario isolation
+            (the Commit-6 reconciliation oracle).
 
     Returns:
         The settled (Paid) parent :class:`~app.models.transfer.Transfer`.
@@ -688,13 +753,16 @@ def create_settled_transfer(
     from app.extensions import db
     from app.services import transfer_service
 
+    scenario_id = (
+        seed_user["scenario"].id if scenario is None else scenario.id
+    )
     transfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
             user_id=seed_user["user"].id,
             from_account_id=from_account.id,
             to_account_id=to_account.id,
             pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
+            scenario_id=scenario_id,
             amount=amount,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,

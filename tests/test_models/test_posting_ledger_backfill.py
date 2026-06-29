@@ -11,11 +11,11 @@ invokes the migration's idempotent
 ``ledger_accounts`` / ``loan_anchor_events`` backfill tests use.
 
 Since Commit 5 wires the transfer service to auto-post on settle, each
-settled-transfer test first clears those go-forward postings (raw SQL, via
-:func:`_clear_postings_for` -- the ORM blocks deletes on the append-only
-tables) to reproduce the pre-ledger historical state the backfill targets;
-otherwise the backfill's ``NOT EXISTS`` guard would no-op and the test would
-assert on the auto-posted entry instead of the backfilled one.
+settled-transfer test first clears those go-forward postings (raw SQL, via the
+shared ``clear_postings_for_transfer`` helper -- the ORM blocks deletes on the
+append-only tables) to reproduce the pre-ledger historical state the backfill
+targets; otherwise the backfill's ``NOT EXISTS`` guard would no-op and the test
+would assert on the auto-posted entry instead of the backfilled one.
 
 The asserted invariants:
 
@@ -45,7 +45,6 @@ conflicts with the session-scoped ``ref_cache`` refresh in an xdist worker).
 # pattern; bodies bind fixtures by name.
 from __future__ import annotations
 
-import importlib.util
 import pathlib
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -58,35 +57,30 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services import transfer_service
 from tests._test_helpers import (
+    clear_postings_for_transfer,
     create_account_of_type,
     create_settled_transfer,
     ledger_accounts_for_account,
+    load_migration_module,
 )
 
 
 # ---------------------------------------------------------------------------
-# Migration module loader (migrations/versions has no __init__)
+# Migration module under test (migrations/versions has no __init__)
 # ---------------------------------------------------------------------------
 
 
+# ``_MIGRATIONS_DIR`` / ``_MIGRATION_FILENAME`` are retained for the
+# source-level downgrade check (``TestDowngradeReversible``), which reads the
+# migration file's TEXT rather than loading it as a module.  Loading the module
+# (to invoke its backfill) goes through the shared ``load_migration_module``.
 _MIGRATIONS_DIR = (
     pathlib.Path(__file__).resolve().parents[2] / "migrations" / "versions"
 )
 _MIGRATION_FILENAME = (
     "db239773c2fd_create_journal_entries_account_postings_.py"
 )
-
-
-def _load_migration(filename):
-    """Load an Alembic migration module by path via importlib."""
-    path = _MIGRATIONS_DIR / filename
-    spec = importlib.util.spec_from_file_location(path.stem, str(path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_MIGRATION = _load_migration(_MIGRATION_FILENAME)
+_MIGRATION = load_migration_module(_MIGRATION_FILENAME)
 
 
 # ---------------------------------------------------------------------------
@@ -123,31 +117,6 @@ def _legs_by_ledger(entry_id):
 def _ledger_id(account):
     """Return the linked ledger account id for *account*."""
     return ledger_accounts_for_account(_db.session, account.id)[0].id
-
-
-def _clear_postings_for(transfer_id):
-    """Delete a transfer's auto-posted ledger entries and legs (raw SQL).
-
-    Commit 5 wires the transfer service to auto-post on settle, so a settled
-    transfer built through ``transfer_service`` already carries its go-forward
-    postings.  The backfill, by contrast, exists to post HISTORICAL settled
-    transfers that predate the ledger and so have NONE (the migration runs
-    before the Commit-5 code is live in production).  This clears the
-    auto-posted entries and legs -- raw SQL, because the ORM blocks deletes on
-    the append-only tables -- reproducing that pre-ledger historical
-    precondition so the backfill genuinely posts (rather than no-opping on its
-    ``NOT EXISTS`` guard) and the test asserts on the BACKFILLED entry, not the
-    auto-posted one.  Legs are deleted before the header for explicitness (the
-    FK CASCADE would do it either way).
-    """
-    _db.session.execute(_db.text(
-        "DELETE FROM budget.account_postings WHERE journal_entry_id IN "
-        "(SELECT id FROM budget.journal_entries WHERE transfer_id = :t)"
-    ), {"t": transfer_id})
-    _db.session.execute(_db.text(
-        "DELETE FROM budget.journal_entries WHERE transfer_id = :t"
-    ), {"t": transfer_id})
-    _db.session.commit()
 
 
 @pytest.fixture()
@@ -194,7 +163,7 @@ class TestBackfillPostsBalancedEntry:
 
             # Commit-5 auto-posted on settle; clear to the pre-ledger historical
             # state so the backfill genuinely posts the entry.
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             posted = _run_backfill()
             assert posted == [transfer.id]
 
@@ -237,7 +206,7 @@ class TestBackfillPostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             mortgage_ledger = _ledger_id(mortgage)
 
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             legs = _legs_by_ledger(entry.id)
@@ -265,7 +234,7 @@ class TestBackfillPostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
 
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             _run_backfill()
             legs = _legs_by_ledger(_entry_for_transfer(transfer.id).id)
             assert legs[checking_ledger] == Decimal("-97.50")
@@ -288,7 +257,7 @@ class TestBackfillEntryDate:
                 paid_at=datetime(2026, 5, 10, 14, 30, tzinfo=timezone.utc),
             )
             _db.session.commit()
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             assert entry.entry_date == date(2026, 5, 10)
@@ -309,7 +278,7 @@ class TestBackfillEntryDate:
                 period, amount=Decimal("100.00"), paid_at=None,
             )
             _db.session.commit()
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             assert entry.entry_date == period.start_date
@@ -383,7 +352,7 @@ class TestBackfillExclusions:
             # Clear the settle auto-post + soft-delete auto-reversal to the
             # pre-ledger state, then confirm the backfill excludes the
             # soft-deleted transfer (posts nothing).
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             assert _run_backfill() == []
             assert _entry_for_transfer(transfer.id) is None
 
@@ -424,7 +393,7 @@ class TestBackfillIdempotency:
             _db.session.commit()
 
             # Clear the Commit-5 auto-post so the backfill itself runs.
-            _clear_postings_for(transfer.id)
+            clear_postings_for_transfer(transfer.id)
             first = _run_backfill()
             second = _run_backfill()
             assert first == [transfer.id]

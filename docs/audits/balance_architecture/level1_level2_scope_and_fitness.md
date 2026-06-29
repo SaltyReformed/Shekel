@@ -632,3 +632,45 @@ date-precise cash reserved for the explicit cash-flow scalar. The implementation
 (`implementation_plan_level1_balance_seam.md`) carries the full per-commit record and the Commit-10
 adversarial-review outcome. The presentation gates and the deferred kind-correct-grid feature
 (`followup_kind_correct_grid_interest.md`) remain as the fitness doc planned.
+
+**Build-Order Step 2 (Level 2: the append-only double-entry posting ledger + chart of accounts,
+piloted on transfers) -- CODE-COMPLETE (2026-06-28)** on `feat/posting-ledger-transfers` (off `dev`,
+all six commits green; pending the `dev -> main` PR so CI runs). The implementation plan
+(`implementation_plan_posting_ledger_transfers.md`) carries the full per-commit record. What shipped,
+exactly as Option D prescribes (confirmed facts only; reads unchanged; the legacy tables never
+dropped):
+
+- **Three `ref` catalogues** (`ledger_account_classes` with an `is_debit_normal` flag,
+  `posting_kinds`, `posting_sources`) + enums + `ref_cache` accessors (Commit 1).
+- **`budget.ledger_accounts`** -- the chart of accounts, one Asset/Liability ledger account paired
+  per real account by a `create_account` sync hook and a historical backfill; class derived from the
+  account-type category by ID, never name (Commit 2).
+- **`budget.journal_entries` + `budget.account_postings`** -- the append-only ledger: one signed
+  `Numeric(12,2)` `amount` (debit-positive / credit-negative, the only signed money column),
+  `before_update`/`before_delete` ORM immutability guards (corrections are reversing entries, never
+  edits), and the genuinely-new mechanism: a DEFERRABLE INITIALLY DEFERRED constraint trigger
+  (`ck_account_postings_balanced`, centralised in `app/posting_infrastructure.py`) enforcing per-entry
+  `SUM(amount)=0` and `COUNT>=2` at COMMIT. A raw-SQL migration backfills one balanced entry per
+  historical settled, non-deleted transfer, making the oracle production-wide (Commit 3).
+- **`app/services/posting_service.py`** -- the sole writer: `sync_transfer_postings(xfer, settled=)`
+  reconciles a transfer's net posted effect to its target by emitting ONE balanced delta entry,
+  idempotent across the whole lifecycle (settle / revert / archive / cancel / delete / restore). The
+  posted magnitude is the SHADOW's `effective_amount` (`COALESCE(actual, estimated)`), not
+  `transfers.amount` -- the value the balance calculator, the backfill, and the oracle all agree on
+  (Commit 4).
+- **Lifecycle wiring** at the three transfer chokepoints (`update_transfer` END, delete-reverse-before,
+  restore-repost-after), gated on `is_settled` (Commit 5). A separate guard fix archives (never
+  hard-deletes) any account whose ledger has postings.
+- **The reconciliation oracle** (`tests/test_integration/test_posting_ledger_reconciliation.py`,
+  Commit 6): per-account reconciliation (asset + liability + divergent-actual), per-entry balance,
+  global trial balance, multi-scenario isolation, owner-via-`journal_entry.user_id` isolation, and
+  backfilled-vs-go-forward agreement, and a per-transfer completeness check (no settled transfer is
+  silently unposted) -- each non-tautological (hand-computed literals + independent cross-table
+  queries + the service helpers) with two adversarial cases proving the checks are not vacuous. Full
+  suite **6510 passed**; `pylint app/ scripts/` 10.00.
+
+Reads are unchanged -- every balance still flows through the `balance_at` seam over
+`budget.transactions`; the ledger is a parallel, independently-checkable record of the
+confirmed-transfer subset, validated only by the oracle. Steps 3-5 (cash + envelope entries, loan
+payments, actuals reporting) extend the same `posting_service` and switch confirmed reads onto the
+ledger.
