@@ -9,26 +9,82 @@ accumulated debit-positive posting balance (Asset/Expense are
 debit-normal; Liability/Income/Equity are credit-normal -- see
 :class:`app.models.ref.LedgerAccountClass`).
 
-Two kinds of row coexist in one table:
+Four kinds of row coexist in one table, distinguished by ``account_id`` /
+``category_id`` / ``is_fallback`` (the distinction is storage-enforced --
+see the FK / index / CHECK rationale below):
 
-* **Linked rows** -- one per real ``budget.accounts`` row, created by the
-  account-create sync hook (``ledger_account_service``) and by the Step-2
-  backfill migration.  ``account_id`` is set; ``name`` is ``NULL`` and the
-  display label derives from the live ``account.name`` via the
-  relationship.  Every such row is Asset or Liability (derived from the
-  account-type category: Liability category -> Liability class; Asset,
-  Retirement, and Investment categories -> Asset class).
-* **Unlinked rows** -- Income/Expense/Equity ledger accounts that later
-  Build-Order steps add (category->expense-account promotion in Step 3,
-  reporting equity in Step 5).  ``account_id`` is ``NULL`` and ``name``
-  carries the canonical label.  None exist in Step 2.
+* **Linked rows** (``account_id`` set, ``category_id`` NULL,
+  ``is_fallback`` False) -- one per real ``budget.accounts`` row, created
+  by the account-create sync hook (``ledger_account_service``) and by the
+  Step-2 backfill migration.  ``name`` is ``NULL`` and the display label
+  derives from the live ``account.name`` via the relationship.  Every such
+  row is Asset or Liability (derived from the account-type category:
+  Liability category -> Liability class; Asset, Retirement, and Investment
+  categories -> Asset class).
+* **Category rows** (``account_id`` NULL, ``category_id`` set,
+  ``is_fallback`` False) -- one Income or Expense ledger account per budget
+  category per accounting class: the per-category chart of accounts the
+  cash-posting step (Build-Order Step 3) books an ordinary transaction's
+  counter-leg into.  ``name`` snapshots the category's ``display_name``
+  ("Group: Item") at creation, so renaming the budgeting category never
+  rewrites posted history; the ``category_id`` link still enables live
+  reporting grouping while the category exists.  A ``Category`` is
+  type-agnostic, so a category used for both an income and an expense
+  transaction correctly yields two rows -- one per class.
+* **Fallback rows** (``account_id`` NULL, ``category_id`` NULL,
+  ``is_fallback`` True) -- the per-user ``Uncategorized Income`` /
+  ``Uncategorized Expense`` buckets (exactly one per owner per class) that
+  catch a settled transaction whose ``category_id`` is NULL.  ``name``
+  carries the canonical label.  The ``is_fallback`` flag is what marks a
+  row as *the* fallback.
+* **Orphan rows** (``account_id`` NULL, ``category_id`` NULL,
+  ``is_fallback`` False) -- a former **category row** whose budget category
+  was later deleted: ``category_id`` is SET NULL but the row, its ``name``
+  snapshot, and its immutable postings persist (a permanent, now-inactive
+  chart entry -- the accounting analogue of a retired expense account).
+  Orphans are deliberately NOT unique: any number coexist with one another
+  and with the fallback of the same class.
+
+**Why ``is_fallback`` exists.**  A fallback and an orphan are BOTH
+``(account_id NULL, category_id NULL)`` -- nothing in those two columns
+tells them apart.  Without a discriminator, a per-(owner, class) singleton
+over the NULL/NULL space would (a) forbid a second retired category of a
+class, and worse (b) make a category delete's ``category_id`` SET NULL
+*fail at the database* the moment the orphan it produces lands on an
+existing fallback of that class -- the SET NULL is part of the DELETE, so
+the whole category delete would raise.  ``is_fallback`` confines the
+singleton to the true fallback, so a deleted category becomes a
+freely-coexisting orphan and the delete always succeeds.
+
+The four kinds are mutually exclusive at the storage tier:
+``ck_ledger_accounts_account_or_category_null`` forbids setting both
+``account_id`` and ``category_id``; ``ck_ledger_accounts_fallback_shape``
+forbids ``is_fallback`` on anything but the NULL/NULL shape; and each
+*constrained* kind has its own partial unique index -- one linked row per
+account (``uq_ledger_accounts_account``), one category row per
+``(user, category, class)`` (``uq_ledger_accounts_category``), one fallback
+per ``(user, class)`` (``uq_ledger_accounts_uncategorized``, keyed
+``WHERE is_fallback``).  Orphans carry no uniqueness by design.
+
+**Reconciliation of orphans** (a forward note for Build-Order Step 8's
+oracle).  An orphan still holds the immutable postings made while its
+category was live, but the transactions that produced them now read
+``category_id IS NULL`` (``transactions.category_id`` is itself SET NULL on
+category delete).  So the counter-leg reconciliation must follow the
+postings' ``transaction_id`` linkage on the journal entries (which row
+posted to which ledger account), NOT a ``category_id`` match (the category
+is gone): that formulation reconciles an orphan against exactly the
+transactions whose legs landed on it, and the fallback against the
+still-uncategorized remainder.
 
 The ``name`` column is display-only and is never used for logic
 (IDs-for-logic invariant).  The display rule is
 ``COALESCE(account.name, ledger_account.name)``: a linked row reads the
-live account name, an unlinked row reads its own.  The
-``ck_ledger_accounts_name_present`` CHECK guarantees at least one of the
-two is present so the display rule can never resolve to NULL.
+live account name, a category / fallback / orphan row reads its own
+snapshot.  The ``ck_ledger_accounts_name_present`` CHECK guarantees at
+least one of the two is present so the display rule can never resolve to
+NULL -- and because a non-linked row has ``account_id`` NULL, that CHECK
+forces it to carry a ``name``.
 
 **Write-once, not append-only.**  Rows are created by the sync hook /
 backfill and never edited afterwards: ``class_id`` and ``account_id`` are
@@ -59,6 +115,19 @@ the paired row, cleanly.
 ``ref.ledger_account_classes`` rows are non-removable application
 invariants: a successful class delete would strand every ledger account
 in that class.
+
+``category_id`` is ``ON DELETE SET NULL`` (the same action
+``budget.transactions.category_id`` uses).  A category ledger account
+accumulates immutable postings, so the ledger account itself can never be
+deleted; when the budgeting category it snapshots is deleted, clearing the
+back-link (and keeping the ``name`` snapshot) turns the row into an
+**orphan** (``is_fallback`` stays False, so it freely coexists with the
+fallback and any other orphans -- see the row-kind taxonomy and the
+"Why ``is_fallback`` exists" note above; without that discriminator this
+SET NULL would collide with the per-(owner, class) fallback singleton and
+abort the category delete).  RESTRICT would wrongly forbid deleting a
+category that has posted history.  Like ``account``, the relationship is
+one-directional (no backref on ``Category``).
 """
 
 from app.extensions import db
@@ -70,22 +139,25 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
 
     Carries the owning ``user_id`` (tenancy), a ``class_id`` fixing the
     accounting class, an optional ``account_id`` linking it 1:1 to a real
-    ``budget.accounts`` row, and an optional display ``name`` (set only on
-    unlinked Income/Expense/Equity rows).  See the module docstring for
-    the linked/unlinked row split, the display rule, and the FK-action
-    impossibility argument that keeps CASCADE safe.
+    ``budget.accounts`` row, an optional ``category_id`` linking a
+    per-category Income/Expense row to its budget category, an
+    ``is_fallback`` flag marking the per-(owner, class) Uncategorized
+    bucket, and an optional display ``name`` (set on the non-linked
+    category / fallback / orphan rows; a linked row derives its label from
+    ``account.name``).  See the module docstring for the
+    linked/category/fallback/orphan row split, why ``is_fallback`` exists,
+    the display rule, and the FK-action rationale (the CASCADE
+    impossibility argument for ``account_id`` and the SET NULL disposal for
+    ``category_id``).
     """
 
     __tablename__ = "ledger_accounts"
     __table_args__ = (
         # Exactly one *linked* ledger account per real account.  Partial
         # (``WHERE account_id IS NOT NULL``) so it constrains only linked
-        # rows; the unlinked Income/Expense/Equity rows later steps add all
-        # carry NULL ``account_id`` and fall outside this index.  Uniqueness
-        # among unlinked rows (e.g. one expense account per category) is
-        # intentionally deferred to the step that first writes them -- its
-        # natural key (name vs. category_id) is a Step-3 design decision, not
-        # presumed here.  The ``postgresql_where`` text matches the
+        # rows; the non-linked category/fallback/orphan rows all carry NULL
+        # ``account_id`` and fall outside this index (they have their own
+        # uniques below).  The ``postgresql_where`` text matches the
         # migration's index DDL byte-for-byte so autogenerate produces no
         # spurious diff.
         db.Index(
@@ -94,13 +166,70 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
             unique=True,
             postgresql_where=db.text("account_id IS NOT NULL"),
         ),
+        # Exactly one *category* ledger account per (owner, category,
+        # class).  Partial (``WHERE category_id IS NOT NULL AND account_id
+        # IS NULL``) so it constrains only category rows.  Keyed on
+        # ``class_id`` as well as ``category_id`` because a type-agnostic
+        # category used for both income and expense correctly yields two
+        # rows (Income-class + Expense-class); each is a distinct chart
+        # entry.  All three indexed columns are non-NULL within the
+        # predicate's scope, so ordinary (NULL-distinct) unique semantics
+        # apply cleanly.
+        db.Index(
+            "uq_ledger_accounts_category",
+            "user_id", "category_id", "class_id",
+            unique=True,
+            postgresql_where=db.text(
+                "category_id IS NOT NULL AND account_id IS NULL"
+            ),
+        ),
+        # Exactly one *fallback* ledger account per (owner, class) -- one
+        # Uncategorized-Income and one Uncategorized-Expense per user.  Keyed
+        # ``WHERE is_fallback`` (NOT ``WHERE category_id IS NULL``) so the
+        # singleton confines itself to the true fallback: a deleted-category
+        # ORPHAN is also ``(account_id NULL, category_id NULL)`` but carries
+        # ``is_fallback`` False, so it stays outside this index and any number
+        # of orphans coexist with the fallback (see the module docstring's
+        # "Why is_fallback exists" -- keying on ``category_id IS NULL`` would
+        # instead make a category delete's SET NULL collide here and abort).
+        # ``ck_ledger_accounts_fallback_shape`` guarantees an ``is_fallback``
+        # row has the NULL/NULL shape, so the ``(user_id, class_id)`` key
+        # (both non-NULL) enforces the singleton cleanly.
+        db.Index(
+            "uq_ledger_accounts_uncategorized",
+            "user_id", "class_id",
+            unique=True,
+            postgresql_where=db.text("is_fallback"),
+        ),
         # At least one of (name, account_id) is present so the display
         # rule COALESCE(account.name, ledger_account.name) never resolves
         # to NULL: a linked row may omit ``name`` (derives it from
-        # ``account.name``); an unlinked row must carry one.
+        # ``account.name``); a category/fallback/orphan row (account_id NULL)
+        # must carry one.
         db.CheckConstraint(
             "name IS NOT NULL OR account_id IS NOT NULL",
             name="ck_ledger_accounts_name_present",
+        ),
+        # A row is EITHER linked to a real account OR a category bucket,
+        # never both: at most one of (account_id, category_id) is set
+        # (both-NULL is the legitimate fallback/orphan shape).  This makes
+        # the linked/category/fallback/orphan partition exhaustive and
+        # non-overlapping at the storage tier rather than by convention, so
+        # no writer bug can mint a both-set row that would slip outside the
+        # category uniqueness index.
+        db.CheckConstraint(
+            "account_id IS NULL OR category_id IS NULL",
+            name="ck_ledger_accounts_account_or_category_null",
+        ),
+        # ``is_fallback`` marks ONLY the Uncategorized fallback bucket, which
+        # by definition has neither a real account nor a category.  Forbidding
+        # ``is_fallback`` on any other shape keeps the flag a true discriminator
+        # (so the fallback singleton index above cannot be subverted by a
+        # linked/category row flagged ``is_fallback``) and lets that index key
+        # simply ``WHERE is_fallback``.
+        db.CheckConstraint(
+            "NOT is_fallback OR (account_id IS NULL AND category_id IS NULL)",
+            name="ck_ledger_accounts_fallback_shape",
         ),
         # Ownership-filtered queries (reconciliation, reporting) scan by
         # user_id.
@@ -137,10 +266,43 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=True,
     )
+    # The budget category this Income/Expense ledger account books, or NULL
+    # on a linked Asset/Liability row, on the per-user Uncategorized
+    # fallback, and on a deleted-category orphan.  SET NULL on category
+    # delete (see the module docstring's FK-action rationale): the immutable
+    # postings keep the ledger account alive, so clearing the link and
+    # retaining the ``name`` snapshot is the correct disposal (producing an
+    # orphan).  Mutually exclusive with ``account_id``
+    # (``ck_ledger_accounts_account_or_category_null``).  Explicit
+    # convention FK name for the same reason as ``class_id`` (the naming
+    # convention is not installed on the metadata, so new FKs name
+    # themselves).
+    category_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.categories.id",
+            name="fk_ledger_accounts_category_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    # True ONLY on the per-(owner, class) Uncategorized fallback bucket;
+    # False on every linked, category, and deleted-category *orphan* row.
+    # The discriminator that lets ``uq_ledger_accounts_uncategorized`` apply
+    # the singleton to the true fallback while leaving orphans (also NULL/
+    # NULL, see the module docstring's "Why is_fallback exists") free to
+    # coexist -- which is what keeps a category delete's ``category_id`` SET
+    # NULL from colliding with the fallback.  ``ck_ledger_accounts_fallback_shape``
+    # ties it to the NULL/NULL shape.
+    is_fallback = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
     # Display-only label, never used for logic.  NULL on a linked row
-    # (display derives from ``account.name``); NOT NULL on an unlinked row
-    # (its canonical label).  The presence of one of the two is enforced
-    # by ``ck_ledger_accounts_name_present``.
+    # (display derives from ``account.name``); NOT NULL on a category /
+    # fallback / orphan row (its canonical label, snapshotted at creation).
+    # The presence of one of the two is enforced by
+    # ``ck_ledger_accounts_name_present``.
     name = db.Column(db.String(100), nullable=True)
     # user_id (NOT NULL, CASCADE FK to auth.users.id) from UserScopedMixin.
     # created_at (TIMESTAMPTZ NOT NULL DEFAULT now()) from CreatedAtMixin.
@@ -151,6 +313,14 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     # docstring).  Eager-loaded because the display rule reads
     # ``account.name`` whenever a ledger account is rendered.
     account = db.relationship("Account", lazy="joined")
+    # ``category`` is one-directional (no backref on Category) and
+    # ``lazy="select"`` (load on access, no eager JOIN): a category row's
+    # display label is its own ``name`` snapshot, never navigated through
+    # this relationship, so eager-loading would add a JOIN no display path
+    # consumes.  Kept for live reporting grouping (Step 5) while the
+    # category exists and for ORM navigation; the SET NULL on category
+    # delete leaves it resolving to None with the ``name`` snapshot intact.
+    category = db.relationship("Category", lazy="select")
     # ``lazy="select"`` (load on access, no eager JOIN): a reader gets the
     # class's natural-balance side from the cached
     # ``ref_cache.ledger_class_is_debit_normal`` accessor keyed by
@@ -163,5 +333,6 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     def __repr__(self):
         return (
             f"<LedgerAccount id={self.id} account_id={self.account_id} "
+            f"category_id={self.category_id} is_fallback={self.is_fallback} "
             f"class_id={self.class_id}>"
         )

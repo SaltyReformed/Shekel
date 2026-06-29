@@ -1,4 +1,5 @@
-"""Tests for the JournalEntry + Posting models (Build-Order Step 2, Commit 3).
+"""Tests for the JournalEntry + Posting models (Build-Order Step 2, Commit 3;
+the ``transaction_id`` source link added Step 3, Commit 2).
 
 ``budget.journal_entries`` (event headers) and ``budget.account_postings``
 (signed, debit-positive legs) are the append-only double-entry ledger.  These
@@ -9,10 +10,11 @@ jointly guarantee:
     DELETE raises the model's named immutable error;
   * a posting leg's ``amount`` may not be zero (``ck_account_postings_amount_nonzero``);
   * NOT NULL columns are enforced at the storage tier;
-  * ``transfer_id`` is SET NULL on a source-transfer delete (the immutable
-    posted fact survives), while the tenancy CASCADE (a deleted pay period)
-    disposes of the entry AND its legs -- a database-level cascade that runs
-    outside the ORM and so is NOT blocked by the immutability guards;
+  * ``transfer_id`` (and, Step 3, ``transaction_id``) is SET NULL on a
+    source delete (the immutable posted fact survives), while the tenancy
+    CASCADE (a deleted pay period) disposes of the entry AND its legs -- a
+    database-level cascade that runs outside the ORM and so is NOT blocked
+    by the immutability guards;
   * ``posting_kind_id`` / ``source_kind_id`` are RESTRICT (the seeded ref
     rows are non-removable invariants);
   * both tables are registered for auditing and their triggers fire.
@@ -44,6 +46,7 @@ from app.models.journal_entry import (
 )
 from app.models.pay_period import PayPeriod
 from tests._test_helpers import (
+    add_txn,
     create_account_of_type,
     create_settled_transfer,
     ledger_accounts_for_account,
@@ -62,13 +65,22 @@ def _ledger_id(session, account):
 
 def _make_balanced_entry(
     session, seed_user, *, from_ledger_id, to_ledger_id,
-    amount=Decimal("100.00"), transfer_id=None, period_id=None,
+    amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
+    source_kind=PostingSourceEnum.TRANSFER,
+    posting_kind=PostingKindEnum.TRANSFER, period_id=None,
 ):
     """Create and commit one balanced entry (two legs summing to zero).
 
     The from leg is ``-amount`` (credit), the to leg is ``+amount`` (debit),
     so the deferred balanced trigger passes at commit.  Returns the committed
     :class:`JournalEntry`.
+
+    ``source_kind`` / ``transfer_id`` / ``transaction_id`` / ``posting_kind``
+    default to the transfer shape (Step 2); a Step-3 transaction-sourced
+    entry passes ``source_kind=PostingSourceEnum.TRANSACTION``,
+    ``transaction_id=<id>``, and ``posting_kind=PostingKindEnum.EXPENSE`` (or
+    ``INCOME``).  Both concrete FKs default to ``None`` so a caller sets
+    exactly the one its source kind implies.
     """
     if period_id is None:
         period_id = seed_user["bootstrap_period"].id
@@ -77,13 +89,14 @@ def _make_balanced_entry(
         scenario_id=seed_user["scenario"].id,
         pay_period_id=period_id,
         entry_date=date(2026, 1, 15),
-        source_kind_id=ref_cache.posting_source_id(PostingSourceEnum.TRANSFER),
+        source_kind_id=ref_cache.posting_source_id(source_kind),
         transfer_id=transfer_id,
+        transaction_id=transaction_id,
         description="Test entry",
     )
     session.add(entry)
     session.flush()
-    kind_id = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+    kind_id = ref_cache.posting_kind_id(posting_kind)
     session.add(Posting(
         journal_entry_id=entry.id, ledger_account_id=from_ledger_id,
         amount=-amount, posting_kind_id=kind_id,
@@ -321,6 +334,58 @@ class TestForeignKeyActions:
             )
             assert survived.transfer_id is None, (
                 "the entry's transfer back-link must be SET NULL, not cascaded"
+            )
+            # Both legs survive too.
+            assert (
+                _db.session.query(Posting)
+                .filter_by(journal_entry_id=entry_id)
+                .count() == 2
+            )
+
+    def test_transaction_delete_sets_transaction_id_null(
+        self, app, db, seed_user, two_ledgers,
+    ):
+        """Deleting a source transaction SET-NULLs the entry's transaction_id.
+
+        The Step-3 analog of the transfer SET NULL above: an ordinary
+        transaction's posted journal entry is immutable history and must
+        survive a hard delete of its source transaction with only the
+        back-link cleared.  The FK SET NULL is a database-level action run
+        outside the ORM, so the ``before_update`` immutability guard does not
+        fire (the same mechanism the transfer case relies on).
+        """
+        from_ledger, to_ledger = two_ledgers
+        with app.app_context():
+            txn = add_txn(
+                _db.session, seed_user, seed_user["bootstrap_period"],
+                "Posted expense", "50.00", category_key="Groceries",
+            )
+            _db.session.commit()
+            txn_id = txn.id
+            entry = _make_balanced_entry(
+                _db.session, seed_user,
+                from_ledger_id=from_ledger, to_ledger_id=to_ledger,
+                source_kind=PostingSourceEnum.TRANSACTION,
+                transaction_id=txn_id,
+                posting_kind=PostingKindEnum.EXPENSE,
+            )
+            entry_id = entry.id
+
+            # Delete the source transaction at the storage tier.
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.transactions WHERE id = :t"
+            ), {"t": txn_id})
+            _db.session.commit()
+            _db.session.expire_all()
+
+            survived = _db.session.get(JournalEntry, entry_id)
+            assert survived is not None, (
+                "the immutable journal entry must survive a source-"
+                "transaction delete"
+            )
+            assert survived.transaction_id is None, (
+                "the entry's transaction back-link must be SET NULL, not "
+                "cascaded"
             )
             # Both legs survive too.
             assert (
