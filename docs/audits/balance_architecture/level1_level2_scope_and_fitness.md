@@ -634,8 +634,10 @@ adversarial-review outcome. The presentation gates and the deferred kind-correct
 (`followup_kind_correct_grid_interest.md`) remain as the fitness doc planned.
 
 **Build-Order Step 2 (Level 2: the append-only double-entry posting ledger + chart of accounts,
-piloted on transfers) -- CODE-COMPLETE (2026-06-28)** on `feat/posting-ledger-transfers` (off `dev`,
-all six commits green; pending the `dev -> main` PR so CI runs). The implementation plan
+piloted on transfers) -- SHIPPED TO PROD (2026-06-28)** via PR #48 (merge commit `9780464` ->
+docker-publish `8f95fcb6` -> shekel-deploy `fe4f76bd`->`8f95fcb6` healthy; the three Step-2 migrations
+applied on the prod DB and the prod ledger reconciles -- per-entry, per-account, and per-transfer
+checks all clean on real production data; `dev` == `main`). The implementation plan
 (`implementation_plan_posting_ledger_transfers.md`) carries the full per-commit record. What shipped,
 exactly as Option D prescribes (confirmed facts only; reads unchanged; the legacy tables never
 dropped):

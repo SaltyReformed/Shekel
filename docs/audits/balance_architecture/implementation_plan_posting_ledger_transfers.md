@@ -1,11 +1,14 @@
 # Implementation plan: posting ledger + chart of accounts, piloted on transfers
 
-**Status:** CODE-COMPLETE (2026-06-28). All six commits landed on
-`feat/posting-ledger-transfers` (off `dev`), each green and `code-reviewer`-clean; the Commit-6
-reconciliation oracle (`tests/test_integration/test_posting_ledger_reconciliation.py`) is in and
-non-tautological; full suite **6510 passed**; `pylint app/ scripts/` 10.00. Reads remain on the
-`balance_at` seam (coexistence). NEXT: open the `dev -> main` PR so CI runs (CI does not run on `dev`
-pushes); see the completion record in `level1_level2_scope_and_fitness.md` (Status section).
+**Status:** SHIPPED TO PROD (2026-06-28) via PR #48 (merge commit `9780464`; prod digest `8f95fcb6`).
+All six commits + the guard fix landed on `feat/posting-ledger-transfers` -> `dev` -> `main`, each
+green and `code-reviewer`-clean; the Commit-6 reconciliation oracle
+(`tests/test_integration/test_posting_ledger_reconciliation.py`) is in and non-tautological; full
+suite **6510 passed**; `pylint app/ scripts/` 10.00; CI green on the PR. The three Step-2 migrations
+applied on the prod DB and the prod ledger reconciles on real data (per-entry / per-account /
+per-transfer checks all clean). Reads remain on the `balance_at` seam (coexistence). NEXT: Build-Order
+Step 3 (post confirmed cash transactions + cleared envelope entries at settle). See the completion
+record in `level1_level2_scope_and_fitness.md` (Status section).
 **Build-Order Step 2** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section).
 **Enabled by:** Build-Order Step 1 (the `balance_at` seam, shipped to prod in PR #45) and the
