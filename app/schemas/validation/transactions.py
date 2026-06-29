@@ -80,7 +80,13 @@ class TransactionCreateSchema(BaseSchema):
     scenario_id = fields.Integer(required=True)
     category_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
-    status_id = fields.Integer()
+    # No ``status_id``: a transaction is born Projected (the route assigns it
+    # unconditionally).  The only path to a settled status is the status seam
+    # (``status_seam.apply_status_change``), so a submitted status is dropped by
+    # ``unknown=EXCLUDE`` rather than minting a born-settled row that
+    # would have a NULL ``paid_at``, bypass ``verify_transition``, and post
+    # nothing to the ledger.  Record an already-paid item by creating it
+    # Projected, then marking it done.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
     # Ad-hoc tracking / visibility flags.  load_default=False so a create
@@ -117,7 +123,9 @@ class InlineTransactionCreateSchema(BaseSchema):
     pay_period_id = fields.Integer(required=True)
     transaction_type_id = fields.Integer(required=True)
     scenario_id = fields.Integer(required=True)
-    status_id = fields.Integer()
+    # No ``status_id``: born Projected (see TransactionCreateSchema).  A
+    # submitted status is dropped by ``unknown=EXCLUDE``; the route assigns
+    # Projected and the status seam owns every later transition.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     # Ad-hoc tracking / visibility flags.  load_default=False so the
     # quick-create form (which omits these controls) defaults to off.

@@ -11,10 +11,12 @@ init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); 
 # Load the docparams extension (param/return description enforcement) plus the
 # project's own checkers in tools/pylint/shekel_checkers.py:
 # shekel-decimal-from-float, shekel-refname-compare, shekel-bare-money-quantize,
-# shekel-disable-rationale, shekel-original-principal-as-balance, and
+# shekel-disable-rationale, shekel-original-principal-as-balance,
 # shekel-balance-producer-bypass (every balance read must go through the
-# app.services.balance_at seam). See docs/coding-standards.md (Type Safety,
-# Reference Tables) for the rules they enforce.
+# app.services.balance_at seam), and shekel-transaction-status-bypass (every
+# Transaction.status_id change must go through the
+# transaction_service.apply_status_change seam). See docs/coding-standards.md
+# (Type Safety, Reference Tables) for the rules they enforce.
 load-plugins=pylint.extensions.docparams,shekel_checkers
 
 [FORMAT]

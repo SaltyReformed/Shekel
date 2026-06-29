@@ -1,11 +1,12 @@
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
-**Status:** IN PROGRESS -- Commits 1-2 committed on `feat/posting-ledger-cash-envelopes` (not pushed):
-C1 `97bc03c2aa4c` (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback`
-discriminator -- see Section 4.2's H1 fix). C3 (the category/fallback resolver) is code-complete,
-staged, green, and `code-reviewer`-clean, awaiting the developer's commit approval (see the Commit 3
-As-built note for the four developer-approved/review-driven refinements). NEXT after the C3 commit =
-Commit 4 (the `posting_service.sync_transaction_postings` builder).
+**Status:** IN PROGRESS -- Commits 1-5 committed on `feat/posting-ledger-cash-envelopes` (not pushed):
+C1 (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback` discriminator
+-- see Section 4.2's H1 fix), C3 (the category/fallback resolver), C4 (the
+`posting_service.sync_transaction_postings` builder), C5 (the status-mechanics seam + the W9907
+bypass checker + born-Projected -- see the Commit 5 As-built note for the two developer-approved
+deviations). NEXT = Commit 6 (posting emission: reconcile once at each handler's end + the
+entry/delete hooks).
 **Build-Order Step 3** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section, build
 order item 3: "Post confirmed cash transactions and cleared envelope entries at settle").
@@ -802,7 +803,7 @@ Pure service, no wiring. This is where the 2.8 CRITICAL is structurally closed.
   class-independent and correct; owner from `txn.pay_period.user_id` (no `txn.user_id`); idempotency;
   no Flask import.
 
-### Commit 5 -- The status-mechanics seam + enforcement checker + born-Projected (no posting yet)
+### Commit 5 -- The status-mechanics seam + enforcement checker + born-Projected (no posting yet) -- DONE
 
 This closes the 2.8 stale-status HIGH and makes the status SSOT mechanical: settled state is reachable
 ONLY through the seam (status changes) and never at birth (creation). It is a behavior-preserving
@@ -810,6 +811,47 @@ refactor of working status logic (Rule 10: NO rewrite of the status semantics --
 guards, and statuses are unchanged; only the *call path* is centralized), plus two deliberate, verified
 fixes (the inline-PATCH `paid_at` stamp; born-Projected). **The seam does NOT post** -- it is pure
 status mechanics; ledger emission is Commit 6.
+
+**As-built note (two developer-approved deviations, both `code-reviewer`-confirmed sound).**
+1. **The seam lives in a NEW `app/services/status_seam.py` module, not `transaction_service`.** Placing
+   `apply_status_change` in `transaction_service` (as the plan below proposed) creates a real import
+   cycle -- `transaction_service` -> `entry_service` -> `entry_credit_workflow` -> `credit_workflow` ->
+   (the seam) -- that pylint flags as `cyclic-import` (R0401) the moment `credit_workflow` imports the
+   seam; a deferred import does NOT hide it (pylint counts function-local imports). The dedicated leaf
+   module (it imports only `state_machine`, `balance_predicates`, `db`, and the model) breaks the cycle
+   with zero `# pylint: disable`, lets `credit_workflow` import the seam at top level, and is the more
+   SOLID placement (a low-level primitive sits below its callers). `transaction_service` re-exports
+   `apply_status_change`, so the plan's `transaction_service.apply_status_change` name still resolves.
+   The W9907 allowlist is therefore `{app.services.status_seam, app.services.transfer_service}`.
+2. **`paid_at=None` means "derive from the new status", not the planned `_UNSET` sentinel.** A trace of
+   all six status callers confirmed none ever needs to clear `paid_at` *while settling* (the
+   explicit-None-to-clear pattern is transfer-only), so `None` is free to mean "derive" -- stamp now()
+   on the first entry into a settled status, preserve an existing stamp on a re-settle, clear on
+   leaving settled -- and the seam needs no sentinel. `settle_from_entries` forwards its `paid_at`
+   verbatim (its historical `None` -> now() fallback is preserved); carry-forward back-dating passes a
+   real datetime.
+
+What shipped: `app/services/status_seam.py` (the seam); `transaction_service.settle_from_entries`, the
+manual `mark_done` branch, the inline PATCH (`_apply_regular_update` -- `status_id` routed through the
+seam and the old `revert_paid_at` handling removed), `cancel_transaction`, and `mark_as_credit` /
+`unmark_credit` all rerouted; `shekel-transaction-status-bypass` (W9907) in
+`tools/pylint/shekel_checkers.py` (+ an extracted `_module_in_allowlist` helper shared with W9906)
+wired into `.pylintrc`, the per-edit hook, `ci.yml`, `.pre-commit-config.yaml`, and `CLAUDE.md`;
+born-Projected (dropped `status_id` from both create schemas, unconditional Projected in both create
+routes, removed the full-create Status `<select>` + `get_full_create`'s `statuses` query). The intended
+PATCH-settle `paid_at` stamp fix shipped (it previously left a PATCH-settled row's `paid_at` NULL).
+
+- **Tests:** `tests/test_services/test_status_seam.py` (8: paid_at derive/preserve/clear/explicit,
+  illegal-transition-no-mutation, status-relationship-fresh-after-expire, no-commit); 10 W9907 checker
+  cases in `test_shekel_checkers.py` (flag route + credit_workflow; allow seam + transfer_service +
+  every-seam-module + package-submodule; reject same-basename-elsewhere; ignore other-attr +
+  filing_status_id + value-side read); 4 route tests (PATCH-settle stamps `paid_at`, born-Projected
+  create x2, full-create renders no Status control); the renamed
+  `test_mark_done_idempotent_preserves_paid_at` now pins preservation (`==`, was `>=`).
+- **Outcome:** full suite 6588, `pylint app/ scripts/` 10.00/10 with every `--fail-on` checker (R0401
+  eliminated, no new messages), checker unit tests 72. One `code-reviewer` adversarial pass: 0 Critical
+  / 0 High / 0 Medium; 3 LOW/informational, the one actionable (a stale test name) fixed. No migration
+  (head unchanged at `db239773c2fd` -> Step-3's prior schema head; C5 adds none).
 
 - `app/services/transaction_service.py`: `apply_status_change(txn, new_status_id, *, paid_at=_UNSET)`
   (Section 5.2) -- `verify_transition` + status assign + `paid_at` set/clear + `expire(txn,

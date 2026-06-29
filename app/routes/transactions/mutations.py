@@ -29,7 +29,12 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import Status
-from app.services import credit_workflow, transaction_service, transfer_service
+from app.services import (
+    credit_workflow,
+    status_seam,
+    transaction_service,
+    transfer_service,
+)
 from app.services.state_machine import finalised_edit_rejection, verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
@@ -173,57 +178,54 @@ def _apply_shadow_update(txn, txn_id, data):
 
 
 def _resolve_status_change(txn, data):
-    """Validate a status transition and decide whether to clear paid_at.
+    """Validate a PATCH status transition early, before any column is mutated.
 
     Runs the status-dependent guards for a regular (non-shadow)
-    :func:`update_transaction` before any column is mutated: verifies
-    the requested transition through the state machine (F-161 / C-21),
-    blocks the Credit status on purchase-tracking transactions (credit
-    is per-entry, scope doc 5.2), and reports whether reverting to a
-    non-settled status should null ``paid_at``.  Looking the status up
-    here -- before the ``setattr`` loop dirties the session -- avoids an
-    autoflush firing an FK violation mid-validation.
+    :func:`update_transaction` before the ``setattr`` loop dirties the session:
+    verifies the requested transition through the state machine (F-161 / C-21)
+    and blocks the Credit status on purchase-tracking transactions (credit is
+    per-entry, scope doc 5.2).  Doing it here gives the precise 400 precedence
+    (an illegal transition reports before a finalised-field lock or an FK error)
+    and leaves the row untouched on rejection.  ``paid_at`` is NOT decided here:
+    the status seam (:func:`status_seam.apply_status_change`, invoked
+    once the field is applied) owns the stamp/clear and re-runs this same
+    verification as the single source of truth -- this early call exists purely
+    for error precedence.
 
     Args:
         txn: The Transaction being edited.
         data: The schema-loaded PATCH payload.
 
     Returns:
-        ``(revert_paid_at, None)`` when the change is allowed --
-        *revert_paid_at* is ``True`` when ``paid_at`` must be cleared --
-        or ``(False, (msg, 400))`` when a guard rejects the request, a
-        Flask response tuple the caller returns directly.
+        ``None`` when the status change is allowed (or absent), or a Flask
+        ``(msg, 400)`` response tuple the caller returns directly when a guard
+        rejects the request.
     """
     if "status_id" not in data:
-        return False, None
+        return None
 
-    # Verify the transition BEFORE any other status-dependent work
-    # (envelope guard, paid_at revert).  An illegal transition -- for
-    # example settled -> projected -- short-circuits the request with a
-    # 400 and leaves the row untouched.  Audit reference: F-161 /
+    # Verify the transition BEFORE any other status-dependent work.  An illegal
+    # transition -- for example settled -> projected -- short-circuits the
+    # request with a 400 and leaves the row untouched.  Audit reference: F-161 /
     # commit C-21 of the 2026-04-15 security remediation plan.
     try:
         verify_transition(
             txn.status_id, data["status_id"], context="transaction",
         )
     except ValidationError as exc:
-        return False, (str(exc), 400)
+        return str(exc), 400
 
     # Block Credit status on entry-capable transactions -- credit
     # handling is per-entry, not per-transaction (scope doc section 5.2).
     credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     if data["status_id"] == credit_id and txn.tracks_purchases:
-        return False, (
+        return (
             "Cannot set Credit status on transactions with individual "
             "purchase tracking. Use entry-level credit instead.",
             400,
         )
 
-    new_status = db.session.get(Status, data["status_id"])
-    revert_paid_at = bool(
-        new_status and not new_status.is_settled and txn.paid_at is not None
-    )
-    return revert_paid_at, None
+    return None
 
 
 def _apply_regular_update(txn, txn_id, data):
@@ -253,7 +255,7 @@ def _apply_regular_update(txn, txn_id, data):
         change, a locked-field edit of a finalised row (#26), the income
         purchase-tracking guard, or a bad FK.
     """
-    revert_paid_at, status_error = _resolve_status_change(txn, data)
+    status_error = _resolve_status_change(txn, data)
     if status_error is not None:
         return status_error
 
@@ -299,12 +301,23 @@ def _apply_regular_update(txn, txn_id, data):
         and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
     )
 
-    # Apply updates (regular transactions only).
+    # Apply non-status updates (regular transactions only).  ``status_id`` is
+    # excluded here and routed through the status seam below: a bare setattr
+    # would assign the column but skip the transition check, the paid_at
+    # stamp/clear, and the status-relationship expire that the seam owns.
     for field, value in data.items():
+        if field == "status_id":
+            continue
         setattr(txn, field, value)
 
-    if revert_paid_at:
-        txn.paid_at = None
+    # Apply the status change through the single seam (verify + status_id +
+    # paid_at + expire).  ``_resolve_status_change`` already pre-verified this
+    # exact transition for error precedence, so the seam's re-verification never
+    # raises here; the seam owns paid_at -- stamping now() on a settle and
+    # clearing it on a revert to a non-settled status -- which replaces the old
+    # bespoke revert-paid_at handling.
+    if "status_id" in data:
+        status_seam.apply_status_change(txn, data["status_id"])
 
     # If the user changed amount or period on a template-generated item,
     # flag as override.
@@ -592,19 +605,20 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         except ValidationError as exc:
             return str(exc), 400
     else:
-        # State-machine guard: only Projected (or the identity edge from
-        # Paid/Received) can transition into Paid/Received via mark_done.
-        # The envelope branch above already enforces the same rule via
-        # ``settle_from_entries``'s stricter ``is_immutable`` precondition,
-        # so the guard sits on the direct branch where the gap was.
-        # Audit reference: F-047 / F-161 follow-up to commit C-21.
+        # Manual settle: route the status flip through the single status seam
+        # (state-machine check + status_id + paid_at stamp + status expire).  The
+        # envelope branch above reaches the same seam via
+        # ``settle_from_entries``.  Only Projected (or the identity edge from
+        # Paid/Received) can transition into Paid/Received; an illegal move
+        # raises ValidationError, surfaced as 400.  Audit reference: F-047 /
+        # F-161 follow-up to commit C-21.
         try:
-            verify_transition(txn.status_id, status_id, context="transaction")
+            status_seam.apply_status_change(txn, status_id)
         except ValidationError as exc:
             return str(exc), 400
-        txn.status_id = status_id
-        txn.paid_at = db.func.now()
-        # Accept an optional manual actual amount from the form.
+        # Accept an optional manual actual amount from the form.  Applied AFTER
+        # the seam so Commit 6's posting reconcile (the last step) reads the
+        # final actual_amount, not the pre-edit estimate.
         if actual_amount is not None:
             txn.actual_amount = actual_amount
 
@@ -841,17 +855,17 @@ def cancel_transaction(txn_id):
         return _cancel_shadow(txn, txn_id, cancelled_id)
     # --- End guard ---
 
-    # State-machine guard: Cancelled is reachable only from Projected
-    # (or the Cancelled identity edge for idempotent re-submits).  A
-    # direct done -> cancelled or settled -> cancelled would erase the
-    # paid/archived audit trail and is rejected with 400.  Audit
-    # reference: F-047 / F-161 follow-up to commit C-21.
+    # Route the cancel through the single status seam (state-machine check +
+    # status_id + paid_at).  Cancelled is reachable only from Projected (or the
+    # Cancelled identity edge for idempotent re-submits); a direct done ->
+    # cancelled or settled -> cancelled would erase the paid/archived audit
+    # trail and raises ValidationError -> 400.  Cancelled is non-settled, so the
+    # seam leaves paid_at clear.  Audit reference: F-047 / F-161 follow-up to
+    # commit C-21.
     try:
-        verify_transition(txn.status_id, cancelled_id, context="transaction")
+        status_seam.apply_status_change(txn, cancelled_id)
     except ValidationError as exc:
         return str(exc), 400
-
-    txn.status_id = cancelled_id
 
     try:
         db.session.commit()

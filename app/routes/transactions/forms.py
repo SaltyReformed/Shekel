@@ -188,8 +188,10 @@ def get_full_create():
     if not scenario:
         return "No baseline scenario", 400
 
-    statuses = db.session.query(Status).all()
-
+    # No ``statuses``: the create form has no status control -- a new
+    # transaction is born Projected (the create route assigns it), so there is
+    # nothing for the user to pick.  Status changes happen later through the
+    # mark-done / cancel / credit / full-edit actions on the saved row.
     return render_template(
         "grid/_transaction_full_create.html",
         category=category,
@@ -197,7 +199,6 @@ def get_full_create():
         account_id=acct.id,
         scenario_id=scenario.id,
         transaction_type_id=transaction_type_id,
-        statuses=statuses,
     )
 
 

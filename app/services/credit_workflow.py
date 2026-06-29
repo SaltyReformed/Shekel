@@ -15,9 +15,8 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import pay_period_service
+from app.services import pay_period_service, status_seam
 from app.exceptions import NotFoundError, ValidationError
-from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
     BUSINESS,
@@ -321,20 +320,13 @@ def mark_as_credit(transaction_id, user_id):
             "Only projected transactions can be marked as credit."
         )
 
-    # Update the original transaction's status.
-    txn.status_id = credit_id
-    # ``Transaction.status`` is loaded eagerly via ``lazy="joined"``
-    # so the locking SELECT at the top of this function (and
-    # ``_get_owned_transaction`` in the route) populated the cached
-    # relationship with the *pre-update* Status row.  SQLAlchemy
-    # does not auto-refresh many-to-one relationships when only the
-    # FK column is rewritten -- without this expire, downstream code
-    # (test assertions, the post-flush cell render in routes that
-    # do not use ``expire_on_commit``) would observe the stale
-    # ``Projected`` Status object even though ``status_id`` already
-    # points to ``Credit``.  Expiring the single attribute is cheap:
-    # the next access lazy-loads the matching ref row.
-    db.session.expire(txn, ["status"])
+    # Update the original transaction's status through the single status seam.
+    # The seam assigns ``status_id`` and expires the eagerly-joined ``status``
+    # relationship so downstream code (test assertions, the post-flush cell
+    # render) observes ``Credit`` rather than the stale ``Projected`` row
+    # SQLAlchemy leaves cached when only the FK column is rewritten.  Credit is
+    # a non-settled status, so the seam also leaves ``paid_at`` clear.
+    status_seam.apply_status_change(txn, credit_id)
 
     # Find or create the CC Payback category for this user.
     period = db.session.get(PayPeriod, txn.pay_period_id)
@@ -428,13 +420,12 @@ def unmark_credit(transaction_id, user_id):
             "Only Credit transactions can be unmarked."
         )
 
-    # State-machine verification (defense-in-depth, redundant with
-    # the bespoke guard above except when a future StatusEnum addition
-    # makes the bespoke guard incomplete).
-    verify_transition(txn.status_id, projected_id, context="transaction")
-
-    # Revert the original transaction's status.
-    txn.status_id = projected_id
+    # Revert the original transaction's status through the single status seam.
+    # The seam runs the same state-machine verification (defense-in-depth,
+    # redundant with the bespoke ``is_credit`` guard above except when a future
+    # StatusEnum addition makes that guard incomplete) before assigning
+    # ``status_id``; Projected is non-settled, so it also clears ``paid_at``.
+    status_seam.apply_status_change(txn, projected_id)
 
     # Delete the live payback + write the audit event.  Shared with the
     # transaction PATCH route's status-revert path via the single

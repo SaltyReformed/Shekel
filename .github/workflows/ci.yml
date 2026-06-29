@@ -126,23 +126,25 @@ jobs:
 
       # ── 5. Run pylint ────────────────────────────────────────────
       # Layered pylint gate:
-      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass:
+      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass:
       #     always fail on errors (E), fatals (F), and the project's custom
       #     checkers (tools/pylint/shekel_checkers.py, loaded via .pylintrc) --
       #     the financial-correctness rules (decimal-from-float, refname-compare,
       #     bare-money-quantize, original-principal-as-balance), disable-rationale
       #     (every `# pylint: disable=` must carry a standard `Pylint:`
-      #     why-comment), and balance-producer-bypass (every balance read must go
-      #     through the app.services.balance_at seam) -- even if the score
-      #     stays above the threshold.  These have zero violations today, so this
-      #     only ever catches a regression -- it cannot turn the current green
-      #     build red.
+      #     why-comment), balance-producer-bypass (every balance read must go
+      #     through the app.services.balance_at seam), and
+      #     transaction-status-bypass (every Transaction.status_id change must go
+      #     through the transaction_service.apply_status_change seam) -- even if
+      #     the score stays above the threshold.  These have zero violations
+      #     today, so this only ever catches a regression -- it cannot turn the
+      #     current green build red.
       #   --fail-under=10: the cleanup lock-in (docs/audits/pylint-cleanup/plan.md
       #     Phase 5).  app/ is at a clean 10.00/10, so any new convention/warning
       #     that drops the score fails the build.  Enforced locally by the Stop
       #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass --output-format=colorized
+        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass --output-format=colorized
 
       # ── 5a. Lint scripts/ ────────────────────────────────────────
       # Same layered gate for the operational CLI scripts.  scripts/
@@ -154,7 +156,7 @@ jobs:
       # gate cross-tree duplicate-code is a separate open decision in
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
-        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass --output-format=colorized
+        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a

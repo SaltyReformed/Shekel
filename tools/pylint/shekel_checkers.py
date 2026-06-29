@@ -48,6 +48,18 @@ Rules implemented:
   primitives ``project_balance`` and ``resolve_loan`` / ``resolve_account_loan``
   are NOT producers (they return ProjectedBalance / LoanState detail the seam
   composes) and stay callable by the chart and loan-route consumers.
+* ``shekel-transaction-status-bypass`` (W9907): flags assigning ``status_id``
+  outside the transaction status seam. Every non-transfer
+  ``Transaction.status_id`` change must funnel through
+  ``status_seam.apply_status_change`` (the seam that verifies the transition,
+  maintains ``paid_at``, and refreshes the eager ``status`` relationship) so the
+  settled-state boundary is uniform and a confirmed settle can never be emitted
+  twice or skipped (Build-Order Step 3's named highest risk). Only
+  ``app.services.status_seam`` (the seam) and ``transfer_service`` (which mirrors
+  ``status_id`` onto a transfer's two shadow ``Transaction`` rows, which a
+  syntactic checker cannot tell from a real transaction) may assign it.
+  ``Transaction`` / ``Transfer`` are the only models with a ``status_id`` column,
+  so the name match is precise. The status analog of the W9906 balance fence.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -188,6 +200,21 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.account_projection",
     "app.services.growth_engine",
     "app.services.net_worth_kernel",
+})
+
+# Status seam (W9907): the single attribute the transaction status seam owns.
+# Every non-transfer ``Transaction.status_id`` assignment must go through
+# ``status_seam.apply_status_change``; only the seam's own module and
+# ``transfer_service`` (which mirrors the status onto a transfer's two shadow
+# ``Transaction`` rows) may write it directly. Matched syntactically by attribute
+# name -- precise because ``Transaction`` / ``Transfer`` are the only models with
+# a ``status_id`` column (``filing_status_id`` on the tax tables is a different
+# attribute and is not matched). Listed by fully-qualified module name, matched
+# exactly or as a package prefix by :func:`_module_in_allowlist`.
+_STATUS_ID_ATTR = "status_id"
+_STATUS_SEAM_MODULES = frozenset({
+    "app.services.status_seam",
+    "app.services.transfer_service",
 })
 
 
@@ -357,26 +384,49 @@ def _called_balance_producer(node: nodes.Call) -> str | None:
     return None
 
 
-def _in_balance_seam_cluster(node: nodes.NodeNG) -> bool:
-    """Return True if ``node``'s module is the seam or an engine-cluster module.
+def _module_in_allowlist(node: nodes.NodeNG, modules: frozenset[str]) -> bool:
+    """Return True if ``node``'s enclosing module is in ``modules``.
 
     Matches the enclosing module's fully-qualified name (``node.root().name``)
-    against :data:`_BALANCE_SEAM_MODULES` exactly, or as a package prefix
-    (``<module>.`` ...) so a cluster module later split into a package keeps its
-    submodules inside the fence.  Matching the FULL path -- not the basename --
-    means a same-named module in another package (a hypothetical
-    ``app/routes/balance_at.py``) is NOT exempted, so the fence cannot be
-    silently bypassed by a name collision.  An empty / unresolvable name matches
-    nothing, so the producer call fails closed (is flagged): the safe direction
-    for a fence.  The trailing dot in the prefix test is required so a sibling
-    like ``app.services.balance_resolver_helpers`` does not match
+    against ``modules`` exactly, or as a package prefix (``<module>.`` ...) so a
+    module later split into a package keeps its submodules inside the set.
+    Matching the FULL path -- not the basename -- means a same-named module in
+    another package (a hypothetical ``app/routes/balance_at.py``) is NOT matched,
+    so an allowlist cannot be silently bypassed by a name collision (a false
+    negative is the dangerous mode for a fence).  An empty / unresolvable name
+    matches nothing, so the call fails closed (is flagged): the safe direction.
+    The trailing dot in the prefix test is required so a sibling like
+    ``app.services.balance_resolver_helpers`` does not match
     ``app.services.balance_resolver``.
+
+    Args:
+        node: Any AST node; its ``root()`` module name is the value tested.
+        modules: The frozenset of fully-qualified module names that are exempt.
+
+    Returns:
+        ``True`` if the enclosing module is allowlisted, else ``False``.
     """
     name = node.root().name or ""
     return any(
         name == module or name.startswith(module + ".")
-        for module in _BALANCE_SEAM_MODULES
+        for module in modules
     )
+
+
+def _in_balance_seam_cluster(node: nodes.NodeNG) -> bool:
+    """Return True if ``node``'s module is the seam or an engine-cluster module.
+
+    Thin wrapper over :func:`_module_in_allowlist` for the balance-seam fence
+    (:data:`_BALANCE_SEAM_MODULES`); see that helper for the exact/prefix match
+    and fail-closed rationale the W9906 fence relies on.
+
+    Args:
+        node: The producer-call node whose enclosing module is checked.
+
+    Returns:
+        ``True`` if the module may call a balance producer directly.
+    """
+    return _module_in_allowlist(node, _BALANCE_SEAM_MODULES)
 
 
 class ShekelMoneyChecker(BaseChecker):
@@ -743,6 +793,61 @@ class ShekelBalanceSeamChecker(BaseChecker):
         )
 
 
+class ShekelTransactionStatusBypassChecker(BaseChecker):
+    """Forbid assigning ``status_id`` outside the transaction status seam.
+
+    Every non-transfer ``Transaction.status_id`` change must run through
+    ``status_seam.apply_status_change`` -- the seam that verifies the
+    state-machine transition, maintains ``paid_at``, and refreshes the eagerly
+    joined ``status`` relationship in ONE place, so a confirmed settle can never
+    be emitted twice or skipped by a forgotten site (the lifecycle-completeness
+    risk Build-Order Step 3 names as its highest).  Only the seam's own module
+    (``app.services.status_seam``) and ``transfer_service`` (which legitimately
+    mirrors ``status_id`` onto a transfer's two shadow ``Transaction`` rows,
+    indistinguishable from a real transaction at the AST) may assign it.  The
+    status analog of the W9906 balance-seam fence.
+    """
+
+    name = "shekel-transaction-status-bypass"
+    msgs = {
+        "W9907": (
+            "status_id assigned outside the transaction status seam; route the "
+            "change through status_seam.apply_status_change instead",
+            "shekel-transaction-status-bypass",
+            "Every non-transfer Transaction.status_id change must go through "
+            "app.services.status_seam.apply_status_change -- the single seam "
+            "that runs the state-machine transition check, maintains paid_at, "
+            "and refreshes the eagerly-joined status relationship. Centralizing "
+            "it makes the settled-state boundary uniform and impossible to skip, "
+            "which is what lets the posting ledger emit a confirmed settle "
+            "exactly once (Build-Order Step 3). Only app.services.status_seam "
+            "(the seam) and transfer_service (which mirrors status_id onto a "
+            "transfer's two shadow Transaction rows -- a name-based checker "
+            "cannot tell those from a real transaction) may assign status_id "
+            "directly; Transaction and Transfer are the only models carrying "
+            "that column, so the syntactic match is precise. Construction "
+            "(Transaction(status_id=...)) is a constructor kwarg, not an "
+            "assignment, and is governed by the separate born-Projected create "
+            "rule, not this checker.",
+        ),
+    }
+
+    def visit_assignattr(self, node: nodes.AssignAttr) -> None:
+        """Flag ``<x>.status_id = ...`` made outside the seam-owner allowlist.
+
+        ``node`` is every attribute-assignment TARGET (astroid's store-context
+        ``AssignAttr``); a ``status_id ==`` comparison is a ``Compare`` over a
+        load-context ``Attribute`` and is dispatched elsewhere, so it is never
+        seen here.  Only a ``status_id`` target whose enclosing module is outside
+        :data:`_STATUS_SEAM_MODULES` is reported.
+        """
+        if node.attrname != _STATUS_ID_ATTR:
+            return
+        if _module_in_allowlist(node, _STATUS_SEAM_MODULES):
+            return
+        self.add_message("shekel-transaction-status-bypass", node=node)
+
+
 def register(linter) -> None:
     """Register the Shekel checkers with the pylint ``linter`` (plugin entry point).
 
@@ -754,3 +859,4 @@ def register(linter) -> None:
     linter.register_checker(ShekelDisableRationaleChecker(linter))
     linter.register_checker(ShekelLoanBalanceSourceChecker(linter))
     linter.register_checker(ShekelBalanceSeamChecker(linter))
+    linter.register_checker(ShekelTransactionStatusBypassChecker(linter))
