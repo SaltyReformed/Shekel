@@ -24,11 +24,22 @@ from app import ref_cache
 from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
+    LedgerAccountClassEnum,
     LoanAnchorSourceEnum,
+    PostingKindEnum,
+    PostingSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
-from app.models.ref import GoalMode, IncomeUnit, Status, TransactionType
+from app.models.ref import (
+    GoalMode,
+    IncomeUnit,
+    LedgerAccountClass,
+    PostingKind,
+    PostingSource,
+    Status,
+    TransactionType,
+)
 from app.models.transaction import Transaction
 
 
@@ -365,4 +376,187 @@ class TestIncomeUnitRefCache:
             assert len(db_rows) == len(IncomeUnitEnum), (
                 f"IncomeUnit has {len(db_rows)} rows but IncomeUnitEnum has "
                 f"{len(IncomeUnitEnum)} members"
+            )
+
+
+class TestLedgerAccountClassRefCache:
+    """Tests for ref_cache ledger-account-class resolution (posting ledger)."""
+
+    def test_ledger_account_class_ref_cache(self, app, db):
+        """ref_cache.ledger_account_class_id() returns a distinct positive int
+        for every LedgerAccountClassEnum member.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.ledger_account_class_id(member)
+                for member in LedgerAccountClassEnum
+            }
+            for member, class_id in ids.items():
+                assert isinstance(class_id, int), (
+                    f"ledger_account_class_id({member.name}) returned "
+                    f"{type(class_id)}, expected int"
+                )
+                assert class_id > 0, (
+                    f"{member.name} id should be positive, got {class_id}"
+                )
+            assert len(set(ids.values())) == len(LedgerAccountClassEnum), (
+                f"LedgerAccountClassEnum members must have distinct IDs; "
+                f"got {ids}"
+            )
+
+    def test_ledger_account_class_enum_matches_db(self, app, db):
+        """Every LedgerAccountClassEnum member has exactly one DB row and
+        every DB row has a member.  No extra rows, no missing rows.
+        """
+        with app.app_context():
+            db_rows = db.session.query(LedgerAccountClass).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in LedgerAccountClassEnum}
+
+            assert db_names == enum_values, (
+                f"LedgerAccountClass DB rows {db_names} do not match "
+                f"LedgerAccountClassEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(LedgerAccountClassEnum), (
+                f"LedgerAccountClass has {len(db_rows)} rows but "
+                f"LedgerAccountClassEnum has {len(LedgerAccountClassEnum)} "
+                f"members"
+            )
+
+    def test_is_debit_normal_correct_per_class(self, app, db):
+        """ledger_class_is_debit_normal() returns the correct natural-balance
+        side for every class, read through the cached meta map.
+
+        Fundamental double-entry accounting: a debit increases an Asset or
+        Expense balance (debit-normal -> True); a credit increases a
+        Liability, Income (revenue), or Equity balance (credit-normal ->
+        False).  These five values are the entire reason the
+        ``LedgerAccountClass`` table exists, so they are pinned by hand.
+        """
+        expected = {
+            LedgerAccountClassEnum.ASSET: True,
+            LedgerAccountClassEnum.LIABILITY: False,
+            LedgerAccountClassEnum.INCOME: False,
+            LedgerAccountClassEnum.EXPENSE: True,
+            LedgerAccountClassEnum.EQUITY: False,
+        }
+        with app.app_context():
+            for member, is_debit_normal in expected.items():
+                class_id = ref_cache.ledger_account_class_id(member)
+                result = ref_cache.ledger_class_is_debit_normal(class_id)
+                assert result is is_debit_normal, (
+                    f"{member.name}: ledger_class_is_debit_normal("
+                    f"{class_id})={result}, expected {is_debit_normal}"
+                )
+
+    def test_ledger_class_is_debit_normal_raises_on_unknown_id(self, app, db):
+        """ledger_class_is_debit_normal() raises on an unknown class_id.
+
+        The accessor is logic-bearing (it decides whether a reader negates
+        an account's posting sum), so a bogus class_id must fail loud
+        rather than silently default to a wrong-but-valid False.
+        """
+        with app.app_context():
+            known = {
+                ref_cache.ledger_account_class_id(m)
+                for m in LedgerAccountClassEnum
+            }
+            bogus_id = max(known) + 1000
+            with pytest.raises(KeyError):
+                ref_cache.ledger_class_is_debit_normal(bogus_id)
+
+    def test_ref_cache_fails_on_missing_ledger_class(self, app, db):
+        """ref_cache.init() raises RuntimeError when a ledger-class row is
+        missing.
+
+        Proves the enum<->seed parity gate fires for the new posting-ledger
+        ref table exactly as it does for the long-standing Status table:
+        deleting the 'Asset' row leaves LedgerAccountClassEnum.ASSET
+        unresolvable, which must be a fatal startup error, not a silent
+        skip.
+        """
+        with app.app_context():
+            asset = (
+                db.session.query(LedgerAccountClass)
+                .filter_by(name="Asset")
+                .one()
+            )
+            db.session.delete(asset)
+            db.session.flush()
+
+            with pytest.raises(RuntimeError, match="Asset"):
+                ref_cache.init(db.session)
+
+            # Roll back so other tests aren't affected, then re-init clean.
+            db.session.rollback()
+            ref_cache.init(db.session)
+
+
+class TestPostingKindRefCache:
+    """Tests for ref_cache posting-kind resolution."""
+
+    def test_posting_kind_ref_cache(self, app, db):
+        """ref_cache.posting_kind_id() returns a positive int for TRANSFER."""
+        with app.app_context():
+            transfer_id = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            assert isinstance(transfer_id, int), (
+                f"posting_kind_id(TRANSFER) returned {type(transfer_id)}, "
+                f"expected int"
+            )
+            assert transfer_id > 0, (
+                f"TRANSFER id should be positive, got {transfer_id}"
+            )
+
+    def test_posting_kind_enum_matches_db(self, app, db):
+        """Every PostingKindEnum member has a DB row and vice versa.
+
+        Step 2 seeds only 'transfer'; this guards against a future kind
+        added to the enum without a seed row (or vice versa).
+        """
+        with app.app_context():
+            db_rows = db.session.query(PostingKind).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in PostingKindEnum}
+
+            assert db_names == enum_values, (
+                f"PostingKind DB rows {db_names} do not match "
+                f"PostingKindEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(PostingKindEnum), (
+                f"PostingKind has {len(db_rows)} rows but PostingKindEnum "
+                f"has {len(PostingKindEnum)} members"
+            )
+
+
+class TestPostingSourceRefCache:
+    """Tests for ref_cache posting-source resolution."""
+
+    def test_posting_source_ref_cache(self, app, db):
+        """ref_cache.posting_source_id() returns a positive int for TRANSFER."""
+        with app.app_context():
+            transfer_id = ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER
+            )
+            assert isinstance(transfer_id, int), (
+                f"posting_source_id(TRANSFER) returned {type(transfer_id)}, "
+                f"expected int"
+            )
+            assert transfer_id > 0, (
+                f"TRANSFER id should be positive, got {transfer_id}"
+            )
+
+    def test_posting_source_enum_matches_db(self, app, db):
+        """Every PostingSourceEnum member has a DB row and vice versa."""
+        with app.app_context():
+            db_rows = db.session.query(PostingSource).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in PostingSourceEnum}
+
+            assert db_names == enum_values, (
+                f"PostingSource DB rows {db_names} do not match "
+                f"PostingSourceEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(PostingSourceEnum), (
+                f"PostingSource has {len(db_rows)} rows but PostingSourceEnum "
+                f"has {len(PostingSourceEnum)} members"
             )

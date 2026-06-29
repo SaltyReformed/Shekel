@@ -40,7 +40,10 @@ from app.enums import (
     EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
+    LedgerAccountClassEnum,
     LoanAnchorSourceEnum,
+    PostingKindEnum,
+    PostingSourceEnum,
     RecurrencePatternEnum,
     RoleEnum,
     StatusEnum,
@@ -68,12 +71,15 @@ class _RefState:
 
     ``enum_ids`` maps each reference enum class to its ``{member: database
     PK}`` lookup; ``acct_type_meta`` maps an account-type PK to its
-    presentation metadata.  Written once at startup (re-written in tests)
-    and read-only thereafter via the accessor functions below.
+    presentation metadata; ``ledger_class_debit_normal`` maps a
+    ledger-account-class PK to its natural-balance side (TRUE =
+    debit-normal).  Written once at startup (re-written in tests) and
+    read-only thereafter via the accessor functions below.
     """
 
     enum_ids: dict[type[Enum], dict[Enum, int]] = field(default_factory=dict)
     acct_type_meta: dict[int, _AcctTypeMeta] = field(default_factory=dict)
+    ledger_class_debit_normal: dict[int, bool] = field(default_factory=dict)
     initialized: bool = False
 
 
@@ -194,6 +200,9 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
             EmployerContributionTypeEnum, ref_models.EmployerContributionType
         ),
         _RefSpec(CompoundingFrequencyEnum, ref_models.CompoundingFrequency),
+        _RefSpec(LedgerAccountClassEnum, ref_models.LedgerAccountClass),
+        _RefSpec(PostingKindEnum, ref_models.PostingKind),
+        _RefSpec(PostingSourceEnum, ref_models.PostingSource),
     ]
 
 
@@ -237,6 +246,7 @@ def init(db_session):
     # re-init leaves the previous flag value, matching the original behavior.
     _cache.enum_ids.clear()
     _cache.acct_type_meta.clear()
+    _cache.ledger_class_debit_normal.clear()
     for spec in specs:
         _cache.enum_ids[spec.enum] = {}
 
@@ -284,6 +294,16 @@ def init(db_session):
                 "icon_class": row.icon_class,
                 "max_term_months": row.max_term_months,
             }
+
+    # Build the ledger-account-class natural-balance map.  Mirrors the
+    # account-type metadata block above: a dedicated query keyed by class
+    # PK (the spec loop only captures name->id), so a reader holding a
+    # ``budget.ledger_accounts.class_id`` can branch on the debit-normal
+    # side without a name compare.  Skipped when the table is unavailable
+    # (the pre-migration bootstrap window already warned during loading).
+    if "ledger_account_classes" not in unavailable:
+        for row in db_session.query(ref_models.LedgerAccountClass).all():
+            _cache.ledger_class_debit_normal[row.id] = row.is_debit_normal
 
     _cache.initialized = True
     return unavailable
@@ -578,3 +598,105 @@ def compounding_frequency_id(member):
     """
     _require_init()
     return _cache.enum_ids[CompoundingFrequencyEnum][member]
+
+
+def ledger_account_class_id(member):
+    """Return the integer primary key for a LedgerAccountClassEnum member.
+
+    Used by the chart-of-accounts sync hook (Commit 2) to derive a real
+    account's ledger class from its account-type category, and by later
+    Build-Order steps that read postings to compare against
+    ``budget.ledger_accounts.class_id`` without ever reading the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``LedgerAccountClassEnum`` member
+                (e.g. ``LedgerAccountClassEnum.ASSET``).
+
+    Returns:
+        int -- the ``ref.ledger_account_classes.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid LedgerAccountClassEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[LedgerAccountClassEnum][member]
+
+
+def ledger_class_is_debit_normal(class_id):
+    """Return whether a ledger account class is debit-normal.
+
+    The natural-balance side of a ledger account class, read from the
+    cached ``is_debit_normal`` flag by a reader holding a
+    ``budget.ledger_accounts.class_id``.  A debit-normal class (Asset,
+    Expense) accumulates a balance that increases on a debit; a
+    credit-normal class (Liability, Income, Equity) increases on a
+    credit, so a reader negates that account's debit-positive posting sum
+    to present its natural balance.
+
+    Logic-bearing, so an unknown ``class_id`` raises rather than
+    defaulting -- a missing class is a genuine data/seed error, not a
+    benign lookup miss (contrast ``acct_type_icon``, a display accessor
+    that defaults).
+
+    Args:
+        class_id: The integer primary key of a
+            ``ref.ledger_account_classes`` row.
+
+    Returns:
+        bool -- TRUE if the class is debit-normal (Asset, Expense),
+        FALSE if credit-normal (Liability, Income, Equity).
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *class_id* is not a known ledger-account-class PK.
+    """
+    _require_init()
+    return _cache.ledger_class_debit_normal[class_id]
+
+
+def posting_kind_id(member):
+    """Return the integer primary key for a PostingKindEnum member.
+
+    Used by ``posting_service`` (Commit 4) to tag each
+    ``budget.account_postings`` leg with its kind, and by later readers
+    that branch on the leg kind -- always via the integer ID, never the
+    string ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``PostingKindEnum`` member
+                (e.g. ``PostingKindEnum.TRANSFER``).
+
+    Returns:
+        int -- the ``ref.posting_kinds.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid PostingKindEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[PostingKindEnum][member]
+
+
+def posting_source_id(member):
+    """Return the integer primary key for a PostingSourceEnum member.
+
+    Used by ``posting_service`` (Commit 4) to tag each
+    ``budget.journal_entries`` row with its source-event kind, and by
+    later readers -- always via the integer ID, never the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``PostingSourceEnum`` member
+                (e.g. ``PostingSourceEnum.TRANSFER``).
+
+    Returns:
+        int -- the ``ref.posting_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid PostingSourceEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[PostingSourceEnum][member]

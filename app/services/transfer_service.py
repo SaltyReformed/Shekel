@@ -31,16 +31,20 @@ from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import Status
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services import posting_service
+from app.services._transfer_ownership import (
+    _get_owned_account,
+    _get_owned_category,
+    _get_owned_period,
+    _get_owned_scenario,
+    _get_owned_transfer_template,
+)
 from app.services.state_machine import verify_transition
 from app.utils.log_events import (
     BUSINESS,
@@ -55,6 +59,25 @@ from app.utils.log_events import (
 
 logger = logging.getLogger(__name__)
 
+# The ``update_transfer`` kwargs whose change can alter a transfer's posted
+# double-entry ledger effect, so a change to any of them triggers a posting
+# reconcile (Build-Order Step 2; see ``posting_service.sync_transfer_postings``).
+# ``status_id`` flips the settled/unsettled target; ``amount`` (the estimated
+# amount) and ``actual_amount`` together determine the settled shadow's
+# ``effective_amount`` (``COALESCE(actual_amount, estimated_amount)``) -- the
+# magnitude posted.  This set guards the posted MAGNITUDE and SETTLED-SENSE
+# only.  The other kwargs (``pay_period_id`` / ``category_id`` / ``name`` /
+# ``notes`` / ``due_date`` / ``is_override`` / ``paid_at``) move neither, so
+# they raise no reconcile -- and a settled transfer's period / settle-date
+# (which the journal entry denormalises) cannot move anyway: the
+# finalised-edit lock blocks editing a settled transfer's period / due-date,
+# and carry-forward and recurrence touch only Projected transfers.  (An
+# amount-based reconcile could not re-stamp a stale period/date regardless --
+# a future settled-period move would have to re-stamp the entry, not reconcile
+# it.)  The reconcile is idempotent, so listing a field that did not move the
+# effect is a harmless no-op; this set is the cheap pre-filter that avoids a
+# ledger round-trip on a pure metadata edit.
+_POSTING_RELEVANT_FIELDS = frozenset({"status_id", "amount", "actual_amount"})
 
 
 # ── Private helpers ────────────────────────────────────────────────
@@ -83,94 +106,6 @@ def _validate_positive_amount(amount):
             "Transfer amount must be positive."
         )
     return amount
-
-
-def _get_owned_account(account_id, user_id, label="Account"):
-    """Load an Account and verify ownership.
-
-    Args:
-        account_id: The primary key.
-        user_id:    The expected owner.
-        label:      Human-readable label for error messages.
-
-    Returns:
-        The Account object.
-
-    Raises:
-        NotFoundError: If the account does not exist or belongs to
-            another user.  The message is identical in both cases
-            (security response rule).
-    """
-    acct = db.session.get(Account, account_id)
-    if acct is None or acct.user_id != user_id:
-        raise NotFoundError(f"{label} {account_id} not found.")
-    return acct
-
-
-def _get_owned_period(pay_period_id, user_id):
-    """Load a PayPeriod and verify ownership.
-
-    Imported inside the function to avoid circular imports (same
-    pattern used by carry_forward_service and credit_workflow).
-
-    Raises:
-        NotFoundError: If the period does not exist or belongs to
-            another user.
-    """
-    period = db.session.get(PayPeriod, pay_period_id)
-    if period is None or period.user_id != user_id:
-        raise NotFoundError(f"Pay period {pay_period_id} not found.")
-    return period
-
-
-def _get_owned_scenario(scenario_id, user_id):
-    """Load a Scenario and verify ownership.
-
-    Raises:
-        NotFoundError: If the scenario does not exist or belongs to
-            another user.
-    """
-    scenario = db.session.get(Scenario, scenario_id)
-    if scenario is None or scenario.user_id != user_id:
-        raise NotFoundError(f"Scenario {scenario_id} not found.")
-    return scenario
-
-
-def _get_owned_category(category_id, user_id):
-    """Load a Category and verify ownership.
-
-    Returns None if *category_id* is None (caller explicitly passed
-    no category).
-
-    Raises:
-        NotFoundError: If the category does not exist or belongs to
-            another user.
-    """
-    if category_id is None:
-        return None
-    cat = db.session.get(Category, category_id)
-    if cat is None or cat.user_id != user_id:
-        raise NotFoundError(f"Category {category_id} not found.")
-    return cat
-
-
-def _get_owned_transfer_template(template_id, user_id):
-    """Load a TransferTemplate and verify ownership.
-
-    Returns None if *template_id* is None.
-
-    Raises:
-        NotFoundError: If the template does not exist or belongs to
-            another user.
-    """
-    if template_id is None:
-        return None
-    tpl = db.session.get(TransferTemplate, template_id)
-    if tpl is None or tpl.user_id != user_id:
-        raise NotFoundError(f"Transfer template {template_id} not found.")
-    return tpl
-
-
 
 
 def _get_transfer_or_raise(transfer_id, user_id, allow_deleted=False):
@@ -688,6 +623,25 @@ def update_transfer(transfer_id, user_id, **kwargs):
         income_shadow.is_override = flag
 
     db.session.flush()
+
+    # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
+    # After every kwarg is applied, bring the double-entry posting ledger
+    # back in step with the transfer's now-current settled effect.  Placed
+    # here -- NOT inside ``_apply_status_change`` -- because ``actual_amount``
+    # is applied AFTER ``status_id`` above, and the grid shadow-edit path can
+    # settle and set an actual amount in one call; the reconcile reads the
+    # income shadow's ``effective_amount``, so it must run once everything is
+    # in place or it would post the pre-edit estimate.  ``xfer.status_id`` is
+    # the post-update status (``_apply_status_change`` already wrote it, or it
+    # is unchanged), so its ``is_settled`` is the correct target sense.
+    # Idempotent reconcile-to-target: a settle posts the effect, a revert /
+    # cancel reverses to zero, and an unchanged effect writes nothing.
+    if _POSTING_RELEVANT_FIELDS & kwargs.keys():
+        current_status = db.session.get(Status, xfer.status_id)
+        posting_service.sync_transfer_postings(
+            xfer, settled=current_status.is_settled,
+        )
+
     log_event(
         logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,
         "Transfer updated",
@@ -723,6 +677,17 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # allow_deleted=True so that idempotent soft-delete and hard-delete
     # of already-soft-deleted transfers continue to work.
     xfer = _get_transfer_or_raise(transfer_id, user_id, allow_deleted=True)
+
+    # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
+    # Reverse any posted effect BEFORE the row is removed, so a settled
+    # transfer's ledger entry nets to zero.  Runs first -- while xfer.id and
+    # the shadows still exist -- so the reversal entry can link ``transfer_id``
+    # and read the shadow settle date; a hard delete then SET-NULLs the link,
+    # leaving the immutable net-zero pair as history.  Idempotent no-op for a
+    # never-settled or already-reversed transfer (the account-delete and
+    # recurrence-regeneration paths only ever reach those: Guard 4 in
+    # ``accounts/crud.py`` archives any account with settled history).
+    posting_service.sync_transfer_postings(xfer, settled=False)
 
     if soft:
         xfer.is_deleted = True
@@ -974,6 +939,19 @@ def restore_transfer(transfer_id, user_id):
             shadow.is_override = xfer.is_override
 
     db.session.flush()
+
+    # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
+    # Re-post the confirmed effect when the restored transfer is settled: a
+    # settled transfer that was soft-deleted had its effect reversed by
+    # ``delete_transfer``, so restoring re-syncs the ledger to its current
+    # status.  Runs AFTER the shadows are un-deleted above, so the income
+    # shadow's effective amount is readable.  A no-op for a restored projected
+    # transfer (the common path -- nothing was posted to restore).
+    restored_status = db.session.get(Status, xfer.status_id)
+    posting_service.sync_transfer_postings(
+        xfer, settled=restored_status.is_settled,
+    )
+
     log_event(
         logger, logging.INFO, EVT_TRANSFER_RESTORED, BUSINESS,
         "Transfer restored from soft-delete",

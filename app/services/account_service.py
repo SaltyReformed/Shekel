@@ -39,7 +39,7 @@ from app.exceptions import ValidationError
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
-from app.services import pay_period_service
+from app.services import ledger_account_service, pay_period_service
 
 
 logger = logging.getLogger(__name__)
@@ -214,6 +214,14 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
         anchor_balance=anchor_balance,
         notes=spec.notes,
     ))
+
+    # Pair the account with its chart-of-accounts ledger account
+    # (Build-Order Step 2): exactly one Asset/Liability ledger account per
+    # real account, so the double-entry posting ledger has somewhere to
+    # post.  Idempotent and side-effecting only -- the returned Account is
+    # unchanged.  Historical accounts were paired by the Commit-2 backfill
+    # migration; this call is the go-forward half.
+    ledger_account_service.create_ledger_account_for_account(account)
 
     logger.info(
         "Created account %s (id=%d, user_id=%d) anchored to period %d at $%s",

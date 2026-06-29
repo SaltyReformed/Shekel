@@ -5,6 +5,8 @@ Underscore-prefixed module name keeps pytest from collecting it as a
 test file.  Import functions from here in test modules that need them.
 """
 
+import importlib.util
+import pathlib
 import re
 import sys
 
@@ -553,6 +555,230 @@ def create_hysa_account(
     ))
     db_session.commit()
     return account
+
+
+# Default opening anchor balance for ledger-account-suite accounts.  The
+# Build-Order Step 2 suites never assert on a balance (Commit 2 touches no
+# balance math), so a single fixed value keeps the shared factory at four
+# parameters and the call sites free of an irrelevant amount.
+_LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
+
+
+def create_account_of_type(seed_user, db_session, type_name, name):
+    """Create an account of any built-in type via the canonical factory.
+
+    The shared "build an account of type X" helper for the ledger-account
+    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
+    ``AccountSpec`` + ``create_account`` block is not copied per file (a
+    duplicate-code finding).  ``create_account`` fires the Step-2
+    ledger-account sync hook, so the returned account already carries its
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance is a
+    fixed sentinel (the suites assert on ledger pairing, never on balance)
+    and the anchor period is resolved by the factory from the user's pay
+    periods.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
+            ``"Mortgage"``, ``"401(k)"``).
+        name: The account name.
+
+    Returns:
+        The created :class:`~app.models.account.Account` (flushed,
+        uncommitted).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention); load
+    # the models / service lazily, the same way the factory helpers above do.
+    # pylint: disable=import-outside-toplevel
+    from app.models.ref import AccountType
+    from app.services import account_service
+
+    acct_type = (
+        db_session.query(AccountType).filter_by(name=type_name).one()
+    )
+    return account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name=name,
+            anchor_balance=_LEDGER_SUITE_ANCHOR_BALANCE,
+        ),
+    )
+
+
+def ledger_accounts_for_account(db_session, account_id):
+    """Return every ``LedgerAccount`` linked to *account_id*.
+
+    Shared by the ledger-account model / service / backfill suites so the
+    one-line lookup is not re-inlined per file (a duplicate-code finding).
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id whose linked ledger accounts to
+            fetch.
+
+    Returns:
+        list[:class:`~app.models.ledger_account.LedgerAccount`] -- the
+        linked rows (zero or one in normal operation; the partial unique
+        index permits at most one).
+    """
+    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # convention as the helpers above (no app symbols imported at module
+    # load); load the model lazily here.
+    # pylint: disable=import-outside-toplevel
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(account_id=account_id)
+        .all()
+    )
+
+
+def load_migration_module(filename):
+    """Load an Alembic migration module by filename via importlib.
+
+    ``migrations/versions`` has no ``__init__``, so a migration cannot be
+    imported as an ordinary package member.  This loads one by absolute path so
+    a test can invoke a migration's module-level helpers directly (e.g. the
+    posting-ledger backfill's ``_backfill_settled_transfers``).  Shared by the
+    posting-ledger backfill suite and the Commit-6 reconciliation oracle so the
+    importlib boilerplate lives in one place (a duplicate-code finding).
+
+    Args:
+        filename: The migration module's filename (e.g.
+            ``"db239773c2fd_create_journal_entries_account_postings_.py"``),
+            resolved under ``<repo>/migrations/versions``.
+
+    Returns:
+        The loaded migration module object.
+    """
+    versions_dir = (
+        pathlib.Path(__file__).resolve().parents[1] / "migrations" / "versions"
+    )
+    path = versions_dir / filename
+    spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def clear_postings_for_transfer(transfer_id):
+    """Delete a transfer's posted journal entries and legs (raw SQL).
+
+    The posting ledger is append-only (the ORM blocks deletes on
+    ``budget.journal_entries`` / ``budget.account_postings``), so this clears a
+    transfer's auto-posted entries via raw SQL.  Used by the posting-ledger
+    suites to reproduce the pre-ledger historical state the Commit-3 backfill
+    targets: Commit 5 auto-posts on settle, so a settled transfer already
+    carries go-forward postings; clearing them lets the backfill genuinely
+    re-post (rather than no-opping on its ``NOT EXISTS`` guard).  Legs are
+    deleted before the header for explicitness (the FK CASCADE would do it
+    either way).  Commits.
+
+    Args:
+        transfer_id: The transfer whose posted entries and legs to remove.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+
+    db.session.execute(db.text(
+        "DELETE FROM budget.account_postings WHERE journal_entry_id IN "
+        "(SELECT id FROM budget.journal_entries WHERE transfer_id = :t)"
+    ), {"t": transfer_id})
+    db.session.execute(db.text(
+        "DELETE FROM budget.journal_entries WHERE transfer_id = :t"
+    ), {"t": transfer_id})
+    db.session.commit()
+
+
+_UNSET_PAID_AT = object()
+
+
+def create_settled_transfer(
+    seed_user, db_session, from_account, to_account, period,
+    amount=Decimal("100.00"), actual_amount=None,
+    paid_at=_UNSET_PAID_AT, name=None, scenario=None,
+):
+    """Create an ad-hoc transfer and settle it (Paid), returning the parent.
+
+    The shared "settled transfer with two real shadows" builder for the
+    posting-ledger (Build-Order Step 2) backfill / lifecycle suites.  Routes
+    the whole thing through ``transfer_service`` -- the sole transfer writer --
+    so the parent transfer plus its expense/income shadow transactions obey
+    every transfer invariant (two balanced shadows, amounts/status/period
+    mirrored), exactly as production produces them.  The transfer is created
+    Projected, then transitioned to Paid via ``update_transfer`` (the same
+    ``mark_done`` chokepoint the route uses).
+
+    Flushes via the service; the caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict (supplies ``user_id`` and
+            the baseline scenario).
+        db_session: The test ``db.session`` (unused directly -- the service
+            owns the session -- but accepted so call sites read uniformly).
+        from_account: The :class:`~app.models.account.Account` money leaves
+            (the expense shadow lands here).
+        to_account: The account money enters (the income shadow lands here).
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transfer (and both shadows) in.
+        amount: The transfer amount (Decimal); also the shadows'
+            ``estimated_amount``.  Defaults to ``Decimal("100.00")``.
+        actual_amount: When not ``None``, the settled actual amount mirrored
+            to both shadows (so their ``effective_amount`` becomes this, not
+            ``amount``).  Defaults to ``None`` (effective == estimated ==
+            amount).
+        paid_at: The settle timestamp written to both shadows.  Defaults to
+            ``db.func.now()`` (the realistic ``mark_done`` value); pass
+            ``None`` explicitly to settle with a NULL ``paid_at`` (the
+            historical state the backfill's period-start fallback covers).
+        name: Optional transfer display name.
+        scenario: The :class:`~app.models.scenario.Scenario` to place the
+            transfer (and both shadows) in.  Defaults to ``None``, which uses
+            the seed user's baseline scenario (``seed_user["scenario"]``);
+            pass a non-baseline scenario to exercise multi-scenario isolation
+            (the Commit-6 reconciliation oracle).
+
+    Returns:
+        The settled (Paid) parent :class:`~app.models.transfer.Transfer`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.extensions import db
+    from app.services import transfer_service
+
+    scenario_id = (
+        seed_user["scenario"].id if scenario is None else scenario.id
+    )
+    transfer = transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=from_account.id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=scenario_id,
+            amount=amount,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            category_id=None,
+            name=name,
+        ),
+    )
+    update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
+    update_kwargs["paid_at"] = (
+        db.func.now() if paid_at is _UNSET_PAID_AT else paid_at
+    )
+    if actual_amount is not None:
+        update_kwargs["actual_amount"] = actual_amount
+    transfer_service.update_transfer(
+        transfer.id, seed_user["user"].id, **update_kwargs
+    )
+    return transfer
 
 
 def set_default_grid_account(db_session, user_id, account_id):

@@ -154,6 +154,7 @@ from alembic.config import Config
 from app import create_app
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.extensions import db
+from app.posting_infrastructure import apply_posting_infrastructure
 from app.ref_seeds import seed_reference_data
 
 
@@ -186,7 +187,7 @@ def _recreate_template_database() -> None:
 
 
 def _populate_template(app) -> None:
-    """Materialise the schema, run migrations, apply audit infra, seed.
+    """Materialise the schema, run migrations, apply audit + posting infra, seed.
 
     Steps, in order:
 
@@ -204,11 +205,19 @@ def _populate_template(app) -> None:
        migration-frozen state.  Pulls in any trigger that was added
        to :data:`AUDITED_TABLES` after the rebuild migration was
        authored.
-    4. ``seed_reference_data``: populates ``ref.account_types`` (18
+    4. ``apply_posting_infrastructure``: idempotent re-application of
+       the balanced-journal constraint trigger (created by the
+       Commit-3 migration in step 2) so the latest in-code trigger
+       definition wins over any migration-frozen state -- the same
+       robustness contract step 3 gives the audit trigger.  This is
+       the test-suite caller for the posting infrastructure: the
+       per-test ``db`` fixture clones this template, so the trigger
+       enforced here is the one every test runs against.
+    5. ``seed_reference_data``: populates ``ref.account_types`` (18
        rows) and the other ref tables.  The INSERTs on
        ``ref.account_types`` fire the audit trigger attached in
        step 2/3 and write 18 rows into ``system.audit_log``.
-    5. ``TRUNCATE system.audit_log``: clear those 18 seed-time
+    6. ``TRUNCATE system.audit_log``: clear those 18 seed-time
        audit rows so the template ships with a zeroed log.  Mirrors
        the per-test pattern in ``tests/conftest.py::db`` (line 244)
        and gives the per-session clones a clean slate.
@@ -230,6 +239,11 @@ def _populate_template(app) -> None:
         command.upgrade(alembic_cfg, "head")
 
         apply_audit_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        apply_posting_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

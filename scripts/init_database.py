@@ -70,6 +70,7 @@ from alembic.config import Config
 from app import create_app
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
+from app.posting_infrastructure import apply_posting_infrastructure
 # pylint: enable=wrong-import-position
 
 
@@ -92,9 +93,9 @@ def is_fresh_database():
 
 
 def init_fresh_database(app):
-    """Create the schema, the audit infrastructure, and stamp Alembic.
+    """Create the schema, the audit + posting infrastructure, and stamp Alembic.
 
-    Three steps in order:
+    Four steps in order:
 
     1. ``db.create_all()`` -- materialise every SQLAlchemy-modeled
        table.  This covers the ``ref``, ``auth``, ``budget``, and
@@ -109,7 +110,14 @@ def init_fresh_database(app):
        distinguishes fresh-DB initialisation post-C-13 from the
        previous bypass-of-audit-triggers behaviour that audit
        finding F-028 documents.
-    3. ``alembic stamp head`` -- mark every migration as applied so
+    3. ``apply_posting_infrastructure`` -- materialise the
+       ``budget.assert_journal_entry_balanced`` function and the deferred
+       ``ck_account_postings_balanced`` constraint trigger that enforces
+       the per-journal-entry sum-to-zero / at-least-two-legs invariant.
+       Like the audit trigger, these are raw SQL outside the model
+       registry, so ``db.create_all`` (which made the
+       ``budget.account_postings`` table) does not create them.
+    4. ``alembic stamp head`` -- mark every migration as applied so
        subsequent ``flask db upgrade`` calls only apply
        newly-authored migrations.
 
@@ -128,6 +136,13 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Audit infrastructure ready.")
+
+    print("Materialising posting infrastructure (balanced-journal trigger)...")
+    apply_posting_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Posting infrastructure ready.")
 
     # Stamp Alembic so it knows all migrations are "applied".
     alembic_cfg = Config("alembic.ini")
