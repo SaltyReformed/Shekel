@@ -507,6 +507,28 @@ class TestPostingKindRefCache:
                 f"TRANSFER id should be positive, got {transfer_id}"
             )
 
+    def test_posting_kind_resolves_income_and_expense(self, app, db):
+        """ref_cache resolves the Step-3 INCOME and EXPENSE kinds distinctly.
+
+        The two cash-leg kinds added in Build-Order Step 3 must each
+        resolve to a distinct positive ID, distinct from Step 2's TRANSFER.
+        This guards that the enum ``.value`` strings match the seeded
+        ``ref.posting_kinds.name`` rows and that no two members collapse
+        onto one row (a copy-paste value collision).
+        """
+        with app.app_context():
+            transfer_id = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            income_id = ref_cache.posting_kind_id(PostingKindEnum.INCOME)
+            expense_id = ref_cache.posting_kind_id(PostingKindEnum.EXPENSE)
+            assert income_id > 0 and expense_id > 0, (
+                f"income/expense kind ids must be positive, got "
+                f"income={income_id}, expense={expense_id}"
+            )
+            assert len({transfer_id, income_id, expense_id}) == 3, (
+                f"posting kind ids collide: transfer={transfer_id}, "
+                f"income={income_id}, expense={expense_id}"
+            )
+
     def test_posting_kind_enum_matches_db(self, app, db):
         """Every PostingKindEnum member has a DB row and vice versa.
 
@@ -543,6 +565,29 @@ class TestPostingSourceRefCache:
             )
             assert transfer_id > 0, (
                 f"TRANSFER id should be positive, got {transfer_id}"
+            )
+
+    def test_posting_source_resolves_transaction(self, app, db):
+        """ref_cache resolves the Step-3 TRANSACTION source distinctly.
+
+        The ordinary-transaction source added in Build-Order Step 3 must
+        resolve to a positive ID distinct from Step 2's TRANSFER, guarding
+        that ``PostingSourceEnum.TRANSACTION.value`` matches its seeded
+        ``ref.posting_sources.name`` row.
+        """
+        with app.app_context():
+            transfer_id = ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER
+            )
+            transaction_id = ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSACTION
+            )
+            assert transaction_id > 0, (
+                f"transaction source id must be positive, got {transaction_id}"
+            )
+            assert transaction_id != transfer_id, (
+                f"transaction source id {transaction_id} collides with "
+                f"transfer {transfer_id}"
             )
 
     def test_posting_source_enum_matches_db(self, app, db):
