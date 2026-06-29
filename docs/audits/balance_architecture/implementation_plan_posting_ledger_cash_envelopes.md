@@ -1,8 +1,11 @@
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
-**Status:** IN PROGRESS -- Commits 1-2 DONE on `feat/posting-ledger-cash-envelopes` (not pushed):
+**Status:** IN PROGRESS -- Commits 1-2 committed on `feat/posting-ledger-cash-envelopes` (not pushed):
 C1 `97bc03c2aa4c` (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback`
-discriminator -- see Section 4.2's H1 fix). NEXT = Commit 3 (the category/fallback resolver).
+discriminator -- see Section 4.2's H1 fix). C3 (the category/fallback resolver) is code-complete,
+staged, green, and `code-reviewer`-clean, awaiting the developer's commit approval (see the Commit 3
+As-built note for the four developer-approved/review-driven refinements). NEXT after the C3 commit =
+Commit 4 (the `posting_service.sync_transaction_postings` builder).
 **Build-Order Step 3** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section, build
 order item 3: "Post confirmed cash transactions and cleared envelope entries at settle").
@@ -705,13 +708,46 @@ category delete (4.2's H1). The implemented schema therefore adds an `is_fallbac
   up/down. Rejection tests pin the specific constraint name.
 - **Outcome:** full suite 6542, `pylint app/` 10.00, two `code-reviewer` passes clean.
 
-### Commit 3 -- `ledger_account_service`: the category/fallback resolver
+### Commit 3 -- `ledger_account_service`: the category/fallback resolver -- DONE
+
+**As-built note (developer-approved deviations + an adversarial-review fix).** Four refinements to
+the design below, each confirmed by the developer or the `code-reviewer` pass:
+1. **Signature takes the enum member, not an int, and the `_ledger_class_for_txn_type` helper is
+   dropped.** `get_or_create_category_ledger_account(user_id, category_id: int | None,
+   ledger_class: LedgerAccountClassEnum)`. The class is part of the resolver's natural key, so passing
+   the `LedgerAccountClassEnum` member (INCOME/EXPENSE) is the honest signature; the class ID comes
+   from `ref_cache.ledger_account_class_id(ledger_class)` and the fallback label from an explicit
+   `_FALLBACK_LEDGER_ACCOUNT_NAMES` map (no int -> "Income"/"Expense" reverse-map). The plan's private
+   `_ledger_class_for_txn_type(is_income)` had no caller in Commit 3 (it would be dead code until the
+   Commit-4 wiring), so it is dropped; Commit 4's `posting_service` inlines the trivial
+   `LedgerAccountClassEnum.INCOME if txn.is_income else LedgerAccountClassEnum.EXPENSE` at its call
+   site.
+2. **An Income/Expense class guard** raises `ValueError` if `ledger_class` is anything else. No database
+   CHECK constrains a category row's `class_id`, so this guard is the sole defense against a malformed
+   chart entry (and future-proofs the Steps 4-5 callers). The valid-class set is `frozenset` of the
+   fallback-name map's keys, so the two can never drift.
+3. **The display `name` snapshot is truncated to the column width** (`_LEDGER_ACCOUNT_NAME_MAX_LEN`,
+   read from `LedgerAccount.__table__.columns["name"].type.length` so it cannot drift). A category's
+   `display_name` ("Group: Item") concatenates two `String(100)` halves and can reach ~202 chars, but
+   `ledger_accounts.name` is `String(100)`; PostgreSQL rejects (does not silently truncate) the
+   overflow, which would have 500'd a settle. `name` is display-only, so the clip is lossless for
+   logic, and `display_name[:N]` is byte-for-byte equal to the Commit-7 backfill's
+   `LEFT(group || ': ' || item, N)` (both count code points; verified on the live DB) -- so
+   backfill==go-forward holds. **Commit 7's backfill MUST use the same `LEFT(..., N)` truncation.**
+4. **The category snapshot load filters by `user_id`** (the `code-reviewer` MEDIUM): a `Category` is
+   user-scoped data, so the load honours the "every user-data query filters by `user_id`" rule and
+   matches the sibling idempotency lookup; a foreign `category_id` is treated as not-found. The
+   resolver raises an actionable `ValueError` (with the offending id/user) instead of an opaque
+   `AttributeError` on `None.display_name` when a category id is stale/foreign.
+
+What shipped:
 
 - `app/services/ledger_account_service.py`:
   `get_or_create_category_ledger_account(user_id, category_id, ledger_class) -> LedgerAccount` --
-  idempotent (respects the partial uniques), snapshots the name (`category.display_name` or
-  `"Uncategorized {Income|Expense}"`), leaves `account_id` NULL. A private
-  `_ledger_class_for_txn_type(is_income) -> int` helper. Flushes, does not commit.
+  idempotent (respects the partial uniques), snapshots the name (`category.display_name` truncated, or
+  `"Uncategorized {Income|Expense}"`), leaves `account_id` NULL. Private helpers
+  `_find_existing_category_ledger_account` (the kind-keyed idempotency lookup) and
+  `_category_display_name` (the user-scoped, truncated snapshot loader). Flushes, does not commit.
   - **`is_fallback` handling (4.2 H1).** When `category_id` is NULL, the resolver creates / looks up
     the fallback with **`is_fallback=True`**, and its idempotency lookup keys on
     `(user_id, class_id) WHERE is_fallback` -- NOT on `category_id IS NULL` (a `category_id IS NULL`
@@ -728,6 +764,18 @@ category delete (4.2's H1). The implemented schema therefore adds an `is_fallbac
 - **Review focus:** class derived by ID (never name); the fallback lookup keys on `is_fallback` (never
   on `category_id IS NULL`, the H1 trap); the singleton holds under the partial unique; SRP (only this
   service writes `ledger_accounts`); no Flask import.
+- **Tests (as-built, 15 added in `tests/test_services/test_ledger_account_service.py`):** category-row
+  shape + name snapshot; idempotency; the mixed-category two-class case; the category row surviving a
+  category delete as an orphan; the **long-name truncation** regression (a 202-char `display_name`
+  clips to 100, non-vacuous -- the un-truncated insert raises `DataError`); fallback creation/naming
+  (both classes); the fallback singleton; the **fallback-vs-orphan H1** service-level lock; per-user
+  fallback scoping; the class guard (Asset/Liability/Equity rejected); missing-category and
+  **foreign-category** (cross-tenant) rejection. Decimals/IDs only.
+- **Outcome:** 27 tests in the service suite pass (12 Step-2 + 15 Step-3), `pylint app/` 10.00/10 with
+  every `--fail-on` checker, no new migration (head stays `bdde62675c9b`; no template rebuild). One
+  `code-reviewer` adversarial pass: 0 Critical / 0 High; 1 MEDIUM (the user-scoped category load) + 2
+  LOW (a missing type hint; a redundant test flush/comment) -- all fixed, plus the foreign-category
+  regression test added to lock the MEDIUM.
 
 ### Commit 4 -- `posting_service.sync_transaction_postings` (correct-by-construction) + helpers
 
