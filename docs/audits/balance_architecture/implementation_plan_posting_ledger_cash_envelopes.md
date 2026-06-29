@@ -1,6 +1,9 @@
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
-**Status:** PLANNED (not started). **Build-Order Step 3** of the Option D architecture
+**Status:** IN PROGRESS -- Commits 1-2 DONE on `feat/posting-ledger-cash-envelopes` (not pushed):
+C1 `97bc03c2aa4c` (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback`
+discriminator -- see Section 4.2's H1 fix). NEXT = Commit 3 (the category/fallback resolver).
+**Build-Order Step 3** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section, build
 order item 3: "Post confirmed cash transactions and cleared envelope entries at settle").
 **Enabled by:** Build-Order Step 2 (the append-only double-entry posting ledger +
@@ -323,9 +326,9 @@ no-gold-plating choice. Push back on any.
 |---|---|---|
 | **Category-account natural key** | One ledger account per **(user_id, category_id, class_id)**, class ∈ {Income, Expense} derived from the transaction *type* at posting time | A `Category` is type-agnostic (`category.py` -- just `group_name`/`item_name`); the same category *could* be used for both an income and an expense transaction. Double-entry requires one normal-balance side per account, so a mixed category correctly yields two accounts (Income-class and Expense-class). Keying by (category, class) handles the common case (one account) and the edge (two) with no validation. |
 | **Creation timing** | **Lazy get-or-create at posting time** (not an eager category-create hook + backfill-all-categories) | Eager creation would make two accounts (Income+Expense) per category, almost all unused; lazy creation makes exactly the accounts that are actually posted to. The historical backfill get-or-creates as it sweeps. New writer lives in `ledger_account_service` (sole writer of `ledger_accounts`), called by `posting_service` -- preserves SRP. |
-| **Uncategorized fallback** | Per-user **"Uncategorized Income" / "Uncategorized Expense"** rows (`category_id` NULL, `name` set), one per (user, class) | A transaction's `category_id` is nullable and is SET NULL when a category is deleted (`transaction.py:162-164`). Those rows still post; they land in the fallback account. |
+| **Uncategorized fallback** | Per-user **"Uncategorized Income" / "Uncategorized Expense"** rows (`category_id` NULL, **`is_fallback` True**, `name` set), one per (user, class) | A transaction's `category_id` is nullable and is SET NULL when a category is deleted (`transaction.py:162-164`). Those rows still post; they land in the fallback account. The singleton keys on **`is_fallback`** (not the NULL `category_id` -- see 4.2's H1 fix); the resolver sets `is_fallback=True` when it creates the fallback. |
 | **Display name** | **Snapshot** `category.display_name` ("Group: Item") into `name` at creation | A ledger account is a stable identifier; renaming the budgeting category should not rewrite posted history. The `category_id` link still enables live Step-5 grouping while the category exists, and the snapshot survives a category delete (when `category_id` goes NULL). This is also forced by `ck_ledger_accounts_name_present` (an `account_id`-NULL row must carry a name). |
-| **`category_id` FK action** | **SET NULL** on category delete | Postings are immutable and reference the ledger account, so the ledger account can never be deleted; the category link is cleared and the `name` snapshot keeps the account identifiable. RESTRICT would wrongly forbid deleting a category that has posted history. |
+| **`category_id` FK action** | **SET NULL** on category delete | Postings are immutable and reference the ledger account, so the ledger account can never be deleted; the category link is cleared and the `name` snapshot keeps the account identifiable -- the row becomes a coexisting **orphan** (`is_fallback` False; 4.2's H1 fix is what lets it coexist with the fallback instead of colliding). RESTRICT would wrongly forbid deleting a category that has posted history. |
 | **Posting kind per leg** | Both legs of an entry carry the **same kind** (`income` or `expense`, by transaction type) | Mirrors Step 2 (both transfer legs are `transfer`); no Step-3 reader differentiates per-leg kind. |
 | **Scope of "cash transaction"** | All settled, non-deleted, **non-transfer** (`transfer_id IS NULL`) transactions, on any account | The double-entry is correct for any account class; the oracle reconciles ledger-vs-source for every account; excluding non-cash accounts would leave confirmed rows unposted and add a classification dependency. Reads do not use the ledger yet, so there is no projection double-count in Step 3. Transfer shadows are excluded (Step 2 owns them). |
 | **Chokepoint strategy** (REVERSED after the 2.8 review + developer question) | **Build a single status-transition seam** `transaction_service.apply_status_change` that all status changes route through, checker-enforced -- the transfer pattern (`transfer_service._apply_status_change`) applied to transactions. The seam does the status MECHANICS only (verify + assign + `paid_at` + expire); **posting is reconciled once at each handler's end, after all field mutations** (also the transfer pattern -- `update_transfer:628-643`). Born-Projected closes the create dimension; small hooks handle entry mutations and deletes. | The 2.8 review found two completeness HIGHs the per-site approach caused (create-time settle; stale-status read); the 2.8b review showed posting must NOT live inside the seam (order-fragility). The enforced seam makes the *status* dimension impossible to bypass; born-Projected + the entry/delete hooks + the production-wide oracle cover the rest. It pays off for Steps 4-5, which also post on settle. My original "hook each site, no seam" recommendation is withdrawn. |
@@ -345,11 +348,13 @@ no-gold-plating choice. Push back on any.
 
 ---
 
-## 4. The schema (two additive column changes; no new table)
+## 4. The schema (three additive columns; no new table)
 
-Both changes are additive (no drops, no type changes). Every FK has an explicit named `ondelete`;
+All three changes are additive (no drops, no type changes). Every FK has an explicit named `ondelete`;
 every new index matches its model `postgresql_where` byte-for-byte (so autogenerate yields an empty
-diff).
+diff). (As-built note: Section 4.2 was revised after an adversarial review found a category-delete
+collision in the original design -- the `is_fallback` discriminator below is the fix. Shipped in
+Commit 2, migration `bdde62675c9b`.)
 
 ### 4.1 `ref` additions (data, not schema)
 
@@ -362,29 +367,47 @@ diff).
   migration MUST inline-seed these (dual-seed: migration `ON CONFLICT DO NOTHING` + the
   `_REF_TABLE_SEEDS` lists in `ref_seeds.py`).
 
-### 4.2 `budget.ledger_accounts.category_id` (the category chart of accounts)
+### 4.2 `budget.ledger_accounts.category_id` + `is_fallback` (the category chart of accounts)
 
 | column | type | notes |
 |---|---|---|
-| `category_id` | int NULL | FK `budget.categories.id` **SET NULL**. Set on Income/Expense category rows (`account_id` NULL); NULL on linked Asset/Liability rows and on the Uncategorized fallbacks. |
+| `category_id` | int NULL | FK `budget.categories.id` **SET NULL**. Set on Income/Expense category rows (`account_id` NULL); NULL on linked Asset/Liability rows, on the Uncategorized fallbacks, and on deleted-category orphans. |
+| `is_fallback` | bool NOT NULL DEFAULT false | True ONLY on the per-(owner, class) Uncategorized fallback bucket; False on linked, category, and orphan rows. The discriminator that fixes the H1 collision below. |
 
 Indexes / constraints (added; the existing `uq_ledger_accounts_account`,
 `ck_ledger_accounts_name_present`, `idx_ledger_accounts_user` are unchanged):
 - `uq_ledger_accounts_category` -- partial unique on `(user_id, category_id, class_id)`
   `WHERE category_id IS NOT NULL AND account_id IS NULL` (one ledger account per category per class
   per owner).
-- `uq_ledger_accounts_uncategorized` -- partial unique on `(user_id, class_id)`
-  `WHERE category_id IS NULL AND account_id IS NULL` (exactly one Uncategorized-Income and one
-  Uncategorized-Expense per owner; PG treats NULL `category_id` as distinct under a normal unique,
-  so this dedicated partial index is what enforces the singleton).
+- `uq_ledger_accounts_uncategorized` -- partial unique on `(user_id, class_id)` **`WHERE is_fallback`**
+  (exactly one Uncategorized-Income and one Uncategorized-Expense per owner).
+- `ck_ledger_accounts_account_or_category_null` -- CHECK `account_id IS NULL OR category_id IS NULL`
+  (a row links a real account XOR a category, never both).
+- `ck_ledger_accounts_fallback_shape` -- CHECK
+  `NOT is_fallback OR (account_id IS NULL AND category_id IS NULL)` (`is_fallback` is a true
+  discriminator only on the NULL/NULL shape, so it cannot subvert the fallback singleton).
 
-The three row kinds partition cleanly: **linked** (`account_id` NOT NULL, `category_id` NULL),
-**category** (`account_id` NULL, `category_id` NOT NULL), **uncategorized** (`account_id` NULL,
-`category_id` NULL). No two partial indexes overlap.
+**Why `is_fallback` (the H1 fix -- a correction to the original plan).** The original design keyed the
+fallback singleton `WHERE category_id IS NULL AND account_id IS NULL`. That collides with the
+`category_id` SET NULL: deleting a budget category that has posted history turns its category ledger
+row into a *second* NULL/NULL row, and -- because the SET NULL is part of the category DELETE -- the
+whole delete aborts with a unique violation. It is a reachable, ordinary action (the hard-delete path
+`routes/categories.py:delete_category` -> `archive_helpers.category_has_usage` checks only templates
+and transactions, never ledger accounts). An adversarial review caught this before any rows were
+written. The fix (developer-approved): the `is_fallback` discriminator confines the singleton to the
+*true* fallback, so a deleted category becomes a freely-coexisting **orphan** (NULL/NULL,
+`is_fallback` False) and the delete always succeeds.
 
-Model: add `category_id` column + a one-directional `category` relationship (no backref, lazy
-select); display rule extends to `COALESCE(account.name, ledger_account.name)` unchanged (category
-rows carry `name`, so they resolve to the snapshot). `class_id` already exists.
+The four row kinds partition cleanly and exhaustively (the two CHECKs make it storage-enforced, not
+convention): **linked** (`account_id` NOT NULL, `category_id` NULL, `is_fallback` False),
+**category** (`account_id` NULL, `category_id` NOT NULL, `is_fallback` False), **fallback** (NULL/NULL,
+`is_fallback` True), **orphan** (NULL/NULL, `is_fallback` False). Each *constrained* kind has exactly
+one partial unique; orphans carry none and coexist freely.
+
+Model: add `category_id` + `is_fallback` columns + a one-directional `category` relationship (no
+backref, lazy select); display rule extends to `COALESCE(account.name, ledger_account.name)` unchanged
+(category / fallback / orphan rows carry `name`, so they resolve to the snapshot). `class_id` already
+exists.
 
 ### 4.3 `budget.journal_entries.transaction_id` (the source link, mirroring `transfer_id`)
 
@@ -593,11 +616,19 @@ Invariants (asserted production-wide after the backfill, and re-checked after th
    The transaction term is the signed sum (income `+`, expense `−`) of `effective − credit_sum` over
    A's settled, non-deleted, `transfer_id IS NULL` transactions -- computed by an independent
    source-table query, not the service helper.
-2. **Per category account (counter side).** For each category ledger account CA (user, category,
-   class): `SUM(postings on CA)` `== −Σ(signed effect)` over the settled, non-deleted, non-transfer
-   transactions of that category and matching class -- i.e. the exact negation of the cash legs those
-   transactions produced. Uncategorized fallbacks reconcile against `category_id IS NULL`
-   transactions of each class.
+2. **Per counter account (category / fallback / orphan).** For each counter ledger account CA:
+   `SUM(postings on CA)` `== −Σ(signed effect)` over **the transactions whose legs posted to CA**,
+   identified by the `journal_entries.transaction_id` linkage -- NOT by `category_id` matching. For a
+   *live category* account that equals the settled, non-deleted, non-transfer transactions of that
+   category and matching class (the negation of the cash legs they produced); for the *fallback* it
+   equals the still-`category_id IS NULL` transactions of that class; and for an *orphan* (a deleted
+   category's former account, `is_fallback` False) it equals exactly the transactions that posted to
+   it while the category was live -- which `category_id` matching could no longer find, since those
+   transactions now read `category_id IS NULL` (`transactions.category_id` is itself SET NULL on
+   category delete). The transaction_id-linkage formulation reconciles all three uniformly and is the
+   reason orphans do not break per-counter reconciliation. (Forward note: this was a `category_id`-match
+   formulation in the original plan; the `is_fallback`/orphan design in 4.2 requires the linkage
+   formulation -- see the `ledger_account.py` module docstring's "Reconciliation of orphans".)
 3. **Per-entry balance.** `SUM(amount) = 0` and `COUNT >= 2` for every `journal_entry_id` (also
    DB-enforced).
 4. **Trial balance (global).** `SUM(all account_postings.amount) = 0`.
@@ -647,35 +678,56 @@ two that close the 2.8 review's CRITICAL/HIGH findings and carry the heaviest re
   `ref_cache.init()` succeeds (an enum/seed mismatch makes `init()` raise loudly).
 - **Review focus:** enum `.value` strings match the seeded names exactly; no name-compare introduced.
 
-### Commit 2 -- Schema: `ledger_accounts.category_id` + `journal_entries.transaction_id`
+### Commit 2 -- Schema: `ledger_accounts.category_id` + `is_fallback` + `journal_entries.transaction_id` -- DONE (1b4d785)
 
-- `app/models/ledger_account.py`: add `category_id` (nullable SET-NULL FK), the two new partial
-  unique indexes, the `category` relationship; extend the module docstring's row-kind taxonomy.
+**As-built note:** an adversarial review found the original `uq_ledger_accounts_uncategorized`
+(`WHERE category_id IS NULL AND account_id IS NULL`) collides with the `category_id` SET NULL on a
+category delete (4.2's H1). The implemented schema therefore adds an `is_fallback` discriminator and a
+`ck_ledger_accounts_fallback_shape` CHECK beyond the original plan, and keys the singleton
+`WHERE is_fallback`. What shipped:
+
+- `app/models/ledger_account.py`: add `category_id` (nullable SET-NULL FK) **and `is_fallback` (bool
+  NOT NULL DEFAULT false)**, the two new partial unique indexes (the uncategorized one keyed
+  `WHERE is_fallback`), **the two CHECKs `ck_ledger_accounts_account_or_category_null` and
+  `ck_ledger_accounts_fallback_shape`**, the `category` relationship; rewrite the module docstring's
+  row-kind taxonomy to four kinds (linked / category / fallback / orphan) + the orphan-reconciliation
+  forward note.
 - `app/models/journal_entry.py`: add `transaction_id` (nullable SET-NULL FK) + partial index,
   verbatim shape of the `transfer_id` block; note the `source_kind_id` disambiguation.
-- **Migration** (additive; `Review:` line for the new FKs/indexes): `add_column` both;
-  `create_index` the three new indexes. Downgrade drops them. Hand-check the DDL against the models
-  for an empty autogenerate diff.
-- **Tests:** model smoke; the partial uniques reject a duplicate category/uncategorized row and
-  permit the disjoint kinds; SET NULL on category delete leaves the ledger row with `category_id`
-  NULL and the `name` snapshot intact; SET NULL on transaction delete clears `transaction_id`;
-  migration up/down.
-- **Review focus:** the three partial-index predicates partition without overlap; FK actions per
-  Section 4; `name` presence still enforced for category rows.
+- **Migration `bdde62675c9b`** (additive; `Review:` line): `add_column` all three; `create_index` the
+  three new indexes; `create_check_constraint` the two CHECKs (hand-added -- Alembic does not
+  autogenerate CHECKs). Downgrade drops them. Verified up/down with an empty autogenerate diff.
+- **Tests:** model smoke; the partial uniques reject a duplicate category / fallback row and permit
+  the disjoint kinds; **the H1 end-to-end regression (category delete with a same-class fallback
+  present does NOT collide); fallback+orphan and multi-orphan coexistence; the `fallback_shape` CHECK
+  rejects `is_fallback` on a linked/category row**; SET NULL on category delete leaves an orphan with
+  the `name` snapshot intact; SET NULL on transaction delete clears `transaction_id`; migration
+  up/down. Rejection tests pin the specific constraint name.
+- **Outcome:** full suite 6542, `pylint app/` 10.00, two `code-reviewer` passes clean.
 
-### Commit 3 -- `ledger_account_service`: the category/uncategorized resolver
+### Commit 3 -- `ledger_account_service`: the category/fallback resolver
 
 - `app/services/ledger_account_service.py`:
   `get_or_create_category_ledger_account(user_id, category_id, ledger_class) -> LedgerAccount` --
   idempotent (respects the partial uniques), snapshots the name (`category.display_name` or
   `"Uncategorized {Income|Expense}"`), leaves `account_id` NULL. A private
   `_ledger_class_for_txn_type(is_income) -> int` helper. Flushes, does not commit.
+  - **`is_fallback` handling (4.2 H1).** When `category_id` is NULL, the resolver creates / looks up
+    the fallback with **`is_fallback=True`**, and its idempotency lookup keys on
+    `(user_id, class_id) WHERE is_fallback` -- NOT on `category_id IS NULL` (a `category_id IS NULL`
+    lookup would also match deleted-category *orphans* and return one of them as the fallback,
+    commingling unrelated postings). When `category_id` is NOT NULL, it creates a category row with
+    `is_fallback=False`. The resolver NEVER creates an orphan; orphans arise only from a category
+    delete's SET NULL (Commit 2's schema), and the resolver must not resurrect or reuse them.
 - **Tests:** creates one row per (category, class); dedups on re-call; a category used as both income
   and expense yields two rows (Income-class + Expense-class); NULL category -> the per-(user, class)
-  Uncategorized fallback (singleton enforced); the name snapshot is `"Group: Item"`; the row survives
-  a later category delete (becomes `category_id` NULL, name intact); decimals/IDs only.
-- **Review focus:** class derived by ID (never name); the uncategorized singleton holds under the
-  partial unique; SRP (only this service writes `ledger_accounts`); no Flask import.
+  fallback with `is_fallback=True` (singleton enforced); the name snapshot is `"Group: Item"`; the row
+  survives a later category delete (becomes a `category_id`-NULL orphan, `is_fallback` still False,
+  name intact); **a fallback created when an orphan of the same class already exists is the
+  `is_fallback=True` row, not the orphan**; decimals/IDs only.
+- **Review focus:** class derived by ID (never name); the fallback lookup keys on `is_fallback` (never
+  on `category_id IS NULL`, the H1 trap); the singleton holds under the partial unique; SRP (only this
+  service writes `ledger_accounts`); no Flask import.
 
 ### Commit 4 -- `posting_service.sync_transaction_postings` (correct-by-construction) + helpers
 
@@ -776,13 +828,17 @@ every handler, after all effect fields are applied** -- never at the status flip
 - **Migration** (`Review:` line; raw SQL, self-contained except the documented
   `apply_posting_infrastructure`-style exception is NOT needed here -- no trigger work). Two passes,
   mirroring `db239773c2fd:_backfill_settled_transfers`:
-  - **Pass A -- create category/uncategorized ledger accounts.** `INSERT INTO budget.ledger_accounts
-    (user_id, class_id, category_id, name) SELECT DISTINCT …` over every (user, category, class) and
-    (user, NULL, class) appearing in settled, non-deleted, non-transfer transactions, with `ON
-    CONFLICT … DO NOTHING` against the two partial uniques (categorized + uncategorized passes). Class
-    from the transaction `transaction_type` -> Income/Expense by ID-resolved-by-name (the documented
-    migration exception); name = `category.group_name || ': ' || category.item_name` or
-    `'Uncategorized Income'/'Uncategorized Expense'`.
+  - **Pass A -- create category/fallback ledger accounts.** `INSERT INTO budget.ledger_accounts
+    (user_id, class_id, category_id, is_fallback, name) SELECT DISTINCT …` over every (user, category,
+    class) and (user, NULL, class) appearing in settled, non-deleted, non-transfer transactions, with
+    `ON CONFLICT … DO NOTHING` against the matching partial unique. The categorized pass inserts
+    `is_fallback=false` (conflict target `uq_ledger_accounts_category`); the **fallback pass inserts
+    `is_fallback=true`** (conflict target `uq_ledger_accounts_uncategorized`, which is `WHERE
+    is_fallback`) -- the backfill must agree with the go-forward resolver, which sets `is_fallback=True`
+    on the fallback (4.2 H1). Class from the transaction `transaction_type` -> Income/Expense by
+    ID-resolved-by-name (the documented migration exception); name =
+    `category.group_name || ': ' || category.item_name` or `'Uncategorized Income'/'Uncategorized
+    Expense'`.
   - **Pass B -- post entries.** For every settled (`status.is_settled`), non-deleted,
     `transfer_id IS NULL` transaction with nonzero `effect`, insert one journal entry (`source_kind =
     transaction`, `transaction_id`, scenario/period/user, `entry_date = COALESCE((paid_at AT TIME
@@ -827,9 +883,12 @@ every handler, after all effect fields are applied** -- never at the status flip
 ## 8. Testing strategy (by layer)
 
 - **Reference (C1):** enum<->seed parity for the new kinds/source; `ref_cache` resolution.
-- **Schema (C2):** the three partial indexes partition correctly; SET-NULL behaviors; name-presence.
+- **Schema (C2):** the three partial indexes + two CHECKs partition the four kinds
+  (linked/category/fallback/orphan) correctly; the H1 regression (category delete with a same-class
+  fallback present does not collide); SET-NULL behaviors; name-presence; the `fallback_shape` CHECK.
 - **Chart of accounts (C3):** (category, class) keying incl. the mixed-category two-account case;
-  uncategorized singleton; name snapshot; survives category delete.
+  fallback singleton (keyed `is_fallback`); fallback chosen over a same-class orphan; name snapshot;
+  survives category delete (becomes an orphan).
 - **Service (C4):** the unified `effective − credit_sum` effect with hand-computed worked examples
   (plain income/expense, envelope debit-only, all-credit no-op); idempotent reconcile; reversal;
   the revert-recategorize-resettle reconcile (2.8 CRITICAL); per-transaction isolation; counter-leg
@@ -861,11 +920,14 @@ Three migrations, chained off `db239773c2fd`, each reversible:
 
 1. **Ref rows** (C1): inline-seed `income` / `expense` posting kinds + `transaction` posting source.
    Down: delete the three rows by name.
-2. **Schema** (C2): add `ledger_accounts.category_id` + two partial uniques; add
-   `journal_entries.transaction_id` + partial index. Down: drop them. `Review:` line.
-3. **Backfill** (C7): create category/uncategorized ledger accounts, then post one balanced entry per
-   historical settled non-transfer transaction. Down: delete Step-3 (`source_kind = transaction`)
-   journal entries + the category ledger accounts (reproducible on re-upgrade). `Review:` line.
+2. **Schema** (C2, `bdde62675c9b`): add `ledger_accounts.category_id` + `is_fallback` + two partial
+   uniques (uncategorized keyed `WHERE is_fallback`) + two CHECKs
+   (`account_or_category_null`, `fallback_shape`); add `journal_entries.transaction_id` + partial
+   index. Down: drop them. `Review:` line. DONE.
+3. **Backfill** (C7): create category + fallback (`is_fallback=true`) ledger accounts, then post one
+   balanced entry per historical settled non-transfer transaction. Down: delete Step-3
+   (`source_kind = transaction`) journal entries + the category/fallback ledger accounts (reproducible
+   on re-upgrade). `Review:` line.
 
 Downgrade caveat (documented in each, matching `db239773c2fd`): a downgrade removes the backfilled +
 go-forward Step-3 postings and the category accounts; a re-upgrade re-runs the backfill and
@@ -911,9 +973,12 @@ downgrade must run after the backfill's, since the backfill rows depend on `cate
   than Step 2's single-account delta. Mitigated by the revert-recategorize regression test (2.8
   CRITICAL), the sum-to-zero-by-construction property, and the oracle.
 - **Backfill correctness + category pre-pass (C7)** -- the raw-SQL `effect` must equal the Python
-  builder's, and the lazy get-or-create must produce the SAME account both ways. Mitigated by the
-  oracle's backfill==go-forward check, the deterministic key + name snapshot in both producers, and
-  the `effect <> 0` / `transfer_id IS NULL` filters.
+  builder's, and the lazy get-or-create must produce the SAME account both ways. With `is_fallback`
+  (4.2 H1), "the same account both ways" now also requires both producers to set `is_fallback=true` on
+  the fallback (else the backfill makes an `is_fallback=false` row the resolver's `WHERE is_fallback`
+  lookup never finds, yielding two fallback-shaped rows and breaking backfill==go-forward). Mitigated
+  by the oracle's backfill==go-forward check, the deterministic key + name snapshot + `is_fallback`
+  value in both producers, and the `effect <> 0` / `transfer_id IS NULL` filters.
 - **Coexistence double-count fear.** None: reads never sum postings in Step 3.
 - **Rollback.** Each commit is independently revertible. Reverting C6/C5 stops go-forward emission
   (C5 also reverts the seam refactor) but leaves the backfilled historical postings (still
