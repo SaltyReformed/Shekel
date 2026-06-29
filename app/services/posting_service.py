@@ -784,6 +784,40 @@ def sync_transaction_postings(
     return entry
 
 
+def reverse_postings_before_delete(txn: Transaction) -> None:
+    """Reverse a transaction's ledger postings before the row is deleted.
+
+    The delete-side reconcile every transaction-delete path runs FIRST, while
+    ``txn.id`` still exists: it brings the transaction's net posted effect to
+    zero by reconciling to an empty (``settled=False``) target via
+    :func:`sync_transaction_postings`, emitting a balanced reversal entry for
+    whatever the ledger currently holds.  Running it before the delete is
+    load-bearing for a HARD delete: ``journal_entries.transaction_id`` is
+    ``ON DELETE SET NULL``, so once the row is gone the link is severed and the
+    original legs would be stranded on their ledger accounts with no offsetting
+    reversal -- breaking per-account reconciliation.  Reversing first leaves the
+    original entry and its reversal as an immutable net-zero pair (their
+    ``transaction_id`` SET-NULLs together on the delete), so every ledger
+    account still nets correctly.  The transaction analog of
+    ``transfer_service.delete_transfer``'s ``sync_transfer_postings(xfer,
+    settled=False)`` reverse-before-delete.
+
+    Idempotent no-op for a never-settled or already-reversed transaction (a
+    Projected row has no postings).  Shared by the delete route
+    (``delete_transaction``) and the three payback-delete paths
+    (``credit_workflow.delete_payback_on_credit_revert`` /
+    ``delete_payback_on_source_delete`` / ``entry_credit_workflow
+    .sync_entry_payback``'s DELETE branch) so no delete path can strand a
+    posting.  Flushes but does not commit (the caller owns the transaction).
+
+    Args:
+        txn: The transaction about to be deleted (soft or hard).  Must still be
+            flushed (``txn.id`` set) so the reversal entry can link by
+            ``transaction_id`` and read the already-posted legs back.
+    """
+    sync_transaction_postings(txn, settled=False)
+
+
 def account_posting_total(account_id: int, scenario_id: int) -> Decimal:
     """Return the net of all posting legs on an account's ledger in a scenario.
 

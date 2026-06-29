@@ -20,7 +20,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import pay_period_service
+from app.services import pay_period_service, posting_service
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
     get_active_payback,
@@ -155,6 +155,12 @@ def sync_entry_payback(
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
+        # Reverse the payback's own ledger postings before deleting it
+        # (Build-Order Step 3 reverse-before-delete): an entry-level payback that
+        # was settled -- and therefore posted -- before its source's credit
+        # entries were all removed must not leave its double-entry legs stranded.
+        # Idempotent no-op for a still-Projected payback.
+        posting_service.reverse_postings_before_delete(existing_payback)
         db.session.delete(existing_payback)
         db.session.flush()
         log_event(

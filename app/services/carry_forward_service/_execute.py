@@ -15,7 +15,7 @@ from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import transfer_service
+from app.services import posting_service, transfer_service
 from app.services.entry_service import compute_actual_from_entries
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
@@ -212,6 +212,25 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
             count += 1
 
     db.session.flush()
+
+    # ── Posting ledger reconcile (Build-Order Step 3) ──────────────
+    # Each envelope source was settled at sum(entries) inside the loop above;
+    # post its confirmed cash effect to the double-entry ledger.  Done AFTER the
+    # no_autoflush block and its flush -- NOT inside settle_from_entries (which
+    # runs inside that block) -- so _emit_balanced_entry's flush lands on the
+    # batch's index-safe final state, never mid-loop where a partially-mutated
+    # (template, period, scenario) row could violate
+    # idx_transactions_template_period_scenario.  The reconcile is idempotent and
+    # a no-op for the common empty-envelope rollover (effect 0); a
+    # partially-spent source posts its debit-only checking outflow.  Only
+    # envelope sources need a reconcile here: carry-forward moves only Projected
+    # rows, so the transfers relocated above are unsettled and
+    # transfer_service.update_transfer posted nothing for them.
+    for source_txn in ctx.envelope_txns:
+        posting_service.sync_transaction_postings(
+            source_txn, settled=source_txn.status.is_settled,
+        )
+
     log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
               "Carried forward unpaid items",
               user_id=user_id,

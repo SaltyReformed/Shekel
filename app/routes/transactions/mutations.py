@@ -31,6 +31,7 @@ from app.extensions import db
 from app.models.ref import Status
 from app.services import (
     credit_workflow,
+    posting_service,
     status_seam,
     transaction_service,
     transfer_service,
@@ -63,6 +64,25 @@ logger = logging.getLogger(__name__)
 _LOCKED_EDIT_FIELDS = frozenset({
     "estimated_amount", "actual_amount", "category_id",
     "pay_period_id", "due_date",
+})
+
+# The PATCH fields whose change can alter a transaction's posted double-entry
+# ledger effect, so a change to any triggers a posting reconcile (Build-Order
+# Step 3, the transaction analog of ``transfer_service._POSTING_RELEVANT_FIELDS``).
+# ``status_id`` flips the settled/unsettled target; ``estimated_amount`` /
+# ``actual_amount`` together set ``effective_amount``
+# (``COALESCE(actual, estimated)``) -- the magnitude posted; ``category_id``
+# moves which counter (category) ledger account the expense/income leg books
+# into.  The other PATCH fields (``notes`` / ``name`` / ``due_date`` /
+# ``pay_period_id`` / ``is_envelope`` / the visibility flags) move none of
+# those, so a metadata-only edit raises no reconcile -- and a settled row's
+# period / due-date cannot move anyway (the finalised-edit lock blocks editing
+# them unless the same PATCH reverts to Projected).  The reconcile is
+# idempotent, so listing a field that did not move the effect is a harmless
+# no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
+# pure metadata edit.
+_POSTING_RELEVANT_FIELDS = frozenset({
+    "status_id", "estimated_amount", "actual_amount", "category_id",
 })
 
 
@@ -325,6 +345,26 @@ def _apply_regular_update(txn, txn_id, data):
         txn.is_override = True
 
     try:
+        # Posting ledger reconcile (Build-Order Step 3): after every effect
+        # field is applied above (the setattr loop, the status seam, the
+        # is_override flag), bring the double-entry ledger back in step with the
+        # transaction's now-current settled effect.  Placed LAST -- NOT at the
+        # status flip -- so it reads the FINAL amount and category, the exact
+        # discipline ``transfer_service.update_transfer`` documents (the 2.8b
+        # HIGH: a settle-and-recategorize PATCH applies category_id after
+        # status_id, so posting at the flip would book the stale category).  The
+        # reconcile reads the OLD category's posted legs back from the ledger by
+        # transaction_id, so a revert-and-recategorize reverses the old category
+        # cleanly even though ``txn.category_id`` already points at the new one
+        # (the 2.8 CRITICAL).  Gated on ``_POSTING_RELEVANT_FIELDS`` so a
+        # notes-only edit posts nothing.  Inside the StaleDataError net for the
+        # same reason as the payback delete below: the reconcile's flush
+        # autoflushes the version-pinned row, so a concurrent commit surfaces
+        # here as a 409, not a 500.
+        if _POSTING_RELEVANT_FIELDS & data.keys():
+            posting_service.sync_transaction_postings(
+                txn, settled=txn.status.is_settled,
+            )
         if reverts_credit:
             # Inside the StaleDataError net deliberately: the payback
             # lookup autoflushes the already-dirtied row (the
@@ -477,20 +517,32 @@ def delete_transaction(txn_id):
     if txn.transfer_id is not None:
         return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
 
-    # Delete the live payback (if any) before the source goes.  Runs
-    # for both branches below: a hard-deleted ad-hoc source would
-    # otherwise leave the payback with its link NULLed, a soft-deleted
-    # template row would leave it linked to an invisible source.
-    credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
-
-    if txn.template_id:
-        # Template-linked: soft-delete so the recurrence engine knows.
-        txn.is_deleted = True
-    else:
-        # Ad-hoc: hard delete.
-        db.session.delete(txn)
-
     try:
+        # Delete the live payback (if any) before the source goes.  Runs for
+        # both branches below: a hard-deleted ad-hoc source would otherwise
+        # leave the payback with its link NULLed, a soft-deleted template row
+        # would leave it linked to an invisible source.  Each payback level
+        # reverses its own postings first (Step 3 reverse-before-delete).
+        credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
+
+        # Posting ledger reconcile (Build-Order Step 3): reverse THIS row's own
+        # postings before it leaves the table, so a settled, posted row's
+        # double-entry nets to zero while journal_entries.transaction_id still
+        # links it (the FK SET-NULLs on the hard delete, leaving the net-zero
+        # pair as history; reversing afterward would strand the original legs).
+        # Idempotent no-op for a Projected (never-posted) row.  Inside the
+        # StaleDataError net with the payback teardown and the delete: these
+        # reconcile flushes autoflush version-pinned rows, so a concurrent
+        # commit surfaces as a 409 conflict cell, not a 500.
+        posting_service.reverse_postings_before_delete(txn)
+
+        if txn.template_id:
+            # Template-linked: soft-delete so the recurrence engine knows.
+            txn.is_deleted = True
+        else:
+            # Ad-hoc: hard delete.
+            db.session.delete(txn)
+
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -623,6 +675,19 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
             txn.actual_amount = actual_amount
 
     try:
+        # Posting ledger reconcile (Build-Order Step 3): both branches above
+        # leave the row in its final settled state -- the envelope branch via
+        # settle_from_entries (status + actual = sum(entries)), the manual
+        # branch via the seam plus the optional manual actual_amount -- so
+        # reconcile the double-entry ledger to that confirmed effect as the
+        # last step (the transfer pattern: post after every field is applied).
+        # A manual actual_amount therefore posts the ACTUAL, not the estimate
+        # (the 2.8b HIGH, forward direction).  Inside the StaleDataError net:
+        # the reconcile's flush autoflushes the version-pinned row, so a
+        # concurrent commit surfaces as a 409, not a 500.
+        posting_service.sync_transaction_postings(
+            txn, settled=txn.status.is_settled,
+        )
         db.session.commit()
     except StaleDataError:
         logger.info(
@@ -867,7 +932,19 @@ def cancel_transaction(txn_id):
     except ValidationError as exc:
         return str(exc), 400
 
+    # Posting ledger reconcile (Build-Order Step 3): reconcile to the new
+    # status's settled sense as the final step, mirroring the transfer pattern
+    # (reconcile on every status change).  Cancelled is non-settled and is
+    # reachable only from Projected, so this is an idempotent no-op today (a
+    # Projected source has no postings to reverse), but it keeps the "every
+    # status handler reconciles last" invariant complete and self-heals if the
+    # state machine ever admits cancelling a settled row.  Inside the
+    # StaleDataError net: the reconcile's flush autoflushes the version-pinned
+    # row, so a concurrent commit surfaces here as a 409, not a 500.
     try:
+        posting_service.sync_transaction_postings(
+            txn, settled=txn.status.is_settled,
+        )
         db.session.commit()
     except StaleDataError:
         logger.info(
