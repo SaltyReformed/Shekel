@@ -10,6 +10,13 @@ invokes the migration's idempotent
 :func:`_backfill_settled_transfers` directly -- the same pattern the
 ``ledger_accounts`` / ``loan_anchor_events`` backfill tests use.
 
+Since Commit 5 wires the transfer service to auto-post on settle, each
+settled-transfer test first clears those go-forward postings (raw SQL, via
+:func:`_clear_postings_for` -- the ORM blocks deletes on the append-only
+tables) to reproduce the pre-ledger historical state the backfill targets;
+otherwise the backfill's ``NOT EXISTS`` guard would no-op and the test would
+assert on the auto-posted entry instead of the backfilled one.
+
 The asserted invariants:
 
   * a settled transfer backfills to exactly one balanced entry: a ``-amount``
@@ -118,6 +125,31 @@ def _ledger_id(account):
     return ledger_accounts_for_account(_db.session, account.id)[0].id
 
 
+def _clear_postings_for(transfer_id):
+    """Delete a transfer's auto-posted ledger entries and legs (raw SQL).
+
+    Commit 5 wires the transfer service to auto-post on settle, so a settled
+    transfer built through ``transfer_service`` already carries its go-forward
+    postings.  The backfill, by contrast, exists to post HISTORICAL settled
+    transfers that predate the ledger and so have NONE (the migration runs
+    before the Commit-5 code is live in production).  This clears the
+    auto-posted entries and legs -- raw SQL, because the ORM blocks deletes on
+    the append-only tables -- reproducing that pre-ledger historical
+    precondition so the backfill genuinely posts (rather than no-opping on its
+    ``NOT EXISTS`` guard) and the test asserts on the BACKFILLED entry, not the
+    auto-posted one.  Legs are deleted before the header for explicitness (the
+    FK CASCADE would do it either way).
+    """
+    _db.session.execute(_db.text(
+        "DELETE FROM budget.account_postings WHERE journal_entry_id IN "
+        "(SELECT id FROM budget.journal_entries WHERE transfer_id = :t)"
+    ), {"t": transfer_id})
+    _db.session.execute(_db.text(
+        "DELETE FROM budget.journal_entries WHERE transfer_id = :t"
+    ), {"t": transfer_id})
+    _db.session.commit()
+
+
 @pytest.fixture()
 def savings(app, db, seed_user):  # pylint: disable=unused-argument
     """A second (Savings) account so transfers have a destination.
@@ -160,6 +192,9 @@ class TestBackfillPostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
 
+            # Commit-5 auto-posted on settle; clear to the pre-ledger historical
+            # state so the backfill genuinely posts the entry.
+            _clear_postings_for(transfer.id)
             posted = _run_backfill()
             assert posted == [transfer.id]
 
@@ -202,6 +237,7 @@ class TestBackfillPostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             mortgage_ledger = _ledger_id(mortgage)
 
+            _clear_postings_for(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             legs = _legs_by_ledger(entry.id)
@@ -229,6 +265,7 @@ class TestBackfillPostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
 
+            _clear_postings_for(transfer.id)
             _run_backfill()
             legs = _legs_by_ledger(_entry_for_transfer(transfer.id).id)
             assert legs[checking_ledger] == Decimal("-97.50")
@@ -251,6 +288,7 @@ class TestBackfillEntryDate:
                 paid_at=datetime(2026, 5, 10, 14, 30, tzinfo=timezone.utc),
             )
             _db.session.commit()
+            _clear_postings_for(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             assert entry.entry_date == date(2026, 5, 10)
@@ -271,6 +309,7 @@ class TestBackfillEntryDate:
                 period, amount=Decimal("100.00"), paid_at=None,
             )
             _db.session.commit()
+            _clear_postings_for(transfer.id)
             _run_backfill()
             entry = _entry_for_transfer(transfer.id)
             assert entry.entry_date == period.start_date
@@ -341,6 +380,10 @@ class TestBackfillExclusions:
                 transfer.id, seed_user["user"].id, soft=True,
             )
             _db.session.commit()
+            # Clear the settle auto-post + soft-delete auto-reversal to the
+            # pre-ledger state, then confirm the backfill excludes the
+            # soft-deleted transfer (posts nothing).
+            _clear_postings_for(transfer.id)
             assert _run_backfill() == []
             assert _entry_for_transfer(transfer.id) is None
 
@@ -380,6 +423,8 @@ class TestBackfillIdempotency:
             )
             _db.session.commit()
 
+            # Clear the Commit-5 auto-post so the backfill itself runs.
+            _clear_postings_for(transfer.id)
             first = _run_backfill()
             second = _run_backfill()
             assert first == [transfer.id]

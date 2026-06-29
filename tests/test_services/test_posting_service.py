@@ -29,9 +29,11 @@ These tests pin the load-bearing properties with hand-computed arithmetic:
 
 The transfer states are built through ``transfer_service`` (the sole transfer
 writer, via the ``create_settled_transfer`` helper), so every shadow obeys
-the transfer invariants exactly as production produces them; Commit 4 wires
-nothing into that service yet, so each test invokes ``posting_service``
-directly.
+the transfer invariants exactly as production produces them.  Commit 5 wires
+``posting_service`` into that service, so settling a transfer already
+auto-posts its ledger entry; the settle tests below read that auto-posted
+entry back, while the idempotency / reversal tests still invoke
+``posting_service`` directly to prove a re-sync no-ops or reverses.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture
@@ -139,12 +141,10 @@ class TestSyncSettlePostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
 
-            entry = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            _db.session.commit()
+            # Commit-5 wiring: settling through the transfer service already
+            # auto-posted the entry; read it back (a re-sync would no-op).
+            entry = _entries_for_transfer(transfer.id)[0]
 
-            assert entry is not None
             # Header metadata.
             assert entry.transfer_id == transfer.id
             assert entry.user_id == seed_user["user"].id
@@ -197,10 +197,9 @@ class TestSyncSettlePostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             mortgage_ledger = _ledger_id(mortgage)
 
-            entry = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            _db.session.commit()
+            # Commit-5 wiring: the mortgage pay-down auto-posted on settle;
+            # read the entry back (a re-sync would no-op).
+            entry = _entries_for_transfer(transfer.id)[0]
 
             legs = _legs_by_ledger(entry.id)
             assert legs[checking_ledger] == Decimal("-250.00")
@@ -229,10 +228,9 @@ class TestSyncSettlePostsBalancedEntry:
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
 
-            entry = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            _db.session.commit()
+            # Commit-5 wiring: the divergent settled actual auto-posted; read
+            # the entry back (a re-sync would no-op).
+            entry = _entries_for_transfer(transfer.id)[0]
 
             legs = _legs_by_ledger(entry.id)
             assert legs[checking_ledger] == Decimal("-97.50")
@@ -262,10 +260,8 @@ class TestSyncSettleEntryDate:
                 paid_at=datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc),
             )
             _db.session.commit()
-            entry = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            _db.session.commit()
+            # Commit-5 wiring: the settle auto-posted; read the entry back.
+            entry = _entries_for_transfer(transfer.id)[0]
             # UTC civil date 2026-05-10, NOT the Eastern 2026-05-09.
             assert entry.entry_date == date(2026, 5, 10)
 
@@ -285,10 +281,8 @@ class TestSyncSettleEntryDate:
                 period, amount=Decimal("100.00"), paid_at=None,
             )
             _db.session.commit()
-            entry = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            _db.session.commit()
+            # Commit-5 wiring: the settle auto-posted; read the entry back.
+            entry = _entries_for_transfer(transfer.id)[0]
             assert entry.entry_date == period.start_date
 
 
@@ -301,11 +295,12 @@ class TestSyncIdempotency:
     """A repeat sync at the same target writes nothing."""
 
     def test_repeat_settle_is_noop(self, app, db, seed_user, savings):
-        """A second settle sync returns None and posts no second entry.
+        """Re-syncing an already-auto-posted settle returns None, no 2nd entry.
 
-        Arithmetic: first sync posts +100 to the Savings ledger (current 0 ->
-        target 100, delta 100); the second sees current 100 == target 100, so
-        delta 0 and no entry.  This is the double-mark-done guard.
+        Arithmetic: ``create_settled_transfer`` auto-posted +100 to the Savings
+        ledger (Commit-5 wiring), so both manual re-syncs see current 100 ==
+        target 100, delta 0, and write nothing.  This is the double-mark-done
+        guard -- a repeated settle never double-posts.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -314,6 +309,8 @@ class TestSyncIdempotency:
             )
             _db.session.commit()
 
+            # Both manual re-syncs are no-ops: create_settled_transfer already
+            # auto-posted the +100 entry, so current == target and delta == 0.
             first = posting_service.sync_transfer_postings(
                 transfer, settled=True,
             )
@@ -322,7 +319,7 @@ class TestSyncIdempotency:
             )
             _db.session.commit()
 
-            assert first is not None
+            assert first is None
             assert second is None
             assert len(_entries_for_transfer(transfer.id)) == 1
 
