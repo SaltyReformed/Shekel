@@ -25,6 +25,7 @@ from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
+    LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -35,6 +36,7 @@ from app.models.ref import (
     GoalMode,
     IncomeUnit,
     LedgerAccountClass,
+    LedgerAccountKind,
     PostingKind,
     PostingSource,
     Status,
@@ -573,10 +575,47 @@ class TestPostingKindRefCache:
                 f"income={income_id}, expense={expense_id}"
             )
 
+    def test_posting_kind_resolves_loan_correction_kinds(self, app, db):
+        """ref_cache resolves the Step-4 loan-correction kinds distinctly.
+
+        The four legs of a confirmed loan payment's real-split correction
+        (``principal`` / ``interest`` / ``escrow`` / ``refund``) added in
+        Build-Order Step 4 must each resolve to a distinct positive ID,
+        distinct from one another and from the Step 2/3 kinds.  This guards
+        that the enum ``.value`` strings match the seeded
+        ``ref.posting_kinds.name`` rows and that no two members collapse onto
+        one row (a copy-paste value collision).
+        """
+        with app.app_context():
+            existing = {
+                ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
+                ref_cache.posting_kind_id(PostingKindEnum.INCOME),
+                ref_cache.posting_kind_id(PostingKindEnum.EXPENSE),
+            }
+            loan_kinds = {
+                member: ref_cache.posting_kind_id(member)
+                for member in (
+                    PostingKindEnum.PRINCIPAL,
+                    PostingKindEnum.INTEREST,
+                    PostingKindEnum.ESCROW,
+                    PostingKindEnum.REFUND,
+                )
+            }
+            for member, kind_id in loan_kinds.items():
+                assert isinstance(kind_id, int) and kind_id > 0, (
+                    f"{member.name} id must be a positive int, got {kind_id}"
+                )
+            # Four distinct loan kinds, none colliding with the earlier three.
+            assert len(set(loan_kinds.values())) == 4, loan_kinds
+            assert existing.isdisjoint(set(loan_kinds.values())), (
+                f"loan kinds {loan_kinds} collide with earlier kinds {existing}"
+            )
+
     def test_posting_kind_enum_matches_db(self, app, db):
         """Every PostingKindEnum member has a DB row and vice versa.
 
-        Step 2 seeds only 'transfer'; this guards against a future kind
+        Step 2 seeds 'transfer'; Step 3 adds 'income'/'expense'; Step 4 adds
+        the four loan-correction kinds.  This guards against a future kind
         added to the enum without a seed row (or vice versa).
         """
         with app.app_context():
@@ -634,6 +673,33 @@ class TestPostingSourceRefCache:
                 f"transfer {transfer_id}"
             )
 
+    def test_posting_source_resolves_loan_payment(self, app, db):
+        """ref_cache resolves the Step-4 LOAN_PAYMENT source distinctly.
+
+        The loan-payment correction source added in Build-Order Step 4 must
+        resolve to a positive ID distinct from Step 2's TRANSFER and Step 3's
+        TRANSACTION, guarding that
+        ``PostingSourceEnum.LOAN_PAYMENT.value`` matches its seeded
+        ``ref.posting_sources.name`` row.
+        """
+        with app.app_context():
+            transfer_id = ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER
+            )
+            transaction_id = ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSACTION
+            )
+            loan_payment_id = ref_cache.posting_source_id(
+                PostingSourceEnum.LOAN_PAYMENT
+            )
+            assert loan_payment_id > 0, (
+                f"loan_payment source id must be positive, got {loan_payment_id}"
+            )
+            assert len({transfer_id, transaction_id, loan_payment_id}) == 3, (
+                f"source ids collide: transfer={transfer_id}, "
+                f"transaction={transaction_id}, loan_payment={loan_payment_id}"
+            )
+
     def test_posting_source_enum_matches_db(self, app, db):
         """Every PostingSourceEnum member has a DB row and vice versa."""
         with app.app_context():
@@ -649,3 +715,78 @@ class TestPostingSourceRefCache:
                 f"PostingSource has {len(db_rows)} rows but PostingSourceEnum "
                 f"has {len(PostingSourceEnum)} members"
             )
+
+
+class TestLedgerAccountKindRefCache:
+    """Tests for ref_cache ledger-account-kind resolution (Step 4 discriminator)."""
+
+    def test_ledger_account_kind_ref_cache(self, app, db):
+        """ref_cache.ledger_account_kind_id() returns a distinct positive int
+        for every LedgerAccountKindEnum member.
+
+        The explicit row-kind discriminator added in Build-Order Step 4 must
+        resolve every member (the four existing chart kinds plus the three
+        per-loan kinds) to a distinct positive ID, guarding that the enum
+        ``.value`` strings match the seeded ``ref.ledger_account_kinds.name``
+        rows and that no two members collapse onto one row.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.ledger_account_kind_id(member)
+                for member in LedgerAccountKindEnum
+            }
+            for member, kind_id in ids.items():
+                assert isinstance(kind_id, int), (
+                    f"ledger_account_kind_id({member.name}) returned "
+                    f"{type(kind_id)}, expected int"
+                )
+                assert kind_id > 0, (
+                    f"{member.name} id should be positive, got {kind_id}"
+                )
+            assert len(set(ids.values())) == len(LedgerAccountKindEnum), (
+                f"LedgerAccountKindEnum members must have distinct IDs; "
+                f"got {ids}"
+            )
+
+    def test_ledger_account_kind_enum_matches_db(self, app, db):
+        """Every LedgerAccountKindEnum member has exactly one DB row and
+        every DB row has a member.  No extra rows, no missing rows.
+        """
+        with app.app_context():
+            db_rows = db.session.query(LedgerAccountKind).all()
+            db_names = {row.name for row in db_rows}
+            enum_values = {member.value for member in LedgerAccountKindEnum}
+
+            assert db_names == enum_values, (
+                f"LedgerAccountKind DB rows {db_names} do not match "
+                f"LedgerAccountKindEnum values {enum_values}"
+            )
+            assert len(db_rows) == len(LedgerAccountKindEnum), (
+                f"LedgerAccountKind has {len(db_rows)} rows but "
+                f"LedgerAccountKindEnum has {len(LedgerAccountKindEnum)} "
+                f"members"
+            )
+
+    def test_ref_cache_fails_on_missing_ledger_account_kind(self, app, db):
+        """ref_cache.init() raises RuntimeError when a kind row is missing.
+
+        Proves the enum<->seed parity gate fires for the new discriminator
+        ref table exactly as it does for the long-standing Status table:
+        deleting the 'linked' row leaves LedgerAccountKindEnum.LINKED
+        unresolvable, which must be a fatal startup error, not a silent skip.
+        """
+        with app.app_context():
+            linked = (
+                db.session.query(LedgerAccountKind)
+                .filter_by(name="linked")
+                .one()
+            )
+            db.session.delete(linked)
+            db.session.flush()
+
+            with pytest.raises(RuntimeError, match="linked"):
+                ref_cache.init(db.session)
+
+            # Roll back so other tests aren't affected, then re-init clean.
+            db.session.rollback()
+            ref_cache.init(db.session)

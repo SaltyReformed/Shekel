@@ -134,17 +134,22 @@ _REF_TABLE_SEEDS = (
     ("EmployerContributionType", ["none", "flat_percentage", "match"]),
     ("CompoundingFrequency", ["daily", "monthly", "quarterly"]),
     # Posting-ledger ref tables (Build-Order Step 2, Commit 1; extended in
-    # Step 3, Commit 1).  ``LedgerAccountClass`` carries the logic-bearing
-    # ``is_debit_normal`` boolean (TRUE for Asset/Expense, FALSE for the
-    # credit-normal classes), so its entries are dicts like ``Status``
-    # above; the migration ``f5037400dc5e`` inline-seeds the identical rows
-    # so a freshly upgraded DB resolves those enums before this idempotent
-    # reseed runs.  ``PostingKind`` / ``PostingSource`` seeded only
-    # ``transfer`` in Step 2; Step 3 adds the ``income`` / ``expense``
-    # kinds and the ``transaction`` source (inline-seeded by their own
-    # migration, the same dual-seed pattern), and later steps INSERT more
-    # via their own migrations.  Names match the enum ``.value`` strings in
-    # ``app/enums.py`` exactly.
+    # Step 3, Commit 1 and Step 4, Commit 1).  ``LedgerAccountClass`` carries
+    # the logic-bearing ``is_debit_normal`` boolean (TRUE for Asset/Expense,
+    # FALSE for the credit-normal classes), so its entries are dicts like
+    # ``Status`` above; the migration ``f5037400dc5e`` inline-seeds the
+    # identical rows so a freshly upgraded DB resolves those enums before
+    # this idempotent reseed runs.  ``PostingKind`` / ``PostingSource``
+    # seeded only ``transfer`` in Step 2; Step 3 added the ``income`` /
+    # ``expense`` kinds and the ``transaction`` source; Step 4 adds the
+    # ``principal`` / ``interest`` / ``escrow`` / ``refund`` loan-correction
+    # kinds and the ``loan_payment`` source (each inline-seeded by its own
+    # migration, the same dual-seed pattern), and later steps INSERT more.
+    # ``LedgerAccountKind`` (Step 4) is the explicit row-kind discriminator
+    # for ``budget.ledger_accounts``: the four kinds the chart already uses
+    # plus the three per-loan accounts the loan-payment correction books
+    # into.  Names match the enum ``.value`` strings in ``app/enums.py``
+    # exactly.
     ("LedgerAccountClass", [
         {"name": "Asset",     "is_debit_normal": True},
         {"name": "Liability", "is_debit_normal": False},
@@ -152,8 +157,15 @@ _REF_TABLE_SEEDS = (
         {"name": "Expense",   "is_debit_normal": True},
         {"name": "Equity",    "is_debit_normal": False},
     ]),
-    ("PostingKind", ["transfer", "income", "expense"]),
-    ("PostingSource", ["transfer", "transaction"]),
+    ("PostingKind", [
+        "transfer", "income", "expense",
+        "principal", "interest", "escrow", "refund",
+    ]),
+    ("PostingSource", ["transfer", "transaction", "loan_payment"]),
+    ("LedgerAccountKind", [
+        "linked", "category", "fallback", "orphan",
+        "loan_interest", "loan_escrow", "loan_refund",
+    ]),
 )
 # pylint: enable=line-too-long
 # fmt: on

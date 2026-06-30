@@ -41,6 +41,7 @@ from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
+    LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -203,6 +204,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(LedgerAccountClassEnum, ref_models.LedgerAccountClass),
         _RefSpec(PostingKindEnum, ref_models.PostingKind),
         _RefSpec(PostingSourceEnum, ref_models.PostingSource),
+        _RefSpec(LedgerAccountKindEnum, ref_models.LedgerAccountKind),
     ]
 
 
@@ -654,6 +656,31 @@ def ledger_class_is_debit_normal(class_id):
     """
     _require_init()
     return _cache.ledger_class_debit_normal[class_id]
+
+
+def ledger_account_kind_id(member):
+    """Return the integer primary key for a LedgerAccountKindEnum member.
+
+    Used by the chart-of-accounts resolver and the loan-payment posting
+    service (Build-Order Step 4) to stamp and read a ledger account's
+    explicit row-kind discriminator via ``budget.ledger_accounts.kind_id``,
+    and by chart readers that enumerate by kind -- always via the integer
+    ID, never the string ``name``.  Matches the project-wide IDs-for-logic
+    invariant.
+
+    Args:
+        member: A ``LedgerAccountKindEnum`` member
+                (e.g. ``LedgerAccountKindEnum.LINKED``).
+
+    Returns:
+        int -- the ``ref.ledger_account_kinds.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid LedgerAccountKindEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[LedgerAccountKindEnum][member]
 
 
 def posting_kind_id(member):

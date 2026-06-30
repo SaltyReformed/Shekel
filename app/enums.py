@@ -223,24 +223,74 @@ class PostingKindEnum(enum.Enum):
 
     ``transfer`` is a transfer's two balanced legs (Build-Order Step 2);
     ``income`` / ``expense`` are an ordinary settled transaction's cash and
-    category legs (Build-Order Step 3); later Build-Order steps add
-    ``principal``, ``interest`` and similar kinds via data migrations.
-    Values match ``ref.posting_kinds.name``.
+    category legs (Build-Order Step 3); ``principal`` / ``interest`` /
+    ``escrow`` / ``refund`` are the four legs of a confirmed loan payment's
+    real-split correction (Build-Order Step 4) -- the loan principal
+    adjustment, the accrued interest expense, the configured escrow expense,
+    and the payoff-overpayment refund receivable.  Later Build-Order steps
+    add further kinds via data migrations.  Values match
+    ``ref.posting_kinds.name``.
     """
 
     TRANSFER = "transfer"
     INCOME = "income"
     EXPENSE = "expense"
+    PRINCIPAL = "principal"
+    INTEREST = "interest"
+    ESCROW = "escrow"
+    REFUND = "refund"
 
 
 class PostingSourceEnum(enum.Enum):
     """Journal-entry source-event values for ``budget.journal_entries``.
 
     ``transfer`` is a settled transfer (Build-Order Step 2); ``transaction``
-    is an ordinary settled cash transaction (Build-Order Step 3); later
-    steps add ``loan_payment``, ``paycheck`` and ``credit_payback`` via data
-    migrations.  Values match ``ref.posting_sources.name``.
+    is an ordinary settled cash transaction (Build-Order Step 3);
+    ``loan_payment`` is the real-split correction appended to a confirmed
+    loan-payment transfer (Build-Order Step 4); later steps add ``paycheck``
+    and ``credit_payback`` via data migrations.  Values match
+    ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
     TRANSACTION = "transaction"
+    LOAN_PAYMENT = "loan_payment"
+
+
+class LedgerAccountKindEnum(enum.Enum):
+    """Row-kind discriminator for ``budget.ledger_accounts`` (Build-Order Step 4).
+
+    The explicit, positive discriminator that replaces inferring a ledger
+    account's kind from the NULL-pattern of its ``account_id`` /
+    ``category_id`` / ``is_fallback`` columns (see
+    :class:`app.models.ledger_account.LedgerAccount`).  Every row carries a
+    ``kind_id`` FK to one of these values; readers branch on the integer ID,
+    never on which FKs happen to be NULL.
+
+    The first four enumerate the kinds Steps 2-3 already create:
+
+        linked    -- one per real ``budget.accounts`` row (Asset/Liability).
+        category  -- one per budget category per Income/Expense class.
+        fallback  -- the per-(owner, class) Uncategorized bucket.
+        orphan    -- a former category row whose category was deleted.
+
+    The last three are the per-loan ledger accounts Step 4's loan-payment
+    correction books into:
+
+        loan_interest -- the loan's accrued-interest Expense account.
+        loan_escrow   -- the loan's configured-escrow Expense account.
+        loan_refund   -- the loan's payoff-overpayment refund Asset account.
+
+    Application code resolves these via ``ref_cache.ledger_account_kind_id``
+    and compares against the integer ID -- never the string ``name`` --
+    matching the project-wide ``ref-table: IDs for logic, strings for display
+    only`` invariant.
+    """
+
+    LINKED = "linked"
+    CATEGORY = "category"
+    FALLBACK = "fallback"
+    ORPHAN = "orphan"
+    LOAN_INTEREST = "loan_interest"
+    LOAN_ESCROW = "loan_escrow"
+    LOAN_REFUND = "loan_refund"

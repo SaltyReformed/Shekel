@@ -34,13 +34,31 @@ Two design points make the scan precise:
     prose docstrings (which write ``income`` in backticks), so a value
     named only in documentation does not satisfy the check.
 
-This is a SOURCE-level guard for the bare-upgrade path.  The complementary
-RUNTIME guarantee -- that the seeded database actually contains a row for
-every member -- is enforced by the enum<->DB-row parity tests in
-``tests/test_ref_cache.py`` and, at app start, by ``ref_cache.init()``
-itself (which raises if any member is unresolved).  A migration that
-deletes a previously-seeded value would slip past this source scan but be
-caught by those runtime tests; the two layers together are exhaustive.
+The dual seed has three legs, each guarded by a distinct layer:
+
+  1. the enum (``app/enums.py``) is the source of truth for valid values;
+  2. the migration inline-seed (the bare-``flask db upgrade`` path) -- the
+     ``TestPostingRefInlineSeedParity`` scan below asserts every enum member
+     is INSERTed by some migration;
+  3. the ongoing idempotent reseed (``app/ref_seeds.py``'s
+     ``_REF_TABLE_SEEDS``) -- the ``TestPostingRefSeedsEnumParity`` check
+     below asserts its value lists equal the enums exactly.
+
+Leg 3 needs its own check because every test database is migration-built and
+THEN idempotently reseeded, so a value missing from ``_REF_TABLE_SEEDS`` (but
+present in the enum and the migration) is invisible to a migration-built
+suite -- the migration already seeded it.  The omission would only fail loud
+on the ``create_all`` + ``seed_reference_data`` fresh-init path (dev/test
+bootstrap, the production deploy reseed), at ``ref_cache.init()`` time.  The
+source-level check here catches it in the suite instead.
+
+These are SOURCE-level guards.  The complementary RUNTIME guarantee -- that
+the seeded database actually contains a row for every member -- is enforced
+by the enum<->DB-row parity tests in ``tests/test_ref_cache.py`` and, at app
+start, by ``ref_cache.init()`` itself (which raises if any member is
+unresolved).  A migration that deletes a previously-seeded value would slip
+past the source scans but be caught by those runtime tests; the layers
+together are exhaustive.
 """
 import pathlib
 import re
@@ -48,9 +66,11 @@ from enum import Enum
 
 from app.enums import (
     LedgerAccountClassEnum,
+    LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
 )
+from app.ref_seeds import _REF_TABLE_SEEDS
 
 
 _MIGRATIONS_DIR = (
@@ -64,9 +84,45 @@ _MIGRATIONS_DIR = (
 # module docstring on statement anchoring).
 _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (LedgerAccountClassEnum, "ref.ledger_account_classes"),
+    (LedgerAccountKindEnum, "ref.ledger_account_kinds"),
     (PostingKindEnum, "ref.posting_kinds"),
     (PostingSourceEnum, "ref.posting_sources"),
 )
+
+
+# Each posting-ledger ref enum mapped to its ``_REF_TABLE_SEEDS`` model-attr
+# key (the first element of each ``(model_attr_name, entries)`` tuple).  Used
+# by ``TestPostingRefSeedsEnumParity`` to assert the ongoing reseed list (leg
+# 3 of the dual seed) equals the enum exactly.
+_SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
+    (LedgerAccountClassEnum, "LedgerAccountClass"),
+    (LedgerAccountKindEnum, "LedgerAccountKind"),
+    (PostingKindEnum, "PostingKind"),
+    (PostingSourceEnum, "PostingSource"),
+)
+
+
+# ``_REF_TABLE_SEEDS`` keyed by model-attr name.  Entries are either bare
+# strings (``name`` only) or dicts carrying non-name columns (e.g. the
+# ``LedgerAccountClass`` ``is_debit_normal`` rows); :func:`_seed_value_set`
+# normalises both to the set of ``name`` values.
+_REF_SEEDS_BY_MODEL: dict[str, list] = dict(_REF_TABLE_SEEDS)
+
+
+def _seed_value_set(entries: list) -> set[str]:
+    """Return the set of ``name`` values in a ``_REF_TABLE_SEEDS`` entry list.
+
+    Args:
+        entries: One ``_REF_TABLE_SEEDS`` value list -- bare strings, dicts
+            with a ``name`` key, or a mix.
+
+    Returns:
+        The ``name`` value of every entry.
+    """
+    return {
+        entry["name"] if isinstance(entry, dict) else entry
+        for entry in entries
+    }
 
 
 # SQL statement-starting keywords used across the migration chain.  An
@@ -143,3 +199,31 @@ class TestPostingRefInlineSeedParity:
                     f"Add it to the introducing migration's inline seed "
                     f"(and to app/ref_seeds.py)."
                 )
+
+
+class TestPostingRefSeedsEnumParity:
+    """The ongoing reseed list (``_REF_TABLE_SEEDS``) equals each enum exactly.
+
+    Leg 3 of the dual seed (see the module docstring).  A migration-built test
+    suite cannot otherwise catch a value present in the enum + migration but
+    MISSING from ``app/ref_seeds.py``: the migration already seeded the row, so
+    every test DB has it.  Such an omission would only surface on the
+    ``create_all`` + ``seed_reference_data`` fresh-init path, at
+    ``ref_cache.init()`` time.  This source-level set equality catches it in
+    the suite, in both directions (missing OR extra reseed value).
+    """
+
+    def test_ref_seeds_lists_equal_enums(self):
+        """Each posting-ledger enum's value set equals its reseed list's set."""
+        for enum_cls, model_attr in _SEED_LIST_REF_ENUMS:
+            seed_values = _seed_value_set(_REF_SEEDS_BY_MODEL[model_attr])
+            enum_values = {member.value for member in enum_cls}
+            assert seed_values == enum_values, (
+                f"app/ref_seeds.py _REF_TABLE_SEEDS['{model_attr}'] = "
+                f"{sorted(seed_values)} does not equal "
+                f"{enum_cls.__name__} values {sorted(enum_values)}. "
+                f"The ongoing idempotent reseed (the create_all + "
+                f"seed_reference_data fresh-init path) would diverge from the "
+                f"enum -- add the missing value to _REF_TABLE_SEEDS (or remove "
+                f"the stray one) so all three dual-seed legs agree."
+            )
