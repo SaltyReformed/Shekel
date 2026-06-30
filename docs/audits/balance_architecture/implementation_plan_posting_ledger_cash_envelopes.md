@@ -1,12 +1,16 @@
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
-**Status:** IN PROGRESS -- Commits 1-5 committed on `feat/posting-ledger-cash-envelopes` (not pushed):
-C1 (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback` discriminator
--- see Section 4.2's H1 fix), C3 (the category/fallback resolver), C4 (the
-`posting_service.sync_transaction_postings` builder), C5 (the status-mechanics seam + the W9907
-bypass checker + born-Projected -- see the Commit 5 As-built note for the two developer-approved
-deviations). NEXT = Commit 6 (posting emission: reconcile once at each handler's end + the
-entry/delete hooks).
+**Status:** COMPLETE on `feat/posting-ledger-cash-envelopes` (all 8 commits; not yet PR'd to `main`).
+C1 `97bc03c2aa4c` (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback`
+discriminator -- see Section 4.2's H1 fix), C3 `1190a46` (the category/fallback resolver), C4
+`fa79630` (the `posting_service.sync_transaction_postings` builder), C5 `4c21af1` (the
+status-mechanics seam + the W9907 bypass checker + born-Projected -- see the Commit 5 As-built note
+for the two developer-approved deviations), C6 `671f49f` (posting emission: reconcile once at each
+handler's end + the entry/delete hooks), C7 `48479ef` (the production-wide historical backfill
+migration `7d63529e4300`), C8 (the 13-test cash reconciliation oracle
+`tests/test_integration/test_posting_ledger_cash_reconciliation.py` + docs; full suite **6638
+passed**, `pylint app/ scripts/` 10.00). NEXT = open the `dev -> main` PR covering all of Step 3 (CI
+runs on the PR, not on feature/dev pushes).
 **Build-Order Step 3** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section, build
 order item 3: "Post confirmed cash transactions and cleared envelope entries at settle").
