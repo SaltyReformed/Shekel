@@ -27,8 +27,8 @@ from ._periods import (
     ZERO_MONEY,
     LoanInputs,
     _replay_from_anchor,
-    _resolve_periods,
     _terms_from_periods,
+    resolve_periods,
 )
 
 
@@ -237,7 +237,7 @@ def _build_forward_inputs(
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             :func:`._periods._replay_from_anchor`).
     """
-    periods = _resolve_periods(
+    periods = resolve_periods(
         loan_inputs.loan_params, loan_inputs.rate_changes,
     )
     # The balance is schedule-driven: replay advances one scheduled step
@@ -360,7 +360,7 @@ def compute_payoff_scenarios(
             (``loan_params``, ``anchor_events``, ``payments``,
             ``rate_changes``).  ``anchor_events`` must be non-empty
             (the Commit-12 invariant); an empty list raises a
-            ValueError via ``._periods._select_latest_anchor``.  The
+            ValueError via ``._periods.select_latest_anchor``.  The
             composer separates confirmed-pre-as_of payments (replay)
             from everything else (override) internally; the full
             rate-period terms feed governs the forward slices month by
@@ -378,7 +378,7 @@ def compute_payoff_scenarios(
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
-            ``._periods._select_latest_anchor``).
+            ``._periods.select_latest_anchor``).
     """
     prep = _build_forward_inputs(loan_inputs, as_of)
 
@@ -498,7 +498,7 @@ def target_date_outlook(
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
-            ``._periods._select_latest_anchor``).
+            ``._periods.select_latest_anchor``).
     """
     prep = _build_forward_inputs(loan_inputs, as_of)
 

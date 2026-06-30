@@ -49,7 +49,7 @@ from app.services.amortization_engine import (
     calculate_monthly_payment,
 )
 from app.utils.dates import months_between
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import accrue_monthly_interest, round_money
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -270,6 +270,56 @@ def monthly_due_date(period_start: date, payment_day: int) -> date:
     return _advance_one_month(period_start, payment_day)
 
 
+def is_confirmed_payment_eligible(
+    period_start: date,
+    *,
+    anchor_date: date,
+    payment_day: int,
+    as_of: date,
+) -> bool:
+    """Return whether a confirmed payment falls in the post-anchor replay window.
+
+    The single eligibility rule for "which confirmed payments has this loan
+    actually made since its balance was last verified."  A payment keyed to
+    ``period_start`` counts iff BOTH boundaries clear:
+
+    * its true monthly due date (:func:`monthly_due_date`) is strictly AFTER
+      ``anchor_date`` -- it came due after the anchor balance was verified, so
+      it is not already baked into that balance; AND
+    * its pay-period start is at or before ``as_of`` -- its pay period has
+      begun, so it is historical fact rather than a forward projection.
+
+    Comparing the DUE date (not the pay-period start) against the anchor is what
+    keeps a payment whose biweekly pay period began on or before a mid-period
+    balance true-up but whose monthly payment is not due until after it (the
+    mid-period-true-up subtlety, see :func:`monthly_due_date`).
+
+    :func:`replay_schedule` (the resolver's confirmed-payment replay) and
+    :func:`app.services.loan_posting_service.compute_loan_payment_splits` (the
+    Build-Order Step 4 real-split walk) BOTH gate on this one predicate, so the
+    posted loan-payment ledger and the resolver's replayed balance can never
+    drift on which payment set they consider.
+
+    Args:
+        period_start: The pay-period start date the payment is keyed to
+            (a ``PaymentRecord.payment_date`` / the income shadow's
+            ``pay_period.start_date``).
+        anchor_date: The latest balance anchor's verified date
+            (``LoanAnchorEvent.anchor_date`` / ``BalanceAnchor.as_of_date``).
+        payment_day: The loan's contractual day-of-month due day
+            (``LoanParams.payment_day``), 1-31.
+        as_of: The evaluation date; a payment whose pay period has not begun
+            by it is a projection, not history.
+
+    Returns:
+        ``True`` iff the payment is an eligible post-anchor historical payment.
+    """
+    return (
+        anchor_date < monthly_due_date(period_start, payment_day)
+        and period_start <= as_of
+    )
+
+
 def _rate_at_date(
     rate_changes: list | None,
     target_date: date,
@@ -358,11 +408,10 @@ def _amortize_forward(
     Returns:
         The balance after ``months`` payments, quantized to cents.
     """
-    monthly_rate = annual_rate / MONTHS_PER_YEAR if annual_rate > 0 else ZERO_MONEY
     for _ in range(max(0, months)):
         if balance <= 0:
             return ZERO_MONEY
-        interest = round_money(balance * monthly_rate)
+        interest = accrue_monthly_interest(balance, annual_rate)
         principal = level_payment - interest
         if principal >= balance:
             return ZERO_MONEY
@@ -546,10 +595,7 @@ def _replay_payment_row(
     Returns:
         The :class:`AmortizationRow` for this confirmed payment.
     """
-    if period.annual_rate > 0:
-        interest = round_money(balance * (period.annual_rate / MONTHS_PER_YEAR))
-    else:
-        interest = ZERO_MONEY
+    interest = accrue_monthly_interest(balance, period.annual_rate)
     principal = period.period_pi - interest
     if principal >= balance:
         principal = balance
@@ -654,8 +700,12 @@ def replay_schedule(
     #     start so the two partitions stay exact complements.
     eligible = sorted(
         d for d in confirmed_payment_dates
-        if anchor.as_of_date < monthly_due_date(d, payment_day)
-        and d <= as_of
+        if is_confirmed_payment_eligible(
+            d,
+            anchor_date=anchor.as_of_date,
+            payment_day=payment_day,
+            as_of=as_of,
+        )
     )
 
     balance = Decimal(str(anchor.balance))
