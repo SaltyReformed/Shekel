@@ -8,7 +8,6 @@
      account_id          -- Account ID for the viewed account
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
-     statuses            -- list of Status objects
 #}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
@@ -46,17 +45,10 @@
              placeholder="Actual amount">
     </div>
 
-    {# Status selector -- defaults to projected #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Status</label>
-      <select name="status_id" class="form-select form-select-sm">
-        {% for s in statuses %}
-        <option value="{{ s.id }}" {{ 'selected' if s.id == STATUS_PROJECTED else '' }}>
-          {{ s.name }}
-        </option>
-        {% endfor %}
-      </select>
-    </div>
+    {# No status selector: a new transaction is born Projected (the create
+       route assigns it).  Status changes happen later via mark-done / cancel /
+       credit / full-edit on the saved row, each routed through the status
+       seam. #}
 
     {# Notes #}
     <div class="mb-2">

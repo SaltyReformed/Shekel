@@ -295,6 +295,14 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
         pid: reason for pid, reason in locks.items() if reason is not None
     }
     if blocking:
+        # Build-Order Step 3 note: a period holding settled (posted)
+        # transactions classifies as locked here, so truncate refuses it -- the
+        # same protection reset gets from its zero-settled gate.
+        # journal_entries.pay_period_id is ON DELETE CASCADE, so deleting a
+        # posted period would dispose its ledger entries + legs at the DB tier
+        # (outside the ORM, where the balanced-journal trigger never fires on
+        # DELETE).  Whoever relaxes this lock MUST first reverse those
+        # transactions' postings (posting_service.reverse_postings_before_delete).
         raise PayPeriodLocked(blocking)
 
     period_ids = [p.id for p in to_delete]
@@ -454,6 +462,15 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
         ValidationError: ``generate_pay_periods`` rejects the batch (an
             invalid start date or cadence).
     """
+    # Reset is gated on zero settled transactions.  Build-Order Step 3 note:
+    # this same gate keeps the double-entry posting ledger consistent across a
+    # reset -- the wipe below deletes the user's pay periods, and
+    # journal_entries.pay_period_id is ON DELETE CASCADE, so a period holding
+    # settled (posted) transactions would dispose its journal entries + legs at
+    # the DB tier (outside the ORM, where the balanced-journal trigger never
+    # fires on DELETE).  Because any settled row blocks the reset entirely, no
+    # posted period is ever wiped.  Whoever relaxes this gate MUST first reverse
+    # those transactions' postings (posting_service.reverse_postings_before_delete).
     settled = _settled_transaction_count(user_id)
     if settled > 0:
         raise PayPeriodResetBlocked(settled)

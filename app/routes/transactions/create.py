@@ -82,9 +82,11 @@ def create_inline():
         return err
     category = objs[Category]
 
-    # Default to projected status if not specified.
-    if "status_id" not in data or data["status_id"] is None:
-        data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Born Projected: a transaction can only ever be created Projected; the sole
+    # path to a settled status is the status seam (mark-done / PATCH / settle).
+    # ``status_id`` is not a schema field, so a submitted value was already
+    # dropped; assign Projected unconditionally.
+    data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
     # Set the name from the category display name.
     data["name"] = category.display_name
@@ -134,9 +136,10 @@ def create_transaction():
     if err is not None:
         return err
 
-    # Default to projected status if not specified.
-    if "status_id" not in data or data["status_id"] is None:
-        data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
+    # Born Projected: see create_inline.  ``status_id`` is not a schema field,
+    # so any submitted value was dropped; assign Projected unconditionally so
+    # the only route to a settled status remains the status seam.
+    data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
     txn = Transaction(**data)
     db.session.add(txn)

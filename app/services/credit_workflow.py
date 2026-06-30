@@ -15,9 +15,8 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import pay_period_service
+from app.services import pay_period_service, posting_service, status_seam
 from app.exceptions import NotFoundError, ValidationError
-from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
     BUSINESS,
@@ -165,6 +164,12 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
+        # Reverse the payback's own ledger postings before it is deleted
+        # (Build-Order Step 3 reverse-before-delete): a payback that was settled
+        # -- and therefore posted -- before its source's Credit status is
+        # reverted must not leave its double-entry legs stranded on the ledger.
+        # Idempotent no-op for the usual still-Projected payback.
+        posting_service.reverse_postings_before_delete(payback)
         db.session.delete(payback)
 
     log_event(
@@ -224,6 +229,12 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     # can be marked Credit); its own live payback dies with it under
     # the same invariant.
     delete_payback_on_source_delete(payback, user_id)
+    # Reverse the payback's own ledger postings before deleting it (Build-Order
+    # Step 3 reverse-before-delete).  The recursion above runs FIRST, so each
+    # deeper level of the chain reverses-then-deletes before this one does --
+    # every ledger account is net-zero before the row's transaction_id link
+    # SET-NULLs on the delete.  Idempotent no-op for a still-Projected payback.
+    posting_service.reverse_postings_before_delete(payback)
     db.session.delete(payback)
 
     log_event(
@@ -321,20 +332,13 @@ def mark_as_credit(transaction_id, user_id):
             "Only projected transactions can be marked as credit."
         )
 
-    # Update the original transaction's status.
-    txn.status_id = credit_id
-    # ``Transaction.status`` is loaded eagerly via ``lazy="joined"``
-    # so the locking SELECT at the top of this function (and
-    # ``_get_owned_transaction`` in the route) populated the cached
-    # relationship with the *pre-update* Status row.  SQLAlchemy
-    # does not auto-refresh many-to-one relationships when only the
-    # FK column is rewritten -- without this expire, downstream code
-    # (test assertions, the post-flush cell render in routes that
-    # do not use ``expire_on_commit``) would observe the stale
-    # ``Projected`` Status object even though ``status_id`` already
-    # points to ``Credit``.  Expiring the single attribute is cheap:
-    # the next access lazy-loads the matching ref row.
-    db.session.expire(txn, ["status"])
+    # Update the original transaction's status through the single status seam.
+    # The seam assigns ``status_id`` and expires the eagerly-joined ``status``
+    # relationship so downstream code (test assertions, the post-flush cell
+    # render) observes ``Credit`` rather than the stale ``Projected`` row
+    # SQLAlchemy leaves cached when only the FK column is rewritten.  Credit is
+    # a non-settled status, so the seam also leaves ``paid_at`` clear.
+    status_seam.apply_status_change(txn, credit_id)
 
     # Find or create the CC Payback category for this user.
     period = db.session.get(PayPeriod, txn.pay_period_id)
@@ -356,6 +360,16 @@ def mark_as_credit(transaction_id, user_id):
     payback = create_cc_payback_transaction(
         txn, next_period, category, payback_amount,
     )
+
+    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row to
+    # its new status's settled sense as the final step (the transfer pattern:
+    # reconcile on every status change).  Credit is non-settled and is reachable
+    # only from Projected, so this is an idempotent no-op today -- a Projected
+    # source has no postings to reverse -- but it keeps the "every status
+    # handler reconciles last" invariant complete and self-heals if the state
+    # machine ever lets a settled row be marked Credit.  The payback itself is
+    # born Projected and posts nothing until it settles through the seam.
+    posting_service.sync_transaction_postings(txn, settled=txn.status.is_settled)
 
     log_event(
         logger, logging.INFO, EVT_CREDIT_MARKED, BUSINESS,
@@ -428,18 +442,26 @@ def unmark_credit(transaction_id, user_id):
             "Only Credit transactions can be unmarked."
         )
 
-    # State-machine verification (defense-in-depth, redundant with
-    # the bespoke guard above except when a future StatusEnum addition
-    # makes the bespoke guard incomplete).
-    verify_transition(txn.status_id, projected_id, context="transaction")
-
-    # Revert the original transaction's status.
-    txn.status_id = projected_id
+    # Revert the original transaction's status through the single status seam.
+    # The seam runs the same state-machine verification (defense-in-depth,
+    # redundant with the bespoke ``is_credit`` guard above except when a future
+    # StatusEnum addition makes that guard incomplete) before assigning
+    # ``status_id``; Projected is non-settled, so it also clears ``paid_at``.
+    status_seam.apply_status_change(txn, projected_id)
 
     # Delete the live payback + write the audit event.  Shared with the
     # transaction PATCH route's status-revert path via the single
     # cleanup helper so the two endpoints cannot disagree.
     delete_payback_on_credit_revert(txn, user_id)
+
+    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row to
+    # its new status as the final step (the transfer pattern: reconcile on every
+    # status change).  Projected is non-settled, so this reverses any posted
+    # source effect to zero -- an idempotent no-op today, since a Credit source
+    # never settled and so never posted -- keeping the "every status handler
+    # reconciles last" invariant complete.  The payback's own postings were
+    # already reversed inside delete_payback_on_credit_revert.
+    posting_service.sync_transaction_postings(txn, settled=txn.status.is_settled)
 
 
 def get_or_create_cc_category(user_id: int) -> Category:

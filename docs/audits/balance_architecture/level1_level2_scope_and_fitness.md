@@ -634,8 +634,10 @@ adversarial-review outcome. The presentation gates and the deferred kind-correct
 (`followup_kind_correct_grid_interest.md`) remain as the fitness doc planned.
 
 **Build-Order Step 2 (Level 2: the append-only double-entry posting ledger + chart of accounts,
-piloted on transfers) -- CODE-COMPLETE (2026-06-28)** on `feat/posting-ledger-transfers` (off `dev`,
-all six commits green; pending the `dev -> main` PR so CI runs). The implementation plan
+piloted on transfers) -- SHIPPED TO PROD (2026-06-28)** via PR #48 (merge commit `9780464` ->
+docker-publish `8f95fcb6` -> shekel-deploy `fe4f76bd`->`8f95fcb6` healthy; the three Step-2 migrations
+applied on the prod DB and the prod ledger reconciles -- per-entry, per-account, and per-transfer
+checks all clean on real production data; `dev` == `main`). The implementation plan
 (`implementation_plan_posting_ledger_transfers.md`) carries the full per-commit record. What shipped,
 exactly as Option D prescribes (confirmed facts only; reads unchanged; the legacy tables never
 dropped):
@@ -674,3 +676,58 @@ Reads are unchanged -- every balance still flows through the `balance_at` seam o
 confirmed-transfer subset, validated only by the oracle. Steps 3-5 (cash + envelope entries, loan
 payments, actuals reporting) extend the same `posting_service` and switch confirmed reads onto the
 ledger.
+
+**Build-Order Step 3 (post confirmed cash transactions + cleared envelope entries at settle) -- DONE
+on `feat/posting-ledger-cash-envelopes` (2026-06-29; not yet PR'd to `main`).** The implementation
+plan (`implementation_plan_posting_ledger_cash_envelopes.md`) carries the full per-commit record.
+Step 3 reuses Step 2's tables, balanced-journal trigger, and `posting_service` write path unchanged;
+it adds the income/expense counter-leg, a per-category chart of accounts, and the ordinary-transaction
+lifecycle wiring. Exactly as Option D prescribes (confirmed facts only; reads unchanged; the legacy
+tables never dropped):
+
+- **Ref + schema** (Commits 1-2): `income` / `expense` posting kinds + a `transaction` posting source;
+  `budget.ledger_accounts` += `category_id` (SET NULL FK) + `is_fallback` (the discriminator that lets
+  a deleted-category orphan coexist with the per-(owner, class) Uncategorized fallback) + two partial
+  uniques + two CHECKs; `budget.journal_entries` += `transaction_id` (SET NULL, mirroring
+  `transfer_id`). Four ledger-account row kinds now coexist: linked / category / fallback / orphan.
+- **The per-category chart resolver** (`ledger_account_service.get_or_create_category_ledger_account`,
+  Commit 3): lazy, idempotent, one Income/Expense account per `(owner, category, class)` (a
+  type-agnostic category used both ways correctly yields two), the per-(owner, class) Uncategorized
+  fallback for a NULL category, class derived by ID, the display name snapshotted (truncated to the
+  column width) so a category rename never rewrites posted history.
+- **`posting_service.sync_transaction_postings(txn, settled=)`** (Commit 4): the correct-by-construction
+  reconcile. The one formula -- `effect = effective_amount - Sigma(credit entries)`, signed `+` income /
+  `-` expense, class-independent -- collapses an envelope at settle to its debit-only outflow (the
+  credit portion rides its CC Payback) with no branch on "is this an envelope". It reconciles over the
+  accounts the transaction has ALREADY posted to (read from the ledger by `transaction_id`), so a
+  revert-and-recategorize reverses the OLD category, never the current `category_id`.
+- **A single status-mechanics seam** (`app/services/status_seam.apply_status_change`, Commit 5) every
+  non-transfer status change routes through, enforced by a new `shekel-transaction-status-bypass`
+  (W9907) checker, plus a born-Projected create rule -- so a settled state is reachable only through the
+  seam and never at construction.
+- **Lifecycle wiring** (Commit 6): `sync_transaction_postings` reconciled ONCE at each handler's end,
+  after every effect field is applied (the transfer pattern -- never at the status flip), at mark-done /
+  PATCH / cancel / delete / the envelope entry mutations / the credit-payback deletes (reverse-before-
+  delete, including the recursive payback chain) / carry-forward.
+- **A production-wide historical backfill** (migration `7d63529e4300`, Commit 7): one balanced entry
+  per historical settled, non-deleted, non-transfer transaction, byte-for-byte agreeing with the
+  go-forward builder; verified up/down on the prod-clone dev DB (the oracle detected the unposted-cash
+  gap before, zero mismatches after).
+- **The cash reconciliation oracle**
+  (`tests/test_integration/test_posting_ledger_cash_reconciliation.py`, Commit 8): per-linked-account
+  reconciliation now COMBINING transfer + transaction legs; per-counter-account reconciliation by the
+  `journal_entries.transaction_id` linkage (the formulation that reconciles category, fallback, AND a
+  deleted-category orphan -- where a `category_id` match could no longer find the now-NULL
+  transactions); per-entry balance; global trial balance; per-transaction completeness (no settled
+  nonzero-effect cash row is silently unposted); multi-scenario and owner isolation; backfilled-vs-go-
+  forward agreement; a route-level revert-and-recategorize regression lock; a hard-delete-via-NULL-
+  linkage case; and a reverted-at-zero case -- each non-tautological (hand-computed literals +
+  independent cross-table queries + the service helpers) with two adversarial cases proving the checks
+  are not vacuous. The per-counter sweep also verifies category-account ROUTING (a same-class
+  miscategorization is caught, not just a wrong amount). Full suite **6638 passed**; `pylint app/
+  scripts/` 10.00.
+
+Reads remain on the `balance_at` seam; the ledger now records the confirmed-transfer AND
+confirmed-cash subset, validated by the two oracles. Steps 4-5 (loan-payment principal/interest splits,
+paycheck legs, then the opening-balance Equity posting + the read switch) extend the same
+`posting_service`.

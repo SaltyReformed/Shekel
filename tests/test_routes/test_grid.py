@@ -5110,10 +5110,18 @@ class TestPaidAtLifecycle:
             assert txn.notes == "Reconciled against statement"
             assert txn.paid_at is not None
 
-    def test_mark_done_idempotent_updates_paid_at(
+    def test_mark_done_idempotent_preserves_paid_at(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/mark-done twice both succeed; paid_at is set each time."""
+        """POST /transactions/<id>/mark-done twice both succeed; paid_at is preserved.
+
+        An idempotent re-mark (Paid -> Paid) keeps the ORIGINAL payment time: the
+        status seam stamps now() only on the first entry into a settled status
+        and leaves an existing stamp untouched on a re-settle (Commit 5).  Before
+        the seam, the manual mark-done branch overwrote paid_at with now() on
+        every call.  This route-level assertion matches the service-level pin in
+        tests/test_services/test_status_seam.py::test_re_settle_preserves_existing_paid_at.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
@@ -5124,13 +5132,135 @@ class TestPaidAtLifecycle:
             first_paid_at = txn.paid_at
             assert first_paid_at is not None
 
-            # Second mark done (idempotent).
+            # Second mark done (idempotent Paid -> Paid).
             resp2 = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp2.status_code == 200
             db.session.refresh(txn)
             second_paid_at = txn.paid_at
             assert second_paid_at is not None
-            assert second_paid_at >= first_paid_at
+            # Preserved, not churned -- exactly the original timestamp.
+            assert second_paid_at == first_paid_at
+
+    def test_paid_at_stamped_on_patch_settle(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH /transactions/<id> settling to Paid stamps paid_at (the C5 fix).
+
+        Before the status seam, the inline PATCH path assigned status_id without
+        stamping paid_at, leaving a Paid row with a NULL payment time -- it
+        bypassed the now()-stamp that mark_done and transfers apply.  The seam
+        now owns paid_at for every status change, so a PATCH that settles a
+        Projected row records the timestamp the same way mark_done does.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            assert txn.paid_at is None
+
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"status_id": str(done_id)},
+            )
+            assert response.status_code == 200
+
+            db.session.refresh(txn)
+            assert txn.status_id == done_id
+            assert txn.paid_at is not None
+
+
+class TestBornProjected:
+    """A transaction is always created Projected; status moves only via the seam.
+
+    The create schemas drop ``status_id`` and the create routes assign Projected
+    unconditionally, so a crafted request cannot mint a born-settled row (which
+    would carry a NULL paid_at, bypass verify_transition, and post nothing to the
+    ledger).  The "record an already-paid item" flow is the correct
+    create-Projected-then-mark-done.
+    """
+
+    def test_create_with_settled_status_yields_projected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """POST /transactions carrying a settled status_id still creates Projected."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+
+            response = auth_client.post("/transactions", data={
+                "name": "Crafted Settled",
+                "estimated_amount": "75.00",
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": str(done_id),   # crafted: must be ignored
+                "account_id": str(seed_user["account"].id),
+            })
+            assert response.status_code == 201
+
+            txn = db.session.query(Transaction).filter_by(
+                name="Crafted Settled"
+            ).one()
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.paid_at is None
+
+    def test_inline_create_with_settled_status_yields_projected(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """POST /transactions/inline carrying a settled status_id creates Projected."""
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            expense_type = db.session.query(TransactionType).filter_by(
+                name="Expense"
+            ).one()
+            received_id = ref_cache.status_id(StatusEnum.RECEIVED)
+
+            response = auth_client.post("/transactions/inline", data={
+                "estimated_amount": "33.33",
+                "account_id": str(seed_user["account"].id),
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "pay_period_id": seed_periods_today[0].id,
+                "scenario_id": seed_user["scenario"].id,
+                "transaction_type_id": expense_type.id,
+                "status_id": str(received_id),   # crafted: must be ignored
+            })
+            assert response.status_code == 201
+
+            txn = (
+                db.session.query(Transaction)
+                .filter_by(estimated_amount=Decimal("33.33"))
+                .order_by(Transaction.id.desc())
+                .first()
+            )
+            assert txn is not None
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+
+    def test_full_create_form_has_no_status_control(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """GET /transactions/new/full renders no status selector (born Projected)."""
+        with app.app_context():
+            response = auth_client.get(
+                "/transactions/new/full",
+                query_string={
+                    "category_id": seed_user["categories"]["Groceries"].id,
+                    "period_id": seed_periods_today[0].id,
+                    "account_id": seed_user["account"].id,
+                },
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert 'name="status_id"' not in body
 
 
 class TestSchemaValidation:

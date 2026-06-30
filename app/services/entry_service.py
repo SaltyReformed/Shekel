@@ -28,6 +28,7 @@ from app.models.user import User
 from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.utils.balance_predicates import (
     is_cancelled,
@@ -84,6 +85,36 @@ def _update_actual_if_paid(txn: Transaction) -> None:
     # other per-status equality check in the project.
     if is_done(txn) and txn.entries:
         txn.actual_amount = compute_actual_from_entries(txn.entries)
+
+
+def _resync_postings_if_settled(txn: Transaction) -> None:
+    """Reconcile a settled envelope's ledger postings after an entry mutation.
+
+    Called after every entry create / update / delete (right after
+    :func:`_update_actual_if_paid`): an entry mutation on a SETTLED envelope
+    changes its confirmed cash effect (``effective_amount - sum(credit
+    entries)``), so its double-entry ledger postings must be reconciled to the
+    new effect (Build-Order Step 3).  Adding a debit purchase to a Paid
+    envelope grows its checking outflow; flipping an entry to/from credit moves
+    the credit-excluded portion; deleting an entry shrinks it -- each re-syncs
+    here.
+
+    Gated on ``is_settled`` because a Projected envelope (the common case for
+    entry edits) has no postings, so reconciling would be a wasted ledger
+    round-trip.  :func:`toggle_cleared` is deliberately NOT a caller: the
+    cleared/uncleared split does not change ``effective - credit_sum``, so the
+    confirmed effect -- and the postings -- are invariant under it.
+
+    Does NOT commit -- the calling service function owns the session boundary
+    (the reconcile flushes but does not commit, matching this module's
+    contract).
+
+    Args:
+        txn: The parent envelope transaction whose entries changed.  Its
+            ``status`` relationship is read to gate the reconcile.
+    """
+    if txn.status.is_settled:
+        posting_service.sync_transaction_postings(txn, settled=True)
 
 
 def resolve_owner_id(user_id: int) -> int:
@@ -242,6 +273,7 @@ def create_entry(
 
     sync_entry_payback(transaction_id, owner_id)
     _update_actual_if_paid(txn)
+    _resync_postings_if_settled(txn)
 
     return entry
 
@@ -303,6 +335,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
 
     sync_entry_payback(entry.transaction_id, owner_id)
     _update_actual_if_paid(entry.transaction)
+    _resync_postings_if_settled(entry.transaction)
 
     return entry
 
@@ -349,6 +382,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     sync_entry_payback(transaction_id, owner_id)
     _update_actual_if_paid(txn)
+    _resync_postings_if_settled(txn)
 
     return transaction_id
 

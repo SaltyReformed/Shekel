@@ -70,16 +70,24 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     ``pay_period_id`` the event is attributed to (the join keys the
     reconciliation oracle uses), the civil ``entry_date`` of the confirmed
     event, a ``source_kind_id`` naming the *kind* of source
-    (``ref.posting_sources`` -- ``transfer`` in Step 2), an optional
-    concrete ``transfer_id`` linking back to the source transfer, and a
-    human ``description``.
+    (``ref.posting_sources`` -- ``transfer`` in Step 2, ``transaction`` in
+    Step 3), an optional concrete ``transfer_id`` / ``transaction_id``
+    linking back to the source row, and a human ``description``.
 
-    The two source references are deliberately distinct: ``source_kind_id``
+    The source references are deliberately layered: ``source_kind_id``
     answers "what kind of event posted this?" (a non-removable ref
-    invariant, RESTRICT) while ``transfer_id`` answers "which concrete
-    transfer?" (SET NULL, so the immutable posted fact survives a
-    source-transfer delete).  Later Build-Order steps add one concrete
-    nullable FK per new source kind beside ``transfer_id``.
+    invariant, RESTRICT) while each concrete nullable FK answers "which
+    concrete source row?" (SET NULL, so the immutable posted fact survives a
+    source delete).  Step 2 added ``transfer_id``; Step 3 adds
+    ``transaction_id`` beside it for ordinary (non-transfer) settled
+    transactions.  ``source_kind_id`` disambiguates which is set: a
+    ``transfer`` entry carries ``transfer_id`` (``transaction_id`` NULL), a
+    ``transaction`` entry the reverse.  Later Build-Order steps add one
+    concrete nullable FK per new source kind beside these two.  (The
+    one-set-FK-per-entry rule is maintained by the posting builder, not a
+    storage CHECK -- a CHECK would have to grow with every future source
+    kind and reference ref-table IDs it cannot see; the reconciliation
+    oracle is the cross-source correctness gate.)
 
     Append-only: see the module docstring.  Disposal is the database-level
     CASCADE from a deleted user / scenario / pay period, which runs outside
@@ -104,6 +112,17 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
             "idx_journal_entries_transfer",
             "transfer_id",
             postgresql_where=db.text("transfer_id IS NOT NULL"),
+        ),
+        # The transaction analog (Step 3): lifecycle lookups ("what has this
+        # transaction posted?") and the per-transaction reconcile-to-target
+        # filter.  Partial (``WHERE transaction_id IS NOT NULL``) for the
+        # same reason as the transfer index -- transfer-sourced entries carry
+        # a NULL ``transaction_id`` and fall outside it.  Verbatim shape of
+        # the transfer index above.
+        db.Index(
+            "idx_journal_entries_transaction",
+            "transaction_id",
+            postgresql_where=db.text("transaction_id IS NOT NULL"),
         ),
         {"schema": "budget"},
     )
@@ -178,6 +197,21 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=True,
     )
+    # The concrete source transaction (Step 3), or NULL once that
+    # transaction is hard-deleted (and NULL on every transfer-sourced
+    # entry).  Verbatim shape of ``transfer_id`` above: SET NULL so the
+    # immutable posted fact survives a source-transaction delete with only
+    # the back-link cleared.  ``source_kind_id`` disambiguates which of the
+    # two concrete FKs is set (see the class docstring).
+    transaction_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.transactions.id",
+            name="fk_journal_entries_transaction_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     # Human-readable label, e.g. "Transfer: Checking to Savings".  Display
     # only; never used for logic.
     description = db.Column(db.String(200), nullable=False)
@@ -202,7 +236,7 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     def __repr__(self):
         return (
             f"<JournalEntry id={self.id} transfer_id={self.transfer_id} "
-            f"date={self.entry_date}>"
+            f"transaction_id={self.transaction_id} date={self.entry_date}>"
         )
 
 

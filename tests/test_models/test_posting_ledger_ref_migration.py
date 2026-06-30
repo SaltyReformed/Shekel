@@ -8,14 +8,22 @@ inline-seeds the Step-2 values.
 
 The migration is already at HEAD when these tests run (the template
 builder upgraded it base->head), so the per-worker DB shows the
-post-migration state.  These tests therefore assert two things without
-re-executing DDL in the worker:
+post-migration state.  These tests therefore assert, without re-executing
+DDL in the worker:
 
-  * the migration is correctly chained (revision / down_revision), and
-  * the live migrated+seeded state is exactly the Step-2 contract (three
-    tables, correct rows, correct ``is_debit_normal`` flags), and
-  * the ``downgrade`` is not a bare pass -- it references every artefact
-    the ``upgrade`` materialises.
+  * the migration is correctly chained (revision / down_revision);
+  * the three ``ref`` lookup tables exist and ``ledger_account_classes``
+    carries exactly its five classes with the correct ``is_debit_normal``
+    flags (f5037400dc5e is the sole, permanent producer of that table --
+    accounting has exactly five classes);
+  * the Step-2 ``transfer`` kind and source are present.  Later Build-Order
+    steps add more rows to ``posting_kinds`` / ``posting_sources`` via
+    their own migrations (Step 3's ``income`` / ``expense`` /
+    ``transaction``), so this file asserts only f5037400dc5e's own
+    contribution; the cumulative inline-seed coverage for every enum
+    member lives in ``test_posting_ref_seed_parity.py``;
+  * the ``downgrade`` is not a bare pass -- it drops every table the
+    ``upgrade`` materialises.
 
 A full executable upgrade -> downgrade -> upgrade round-trip belongs in
 the Alembic-driven environment, not an in-test xdist worker: a
@@ -27,7 +35,8 @@ same constraint that drove the ``loan_anchor_events`` migration test
 to a source-level downgrade check.  The executable round-trip was run
 manually against the prod-clone dev DB during development (downgrade
 dropped all three tables and their owned sequences cleanly; re-upgrade
-restored the 5/1/1 seeded rows).
+restored f5037400dc5e's five ledger classes and the ``transfer`` kind and
+source it seeds).
 """
 from __future__ import annotations
 
@@ -35,12 +44,6 @@ import importlib.util
 import pathlib
 
 from sqlalchemy import text
-
-from app.enums import (
-    LedgerAccountClassEnum,
-    PostingKindEnum,
-    PostingSourceEnum,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -126,52 +129,29 @@ class TestMigratedAndSeededState:
             }, rows
 
     def test_posting_kinds_and_sources_seeded(self, app, db):
-        """Step 2 seeds exactly one ``transfer`` row in each kind/source."""
+        """f5037400dc5e seeds the Step-2 ``transfer`` kind and source.
+
+        Asserts membership rather than the exact row set: later Build-Order
+        steps add more kinds/sources (Step 3's ``income`` / ``expense``
+        kinds and ``transaction`` source) via their own migrations, each
+        asserted in that migration's own test
+        (``test_posting_cash_ref_migration.py``).  The cumulative
+        inline-seed coverage for every enum member is guarded by
+        ``test_posting_ref_seed_parity.py``.
+        """
         with app.app_context():
-            kinds = [
+            kinds = {
                 row[0] for row in db.session.execute(text(
-                    "SELECT name FROM ref.posting_kinds ORDER BY name"
+                    "SELECT name FROM ref.posting_kinds"
                 )).fetchall()
-            ]
-            sources = [
+            }
+            sources = {
                 row[0] for row in db.session.execute(text(
-                    "SELECT name FROM ref.posting_sources ORDER BY name"
+                    "SELECT name FROM ref.posting_sources"
                 )).fetchall()
-            ]
-            assert kinds == ["transfer"], kinds
-            assert sources == ["transfer"], sources
-
-
-class TestInlineSeedParity:
-    """The migration's OWN inline seed covers every enum member.
-
-    The inline seed is the load-bearing mechanism of this commit: it lets
-    ``ref_cache.init()`` resolve the three new enums after a bare
-    ``flask db upgrade``, BEFORE the entrypoint's ``seed_reference_data``
-    runs.  ``TestMigratedAndSeededState`` above reads the template-built
-    state, which runs the migration AND THEN ``seed_reference_data`` -- so
-    a value omitted from the migration's inline seed alone (but still
-    listed in ``app/ref_seeds.py``) would be backfilled there and pass
-    undetected, silently breaking the bare-upgrade guarantee.  This
-    source-level check isolates the migration's own seed so that omission
-    cannot hide.  The quoted form (``'Asset'``) appears only in the
-    inline-seed SQL, never in the prose docstring (which is unquoted), so
-    a whole-file substring check is unambiguous.
-    """
-
-    def test_inline_seed_covers_every_enum_value(self):
-        """Each enum value is quoted in the migration's own inline seed."""
-        source = (_MIGRATIONS_DIR / _MIGRATION_FILENAME).read_text()
-        for enum_cls in (
-            LedgerAccountClassEnum, PostingKindEnum, PostingSourceEnum,
-        ):
-            for member in enum_cls:
-                assert f"'{member.value}'" in source, (
-                    f"{enum_cls.__name__}.{member.name} "
-                    f"('{member.value}') is not seeded inline by the "
-                    f"migration -- a bare `flask db upgrade` would leave "
-                    f"ref_cache.init() unable to resolve it."
-                )
+            }
+            assert "transfer" in kinds, kinds
+            assert "transfer" in sources, sources
 
 
 class TestDowngradeReversible:

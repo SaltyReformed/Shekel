@@ -23,9 +23,9 @@ from typing import Optional
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
-from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.entry_service import compute_actual_from_entries
+from app.services.status_seam import apply_status_change
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
@@ -141,15 +141,20 @@ def settle_from_entries(
 
     # Determine the destination status from the transaction type.
     # Mirrors the income/expense split in
-    # app/routes/transactions.py:mark_done so the helper produces an
-    # identical observable result on tracked-envelope rows.
+    # app/routes/transactions/mutations.py:mark_done so the helper produces
+    # an identical observable result on tracked-envelope rows.
     if txn.is_income:
         new_status_id = ref_cache.status_id(StatusEnum.RECEIVED)
     else:
         new_status_id = ref_cache.status_id(StatusEnum.DONE)
 
-    txn.status_id = new_status_id
-    txn.paid_at = paid_at if paid_at is not None else db.func.now()
+    # Route the status mechanics (transition check, status_id, paid_at, status
+    # expire) through the single seam so this helper cannot drift from the
+    # manual mark-done / PATCH / credit paths.  ``paid_at`` forwards verbatim:
+    # the seam's ``None`` (this helper's historical default) DERIVES now() on
+    # entering the settled status -- exactly the old ``db.func.now()`` fallback --
+    # and an explicit caller timestamp (carry-forward back-dating) passes through.
+    apply_status_change(txn, new_status_id, paid_at=paid_at)
     # ``compute_actual_from_entries`` returns Decimal("0") on an empty
     # list, which is the carry-forward "no spend, full rollover" case.
     txn.actual_amount = compute_actual_from_entries(txn.entries)

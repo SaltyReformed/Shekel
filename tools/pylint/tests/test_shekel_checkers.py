@@ -14,11 +14,13 @@ from pylint.testutils import CheckerTestCase, MessageTest
 from shekel_checkers import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
+    _STATUS_SEAM_MODULES,
     ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
     ShekelLoanBalanceSourceChecker,
     ShekelMoneyChecker,
     ShekelRefNameChecker,
+    ShekelTransactionStatusBypassChecker,
 )
 
 
@@ -813,3 +815,152 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
+
+
+class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
+    """``shekel-transaction-status-bypass``: status_id assigned only via the seam.
+
+    Every non-transfer ``Transaction.status_id`` change must route through
+    ``status_seam.apply_status_change``; only that module
+    (``app.services.status_seam``) and ``transfer_service`` (which mirrors status
+    onto a transfer's two shadow rows) may assign it.  Like the W9906 fence the
+    rule keys off the ENCLOSING module (``node.root().name``), so each snippet is
+    parsed inside a named module via :func:`astroid.parse` (``module_name=``).
+    Every flagged form is paired with the conforming form that must NOT fire, and
+    a register-bound loop asserts every allowlisted module is exempt.
+    """
+
+    CHECKER_CLASS = ShekelTransactionStatusBypassChecker
+
+    @staticmethod
+    def _status_assign(assign_source: str, module_name: str) -> nodes.AssignAttr:
+        """Return the AssignAttr target of *assign_source* parsed in *module_name*.
+
+        The enclosing module's name drives the allowlist check, so it is set
+        explicitly.  The snippet is a single attribute assignment, so the module
+        body's one statement is an ``Assign`` whose first target is the
+        store-context ``AssignAttr`` the checker visits.
+        """
+        module = astroid.parse(f"{assign_source}\n", module_name=module_name)
+        return module.body[0].targets[0]
+
+    def test_flags_status_id_assignment_from_route(self) -> None:
+        """A bare status_id assignment in a route module is flagged."""
+        node = self._status_assign(
+            "txn.status_id = new_status_id",
+            "app.routes.transactions.mutations",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_assignattr(node)
+
+    def test_flags_status_id_assignment_from_credit_workflow(self) -> None:
+        """A status_id assignment in credit_workflow is flagged (must use the seam)."""
+        node = self._status_assign(
+            "txn.status_id = credit_id", "app.services.credit_workflow",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_assignattr(node)
+
+    def test_allows_status_id_assignment_in_status_seam(self) -> None:
+        """The seam's own module (status_seam) may assign status_id; not flagged."""
+        node = self._status_assign(
+            "txn.status_id = new_status_id", "app.services.status_seam",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_allows_status_id_assignment_in_transfer_service(self) -> None:
+        """transfer_service mirrors status onto its two shadow rows; not flagged.
+
+        A name-based checker cannot distinguish a shadow ``Transaction``'s
+        ``status_id`` from a real transaction's, so transfer_service is
+        allowlisted alongside the seam (2.8b MEDIUM).
+        """
+        node = self._status_assign(
+            "expense_shadow.status_id = new_status_id",
+            "app.services.transfer_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_allows_every_seam_module(self) -> None:
+        """EVERY allowlisted module may assign status_id directly.
+
+        Binds the test to :data:`_STATUS_SEAM_MODULES` itself, so narrowing the
+        set would surface here rather than as a surprise W9907 on a seam module.
+        """
+        for module_name in sorted(_STATUS_SEAM_MODULES):
+            node = self._status_assign(
+                "txn.status_id = new_status_id", module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_assignattr(node)
+
+    def test_allows_seam_package_submodule(self) -> None:
+        """A submodule of a seam module (if it is split into a package) stays exempt.
+
+        Locks the package-prefix match: a future
+        ``app/services/status_seam/_core.py`` resolves to
+        ``app.services.status_seam._core`` and must remain exempt.
+        """
+        node = self._status_assign(
+            "txn.status_id = new_status_id",
+            "app.services.status_seam._core",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_flags_same_basename_in_another_package(self) -> None:
+        """A same-named module in another package is NOT exempted (no collision bypass).
+
+        The allowlist keys off the FULL module path, so a hypothetical
+        ``app/routes/status_seam.py`` is still flagged.
+        """
+        node = self._status_assign(
+            "txn.status_id = x", "app.routes.status_seam",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_assignattr(node)
+
+    def test_ignores_other_attribute_assignment(self) -> None:
+        """Assigning a non-status_id attribute is not this checker's concern."""
+        node = self._status_assign(
+            "txn.estimated_amount = amount",
+            "app.routes.transactions.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_ignores_filing_status_id_assignment(self) -> None:
+        """filing_status_id (a different attribute on the tax tables) is not matched."""
+        node = self._status_assign(
+            "profile.filing_status_id = fs_id",
+            "app.services.tax_config_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_ignores_status_id_read_in_assigned_value(self) -> None:
+        """A status_id READ on the value side is never flagged; only the target counts.
+
+        ``txn.notes = (other.status_id == 5)`` assigns ``notes`` (the
+        ``AssignAttr`` the checker visits); the ``other.status_id`` on the value
+        side is a load-context ``Attribute`` the visitor never receives, so no
+        message fires -- the structural reason a ``status_id ==`` comparison is
+        immune.
+        """
+        node = self._status_assign(
+            "txn.notes = (other.status_id == 5)",
+            "app.routes.transactions.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_assignattr(node)

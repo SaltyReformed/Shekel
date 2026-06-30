@@ -221,22 +221,26 @@ class LedgerAccountClassEnum(enum.Enum):
 class PostingKindEnum(enum.Enum):
     """Posting-leg kind values for ``budget.account_postings``.
 
-    Step 2 carries only ``transfer`` (a transfer's two balanced legs);
-    later Build-Order steps add ``income``, ``expense``, ``principal``,
-    ``interest`` and similar kinds via data migrations.  Values match
-    ``ref.posting_kinds.name``.
+    ``transfer`` is a transfer's two balanced legs (Build-Order Step 2);
+    ``income`` / ``expense`` are an ordinary settled transaction's cash and
+    category legs (Build-Order Step 3); later Build-Order steps add
+    ``principal``, ``interest`` and similar kinds via data migrations.
+    Values match ``ref.posting_kinds.name``.
     """
 
     TRANSFER = "transfer"
+    INCOME = "income"
+    EXPENSE = "expense"
 
 
 class PostingSourceEnum(enum.Enum):
     """Journal-entry source-event values for ``budget.journal_entries``.
 
-    Step 2 carries only ``transfer`` (the source event is a settled
-    transfer); later steps add ``transaction``, ``loan_payment``,
-    ``paycheck`` and ``credit_payback`` via data migrations.  Values match
-    ``ref.posting_sources.name``.
+    ``transfer`` is a settled transfer (Build-Order Step 2); ``transaction``
+    is an ordinary settled cash transaction (Build-Order Step 3); later
+    steps add ``loan_payment``, ``paycheck`` and ``credit_payback`` via data
+    migrations.  Values match ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
+    TRANSACTION = "transaction"

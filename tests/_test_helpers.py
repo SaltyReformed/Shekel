@@ -695,6 +695,40 @@ def clear_postings_for_transfer(transfer_id):
     db.session.commit()
 
 
+def clear_postings_for_transaction(transaction_id):
+    """Delete an ordinary transaction's posted journal entries and legs (raw SQL).
+
+    The transaction analog of :func:`clear_postings_for_transfer`: the posting
+    ledger is append-only (the ORM blocks deletes on ``budget.journal_entries``
+    / ``budget.account_postings``), so this clears a transaction's auto-posted
+    entries via raw SQL, keyed on the ``journal_entries.transaction_id`` linkage.
+    Used by the Commit-8 cash reconciliation oracle to reproduce the pre-ledger
+    historical state the Commit-7 backfill targets: the go-forward poster
+    auto-posts on settle, so a settled transaction already carries go-forward
+    postings; clearing them lets the backfill genuinely re-post (rather than
+    no-opping on its ``NOT EXISTS`` guard), so the two producers can be compared
+    leg-for-leg.  Legs are deleted before the header for explicitness (the FK
+    CASCADE would do it either way); the category/fallback ledger accounts the
+    postings referenced are left in place (the backfill's ``ON CONFLICT`` reuses
+    them).  Commits.
+
+    Args:
+        transaction_id: The transaction whose posted entries and legs to remove.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+
+    db.session.execute(db.text(
+        "DELETE FROM budget.account_postings WHERE journal_entry_id IN "
+        "(SELECT id FROM budget.journal_entries WHERE transaction_id = :t)"
+    ), {"t": transaction_id})
+    db.session.execute(db.text(
+        "DELETE FROM budget.journal_entries WHERE transaction_id = :t"
+    ), {"t": transaction_id})
+    db.session.commit()
+
+
 _UNSET_PAID_AT = object()
 
 
@@ -779,6 +813,98 @@ def create_settled_transfer(
         transfer.id, seed_user["user"].id, **update_kwargs
     )
     return transfer
+
+
+def create_settled_cash_transaction(
+    seed_user, db_session, period, amount,
+    *, account=None, scenario=None, is_income=False,
+    category=None, actual_amount=None, name="Cash Txn",
+):
+    """Create an ordinary (non-transfer) transaction and settle it go-forward.
+
+    The cash analog of :func:`create_settled_transfer` for the Build-Order
+    Step 3 posting-ledger oracle: it builds a Projected transaction, then settles
+    it through the two REAL go-forward production primitives -- the status seam
+    (``status_seam.apply_status_change``) and the posting builder
+    (``posting_service.sync_transaction_postings``) -- in the same order the
+    mark-done route applies them (seam, then the optional manual ``actual_amount``,
+    then the reconcile as the last step).  So the returned transaction is genuinely
+    settled (``status.is_settled``, ``paid_at`` stamped) AND its confirmed cash
+    effect is posted to the double-entry ledger, exactly as production produces it
+    when a user marks a transaction Paid / Received.
+
+    Income settles to Received and expenses to Paid (Done) -- the same split the
+    mark-done route applies (``mutations.py``).  A plain transaction carries no
+    entries, so its effect is ``effective_amount`` (``actual`` over ``estimated``);
+    callers needing the envelope debit-only effect attach credit entries
+    separately (the backfill / lifecycle suites cover that path).
+
+    Flushes via the builder; the caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` (or ``seed_second_user``) fixture dict --
+            supplies the default account / scenario and the owning ``user_id``.
+        db_session: The test ``db.session``.
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transaction in.
+        amount: The estimated amount (Decimal) -- the confirmed effect when no
+            ``actual_amount`` is given.
+        account: The :class:`~app.models.account.Account` the cash leg lands on;
+            defaults to ``seed_user["account"]`` (the Checking account).
+        scenario: The :class:`~app.models.scenario.Scenario` to place the
+            transaction in; defaults to the seed user's baseline scenario.  Pass
+            a non-baseline scenario to exercise multi-scenario isolation.
+        is_income: When True, an Income transaction settling to Received (cash
+            leg positive); otherwise an Expense settling to Paid (cash leg
+            negative).
+        category: The :class:`~app.models.category.Category` the counter leg
+            books into, or ``None`` for the per-(owner, class) Uncategorized
+            fallback.
+        actual_amount: The settled actual amount (Decimal) when it diverges from
+            the estimate, or ``None`` (effective == estimated == amount).
+        name: The transaction display name (becomes the journal entry
+            description).
+
+    Returns:
+        The settled (Paid / Received) :class:`~app.models.transaction.Transaction`,
+        with its go-forward postings flushed.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum, TxnTypeEnum
+    from app.models.transaction import Transaction
+    from app.services import posting_service, status_seam
+
+    account = seed_user["account"] if account is None else account
+    scenario = seed_user["scenario"] if scenario is None else scenario
+    type_id = ref_cache.txn_type_id(
+        TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE
+    )
+    txn = Transaction(
+        account_id=account.id,
+        pay_period_id=period.id,
+        scenario_id=scenario.id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name=name,
+        category_id=None if category is None else category.id,
+        transaction_type_id=type_id,
+        estimated_amount=amount,
+    )
+    db_session.add(txn)
+    db_session.flush()
+
+    # Settle through the real go-forward path: the seam flips the status and
+    # stamps paid_at, the optional manual actual is applied AFTER (as the route
+    # does), and the builder reconciles the ledger to the confirmed effect last.
+    settled_status = StatusEnum.RECEIVED if is_income else StatusEnum.DONE
+    status_seam.apply_status_change(
+        txn, ref_cache.status_id(settled_status),
+    )
+    if actual_amount is not None:
+        txn.actual_amount = actual_amount
+    posting_service.sync_transaction_postings(txn, settled=True)
+    return txn
 
 
 def set_default_grid_account(db_session, user_id, account_id):

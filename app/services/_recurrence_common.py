@@ -241,7 +241,16 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
     deleted_ids = []
     to_delete = []
     for row in existing_rows:
-        # Immutable -- never touch.
+        # Immutable -- never touch.  Build-Order Step 3 note: a settled row is
+        # immutable, and every posted row is settled, so neither the regenerate
+        # sweep (which deletes ``to_delete`` rows) nor
+        # ``recurrence_engine.resolve_conflicts`` (which restores / re-amounts
+        # the overridden / deleted conflict ids) ever touches a row with ledger
+        # postings -- both operate only on the mutable (Projected) rows that
+        # fall through below.  Whoever relaxes this skip MUST reverse a settled
+        # row's postings before deleting it and re-sync after a mutation (see
+        # posting_service.reverse_postings_before_delete /
+        # sync_transaction_postings), or the double-entry ledger desyncs.
         if row.status and row.status.is_immutable:
             continue
         # Overridden -- flag as conflict for user prompt.
