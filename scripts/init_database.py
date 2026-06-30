@@ -162,7 +162,12 @@ def migrate_existing_database():
 
 
 if __name__ == "__main__":
-    flask_app = create_app()
+    # init_ref_cache=False: this migration host builds the app only for an
+    # Alembic context and runs BEFORE the migrations seed new ref rows, so the
+    # strict ref_cache row-check must not fire on the pre-migration database
+    # (it raises on a missing row in an existing ref table -- the exact
+    # bootstrap window a row-adding migration like Step 3's creates).
+    flask_app = create_app(init_ref_cache=False)
     with flask_app.app_context():
         if is_fresh_database():
             init_fresh_database(flask_app)

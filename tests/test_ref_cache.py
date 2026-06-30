@@ -20,7 +20,7 @@ import pytest
 import sqlalchemy.exc
 
 from app.extensions import db
-from app import ref_cache
+from app import create_app, ref_cache
 from app.enums import (
     GoalModeEnum,
     IncomeUnitEnum,
@@ -123,6 +123,50 @@ class TestRefCacheStatuses:
             # Restore a fully-populated cache so later tests are unaffected.
             monkeypatch.undo()
             ref_cache.init(db.session)
+
+
+class TestCreateAppRefCacheGate:
+    """``create_app``'s ``init_ref_cache`` flag gates the eager ref_cache init.
+
+    Locks the deploy-ordering fix: the migration host
+    (``scripts/init_database.py``) builds the app with ``init_ref_cache=False``
+    so the strict ref_cache row-check does NOT fire on a pre-migration
+    database.  ``ref_cache.init`` is fatal on a missing row in an existing ref
+    table (a genuine seed/data drift), and a migration that ADDS rows to an
+    existing ref table -- like Build-Order Step 3's ``income`` / ``expense``
+    posting kinds and ``transaction`` source -- leaves those rows absent until
+    the migration the host is about to run actually applies them.  Eager-initing
+    there raised and aborted the deploy (rolled back by ``shekel-deploy``);
+    skipping it lets the host run the seeding migrations.  Gunicorn, the dev
+    server, and the test app keep the eager default (True).
+    """
+
+    def test_init_ref_cache_false_skips_ref_cache_init(self, app, monkeypatch):
+        """``create_app(init_ref_cache=False)`` never calls ``ref_cache.init``.
+
+        The migration host must build the app without the eager row-check so it
+        can run the very migrations that seed the missing rows.  A spy on
+        ``ref_cache.init`` must record zero calls.
+        """
+        calls = []
+        monkeypatch.setattr(
+            ref_cache, "init", lambda session: calls.append(session) or [],
+        )
+        create_app("testing", init_ref_cache=False)
+        assert calls == []
+
+    def test_init_ref_cache_default_runs_ref_cache_init(self, app, monkeypatch):
+        """``create_app()`` (the runtime default) eagerly calls ``ref_cache.init``.
+
+        Gunicorn and the dev/test server rely on the eager init so the cache and
+        the ref-id Jinja globals are ready before the first request.
+        """
+        calls = []
+        monkeypatch.setattr(
+            ref_cache, "init", lambda session: calls.append(session) or [],
+        )
+        create_app("testing")
+        assert len(calls) == 1
 
 
 class TestStatusBooleanColumns:
