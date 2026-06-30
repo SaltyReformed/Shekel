@@ -1,8 +1,9 @@
 """Tests for ``ledger_account_service`` (Build-Order Step 2, Commit 2;
-the category/fallback resolver added Step 3, Commit 3).
+the category/fallback resolver added Step 3, Commit 3; the per-loan resolver
+added Step 4, Commit 3).
 
 The service is the sole go-forward writer of ``budget.ledger_accounts``.
-Two entry points:
+Three entry points:
 
   * :func:`create_ledger_account_for_account` (Step 2) pairs every real
     account with exactly one Asset or Liability ledger account when the
@@ -11,6 +12,10 @@ Two entry points:
     materialises the per-category Income/Expense counter accounts and the
     per-(owner, class) Uncategorized fallback an ordinary settled
     transaction's category leg books into.
+  * :func:`get_or_create_loan_ledger_account` (Step 4) lazily materialises
+    the three per-loan accounts a confirmed loan payment's real-split
+    correction books into -- the loan's ``loan_interest`` and ``loan_escrow``
+    Expense accounts and its ``loan_refund`` Asset account.
 
 Both are idempotent (a repeat call is a no-op).  The Step-2 tests pin:
 
@@ -36,6 +41,15 @@ naming, per-(owner, class) singleton, and the H1 property that its lookup
 keys on ``is_fallback`` so it never returns a deleted-category orphan); and
 the input guards (class must be Income/Expense; a non-NULL category id must
 exist).
+
+The Step-4 tests likewise pin the loan resolver's behaviour (the per-loan
+shape CHECK and per-(loan, kind) unique are covered by
+``test_models/test_ledger_account``): correct per-loan row shape, class by
+kind (interest/escrow Expense, refund Asset), and name snapshot; idempotency;
+the three kinds coexisting on one loan; independence across loans; and the
+two load-bearing guards the columns-only shape CHECK cannot enforce -- the
+kind must be a loan kind, and the account must be an amortizing loan owned by
+the calling user.
 """
 from __future__ import annotations
 
@@ -180,6 +194,25 @@ class TestSyncHookIdempotency:
 def _expense_class_id():
     """Resolve the Expense ledger-account-class PK (test convenience)."""
     return ref_cache.ledger_account_class_id(LedgerAccountClassEnum.EXPENSE)
+
+
+def _asset_class_id():
+    """Resolve the Asset ledger-account-class PK (test convenience)."""
+    return ref_cache.ledger_account_class_id(LedgerAccountClassEnum.ASSET)
+
+
+def _loan_ledger_rows(loan_account_id):
+    """Return every per-loan ``LedgerAccount`` linked to *loan_account_id*.
+
+    Filters on ``loan_account_id`` (NOT ``account_id``) so it returns only the
+    Step-4 per-loan rows and excludes the loan's own auto-paired *linked* row
+    (which carries ``account_id`` = the loan id and ``loan_account_id`` NULL).
+    """
+    return (
+        _db.session.query(LedgerAccount)
+        .filter_by(loan_account_id=loan_account_id)
+        .all()
+    )
 
 
 class TestCategoryLedgerAccountResolver:
@@ -580,3 +613,301 @@ class TestCategoryResolverValidation:
                 .filter_by(user_id=user_a, category_id=foreign_category.id)
                 .count() == 0
             )
+
+
+class TestLoanLedgerAccountResolver:
+    """``get_or_create_loan_ledger_account`` materialises per-loan rows.
+
+    Build-Order Step 4's chart resolver: one ``loan_interest`` and one
+    ``loan_escrow`` Expense account and one ``loan_refund`` Asset account per
+    loan, lazily and idempotently.  These tests pin the resolver's behaviour
+    (the storage-tier shape CHECK and per-(loan, kind) unique are covered by
+    ``test_models/test_ledger_account.py::TestLoanLedgerShapeAndUnique``):
+    correct shape / class / name snapshot per kind; idempotency; the three
+    kinds coexisting for one loan; and independence across two loans.
+    """
+
+    @pytest.mark.parametrize("kind,expected_class,expected_suffix", [
+        (LedgerAccountKindEnum.LOAN_INTEREST,
+         LedgerAccountClassEnum.EXPENSE, "Interest"),
+        (LedgerAccountKindEnum.LOAN_ESCROW,
+         LedgerAccountClassEnum.EXPENSE, "Escrow"),
+        (LedgerAccountKindEnum.LOAN_REFUND,
+         LedgerAccountClassEnum.ASSET, "Refund"),
+    ])
+    def test_creates_loan_row_with_correct_shape_per_kind(
+        self, app, db, seed_user, kind, expected_class, expected_suffix,
+    ):
+        """Each loan kind creates one correctly-shaped row with the right class.
+
+        Shape contract for a per-loan ledger account: ``loan_account_id`` points
+        at the loan; ``account_id`` / ``category_id`` NULL and ``is_fallback``
+        False (the per-loan column shape); ``kind_id`` the requested loan kind;
+        ``class_id`` the class that kind implies (interest/escrow -> Expense,
+        refund -> Asset); ``name`` snapshots "<loan name> -- <suffix>";
+        ``user_id`` the owner; the row is flushed (``id`` assigned).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Home Loan",
+            )
+
+            row = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan.id, kind,
+            )
+
+            assert row.id is not None
+            assert row.loan_account_id == loan.id
+            assert row.account_id is None
+            assert row.category_id is None
+            assert row.is_fallback is False
+            assert row.kind_id == ref_cache.ledger_account_kind_id(kind)
+            assert row.class_id == ref_cache.ledger_account_class_id(
+                expected_class,
+            )
+            assert row.name == f"Home Loan -- {expected_suffix}"
+            assert row.user_id == user_id
+
+    def test_idempotent_returns_existing_row(self, app, db, seed_user):
+        """A second call for the same (loan, kind) returns the same row.
+
+        ``uq_ledger_accounts_loan`` permits one row per (owner, loan, kind); the
+        resolver short-circuits on the existing row (a second insert would
+        raise) and returns the same PK.  The interest-row count for the loan
+        stays exactly one.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Idem Loan",
+            )
+
+            first = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            second = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+
+            assert second.id == first.id
+            assert len(_loan_ledger_rows(loan.id)) == 1
+
+    def test_three_kinds_one_loan_yield_three_distinct_rows(
+        self, app, db, seed_user,
+    ):
+        """Resolving all three kinds for one loan yields three distinct rows.
+
+        A loan has up to three per-loan accounts -- interest, escrow, refund --
+        each a separate chart entry under the (loan, kind) key.  All three carry
+        the same ``loan_account_id``; their ``kind_id`` / ``class_id`` / ``id``
+        differ (interest + escrow Expense, refund Asset).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Triple Loan",
+            )
+
+            interest, escrow, refund = (
+                ledger_account_service.get_or_create_loan_ledger_account(
+                    user_id, loan.id, kind,
+                )
+                for kind in (
+                    LedgerAccountKindEnum.LOAN_INTEREST,
+                    LedgerAccountKindEnum.LOAN_ESCROW,
+                    LedgerAccountKindEnum.LOAN_REFUND,
+                )
+            )
+
+            assert len({interest.id, escrow.id, refund.id}) == 3
+            assert len(_loan_ledger_rows(loan.id)) == 3
+            assert interest.class_id == _expense_class_id()
+            assert escrow.class_id == _expense_class_id()
+            assert refund.class_id == _asset_class_id()
+
+    def test_same_kind_two_loans_independent(self, app, db, seed_user):
+        """The same kind on two loans yields two distinct rows.
+
+        The natural key is (owner, loan, kind), so a ``loan_interest`` account
+        for loan A is distinct from loan B's -- proving the idempotency lookup
+        keys on ``loan_account_id``.  A missing loan filter would collapse all
+        of a user's loans onto one shared interest account, commingling them.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan_a = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan A",
+            )
+            loan_b = create_account_of_type(
+                seed_user, _db.session, "Auto Loan", "Loan B",
+            )
+
+            row_a = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan_a.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            row_b = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan_b.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+
+            assert row_a.id != row_b.id
+            assert row_a.loan_account_id == loan_a.id
+            assert row_b.loan_account_id == loan_b.id
+            assert row_a.name == "Loan A -- Interest"
+            assert row_b.name == "Loan B -- Interest"
+
+    def test_archived_loan_still_resolves(self, app, db, seed_user):
+        """An archived (``is_active`` False) loan still resolves its accounts.
+
+        The loan load filters ``(id, user_id)`` but deliberately NOT
+        ``is_active``: an archived loan that still carries settled payment
+        history must keep resolving its interest / escrow / refund accounts so
+        the immutable postings on them reconcile.  This locks that documented
+        contract -- a future maintainer who "tightens" the load with
+        ``.filter_by(is_active=True)`` would break archived-loan resolution
+        (raising the misleading "no account ... owned by user_id" for a loan
+        that exists), and this test would fail on the unhandled ``ValueError``.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Archived Loan",
+            )
+            loan.is_active = False
+            _db.session.flush()
+
+            row = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+
+            assert row.loan_account_id == loan.id
+            assert row.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            assert row.name == "Archived Loan -- Interest"
+
+
+class TestLoanLedgerResolverValidation:
+    """The loan resolver guards its inputs before writing.
+
+    Because ``ck_ledger_accounts_loan_shape`` is columns-only (it cannot pin
+    ``kind_id`` to the loan kinds, nor verify ``loan_account_id`` references a
+    loan), these guards are the sole defense against a malformed per-loan chart
+    entry: the kind must be one of the three loan kinds, and the account must
+    be an amortizing loan owned by the calling user.
+    """
+
+    @pytest.mark.parametrize("bad_kind", [
+        LedgerAccountKindEnum.LINKED,
+        LedgerAccountKindEnum.CATEGORY,
+        LedgerAccountKindEnum.FALLBACK,
+        LedgerAccountKindEnum.ORPHAN,
+    ])
+    def test_rejects_non_loan_kind(self, app, db, seed_user, bad_kind):
+        """A non-loan kind raises ValueError, creating no row.
+
+        All four non-loan kinds (linked, category, fallback, orphan) must be
+        refused before any write -- a ``linked``-kinded ``loan_account_id`` row
+        would be a malformed chart entry the columns-only CHECK would not catch.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Bad Kind Loan",
+            )
+
+            with pytest.raises(ValueError, match="loan ledger account kind"):
+                ledger_account_service.get_or_create_loan_ledger_account(
+                    user_id, loan.id, bad_kind,
+                )
+            assert _loan_ledger_rows(loan.id) == []
+
+    @pytest.mark.parametrize("non_loan_type", [
+        "Checking", "HYSA", "Credit Card", "Brokerage",
+    ])
+    def test_rejects_non_amortizing_account(
+        self, app, db, seed_user, non_loan_type,
+    ):
+        """A non-amortizing account raises ValueError, creating no row.
+
+        The amortizing-loan guard rejects every account that is not a loan: a
+        Checking (PLAIN), a HYSA (INTEREST), a Credit Card (a Liability but NOT
+        amortizing), and a Brokerage (INVESTMENT).  Each would otherwise mint a
+        ``loan_interest`` row pointing at a non-loan account, which the
+        columns-only shape CHECK cannot prevent.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, non_loan_type,
+                f"Not A Loan {non_loan_type}",
+            )
+
+            with pytest.raises(ValueError, match="not an amortizing loan"):
+                ledger_account_service.get_or_create_loan_ledger_account(
+                    user_id, account.id, LedgerAccountKindEnum.LOAN_INTEREST,
+                )
+            assert _loan_ledger_rows(account.id) == []
+
+    def test_missing_account_raises_value_error(self, app, db, seed_user):
+        """A loan_account_id naming no account raises ValueError, no row.
+
+        A live caller only resolves a settled payment's loan account, so a miss
+        is a caller error; the resolver fails loud with the offending id rather
+        than minting a per-loan row whose ``loan_account_id`` FK would dangle.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            missing_id = 999_999
+
+            with pytest.raises(ValueError, match="999999"):
+                ledger_account_service.get_or_create_loan_ledger_account(
+                    user_id, missing_id, LedgerAccountKindEnum.LOAN_INTEREST,
+                )
+            assert _loan_ledger_rows(missing_id) == []
+
+    def test_foreign_loan_rejected(self, app, db, seed_user, seed_second_user):
+        """A loan owned by another user is treated as not-found (tenancy).
+
+        The loan load filters by ``user_id``, so passing user A's id with user
+        B's loan id finds nothing and raises -- the resolver never mints an
+        A-owned per-loan row keyed to B's loan, nor snapshots B's loan name into
+        A's chart.  Honours the project's "filter every user-data query by
+        user_id" rule (an IDOR otherwise).
+        """
+        with app.app_context():
+            user_a = seed_user["user"].id
+            foreign_loan = create_account_of_type(
+                seed_second_user, _db.session, "Mortgage", "B's Loan",
+            )
+
+            with pytest.raises(ValueError, match="owned by user_id"):
+                ledger_account_service.get_or_create_loan_ledger_account(
+                    user_a, foreign_loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+                )
+            assert _loan_ledger_rows(foreign_loan.id) == []
+
+    def test_long_loan_name_truncated_to_fit_column(self, app, db, seed_user):
+        """A loan name + suffix wider than the name column is clipped, not rejected.
+
+        ``accounts.name`` is ``String(100)``, so "<loan name> -- Interest" can
+        reach 112 chars -- wider than the ``ledger_accounts.name`` ``String(100)``
+        column, which PostgreSQL rejects (not silently truncates) on insert.
+        The resolver clips the snapshot to the column width so the row inserts
+        cleanly; ``name`` is display-only (the natural key is the (user, loan,
+        kind) IDs), so the clip is lossless for logic.  Without the clip this
+        resolve would raise ``DataError`` and 500 the settling payment.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            long_name = "L" * 95
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", long_name,
+            )
+
+            row = ledger_account_service.get_or_create_loan_ledger_account(
+                user_id, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+
+            assert len(row.name) == 100
+            assert row.name == f"{long_name} -- Interest"[:100]

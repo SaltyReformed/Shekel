@@ -17,17 +17,30 @@ a ``category_id`` (or, for the fallback, ``is_fallback=True``) and a NULL
 ``account_id``.  This service stays the sole writer of every
 ``ledger_accounts`` row kind.
 
+Build-Order Step 4 adds the per-loan side:
+:func:`get_or_create_loan_ledger_account` lazily materialises the three
+per-loan accounts a confirmed loan payment's real-split correction books
+into -- the loan's ``loan_interest`` and ``loan_escrow`` Expense accounts and
+its ``loan_refund`` Asset account -- keyed (and made idempotent) by the
+``uq_ledger_accounts_loan`` partial unique on ``(user, loan, kind)``.
+
 As the sole writer, it stamps every row's explicit ``kind_id`` discriminator
 (``LedgerAccountKindEnum`` -> ``ref.ledger_account_kinds`` id):
-``create_ledger_account_for_account`` writes ``linked``, and
+``create_ledger_account_for_account`` writes ``linked``,
 ``get_or_create_category_ledger_account`` writes ``fallback`` (the
-Uncategorized bucket) or ``category``.  ``kind_id`` is the authoritative
-discriminator readers branch on; no database CHECK pins it to the row shape
-(see :class:`app.models.ledger_account.LedgerAccount`), so stamping it
-correctly here -- exactly as this service already stamps ``class_id`` -- is
-the app's guarantee that the kind and the column shape agree.  The Step-4
-per-loan ``loan_interest`` / ``loan_escrow`` / ``loan_refund`` kinds are
-stamped by a sibling resolver added in that step.
+Uncategorized bucket) or ``category``, and
+``get_or_create_loan_ledger_account`` writes one of the three per-loan kinds
+(``loan_interest`` / ``loan_escrow`` / ``loan_refund``).  ``kind_id`` is the
+authoritative discriminator readers branch on; no database CHECK pins it to
+the row shape (see :class:`app.models.ledger_account.LedgerAccount`), so
+stamping it correctly here -- exactly as this service already stamps
+``class_id`` -- is the app's guarantee that the kind and the column shape
+agree.  For the per-loan rows that guarantee is load-bearing, not
+belt-and-suspenders: the shipped ``ck_ledger_accounts_loan_shape`` CHECK is
+columns-only (a CHECK cannot subquery ``ref.ledger_account_kinds``), so the
+loan resolver -- which rejects any non-loan kind and any non-amortizing loan
+account before it writes -- is the only thing keeping a ``loan_account_id``
+row's kind a loan kind and its target a real loan.
 
 This service is Flask-isolated per the project architecture rule
 (``CLAUDE.md`` Architecture section): it takes plain data, returns a plain
@@ -55,6 +68,10 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -358,5 +375,216 @@ def get_or_create_category_ledger_account(
         "class_id=%d, is_fallback=%s)",
         "Uncategorized fallback" if is_fallback else "category",
         ledger_account.id, user_id, category_id, class_id, is_fallback,
+    )
+    return ledger_account
+
+
+# The three per-loan ledger-account kinds the Step-4 loan-payment correction
+# books into, each mapped to (its accounting class, the display-name suffix
+# snapshotted into ``name``).  ``loan_interest`` and ``loan_escrow`` are
+# Expense (the accrued interest and the configured escrow both leave the
+# borrower as an expense at payment time); ``loan_refund`` is an Asset (a
+# payoff overpayment the lender owes back).  Spelled out here, like
+# ``_FALLBACK_LEDGER_ACCOUNT_NAMES``, rather than derived from the enum value
+# so renaming a ``LedgerAccountKindEnum`` member can never silently rewrite the
+# class or the label on already-posted per-loan rows.
+#
+# This map is the resolver's -- and therefore the app's -- sole guarantee that
+# a ``loan_account_id`` row carries one of the three loan kinds and the
+# accounting class that kind implies: the shipped
+# ``ck_ledger_accounts_loan_shape`` CHECK is columns-only (a CHECK cannot
+# subquery ``ref.ledger_account_kinds`` and the project forbids hardcoding its
+# IDs -- see the model docstring), so nothing at the storage tier pins a loan
+# row's ``kind_id`` to a loan kind.  A kind absent from this map is rejected
+# before any write -- the load-bearing guard, not belt-and-suspenders.
+_LOAN_LEDGER_KINDS = {
+    LedgerAccountKindEnum.LOAN_INTEREST: (LedgerAccountClassEnum.EXPENSE, "Interest"),
+    LedgerAccountKindEnum.LOAN_ESCROW: (LedgerAccountClassEnum.EXPENSE, "Escrow"),
+    LedgerAccountKindEnum.LOAN_REFUND: (LedgerAccountClassEnum.ASSET, "Refund"),
+}
+
+
+def _find_existing_loan_ledger_account(
+    user_id: int, loan_account_id: int, kind_id: int,
+) -> LedgerAccount | None:
+    """Return the existing per-loan ledger account, or None.
+
+    The idempotency lookup for :func:`get_or_create_loan_ledger_account`,
+    keyed to match the ``uq_ledger_accounts_loan`` partial unique exactly:
+    ``(user_id, loan_account_id, kind_id)`` among the rows
+    ``WHERE loan_account_id IS NOT NULL``.  ``loan_account_id`` is non-NULL
+    here (the caller only resolves a concrete loan), so the row is inside the
+    index's predicate and the three-column key identifies at most one row --
+    one ``loan_interest`` / ``loan_escrow`` / ``loan_refund`` account per
+    (owner, loan).
+
+    Args:
+        user_id: The owning user's id.
+        loan_account_id: The loan ``budget.accounts`` id whose per-loan
+            account is sought.
+        kind_id: The ``ref.ledger_account_kinds`` PK of the loan kind
+            (``loan_interest`` / ``loan_escrow`` / ``loan_refund``).
+
+    Returns:
+        The matching :class:`~app.models.ledger_account.LedgerAccount`, or
+        None when none exists yet.
+    """
+    return (
+        db.session.query(LedgerAccount)
+        .filter_by(
+            user_id=user_id,
+            loan_account_id=loan_account_id,
+            kind_id=kind_id,
+        )
+        .first()
+    )
+
+
+def _load_amortizing_loan_account(user_id: int, loan_account_id: int) -> Account:
+    """Load and validate the loan account a per-loan ledger row will link.
+
+    Resolves the ``budget.accounts`` row by ``(id, user_id)`` -- the tenancy
+    filter, matching :func:`_category_display_name`, so a ``loan_account_id``
+    belonging to another user is treated as "not found" rather than minting an
+    owner-A row keyed to user B's loan.  Deliberately NOT filtered by
+    ``is_active``: an archived loan that still carries settled payment history
+    must keep resolving its per-loan accounts so the immutable postings on them
+    reconcile (archiving disables new activity, it does not erase posted facts).
+
+    Then guards that the account is an amortizing loan (``classify_account ==
+    AMORTIZING``, which reads the ``has_amortization`` boolean -- never a type
+    name string).  This is the load-bearing companion to the kind guard in
+    :func:`get_or_create_loan_ledger_account`: ``ck_ledger_accounts_loan_shape``
+    polices only a per-loan row's column shape, so nothing at the storage tier
+    stops a ``loan_account_id`` pointing at a Checking or Credit Card account.
+    The resolver is the sole writer and therefore the only guarantee that a
+    per-loan ledger row links a real loan.
+
+    Args:
+        user_id: The owning user's id (the loan must belong to them).
+        loan_account_id: The loan ``budget.accounts`` id (non-NULL).
+
+    Returns:
+        The validated :class:`~app.models.account.Account` (an amortizing
+        loan owned by ``user_id``), with ``account_type`` eager-loaded.
+
+    Raises:
+        ValueError: If no account with that id is owned by ``user_id``, or if
+            the account is not an amortizing loan.  A live caller (the Step-4
+            poster) only ever resolves a settled loan payment's loan account,
+            so a miss or a non-loan account signals a caller bug; fail loud
+            with the offending id and the account's actual projection kind.
+    """
+    loan = (
+        db.session.query(Account)
+        .filter_by(id=loan_account_id, user_id=user_id)
+        .first()
+    )
+    if loan is None:
+        raise ValueError(
+            f"cannot create a loan ledger account: no account with "
+            f"id={loan_account_id} owned by user_id={user_id}"
+        )
+    projection_kind = classify_account(loan)
+    if projection_kind is not AccountProjectionKind.AMORTIZING:
+        raise ValueError(
+            f"cannot create a loan ledger account: account id={loan_account_id} "
+            f"is not an amortizing loan (classifies as {projection_kind.value!r})"
+        )
+    return loan
+
+
+def get_or_create_loan_ledger_account(
+    user_id: int,
+    loan_account_id: int,
+    kind: LedgerAccountKindEnum,
+) -> LedgerAccount:
+    """Ensure a loan's per-kind interest / escrow / refund ledger account exists.
+
+    The Build-Order Step 4 chart resolver: a confirmed loan payment's real-split
+    correction books its accrued interest into the loan's ``loan_interest``
+    Expense account, its configured escrow into the ``loan_escrow`` Expense
+    account, and any payoff overpayment into the ``loan_refund`` Asset account.
+    This lazily materialises (and thereafter reuses) the requested one.
+
+    The accounting class is derived from ``kind`` (``loan_interest`` /
+    ``loan_escrow`` -> Expense; ``loan_refund`` -> Asset) via
+    ``_LOAN_LEDGER_KINDS`` -- the caller passes only the kind, so the class can
+    never be set inconsistently with it.  ``kind`` MUST be one of the three
+    loan kinds; any other (``linked`` / ``category`` / ``fallback`` / ``orphan``)
+    is rejected before any write.  That guard, and the amortizing-loan guard in
+    :func:`_load_amortizing_loan_account`, are load-bearing rather than
+    belt-and-suspenders: the shipped ``ck_ledger_accounts_loan_shape`` CHECK is
+    columns-only (it cannot pin ``kind_id`` without subquerying ``ref`` or
+    hardcoding its IDs), so this resolver is the only thing keeping a per-loan
+    row's kind a loan kind and its ``loan_account_id`` a real loan (the same
+    un-CHECKed trust contract ``class_id`` already carries).
+
+    Idempotent: an existing row for the ``(user, loan, kind)`` natural key is
+    returned unchanged (the ``uq_ledger_accounts_loan`` partial unique would
+    otherwise reject a duplicate).  The created row sets ``loan_account_id``,
+    leaves ``account_id`` / ``category_id`` NULL and ``is_fallback`` False (the
+    per-loan column shape ``ck_ledger_accounts_loan_shape`` requires), and
+    snapshots a display ``name`` (``"<loan name> -- Interest|Escrow|Refund"``)
+    clipped to the column width -- like a category row the snapshot is frozen at
+    creation, so renaming the loan never rewrites posted history (and unlike a
+    linked row, a per-loan row has ``account_id`` NULL, so
+    ``ck_ledger_accounts_name_present`` requires the stored ``name``).
+
+    Flushes so the new row's ``id`` is assigned, but does NOT commit -- the
+    caller (the Step-4 ``posting_service``) owns the transaction boundary.
+
+    Args:
+        user_id: The owning user's id.
+        loan_account_id: The loan ``budget.accounts`` id whose payment split
+            this account books.  Must be an amortizing loan owned by
+            ``user_id`` (validated when the row is first created).
+        kind: The per-loan kind to resolve, a
+            :class:`~app.enums.LedgerAccountKindEnum` member that MUST be
+            ``LOAN_INTEREST``, ``LOAN_ESCROW``, or ``LOAN_REFUND``.
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount` for the
+        ``(user, loan, kind)`` key (existing, or newly created and flushed).
+
+    Raises:
+        ValueError: If ``kind`` is not one of the three loan kinds, or (on
+            first creation) if ``loan_account_id`` names no amortizing loan
+            owned by ``user_id`` (see :func:`_load_amortizing_loan_account`).
+            No database CHECK enforces either, so these guards are the sole
+            defense against a malformed per-loan chart entry.
+    """
+    if kind not in _LOAN_LEDGER_KINDS:
+        raise ValueError(
+            f"loan ledger account kind must be one of "
+            f"{sorted(member.value for member in _LOAN_LEDGER_KINDS)}, "
+            f"got {kind!r}"
+        )
+    ledger_class, component = _LOAN_LEDGER_KINDS[kind]
+    class_id = ref_cache.ledger_account_class_id(ledger_class)
+    kind_id = ref_cache.ledger_account_kind_id(kind)
+
+    existing = _find_existing_loan_ledger_account(
+        user_id, loan_account_id, kind_id,
+    )
+    if existing is not None:
+        return existing
+
+    loan = _load_amortizing_loan_account(user_id, loan_account_id)
+    name = f"{loan.name} -- {component}"[:_LEDGER_ACCOUNT_NAME_MAX_LEN]
+    ledger_account = LedgerAccount(
+        user_id=user_id,
+        class_id=class_id,
+        kind_id=kind_id,
+        loan_account_id=loan_account_id,
+        name=name,
+    )
+    db.session.add(ledger_account)
+    db.session.flush()
+    logger.info(
+        "Created loan %s ledger account id=%d (user_id=%d, "
+        "loan_account_id=%d, class_id=%d, kind_id=%d)",
+        component, ledger_account.id, user_id, loan_account_id,
+        class_id, kind_id,
     )
     return ledger_account
