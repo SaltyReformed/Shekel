@@ -16,7 +16,10 @@ Both are idempotent (a repeat call is a no-op).  The Step-2 tests pin:
 
   * **Shape** -- one paired linked row per account, ``account_id`` set,
     ``name`` NULL (display derives from ``account.name``), ``user_id``
-    copied from the account.
+    copied from the account, and the explicit ``linked`` ``kind_id`` the
+    writer stamps (no DB CHECK pins the kind to the shape, so the writer is
+    the guarantee; the category/fallback tests pin ``category`` / ``fallback``
+    likewise).
   * **Class derivation** -- a Liability-category account maps to the
     Liability ledger class; every other category (Asset, Retirement,
     Investment) maps to the Asset ledger class.  The derivation branches
@@ -39,7 +42,7 @@ from __future__ import annotations
 import pytest
 
 from app import ref_cache
-from app.enums import LedgerAccountClassEnum
+from app.enums import LedgerAccountClassEnum, LedgerAccountKindEnum
 from app.extensions import db as _db
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
@@ -61,7 +64,9 @@ class TestSyncHookShape:
         Shape contract: exactly one linked row; ``account_id`` points at
         the new account; ``name`` is NULL (a linked row derives its
         display label from ``account.name``); ``user_id`` is copied from
-        the account; the class is Asset (Checking is Asset-category).
+        the account; the class is Asset (Checking is Asset-category); and
+        ``kind_id`` is the ``linked`` kind (the writer stamps the explicit
+        discriminator no DB CHECK enforces).
         """
         with app.app_context():
             account = create_account_of_type(
@@ -75,6 +80,9 @@ class TestSyncHookShape:
             assert ledger_account.user_id == account.user_id
             assert ledger_account.class_id == ref_cache.ledger_account_class_id(
                 LedgerAccountClassEnum.ASSET,
+            )
+            assert ledger_account.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
             )
 
     @pytest.mark.parametrize("type_name,expected_class", [
@@ -185,9 +193,9 @@ class TestCategoryLedgerAccountResolver:
         Shape contract for a category ledger account: ``account_id`` NULL (it
         is a counter account, not a real-account mirror); ``category_id``
         points at the budget category; ``is_fallback`` False; ``class_id`` is
-        the Expense class; ``name`` snapshots the category's display label
-        ("Family: Groceries"); ``user_id`` is the owner; the row is flushed
-        (``id`` assigned).
+        the Expense class; ``kind_id`` is the ``category`` kind; ``name``
+        snapshots the category's display label ("Family: Groceries");
+        ``user_id`` is the owner; the row is flushed (``id`` assigned).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -202,6 +210,9 @@ class TestCategoryLedgerAccountResolver:
             assert row.category_id == groceries.id
             assert row.is_fallback is False
             assert row.class_id == _expense_class_id()
+            assert row.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.CATEGORY,
+            )
             assert row.name == groceries.display_name  # "Family: Groceries"
             assert row.user_id == user_id
 
@@ -355,9 +366,9 @@ class TestUncategorizedFallbackResolver:
         """A NULL category resolves to the fallback with ``is_fallback`` True.
 
         Shape: ``account_id`` NULL, ``category_id`` NULL, ``is_fallback``
-        True, ``class_id`` the requested class, ``name`` the canonical
-        "Uncategorized {Income|Expense}" label.  Parametrized across both
-        classes.
+        True, ``class_id`` the requested class, ``kind_id`` the ``fallback``
+        kind, ``name`` the canonical "Uncategorized {Income|Expense}" label.
+        Parametrized across both classes.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -370,6 +381,9 @@ class TestUncategorizedFallbackResolver:
             assert row.category_id is None
             assert row.is_fallback is True
             assert row.class_id == ref_cache.ledger_account_class_id(ledger_class)
+            assert row.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.FALLBACK,
+            )
             assert row.name == expected_name
             assert row.user_id == user_id
 
@@ -419,6 +433,9 @@ class TestUncategorizedFallbackResolver:
             # Seed an orphan directly (the shape a category delete leaves).
             orphan = LedgerAccount(
                 user_id=user_id, class_id=expense_class_id,
+                kind_id=ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ORPHAN,
+                ),
                 account_id=None, category_id=None, is_fallback=False,
                 name="Family: Groceries",
             )

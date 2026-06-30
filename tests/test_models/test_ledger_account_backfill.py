@@ -15,6 +15,19 @@ deterministic mapping from account-type category to ledger class -- exactly
 the pattern the ``loan_anchor_events`` backfill test
 (``tests/test_models/test_loan_anchor_backfill.py``) uses.
 
+**Post-Step-4 adaptation (``kind_id``).**  Step 4, Commit 2
+(``efca4315bf81``) added a NOT NULL ``ledger_accounts.kind_id`` discriminator,
+so the frozen b82 INSERT -- which predates that column and omits it -- can no
+longer run standalone at HEAD.  In production the chain ran the b82 INSERT at
+its own revision (before ``kind_id`` existed) and the Step-4 migration then
+backfilled ``kind_id = 'linked'`` for every ``account_id``-bearing row; at
+HEAD those two are fused because ``kind_id`` is already NOT NULL.
+:func:`_head_valid_backfill_sql` reproduces exactly that fusion -- it reuses
+the frozen (immutable, shipped) b82 mapping SQL as the single source of the
+category -> class derivation and injects only the linked-kind value the Step-4
+backfill would assign.  The category-mapping assertions below are unchanged;
+they still execute the b82 derivation, now against the post-Step-4 schema.
+
 A full executable upgrade -> downgrade -> upgrade round-trip belongs in the
 Alembic-driven environment, not an in-test xdist worker (a ``DROP TABLE``
 needs an ACCESS EXCLUSIVE lock that conflicts with the session-scoped
@@ -82,9 +95,49 @@ def _drop_ledger_account_for(account_id):
     _db.session.commit()
 
 
+# The Step-4 ``ledger_accounts.kind_id`` subquery the b82 linked-row backfill
+# would be paired with at HEAD (see the module docstring): every account_id
+# bearing row is the ``linked`` kind.
+_LINKED_KIND_SUBQUERY = (
+    "(SELECT id FROM ref.ledger_account_kinds WHERE name = 'linked')"
+)
+
+
+def _head_valid_backfill_sql():
+    """Return the frozen b82 linked-row backfill adapted for NOT NULL kind_id.
+
+    Injects the ``kind_id`` column and the linked-kind subquery into the frozen,
+    immutable ``_BACKFILL_LEDGER_ACCOUNTS_SQL`` so the historical INSERT runs
+    against the post-Step-4 schema (where ``kind_id`` is NOT NULL).  The two
+    string replacements are anchored on the exact shipped text of the constant,
+    which never changes (it is locked migration history), reproducing the
+    cumulative production effect (b82 insert + Step-4 kind backfill) the module
+    docstring describes -- not a hand-rewritten copy of the mapping.  Asserts the
+    transform fired (mirroring the shared 7d63 ``_inject_pass_a_kind`` helper) so
+    a future change to the shipped constant fails loudly here rather than
+    silently emitting kind-less SQL that trips the NOT NULL at insert.
+    """
+    injected = (
+        _MIGRATION._BACKFILL_LEDGER_ACCOUNTS_SQL
+        .replace(
+            "(user_id, class_id, account_id) ",
+            "(user_id, class_id, account_id, kind_id) ",
+        )
+        .replace(
+            "SELECT a.user_id, lc.id, a.id ",
+            f"SELECT a.user_id, lc.id, a.id, {_LINKED_KIND_SUBQUERY} ",
+        )
+    )
+    assert "kind_id" in injected and _LINKED_KIND_SUBQUERY in injected, (
+        "kind_id injection did not fire -- the frozen b82 backfill SQL changed; "
+        "update the anchors in test_ledger_account_backfill.py"
+    )
+    return injected
+
+
 def _run_backfill():
-    """Execute the migration's idempotent backfill SQL."""
-    _db.session.execute(_db.text(_MIGRATION._BACKFILL_LEDGER_ACCOUNTS_SQL))
+    """Execute the (HEAD-adapted) b82 linked-row backfill SQL."""
+    _db.session.execute(_db.text(_head_valid_backfill_sql()))
     _db.session.commit()
 
 

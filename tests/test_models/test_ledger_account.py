@@ -41,7 +41,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.audit_infrastructure import AUDITED_TABLES
-from app.enums import LedgerAccountClassEnum
+from app.enums import LedgerAccountClassEnum, LedgerAccountKindEnum
 from app.extensions import db as _db
 from app.models.ledger_account import LedgerAccount
 from tests._test_helpers import create_account_of_type
@@ -50,6 +50,11 @@ from tests._test_helpers import create_account_of_type
 def _class_id(member):
     """Resolve a LedgerAccountClassEnum member to its integer PK."""
     return ref_cache.ledger_account_class_id(member)
+
+
+def _kind_id(member):
+    """Resolve a LedgerAccountKindEnum member to its integer PK."""
+    return ref_cache.ledger_account_kind_id(member)
 
 
 class TestPartialUnique:
@@ -70,6 +75,7 @@ class TestPartialUnique:
                 _db.session.add(LedgerAccount(
                     user_id=account.user_id,
                     class_id=_class_id(LedgerAccountClassEnum.ASSET),
+                    kind_id=_kind_id(LedgerAccountKindEnum.LINKED),
                     account_id=account.id,
                     name=None,
                 ))
@@ -100,11 +106,13 @@ class TestPartialUnique:
             rent = seed_user["categories"]["Rent"]
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=groceries.id,
                 name=groceries.display_name,
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=rent.id,
                 name=rent.display_name,
             ))
@@ -133,6 +141,7 @@ class TestNamePresentCheck:
                 _db.session.add(LedgerAccount(
                     user_id=seed_user["user"].id,
                     class_id=_class_id(LedgerAccountClassEnum.EQUITY),
+                    kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
                     account_id=None,
                     name=None,
                 ))
@@ -154,6 +163,7 @@ class TestNamePresentCheck:
                 _db.session.add(LedgerAccount(
                     user_id=seed_user["user"].id,
                     class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                     account_id=None,
                     category_id=seed_user["categories"]["Groceries"].id,
                     name=None,
@@ -246,6 +256,7 @@ class TestForeignKeyActions:
             _db.session.add(LedgerAccount(
                 user_id=seed_user["user"].id,
                 class_id=equity_class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
                 account_id=None,
                 name="Retained earnings (equity)",
             ))
@@ -280,6 +291,7 @@ class TestForeignKeyActions:
             ledger_account = LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None,
                 category_id=category_id,
                 name=snapshot,
@@ -339,12 +351,14 @@ class TestForeignKeyActions:
             # The Uncategorized-Expense fallback ...
             fallback = LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Expense",
             )
             # ... and a category ledger account of the SAME class.
             category_row = LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=category_id, is_fallback=False,
                 name=category.display_name,
             )
@@ -404,6 +418,7 @@ class TestCategoryFallbackUniques:
             class_id = _class_id(LedgerAccountClassEnum.EXPENSE)
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=category.id,
                 name=category.display_name,
             ))
@@ -411,6 +426,7 @@ class TestCategoryFallbackUniques:
             with pytest.raises(IntegrityError) as excinfo:
                 _db.session.add(LedgerAccount(
                     user_id=user_id, class_id=class_id,
+                    kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                     account_id=None, category_id=category.id,
                     name=category.display_name,
                 ))
@@ -434,12 +450,14 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.INCOME),
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=category.id,
                 name=category.display_name,
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=category.id,
                 name=category.display_name,
             ))
@@ -466,6 +484,7 @@ class TestCategoryFallbackUniques:
             class_id = _class_id(LedgerAccountClassEnum.EXPENSE)
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Expense",
             ))
@@ -473,6 +492,7 @@ class TestCategoryFallbackUniques:
             with pytest.raises(IntegrityError) as excinfo:
                 _db.session.add(LedgerAccount(
                     user_id=user_id, class_id=class_id,
+                    kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                     account_id=None, category_id=None, is_fallback=True,
                     name="Uncategorized Expense",
                 ))
@@ -489,12 +509,14 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.INCOME),
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Income",
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Expense",
             ))
@@ -521,11 +543,13 @@ class TestCategoryFallbackUniques:
             class_id = _class_id(LedgerAccountClassEnum.EXPENSE)
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
                 account_id=None, category_id=category.id,
                 name=category.display_name,
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Expense",
             ))
@@ -552,11 +576,13 @@ class TestCategoryFallbackUniques:
             class_id = _class_id(LedgerAccountClassEnum.EXPENSE)
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                 account_id=None, category_id=None, is_fallback=True,
                 name="Uncategorized Expense",
             ))
             _db.session.add(LedgerAccount(  # the orphan
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
                 account_id=None, category_id=None, is_fallback=False,
                 name="Family: Groceries",
             ))
@@ -584,11 +610,13 @@ class TestCategoryFallbackUniques:
             class_id = _class_id(LedgerAccountClassEnum.EXPENSE)
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
                 account_id=None, category_id=None, is_fallback=False,
                 name="Family: Groceries",
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
                 account_id=None, category_id=None, is_fallback=False,
                 name="Home: Rent",
             ))
@@ -645,6 +673,7 @@ class TestAccountOrCategoryExclusiveCheck:
                 _db.session.add(LedgerAccount(
                     user_id=account.user_id,
                     class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.LINKED),
                     account_id=account.id,
                     category_id=category.id,
                     name=category.display_name,
@@ -673,6 +702,7 @@ class TestFallbackShapeCheck:
                 _db.session.add(LedgerAccount(
                     user_id=seed_user["user"].id,
                     class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                     account_id=None,
                     category_id=seed_user["categories"]["Groceries"].id,
                     is_fallback=True,
@@ -706,6 +736,7 @@ class TestFallbackShapeCheck:
                 _db.session.add(LedgerAccount(
                     user_id=account.user_id,
                     class_id=_class_id(LedgerAccountClassEnum.ASSET),
+                    kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                     account_id=account.id,
                     category_id=None,
                     is_fallback=True,
@@ -716,6 +747,193 @@ class TestFallbackShapeCheck:
                 str(excinfo.value)
             )
             _db.session.rollback()
+
+
+class TestLoanLedgerShapeAndUnique:
+    """The Step-4 per-loan rows: shape CHECK + per-(loan, kind) unique.
+
+    ``ck_ledger_accounts_loan_shape`` keeps a ``loan_account_id`` row from also
+    being a linked / category / fallback row, and ``uq_ledger_accounts_loan``
+    permits at most one interest / escrow / refund account per (owner, loan).
+    Together they confine the three per-loan kinds to their own column shape and
+    cardinality while leaving every other kind untouched (the per-loan rows
+    carry NULL ``loan_account_id`` nowhere else, so they fall outside the linked
+    / category / fallback uniques).
+    """
+
+    def test_valid_loan_row_accepted(self, app, db, seed_user):
+        """A well-formed per-loan interest row commits and coexists with linked.
+
+        ``loan_account_id`` set, ``account_id`` / ``category_id`` NULL,
+        ``is_fallback`` False, a snapshot ``name``, the ``loan_interest`` kind,
+        Expense class -- the shape the Step-4 resolver will create.  It coexists
+        with the loan account's own linked row (different shape, different
+        index), proving the loan unique does not collide with
+        ``uq_ledger_accounts_account``.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan Shape OK",
+            )
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.LOAN_INTEREST),
+                loan_account_id=loan.id,
+                name="Mortgage Interest",
+            ))
+            _db.session.commit()
+            loan_rows = (
+                _db.session.query(LedgerAccount)
+                .filter_by(loan_account_id=loan.id)
+                .all()
+            )
+            assert len(loan_rows) == 1
+            assert loan_rows[0].kind_id == _kind_id(
+                LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            # The loan's own linked row survives, a distinct chart entry.
+            linked = (
+                _db.session.query(LedgerAccount)
+                .filter_by(account_id=loan.id)
+                .one()
+            )
+            assert linked.id != loan_rows[0].id
+            assert linked.kind_id == _kind_id(LedgerAccountKindEnum.LINKED)
+
+    def test_loan_row_with_account_id_rejected(self, app, db, seed_user):
+        """A per-loan row that ALSO links a real account trips the shape CHECK.
+
+        ``ck_ledger_accounts_loan_shape`` forbids ``account_id`` on a
+        ``loan_account_id`` row.  The loan's auto-paired linked row is removed
+        first so the only constraint a (loan AND account) row can violate is the
+        loan-shape CHECK, not ``uq_ledger_accounts_account`` -- pinning the
+        CHECK as the surface regardless of constraint-evaluation order.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan Bad Acct",
+            )
+            linked = (
+                _db.session.query(LedgerAccount)
+                .filter_by(account_id=loan.id)
+                .one()
+            )
+            _db.session.delete(linked)
+            _db.session.commit()
+            with pytest.raises(IntegrityError) as excinfo:
+                _db.session.add(LedgerAccount(
+                    user_id=loan.user_id,
+                    class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.LOAN_INTEREST),
+                    loan_account_id=loan.id,
+                    account_id=loan.id,
+                    name="bad loan row",
+                ))
+                _db.session.commit()
+            assert "ck_ledger_accounts_loan_shape" in str(excinfo.value), (
+                str(excinfo.value)
+            )
+            _db.session.rollback()
+
+    def test_loan_row_with_is_fallback_rejected(self, app, db, seed_user):
+        """A per-loan row flagged ``is_fallback`` trips the loan-shape CHECK.
+
+        ``loan_account_id`` set with ``is_fallback`` True violates
+        ``ck_ledger_accounts_loan_shape`` (which requires ``NOT is_fallback`` on
+        a loan row); ``account_id`` / ``category_id`` stay NULL so the sibling
+        ``ck_ledger_accounts_fallback_shape`` is satisfied and the loan-shape
+        CHECK is the surface.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan Bad Fallback",
+            )
+            with pytest.raises(IntegrityError) as excinfo:
+                _db.session.add(LedgerAccount(
+                    user_id=loan.user_id,
+                    class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.LOAN_ESCROW),
+                    loan_account_id=loan.id,
+                    is_fallback=True,
+                    name="bad loan fallback",
+                ))
+                _db.session.commit()
+            assert "ck_ledger_accounts_loan_shape" in str(excinfo.value), (
+                str(excinfo.value)
+            )
+            _db.session.rollback()
+
+    def test_second_same_kind_loan_row_rejected(self, app, db, seed_user):
+        """A second loan row of the SAME kind for the SAME loan trips the unique.
+
+        ``uq_ledger_accounts_loan`` permits one interest / escrow / refund
+        account per (owner, loan); a second ``loan_interest`` row for the same
+        loan must raise on exactly that index.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan Dup Kind",
+            )
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.LOAN_INTEREST),
+                loan_account_id=loan.id,
+                name="Mortgage Interest",
+            ))
+            _db.session.commit()
+            with pytest.raises(IntegrityError) as excinfo:
+                _db.session.add(LedgerAccount(
+                    user_id=loan.user_id,
+                    class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                    kind_id=_kind_id(LedgerAccountKindEnum.LOAN_INTEREST),
+                    loan_account_id=loan.id,
+                    name="Mortgage Interest duplicate",
+                ))
+                _db.session.commit()
+            assert "uq_ledger_accounts_loan" in str(excinfo.value), (
+                str(excinfo.value)
+            )
+            _db.session.rollback()
+
+    def test_three_loan_kinds_one_loan_coexist(self, app, db, seed_user):
+        """Interest, escrow, and refund rows for ONE loan coexist.
+
+        ``uq_ledger_accounts_loan`` keys on ``kind_id`` too, so a single loan's
+        three distinct per-loan accounts are each a separate chart entry -- the
+        edge case the (user, loan, kind) natural key is designed for.  Interest
+        and escrow are Expense; refund is Asset.  A single commit of all three
+        raising no IntegrityError is the proof.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Loan Three Kinds",
+            )
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.LOAN_INTEREST),
+                loan_account_id=loan.id, name="Mortgage Interest",
+            ))
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.LOAN_ESCROW),
+                loan_account_id=loan.id, name="Mortgage Escrow",
+            ))
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.ASSET),
+                kind_id=_kind_id(LedgerAccountKindEnum.LOAN_REFUND),
+                loan_account_id=loan.id, name="Mortgage Refund",
+            ))
+            _db.session.commit()
+            assert (
+                _db.session.query(LedgerAccount)
+                .filter_by(loan_account_id=loan.id)
+                .count() == 3
+            )
 
 
 class TestAuditTableRegistration:

@@ -18,6 +18,20 @@ constructor kwarg, never a post-hoc ``status_id`` assignment, so the W9907 seam
 checker is satisfied and no go-forward post fires).  A settled row built this
 way carries no posting -- exactly the pre-ledger state the backfill targets.
 
+**Post-Step-4 adaptation (``kind_id``).**  Step 4, Commit 2 (``efca4315bf81``)
+added a NOT NULL ``ledger_accounts.kind_id``, so the frozen 7d63 Pass-A INSERTs
+-- which predate that column and omit it -- can no longer run standalone at
+HEAD.  In production 7d63 ran at its own revision (before ``kind_id`` existed)
+and the Step-4 migration then backfilled each row's ``kind_id`` from its shape
+(category rows -> ``category``, fallback rows -> ``fallback``); at HEAD the two
+are fused because ``kind_id`` is already NOT NULL.  The ``_inject_kind_into_pass_a``
+autouse fixture reproduces exactly that fusion by swapping the two frozen,
+immutable Pass-A SQL constants for kind-injected equivalents, so the migration's
+REAL :func:`_backfill_settled_transactions` orchestration (the settled-cash
+guard, ref-id resolution, and all of Pass B) still runs unchanged -- only Pass
+A's INSERT carries the ``kind_id`` the Step-4 backfill would assign.  The
+injection reuses the frozen mapping SQL as its single source.
+
 The asserted invariants (plan Section 6 / Commit 7):
 
   * a settled plain expense / income backfills to exactly one balanced entry:
@@ -71,6 +85,7 @@ from tests._test_helpers import (
     add_txn,
     create_account_of_type,
     create_settled_transfer,
+    inject_cash_backfill_kind_id,
     ledger_accounts_for_account,
     load_migration_module,
 )
@@ -86,6 +101,20 @@ _MIGRATIONS_DIR = (
 )
 _MIGRATION_FILENAME = "7d63529e4300_backfill_historical_cash_postings.py"
 _MIGRATION = load_migration_module(_MIGRATION_FILENAME)
+
+
+@pytest.fixture(autouse=True)
+def _inject_kind_into_pass_a(monkeypatch):
+    """Swap the frozen Pass-A SQL for kind-injected SQL for every test.
+
+    Autouse so every ``_run_backfill()`` runs the migration's real orchestration
+    with Pass A carrying the Step-4 ``kind_id`` (see the module docstring's
+    "Post-Step-4 adaptation").  Delegates to the shared
+    :func:`inject_cash_backfill_kind_id` helper, which the cash reconciliation
+    oracle reuses; ``monkeypatch`` auto-reverts the module constants after each
+    test.
+    """
+    inject_cash_backfill_kind_id(monkeypatch, _MIGRATION)
 
 
 # ---------------------------------------------------------------------------

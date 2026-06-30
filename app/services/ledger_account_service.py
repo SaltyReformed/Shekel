@@ -17,6 +17,18 @@ a ``category_id`` (or, for the fallback, ``is_fallback=True``) and a NULL
 ``account_id``.  This service stays the sole writer of every
 ``ledger_accounts`` row kind.
 
+As the sole writer, it stamps every row's explicit ``kind_id`` discriminator
+(``LedgerAccountKindEnum`` -> ``ref.ledger_account_kinds`` id):
+``create_ledger_account_for_account`` writes ``linked``, and
+``get_or_create_category_ledger_account`` writes ``fallback`` (the
+Uncategorized bucket) or ``category``.  ``kind_id`` is the authoritative
+discriminator readers branch on; no database CHECK pins it to the row shape
+(see :class:`app.models.ledger_account.LedgerAccount`), so stamping it
+correctly here -- exactly as this service already stamps ``class_id`` -- is
+the app's guarantee that the kind and the column shape agree.  The Step-4
+per-loan ``loan_interest`` / ``loan_escrow`` / ``loan_refund`` kinds are
+stamped by a sibling resolver added in that step.
+
 This service is Flask-isolated per the project architecture rule
 (``CLAUDE.md`` Architecture section): it takes plain data, returns a plain
 SQLAlchemy object, never imports ``request``/``session``.  The caller owns
@@ -34,7 +46,11 @@ its display label derives from the live ``account.name`` (see
 import logging
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, LedgerAccountClassEnum
+from app.enums import (
+    AcctCategoryEnum,
+    LedgerAccountClassEnum,
+    LedgerAccountKindEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -114,9 +130,9 @@ def create_ledger_account_for_account(account: Account) -> LedgerAccount:
     account it is returned unchanged (the partial unique index
     ``uq_ledger_accounts_account`` permits only one per ``account_id``, so
     a second insert would raise); otherwise a new linked row is created
-    with the derived class, ``name`` left NULL (the display label derives
-    from ``account.name``), and the owning ``user_id`` copied from the
-    account.
+    with the derived class, the ``linked`` kind, ``name`` left NULL (the
+    display label derives from ``account.name``), and the owning ``user_id``
+    copied from the account.
 
     Flushes so the new row's ``id`` is assigned, but does NOT commit --
     the caller (``account_service.create_account``) owns the transaction
@@ -142,6 +158,7 @@ def create_ledger_account_for_account(account: Account) -> LedgerAccount:
     ledger_account = LedgerAccount(
         user_id=account.user_id,
         class_id=_ledger_class_id_for_account(account),
+        kind_id=ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
         account_id=account.id,
         name=None,
     )
@@ -270,7 +287,8 @@ def get_or_create_category_ledger_account(
     a real-account mirror), snapshots its display ``name`` (the category's
     ``"Group: Item"`` or the canonical ``"Uncategorized {Income|Expense}"``),
     and sets ``is_fallback`` True for the fallback / False for a category
-    row.  The resolver NEVER creates or reuses an **orphan** (``is_fallback``
+    row, stamping the matching ``kind_id`` (``fallback`` or ``category``).
+    The resolver NEVER creates or reuses an **orphan** (``is_fallback``
     False, ``category_id`` NULL): orphans arise only from a category delete's
     SET NULL and are left untouched (see
     :func:`_find_existing_category_ledger_account` for why the fallback
@@ -316,6 +334,10 @@ def get_or_create_category_ledger_account(
         return existing
 
     is_fallback = category_id is None
+    kind_member = (
+        LedgerAccountKindEnum.FALLBACK if is_fallback
+        else LedgerAccountKindEnum.CATEGORY
+    )
     name = (
         _FALLBACK_LEDGER_ACCOUNT_NAMES[ledger_class] if is_fallback
         else _category_display_name(user_id, category_id)
@@ -323,6 +345,7 @@ def get_or_create_category_ledger_account(
     ledger_account = LedgerAccount(
         user_id=user_id,
         class_id=class_id,
+        kind_id=ref_cache.ledger_account_kind_id(kind_member),
         account_id=None,
         category_id=category_id,
         is_fallback=is_fallback,

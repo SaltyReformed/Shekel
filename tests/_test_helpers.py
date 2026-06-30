@@ -1523,3 +1523,91 @@ def make_investment_account(
     ))
     db_session.commit()
     return account
+
+
+# The frozen 7d63 counter-account column list, and the same list with the
+# Step-4 ``kind_id`` added.  Module-level so :func:`inject_cash_backfill_kind_id`
+# reuses a single source for both Pass-A INSERTs.
+_FROZEN_COUNTER_COLUMNS = "(user_id, class_id, category_id, is_fallback, name) "
+_KIND_INJECTED_COUNTER_COLUMNS = (
+    "(user_id, class_id, category_id, is_fallback, name, kind_id) "
+)
+
+
+def _inject_pass_a_kind(frozen_sql, name_expr_tail, kind_name):
+    """Add the kind_id column + its name-resolving subquery to a Pass-A INSERT.
+
+    Reuses the frozen, immutable shipped SQL as the single source of every other
+    column; appends the kind subquery to the end of the SELECT list (right after
+    ``name_expr_tail`` -- the frozen text closing that INSERT's ``name``
+    expression).  Asserts the transform fired so a future change to the shipped
+    constant fails loudly here rather than silently emitting kind-less SQL that
+    trips the NOT NULL at insert.
+
+    Args:
+        frozen_sql: The frozen Pass-A INSERT ... SELECT statement.
+        name_expr_tail: The exact frozen text that closes the SELECT's ``name``
+            expression (the anchor the kind subquery is appended after).
+        kind_name: The ``ref.ledger_account_kinds`` name this INSERT's rows take
+            (``"category"`` or ``"fallback"``).
+
+    Returns:
+        str -- the INSERT with ``kind_id`` added to the column list and the kind
+        subquery added to the SELECT list.
+    """
+    subquery = (
+        f"(SELECT id FROM ref.ledger_account_kinds WHERE name = '{kind_name}')"
+    )
+    injected = (
+        frozen_sql
+        .replace(_FROZEN_COUNTER_COLUMNS, _KIND_INJECTED_COUNTER_COLUMNS)
+        .replace(name_expr_tail, f"{name_expr_tail.rstrip()}, {subquery} ")
+    )
+    assert _KIND_INJECTED_COUNTER_COLUMNS in injected and subquery in injected, (
+        "kind_id injection did not fire -- the frozen 7d63 Pass-A SQL changed; "
+        "update the anchors in tests/_test_helpers.py"
+    )
+    return injected
+
+
+def inject_cash_backfill_kind_id(monkeypatch, migration_module):
+    """Inject the Step-4 ``kind_id`` into a 7d63 migration's frozen Pass-A SQL.
+
+    Step 4, Commit 2 (``efca4315bf81``) added a NOT NULL
+    ``budget.ledger_accounts.kind_id``, so the frozen 7d63 Pass-A INSERTs --
+    which predate that column and omit it -- can no longer run standalone at
+    HEAD.  In production 7d63 ran at its own revision (before ``kind_id``
+    existed) and the Step-4 migration then backfilled each row's kind from its
+    column shape (category rows -> ``category``, fallback rows -> ``fallback``);
+    at HEAD the two are fused because ``kind_id`` is already NOT NULL.
+
+    This swaps the two frozen, immutable Pass-A SQL constants on
+    *migration_module* for kind-injected equivalents -- reusing the shipped
+    mapping SQL as the single source -- so the migration's real
+    ``_backfill_settled_transactions`` orchestration runs unchanged at HEAD with
+    Pass A carrying the kind the Step-4 backfill would assign.  Shared by the
+    cash-backfill suite and the cash reconciliation oracle, the two suites that
+    invoke that backfill (a duplicate-code finding).  ``monkeypatch``
+    auto-reverts the patched constants after each test.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+        migration_module: The loaded 7d63 migration module (each suite loads its
+            own via :func:`load_migration_module`, so each patches its own copy).
+    """
+    monkeypatch.setattr(
+        migration_module, "_CREATE_CATEGORY_LEDGER_ACCOUNTS_SQL",
+        _inject_pass_a_kind(
+            migration_module._CREATE_CATEGORY_LEDGER_ACCOUNTS_SQL,
+            "LEFT(c.group_name || ': ' || c.item_name, 100) ",
+            "category",
+        ),
+    )
+    monkeypatch.setattr(
+        migration_module, "_CREATE_FALLBACK_LEDGER_ACCOUNTS_SQL",
+        _inject_pass_a_kind(
+            migration_module._CREATE_FALLBACK_LEDGER_ACCOUNTS_SQL,
+            "ELSE 'Uncategorized Expense' END ",
+            "fallback",
+        ),
+    )
