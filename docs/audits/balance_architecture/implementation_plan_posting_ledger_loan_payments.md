@@ -1,16 +1,24 @@
 # Implementation plan: post confirmed loan payments with their REAL principal / interest / escrow split
 
 **Status:** IN PROGRESS (2026-06-30, v2 -- full rewrite after the adversarial review in
-`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-3 of 7 SHIPPED to the feature branch
+`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-4 of 7 SHIPPED to the feature branch
 (as-built; local, not pushed/PR'd):** C1 `4d5d0ff` (ref tables -- Section 4.1), C2 `c26a899` (the
 `budget.ledger_accounts` schema -- Section 4.2; migration head is now `efca4315bf81`), C3 `c3937ce`
-(the chart resolver `get_or_create_loan_ledger_account` -- Section 4.2 / Section 9 item 3). **Two
-as-built deviations from the original spec, both developer-ratified:** (1) the loan shape CHECK shipped
-columns-only (see D14 and Section 4.2(4); the original `kind_id IN (...)` form was not implementable);
-(2) the C3 resolver ALSO guards that the loan account classifies AMORTIZING (D15 / Section 4.2), beyond
-the plan's stated class/kind guard -- closing the gap the columns-only CHECK leaves on `loan_account_id`.
-Commits 4-7 pending. **Build-Order Step 4** of Option D (`level1_level2_scope_and_fitness.md`,
-build-order item 4:
+(the chart resolver `get_or_create_loan_ledger_account` -- Section 4.2 / Section 9 item 3), C4 `f4992d0`
+(the pure split + posting service -- Section 6 / 7 / 9 item 4). **As-built deviations from the original
+spec, all developer-ratified:** (1) the loan shape CHECK shipped columns-only (see D14 and Section
+4.2(4); the original `kind_id IN (...)` form was not implementable); (2) the C3 resolver ALSO guards
+that the loan account classifies AMORTIZING (D15 / Section 4.2), beyond the plan's stated class/kind
+guard; (3) C4 ships in a NEW `app/services/loan_posting_service.py` sibling module (not `posting_service`
+as the plan said -- that file would exceed the 1000-line module gate), reusing posting_service's shared
+balanced-write primitives; (4) C4 escrow uses `calculate_monthly_escrow(components)` with **NO
+inflation** (developer decision -- the plan's `(components, payment_date)` form would diverge the
+principal from the cash actually paid and from the resolver on-schedule, breaking the parallel-run
+oracle, whenever an active escrow component carries an inflation_rate; the entire app already models
+payment-component escrow without inflation); (5) C4 also unified the monthly-interest accrual into one
+`app/utils/money.accrue_monthly_interest` (4 inline copies -> 1) so the split's formula is byte-identical
+to the resolver by construction. Commits 5-7 pending. **Build-Order Step 4** of Option D
+(`level1_level2_scope_and_fitness.md`, build-order item 4:
 "Post confirmed loan payments with their real principal / interest split; retire the read-time replay
 of confirmed history").
 
@@ -535,12 +543,43 @@ the final gate in the last commit (run alone).
    `pylint app/ scripts/` 10.00 (no `duplicate-code` despite the structural mirroring); full suite 6686;
    code-reviewer clean (its one LOW -- the archived-loan coverage gap -- fixed and proven non-vacuous by
    mutating the `is_active` filter in, which fails the test).
-4. **The split + service (pure, no wiring):** `compute_loan_payment_splits`,
-   `sync_loan_payment_postings`, `reverse_loan_payment_postings_for_shadow`,
-   `_posted_loan_payment_net(transaction_id)`. Tests: all of Section 8.1 (hand-computed splits) +
-   idempotent re-sync + reverse + the post-payoff Refund routing + the no-LoanParams guard. Review: the
-   `transaction_id` linkage is invisible to `_posted_net`; reuses pure primitives, no engine change;
-   touches only loan/interest/escrow/refund; no Flask import.
+4. **DONE (`f4992d0`). The split + service (pure, no wiring):** `compute_loan_payment_splits(loan_id,
+   scenario_id, as_of)`, `sync_loan_payment_postings(loan_id, scenario_id, as_of)`,
+   `reverse_loan_payment_postings_for_shadow(income_shadow)` -- in a NEW
+   `app/services/loan_posting_service.py` (sibling to `posting_service`, which would exceed the 1000-line
+   module gate; reuses its shared `_emit_balanced_entry` / `_PostingLeg` / `_ledger_account_for` /
+   `_civil_settle_date` / `_MAX_DESCRIPTION_LENGTH` via a pylint-clean cross-module import). **As-built
+   deviations:** (a) the reader is `_posted_loan_payment_legs(transaction_id) -> {ledger_id: (net,
+   posting_kind_id)}`, richer than the drafted `_posted_loan_payment_net` -- it carries each ledger's
+   kind so a component reversed to zero (e.g. escrow removed) reverses with the kind it was posted under;
+   one-kind-per-ledger holds, and any violation fails LOUD at the balanced-write gate rather than
+   silently under-reversing. (b) `sync_loan_payment_postings` takes an explicit `as_of` (the wiring in C5
+   passes `date.today()`; consistent with `resolve_account_loan`), not the 2-arg sketch. (c) escrow is
+   `calculate_monthly_escrow(components)` -- **no inflation** (developer decision; see the header
+   deviation 4 and D3). (d) the monthly-interest accrual was unified into
+   `app/utils/money.accrue_monthly_interest` (4 inline copies -> 1: `_replay_payment_row`,
+   `_amortize_forward`, the deleted `_period_interest`, and the split) so the split's interest is
+   byte-identical to the resolver's by construction -- this was a `code-reviewer` MEDIUM (the formula the
+   parallel-run premise rests on must be shared, not a hand-asserted copy). (e) enabling DRY extractions:
+   `is_confirmed_payment_eligible` (shared by `replay_schedule` and the split walk); exposed
+   `loan_resolver.select_latest_anchor` / `resolve_periods`; `loan_payment_service.load_rate_changes` /
+   `load_loan_params` / `load_anchor_events` / `load_active_escrow_components`. **Whole-loan
+   reconcile-to-target** plus `_stale_loan_payment_shadows` (reverses any posted-but-no-longer-eligible
+   shadow -- reverted / un-settled / re-anchored; hard-deletes excluded by the SET-NULL `transaction_id`,
+   handled by reverse-before-delete in C5). Tests (24 in `test_loan_posting_service.py`): hand-computed
+   splits (on-schedule, +extra, short/negative, escrow, payoff->Refund, post-payoff all-Refund, ARM step,
+   actual-drives-split [non-vacuity], pre-anchor/projected excluded, no-LoanParams guard) + sync posts /
+   idempotent / multi-payment / no-escrow-drops-leg / payoff-Refund / never-touches-Checking /
+   transfer_id-invisible (the CRITICAL regression, via an independent replica of `_posted_net`) + reverse
+   zeroes / no-op / unsettle-reverses + anchor-move re-splits-survivors-and-reverses-pre-anchor +
+   disjoint-from-the-Step-3-path. Verified: real-Mortgage split reproduces 1018.82 / 616.99 / 275.14
+   exactly (read-only, dev DB pristine); `pylint app/ scripts/` 10.00; full suite **6710**; code-reviewer
+   **no CRITICAL/HIGH** (M1 accrual-unification + L1 docstring-refs + L3 escrow-loader + L5 two
+   hardening-tests all fixed; M2 biweekly-redistribution divergence + L4 `paid_at`-ORM-read documented as
+   notes for C5 / the read switch, not defects). **Read-switch note (M2):** the split walks raw shadows
+   without the resolver's `_redistribute_to_distinct_months`, so the C7 / read-switch oracle must treat a
+   biweekly-collision-at-a-rate-boundary loan as an expected divergence (the ledger is the more-correct
+   record), not assert exact ledger==resolver equality.
 5. **Lifecycle wiring** (settle/restore at `:641`/`:951`; reverse-before-delete + downstream re-sync at
    `:690`; scenario-looped sync at true-up, both rate paths, and params-create). Tests: Section 8.5
    (CRITICAL regression) + 8.6 (lifecycle) + non-loan transfers ignored; existing transfer/loan/anchor/
