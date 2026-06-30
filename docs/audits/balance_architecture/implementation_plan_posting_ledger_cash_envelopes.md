@@ -1,16 +1,33 @@
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
-**Status:** COMPLETE on `feat/posting-ledger-cash-envelopes` (all 8 commits; not yet PR'd to `main`).
-C1 `97bc03c2aa4c` (ref rows), C2 `bdde62675c9b` (schema; revised mid-flight to add the `is_fallback`
-discriminator -- see Section 4.2's H1 fix), C3 `1190a46` (the category/fallback resolver), C4
-`fa79630` (the `posting_service.sync_transaction_postings` builder), C5 `4c21af1` (the
-status-mechanics seam + the W9907 bypass checker + born-Projected -- see the Commit 5 As-built note
-for the two developer-approved deviations), C6 `671f49f` (posting emission: reconcile once at each
-handler's end + the entry/delete hooks), C7 `48479ef` (the production-wide historical backfill
-migration `7d63529e4300`), C8 (the 13-test cash reconciliation oracle
-`tests/test_integration/test_posting_ledger_cash_reconciliation.py` + docs; full suite **6638
-passed**, `pylint app/ scripts/` 10.00). NEXT = open the `dev -> main` PR covering all of Step 3 (CI
-runs on the PR, not on feature/dev pushes).
+**Status:** SHIPPED TO PROD (2026-06-29) -- all 8 commits, via PR #49 (`dev -> main`, merge
+`9a1c883`) plus the deploy-fix PR #50 (merge `8c99799`); prod digest `aadcbdac3b99`, healthy, and the
+ledger reconciles on real prod data (per-entry / trial-balance / completeness / per-(account,scenario)
+all zero). C1 `72bdd77` (ref rows, migration `97bc03c2aa4c`), C2 `1b4d785` (schema `bdde62675c9b`;
+revised mid-flight to add the `is_fallback` discriminator -- see Section 4.2's H1 fix), C3 `1190a46`
+(the category/fallback resolver), C4 `fa79630` (the `posting_service.sync_transaction_postings`
+builder), C5 `4c21af1` (the status-mechanics seam + the W9907 bypass checker + born-Projected -- see
+the Commit 5 As-built note for the two developer-approved deviations), C6 `671f49f` (posting
+emission: reconcile once at each handler's end + the entry/delete hooks), C7 `48479ef` (the
+production-wide historical backfill migration `7d63529e4300`), C8 `57b74f3` (the 13-test cash
+reconciliation oracle `tests/test_integration/test_posting_ledger_cash_reconciliation.py` + docs).
+Full suite **6640 passed** (the +2 are the deploy-fix regression tests), `pylint app/ scripts/` 10.00.
+
+**Deploy-fix deviation (NOT in the original plan -- the as-built record).** The first `shekel-deploy`
+of the merged Step 3 FAILED its healthcheck and auto-rolled back (prod stayed healthy on the prior
+image; DB clean at `db239773c2fd`; no outage). Root cause: the entrypoint's migration host
+(`scripts/init_database.py`) builds the app via `create_app()` BEFORE running migrations, and
+`create_app()` eagerly runs `ref_cache.init()`, which is FATAL on a missing ROW in an EXISTING ref
+table (it tolerates only missing whole TABLES). Step 3 is the first migration to ADD rows to
+pre-existing ref tables (`income`/`expense` posting kinds, the `transaction` source), so on the
+pre-migration prod DB those rows were absent and `create_app()` raised before the seeding migration
+could run. (Step 2 added new ref tables -- tolerated -- so this stayed latent; CI's fresh base->head
+build and the bind-mounted dev container also never reproduced it.) Fix (PR #50, commit `3104f87`):
+`create_app(config_name=None, *, init_ref_cache=True)`; the migration host calls
+`create_app(init_ref_cache=False)` so the eager row-check is skipped on the pre-migration DB, while
+Gunicorn / dev / test keep the strict default. Durable for Steps 4-5 (they also add ref rows);
+regression-locked by `tests/test_ref_cache.py::TestCreateAppRefCacheGate`; verified on a prod clone.
+NEXT (separate effort) = Build-Order Step 4 (loan-payment principal/interest splits).
 **Build-Order Step 3** of the Option D architecture
 (`docs/audits/balance_architecture/level1_level2_scope_and_fitness.md`, Decision section, build
 order item 3: "Post confirmed cash transactions and cleared envelope entries at settle").
@@ -674,7 +691,7 @@ work is N/A (no new table), but the two schema migrations carry a `Review:` line
 and indexes. Commits 4 (correct-by-construction reconcile) and 5 (the enforced settle seam) are the
 two that close the 2.8 review's CRITICAL/HIGH findings and carry the heaviest review focus.
 
-### Commit 1 -- Ref: `income` / `expense` posting kinds + `transaction` source
+### Commit 1 -- Ref: `income` / `expense` posting kinds + `transaction` source -- DONE (`72bdd77`)
 
 - `app/enums.py`: `PostingKindEnum.INCOME`/`EXPENSE`, `PostingSourceEnum.TRANSACTION`.
 - `app/ref_seeds.py`: extend the two lists to `("PostingKind", ["transfer", "income", "expense"])`
@@ -782,7 +799,7 @@ What shipped:
   LOW (a missing type hint; a redundant test flush/comment) -- all fixed, plus the foreign-category
   regression test added to lock the MEDIUM.
 
-### Commit 4 -- `posting_service.sync_transaction_postings` (correct-by-construction) + helpers
+### Commit 4 -- `posting_service.sync_transaction_postings` (correct-by-construction) + helpers -- DONE (`fa79630`)
 
 Pure service, no wiring. This is where the 2.8 CRITICAL is structurally closed.
 
@@ -885,7 +902,7 @@ PATCH-settle `paid_at` stamp fix shipped (it previously left a PATCH-settled row
   not post; the checker allowlist covers `transfer_service`; `mark_as_credit`'s bespoke guards/idempotency
   are preserved around the seam call; no create path can mint a settled row.
 
-### Commit 6 -- Posting emission: reconcile ONCE at each handler's end + entry/delete hooks
+### Commit 6 -- Posting emission: reconcile ONCE at each handler's end + entry/delete hooks -- DONE (`671f49f`)
 
 The ledger starts being written go-forward here. The cardinal rule (2.8b HIGH, copied verbatim from
 `transfer_service.update_transfer:628-643`): **`sync_transaction_postings` is the LAST mutation in
@@ -917,7 +934,7 @@ every handler, after all effect fields are applied** -- never at the status flip
   level; no path double-posts/double-reverses; reverse-before-delete ordering is correct for hard
   deletes; `toggle_cleared` correctly omitted.
 
-### Commit 7 -- Historical backfill migration (production-wide)
+### Commit 7 -- Historical backfill migration (production-wide) -- DONE (`48479ef`)
 
 - **Migration** (`Review:` line; raw SQL, self-contained except the documented
   `apply_posting_infrastructure`-style exception is NOT needed here -- no trigger work). Two passes,
@@ -952,7 +969,7 @@ every handler, after all effect fields are applied** -- never at the status flip
   exclusion; `ON CONFLICT` targets match the partial-index predicates; no float (Numeric/Decimal
   only); downgrade correctness (only Step-3 entries removed -- filter `source_kind = transaction`).
 
-### Commit 8 -- Reconciliation oracle, full suite, docs
+### Commit 8 -- Reconciliation oracle, full suite, docs -- DONE (`57b74f3`)
 
 - `tests/test_integration/test_posting_ledger_cash_reconciliation.py`: the Section-6 invariants
   (per-linked-account combining transfer+transaction, per-category, per-entry, trial balance,
@@ -1091,3 +1108,10 @@ downgrade must run after the backfill's, since the backfill rows depend on `cate
 6. Docs + memory updated; manual prod-clone verification offered/done.
 7. Developer asked before commit/push; `dev -> main` PR opened so CI runs (CI does not run on `dev`
    pushes).
+
+**Outcome (2026-06-29): ALL MET.** Eight commits landed and code-reviewer-passed; `pylint app/
+scripts/` 10.00; full suite **6640 passed** (run alone); all three Step-3 migrations carry a tested
+`downgrade()` and the template was rebuilt at C7; the oracle is green production-wide and reconciles
+on real prod data; docs + memory updated; shipped via PR #49 (+ the deploy-fix PR #50). One
+unforeseen item surfaced at deploy and is recorded in the Status header's deploy-fix note (the
+`ref_cache` migration-host ordering bug; fixed by `create_app(init_ref_cache=False)`).
