@@ -1,12 +1,16 @@
 # Implementation plan: post confirmed loan payments with their REAL principal / interest / escrow split
 
 **Status:** IN PROGRESS (2026-06-30, v2 -- full rewrite after the adversarial review in
-`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-2 of 7 SHIPPED to the feature branch
+`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-3 of 7 SHIPPED to the feature branch
 (as-built; local, not pushed/PR'd):** C1 `4d5d0ff` (ref tables -- Section 4.1), C2 `c26a899` (the
-`budget.ledger_accounts` schema -- Section 4.2; migration head is now `efca4315bf81`). **One as-built
-deviation from the original spec: the loan shape CHECK shipped columns-only** (developer-ratified --
-see D14 and Section 4.2(4); the original `kind_id IN (...)` form was not implementable). Commits 3-7
-pending. **Build-Order Step 4** of Option D (`level1_level2_scope_and_fitness.md`, build-order item 4:
+`budget.ledger_accounts` schema -- Section 4.2; migration head is now `efca4315bf81`), C3 `c3937ce`
+(the chart resolver `get_or_create_loan_ledger_account` -- Section 4.2 / Section 9 item 3). **Two
+as-built deviations from the original spec, both developer-ratified:** (1) the loan shape CHECK shipped
+columns-only (see D14 and Section 4.2(4); the original `kind_id IN (...)` form was not implementable);
+(2) the C3 resolver ALSO guards that the loan account classifies AMORTIZING (D15 / Section 4.2), beyond
+the plan's stated class/kind guard -- closing the gap the columns-only CHECK leaves on `loan_account_id`.
+Commits 4-7 pending. **Build-Order Step 4** of Option D (`level1_level2_scope_and_fitness.md`,
+build-order item 4:
 "Post confirmed loan payments with their real principal / interest split; retire the read-time replay
 of confirmed history").
 
@@ -258,7 +262,8 @@ retroactively move a posted split (and must not -- posted history is immutable).
 | D11 | Split computation home | Posting service, reusing the engine's pure **primitives** (not its replay); no engine change | Keeps the pure engine clean; decouples real-split from the contractual replay. |
 | D12 | Reads | **Unchanged** (resolver / seam); the read switch is Section 10 | Validate-then-switch; foundation proven before the read path moves. |
 | D13 | Statement-split override | Out of scope (future hook: enter the lender's exact split, computed split as default) | No gold-plating; the computed split is correct for the common case. |
-| D14 | Loan shape CHECK scope (developer choice 2026-06-30, **as-built C2**) | **Columns-only**: `ck_ledger_accounts_loan_shape` enforces a per-loan row's column shape but does NOT pin `kind_id` to the loan kinds | A CHECK cannot subquery `ref.ledger_account_kinds`, and the project forbids hardcoding ref IDs (literal IDs would also break model/migration parity). "A loan row's kind is a loan kind" is the **sole writer's** guarantee (`get_or_create_loan_ledger_account` + tests) -- the identical un-CHECKed trust contract `class_id` already carries (`ledger_account_service.py`). So **Commit 3's resolver guard is load-bearing, not belt-and-suspenders.** |
+| D14 | Loan shape CHECK scope (developer choice 2026-06-30, **as-built C2**) | **Columns-only**: `ck_ledger_accounts_loan_shape` enforces a per-loan row's column shape but does NOT pin `kind_id` to the loan kinds | A CHECK cannot subquery `ref.ledger_account_kinds`, and the project forbids hardcoding ref IDs (literal IDs would also break model/migration parity). "A loan row's kind is a loan kind" is the **sole writer's** guarantee (`get_or_create_loan_ledger_account` + tests) -- the identical un-CHECKed trust contract `class_id` already carries (`ledger_account_service.py`). So **Commit 3's resolver guard is load-bearing, not belt-and-suspenders.** (As-built C3 `c3937ce`.) |
+| D15 | Loan-account validation (as-built C3 `c3937ce`, developer-ratified 2026-06-30) | The resolver ALSO guards that `loan_account_id` classifies **AMORTIZING** (`classify_account`, reads `has_amortization`) -- beyond the plan's class/kind guard -- and loads the loan by `(id, user_id)` (tenancy) but **not** `is_active` | D14's columns-only CHECK cannot verify `loan_account_id` references a loan, so without this a per-loan row could point at a Checking / Credit Card; same load-bearing logic as the kind guard, cheap (`account_type` eager-loaded). Skipping the `is_active` filter lets an archived loan with settled history still resolve (locked by a non-vacuous regression test). |
 
 ---
 
@@ -304,6 +309,18 @@ snapshot (`"Mortgage -- Interest"`, etc.) truncated to the column width. Resolve
 `ledger_account_service.get_or_create_loan_ledger_account(user_id, loan_account_id, kind)` -- lazy,
 idempotent (by the partial unique; SELECT-then-INSERT relying on the index, not `ON CONFLICT`, mirroring
 `get_or_create_category_ledger_account` -- adequate for the solo user, noted).
+
+**As-built (C3 `c3937ce`).** Shipped as specified, with the kind mapped to its class and display
+suffix via a module constant `_LOAN_LEDGER_KINDS` (`loan_interest` / `loan_escrow` -> Expense,
+`loan_refund` -> Asset; suffixes "Interest" / "Escrow" / "Refund"), idempotency via
+`_find_existing_loan_ledger_account`, and the load + validation in `_load_amortizing_loan_account`.
+Two additions beyond the original "class/kind-guarded" wording, both developer-ratified: (a) the
+resolver rejects any account that does not classify **AMORTIZING** (D15), closing the gap D14's
+columns-only CHECK leaves on `loan_account_id`; (b) the tenancy load filters `(id, user_id)` but
+deliberately **not** `is_active`, so an archived loan that still carries settled history keeps resolving
+its per-loan accounts (locked by a regression test, proven non-vacuous by mutating the filter in). The
+snapshot name is `f"{loan.name} -- {suffix}"` clipped to the 100-char column (a very long loan name
+clips the suffix -- lossless, since the natural key is the (user, loan, kind) IDs).
 
 ### 4.3 No `journal_entries` change
 
@@ -501,12 +518,23 @@ the final gate in the last commit (run alone).
    7d63). Verified up/down/up on the prod-clone dev DB (9 linked + 15 category backfilled correctly,
    `flask db check` no drift, both FKs RESTRICT); full suite 6668; `pylint app/ scripts/` 10.00;
    code-reviewer clean.
-3. **Chart resolver:** `get_or_create_loan_ledger_account(user, loan, kind)` (lazy, idempotent,
-   class/kind-guarded). **The class/kind guard is LOAD-BEARING, not belt-and-suspenders** (D14): the
-   shipped shape CHECK is columns-only, so this resolver is the *only* thing that keeps a loan row's
-   `kind_id` to a loan kind (and its class to Expense/Asset). Tests: creates one per (loan, kind);
-   idempotent; class is Expense/Asset by kind; **rejects a non-loan kind / wrong class** (the guard that
-   substitutes for the absent DB CHECK).
+3. **DONE (`c3937ce`). Chart resolver:** `get_or_create_loan_ledger_account(user_id, loan_account_id,
+   kind)` (lazy, idempotent by the partial unique, flush-no-commit) + the `_LOAN_LEDGER_KINDS` map +
+   `_find_existing_loan_ledger_account` + `_load_amortizing_loan_account`; mirrors
+   `get_or_create_category_ledger_account`; class derived from the kind (interest/escrow -> Expense,
+   refund -> Asset); snapshot name clipped to the column width. **Two LOAD-BEARING guards** stand in for
+   the columns-only shape CHECK (D14): the kind must be a loan kind, AND the account must classify
+   AMORTIZING (D15 -- the developer-ratified addition beyond the original class/kind scope; closes the
+   gap the CHECK leaves on `loan_account_id`). Tenancy load by `(id, user_id)`, deliberately NOT
+   `is_active`-filtered (an archived loan with settled history still resolves). Pure write-only -- no
+   migration, no wiring, no read change. Tests (+18 in `test_ledger_account_service.py`): shape / class /
+   name per kind; idempotent; three kinds one loan; two loans independent; archived-loan-resolves;
+   rejects a non-loan kind (x4) and a non-amortizing account (x4: Checking / HYSA / Credit Card /
+   Brokerage); missing / foreign loan (tenancy); name truncation. (The shape CHECK and per-(loan, kind)
+   unique are covered by `test_models/test_ledger_account.py::TestLoanLedgerShapeAndUnique`.) Verified:
+   `pylint app/ scripts/` 10.00 (no `duplicate-code` despite the structural mirroring); full suite 6686;
+   code-reviewer clean (its one LOW -- the archived-loan coverage gap -- fixed and proven non-vacuous by
+   mutating the `is_active` filter in, which fails the test).
 4. **The split + service (pure, no wiring):** `compute_loan_payment_splits`,
    `sync_loan_payment_postings`, `reverse_loan_payment_postings_for_shadow`,
    `_posted_loan_payment_net(transaction_id)`. Tests: all of Section 8.1 (hand-computed splits) +
