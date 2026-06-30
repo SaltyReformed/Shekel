@@ -1,9 +1,14 @@
 # Implementation plan: post confirmed loan payments with their REAL principal / interest / escrow split
 
-**Status:** PLANNED (2026-06-30, v2 -- full rewrite after the adversarial review in
-`adversarial_review_posting_ledger_loan_payments.md`). Not started. **Build-Order Step 4** of Option D
-(`level1_level2_scope_and_fitness.md`, build-order item 4: "Post confirmed loan payments with their
-real principal / interest split; retire the read-time replay of confirmed history").
+**Status:** IN PROGRESS (2026-06-30, v2 -- full rewrite after the adversarial review in
+`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-2 of 7 SHIPPED to the feature branch
+(as-built; local, not pushed/PR'd):** C1 `4d5d0ff` (ref tables -- Section 4.1), C2 `c26a899` (the
+`budget.ledger_accounts` schema -- Section 4.2; migration head is now `efca4315bf81`). **One as-built
+deviation from the original spec: the loan shape CHECK shipped columns-only** (developer-ratified --
+see D14 and Section 4.2(4); the original `kind_id IN (...)` form was not implementable). Commits 3-7
+pending. **Build-Order Step 4** of Option D (`level1_level2_scope_and_fitness.md`, build-order item 4:
+"Post confirmed loan payments with their real principal / interest split; retire the read-time replay
+of confirmed history").
 
 **This rewrite supersedes the v1 "contractual mirror" plan.** v1 derived each payment's split from the
 loan resolver's *scheduled* amortization and proved `ledger == resolver`. The review showed that
@@ -253,6 +258,7 @@ retroactively move a posted split (and must not -- posted history is immutable).
 | D11 | Split computation home | Posting service, reusing the engine's pure **primitives** (not its replay); no engine change | Keeps the pure engine clean; decouples real-split from the contractual replay. |
 | D12 | Reads | **Unchanged** (resolver / seam); the read switch is Section 10 | Validate-then-switch; foundation proven before the read path moves. |
 | D13 | Statement-split override | Out of scope (future hook: enter the lender's exact split, computed split as default) | No gold-plating; the computed split is correct for the common case. |
+| D14 | Loan shape CHECK scope (developer choice 2026-06-30, **as-built C2**) | **Columns-only**: `ck_ledger_accounts_loan_shape` enforces a per-loan row's column shape but does NOT pin `kind_id` to the loan kinds | A CHECK cannot subquery `ref.ledger_account_kinds`, and the project forbids hardcoding ref IDs (literal IDs would also break model/migration parity). "A loan row's kind is a loan kind" is the **sole writer's** guarantee (`get_or_create_loan_ledger_account` + tests) -- the identical un-CHECKed trust contract `class_id` already carries (`ledger_account_service.py`). So **Commit 3's resolver guard is load-bearing, not belt-and-suspenders.** |
 
 ---
 
@@ -283,8 +289,15 @@ retroactively move a posted split (and must not -- posted history is immutable).
    v1 SET-NULL-orphans-the-kind defect.
 3. **`uq_ledger_accounts_loan`** -- partial unique `(user_id, loan_account_id, kind_id)`
    `WHERE loan_account_id IS NOT NULL`. At most one interest, one escrow, one refund account per loan.
-4. **`ck_ledger_accounts_loan_shape`** -- `loan_account_id IS NULL OR (account_id IS NULL AND
-   category_id IS NULL AND is_fallback = false AND kind_id IN (loan_interest, loan_escrow, loan_refund))`.
+4. **`ck_ledger_accounts_loan_shape`** (as-built C2, columns-only -- see D14) --
+   `loan_account_id IS NULL OR (account_id IS NULL AND category_id IS NULL AND NOT is_fallback)`.
+   It pins the column *shape* of a per-loan row (no account / category link, not the fallback) but does
+   **NOT** also constrain `kind_id` to `(loan_interest, loan_escrow, loan_refund)` as this plan first
+   proposed: a CHECK cannot subquery `ref.ledger_account_kinds`, and embedding the IDs as literals is
+   forbidden (no hardcoded ref IDs) and would break model/migration parity. "A loan row's `kind_id` is a
+   loan kind" is therefore the sole writer's contract (the resolver in Section 4.2 below / Commit 3),
+   the same un-CHECKed trust `class_id` already carries -- which makes **Commit 3's class/kind guard
+   load-bearing** (a writer bug stamping a non-loan kind on a loan row is not caught by the database).
 
 Classes: `loan_interest` / `loan_escrow` are **Expense**; `loan_refund` is **Asset**. The `name` is a
 snapshot (`"Mortgage -- Interest"`, etc.) truncated to the column width. Resolver:
@@ -470,15 +483,30 @@ Each independently green (targeted tests + `pylint app/` 10.00 on touched files)
 `code-reviewer` pass on the staged diff before committing. Migrations tested up and down. Full suite is
 the final gate in the last commit (run alone).
 
-1. **Ref:** `principal`/`interest`/`escrow`/`refund` posting kinds, `loan_payment` source, and the
-   `ledger_account_kinds` ref table + enums + seeds + inline-seed migration. Tests: `ref_cache`
-   resolution; `init()` succeeds; up/down; deploy `init_ref_cache=False` path holds.
-2. **Schema:** `ledger_accounts.kind_id` (3-step backfill from the NULL-pattern) + `loan_account_id`
-   (RESTRICT) + partial unique + shape CHECK; rewrite the model docstring taxonomy around the explicit
-   kind. Tests: backfill maps every existing row to the right kind; partial unique rejects a duplicate
-   (loan, kind); shape CHECK rejects a malformed loan row; up/down (pinned constraint names).
+1. **DONE (`4d5d0ff`). Ref:** `principal`/`interest`/`escrow`/`refund` posting kinds, `loan_payment`
+   source, and the `ledger_account_kinds` ref table + enums + seeds + inline-seed migration. Tests:
+   `ref_cache` resolution; `init()` succeeds; up/down; deploy `init_ref_cache=False` path holds.
+   (`equity_opening` deferred to the Section-10 read switch, so every seeded kind has a live consumer.)
+2. **DONE (`c26a899`). Schema:** `ledger_accounts.kind_id` (3-step backfill from the NULL-pattern) +
+   `loan_account_id` (RESTRICT) + partial unique + the **columns-only** shape CHECK (D14 -- not the
+   `kind_id IN (...)` form originally drafted here); rewrote the model docstring taxonomy around the
+   explicit kind; the sole writer (`ledger_account_service`) stamps `linked`/`category`/`fallback`.
+   Tests: backfill maps every existing row to the right kind (via the shape-CASE evaluated as a SELECT,
+   since `kind_id` is NOT NULL at HEAD); partial unique rejects a duplicate (loan, kind); shape CHECK
+   rejects a malformed loan row; up/down (pinned constraint names). **As-built gotcha:** making `kind_id`
+   NOT NULL broke re-running two *shipped* migrations' backfill SQL in tests (b82538084d24 linked,
+   7d63529e4300 category/fallback) -- their frozen INSERTs omit `kind_id`, the migrations are not
+   editable, and `ON CONFLICT DO NOTHING` does not rescue the NOT NULL; fixed by injecting the kind the
+   Step-4 backfill would assign into the frozen SQL (shared `inject_cash_backfill_kind_id` helper for
+   7d63). Verified up/down/up on the prod-clone dev DB (9 linked + 15 category backfilled correctly,
+   `flask db check` no drift, both FKs RESTRICT); full suite 6668; `pylint app/ scripts/` 10.00;
+   code-reviewer clean.
 3. **Chart resolver:** `get_or_create_loan_ledger_account(user, loan, kind)` (lazy, idempotent,
-   class/kind-guarded). Tests: creates one per (loan, kind); idempotent; class is Expense/Asset by kind.
+   class/kind-guarded). **The class/kind guard is LOAD-BEARING, not belt-and-suspenders** (D14): the
+   shipped shape CHECK is columns-only, so this resolver is the *only* thing that keeps a loan row's
+   `kind_id` to a loan kind (and its class to Expense/Asset). Tests: creates one per (loan, kind);
+   idempotent; class is Expense/Asset by kind; **rejects a non-loan kind / wrong class** (the guard that
+   substitutes for the absent DB CHECK).
 4. **The split + service (pure, no wiring):** `compute_loan_payment_splits`,
    `sync_loan_payment_postings`, `reverse_loan_payment_postings_for_shadow`,
    `_posted_loan_payment_net(transaction_id)`. Tests: all of Section 8.1 (hand-computed splits) +
