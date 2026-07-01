@@ -17,7 +17,21 @@ principal from the cash actually paid and from the resolver on-schedule, breakin
 oracle, whenever an active escrow component carries an inflation_rate; the entire app already models
 payment-component escrow without inflation); (5) C4 also unified the monthly-interest accrual into one
 `app/utils/money.accrue_monthly_interest` (4 inline copies -> 1) so the split's formula is byte-identical
-to the resolver by construction. Commits 5-7 pending. **Build-Order Step 4** of Option D
+to the resolver by construction.
+
+**PREREQUISITE INSERTED (2026-07-01, before Commit 5): temporal escrow.** A review of C4 found the split
+computed escrow from the CURRENT config and applied it to every past payment, so an escrow change would
+retroactively mis-split settled history (the balance drifts). Per three developer decisions, the fix was
+taken NOW, the fully-normalized way -- effective-date the escrow config (`[effective_date, end_date)`
+range columns on `EscrowComponent`). This became a two-commit prerequisite that lands BEFORE the wiring,
+tracked in the companion plan `implementation_plan_temporal_escrow.md`: **T1** (`ac409b5` -- the schema,
+migration `d1e7c4a2f9b3`, all escrow consumers switched off `is_active`) and **T2** (`ce76a03` -- the
+split now sums each payment's escrow as-of its pay-period start via
+`EscrowComponent.is_active_on` + `load_all_escrow_components`, immutable for a past date). Both SHIPPED
+to the feature branch (local, not pushed). **So the original Commits 5-7 below become T3-T5** and now sit
+after this prerequisite; C4's escrow paragraph above is superseded by the effective-dated split (T2).
+
+Commits 5-7 (now T3-T5) pending. **Build-Order Step 4** of Option D
 (`level1_level2_scope_and_fitness.md`, build-order item 4:
 "Post confirmed loan payments with their real principal / interest split; retire the read-time replay
 of confirmed history").
@@ -580,11 +594,16 @@ the final gate in the last commit (run alone).
    without the resolver's `_redistribute_to_distinct_months`, so the C7 / read-switch oracle must treat a
    biweekly-collision-at-a-rate-boundary loan as an expected divergence (the ledger is the more-correct
    record), not assert exact ledger==resolver equality.
-5. **Lifecycle wiring** (settle/restore at `:641`/`:951`; reverse-before-delete + downstream re-sync at
+5. **Lifecycle wiring** (**now T3; preceded by the temporal-escrow prerequisite T1/T2 above**)
+   (settle/restore at `:641`/`:951`; reverse-before-delete + downstream re-sync at
    `:690`; scenario-looped sync at true-up, both rate paths, and params-create). Tests: Section 8.5
    (CRITICAL regression) + 8.6 (lifecycle) + non-loan transfers ignored; existing transfer/loan/anchor/
    rate suites green. Review: loan sync LAST; reverse before delete; no payback wiring; no Checking
-   touch; no double-post.
+   touch; no double-post. **NOTE (verified 2026-07-01 while tracing for T3):** the plan's line numbers
+   here have drifted -- the current sites are `transfer_service.py` update_transfer END ~639-643,
+   `restore_transfer` END ~950-953, `delete_transfer` reverse-before-remove ~690; and `update_params`
+   must sync UNCONDITIONALLY (not only on the origination-rate path) because it can also change
+   `payment_day`, which shifts `is_confirmed_payment_eligible`. Re-anchor each site to live code in T3.
 6. **Historical backfill migration (production-wide):** one correction per confirmed post-anchor settled
    loan payment <= as_of (real-split, per-loan accounts, `ON CONFLICT DO NOTHING`); idempotent via
    `NOT EXISTS` on a prior `loan_payment` entry for that `transaction_id`; down deletes Step-4 entries
