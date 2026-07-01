@@ -731,3 +731,64 @@ Reads remain on the `balance_at` seam; the ledger now records the confirmed-tran
 confirmed-cash subset, validated by the two oracles. Steps 4-5 (loan-payment principal/interest splits,
 paycheck legs, then the opening-balance Equity posting + the read switch) extend the same
 `posting_service`.
+
+**Build-Order Step 4 (post confirmed loan payments with their REAL principal / interest / escrow split)
+-- DONE (WRITE-ONLY) on `feat/posting-ledger-loan-payments` (2026-07-01; not yet PR'd to `main`).** The
+implementation plan (`implementation_plan_posting_ledger_loan_payments.md`, a v2 full rewrite after its
+adversarial review) carries the full per-commit record. A loan payment is really one event with four
+economic parts; Step 2 posted its whole cash onto the loan (`Checking -cash / Loan +cash`), and the
+loan's real balance was recomputed on every screen by the resolver's SCHEDULED replay, which discards
+the actual cash. Step 4 appends a balanced CORRECTION on each confirmed payment that backs the interest
+/ escrow / (payoff) refund off the loan, so the loan-linked ledger nets to the REAL principal -- computed
+from the ACTUAL cash (`principal = cash - interest - escrow`), so an extra / short payment is captured
+honestly where the resolver would need an anchor true-up. Exactly as Option D prescribes (confirmed
+facts only; **reads UNCHANGED** -- displayed loan balances still flow through the resolver / `balance_at`
+seam; the legacy path never dropped):
+
+- **Ref + schema** (Commits 1-2): `principal` / `interest` / `escrow` / `refund` posting kinds + a
+  `loan_payment` source; a NEW `ref.ledger_account_kinds` discriminator (replacing the straining
+  NULL-pattern, reserving `equity_opening` for the read switch); `budget.ledger_accounts` += `kind_id`
+  (NOT NULL, 3-step backfill from the shape) + `loan_account_id` (RESTRICT) + a partial unique + a
+  columns-only loan-shape CHECK (a CHECK cannot subquery a ref table, and hardcoding ref IDs is
+  forbidden, so "a loan row's kind is a loan kind" is the sole writer's contract).
+- **The per-loan chart resolver** (`ledger_account_service.get_or_create_loan_ledger_account`, Commit 3):
+  lazy, idempotent, one interest / escrow / refund account per `(owner, loan, kind)`; class derived from
+  the kind; TWO load-bearing guards stand in for the columns-only CHECK (the kind must be a loan kind AND
+  the account must classify AMORTIZING).
+- **The split + posting service** (`app/services/loan_posting_service.py`, Commit 4): the real split
+  walked from the latest anchor over the resolver's OWN pure primitives (anchor selection, rate periods,
+  the confirmed-eligibility predicate) reusing the ONE unified `accrue_monthly_interest` -- so the posted
+  interest is byte-identical to the resolver's on-schedule by construction. The correction links to the
+  income shadow's `transaction_id` (NOT `transfer_id`), which makes it structurally invisible to the
+  Step-2 cash reader -- dissolving the CRITICAL cash-corruption bug the v1 plan would have shipped.
+  Escrow is the CONFIGURED monthly amount, effective-dated so a later escrow change never re-splits a
+  past payment (a two-commit temporal-escrow prerequisite, T1/T2, landed first). Escrow is modeled as an
+  Expense (matches today's net worth; the impound-asset model is a deferred feature).
+- **Lifecycle wiring** (Commit 5 / T3) at every chokepoint that changes a confirmed payment -- settle /
+  revert / edit / delete / restore (via a `_transfer_loan_posting` sibling), the balance true-up, the
+  ARM and origination-rate edits, and loan-params creation (the settle-before-config back-post) --
+  reconcile-to-target and idempotent, touching only the loan's own ledgers (never Checking).
+- **A production-wide historical backfill** (Commit 6 / T4): because the loan split is a running-balance
+  walk (not a one-line SQL formula), it CANNOT be raw SQL like the Step-2/3 cash backfills; it reuses the
+  go-forward sync and runs in the post-migration deploy hook (`scripts/init_database.py`), so
+  backfill == go-forward by construction, with a thin boundary migration owning only the reversible
+  teardown.
+- **The loan reconciliation oracle**
+  (`tests/test_integration/test_posting_ledger_loan_reconciliation.py`, Commit 7): a PARALLEL RUN pitting
+  the posted ledger (`anchor - account_posting_total(loan)`) against the resolver's independently-derived
+  balance -- they agree to the penny on-schedule and diverge by exactly the extra / short principal
+  off-schedule (the ledger proven the more-correct record the read switch will move onto); the loan-aware
+  invariant `account_posting_total(loan) == settled_transfer_effect(loan) - non-principal corrections`
+  that SUPERSEDES the cash per-account invariant (which breaks for a loan once corrections exist); a rich
+  interest+escrow+refund fixture; scenario / owner isolation of the whole sweep; backfill == go-forward
+  agreement; a pre-anchor boundary test pinning the Section-10 "pre-anchor cleanup" gap; and two
+  adversarial non-vacuity proofs -- each non-tautological (hand-computed literals + the independent
+  resolver + independent cross-table queries), proven non-vacuous by a `+$10` interest-bug injection that
+  failed 9 of the tests including every parallel-run test. Full suite **6765 passed**; `pylint app/
+  scripts/` 10.00.
+
+Reads remain on the `balance_at` seam; the ledger now records the confirmed-transfer, confirmed-cash,
+AND confirmed-loan-payment-split subset, validated by three oracles. The IMMEDIATE next step is the read
+switch (plan Section 10): post each loan's opening balance as an `equity_opening` entry, switch the
+seam's AMORTIZING confirmed read onto `sum(loan-ledger postings)`, retire the resolver's confirmed
+replay, and do the pre-anchor cleanup -- ending the per-off-schedule-payment true-up band-aid.

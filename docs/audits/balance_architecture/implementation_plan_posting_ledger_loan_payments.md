@@ -1,7 +1,11 @@
 # Implementation plan: post confirmed loan payments with their REAL principal / interest / escrow split
 
-**Status:** IN PROGRESS (2026-06-30, v2 -- full rewrite after the adversarial review in
-`adversarial_review_posting_ledger_loan_payments.md`). **Commits 1-4 of 7 SHIPPED to the feature branch
+**Status:** ALL 7 COMMITS DONE ON THE FEATURE BRANCH (local, not pushed/PR'd) as of 2026-07-01;
+developer-gated manual prod-clone verification (§9.7) + `dev -> main` PR remain. (2026-06-30, v2 -- full
+rewrite after the adversarial review in `adversarial_review_posting_ledger_loan_payments.md`.) The
+Commit-1-through-6 arc (C1-C4 + temporal-escrow T1/T2 + T3 wiring + T4 backfill) plus the T5
+reconciliation oracle are all SHIPPED to the branch; see the T3 / T4 / T5 paragraphs below for the
+as-built detail and Section 9 for the per-commit record. **Commits 1-4 SHIPPED to the feature branch
 (as-built; local, not pushed/PR'd):** C1 `4d5d0ff` (ref tables -- Section 4.1), C2 `c26a899` (the
 `budget.ledger_accounts` schema -- Section 4.2; migration head is now `efca4315bf81`), C3 `c3937ce`
 (the chart resolver `get_or_create_loan_ledger_account` -- Section 4.2 / Section 9 item 3), C4 `f4992d0`
@@ -72,7 +76,41 @@ accounts) -- required so the Commit-2 (`efca4315bf81`) schema downgrade stays cl
 (`tests/test_integration/test_loan_posting_backfill.py`, 14, incl. a deploy-hook commit-contract test
 proven non-vacuous by a separate-connection read + a drop-the-commit mutation); executable Alembic
 up/down round-trip verified on the rebuilt template; `pylint app/ scripts/` 10.00; `code-reviewer` no
-Crit/High (its M1/L2/L3 all fixed). See Section 9.6 as-built for detail. T5 pending.
+Crit/High (its M1/L2/L3 all fixed). See Section 9.6 as-built for detail.
+
+**T5 (original Commit 7 -- the reconciliation oracle) SHIPPED (local, not pushed):**
+`tests/test_integration/test_posting_ledger_loan_reconciliation.py` (12 tests). Deliberately
+NON-DUPLICATIVE (the split VALUES live in `test_loan_posting_service.py`, the lifecycle / CRITICAL
+full-cash-reversal regression in `test_loan_posting_wiring.py`, the backfill idempotency / deploy-hook
+contract in `test_loan_posting_backfill.py`); this oracle adds the reconciliation-level checks those do
+not make, mirroring how the Step-3 cash oracle sits above the cash lifecycle / backfill suites. What it
+proves: **(8.2) the parallel run vs the resolver** -- the ledger's `anchor - account_posting_total(loan)`
+agrees to the penny with `resolve_account_loan(...).current_balance` on-schedule (cash == the resolver's
+`monthly_payment`) and DIVERGES by exactly the extra / short principal off-schedule, with the ledger
+equal to the hand-computed real balance (the resolver is an independent producer that never reads the
+ledger -- so this is what pins the split VALUE); **(8.7)** the loan-aware superseding invariant
+(`account_posting_total(loan) == settled_transfer_effect(loan) - non-principal corrections`), driven
+where the Step-2/3 cash per-account invariant provably breaks; a rich fixture booking interest + escrow
++ payoff-refund legs together (8.1/8.3/8.4); scenario + owner isolation of the whole sweep (8.8);
+backfill == go-forward reconciles identically (8.8); and **two non-vacuity proofs** (a tampered
+`actual_amount` breaks the invariant; an injected leg breaks the trial balance) (8.9). A production-wide
+sweep helper (`_assert_loan_reconciles`) ties linked + per-loan + completeness + per-entry + trial
+together after every fixture; its identities are STRUCTURAL (reader/scenario-scope integrity), always
+PAIRED with a value assertion (parallel-run or literal) that pins the split. **As-built additions,
+developer-ratified:** (1) a **pre-anchor boundary test** -- a payment that came due before the latest
+anchor keeps its Step-2 cash on the linked ledger with NO Step-4 correction (the split excludes it), so
+the naive `anchor - linked_net` reads LOW by exactly that cash; the test pins this as the read switch's
+"pre-anchor cleanup" (Section 10) boundary, distinct from an off-schedule divergence, and confirms the
+reconciliation IDENTITIES still hold with pre-anchor cash present (the `code-reviewer` "strongest
+residual risk", closed). **Non-vacuity proven the gold-standard way:** injecting a `+$10` interest bug
+into the split service failed 9 of the (then 11) tests -- all four parallel-run tests caught it via the
+independent resolver, plus every hand-computed literal -- while the two invariant-only meta-tests
+correctly survived (they assert a tamper/injection is caught, independent of the split value). Verified:
+full suite **6765 passed** (run alone; baseline 6753 + 12); `pylint app/ scripts/` 10.00 (the oracle is a
+test file -- `app/`/`scripts/` unchanged); `shekel-decimal-from-float` clean; `code-reviewer` no
+Crit/High (its MEDIUM pre-anchor + MEDIUM sweep-oversell docstring + LOW income-only-note + LOW
+exact-value all fixed). **Remaining (developer-gated): the manual prod-clone verification (Section 9.7)
+and the `dev -> main` PR.**
 
 **This rewrite supersedes the v1 "contractual mirror" plan.** v1 derived each payment's split from the
 loan resolver's *scheduled* amortization and proved `ledger == resolver`. The review showed that
@@ -689,14 +727,23 @@ the final gate in the last commit (run alone).
    hardening + L3 dead-disable all fixed). The exact prod-clone outcome (posts the one Mortgage
    correction 275.14 / 1018.82 / 616.99, nothing for the Van) is the T5 manual step (§9.7); this step
    leaves the dev DB pristine for it.
-7. **The reconciliation oracle** (Section 8) + full suite via `./scripts/test.sh` (run alone) ->
-   show `<N> passed` (~6640+ baseline); `pylint app/ scripts/` 10.00; rebuild the test template. Docs:
-   note Step 4 done (write-only) in `level1_level2_scope_and_fitness.md`; update the Step-4 memory.
-   **Manual (prod-clone dev, 2FA off):** the backfill posted the Mortgage correction + nothing for the
-   Van; mark the next Mortgage payment Paid -> new correction + reconcile; mark it with a +$500 actual
-   -> the ledger shows principal 775.14 while the resolver still shows the contractual balance (proving
-   the ledger is the more-correct record awaiting the read switch); revert -> full cash reversal
-   (CRITICAL regression). Leave the dev DB pristine (re-clone if needed).
+7. **DONE (as-built, T5; see the T5 paragraph in the header for detail). The reconciliation oracle**
+   (`tests/test_integration/test_posting_ledger_loan_reconciliation.py`, 12 tests -- Section 8):
+   parallel run vs the resolver (agree on-schedule, diverge off-schedule = the ledger proven the
+   more-correct record; 8.2), the loan-aware superseding invariant driven where the cash per-account one
+   breaks (8.7), a rich interest+escrow+refund fixture (8.1/8.3/8.4), scenario/owner isolation of the
+   whole sweep (8.8), backfill == go-forward reconciles identically (8.8), two non-vacuity proofs (8.9),
+   plus a developer-ratified pre-anchor boundary test pinning the Section-10 "pre-anchor cleanup" gap.
+   Non-vacuity proven by a `+$10` interest-bug injection (9 of 11 tests failed, incl. all parallel-run
+   tests). Full suite **6765 passed** (run alone; baseline 6753 + 12); `pylint app/ scripts/` 10.00; NO
+   migration added (the oracle is a test file), so no template rebuild. Docs: this plan + Step 4 marked
+   done (write-only) in `level1_level2_scope_and_fitness.md` + the Step-4 memory.
+   **Remaining (developer-gated): Manual (prod-clone dev, 2FA off):** the backfill posted the Mortgage
+   correction + nothing for the Van; mark the next Mortgage payment Paid -> new correction + reconcile;
+   mark it with a +$500 actual -> the ledger shows principal 775.14 while the resolver still shows the
+   contractual balance (proving the ledger is the more-correct record awaiting the read switch); revert
+   -> full cash reversal (CRITICAL regression). Leave the dev DB pristine (re-clone if needed). Then the
+   `dev -> main` PR so CI runs.
 
 ---
 
