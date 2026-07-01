@@ -611,12 +611,54 @@ class TestPostingKindRefCache:
                 f"loan kinds {loan_kinds} collide with earlier kinds {existing}"
             )
 
+    def test_posting_kind_resolves_opening_and_trueup(self, app, db):
+        """ref_cache resolves the loan read-switch OPENING and TRUEUP kinds.
+
+        The two loan-genesis leg kinds added by the loan read switch (the
+        deferred second half of Build-Order Step 4) must each resolve to a
+        distinct positive ID, distinct from one another and from every Step
+        2/3/4 kind.  This guards that the enum ``.value`` strings match the
+        seeded ``ref.posting_kinds.name`` rows and that no two members
+        collapse onto one row (a copy-paste value collision).
+        """
+        with app.app_context():
+            existing = {
+                ref_cache.posting_kind_id(member)
+                for member in (
+                    PostingKindEnum.TRANSFER,
+                    PostingKindEnum.INCOME,
+                    PostingKindEnum.EXPENSE,
+                    PostingKindEnum.PRINCIPAL,
+                    PostingKindEnum.INTEREST,
+                    PostingKindEnum.ESCROW,
+                    PostingKindEnum.REFUND,
+                )
+            }
+            new_kinds = {
+                member: ref_cache.posting_kind_id(member)
+                for member in (
+                    PostingKindEnum.OPENING,
+                    PostingKindEnum.TRUEUP,
+                )
+            }
+            for member, kind_id in new_kinds.items():
+                assert isinstance(kind_id, int) and kind_id > 0, (
+                    f"{member.name} id must be a positive int, got {kind_id}"
+                )
+            # Two distinct new kinds, neither colliding with the earlier seven.
+            assert len(set(new_kinds.values())) == 2, new_kinds
+            assert existing.isdisjoint(set(new_kinds.values())), (
+                f"read-switch kinds {new_kinds} collide with earlier kinds "
+                f"{existing}"
+            )
+
     def test_posting_kind_enum_matches_db(self, app, db):
         """Every PostingKindEnum member has a DB row and vice versa.
 
         Step 2 seeds 'transfer'; Step 3 adds 'income'/'expense'; Step 4 adds
-        the four loan-correction kinds.  This guards against a future kind
-        added to the enum without a seed row (or vice versa).
+        the four loan-correction kinds; the loan read switch adds
+        'opening'/'trueup'.  This guards against a future kind added to the
+        enum without a seed row (or vice versa).
         """
         with app.app_context():
             db_rows = db.session.query(PostingKind).all()
@@ -698,6 +740,44 @@ class TestPostingSourceRefCache:
             assert len({transfer_id, transaction_id, loan_payment_id}) == 3, (
                 f"source ids collide: transfer={transfer_id}, "
                 f"transaction={transaction_id}, loan_payment={loan_payment_id}"
+            )
+
+    def test_posting_source_resolves_loan_opening_and_trueup(self, app, db):
+        """ref_cache resolves the read-switch LOAN_OPENING/LOAN_TRUEUP sources.
+
+        The two loan-genesis source events added by the loan read switch (the
+        deferred second half of Build-Order Step 4) must each resolve to a
+        distinct positive ID, distinct from one another and from Step 2's
+        TRANSFER, Step 3's TRANSACTION, and Step 4's LOAN_PAYMENT.  This guards
+        that the enum ``.value`` strings match the seeded
+        ``ref.posting_sources.name`` rows and that no two members collapse onto
+        one row (a copy-paste value collision).
+        """
+        with app.app_context():
+            existing = {
+                ref_cache.posting_source_id(member)
+                for member in (
+                    PostingSourceEnum.TRANSFER,
+                    PostingSourceEnum.TRANSACTION,
+                    PostingSourceEnum.LOAN_PAYMENT,
+                )
+            }
+            new_sources = {
+                member: ref_cache.posting_source_id(member)
+                for member in (
+                    PostingSourceEnum.LOAN_OPENING,
+                    PostingSourceEnum.LOAN_TRUEUP,
+                )
+            }
+            for member, source_id in new_sources.items():
+                assert isinstance(source_id, int) and source_id > 0, (
+                    f"{member.name} id must be a positive int, got {source_id}"
+                )
+            # Two distinct new sources, neither colliding with the earlier three.
+            assert len(set(new_sources.values())) == 2, new_sources
+            assert existing.isdisjoint(set(new_sources.values())), (
+                f"read-switch sources {new_sources} collide with earlier "
+                f"sources {existing}"
             )
 
     def test_posting_source_enum_matches_db(self, app, db):

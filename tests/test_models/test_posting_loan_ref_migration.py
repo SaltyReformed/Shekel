@@ -14,10 +14,14 @@ upgraded it base->head), so the per-worker DB shows the post-migration
 state.  These tests assert, without re-executing DDL/DML in the worker:
 
   * the migration is correctly chained (revision / down_revision);
-  * ``ref.ledger_account_kinds`` exists and carries EXACTLY its seven kinds
-    (this migration is the sole, permanent producer of that table, so the
-    exact row set is pinned -- unlike the shared ``posting_kinds`` /
-    ``posting_sources`` tables);
+  * ``ref.ledger_account_kinds`` exists and carries this migration's seven
+    kinds (the four the chart already uses plus the three per-loan accounts) --
+    membership, not the exact row set, because the loan read switch (the
+    deferred second half of Step 4) adds an ``equity_opening`` kind through
+    its own later migration, so f8e025a8be41 is no longer this table's sole
+    producer.  The exact row set is pinned against the enum (the source of
+    truth) by ``test_ledger_account_kind_enum_matches_db`` in
+    ``tests/test_ref_cache.py``;
   * this migration's own contributions to the shared tables are present
     (the four loan kinds, the ``loan_payment`` source) -- membership, not
     the exact row set, since Steps 2/3 also populate them and later steps
@@ -90,13 +94,18 @@ class TestMigratedState:
     re-execution.
     """
 
-    def test_ledger_account_kinds_seeded_exactly(self, app, db):
-        """``ref.ledger_account_kinds`` carries exactly its seven kinds.
+    def test_ledger_account_kinds_present(self, app, db):
+        """f8e025a8be41's seven ``ref.ledger_account_kinds`` are seeded at HEAD.
 
-        f8e025a8be41 is the sole, permanent producer of this table (the four
-        kinds the chart already uses plus the three per-loan accounts), so
-        the exact row set is pinned -- a future stray INSERT or a dropped
-        seed value surfaces here.
+        Membership, not the exact row set: f8e025a8be41 created and seeded
+        this table with seven kinds (the four the chart already uses plus the
+        three per-loan accounts), but it is no longer the table's sole
+        producer -- the loan read switch (the deferred second half of Step 4)
+        adds an ``equity_opening`` kind through its own later migration.  This
+        asserts f8e025a8be41's own seven contributions survive at HEAD; the
+        exact row set (no stray INSERT, no dropped value) is pinned against
+        the enum by ``test_ledger_account_kind_enum_matches_db`` in
+        ``tests/test_ref_cache.py``.
         """
         with app.app_context():
             kinds = {
@@ -104,7 +113,7 @@ class TestMigratedState:
                     "SELECT name FROM ref.ledger_account_kinds"
                 )).fetchall()
             }
-            assert kinds == {
+            assert {
                 "linked",
                 "category",
                 "fallback",
@@ -112,7 +121,7 @@ class TestMigratedState:
                 "loan_interest",
                 "loan_escrow",
                 "loan_refund",
-            }, kinds
+            } <= kinds, kinds
 
     def test_loan_posting_kinds_present(self, app, db):
         """The four loan-correction kinds are seeded at HEAD."""
