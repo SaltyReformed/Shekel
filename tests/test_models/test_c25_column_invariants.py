@@ -47,7 +47,6 @@ F_068_LOCKED_COLUMNS = [
     ("budget", "accounts", "sort_order", "0"),
     ("budget", "categories", "is_active", "true"),
     ("budget", "categories", "sort_order", "0"),
-    ("budget", "escrow_components", "is_active", "true"),
     ("budget", "recurrence_rules", "interval_n", "1"),
     ("budget", "recurrence_rules", "offset_periods", "0"),
     ("budget", "savings_goals", "is_active", "true"),

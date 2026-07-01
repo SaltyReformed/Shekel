@@ -73,7 +73,7 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
 
     escrow = EscrowComponent(
         account_id=loan.id, name="Property Tax",
-        annual_amount=escrow_annual, is_active=True,
+        annual_amount=escrow_annual,
     )
     db.session.add(escrow)
 

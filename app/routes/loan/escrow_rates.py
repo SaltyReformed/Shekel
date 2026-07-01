@@ -8,6 +8,7 @@ them keeps that parallel code intra-file (R0801 is cross-file only).
 """
 
 import logging
+from datetime import date
 
 from flask import flash, render_template, request
 from flask_login import login_required
@@ -25,7 +26,7 @@ from app.routes.loan._helpers import (
     _rate_schema,
     _resolve_loan_state,
 )
-from app.services import escrow_calculator
+from app.services import escrow_calculator, loan_payment_service
 from app.utils.auth_helpers import require_owner
 from app.utils.db_errors import is_unique_violation
 
@@ -168,26 +169,32 @@ def add_escrow(account_id):
     # before validation, so ``data["inflation_rate"]`` is stored
     # verbatim.
 
-    # Check for duplicate name.
+    # Check for a duplicate name among the CURRENTLY-ACTIVE components; a
+    # component removed earlier (``end_date`` set) may be re-added under the
+    # same name, so a historical version must not block the add.  The partial
+    # unique ``uq_escrow_components_account_name_active`` is the DB backstop.
     existing = (
         db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, name=data["name"])
+        .filter(
+            EscrowComponent.account_id == account.id,
+            EscrowComponent.name == data["name"],
+            EscrowComponent.end_date.is_(None),
+        )
         .first()
     )
     if existing:
         return "An escrow component with that name already exists.", 400
 
+    # ``effective_date`` is omitted -- the column's CURRENT_DATE server default
+    # takes effect today, opening the component's active range.
     comp = EscrowComponent(account_id=account.id, **data)
     db.session.add(comp)
     db.session.commit()
 
     logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
 
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
+    escrow_components = loan_payment_service.load_active_escrow_components(
+        account.id,
     )
 
     # Compute updated payment summary for OOB swap.
@@ -221,15 +228,16 @@ def delete_escrow(account_id, component_id):
     if comp is None or comp.account_id != account.id:
         return "Component not found", 404
 
-    comp.is_active = False
+    # Close the component's active range as of today (replaces the old
+    # ``is_active = False``); the row survives as history.  Guarded so a repeat
+    # delete does not move an already-set ``end_date`` (idempotent).
+    if comp.end_date is None:
+        comp.end_date = date.today()
     db.session.commit()
     logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
 
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
+    escrow_components = loan_payment_service.load_active_escrow_components(
+        account.id,
     )
 
     # Compute updated payment summary for OOB swap.

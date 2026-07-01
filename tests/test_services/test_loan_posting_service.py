@@ -90,7 +90,7 @@ def _make_loan(
     if escrow_annual is not None:
         _db.session.add(EscrowComponent(
             account_id=loan.id, name="Tax & Insurance",
-            annual_amount=escrow_annual, is_active=True,
+            annual_amount=escrow_annual,
         ))
     _db.session.commit()
     return loan

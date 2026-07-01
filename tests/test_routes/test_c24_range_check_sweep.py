@@ -584,9 +584,9 @@ class TestEscrowComponentsCheck:
                     text(
                         "INSERT INTO budget.escrow_components "
                         "(account_id, name, annual_amount, "
-                        " inflation_rate, is_active, "
+                        " inflation_rate, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 'Tax', -100.00, NULL, true, "
+                        "VALUES (:aid, 'Tax', -100.00, NULL, "
                         "        now(), now())"
                     ),
                     {"aid": account.id},
@@ -605,9 +605,9 @@ class TestEscrowComponentsCheck:
                     text(
                         "INSERT INTO budget.escrow_components "
                         "(account_id, name, annual_amount, "
-                        " inflation_rate, is_active, "
+                        " inflation_rate, "
                         " created_at, updated_at) "
-                        "VALUES (:aid, 'Tax', 1200.00, 1.5, true, "
+                        "VALUES (:aid, 'Tax', 1200.00, 1.5, "
                         "        now(), now())"
                     ),
                     {"aid": account.id},

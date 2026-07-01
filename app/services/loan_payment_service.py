@@ -325,21 +325,27 @@ def load_active_escrow_components(account_id: int) -> list:
     :func:`app.services.loan_posting_service.compute_loan_payment_splits`), so the
     monthly-escrow figure each feeds to
     :func:`app.services.escrow_calculator.calculate_monthly_escrow` is summed
-    over the IDENTICAL component set.  Inactive components are excluded (a
-    deactivated line item no longer contributes to the payment), matching every
-    other escrow surface in the app.
+    over the IDENTICAL component set.  Removed components (``end_date`` set) are
+    excluded -- "currently active" is exactly ``end_date IS NULL`` under the
+    effective-dated model -- matching every other escrow surface in the app.
+    For the escrow active on a PAST date (the loan-payment split walk), see
+    :func:`escrow_components_as_of`.
 
     Args:
         account_id: The loan account whose escrow components to load.
 
     Returns:
-        The active :class:`~app.models.loan_features.EscrowComponent` rows,
-        ascending by name (the order is irrelevant to the order-independent
-        monthly sum, but kept stable for display callers).
+        The currently-active (``end_date IS NULL``)
+        :class:`~app.models.loan_features.EscrowComponent` rows, ascending by
+        name (the order is irrelevant to the order-independent monthly sum, but
+        kept stable for display callers).
     """
     return (
         db.session.query(EscrowComponent)
-        .filter_by(account_id=account_id, is_active=True)
+        .filter(
+            EscrowComponent.account_id == account_id,
+            EscrowComponent.end_date.is_(None),
+        )
         .order_by(EscrowComponent.name)
         .all()
     )

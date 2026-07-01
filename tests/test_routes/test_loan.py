@@ -663,7 +663,7 @@ class TestEscrow:
         assert b"already exists" in resp.data
 
     def test_escrow_delete(self, auth_client, seed_user, db, seed_periods):
-        """POST delete deactivates component."""
+        """POST delete closes the component's active range (stamps end_date)."""
         acct = _create_mortgage(seed_user, db.session)
         comp = EscrowComponent(
             account_id=acct.id, name="Old Insurance", annual_amount=Decimal("1200.00"),
@@ -674,7 +674,9 @@ class TestEscrow:
         resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{comp.id}/delete")
         assert resp.status_code == 200
         db.session.refresh(comp)
-        assert comp.is_active is False
+        # Removal stamps end_date (the effective-dated "removed" marker that
+        # replaced is_active=False); the row survives as history.
+        assert comp.end_date is not None
 
     def test_escrow_delete_idor(self, auth_client, second_user, db, seed_periods):
         """DELETE another user's escrow returns 404 and leaves it active."""
@@ -690,7 +692,7 @@ class TestEscrow:
 
         db.session.expire_all()
         after = db.session.get(EscrowComponent, comp.id)
-        assert after.is_active is True
+        assert after.end_date is None
 
     def test_escrow_oob_payment_update(self, auth_client, seed_user, db, seed_periods):
         """Adding escrow returns OOB fragments for payment summary."""
