@@ -827,3 +827,37 @@ def sync_all_scenarios_or_duplicate(
         if not is_unique_violation(exc, unique_index_name):
             raise
         return False
+
+
+def backfill_all_loan_payment_postings() -> list[int]:
+    """Reconcile every loan's split corrections across all scenarios (the backfill).
+
+    The one-time, production-wide historical backfill (Build-Order Step 4,
+    Commit 6): for every configured loan account, across all owners
+    (:func:`app.services.loan_payment_service.load_all_loan_account_ids`),
+    reconcile its confirmed post-anchor payment corrections to the real split via
+    :func:`sync_loan_payment_postings_all_scenarios`.  This posts the correction
+    for any payment settled BEFORE the Commit-5 go-forward wiring shipped (which
+    therefore carries none), so the ledger is complete on real historical data.
+
+    Reuses the SAME per-loan sync the go-forward chokepoints call, so a
+    backfilled correction is identical to the go-forward one by construction --
+    there is no second split implementation that could drift from it.  Idempotent
+    and self-healing via reconcile-to-target: a payment that already carries a
+    go-forward correction is already at target, so nothing is re-posted -- the
+    backfill never double-posts, and a re-run at the same state writes nothing.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary: the
+    deploy hook
+    (``scripts.init_database.backfill_loan_payment_postings_after_migration``,
+    which initialises ``ref_cache`` first because the migration host does not),
+    the Commit-6 backfill suite, or the Commit-7 reconciliation oracle.
+
+    Returns:
+        The loan account ids reconciled, ascending -- for the deploy log and
+        test introspection (empty on a loan-free database).
+    """
+    loan_account_ids = loan_payment_service.load_all_loan_account_ids()
+    for loan_account_id in loan_account_ids:
+        sync_loan_payment_postings_all_scenarios(loan_account_id)
+    return loan_account_ids

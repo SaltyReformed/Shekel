@@ -291,6 +291,32 @@ def load_loan_params(account_id: int) -> LoanParams | None:
     )
 
 
+def load_all_loan_account_ids() -> list[int]:
+    """Return every configured loan account's id, ascending (all owners).
+
+    The account id of every :class:`LoanParams` row -- one per amortizing loan,
+    across all owners.  A loan can carry a Build-Order Step 4 split correction
+    only once it has a :class:`LoanParams` row (:func:`load_loan_params`;
+    :func:`app.services.loan_posting_service.compute_loan_payment_splits` returns
+    ``[]`` otherwise), so this is exactly the set the one-time historical backfill
+    (:func:`app.services.loan_posting_service.backfill_all_loan_payment_postings`)
+    iterates.  Deliberately NOT user-scoped: it is a system / deploy-time sweep
+    over every owner's loans -- like the Step-2 / Step-3 settled-row backfills --
+    and each posted correction still carries its own owner (from the payment
+    shadow's pay period), so no row is mis-attributed.
+
+    Returns:
+        The loan account ids, ascending (``account_id`` is unique per
+        :class:`LoanParams`, so already distinct); empty on a loan-free database.
+    """
+    rows = (
+        db.session.query(LoanParams.account_id)
+        .order_by(LoanParams.account_id)
+        .all()
+    )
+    return [account_id for (account_id,) in rows]
+
+
 def load_anchor_events(account_id: int) -> list:
     """Load every :class:`LoanAnchorEvent` for a loan account (unordered).
 
