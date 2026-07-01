@@ -84,6 +84,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import case
 
 from app import ref_cache
@@ -109,6 +110,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_settled_cash_transaction,
     create_settled_transfer,
+    inject_cash_backfill_kind_id,
     ledger_accounts_for_account,
     load_migration_module,
 )
@@ -1020,11 +1022,26 @@ class TestOwnerIsolationViaJournalEntry:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _cash_backfill_kind_id(monkeypatch):
+    """Inject the Step-4 ``kind_id`` into the frozen 7d63 Pass-A SQL.
+
+    Requested only by the backfill==go-forward test below -- the sole test here
+    that invokes the migration's raw-SQL backfill.  Step 4, Commit 2 made
+    ``ledger_accounts.kind_id`` NOT NULL, so the frozen Pass-A INSERT (which
+    omits it, and which ``ON CONFLICT DO NOTHING`` does NOT rescue from the NOT
+    NULL) must carry the kind the Step-4 backfill would assign.  Delegates to the
+    shared :func:`inject_cash_backfill_kind_id` helper the cash-backfill suite
+    also uses; ``monkeypatch`` auto-reverts.
+    """
+    inject_cash_backfill_kind_id(monkeypatch, _BACKFILL_MIGRATION)
+
+
 class TestBackfillAndGoForwardAgree:
     """The raw-SQL backfill and the posting_service builder produce equal legs."""
 
     def test_same_transaction_posts_identically_both_ways(
-        self, app, db, seed_user,
+        self, app, db, seed_user, _cash_backfill_kind_id,
     ):
         """A cash expense posted go-forward then re-posted by the backfill matches.
 

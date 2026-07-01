@@ -90,33 +90,33 @@ def _allocate_monthly_amounts(annuals: list[Decimal]) -> list[Decimal]:
 def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
     """Build display DTOs for the escrow components list (MED-04 / E-16).
 
-    Filters inactive components (mirroring
-    :func:`calculate_monthly_escrow`'s gate) and cent-allocates the
-    aggregate monthly total across the rows via
-    :func:`_allocate_monthly_amounts`, so each row's monthly value is
-    within one cent of its exact ``annual / 12`` and the rows sum
-    exactly to the badge total ``calculate_monthly_escrow`` renders
-    beside them (deep-hunt #17 -- per-row HALF_UP rounding made two
-    $100/yr components display 8.33 + 8.33 = 16.66 against a 16.67
-    badge).
+    Builds one display row per GIVEN component and cent-allocates the
+    aggregate monthly total across them via :func:`_allocate_monthly_amounts`,
+    so each row's monthly value is within one cent of its exact ``annual / 12``
+    and the rows sum exactly to the badge total ``calculate_monthly_escrow``
+    renders beside them (deep-hunt #17 -- per-row HALF_UP rounding made two
+    $100/yr components display 8.33 + 8.33 = 16.66 against a 16.67 badge).
+
+    Like :func:`calculate_monthly_escrow`, this does NOT filter by active state
+    -- the caller supplies the set to display (the currently-active components,
+    via :func:`app.services.loan_payment_service.load_active_escrow_components`).
+    Processing the identical set both functions receive keeps the rows-sum-to-
+    badge invariant true for ANY input, rather than only when the caller happens
+    to pre-filter removed components out (they both would otherwise diverge on a
+    removed component -- rows omit it, badge counts it -- resurfacing #17).
 
     Args:
         components: Iterable of escrow components with ``.id``,
-            ``.name``, ``.annual_amount``, ``.is_active``, and
-            optionally ``.inflation_rate``.
+            ``.name``, ``.annual_amount``, and optionally ``.inflation_rate``.
 
     Returns:
-        List of :class:`EscrowComponentDisplay` ordered as ``components``.
-        Inactive components are skipped.
+        List of :class:`EscrowComponentDisplay`, one per input component, in
+        input order.
     """
-    active = [
-        comp for comp in components
-        if not (hasattr(comp, "is_active") and not comp.is_active)
-    ]
-    annuals = [Decimal(str(comp.annual_amount)) for comp in active]
+    annuals = [Decimal(str(comp.annual_amount)) for comp in components]
     monthlies = _allocate_monthly_amounts(annuals)
     rows: list[EscrowComponentDisplay] = []
-    for comp, annual, monthly in zip(active, annuals, monthlies):
+    for comp, annual, monthly in zip(components, annuals, monthlies):
         if getattr(comp, "inflation_rate", None) is not None:
             inflation = Decimal(str(comp.inflation_rate))
             inflation_pct = inflation * Decimal("100")
@@ -135,13 +135,24 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
 
 
 def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -> Decimal:
-    """Sum active escrow components' annual amounts / 12.
+    """Sum the given escrow components' annual amounts / 12.
+
+    The caller supplies the component set relevant to the date in question
+    -- the components active today
+    (:func:`app.services.loan_payment_service.load_active_escrow_components`)
+    or, for a past payment's date, every version
+    (:func:`app.services.loan_payment_service.load_all_escrow_components`)
+    filtered by :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
+    This function no longer filters by active state itself; it sums exactly the
+    components handed to it.
 
     Args:
-        components: List of objects with .annual_amount, .is_active,
-                    and optionally .inflation_rate, .created_at.
+        components: List of objects with .annual_amount, and optionally
+                    .inflation_rate, .created_at.
         as_of_date: If provided, applies inflation from component
-                    created_at to as_of_date.
+                    created_at to as_of_date (a FORWARD-projection escalation
+                    only; recorded past/present escrow is exact, so the loan
+                    split never passes this).
 
     Returns:
         Monthly escrow amount rounded to 2 decimal places.
@@ -149,9 +160,6 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
     total = Decimal("0.00")
 
     for comp in components:
-        if hasattr(comp, "is_active") and not comp.is_active:
-            continue
-
         annual = Decimal(str(comp.annual_amount))
 
         # Apply inflation if both as_of_date and inflation_rate are present.

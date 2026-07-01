@@ -28,7 +28,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.utils.dates import months_between
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import (
+    MONTHS_PER_YEAR,
+    accrue_monthly_interest,
+    round_money,
+)
 
 
 @dataclass(frozen=True)
@@ -359,26 +363,6 @@ def _governing_terms(
     return chosen
 
 
-def _period_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
-    """Return one month's interest on ``balance`` at ``annual_rate``.
-
-    ``round_money(balance * rate / 12)``, with a zero-rate guard --
-    the same per-month accrual shape the replay applies in
-    :func:`app.services.rate_period_engine._replay_payment_row`, so
-    the projected and replayed sides of a schedule accrue identically.
-
-    Args:
-        balance: Outstanding balance before this month's payment.
-        annual_rate: The governing terms entry's annual rate (>= 0).
-
-    Returns:
-        The month's interest, quantized to cents.
-    """
-    if annual_rate <= 0:
-        return Decimal("0.00")
-    return round_money(balance * (annual_rate / MONTHS_PER_YEAR))
-
-
 @dataclass(frozen=True)
 class ProjectionInputs:
     """Immutable starting state and forward-only terms for a projection.
@@ -642,7 +626,7 @@ def project_forward(
         # rate-period engine's figures, never re-derived from the
         # projection's own balance (DH-#1 / E-02).
         terms = _governing_terms(terms_schedule, pay_date)
-        interest = _period_interest(balance, terms.annual_rate)
+        interest = accrue_monthly_interest(balance, terms.annual_rate)
         month_key = (pay_date.year, pay_date.month)
 
         if month_key in overrides:

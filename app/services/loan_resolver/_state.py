@@ -26,7 +26,7 @@ from ._periods import (
     ZERO_MONEY,
     LoanInputs,
     _replay_from_anchor,
-    _resolve_periods,
+    resolve_periods,
 )
 
 
@@ -128,7 +128,7 @@ def compute_monthly_payment_baseline(
     # (loan_payment_service.compute_contractual_pi passes them).
     # pylint: disable=unused-argument
     return period_for_date(
-        _resolve_periods(loan_params, rate_changes), as_of,
+        resolve_periods(loan_params, rate_changes), as_of,
     ).period_pi
 
 
@@ -204,7 +204,7 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
         if payment.is_confirmed
     ]
 
-    periods = _resolve_periods(
+    periods = resolve_periods(
         loan_inputs.loan_params, loan_inputs.rate_changes,
     )
 

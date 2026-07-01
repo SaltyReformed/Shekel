@@ -15,7 +15,6 @@ from flask_login import current_user, login_required
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
-from app.models.loan_features import EscrowComponent
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
@@ -30,7 +29,7 @@ from app.routes.loan._helpers import (
     _resolve_loan_state,
     _transfer_schema,
 )
-from app.services import escrow_calculator
+from app.services import escrow_calculator, loan_payment_service
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -63,10 +62,8 @@ def _resolve_transfer_amount(account, params, data):
         return data["amount"], False
 
     state = _resolve_loan_state(account, params)
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .all()
+    escrow_components = loan_payment_service.load_active_escrow_components(
+        account.id,
     )
     transfer_amount = escrow_calculator.calculate_total_payment(
         state.monthly_payment, escrow_components,

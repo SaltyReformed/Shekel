@@ -1504,7 +1504,6 @@ class TestDebtProgress:
             account_id=mortgage_acct.id,
             name="Property Tax",
             annual_amount=Decimal("3396.00"),
-            is_active=True,
         )
         db.session.add(escrow)
 

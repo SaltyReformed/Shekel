@@ -838,11 +838,15 @@ class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
     ):
         """A different constraint failure must NOT be treated as idempotent.
 
-        Engineers the case by patching ``is_unique_violation`` (the
-        helper's discriminator) to return False -- the helper sees an
-        IntegrityError but cannot confirm it is the same-day uniqueness
-        violation, so it must re-raise.  Pins the "don't silently
-        swallow IntegrityError" contract independent of which
+        Engineers the case by patching ``is_unique_violation`` -- the
+        same-day-duplicate discriminator, which the Build-Order Step 4
+        wiring moved into the shared
+        :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate`
+        helper (the loan true-up now re-splits every scenario in the same
+        transaction and delegates the duplicate translation there) -- to return
+        False.  The helper sees an IntegrityError but cannot confirm it is the
+        same-day uniqueness violation, so it must re-raise.  Pins the "don't
+        silently swallow IntegrityError" contract independent of which
         constraint the engine fired.
         """
         with app.app_context():
@@ -857,7 +861,7 @@ class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
             with patch(
-                "app.services.anchor_service.is_unique_violation",
+                "app.services.loan_posting_service.is_unique_violation",
                 return_value=False,
             ):
                 with pytest.raises(IntegrityError):

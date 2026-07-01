@@ -83,9 +83,13 @@ def _load_loan_params_and_escrow(accounts):
         ).all():
             loan_params_map[lp.account_id] = lp
 
-        # Escrow components for loan accounts (for debt summary PITI).
+        # Currently-active escrow components for loan accounts (for debt
+        # summary PITI).  Filtered to ``end_date IS NULL`` because
+        # ``calculate_monthly_escrow`` no longer gates on active state -- the
+        # caller supplies the set active on the relevant date.
         for ec in db.session.query(EscrowComponent).filter(
             EscrowComponent.account_id.in_(loan_account_ids),
+            EscrowComponent.end_date.is_(None),
         ).all():
             escrow_map.setdefault(ec.account_id, []).append(ec)
 

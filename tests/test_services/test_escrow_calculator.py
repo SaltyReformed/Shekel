@@ -13,14 +13,19 @@ from app.services.escrow_calculator import (
 )
 
 
-def _comp(name, annual, inflation=None, is_active=True, created_at=None, id=1):
-    """Helper to create a mock escrow component."""
+def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
+    """Helper to create a mock escrow component.
+
+    ``end_date=None`` mirrors a currently-active component (the effective-dated
+    model's "active" is exactly ``end_date IS NULL``); pass a date to mark the
+    component removed as of that date.
+    """
     return SimpleNamespace(
         id=id,
         name=name,
         annual_amount=Decimal(str(annual)),
         inflation_rate=Decimal(str(inflation)) if inflation else None,
-        is_active=is_active,
+        end_date=end_date,
         created_at=created_at,
     )
 
@@ -42,14 +47,22 @@ class TestCalculateMonthlyEscrow:
         result = calculate_monthly_escrow([])
         assert result == Decimal("0.00")
 
-    def test_inactive_excluded(self):
-        """Inactive component excluded."""
+    def test_sums_all_given_no_active_filter(self):
+        """calculate_monthly_escrow sums EVERY component it is handed.
+
+        The effective-dating refactor moved active-state filtering to the
+        callers (``load_active_escrow_components`` for today, or
+        ``load_all_escrow_components`` + ``EscrowComponent.is_active_on`` for a
+        past payment's date); this function no longer gates on ``end_date``, so a
+        removed (``end_date``-set) component passed in IS summed.
+        4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
+        """
         components = [
             _comp("Property Tax", "4800"),
-            _comp("Old Insurance", "1200", is_active=False),
+            _comp("Old Insurance", "1200", end_date=date(2026, 1, 1)),
         ]
         result = calculate_monthly_escrow(components)
-        assert result == Decimal("400.00")
+        assert result == Decimal("500.00")
 
     def test_with_inflation(self):
         """Inflation applied with month-aware elapsed years (M-05)."""
@@ -175,17 +188,25 @@ class TestBuildEscrowDisplay:
             assert isinstance(row.annual_amount, Decimal)
             assert isinstance(row.monthly_amount, Decimal)
 
-    def test_inactive_excluded(self):
-        """Inactive components are filtered the same way as the
-        :func:`calculate_monthly_escrow` aggregate, so the per-row
-        display and the badge total can never disagree."""
+    def test_no_active_filter_rows_match_badge(self):
+        """build_escrow_display builds one row per GIVEN component -- it does not
+        filter by active state (the caller supplies the currently-active set,
+        the same set the badge is summed over by ``calculate_monthly_escrow``).
+
+        This keeps the rows-sum-to-badge invariant true for ANY input: even with
+        a removed (``end_date``-set) component present, the rows AND the badge
+        both count it, so they agree, rather than the rows omitting it while the
+        badge counts it -- the #17 mismatch a divergent filter would resurface.
+        4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
+        """
         components = [
             _comp("Property Tax", "4800", id=1),
-            _comp("Old Insurance", "1200", is_active=False, id=2),
+            _comp("Removed Insurance", "1200", end_date=date(2026, 1, 1), id=2),
         ]
         rows = build_escrow_display(components)
-        assert len(rows) == 1
-        assert rows[0].id == 1
+        badge = calculate_monthly_escrow(components)
+        assert [r.id for r in rows] == [1, 2]
+        assert sum(r.monthly_amount for r in rows) == badge == Decimal("500.00")
 
     def test_uneven_division_rounds_half_up(self):
         """1000 / 12 = 83.3333... -> HALF_UP rounds to 83.33.

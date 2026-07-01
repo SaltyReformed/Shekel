@@ -167,3 +167,35 @@ def percent_complete(total: Decimal, target: Decimal) -> Decimal:
     if pct < ZERO:
         return ZERO
     return pct
+
+
+def accrue_monthly_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
+    """Return one month's interest on ``balance`` at ``annual_rate``.
+
+    The single monthly-accrual primitive every amortization surface shares:
+    ``round_money(balance * annual_rate / 12)`` with a zero-rate guard.  The
+    historical replay (``rate_period_engine._replay_payment_row``), the forward
+    projection (``amortization_engine`` schedule), the contractual balance walk
+    (``rate_period_engine._amortize_forward``), and the posting-ledger loan-payment
+    split (``loan_posting_service``) ALL call this one function, so the interest
+    they accrue is byte-identical by construction -- a drifting copy of the
+    formula can no longer desynchronise a displayed loan balance from a posted
+    one (the whole premise of the parallel-run posting ledger).  ``ROUND_HALF_UP``
+    via :func:`round_money` is the project's only rounding boundary; the
+    intermediate ``balance * (annual_rate / 12)`` stays at full Decimal precision
+    and rounds exactly once.
+
+    Args:
+        balance: The outstanding balance before this month's payment.  ``float``
+            is rejected by :func:`round_money` at the boundary, as everywhere.
+        annual_rate: The governing period's annual rate as a decimal fraction
+            (e.g. ``Decimal("0.06875")`` for 6.875%).  A non-positive rate
+            accrues no interest (a zero-interest period).
+
+    Returns:
+        The month's interest quantized to cents, or ``Decimal("0.00")`` when
+        ``annual_rate <= 0``.
+    """
+    if annual_rate <= 0:
+        return Decimal("0.00")
+    return round_money(balance * (annual_rate / MONTHS_PER_YEAR))

@@ -6,11 +6,12 @@ for impound accounts and rate change history for variable-rate loans.
 Both FK to account_id, not to any params table.
 """
 
+from datetime import date
+
 from app.extensions import db
 from app.models.mixins import (
     AccountScopedMixin,
     CreatedAtMixin,
-    IsActiveMixin,
     TimestampMixin,
 )
 
@@ -113,13 +114,81 @@ class RateHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
         )
 
 
-class EscrowComponent(AccountScopedMixin, IsActiveMixin, TimestampMixin, db.Model):
-    """An escrow line item (property tax, insurance, etc.) for a loan account."""
+def _default_effective_date() -> date:
+    """Today, resolved from this module's ``date`` name at INSERT time.
+
+    The :class:`EscrowComponent.effective_date` ORM default.  A bare
+    ``default=date.today`` would capture the real ``date.today`` bound method at
+    class-definition time, so the test suite's ``freeze_today`` -- which rebinds
+    this module's ``date`` name, not the captured method -- could not reach it,
+    leaving an ORM INSERT's ``effective_date`` on the wall clock while a
+    same-transaction ``end_date`` (set from the frozen ``date.today()``) uses the
+    frozen clock, tripping ``ck_escrow_components_date_range``.  Looking ``date``
+    up at CALL time keeps the two clocks identical (real in production, frozen
+    under ``freeze_today``).
+    """
+    return date.today()
+
+
+class EscrowComponent(AccountScopedMixin, TimestampMixin, db.Model):
+    """An effective-dated escrow line item (property tax, insurance, etc.) for a loan.
+
+    **Temporal (effective-dated) model.**  A component is not a single mutable
+    row but a series of versions, each valid over a half-open date range
+    ``[effective_date, end_date)`` -- the same effective-dating shape
+    :class:`RateHistory` uses for rates.  This lets the loan-payment posting
+    split read the escrow that was in effect *on each payment's date*
+    (immutable for a past date, so a posted split never silently moves when the
+    user later changes escrow), and it retires the previous ``is_active``
+    boolean: "currently active" is now exactly ``end_date IS NULL``.
+
+    * **Active on a date D** iff ``effective_date <= D AND (end_date IS NULL OR
+      D < end_date)``.  ``end_date`` is exclusive so a component removed on D is
+      not counted on D.
+    * **Add** a component -> insert a row with ``end_date = NULL``.
+    * **Remove** a component -> stamp ``end_date`` on the active row (replaces
+      the old ``is_active = False``); the row survives as history.
+    * **Change** an amount -> close the current version (stamp ``end_date``) and
+      insert a new one; the existing add/delete flow already expresses this as
+      delete + add.
+
+    The monthly figure at a date is summed by
+    :func:`app.services.escrow_calculator.calculate_monthly_escrow` over the
+    components active on that date: TODAY's set via
+    :func:`app.services.loan_payment_service.load_active_escrow_components`, or a
+    PAST payment's set by loading every version with
+    :func:`app.services.loan_payment_service.load_all_escrow_components` and
+    filtering with :meth:`is_active_on`.
+    """
 
     __tablename__ = "escrow_components"
     __table_args__ = (
-        db.UniqueConstraint(
-            "account_id", "name", name="uq_escrow_account_name"
+        # At most one ACTIVE (``end_date IS NULL``) version per name per
+        # account.  Partial so a removed version and its re-added successor may
+        # share a name across time; replaces the former total
+        # ``uq_escrow_account_name`` (a total unique would forbid ever re-adding
+        # a removed line item under the same name).
+        db.Index(
+            "uq_escrow_components_account_name_active",
+            "account_id", "name", unique=True,
+            postgresql_where=db.text("end_date IS NULL"),
+        ),
+        # A version's active range is well-formed: an open range (still in
+        # effect) or a closed one that does not end before it begins.  ``>=``
+        # (not ``>``) admits a zero-length range -- a component added and
+        # removed on the same day -- which is a legitimate "never active"
+        # version (``active_on(D)`` is ``effective_date <= D < end_date``, empty
+        # when the two are equal), and which a strict ``>`` would wrongly reject
+        # on a same-day add-then-delete.
+        db.CheckConstraint(
+            "end_date IS NULL OR end_date >= effective_date",
+            name="ck_escrow_components_date_range",
+        ),
+        # Serves the as-of lookup (WHERE account_id = ? AND effective_date <= ?
+        # AND (end_date IS NULL OR ? < end_date)) the split walks per payment.
+        db.Index(
+            "ix_escrow_components_account_effective",
+            "account_id", "effective_date", "end_date",
         ),
         # F-077 / C-24: Annual escrow amount must be non-negative.
         # Column is ``Numeric(12, 2)`` and the route validates a
@@ -147,13 +216,52 @@ class EscrowComponent(AccountScopedMixin, IsActiveMixin, TimestampMixin, db.Mode
     name = db.Column(db.String(100), nullable=False)
     annual_amount = db.Column(db.Numeric(12, 2), nullable=False)
     inflation_rate = db.Column(db.Numeric(5, 4), nullable=True)
-    # is_active: from IsActiveMixin.
+    # First date this version of the component is in effect.  Python
+    # ``default=_default_effective_date`` (a CALL-TIME ``date.today()``; see that
+    # helper for why a bare ``default=date.today`` is wrong) so an ORM INSERT
+    # that omits it (the add route, the tests) stamps the APP's today -- the SAME
+    # clock the delete route stamps ``end_date`` with, so a same-day
+    # add-then-delete yields
+    # ``effective_date == end_date`` (a valid zero-length range) rather than a
+    # DB-clock ``effective_date`` that could sit AFTER an app-clock ``end_date``
+    # under a frozen test clock.  ``server_default`` CURRENT_DATE is the
+    # storage-tier fallback for a raw-SQL writer that omits it.  The temporal
+    # migration backfills existing rows to the loan's origination date so every
+    # historical payment sees today's escrow exactly as it did pre-migration.
+    effective_date = db.Column(
+        db.Date, nullable=False,
+        default=_default_effective_date, server_default=db.func.current_date(),
+    )
+    # Exclusive end of this version's active range.  NULL = still in effect
+    # (the "currently active" set); a non-NULL value means the component was
+    # removed (or superseded by a new version) on that date.
+    end_date = db.Column(db.Date, nullable=True)
 
     # Relationships
     account = db.relationship(
         "Account",
         backref=db.backref("escrow_components", lazy="select"),
     )
+
+    def is_active_on(self, on_date: date) -> bool:
+        """Whether this component version is in effect on ``on_date``.
+
+        ``effective_date <= on_date < end_date`` (``end_date`` exclusive; an open
+        range is unbounded above).  The in-memory form of the ``[effective_date,
+        end_date)`` range predicate, used by the loan-payment split to sum the
+        escrow in effect on each historical payment's date -- immutable for a
+        past date, so a posted split never moves when escrow later changes.
+
+        Args:
+            on_date: The date to test membership of.
+
+        Returns:
+            ``True`` iff this version is in effect on ``on_date``.
+        """
+        return (
+            self.effective_date <= on_date
+            and (self.end_date is None or on_date < self.end_date)
+        )
 
     def __repr__(self):
         return (

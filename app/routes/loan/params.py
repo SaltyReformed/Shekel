@@ -28,7 +28,7 @@ from app.routes.loan._helpers import (
     _trueup_schema,
     _update_schema,
 )
-from app.services import anchor_service
+from app.services import anchor_service, loan_posting_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _validate_collateral_link
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -117,6 +117,13 @@ def create_params(account_id):
             LoanAnchorSourceEnum.ORIGINATION,
         ),
     ))
+
+    # Build-Order Step 4: a loan that had payments settled before it was
+    # configured was not yet resolvable, so those payments carry no split
+    # correction.  Now that the params / origination rate / anchor exist,
+    # back-post the corrections for every scenario's confirmed payments
+    # (a no-op for the common case of a brand-new loan with no payments).
+    loan_posting_service.sync_loan_payment_postings_all_scenarios(account.id)
     db.session.commit()
 
     logger.info("Created loan params for account %d", account.id)
@@ -161,6 +168,12 @@ def update_params(account_id):
         if field in _PARAM_FIELDS:
             setattr(params, field, value)
 
+    # Build-Order Step 4: a params edit can change the origination rate (via
+    # ``_upsert_origination_rate`` above) OR the ``payment_day`` -- both move
+    # the confirmed-payment split (the rate drives interest; ``payment_day``
+    # drives the monthly-due-date eligibility boundary), so re-sync every
+    # scenario's corrections UNCONDITIONALLY, not only on the rate path.
+    loan_posting_service.sync_loan_payment_postings_all_scenarios(account.id)
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")

@@ -120,12 +120,7 @@ def load_loan_context(
         LoanContext with all data needed for amortization projection.
     """
     # Escrow -- loaded first because payment preparation needs it.
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account_id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
-    )
+    escrow_components = load_active_escrow_components(account_id)
     monthly_escrow = escrow_calculator.calculate_monthly_escrow(
         escrow_components,
     )
@@ -144,19 +139,7 @@ def load_loan_context(
         .order_by(RateHistory.effective_date.desc())
         .all()
     )
-    rate_changes: list[RateChangeRecord] | None = None
-    if rate_history_records:
-        rate_changes = [
-            RateChangeRecord(
-                effective_date=rh.effective_date,
-                interest_rate=Decimal(str(rh.interest_rate)),
-                monthly_pi=(
-                    Decimal(str(rh.monthly_pi))
-                    if rh.monthly_pi is not None else None
-                ),
-            )
-            for rh in rate_history_records
-        ]
+    rate_changes = _rate_change_records_from(rate_history_records)
 
     # Anchor events for the SSOT monthly_payment calculation.  Commit
     # 12's origination backfill guarantees at least one anchor per
@@ -209,6 +192,215 @@ def load_loan_context(
         monthly_escrow=monthly_escrow,
         contractual_pi=contractual_pi,
         rate_history=rate_history_records,
+    )
+
+
+def _rate_change_records_from(
+    rate_history_records: list,
+) -> list[RateChangeRecord] | None:
+    """Convert loaded RateHistory rows to the engine's RateChangeRecord feed.
+
+    The pure (no-DB) half of rate-change loading, shared by
+    :func:`load_loan_context` (which also keeps the raw ORM rows for its
+    ``rate_history`` display field) and :func:`load_rate_changes` (which needs
+    only the feed), so the two cannot drift on how a :class:`RateHistory` row
+    maps to a :class:`RateChangeRecord`.  Returns ``None`` -- not an empty
+    list -- for no rows: the resolver treats ``None`` and an empty feed
+    identically (an origination-row-less loan is unresolvable), and the explicit
+    ``None`` keeps the established contract a loan with no RateHistory has no
+    feed at all.
+
+    Args:
+        rate_history_records: The loan's :class:`RateHistory` ORM rows (any
+            order; each exposes ``effective_date`` / ``interest_rate`` /
+            optional ``monthly_pi``).
+
+    Returns:
+        The :class:`RateChangeRecord` list, or ``None`` when there are no rows.
+    """
+    if not rate_history_records:
+        return None
+    return [
+        RateChangeRecord(
+            effective_date=rh.effective_date,
+            interest_rate=Decimal(str(rh.interest_rate)),
+            monthly_pi=(
+                Decimal(str(rh.monthly_pi))
+                if rh.monthly_pi is not None else None
+            ),
+        )
+        for rh in rate_history_records
+    ]
+
+
+def load_rate_changes(account_id: int) -> list[RateChangeRecord] | None:
+    """Load a loan's rate-change feed (origination row plus any ARM adjustments).
+
+    Queries the account's :class:`RateHistory` rows (newest first, the same
+    order :func:`load_loan_context` uses) and maps them to the engine's
+    :class:`RateChangeRecord` feed via :func:`_rate_change_records_from`.  The
+    standalone loader for callers that need ONLY the feed -- the Build-Order
+    Step 4 split walk
+    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) builds the
+    loan's rate periods from it via
+    :func:`app.services.loan_resolver.resolve_periods` -- without paying for the
+    rest of :func:`load_loan_context`'s payment-history / escrow /
+    contractual-P&I work.
+
+    Args:
+        account_id: The loan account whose rate history to load.
+
+    Returns:
+        The :class:`RateChangeRecord` list (newest first), or ``None`` when the
+        loan carries no :class:`RateHistory` row (an origination-row-less,
+        unresolvable loan -- the resolver raises on such a feed).
+    """
+    rate_history_records = (
+        db.session.query(RateHistory)
+        .filter_by(account_id=account_id)
+        .order_by(RateHistory.effective_date.desc())
+        .all()
+    )
+    return _rate_change_records_from(rate_history_records)
+
+
+def load_loan_params(account_id: int) -> LoanParams | None:
+    """Load a loan account's :class:`LoanParams` row, or None.
+
+    The one-line "is this a configured loan, and if so what are its terms"
+    lookup shared by every loan consumer (:func:`resolve_account_loan`,
+    :func:`_resolve_loan_piti`, and the Step-4
+    :func:`app.services.loan_posting_service.compute_loan_payment_splits`), so
+    none of them re-spells the same query and a future change to how a loan's
+    params are loaded (eager-loads, soft-delete handling) touches one site.
+    ``None`` means the account has no loan configuration yet -- not an
+    amortizing loan, or a loan whose setup is incomplete -- and the caller
+    short-circuits.
+
+    Args:
+        account_id: The account whose loan parameters to load.
+
+    Returns:
+        The :class:`LoanParams` row, or ``None`` when the account is not a
+        configured loan.
+    """
+    return (
+        db.session.query(LoanParams)
+        .filter_by(account_id=account_id)
+        .first()
+    )
+
+
+def load_all_loan_account_ids() -> list[int]:
+    """Return every configured loan account's id, ascending (all owners).
+
+    The account id of every :class:`LoanParams` row -- one per amortizing loan,
+    across all owners.  A loan can carry a Build-Order Step 4 split correction
+    only once it has a :class:`LoanParams` row (:func:`load_loan_params`;
+    :func:`app.services.loan_posting_service.compute_loan_payment_splits` returns
+    ``[]`` otherwise), so this is exactly the set the one-time historical backfill
+    (:func:`app.services.loan_posting_service.backfill_all_loan_payment_postings`)
+    iterates.  Deliberately NOT user-scoped: it is a system / deploy-time sweep
+    over every owner's loans -- like the Step-2 / Step-3 settled-row backfills --
+    and each posted correction still carries its own owner (from the payment
+    shadow's pay period), so no row is mis-attributed.
+
+    Returns:
+        The loan account ids, ascending (``account_id`` is unique per
+        :class:`LoanParams`, so already distinct); empty on a loan-free database.
+    """
+    rows = (
+        db.session.query(LoanParams.account_id)
+        .order_by(LoanParams.account_id)
+        .all()
+    )
+    return [account_id for (account_id,) in rows]
+
+
+def load_anchor_events(account_id: int) -> list:
+    """Load every :class:`LoanAnchorEvent` for a loan account (unordered).
+
+    The shared anchor-history loader for the loan consumers
+    (:func:`resolve_account_loan`, :func:`_resolve_loan_piti`, and the Step-4
+    :func:`app.services.loan_posting_service.compute_loan_payment_splits`); the
+    resolver and the split walk both select the latest event from the returned
+    list via :func:`app.services.loan_resolver.select_latest_anchor` (so the
+    ordering is irrelevant here and not imposed).  Centralising the query keeps
+    the consumers from drifting on how a loan's anchor history is read.
+
+    Args:
+        account_id: The loan account whose anchor events to load.
+
+    Returns:
+        The account's :class:`LoanAnchorEvent` rows (possibly empty -- the
+        origination backfill guarantees at least one in production, but a
+        direct-insert test fixture may have none).
+    """
+    return (
+        db.session.query(LoanAnchorEvent)
+        .filter_by(account_id=account_id)
+        .all()
+    )
+
+
+def load_active_escrow_components(account_id: int) -> list:
+    """Load a loan account's CURRENTLY-active escrow components, ordered by name.
+
+    The "what escrow does this loan carry TODAY" loader -- used by
+    :func:`load_loan_context` (the resolver / projection path) and the escrow
+    display / recurring-cash surfaces, so the monthly-escrow figure each feeds
+    to :func:`app.services.escrow_calculator.calculate_monthly_escrow` is summed
+    over the IDENTICAL currently-active set.  Removed components (``end_date``
+    set) are excluded -- "currently active" is exactly ``end_date IS NULL`` under
+    the effective-dated model.  For the escrow active on a PAST payment's date
+    (the loan-payment split), load every version with
+    :func:`load_all_escrow_components` and filter each date with
+    :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
+
+    Args:
+        account_id: The loan account whose escrow components to load.
+
+    Returns:
+        The currently-active (``end_date IS NULL``)
+        :class:`~app.models.loan_features.EscrowComponent` rows, ascending by
+        name (the order is irrelevant to the order-independent monthly sum, but
+        kept stable for display callers).
+    """
+    return (
+        db.session.query(EscrowComponent)
+        .filter(
+            EscrowComponent.account_id == account_id,
+            EscrowComponent.end_date.is_(None),
+        )
+        .order_by(EscrowComponent.name)
+        .all()
+    )
+
+
+def load_all_escrow_components(account_id: int) -> list:
+    """Load EVERY escrow component version for a loan (active AND removed).
+
+    The loan-payment split
+    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) needs
+    the escrow in effect on each HISTORICAL payment's date, which may be a
+    version since removed, so it loads the full effective-dated history here and
+    filters each payment's date in memory with
+    :meth:`~app.models.loan_features.EscrowComponent.is_active_on` -- one query
+    for the whole walk rather than one per payment.  Unlike
+    :func:`load_active_escrow_components` this does NOT filter by ``end_date``.
+
+    Args:
+        account_id: The loan account whose full escrow history to load.
+
+    Returns:
+        Every :class:`~app.models.loan_features.EscrowComponent` row for the
+        account (active and removed), unordered -- the caller filters by date and
+        the monthly sum is order-independent.
+    """
+    return (
+        db.session.query(EscrowComponent)
+        .filter(EscrowComponent.account_id == account_id)
+        .all()
     )
 
 
@@ -532,12 +724,10 @@ def resolve_account_loan(
     # module (``load_loan_context``), so resolving it here rather than at
     # module top keeps the dependency one-directional.
     from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
-    params = db.session.query(LoanParams).filter_by(account_id=account_id).first()
+    params = load_loan_params(account_id)
     if params is None:
         return None
-    anchor_events = db.session.query(LoanAnchorEvent).filter_by(
-        account_id=account_id,
-    ).all()
+    anchor_events = load_anchor_events(account_id)
     ctx = load_loan_context(account_id, scenario_id, params)
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
@@ -562,19 +752,11 @@ def _resolve_loan_piti(
     # from this module, so resolving it here rather than at module top
     # keeps the dependency one-directional.
     from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
-    params = (
-        db.session.query(LoanParams)
-        .filter_by(account_id=loan_account_id)
-        .first()
-    )
+    params = load_loan_params(loan_account_id)
     if params is None:
         return None
     context = load_loan_context(loan_account_id, scenario_id, params)
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=loan_account_id)
-        .all()
-    )
+    anchor_events = load_anchor_events(loan_account_id)
     if not anchor_events:
         return None
     state = loan_resolver.resolve_loan(

@@ -138,14 +138,19 @@ def _recorded_pi_from(
     }
 
 
-def _resolve_periods(loan_params, rate_changes):
+def resolve_periods(loan_params, rate_changes):
     """Build the loan's rate periods from its params and rate-change feed.
 
     One construction shared by every resolver entry point
     (:func:`._state.resolve_loan`,
     :func:`._state.compute_monthly_payment_baseline`,
     :func:`._payoff.compute_payoff_scenarios`) so the period set they read
-    cannot drift apart.
+    cannot drift apart.  Re-exported from the package so the out-of-package
+    Build-Order Step 4 split walk
+    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) reads the
+    identical period set -- its accrued-interest rate per payment is sampled
+    from these very periods, so a posted loan-payment split can never disagree
+    with the resolver's replayed balance on the rate in effect.
 
     Args:
         loan_params: The loan's :class:`LoanParams`-shaped object.
@@ -177,7 +182,7 @@ def _terms_from_periods(periods: list[RatePeriod]) -> list[PeriodTerms]:
 
     Args:
         periods: The ordered :class:`RatePeriod` list from
-            :func:`_resolve_periods`.
+            :func:`resolve_periods`.
 
     Returns:
         The corresponding :class:`PeriodTerms` list, in the same order.
@@ -210,7 +215,7 @@ def engine_terms(loan_params, rate_changes) -> list[PeriodTerms]:
     Returns:
         The loan's full :class:`PeriodTerms` schedule.
     """
-    return _terms_from_periods(_resolve_periods(loan_params, rate_changes))
+    return _terms_from_periods(resolve_periods(loan_params, rate_changes))
 
 
 @dataclass(frozen=True)
@@ -260,7 +265,7 @@ class LoanInputs:
     rate_changes: list[RateChangeRecord] | None
 
 
-def _select_latest_anchor(anchor_events: list) -> object:
+def select_latest_anchor(anchor_events: list) -> object:
     """Return the most recent anchor event by (anchor_date, created_at) DESC.
 
     Mirrors the ORM ``backref(order_by=...)`` on
@@ -269,6 +274,12 @@ def _select_latest_anchor(anchor_events: list) -> object:
     plus a later trueup); ``created_at`` is the deterministic
     tie-breaker so the same anchor list always selects the same
     event.
+
+    Re-exported from the package so the out-of-package Build-Order Step 4
+    split walk (:func:`app.services.loan_posting_service.compute_loan_payment_splits`)
+    seeds its running balance from the IDENTICAL anchor the resolver replays
+    from -- the posted loan-payment ledger and the resolver's balance can never
+    disagree on which dated balance is the opening point.
 
     Args:
         anchor_events: Non-empty list of LoanAnchorEvent-shaped
@@ -324,7 +335,7 @@ def _replay_from_anchor(
         loan_inputs: The loan's loaded input bundle.  ``anchor_events``
             must be non-empty (the Commit-12 invariant).
         periods: The loan's ordered rate periods, built once by the
-            caller via :func:`_resolve_periods`.
+            caller via :func:`resolve_periods`.
         as_of: Evaluation date; replay stops at the latest payment whose
             pay period has begun by this date.
 
@@ -334,9 +345,9 @@ def _replay_from_anchor(
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
-            :func:`_select_latest_anchor`).
+            :func:`select_latest_anchor`).
     """
-    anchor = _select_latest_anchor(loan_inputs.anchor_events)
+    anchor = select_latest_anchor(loan_inputs.anchor_events)
     return replay_schedule(
         periods=periods,
         anchor=BalanceAnchor(

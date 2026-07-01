@@ -8,10 +8,10 @@ them keeps that parallel code intra-file (R0801 is cross-file only).
 """
 
 import logging
+from datetime import date
 
 from flask import flash, render_template, request
 from flask_login import login_required
-from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.loan_features import EscrowComponent, RateHistory
@@ -25,9 +25,12 @@ from app.routes.loan._helpers import (
     _rate_schema,
     _resolve_loan_state,
 )
-from app.services import escrow_calculator
+from app.services import (
+    escrow_calculator,
+    loan_payment_service,
+    loan_posting_service,
+)
 from app.utils.auth_helpers import require_owner
-from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
 
@@ -119,19 +122,21 @@ def add_rate_change(account_id):
     # for a backdated or out-of-order change); RateHistory is now the
     # sole source of truth and the resolver derives the current rate from
     # it, so no scalar needs maintaining here.
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        # Same-effective-date double-submit (F-104 / C-22): the
-        # composite unique ``uq_rate_history_account_effective_date``
-        # rejects the second INSERT when the user clicks Save twice
-        # in a row.  Roll back, flash a clear message, and re-render
-        # the rate history without the proposed duplicate.  A
-        # legitimate same-day correction is expressed by editing the
-        # existing row, not by appending another.
-        db.session.rollback()
-        if not is_unique_violation(exc, _RATE_HISTORY_UNIQUE_CONSTRAINT):
-            raise
+    # Build-Order Step 4: a rate change moves the interest split of every
+    # confirmed post-anchor payment, in every scenario.  The shared helper
+    # re-syncs those corrections in the same transaction as the new rate row and
+    # translates a same-effective-date duplicate (which its flush surfaces) into
+    # the idempotent re-render below; a non-rate IntegrityError propagates from
+    # the helper (the correct 500 disposition).
+    if not loan_posting_service.sync_all_scenarios_or_duplicate(
+        account.id, _RATE_HISTORY_UNIQUE_CONSTRAINT,
+    ):
+        # Same-effective-date double-submit (F-104 / C-22): the composite
+        # unique ``uq_rate_history_account_effective_date`` rejected the second
+        # INSERT when the user clicked Save twice in a row.  Flash a clear
+        # message and re-render the rate history without the proposed
+        # duplicate.  A legitimate same-day correction is expressed by editing
+        # the existing row, not by appending another.
         logger.info(
             "Duplicate rate-history entry prevented for account %d on %s",
             account.id, data["effective_date"],
@@ -143,8 +148,8 @@ def add_rate_change(account_id):
         )
         return _render_rate_history(account, params)
 
+    db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
-
     return _render_rate_history(account, params)
 
 
@@ -168,26 +173,32 @@ def add_escrow(account_id):
     # before validation, so ``data["inflation_rate"]`` is stored
     # verbatim.
 
-    # Check for duplicate name.
+    # Check for a duplicate name among the CURRENTLY-ACTIVE components; a
+    # component removed earlier (``end_date`` set) may be re-added under the
+    # same name, so a historical version must not block the add.  The partial
+    # unique ``uq_escrow_components_account_name_active`` is the DB backstop.
     existing = (
         db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, name=data["name"])
+        .filter(
+            EscrowComponent.account_id == account.id,
+            EscrowComponent.name == data["name"],
+            EscrowComponent.end_date.is_(None),
+        )
         .first()
     )
     if existing:
         return "An escrow component with that name already exists.", 400
 
+    # ``effective_date`` is omitted -- the column's CURRENT_DATE server default
+    # takes effect today, opening the component's active range.
     comp = EscrowComponent(account_id=account.id, **data)
     db.session.add(comp)
     db.session.commit()
 
     logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
 
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
+    escrow_components = loan_payment_service.load_active_escrow_components(
+        account.id,
     )
 
     # Compute updated payment summary for OOB swap.
@@ -221,15 +232,16 @@ def delete_escrow(account_id, component_id):
     if comp is None or comp.account_id != account.id:
         return "Component not found", 404
 
-    comp.is_active = False
+    # Close the component's active range as of today (replaces the old
+    # ``is_active = False``); the row survives as history.  Guarded so a repeat
+    # delete does not move an already-set ``end_date`` (idempotent).
+    if comp.end_date is None:
+        comp.end_date = date.today()
     db.session.commit()
     logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
 
-    escrow_components = (
-        db.session.query(EscrowComponent)
-        .filter_by(account_id=account.id, is_active=True)
-        .order_by(EscrowComponent.name)
-        .all()
+    escrow_components = loan_payment_service.load_active_escrow_components(
+        account.id,
     )
 
     # Compute updated payment summary for OOB swap.

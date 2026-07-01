@@ -109,7 +109,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.pay_period import PayPeriod
-from app.services import entry_service
+from app.services import entry_service, loan_posting_service
 from app.utils.db_errors import is_unique_violation
 
 
@@ -377,7 +377,9 @@ def apply_loan_anchor_true_up(
         composition is uniform with the checking-anchor path.
 
     Raises:
-        IntegrityError: When the IntegrityError raised at commit time
+        IntegrityError: When the IntegrityError surfaced while re-splitting
+            and flushing the true-up (via
+            :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate`)
             is NOT the same-day-uniqueness violation -- a different
             constraint failed and we must not swallow it.  Caller
             propagates (Flask will surface as 500, which is the
@@ -392,15 +394,20 @@ def apply_loan_anchor_true_up(
         ),
     ))
 
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        if not is_unique_violation(exc, LOAN_ANCHOR_EVENT_UNIQUE_INDEX):
-            # Some other constraint failed -- do not silently treat
-            # as idempotent success; re-raise so the unexpected
-            # DB-level failure surfaces (Flask returns 500).
-            raise
+    # Build-Order Step 4: a balance true-up re-bases the confirmed-payment
+    # split in EVERY scenario (the anchor is per-account, not per-scenario) --
+    # payments now behind the new anchor reverse, later ones re-split from the
+    # new balance.  The shared helper runs that sync in the same transaction as
+    # the new event and translates a same-day duplicate (which its flush
+    # surfaces) into the idempotent DUPLICATE_SAME_DAY outcome; the sync touches
+    # only the loan's own ledgers, never Checking.  A non-anchor IntegrityError
+    # propagates from the helper (the correct 500 disposition).  The just-added
+    # event becomes visible to the re-split because the helper's first query
+    # autoflushes it -- load-bearing, so this must NOT run under
+    # ``session.no_autoflush``.
+    if not loan_posting_service.sync_all_scenarios_or_duplicate(
+        account.id, LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
+    ):
         logger.info(
             "Duplicate same-day loan anchor event prevented for "
             "account %d on %s (idempotent success)",
@@ -408,4 +415,5 @@ def apply_loan_anchor_true_up(
         )
         return AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
 
+    db.session.commit()
     return AnchorTrueUpOutcome.COMMITTED

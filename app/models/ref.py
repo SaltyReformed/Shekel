@@ -531,3 +531,37 @@ class PostingSource(db.Model):
 
     def __repr__(self):
         return f"<PostingSource {self.name}>"
+
+
+class LedgerAccountKind(db.Model):
+    """Row-kind discriminator reference for ``budget.ledger_accounts``.
+
+    The explicit, positive discriminator (Build-Order Step 4) that replaces
+    inferring a ledger account's kind from the NULL-pattern of its
+    ``account_id`` / ``category_id`` / ``is_fallback`` columns.  Every
+    ``budget.ledger_accounts`` row carries a ``kind_id`` FK to one of these
+    rows (Commit 2); the kind fixes how a reader enumerates and groups the
+    chart of accounts without testing which columns are NULL.
+
+    Step 4 seeds seven kinds: the four the chart already uses (``linked``,
+    ``category``, ``fallback``, ``orphan`` -- see
+    :class:`app.models.ledger_account.LedgerAccount`) plus the three per-loan
+    accounts the loan-payment correction books into (``loan_interest`` and
+    ``loan_escrow``, both Expense; ``loan_refund``, an Asset).  Later steps
+    INSERT additional kinds (e.g. an opening-balance Equity kind) via their
+    own migrations -- new values are data, never schema.
+
+    Application code resolves these via ``ref_cache.ledger_account_kind_id``
+    and compares against the integer ID -- never the string ``name`` --
+    matching the project-wide ``ref-table: IDs for logic, strings for display
+    only`` invariant.
+    """
+
+    __tablename__ = "ledger_account_kinds"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<LedgerAccountKind {self.name}>"
