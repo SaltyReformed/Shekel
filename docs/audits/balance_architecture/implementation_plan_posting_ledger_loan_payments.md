@@ -31,7 +31,23 @@ split now sums each payment's escrow as-of its pay-period start via
 to the feature branch (local, not pushed). **So the original Commits 5-7 below become T3-T5** and now sit
 after this prerequisite; C4's escrow paragraph above is superseded by the effective-dated split (T2).
 
-Commits 5-7 (now T3-T5) pending. **Build-Order Step 4** of Option D
+**T3 (original Commit 5 -- lifecycle wiring) SHIPPED (`45fa001`, local, not pushed):** the C4 split
+service is now wired into every chokepoint that changes a loan's confirmed payments -- settle / revert /
+amount+actual edit / delete / restore (`transfer_service`, via a NEW
+`app/services/_transfer_loan_posting.py` sibling extracted to keep `transfer_service` under the
+1000-line module gate, mirroring the `_transfer_ownership.py` split), the balance true-up
+(`anchor_service`), the ARM-rate and origination-rate / `payment_day` edits, and the params-create N1
+back-post (loan routes). **As-built additions, developer-ratified:** (6) the true-up and both rate paths
+share ONE new `loan_posting_service.sync_all_scenarios_or_duplicate` helper (flush-not-commit; runs the
+all-scenario re-split and translates the pending anchor / rate row's same-day / effective-date unique
+violation to a bool) -- the DRY resolution of a `duplicate-code` gate finding that the identical inline
+sync in `anchor_service` + `escrow_rates` crossed; the duplicate-idempotency is preserved because the
+helper's first query autoflushes the pending row, surfacing the collision inside its one `try`; (7)
+shared loan-posting TEST helpers (`create_loan_with_trueup` + the ledger / correction query helpers)
+were extracted into `tests/_test_helpers.py` and the C4 suite delegated to them (one C4 test's premise
+-- "a settle does not auto-post" -- changed under the wiring, so it now drives a projected shadow).
+`code-reviewer` CLEAN (no CRITICAL/HIGH/MED); `pylint app/ scripts/` 10.00; full suite 6739. T4-T5
+pending. **Build-Order Step 4** of Option D
 (`level1_level2_scope_and_fitness.md`, build-order item 4:
 "Post confirmed loan payments with their real principal / interest split; retire the read-time replay
 of confirmed history").
@@ -594,16 +610,33 @@ the final gate in the last commit (run alone).
    without the resolver's `_redistribute_to_distinct_months`, so the C7 / read-switch oracle must treat a
    biweekly-collision-at-a-rate-boundary loan as an expected divergence (the ledger is the more-correct
    record), not assert exact ledger==resolver equality.
-5. **Lifecycle wiring** (**now T3; preceded by the temporal-escrow prerequisite T1/T2 above**)
-   (settle/restore at `:641`/`:951`; reverse-before-delete + downstream re-sync at
-   `:690`; scenario-looped sync at true-up, both rate paths, and params-create). Tests: Section 8.5
-   (CRITICAL regression) + 8.6 (lifecycle) + non-loan transfers ignored; existing transfer/loan/anchor/
-   rate suites green. Review: loan sync LAST; reverse before delete; no payback wiring; no Checking
-   touch; no double-post. **NOTE (verified 2026-07-01 while tracing for T3):** the plan's line numbers
-   here have drifted -- the current sites are `transfer_service.py` update_transfer END ~639-643,
-   `restore_transfer` END ~950-953, `delete_transfer` reverse-before-remove ~690; and `update_params`
-   must sync UNCONDITIONALLY (not only on the origination-rate path) because it can also change
-   `payment_day`, which shifts `is_confirmed_payment_eligible`. Re-anchor each site to live code in T3.
+5. **DONE (`45fa001`; original Commit 5, T3). Lifecycle wiring** (preceded by the temporal-escrow
+   prerequisite T1/T2): the C4 split service is wired at every chokepoint that changes a loan's confirmed
+   payments. **As-built sites (re-anchored to live code):** `transfer_service.update_transfer` (inside the
+   `_POSTING_RELEVANT_FIELDS` block, AFTER the cash sync) and `restore_transfer` (after the cash sync)
+   call `_sync_loan_payment_postings_if_loan`; `delete_transfer` calls `_reverse_loan_payment_before_delete`
+   (loads the income shadow WITHOUT the `is_deleted` filter, so a hard delete of an already-soft-deleted
+   transfer still reverses) BEFORE the delete and captures the loan / scenario ids, then
+   `_resync_loan_payment_postings_after_delete` AFTER (the soft/hard branches were restructured into an
+   if/else with a shared tail); `anchor_service.apply_loan_anchor_true_up`,
+   `routes/loan/escrow_rates.add_rate_change`, and `routes/loan/params.update_params` (UNCONDITIONAL --
+   `payment_day` also moves `is_confirmed_payment_eligible`) call the all-scenarios sync; `create_params`
+   back-posts the N1 case. **As-built deviations:** (a) the four transfer-service wiring helpers live in a
+   NEW `app/services/_transfer_loan_posting.py` sibling (the 1000-line module gate, mirroring
+   `_transfer_ownership.py`); (b) the true-up + both rate paths share ONE
+   `loan_posting_service.sync_all_scenarios_or_duplicate` helper (flush-not-commit) -- the DRY resolution
+   of a `duplicate-code` gate finding, NOT the per-site inline try/except drafted here; the anchor / rate
+   duplicate-idempotency holds because the helper's first query autoflushes the pending row, so the
+   collision surfaces inside its one `try`. **Tests** (`tests/test_integration/test_loan_posting_wiring.py`,
+   15): Section 8.5 full-cash-reversal regression on revert + hard delete, 8.6 lifecycle (settle / revert /
+   soft+hard delete / downstream-resplit / restore / true-up-Checking-untouched / multi-scenario /
+   duplicate-same-day-idempotent / ARM-rate / base-rate / `payment_day`-eligibility / N1), non-loan-ignored;
+   the actual-amount case uses a payoff-overpayment so the Refund leg is genuinely cash-dependent (a
+   non-vacuity fix from the `code-reviewer` pass). Shared loan-posting test helpers extracted into
+   `_test_helpers.py`; the C4 suite delegated to them (one C4 test's premise changed, so it now drives a
+   projected shadow). Verified: `pylint app/ scripts/` 10.00; full suite **6739**; `code-reviewer` CLEAN
+   (no CRITICAL/HIGH/MED; 3 LOW all addressed). Pre-existing out-of-scope note: an unused `anchor_service`
+   import in `tests/test_services/test_anchor_service.py` (not gated -- CI lints only `app/`).
 6. **Historical backfill migration (production-wide):** one correction per confirmed post-anchor settled
    loan payment <= as_of (real-split, per-loan accounts, `ON CONFLICT DO NOTHING`); idempotent via
    `NOT EXISTS` on a prior `loan_payment` entry for that `transaction_id`; down deletes Step-4 entries
