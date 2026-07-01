@@ -46,11 +46,33 @@ helper's first query autoflushes the pending row, surfacing the collision inside
 shared loan-posting TEST helpers (`create_loan_with_trueup` + the ledger / correction query helpers)
 were extracted into `tests/_test_helpers.py` and the C4 suite delegated to them (one C4 test's premise
 -- "a settle does not auto-post" -- changed under the wiring, so it now drives a projected shadow).
-`code-reviewer` CLEAN (no CRITICAL/HIGH/MED); `pylint app/ scripts/` 10.00; full suite 6739. T4-T5
-pending. **Build-Order Step 4** of Option D
+`code-reviewer` CLEAN (no CRITICAL/HIGH/MED); `pylint app/ scripts/` 10.00; full suite 6739. T5
+pending (T4 SHIPPED -- see the next paragraph). **Build-Order Step 4** of Option D
 (`level1_level2_scope_and_fitness.md`, build-order item 4:
 "Post confirmed loan payments with their real principal / interest split; retire the read-time replay
 of confirmed history").
+
+**T4 (original Commit 6 -- historical backfill) SHIPPED (local, not pushed):** the one-time,
+production-wide backfill that posts the real-split correction for every confirmed post-anchor settled
+loan payment that predates the T3 go-forward wiring. **The plan's raw-SQL `NOT EXISTS`/`ON CONFLICT`
+sketch (Section 9.6, like the Step-2/3 cash backfills) is not implementable for loans** and the
+developer ratified **Option A** instead (2026-07-01): the loan split is a running-balance walk over
+rate periods + effective-dated escrow, not a one-line SQL formula, so it must reuse the go-forward
+split service (built on `ref_cache` + services) -- which the migration host lacks by design
+(`create_app(init_ref_cache=False)`, the `3104f87` fix; the `db239773c2fd` self-contained-backfill
+policy). So the backfill runs in the POST-migration deploy hook
+(`scripts/init_database.py::backfill_loan_payment_postings_after_migration` -> the idempotent
+`loan_posting_service.backfill_all_loan_payment_postings`, reusing
+`sync_loan_payment_postings_all_scenarios` over every loan via the new
+`loan_payment_service.load_all_loan_account_ids`; backfill == go-forward by construction,
+reconcile-to-target so it never double-posts), and a thin boundary migration `e2a9f1c7b4d6` (new head,
+down_revision `d1e7c4a2f9b3`) has a documented NO-OP upgrade and owns only the reversible raw-SQL
+teardown (`source_kind = loan_payment` entries + per-loan `loan_account_id IS NOT NULL` ledger
+accounts) -- required so the Commit-2 (`efca4315bf81`) schema downgrade stays clean. Tests
+(`tests/test_integration/test_loan_posting_backfill.py`, 14, incl. a deploy-hook commit-contract test
+proven non-vacuous by a separate-connection read + a drop-the-commit mutation); executable Alembic
+up/down round-trip verified on the rebuilt template; `pylint app/ scripts/` 10.00; `code-reviewer` no
+Crit/High (its M1/L2/L3 all fixed). See Section 9.6 as-built for detail. T5 pending.
 
 **This rewrite supersedes the v1 "contractual mirror" plan.** v1 derived each payment's split from the
 loan resolver's *scheduled* amortization and proved `ledger == resolver`. The review showed that
@@ -637,12 +659,36 @@ the final gate in the last commit (run alone).
    projected shadow). Verified: `pylint app/ scripts/` 10.00; full suite **6739**; `code-reviewer` CLEAN
    (no CRITICAL/HIGH/MED; 3 LOW all addressed). Pre-existing out-of-scope note: an unused `anchor_service`
    import in `tests/test_services/test_anchor_service.py` (not gated -- CI lints only `app/`).
-6. **Historical backfill migration (production-wide):** one correction per confirmed post-anchor settled
-   loan payment <= as_of (real-split, per-loan accounts, `ON CONFLICT DO NOTHING`); idempotent via
-   `NOT EXISTS` on a prior `loan_payment` entry for that `transaction_id`; down deletes Step-4 entries
-   (`source_kind = loan_payment`) + the per-loan ledger accounts. On the prod clone this posts exactly
-   the one Mortgage correction (275.14 / 1018.82 / 616.99) and nothing for the Van -- verify. Tests:
-   synthetic post-anchor history; exclusions; idempotent; up/down; the exact prod-clone outcome.
+6. **DONE (as-built, T4; developer-ratified Option A, 2026-07-01). Historical backfill
+   (production-wide):** one correction per confirmed post-anchor settled loan payment, real-split,
+   per-loan accounts; **idempotent via reconcile-to-target** (stronger than the drafted `NOT EXISTS` --
+   a payment already carrying a go-forward correction is at target, so nothing is re-posted).
+   **Design fork the plan's raw-SQL sketch could not hold:** unlike the Step-2/3 cash effects (a
+   one-line SQL formula), the loan split is a running-balance walk over rate periods + effective-dated
+   escrow, so it CANNOT be reproduced in raw SQL without duplicating the money-critical split engine
+   (the drift the unified `accrue_monthly_interest` exists to prevent). It must reuse the go-forward
+   split service, which is built on `ref_cache` + the service layer -- but the migration host runs
+   `create_app(init_ref_cache=False)` (the `3104f87` fix) and the `db239773c2fd` policy forbids
+   importing the service into a migration. **Resolution:** the backfill runs in the POST-migration
+   deploy hook `scripts/init_database.py::backfill_loan_payment_postings_after_migration` (inits
+   `ref_cache`, then calls the idempotent app-layer
+   `loan_posting_service.backfill_all_loan_payment_postings`, which loops
+   `sync_loan_payment_postings_all_scenarios` over every loan via the new
+   `loan_payment_service.load_all_loan_account_ids` -- so backfill == go-forward by construction). A
+   thin boundary migration `e2a9f1c7b4d6` (new head, down_revision `d1e7c4a2f9b3`) has a documented
+   NO-OP upgrade and owns only the reversible raw-SQL teardown (downgrade deletes `source_kind =
+   loan_payment` entries + per-loan `loan_account_id IS NOT NULL` ledger accounts), required so the
+   Commit-2 (`efca4315bf81`) schema downgrade is clean -- exactly the ordering its docstring depends on.
+   Tests (`tests/test_integration/test_loan_posting_backfill.py`, 14): posts-a-missing-correction
+   (hand-computed 500/500; escrow 3-leg; multi-payment running balance 497.50), no-double-post +
+   idempotent, all-loans/owners/scenarios coverage, non-loan-untouched + no-payment-no-op, the
+   deploy-hook commit contract (proven non-vacuous via a separate connection AND a mutation test that
+   drops the commit), migration revision-pair + downgrade-removes-loan-data-keeps-Step-2 + source guard.
+   Executable Alembic downgrade/upgrade round-trip verified on the rebuilt template. `pylint app/
+   scripts/` 10.00; `code-reviewer` no Crit/High (M1 hook-commit coverage + L2 stale-idle-transaction
+   hardening + L3 dead-disable all fixed). The exact prod-clone outcome (posts the one Mortgage
+   correction 275.14 / 1018.82 / 616.99, nothing for the Van) is the T5 manual step (§9.7); this step
+   leaves the dev DB pristine for it.
 7. **The reconciliation oracle** (Section 8) + full suite via `./scripts/test.sh` (run alone) ->
    show `<N> passed` (~6640+ baseline); `pylint app/ scripts/` 10.00; rebuild the test template. Docs:
    note Step 4 done (write-only) in `level1_level2_scope_and_fitness.md`; update the Step-4 memory.
