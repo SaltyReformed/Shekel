@@ -754,11 +754,11 @@ class TestLoanLedgerShapeAndUnique:
 
     ``ck_ledger_accounts_loan_shape`` keeps a ``loan_account_id`` row from also
     being a linked / category / fallback row, and ``uq_ledger_accounts_loan``
-    permits at most one interest / escrow / refund account per (owner, loan).
-    Together they confine the three per-loan kinds to their own column shape and
-    cardinality while leaving every other kind untouched (the per-loan rows
-    carry NULL ``loan_account_id`` nowhere else, so they fall outside the linked
-    / category / fallback uniques).
+    permits at most one interest / escrow / refund / opening account per
+    (owner, loan).  Together they confine the four per-loan kinds to their own
+    column shape and cardinality while leaving every other kind untouched (the
+    per-loan rows carry NULL ``loan_account_id`` nowhere else, so they fall
+    outside the linked / category / fallback uniques).
     """
 
     def test_valid_loan_row_accepted(self, app, db, seed_user):
@@ -897,18 +897,21 @@ class TestLoanLedgerShapeAndUnique:
             )
             _db.session.rollback()
 
-    def test_three_loan_kinds_one_loan_coexist(self, app, db, seed_user):
-        """Interest, escrow, and refund rows for ONE loan coexist.
+    def test_four_loan_kinds_one_loan_coexist(self, app, db, seed_user):
+        """Interest, escrow, refund, and opening rows for ONE loan coexist.
 
         ``uq_ledger_accounts_loan`` keys on ``kind_id`` too, so a single loan's
-        three distinct per-loan accounts are each a separate chart entry -- the
+        four distinct per-loan accounts are each a separate chart entry -- the
         edge case the (user, loan, kind) natural key is designed for.  Interest
-        and escrow are Expense; refund is Asset.  A single commit of all three
-        raising no IntegrityError is the proof.
+        and escrow are Expense; refund is Asset; the read switch's opening
+        account is Equity -- proving a per-loan Equity row satisfies the
+        columns-only ``ck_ledger_accounts_loan_shape`` CHECK (which is
+        class-agnostic) and takes its own slot under the unique.  A single
+        commit of all four raising no IntegrityError is the proof.
         """
         with app.app_context():
             loan = create_account_of_type(
-                seed_user, _db.session, "Mortgage", "Loan Three Kinds",
+                seed_user, _db.session, "Mortgage", "Loan Four Kinds",
             )
             _db.session.add(LedgerAccount(
                 user_id=loan.user_id,
@@ -928,11 +931,17 @@ class TestLoanLedgerShapeAndUnique:
                 kind_id=_kind_id(LedgerAccountKindEnum.LOAN_REFUND),
                 loan_account_id=loan.id, name="Mortgage Refund",
             ))
+            _db.session.add(LedgerAccount(
+                user_id=loan.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EQUITY),
+                kind_id=_kind_id(LedgerAccountKindEnum.EQUITY_OPENING),
+                loan_account_id=loan.id, name="Mortgage Opening",
+            ))
             _db.session.commit()
             assert (
                 _db.session.query(LedgerAccount)
                 .filter_by(loan_account_id=loan.id)
-                .count() == 3
+                .count() == 4
             )
 
 
