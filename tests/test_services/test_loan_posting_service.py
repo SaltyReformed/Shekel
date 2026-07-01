@@ -26,22 +26,23 @@ from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
-    PostingSourceEnum,
     StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.ledger_account import LedgerAccount
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
-from app.services import loan_posting_service, posting_service
+from app.services import loan_posting_service, posting_service, transfer_service
 from tests._test_helpers import (
-    create_loan_account,
+    create_loan_with_trueup,
     create_settled_transfer,
+    find_loan_ledger_account,
     insert_trueup_event,
     ledger_accounts_for_account,
+    ledger_net,
+    loan_correction_entries,
+    loan_income_shadow,
 )
 
 # A 6% loan on a $100,000 anchor accrues exactly $500.00 the first month
@@ -76,27 +77,16 @@ def _make_loan(
 ):
     """Create an amortizing loan with a controlled user-trueup anchor.
 
-    Routes through the shared ``create_loan_account`` factory (origination
-    anchor + rate), then appends a ``user_trueup`` anchor at *anchor_balance* /
-    *anchor_date* -- the latest event, so the split walk seeds from it -- and an
-    optional active escrow component.  Commits so the loan is fully resolvable.
+    Delegates to the shared ``create_loan_with_trueup`` factory, pinning this
+    suite's fixed origination principal / date (distinct from the anchor, so a
+    correct interest figure proves the walk seeds from the trueup anchor).
     """
-    loan = create_loan_account(
-        seed_user, _db.session, name="Split Loan",
-        principal=_ORIGINATION_PRINCIPAL, rate=rate, term=360,
-        origination_date=_ORIGINATION_DATE, payment_day=1,
+    return create_loan_with_trueup(
+        seed_user, _db.session,
+        origination_principal=_ORIGINATION_PRINCIPAL,
+        anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
+        origination_date=_ORIGINATION_DATE, escrow_annual=escrow_annual,
     )
-    insert_trueup_event(_loan_params(loan), anchor_balance, anchor_date)
-    if escrow_annual is not None:
-        # Effective from origination so every post-anchor payment's date falls
-        # in its active range and the split sums this escrow (the as-of split
-        # keys escrow by each payment's pay-period start).
-        _db.session.add(EscrowComponent(
-            account_id=loan.id, name="Tax & Insurance",
-            annual_amount=escrow_annual, effective_date=_ORIGINATION_DATE,
-        ))
-    _db.session.commit()
-    return loan
 
 
 def _add_rate_change(loan, effective_date, rate):
@@ -122,17 +112,8 @@ def _settle_payment(seed_user, loan, period, cash, actual=None):
 
 
 def _income_shadow(transfer_id, loan_id):
-    """Return the loan-side income shadow of a transfer."""
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    return (
-        _db.session.query(Transaction)
-        .filter_by(
-            transfer_id=transfer_id,
-            account_id=loan_id,
-            transaction_type_id=income_type_id,
-        )
-        .one()
-    )
+    """Return the loan-side income shadow of a transfer (shared query helper)."""
+    return loan_income_shadow(_db.session, transfer_id, loan_id)
 
 
 def _linked_ledger_id(account):
@@ -141,30 +122,13 @@ def _linked_ledger_id(account):
 
 
 def _find_loan_ledger(loan_id, kind):
-    """Return the per-loan ledger account of *kind*, or None if not created."""
-    return (
-        _db.session.query(LedgerAccount)
-        .filter_by(
-            loan_account_id=loan_id,
-            kind_id=ref_cache.ledger_account_kind_id(kind),
-        )
-        .one_or_none()
-    )
+    """Return the per-loan ledger account of *kind*, or None (shared helper)."""
+    return find_loan_ledger_account(_db.session, loan_id, kind)
 
 
 def _ledger_net(ledger_id, scenario_id):
-    """Return the net of all posting legs on a ledger account in a scenario."""
-    return (
-        _db.session.query(
-            _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
-        )
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(
-            Posting.ledger_account_id == ledger_id,
-            JournalEntry.scenario_id == scenario_id,
-        )
-        .scalar()
-    )
+    """Return the net of a ledger account's posting legs (shared query helper)."""
+    return ledger_net(_db.session, ledger_id, scenario_id)
 
 
 def _transfer_filtered_loan_net(transfer_id, ledger_id):
@@ -189,18 +153,8 @@ def _transfer_filtered_loan_net(transfer_id, ledger_id):
 
 
 def _correction_entries(shadow_id):
-    """Return the loan_payment correction entries booked under a shadow."""
-    return (
-        _db.session.query(JournalEntry)
-        .filter_by(
-            transaction_id=shadow_id,
-            source_kind_id=ref_cache.posting_source_id(
-                PostingSourceEnum.LOAN_PAYMENT
-            ),
-        )
-        .order_by(JournalEntry.id)
-        .all()
-    )
+    """Return the loan_payment corrections under a shadow (shared query helper)."""
+    return loan_correction_entries(_db.session, shadow_id)
 
 
 def _entry_legs(entry_id):
@@ -938,13 +892,30 @@ class TestReverseLoanPaymentPostings:
     def test_reverse_is_a_noop_for_an_unposted_shadow(
         self, app, db, seed_user, seed_periods,
     ):
-        """Reversing a never-synced payment writes nothing."""
+        """Reversing a payment that carries no posted correction writes nothing.
+
+        Commit 5 wires the split-posting into the transfer chokepoints, so a
+        SETTLED loan payment auto-posts its correction; a genuinely unposted
+        shadow is therefore a PROJECTED payment (never settled -> never
+        synced).  Reversing it must be an idempotent no-op -- no entry written
+        -- which is what the delete path relies on for a never-settled payment.
+        """
         with app.app_context():
             loan = _make_loan(seed_user)
-            _, shadow = _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            xfer = transfer_service.create_transfer(
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=loan.id,
+                    pay_period_id=seed_periods[_P1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount=Decimal("1000.00"),
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    category_id=None,
+                ),
             )
             db.session.commit()
+            shadow = _income_shadow(xfer.id, loan.id)
 
             loan_posting_service.reverse_loan_payment_postings_for_shadow(shadow)
             db.session.commit()

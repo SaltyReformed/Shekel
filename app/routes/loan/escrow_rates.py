@@ -12,7 +12,6 @@ from datetime import date
 
 from flask import flash, render_template, request
 from flask_login import login_required
-from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.loan_features import EscrowComponent, RateHistory
@@ -26,9 +25,12 @@ from app.routes.loan._helpers import (
     _rate_schema,
     _resolve_loan_state,
 )
-from app.services import escrow_calculator, loan_payment_service
+from app.services import (
+    escrow_calculator,
+    loan_payment_service,
+    loan_posting_service,
+)
 from app.utils.auth_helpers import require_owner
-from app.utils.db_errors import is_unique_violation
 
 logger = logging.getLogger(__name__)
 
@@ -120,19 +122,21 @@ def add_rate_change(account_id):
     # for a backdated or out-of-order change); RateHistory is now the
     # sole source of truth and the resolver derives the current rate from
     # it, so no scalar needs maintaining here.
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        # Same-effective-date double-submit (F-104 / C-22): the
-        # composite unique ``uq_rate_history_account_effective_date``
-        # rejects the second INSERT when the user clicks Save twice
-        # in a row.  Roll back, flash a clear message, and re-render
-        # the rate history without the proposed duplicate.  A
-        # legitimate same-day correction is expressed by editing the
-        # existing row, not by appending another.
-        db.session.rollback()
-        if not is_unique_violation(exc, _RATE_HISTORY_UNIQUE_CONSTRAINT):
-            raise
+    # Build-Order Step 4: a rate change moves the interest split of every
+    # confirmed post-anchor payment, in every scenario.  The shared helper
+    # re-syncs those corrections in the same transaction as the new rate row and
+    # translates a same-effective-date duplicate (which its flush surfaces) into
+    # the idempotent re-render below; a non-rate IntegrityError propagates from
+    # the helper (the correct 500 disposition).
+    if not loan_posting_service.sync_all_scenarios_or_duplicate(
+        account.id, _RATE_HISTORY_UNIQUE_CONSTRAINT,
+    ):
+        # Same-effective-date double-submit (F-104 / C-22): the composite
+        # unique ``uq_rate_history_account_effective_date`` rejected the second
+        # INSERT when the user clicked Save twice in a row.  Flash a clear
+        # message and re-render the rate history without the proposed
+        # duplicate.  A legitimate same-day correction is expressed by editing
+        # the existing row, not by appending another.
         logger.info(
             "Duplicate rate-history entry prevented for account %d on %s",
             account.id, data["effective_date"],
@@ -144,8 +148,8 @@ def add_rate_change(account_id):
         )
         return _render_rate_history(account, params)
 
+    db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
-
     return _render_rate_history(account, params)
 
 

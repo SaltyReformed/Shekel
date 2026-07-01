@@ -447,6 +447,65 @@ def create_loan_account(
     return account
 
 
+def create_loan_with_trueup(
+    seed_user, db_session, *, origination_principal, anchor_balance,
+    anchor_date, rate, origination_date, name="Split Loan", term=360,
+    payment_day=1, escrow_annual=None,
+):
+    """Create an amortizing loan carrying an origination AND a user-trueup anchor.
+
+    The shared "resolvable loan with a controlled latest anchor" builder for the
+    Build-Order Step 4 split-service and wiring suites (a duplicate-code finding
+    otherwise): routes through :func:`create_loan_account` (origination anchor +
+    rate), appends a ``user_trueup`` :class:`LoanAnchorEvent` at
+    *anchor_balance* / *anchor_date* -- the LATEST event, so both the split walk
+    and the resolver seed their running balance from it -- and an optional
+    escrow component effective from origination (so every post-anchor payment's
+    date falls in its active range).  Commits, so the loan is fully resolvable.
+
+    Keeping ``origination_principal`` distinct from ``anchor_balance`` lets a
+    caller prove the split seeds from the trueup anchor, not origination.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        origination_principal: The original principal (the origination anchor).
+        anchor_balance: The user-trueup balance the split walk seeds from.
+        anchor_date: The user-trueup anchor date (the post-anchor lower bound).
+        rate: The origination annual rate as a Decimal fraction.
+        origination_date: The loan origination date.
+        name: The account name (default ``"Split Loan"``).
+        term: The loan term in months (default 360).
+        payment_day: The day-of-month payment day (default 1).
+        escrow_annual: Optional annual escrow amount (Decimal); when given, one
+            escrow component effective from ``origination_date`` is added.
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.models.loan_features import EscrowComponent
+    from app.models.loan_params import LoanParams
+
+    loan = create_loan_account(
+        seed_user, db_session, name=name, principal=origination_principal,
+        rate=rate, term=term, origination_date=origination_date,
+        payment_day=payment_day,
+    )
+    params = (
+        db_session.query(LoanParams).filter_by(account_id=loan.id).one()
+    )
+    insert_trueup_event(params, anchor_balance, anchor_date)
+    if escrow_annual is not None:
+        db_session.add(EscrowComponent(
+            account_id=loan.id, name="Tax & Insurance",
+            annual_amount=escrow_annual, effective_date=origination_date,
+        ))
+    db_session.commit()
+    return loan
+
+
 def create_savings_account(
     seed_user, db_session, name, anchor_balance, anchor_period_id=None,
 ):
@@ -634,6 +693,140 @@ def ledger_accounts_for_account(db_session, account_id):
         db_session.query(LedgerAccount)
         .filter_by(account_id=account_id)
         .all()
+    )
+
+
+def loan_correction_entries(db_session, shadow_id):
+    """Return the Build-Order Step 4 loan_payment corrections under a shadow.
+
+    The ``budget.journal_entries`` rows the loan-payment posting service books
+    under an income shadow's ``transaction_id`` (``source_kind = loan_payment``),
+    ordered by id.  Shared by the Step-4 split-service suite and the Step-4
+    wiring suite so both read a payment's corrections the same way (a
+    duplicate-code finding otherwise).
+
+    Args:
+        db_session: The test ``db.session``.
+        shadow_id: The loan-side income shadow's id whose corrections to fetch.
+
+    Returns:
+        list[:class:`~app.models.journal_entry.JournalEntry`] -- the correction
+        entries booked under *shadow_id*, ascending by id (empty when none).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import PostingSourceEnum
+    from app.models.journal_entry import JournalEntry
+
+    return (
+        db_session.query(JournalEntry)
+        .filter_by(
+            transaction_id=shadow_id,
+            source_kind_id=ref_cache.posting_source_id(
+                PostingSourceEnum.LOAN_PAYMENT
+            ),
+        )
+        .order_by(JournalEntry.id)
+        .all()
+    )
+
+
+def ledger_net(db_session, ledger_account_id, scenario_id):
+    """Return the net of every posting leg on a ledger account in a scenario.
+
+    Sums ``budget.account_postings.amount`` over *ledger_account_id* for journal
+    entries in *scenario_id*.  Shared by the Step-4 split-service and wiring
+    suites so both read a ledger's net the same way.
+
+    Args:
+        db_session: The test ``db.session``.
+        ledger_account_id: The ledger account whose legs to sum.
+        scenario_id: The scenario to scope to.
+
+    Returns:
+        The signed net as a ``Decimal`` (``Decimal("0")`` when none posted).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+
+    return (
+        db_session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), Decimal("0"))
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == ledger_account_id,
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .scalar()
+    )
+
+
+def find_loan_ledger_account(db_session, loan_account_id, kind):
+    """Return the per-loan ledger account of *kind*, or None if not created.
+
+    The per-loan interest / escrow / refund ledger account
+    (``loan_account_id`` + the ``kind`` discriminator), lazily minted by the
+    Step-4 chart resolver on first use.  Shared by the Step-4 split-service and
+    wiring suites.
+
+    Args:
+        db_session: The test ``db.session``.
+        loan_account_id: The loan whose per-loan ledger account to find.
+        kind: The :class:`~app.enums.LedgerAccountKindEnum` member
+            (``LOAN_INTEREST`` / ``LOAN_ESCROW`` / ``LOAN_REFUND``).
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount`, or ``None`` when
+        the resolver has not minted it yet.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(
+            loan_account_id=loan_account_id,
+            kind_id=ref_cache.ledger_account_kind_id(kind),
+        )
+        .one_or_none()
+    )
+
+
+def loan_income_shadow(db_session, transfer_id, loan_account_id):
+    """Return the loan-side income shadow of a transfer.
+
+    The income (to-account) shadow of *transfer_id* on *loan_account_id* -- the
+    row the Step-4 correction books under.  Shared by the Step-4 split-service
+    and wiring suites.
+
+    Args:
+        db_session: The test ``db.session``.
+        transfer_id: The parent transfer's id.
+        loan_account_id: The loan (to-)account the income shadow lives on.
+
+    Returns:
+        The loan-side income :class:`~app.models.transaction.Transaction`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import TxnTypeEnum
+    from app.models.transaction import Transaction
+
+    return (
+        db_session.query(Transaction)
+        .filter_by(
+            transfer_id=transfer_id,
+            account_id=loan_account_id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        )
+        .one()
     )
 
 

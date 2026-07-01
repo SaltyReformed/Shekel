@@ -38,6 +38,11 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
+from app.services._transfer_loan_posting import (
+    _resync_loan_payment_postings_after_delete,
+    _reverse_loan_payment_before_delete,
+    _sync_loan_payment_postings_if_loan,
+)
 from app.services._transfer_ownership import (
     _get_owned_account,
     _get_owned_category,
@@ -641,6 +646,12 @@ def update_transfer(transfer_id, user_id, **kwargs):
         posting_service.sync_transfer_postings(
             xfer, settled=current_status.is_settled,
         )
+        # Build-Order Step 4: a settle / revert / amount / actual edit of a
+        # loan payment re-splits that loan's confirmed payments (the principal
+        # / interest / escrow split couples on the running balance).  Runs LAST
+        # -- after the Step-2 cash entry is in step -- and is a no-op for a
+        # non-loan transfer.
+        _sync_loan_payment_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,
@@ -689,6 +700,17 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # ``accounts/crud.py`` archives any account with settled history).
     posting_service.sync_transfer_postings(xfer, settled=False)
 
+    # ── Loan-payment split reversal (Build-Order Step 4) ───────────
+    # Reverse this payment's split correction while the income shadow id still
+    # exists -- load-bearing for a hard delete, whose CASCADE SET-NULLs the
+    # correction's ``transaction_id`` link.  Capture the loan coordinates now,
+    # before the row can be deleted, so the downstream payments (whose running
+    # balance the deletion changes) can be re-split afterwards.  A no-op for a
+    # non-loan transfer.
+    is_loan_payment = _reverse_loan_payment_before_delete(xfer)
+    loan_account_id = xfer.to_account_id
+    scenario_id = xfer.scenario_id
+
     if soft:
         xfer.is_deleted = True
         # Soft-delete must explicitly mark both shadows.  The database
@@ -708,34 +730,42 @@ def delete_transfer(transfer_id, user_id, soft=False):
             transfer_id=transfer_id,
             shadow_count=len(shadows),
         )
-        return xfer
+        result = xfer
+    else:
+        # Hard delete -- rely on ON DELETE CASCADE to remove shadows.
+        db.session.delete(xfer)
+        db.session.flush()
 
-    # Hard delete -- rely on ON DELETE CASCADE to remove shadows.
-    db.session.delete(xfer)
-    db.session.flush()
-
-    # Verify CASCADE removed the shadows.  If they still exist,
-    # the FK was misconfigured in Task 2.
-    orphan_count = (
-        db.session.query(Transaction)
-        .filter_by(transfer_id=transfer_id)
-        .count()
-    )
-    if orphan_count > 0:
-        logger.error(
-            "CASCADE delete failed: %d orphaned shadow transactions "
-            "remain for deleted transfer %d.",
-            orphan_count, transfer_id,
+        # Verify CASCADE removed the shadows.  If they still exist,
+        # the FK was misconfigured in Task 2.
+        orphan_count = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=transfer_id)
+            .count()
         )
+        if orphan_count > 0:
+            logger.error(
+                "CASCADE delete failed: %d orphaned shadow transactions "
+                "remain for deleted transfer %d.",
+                orphan_count, transfer_id,
+            )
 
-    log_event(
-        logger, logging.INFO, EVT_TRANSFER_HARD_DELETED, BUSINESS,
-        "Transfer hard-deleted (CASCADE)",
-        user_id=user_id,
-        transfer_id=transfer_id,
-        orphan_count=orphan_count,
-    )
-    return None
+        log_event(
+            logger, logging.INFO, EVT_TRANSFER_HARD_DELETED, BUSINESS,
+            "Transfer hard-deleted (CASCADE)",
+            user_id=user_id,
+            transfer_id=transfer_id,
+            orphan_count=orphan_count,
+        )
+        result = None
+
+    # ── Downstream re-split (Build-Order Step 4) ───────────────────
+    # After the payment is gone, re-split the LATER payments whose running
+    # balance the deletion changed.  Idempotent and self-healing; skipped
+    # entirely for a non-loan transfer.
+    if is_loan_payment:
+        _resync_loan_payment_postings_after_delete(loan_account_id, scenario_id)
+    return result
 
 
 def restore_transfer(transfer_id, user_id):
@@ -951,6 +981,9 @@ def restore_transfer(transfer_id, user_id):
     posting_service.sync_transfer_postings(
         xfer, settled=restored_status.is_settled,
     )
+    # Build-Order Step 4: re-post the split correction for a restored, settled
+    # loan payment (a no-op for a restored projected or non-loan transfer).
+    _sync_loan_payment_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_RESTORED, BUSINESS,
