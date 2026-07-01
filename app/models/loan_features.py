@@ -154,9 +154,11 @@ class EscrowComponent(AccountScopedMixin, TimestampMixin, db.Model):
 
     The monthly figure at a date is summed by
     :func:`app.services.escrow_calculator.calculate_monthly_escrow` over the
-    components active on that date (loaded by
-    :func:`app.services.loan_payment_service.escrow_components_as_of` /
-    :func:`app.services.loan_payment_service.load_active_escrow_components`).
+    components active on that date: TODAY's set via
+    :func:`app.services.loan_payment_service.load_active_escrow_components`, or a
+    PAST payment's set by loading every version with
+    :func:`app.services.loan_payment_service.load_all_escrow_components` and
+    filtering with :meth:`is_active_on`.
     """
 
     __tablename__ = "escrow_components"
@@ -240,6 +242,26 @@ class EscrowComponent(AccountScopedMixin, TimestampMixin, db.Model):
         "Account",
         backref=db.backref("escrow_components", lazy="select"),
     )
+
+    def is_active_on(self, on_date: date) -> bool:
+        """Whether this component version is in effect on ``on_date``.
+
+        ``effective_date <= on_date < end_date`` (``end_date`` exclusive; an open
+        range is unbounded above).  The in-memory form of the ``[effective_date,
+        end_date)`` range predicate, used by the loan-payment split to sum the
+        escrow in effect on each historical payment's date -- immutable for a
+        past date, so a posted split never moves when escrow later changes.
+
+        Args:
+            on_date: The date to test membership of.
+
+        Returns:
+            ``True`` iff this version is in effect on ``on_date``.
+        """
+        return (
+            self.effective_date <= on_date
+            and (self.end_date is None or on_date < self.end_date)
+        )
 
     def __repr__(self):
         return (

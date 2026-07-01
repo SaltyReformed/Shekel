@@ -23,9 +23,10 @@ The loan's NET (Step-2 cash + this correction) is then exactly the real
 principal paid.  The split is computed from the ACTUAL cash
 (``principal = cash - interest - escrow``), so an extra or short payment is
 captured honestly -- where the loan resolver discards the cash and needs an
-anchor true-up.  Escrow is the configured monthly amount with NO inflation (the
-exact figure the recurring transfer's cash was built from and the resolver
-subtracts), so on-schedule the principal is byte-identical to the resolver's.
+anchor true-up.  Each payment's escrow is the configured monthly amount IN EFFECT
+ON that payment's date (the effective-dated components active on its pay-period
+start, NO inflation), so on-schedule the principal is byte-identical to the
+resolver's, and a later escrow change never re-splits a past payment.
 
 **Linked by ``transaction_id``, not ``transfer_id``.**  The correction links to
 the loan-side income shadow's ``transaction_id``, leaving ``transfer_id`` NULL.
@@ -192,7 +193,9 @@ def _split_one_payment(
         periods: The loan's rate periods (from
             :func:`app.services.loan_resolver.resolve_periods`); the governing
             period's ``annual_rate`` drives the interest accrual.
-        monthly_escrow: The configured monthly escrow (no inflation).
+        monthly_escrow: The configured monthly escrow in effect on THIS payment's
+            date (summed over the effective-dated components active on its
+            pay-period start; no inflation).
 
     Returns:
         ``(LoanPaymentSplit, balance_after)``.
@@ -318,10 +321,12 @@ def compute_loan_payment_splits(
     correction, with post-payoff cash routed to Refund, so the ledger stays
     complete (plan Section 6 / 8.3).
 
-    Reads only (no writes, no commit).  Escrow is the configured monthly amount
-    with NO inflation -- the exact figure the recurring transfer's cash was built
-    from and the resolver subtracts -- so on-schedule the principal is
-    byte-identical to the resolver's.
+    Reads only (no writes, no commit).  Each payment's escrow is the configured
+    monthly amount IN EFFECT ON that payment's date -- the effective-dated
+    components active on its pay-period start, with NO inflation -- so on-schedule
+    the principal is byte-identical to the resolver's, AND a later escrow change
+    never moves an already-posted split (immutable for a past date; plan
+    Section 2 / D3).
 
     Args:
         loan_account_id: The loan account whose confirmed payments to split.
@@ -350,10 +355,13 @@ def compute_loan_payment_splits(
     periods = loan_resolver.resolve_periods(
         params, loan_payment_service.load_rate_changes(loan_account_id),
     )
-    escrow_components = loan_payment_service.load_active_escrow_components(
+    # EVERY escrow version (active + removed), loaded once; each payment's
+    # escrow is summed over the versions in effect ON that payment's date, so a
+    # since-removed version still applies to a historical payment and a later
+    # escrow change never re-splits a past payment (plan Section 2 / D3).
+    escrow_components = loan_payment_service.load_all_escrow_components(
         loan_account_id,
     )
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
 
     shadows = _eligible_confirmed_shadows(
         loan_account_id, scenario_id, anchor.anchor_date,
@@ -362,8 +370,12 @@ def compute_loan_payment_splits(
     balance = Decimal(str(anchor.anchor_balance))
     splits: list[LoanPaymentSplit] = []
     for shadow in shadows:
+        payment_escrow = escrow_calculator.calculate_monthly_escrow([
+            comp for comp in escrow_components
+            if comp.is_active_on(shadow.pay_period.start_date)
+        ])
         split, balance = _split_one_payment(
-            shadow, balance, periods, monthly_escrow,
+            shadow, balance, periods, payment_escrow,
         )
         splits.append(split)
     return splits

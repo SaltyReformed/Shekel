@@ -1,12 +1,14 @@
 # Implementation plan: effective-dated (temporal) escrow, and the correct loan-payment split
 
-**Status:** IN PROGRESS (2026-07-01). Prerequisite that emerged while wiring Build-Order Step 4
-(`implementation_plan_posting_ledger_loan_payments.md`, Commit 5). Three developer decisions
-(2026-07-01) reshaped that commit: (1) fix the escrow-immutability defect NOW rather than defer it to
-the read switch; (2) fix it the fully-normalized way -- effective-date the escrow config -- rather than
-a per-payment snapshot; (3) model the effective-dating as `[effective_date, end_date)` range columns
-on `EscrowComponent` rather than new schedule tables. This doc records that design and the revised
-commit sequence; the Step-4 plan's Commits 5-7 now sit AFTER the temporal-escrow prerequisite below.
+**Status:** IN PROGRESS (2026-07-01). **T1 SHIPPED** to the feature branch (`ac409b5`, as-built);
+**T2 SHIPPED** (this commit). T3-T5 pending (Section 7). Prerequisite that emerged while wiring
+Build-Order Step 4 (`implementation_plan_posting_ledger_loan_payments.md`, Commit 5). Three developer
+decisions (2026-07-01) reshaped that commit: (1) fix the escrow-immutability defect NOW rather than
+defer it to the read switch; (2) fix it the fully-normalized way -- effective-date the escrow config --
+rather than a per-payment snapshot; (3) model the effective-dating as `[effective_date, end_date)`
+range columns on `EscrowComponent` rather than new schedule tables. This doc records that design and the
+revised commit sequence; the Step-4 plan's Commits 5-7 now sit AFTER the temporal-escrow prerequisite
+below (they become T3-T5).
 
 **Branch:** `feat/posting-ledger-loan-payments` (same branch; temporal escrow is a prerequisite of the
 correct split, so it lands as earlier commits in the same Step-4 PR).
@@ -38,9 +40,20 @@ nothing reads the ledger). It bites when escrow changes over time AND the read s
 On-schedule, `cash = scheduled_pi + escrow_built`. The split's principal is
 `cash - interest - escrow_split = scheduled_pi + escrow_built - interest - escrow_split`. For this to
 equal the scheduled principal (`scheduled_pi - interest`), we need `escrow_split == escrow_built`: the
-escrow used in the split MUST equal the escrow embedded in that payment's cash. So making the split
-date-aware without also making the **cash builder** date-aware would break the cancellation. Both move
-together (Section 4, T2).
+escrow used in the split MUST equal the escrow embedded in that payment's cash.
+
+**As-built finding (T2): only the split changes; the cash builder is already as-of-correct.** The
+recurring-transfer cash builder (`payment_transfer._resolve_transfer_amount`) and the live projection
+recompute (`loan_payment_service.live_loan_transfer_amounts` -> `load_loan_context` ->
+`load_active_escrow_components`) build cash for FUTURE/projected payments at the CURRENT escrow. Because
+no escrow version can be future-dated (add stamps `effective_date = today`; delete stamps `end_date =
+today`), "escrow as of any future date" IS the current escrow -- so current-escrow cash IS as-of-correct
+for the dates it projects, and a `derive_from_loan` payment's cash tracks the current escrow right up to
+settle, when it freezes. The split reads only HISTORICAL (settled) payments and keys escrow by each
+payment's pay-period start (the same date its rate is keyed by), so `escrow_split` equals the escrow the
+frozen cash was built with, and the cancellation holds without touching the cash path. The two would
+diverge only if an escrow change fell in the ~2-week window between a payment's period start and its
+settle date (escrow changes are ~annual), an accepted narrow edge.
 
 ## 3. The model: effective-dated component ranges
 
@@ -63,12 +76,17 @@ Constraints:
 - `uq_escrow_components_account_name_active` -- partial unique `(account_id, name) WHERE end_date IS
   NULL` (at most one *active* version per name; historical versions may repeat the name). Replaces the
   total `uq_escrow_account_name`.
-- `ck_escrow_components_date_range` -- `end_date IS NULL OR end_date > effective_date`.
-- `ix_escrow_components_account_effective` -- `(account_id, effective_date, end_date)` for the as-of query.
+- `ck_escrow_components_date_range` -- `end_date IS NULL OR end_date >= effective_date` (`>=` admits a
+  same-day add-then-delete zero-length "never active" range).
+- `ix_escrow_components_account_effective` -- `(account_id, effective_date, end_date)`, serving the
+  split's per-loan `load_all_escrow_components` (the `account_id` prefix) and any future as-of query.
 
 ## 4. Escrow as of a date, and inflation
 
-- `escrow_components_as_of(account_id, as_of)` loads components whose range contains `as_of`.
+- **As-built (T2):** rather than a per-date query, the split loads EVERY version once
+  (`load_all_escrow_components(account_id)`) and filters each payment's date in memory with
+  `EscrowComponent.is_active_on(D)` (`effective_date <= D < end_date`) -- one query for the whole walk,
+  not the N+1 a per-date `escrow_components_as_of` query would have been.
 - `calculate_monthly_escrow(components)` sums the recorded `annual_amount / 12` of whatever set it is
   given (the `is_active` gate is gone -- the caller passes the right set). It returns **recorded**
   amounts, so a past date always yields the same figure: immutable by construction.
@@ -100,28 +118,36 @@ So on current data every payment sees the current $616.99 and temporal escrow ch
 `calculate_monthly_escrow`: `loan_posting_service` (the split -> **as-of**), `loan_payment_service.
 load_loan_context` (current -> today's set), `escrow_rates` add/delete OOB (current), `loan/dashboard`
 next_year/portion (current + forward inflation), `savings_dashboard_service._metrics` (current).
-`calculate_total_payment` (cash): `loan/payment_transfer.py:71` (the recurring cash -> **as-of due
-date**), `loan/dashboard.py:413`, `loan/_helpers.py:276` (current). Direct `EscrowComponent`/`is_active`
-queries: `escrow_rates` add/delete/list, `loan_payment_service.load_active_escrow_components`,
-`savings_dashboard_service._data`, `accounts/crud` delete-all (unaffected). All "current" surfaces move
-from `is_active = TRUE` to `end_date IS NULL` (equivalent post-backfill -> no behaviour change); only
-the split and the recurring cash gain the as-of query.
+`calculate_total_payment` (cash): `loan/payment_transfer.py`, `loan/dashboard.py:413`,
+`loan/_helpers.py:276` -- all **UNCHANGED**; current escrow is as-of-correct for the future payments the
+cash projects (Section 2 as-built finding). Direct `EscrowComponent`/`is_active` queries: `escrow_rates`
+add/delete/list, `loan_payment_service.load_active_escrow_components`, `savings_dashboard_service._data`,
+`accounts/crud` delete-all (unaffected). All "current" surfaces move from `is_active = TRUE` to
+`end_date IS NULL` (equivalent post-backfill -> no behaviour change); only the split reads the as-of
+escrow (T2).
 
 ## 7. Revised commit sequence
 
 Temporal-escrow prerequisite, then the Step-4 Commits 5-7:
 
-- **T1 -- schema.** The columns, drop `is_active`, constraints, index, migration (3-step
-  effective_date backfill + end_date backfill + drop column, working downgrade), model (drop
-  `IsActiveMixin`, add columns + an active-as-of predicate), the add/delete routes (open/close ranges),
-  and the current-escrow read consumers (`is_active` -> `end_date IS NULL`, behaviour-preserving).
-  Destructive (drops `is_active`) -> `Review:` line in the migration docstring. Tests: migration
-  up/down, backfill, range CHECK, partial unique, add-opens / delete-closes.
-- **T2 -- date-aware reads + correct split.** `escrow_components_as_of`, `calculate_monthly_escrow`
-  recorded-amounts refactor, the split walks escrow-as-of-each-payment-date, the recurring cash builder
-  goes as-of-due-date in lockstep. Tests: as-of queries; hand-computed escrow-change-over-time
-  (past frozen, new payment new escrow); the 24 existing C4 split tests stay green (fresh compute ==
-  current escrow).
+- **T1 -- schema. DONE (`ac409b5`).** The columns, drop `is_active`, constraints, index, migration
+  `d1e7c4a2f9b3` (3-step effective_date backfill + end_date backfill + drop column, working downgrade
+  verified up/down), model (drop `IsActiveMixin`, add columns + `is_active_on` predicate), the
+  add/delete routes (open/close ranges), and the current-escrow read consumers (`is_active` ->
+  `end_date IS NULL`, behaviour-preserving). Destructive (drops `is_active`) -> `Review:` line in the
+  migration docstring. As-built refinements from testing/review: range CHECK is `>=` (a same-day
+  add-then-delete zero-length range is valid); `effective_date` default is a CALL-TIME
+  `_default_effective_date` (so it respects `freeze_today` and matches the app-clock `end_date`);
+  `build_escrow_display` no longer self-filters (aligned with `calculate_monthly_escrow`, so
+  rows-sum-to-badge holds for any input). Tests: migration up/down + backfill derivations, range CHECK,
+  partial unique, add-opens / delete-closes. Full suite 6723; pylint 10.00; code-reviewer clean.
+- **T2 -- correct split via as-of escrow. DONE (this commit).** `EscrowComponent.is_active_on(d)` (the in-memory range
+  predicate) + `load_all_escrow_components` (active + removed versions); the split sums each payment's
+  escrow over the versions in effect on its pay-period start, so it is immutable for a past date. The
+  cash builder is UNCHANGED -- current escrow is already as-of-correct for the future payments it
+  projects (Section 2 as-built finding). Tests: hand-computed escrow-change-over-time (distinct escrow
+  per date; both splits frozen when a later version is added); the 24 existing C4 split tests stay green
+  with the escrow fixture effective-dated to origination.
 - **T3 (Step-4 C5) -- lifecycle wiring** into the six chokepoints.
 - **T4 (Step-4 C6) -- historical backfill** of corrections.
 - **T5 (Step-4 C7) -- reconciliation oracle** + full suite + docs + manual prod-clone verification.

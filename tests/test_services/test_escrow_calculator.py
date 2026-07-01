@@ -51,10 +51,11 @@ class TestCalculateMonthlyEscrow:
         """calculate_monthly_escrow sums EVERY component it is handed.
 
         The effective-dating refactor moved active-state filtering to the
-        loaders (``load_active_escrow_components`` / ``escrow_components_as_of``
-        supply the set active on the relevant date); this function no longer
-        gates on ``end_date``, so a removed (``end_date``-set) component passed
-        in IS summed.  4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
+        callers (``load_active_escrow_components`` for today, or
+        ``load_all_escrow_components`` + ``EscrowComponent.is_active_on`` for a
+        past payment's date); this function no longer gates on ``end_date``, so a
+        removed (``end_date``-set) component passed in IS summed.
+        4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
         """
         components = [
             _comp("Property Tax", "4800"),

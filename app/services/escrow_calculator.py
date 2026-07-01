@@ -140,9 +140,10 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
     The caller supplies the component set relevant to the date in question
     -- the components active today
     (:func:`app.services.loan_payment_service.load_active_escrow_components`)
-    or active on a past payment's date
-    (:func:`app.services.loan_payment_service.escrow_components_as_of`).  This
-    function no longer filters by active state itself; it sums exactly the
+    or, for a past payment's date, every version
+    (:func:`app.services.loan_payment_service.load_all_escrow_components`)
+    filtered by :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
+    This function no longer filters by active state itself; it sums exactly the
     components handed to it.
 
     Args:

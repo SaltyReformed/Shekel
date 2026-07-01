@@ -88,9 +88,12 @@ def _make_loan(
     )
     insert_trueup_event(_loan_params(loan), anchor_balance, anchor_date)
     if escrow_annual is not None:
+        # Effective from origination so every post-anchor payment's date falls
+        # in its active range and the split sums this escrow (the as-of split
+        # keys escrow by each payment's pay-period start).
         _db.session.add(EscrowComponent(
             account_id=loan.id, name="Tax & Insurance",
-            annual_amount=escrow_annual,
+            annual_amount=escrow_annual, effective_date=_ORIGINATION_DATE,
         ))
     _db.session.commit()
     return loan
@@ -344,6 +347,77 @@ class TestComputeLoanPaymentSplits:
             )
             assert splits[0].escrow == Decimal("100.00")
             assert splits[0].principal == Decimal("400.00")
+
+    def test_escrow_change_is_effective_dated_not_retroactive(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each payment's escrow is the version in effect ON its date, and a
+        LATER escrow change never re-splits an already-past payment.
+
+        Two escrow versions: $1,200/yr ($100.00/mo) from origination until
+        2026-03-01, then $2,400/yr ($200.00/mo).  P1's pay-period start
+        (2026-01-16) is in the first version -> escrow 100.00; the later
+        payment's start (2026-03-13) is in the second -> escrow 200.00.  Then a
+        THIRD version ($3,600/yr) effective 2026-06-01 (the second closed there)
+        must leave BOTH earlier splits unchanged -- proving the split is
+        immutable for a past date, the whole point of effective-dating escrow
+        (the pre-fix code recomputed every payment at the current escrow, so the
+        third change would have retroactively moved both to $300.00).
+        """
+        with app.app_context():
+            loan = _make_loan(seed_user)  # no escrow via the helper
+            # V1: $100/mo from origination, removed 2026-03-01.
+            db.session.add(EscrowComponent(
+                account_id=loan.id, name="Escrow",
+                annual_amount=Decimal("1200.00"),
+                effective_date=_ORIGINATION_DATE, end_date=date(2026, 3, 1),
+            ))
+            # V2: $200/mo from 2026-03-01 (open).
+            db.session.add(EscrowComponent(
+                account_id=loan.id, name="Escrow",
+                annual_amount=Decimal("2400.00"),
+                effective_date=date(2026, 3, 1),
+            ))
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            _settle_payment(
+                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            splits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id, _AS_OF,
+            )
+            # Chronological: P1 start 2026-01-16 (V1 $100); P_late start
+            # 2026-03-13 (V2 $200).  Distinct escrow proves the as-of keying.
+            assert [s.escrow for s in splits] == [
+                Decimal("100.00"), Decimal("200.00"),
+            ]
+
+            # A future escrow change: close V2 at 2026-06-01 (flush first so the
+            # active-name partial unique frees), then add a $300/mo V3.  Neither
+            # past payment's date falls in V3's range, so both splits must hold.
+            v2 = (
+                db.session.query(EscrowComponent)
+                .filter_by(account_id=loan.id, annual_amount=Decimal("2400.00"))
+                .one()
+            )
+            v2.end_date = date(2026, 6, 1)
+            db.session.flush()
+            db.session.add(EscrowComponent(
+                account_id=loan.id, name="Escrow",
+                annual_amount=Decimal("3600.00"),
+                effective_date=date(2026, 6, 1),
+            ))
+            db.session.commit()
+
+            resplits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id, _AS_OF,
+            )
+            assert [s.escrow for s in resplits] == [
+                Decimal("100.00"), Decimal("200.00"),
+            ]
 
     def test_payoff_overpayment_routes_excess_to_refund(
         self, app, db, seed_user, seed_periods,

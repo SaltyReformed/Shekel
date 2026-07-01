@@ -318,18 +318,18 @@ def load_anchor_events(account_id: int) -> list:
 
 
 def load_active_escrow_components(account_id: int) -> list:
-    """Load a loan account's active escrow components, ordered by name.
+    """Load a loan account's CURRENTLY-active escrow components, ordered by name.
 
-    The shared "what escrow does this loan carry" loader for the loan consumers
-    (:func:`load_loan_context` and the Step-4
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits`), so the
-    monthly-escrow figure each feeds to
-    :func:`app.services.escrow_calculator.calculate_monthly_escrow` is summed
-    over the IDENTICAL component set.  Removed components (``end_date`` set) are
-    excluded -- "currently active" is exactly ``end_date IS NULL`` under the
-    effective-dated model -- matching every other escrow surface in the app.
-    For the escrow active on a PAST date (the loan-payment split walk), see
-    :func:`escrow_components_as_of`.
+    The "what escrow does this loan carry TODAY" loader -- used by
+    :func:`load_loan_context` (the resolver / projection path) and the escrow
+    display / recurring-cash surfaces, so the monthly-escrow figure each feeds
+    to :func:`app.services.escrow_calculator.calculate_monthly_escrow` is summed
+    over the IDENTICAL currently-active set.  Removed components (``end_date``
+    set) are excluded -- "currently active" is exactly ``end_date IS NULL`` under
+    the effective-dated model.  For the escrow active on a PAST payment's date
+    (the loan-payment split), load every version with
+    :func:`load_all_escrow_components` and filter each date with
+    :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
 
     Args:
         account_id: The loan account whose escrow components to load.
@@ -347,6 +347,33 @@ def load_active_escrow_components(account_id: int) -> list:
             EscrowComponent.end_date.is_(None),
         )
         .order_by(EscrowComponent.name)
+        .all()
+    )
+
+
+def load_all_escrow_components(account_id: int) -> list:
+    """Load EVERY escrow component version for a loan (active AND removed).
+
+    The loan-payment split
+    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) needs
+    the escrow in effect on each HISTORICAL payment's date, which may be a
+    version since removed, so it loads the full effective-dated history here and
+    filters each payment's date in memory with
+    :meth:`~app.models.loan_features.EscrowComponent.is_active_on` -- one query
+    for the whole walk rather than one per payment.  Unlike
+    :func:`load_active_escrow_components` this does NOT filter by ``end_date``.
+
+    Args:
+        account_id: The loan account whose full escrow history to load.
+
+    Returns:
+        Every :class:`~app.models.loan_features.EscrowComponent` row for the
+        account (active and removed), unordered -- the caller filters by date and
+        the monthly sum is order-independent.
+    """
+    return (
+        db.session.query(EscrowComponent)
+        .filter(EscrowComponent.account_id == account_id)
         .all()
     )
 
