@@ -113,6 +113,68 @@ unchanged). Files: the `loan_posting_service` package (`_sync`/`_payments`/`_anc
 `_transfer_loan_posting.py` + `transfer_service.py`, `routes/loan/params.py`, `scripts/init_database.py`,
 the new + touched migrations, and the four loan-posting test files.
 
+## As-built: Commit 5 (2026-07-02, green on `dev`, NOT yet committed)
+
+C5 adds the genesis confirmed-balance READER, still INERT (no consumer reads it; wired at C8/C9,
+fenced at C11). Two public functions in a NEW `loan_posting_service/_reader.py` (a READ concern,
+distinct from the WRITE modules), re-exported from `__init__`:
+
+- `confirmed_loan_balance_at(loan, scenario, as_of) -> Decimal | None`
+- `confirmed_loan_balance_map(loan, scenario, periods) -> OrderedDict[int, Decimal] | None`
+
+Both compute `round_money(-(sum of the loan's LINKED-ledger postings, scenario-scoped, whose
+`pay_period.start_date <= as_of`))`. At `as_of = today` this equals
+`-posting_service.account_posting_total(loan, scenario)` -- the C4-oracle-proven quantity; the
+pay-period-start bound generalises it to any historical date, and the map applies it at every period
+boundary. Because postings are period-ASSIGNED and periods contiguous, `<= period.start` and
+`<= period.end` select the identical set, so the map (keyed by start) IS the canonical period-END-keyed
+`account_projection.compute_loan_period_balance_map`.
+
+**One decision the plan left open ("clamp or raise"), resolved by the developer this session
+(AskUserQuestion): SCALAR RAISES, MAP CARRIES FLAT.** `confirmed_loan_balance_at` raises `ValueError`
+on `as_of > today` (a future date is a projection; route to `resolve_loan`) -- it is only ever called
+at today, so a future date is a caller bug. `confirmed_loan_balance_map` does NOT raise: a future
+period has no confirmed postings, so it carries the last confirmed balance flat, letting the C9 caller
+pass its whole display window and overlay the projection on the future tail. Principled asymmetry: a
+single future point is ambiguous intent (raise); a future period has a well-defined confirmed value
+(carry flat).
+
+**`None` sentinel** = no OPENING-kind leg on the linked ledger in the scenario (`_has_opening_posting`,
+scoped to the linked ledger so the same-kind equity leg is not matched; scoped to the scenario so the
+M2 what-if-with-no-payment reads `None`, not the baseline's balance). A configured loan that is paid
+off returns `Decimal("0.00")`, distinct from `None`. Owed is `round_money(_ZERO_MONEY - net)` (not
+`-net`) so a zero net (a configured loan read before its opening period, or a paid-off loan) yields a
+clean `0.00`, never `-0.00`.
+
+**DRY/correctness:** a shared `_scope_to_linked_ledger(query, linked_id, scenario_id)` is the FROM /
+JOIN / WHERE both readers use (they differ only in projection + tail), so they cannot drift on which
+postings they sum -- `map[P] == confirmed_loan_balance_at(P.start_date)` by construction.
+
+**Tests (12):** `TestConfirmedLoanBalanceReader` (11: opening-only, on-schedule single, extra-payment
+captured with no true-up [the arc's headline], running-balance = resolver 98492.49, paid-off = 0.00
+not None, payoff overpayment = 0.00 with the excess on the Refund ledger, `as_of` bound at period
+boundaries [incl. start==end within a period], unconfigured -> None, future-`as_of` raises + in-domain
+still reads, scenario isolation + per-scenario None, per-period map running + carry-flat) +
+`TestConfirmedLoanBalanceReaderFuturePeriods` (1: map carries future periods flat while the scalar
+raises). Hand-computed literals; class-scoped `freeze_today` (does NOT leak into the split/anchor tests
+above). Non-vacuity mutation-verified two ways: removing the `<= as_of` bound fails the bound test;
+`bisect_right -> bisect_left` fails both map tests; `is_signed()` locks the clean-zero.
+
+**Gates:** full suite **6797** (baseline 6795 + 2 [10 reader tests added across the session]); `pylint
+app/ scripts/` 10.00 all `--fail-on`; adversarial `code-reviewer` no Critical/High (it re-ran its own
+mutation tests). NO migration (pure reader) -> no template rebuild. The test file's only pylint
+findings (C0302 / C1803 / unused `db`/`seed_periods`) are PRE-EXISTING from C3/C4 (HEAD lints 9.82;
+tests are not CI-gated) -- C5 adds zero new findings.
+
+**Carry-forward for C8/C9 (code-reviewer LOW, NOT a C5 defect):** the reader trusts its
+`loan_account_id` / `scenario_id` args, matching the sibling `account_posting_total` service
+convention. The wiring commits MUST scope `loan_account_id` to the authenticated user via the existing
+ownership helpers and 404 on not-found/not-yours BEFORE calling the reader, since C8 is the first path
+that turns a request parameter into a reader call.
+
+Files: `loan_posting_service/_reader.py` (new), `loan_posting_service/__init__.py`,
+`tests/test_services/test_loan_posting_service.py`.
+
 ---
 
 ## 1. What changed from the anchor-based draft, and why
@@ -356,8 +418,9 @@ reversible.
    - **Double walk.** Once both syncs are wired, each chokepoint calls `walk_loan_ledger` TWICE (via
      `sync_loan_payment_postings` and `sync_loan_anchor_corrections`), each doing ~5 DB loads +
      O(payments) replay. Fold both reconciles behind ONE `walk_loan_ledger` call per (loan, scenario).
-5. **The reader (inert).** `confirmed_loan_balance_at` / `confirmed_loan_balance_map`, `None` sentinel,
-   future-`as_of` domain guard. Unit tests with hand-computed literals.
+5. **The reader (inert). DONE (on `dev`, not yet committed; see "As-built: Commit 5" above).**
+   `confirmed_loan_balance_at` / `confirmed_loan_balance_map`, `None` sentinel, future-`as_of` domain
+   guard (SCALAR RAISES / MAP CARRIES FLAT, developer-ratified). Unit tests with hand-computed literals.
 6. **Oracle gate (before any flip).** Extend `test_posting_ledger_loan_reconciliation.py`: reader ==
    resolver on-schedule; diverges by exactly the extra/short principal off-schedule; the **pre-anchor
    payment is now correctly summed** (genesis has no pollution to exclude -- this replaces the prior

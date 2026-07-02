@@ -34,6 +34,9 @@ keep working unchanged:
 * :mod:`._sync` -- the UNIFIED per-scenario sync (``sync_loan_postings``: one walk,
   both reconciles), the loan-GLOBAL all-scenarios sync, the duplicate translation,
   and the historical backfill.
+* :mod:`._reader` -- the confirmed-balance READ side (``confirmed_loan_balance_at``
+  / ``confirmed_loan_balance_map``): a loan's balance as ``-(sum of its linked
+  postings)``, no anchor read, no boundary filter.  Inert until the read switch.
 
 ## Shared infrastructure and isolation
 
@@ -62,6 +65,10 @@ from ._payments import (
     reverse_loan_payment_postings_for_shadow,
     sync_loan_payment_postings,
 )
+from ._reader import (
+    confirmed_loan_balance_at,
+    confirmed_loan_balance_map,
+)
 from ._sync import (
     backfill_all_loan_postings,
     sync_all_scenarios_or_duplicate,
@@ -82,6 +89,8 @@ __all__ = [
     "LoanPaymentSplit",
     "backfill_all_loan_postings",
     "compute_loan_payment_splits",
+    "confirmed_loan_balance_at",
+    "confirmed_loan_balance_map",
     "reverse_loan_payment_postings_for_shadow",
     "sync_all_scenarios_or_duplicate",
     "sync_loan_anchor_corrections",
