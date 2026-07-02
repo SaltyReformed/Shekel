@@ -36,9 +36,12 @@ keep working unchanged:
   and the historical backfill.
 * :mod:`._reader` -- the genesis READ side: a loan's balance as ``-(sum of its
   linked postings)`` (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``,
-  no anchor read, no boundary filter) and the ACTUAL interest its confirmed
-  payments paid in a year (``confirmed_loan_interest_in_year``, for Schedule A),
-  each attributed by the payment's civil paid date.  Wired by the read switch.
+  no anchor read, no boundary filter), the ACTUAL interest its confirmed
+  payments paid in a year (``confirmed_loan_interest_in_year``, for Schedule A,
+  attributed by the payment's civil paid date), and the ledger-derived
+  amortization HISTORY rows (``confirmed_loan_history_rows``, each confirmed
+  payment's actual principal / interest and running balance read from the
+  posted legs).  Wired by the read switch.
 
 ## Shared infrastructure and isolation
 
@@ -70,6 +73,7 @@ from ._payments import (
 from ._reader import (
     confirmed_loan_balance_at,
     confirmed_loan_balance_map,
+    confirmed_loan_history_rows,
     confirmed_loan_interest_in_year,
 )
 from ._sync import (
@@ -94,6 +98,7 @@ __all__ = [
     "compute_loan_payment_splits",
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
+    "confirmed_loan_history_rows",
     "confirmed_loan_interest_in_year",
     "reverse_loan_payment_postings_for_shadow",
     "sync_all_scenarios_or_duplicate",

@@ -45,7 +45,14 @@ from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import loan_posting_service, posting_service, transfer_service
+from app.services import (
+    loan_loaders,
+    loan_payment_service,
+    loan_posting_service,
+    loan_resolver,
+    posting_service,
+    transfer_service,
+)
 from tests._test_helpers import (
     create_loan_account,
     create_loan_with_trueup,
@@ -2099,3 +2106,497 @@ class TestConfirmedLoanInterestReader:
             assert loan_posting_service.confirmed_loan_interest_in_year(
                 loan.id, scenario_id, 2026,
             ) == Decimal("500.00")
+
+
+class TestConfirmedLoanHistoryRows:
+    """The history reader rebuilds the confirmed schedule from posted legs.
+
+    ``confirmed_loan_history_rows`` is the ledger-derived amortization HISTORY
+    adapter: one row per confirmed payment, its interest from the posted
+    ``loan_interest`` legs, its principal from the payment's net on the linked
+    ledger, and its running balance from the cumulative linked net -- never the
+    resolver's contractual replay.  On-schedule the rows are byte-identical to
+    the replay's (pinned against the resolver directly); off-schedule they show
+    the actual economics the replay cannot.  The loan is the shared SPLIT_LOAN
+    fixture: contractual P&I round_money(250000 * 0.005 * 1.005^360 /
+    (1.005^360 - 1)) = 1498.88, trued up to $100,000 (monthly rate 0.005).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the seed window (same rationale as the reader)."""
+        freeze_today(monkeypatch, _FROZEN_TODAY)
+
+    def test_on_schedule_rows_are_byte_identical_to_the_replay_rows(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two contractual payments read back the replay's exact rows.
+
+        Two settled payments of exactly the contractual P&I (1498.88):
+
+          row 1 (due 02-01): interest round(100000 * 0.005) = 500.00,
+            principal 1498.88 - 500.00 = 998.88, balance 99001.12
+          row 2 (due 03-01): interest round(99001.12 * 0.005) = 495.01,
+            principal 1003.87, balance 97997.25
+
+        The resolver's replay computes the identical figures for an on-schedule
+        loan (same accrual formula on the same running balance), so the
+        ledger-derived rows must equal the resolver's confirmed schedule rows
+        FIELD BY FIELD -- month, date, payment, principal, interest, extra,
+        balance, flag, and rate.  This is the compatibility pin that lets the
+        read switch replace the replay's history without moving any
+        on-schedule number.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            for period in (seed_periods[_P1], seed_periods[_P2]):
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1498.88"),
+                )
+            db.session.commit()
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            # Hand-computed spot pins (independent of the resolver).
+            assert [
+                (r.payment_date, r.interest, r.principal, r.remaining_balance)
+                for r in rows
+            ] == [
+                (date(2026, 2, 1), Decimal("500.00"),
+                 Decimal("998.88"), Decimal("99001.12")),
+                (date(2026, 3, 1), Decimal("495.01"),
+                 Decimal("1003.87"), Decimal("97997.25")),
+            ]
+
+            # Field-by-field equality with the resolver's replayed history.
+            params = _loan_params(loan)
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params,
+                    loan_loaders.load_anchor_events(loan.id),
+                    ctx.payments,
+                    ctx.rate_changes,
+                ),
+                _AS_OF,
+            )
+            replay_rows = [r for r in state.schedule if r.is_confirmed]
+            assert rows == replay_rows
+
+    def test_extra_payment_row_shows_the_actual_split_and_extra(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An off-schedule extra payment's row carries its real economics.
+
+        A $2,000 payment on the $100,000 balance: interest round(100000 *
+        0.005) = 500.00, principal 2000 - 500 = 1500.00, balance 98500.00.
+        Against the 1498.88 contractual P&I the actual P&I of 2000.00 carries
+        extra 2000.00 - 1498.88 = 501.12, leaving payment 1498.88 -- the
+        schedule-row invariant ``principal + interest == payment + extra``
+        (1500.00 + 500.00 == 1498.88 + 501.12), the same algebra a projected
+        row with extra uses, so the table's totals add up unchanged.  The
+        replay would show only the scheduled 998.88 principal; the ledger row
+        shows what the cash actually did.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("2000.00"),
+            )
+            db.session.commit()
+
+            (row,) = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert row.interest == Decimal("500.00")
+            assert row.principal == Decimal("1500.00")
+            assert row.extra_payment == Decimal("501.12")
+            assert row.payment == Decimal("1498.88")
+            assert row.remaining_balance == Decimal("98500.00")
+            assert row.is_confirmed is True
+
+    def test_short_payment_row_shows_negative_principal(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An underpayment's row surfaces the real negative principal.
+
+        A $400 payment against 500.00 accrued interest: principal
+        400 - 500 = -100.00 (the balance GROWS to 100100.00), payment 400.00
+        (the actual P&I, under contractual so extra is 0.00).  Surfaced,
+        never clamped -- the same D5 honesty the split walk pins.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("400.00"),
+            )
+            db.session.commit()
+
+            (row,) = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert row.interest == Decimal("500.00")
+            assert row.principal == Decimal("-100.00")
+            assert row.extra_payment == Decimal("0.00")
+            assert row.payment == Decimal("400.00")
+            assert row.remaining_balance == Decimal("100100.00")
+
+    def test_payoff_overpayment_row_caps_principal_and_excludes_the_refund(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payoff overpayment's row ends at 0.00 with the refund excluded.
+
+        A $150,000 payment on the $100,000 balance: interest 500.00, principal
+        capped at the 100000.00 that closes the loan, and the 49500.00 surplus
+        on the Refund ledger -- NOT in the row (it is not P&I).  The actual P&I
+        is 100500.00, so extra = 100500.00 - 1498.88 = 99001.12 and payment
+        stays the contractual-shaped 1498.88 (principal + interest == payment +
+        extra holds: 100500.00 == 1498.88 + 99001.12).  The balance reads a
+        clean 0.00.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("150000.00"),
+            )
+            db.session.commit()
+
+            (row,) = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert row.interest == Decimal("500.00")
+            assert row.principal == Decimal("100000.00")
+            assert row.extra_payment == Decimal("99001.12")
+            assert row.payment == Decimal("1498.88")
+            assert row.remaining_balance == Decimal("0.00")
+            assert not row.remaining_balance.is_signed()
+
+    def test_trueup_between_payments_moves_the_next_row_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A mid-history true-up resets the balance the NEXT row reads.
+
+        P1 ($1,000, due 02-01) splits 500.00 / 500.00 leaving 99500.00; a
+        true-up then asserts $95,000 on 02-15; P2 ($1,000, due 03-01) accrues
+        on the VERIFIED balance: interest round(95000 * 0.005) = 475.00,
+        principal 525.00, balance 94475.00.  The true-up itself emits no row
+        (it is not a payment) but its correction posting moves the running
+        balance between the rows -- the pre-true-up row keeps its actual
+        interest (the arc's from-origination history), and the post-true-up
+        row lands on the asserted trajectory.
+
+        The pre-true-up row is also the NEW display surface: the resolver's
+        replay starts at the LATEST anchor (02-15), so its confirmed schedule
+        hides the 02-01 payment forever; the ledger history shows the real
+        recorded payment and still lands on the asserted trajectory -- pinned
+        below against the un-seeded resolver directly.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            insert_trueup_event(
+                _loan_params(loan), Decimal("95000.00"), date(2026, 2, 15),
+            )
+            db.session.commit()
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+            _settle_payment(
+                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [
+                (r.payment_date, r.interest, r.principal, r.remaining_balance)
+                for r in rows
+            ] == [
+                (date(2026, 2, 1), Decimal("500.00"),
+                 Decimal("500.00"), Decimal("99500.00")),
+                (date(2026, 3, 1), Decimal("475.00"),
+                 Decimal("525.00"), Decimal("94475.00")),
+            ]
+
+            # The un-seeded resolver replays from the LATEST anchor (02-15),
+            # so its confirmed schedule hides the real 02-01 payment; the
+            # ledger history is the only surface that shows it.
+            params = _loan_params(loan)
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params,
+                    loan_loaders.load_anchor_events(loan.id),
+                    ctx.payments,
+                    ctx.rate_changes,
+                ),
+                _AS_OF,
+            )
+            replay_dates = [
+                r.payment_date for r in state.schedule if r.is_confirmed
+            ]
+            assert replay_dates == [date(2026, 3, 1)]
+
+    def test_reverted_payment_does_not_wobble_row_balances(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A reverted payment's two-dated residue never pollutes a row balance.
+
+        A reverted payment's ledger residue nets to zero but at TWO dates:
+        its original entries at the civil paid date (02-20) and its reversal
+        entries at the pay-period start (01-30, the cleared-``paid_at``
+        fallback).  A confirmed sibling due BETWEEN them (02-01) would absorb
+        half the pair if the residue were treated as dated balance events.
+        The classifier instead recognises the whole transfer as payment
+        LINEAGE and drops it, so the confirmed $1,100 payment's row reads its
+        exact economics -- interest 500.00, principal 600.00, balance
+        100000 - 600 = 99400.00 -- and the final row still equals the scalar
+        reader to the penny.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1100.00"),
+            )
+            reverted = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[2], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 2, 20),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                reverted.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [
+                (r.payment_date, r.interest, r.principal, r.remaining_balance)
+                for r in rows
+            ] == [
+                (date(2026, 2, 1), Decimal("500.00"),
+                 Decimal("600.00"), Decimal("99400.00")),
+            ]
+            assert rows[-1].remaining_balance == (
+                loan_posting_service.confirmed_loan_balance_at(
+                    loan.id, scenario_id, _AS_OF,
+                )
+            )
+
+    def test_settled_payment_in_a_not_yet_begun_period_is_excluded(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment settled ahead of its period stays out until the period begins.
+
+        With payments in periods 1 and 5, a read at 2026-02-10 -- after period
+        1 began (its 02-01 due row counts) but before period 5 begins on
+        03-27 -- must exclude the early-settled payment ENTIRELY, exactly as
+        the scalar reader's period bound does: one row, balance 99500.00,
+        equal to the scalar at the same as_of.  Treating the future payment's
+        postings as dated balance events would desync the schedule table from
+        the loan card by the full cash.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            _settle_payment(
+                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            mid_window = date(2026, 2, 10)
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, mid_window,
+            )
+            assert [
+                (r.payment_date, r.remaining_balance) for r in rows
+            ] == [
+                (date(2026, 2, 1), Decimal("99500.00")),
+            ]
+            assert rows[-1].remaining_balance == (
+                loan_posting_service.confirmed_loan_balance_at(
+                    loan.id, scenario_id, mid_window,
+                )
+            )
+
+    def test_trueup_dated_on_a_due_date_applies_after_that_days_payment(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A true-up dated exactly on a due date subsumes that day's payment.
+
+        The write walk's tie-break (a payment sorts BEFORE a same-date anchor)
+        must be mirrored by the history walk or the row would accrue on the
+        wrong balance.  P1 leaves 99500.00; a true-up asserts $95,000 dated
+        exactly on P2's 03-01 due date; P2's row is walked FIRST -- interest
+        round(99500 * 0.005) = 497.50, principal 502.50, row balance
+        98997.50 -- and the reset applies after it, so the scalar reads the
+        asserted 95000.00.  (An anchor-first order would show 475.00 interest
+        on the reset balance -- the mutation this test kills.)
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            insert_trueup_event(
+                _loan_params(loan), Decimal("95000.00"), date(2026, 3, 1),
+            )
+            db.session.commit()
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+            _settle_payment(
+                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [
+                (r.payment_date, r.interest, r.principal, r.remaining_balance)
+                for r in rows
+            ] == [
+                (date(2026, 2, 1), Decimal("500.00"),
+                 Decimal("500.00"), Decimal("99500.00")),
+                (date(2026, 3, 1), Decimal("497.50"),
+                 Decimal("502.50"), Decimal("98997.50")),
+            ]
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, _AS_OF,
+            ) == Decimal("95000.00")
+
+    def test_final_row_balance_matches_the_scalar_reader(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The last row's balance IS the confirmed-balance scalar (one truth).
+
+        Three $1,000 payments (500.00 / 502.50 / 505.01 principal on the
+        shrinking real balance) leave 100000 - 1507.51 = 98492.49.  The history
+        walk and the scalar reader sum the SAME linked postings, so the final
+        row's ``remaining_balance`` must equal ``confirmed_loan_balance_at`` to
+        the penny -- the transitivity pin that keeps the schedule table's last
+        confirmed row equal to the loan card.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            for period in (
+                seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
+            ):
+                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+            db.session.commit()
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert rows[-1].remaining_balance == Decimal("98492.49")
+            assert rows[-1].remaining_balance == (
+                loan_posting_service.confirmed_loan_balance_at(
+                    loan.id, scenario_id, _AS_OF,
+                )
+            )
+
+    def test_configured_loan_with_no_payments_returns_an_empty_list(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An opened loan with no confirmed payment reads [] -- not None.
+
+        The opening posting alone means the ledger CAN answer (the loan is
+        configured); there is simply no history yet.  ``[]`` routes the caller
+        to an empty confirmed slice, where ``None`` would wrongly fall back to
+        the replay.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            ) == []
+
+    def test_unconfigured_loan_returns_none(self, app, db, seed_user):
+        """A loan with no opening posting reads None (keep the replay rows).
+
+        Mirrors the balance reader's sentinel: no OPENING posting means the
+        ledger cannot answer for this loan / scenario, so the caller keeps the
+        resolver's replay -- never an empty history that would blank a real
+        schedule.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
+                rate=_RATE, origination_date=_ORIGINATION_DATE,
+            )
+            # Deliberately NO sync: params exist but nothing is posted.
+            assert loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            ) is None
+
+    def test_history_is_scenario_scoped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A what-if scenario the opening was never posted into reads None.
+
+        The baseline carries the full history; a second scenario carries no
+        postings at all, so the reader reports None there (the M2 what-if
+        fallback) while the baseline's rows are untouched.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            what_if = Scenario(
+                user_id=seed_user["user"].id, name="What-if",
+                is_baseline=False,
+            )
+            db.session.add(what_if)
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_history_rows(
+                loan.id, what_if.id, _AS_OF,
+            ) is None
+            assert len(loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )) == 1
+
+    def test_future_as_of_raises(self, app, db, seed_user, seed_periods):
+        """A future as_of is out of the confirmed domain and raises.
+
+        Mirrors the scalar reader's guard: 2027-06-01 is after the frozen
+        2027-01-01 today, so the reader refuses rather than answering a
+        projection question with a history sum.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            db.session.commit()
+
+            with pytest.raises(ValueError, match="as_of <= today"):
+                loan_posting_service.confirmed_loan_history_rows(
+                    loan.id, scenario_id, date(2027, 6, 1),
+                )
