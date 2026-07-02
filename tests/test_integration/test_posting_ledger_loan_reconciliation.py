@@ -664,31 +664,27 @@ class TestParallelRunAgainstResolver:
             assert ledger < resolver
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
-    def test_pre_anchor_payment_is_a_read_switch_boundary_not_an_off_schedule_case(
+    def test_pre_anchor_payment_is_correctly_summed_under_genesis(
         self, app, db, seed_user, seed_periods,
     ):
-        """A pre-anchor payment's cash sits uncorrected -- the Section-10 boundary.
+        """A pre-anchor payment is SPLIT and summed, not excluded -- genesis fix.
 
-        The lower-boundary companion to the future-dated guard: Step 2 posts the
-        FULL cash of EVERY settled payment, including one that came due before the
-        latest anchor; the Step-4 split excludes a pre-anchor payment (the anchor
-        already subsumes it, plan 2.5), so its cash sits on the loan's linked
-        ledger with NO correction.  With the trueup anchor moved to 2026-02-15, P1
-        (due 2026-02-01) is pre-anchor: its $1,000 cash posts, but no correction
-        does, and the split walk is empty.  The resolver replays nothing (P1 is
-        subsumed), so its balance is the anchor 100,000.00 -- while the NAIVE
-        ``anchor - linked_net`` reads 99,000.00, LOW by exactly the pre-anchor cash.
-
-        That divergence is the read switch's "pre-anchor cleanup" (plan Section
-        10), a DIFFERENT thing from an off-schedule divergence -- so this pins that
-        the parallel-run identity requires a post-anchor-only history, and that the
-        reconciliation IDENTITIES (accounting facts) still hold with pre-anchor
-        cash present.  A future read switch that sums the linked ledger without
-        scoping past the anchor would reintroduce exactly this error.
+        Genesis retires the Step-4 pre-anchor exclusion (the read-switch boundary
+        the prior draft carved out): the walk splits EVERY payment from
+        origination, and the opening + true-up corrections absorb the pre-anchor
+        principal, so the from-origination sum-of-postings reproduces the resolver
+        with NO boundary rule.  With the trueup at 2026-02-15, P1 (due 2026-02-01)
+        is pre-trueup: it splits on the $250,000 origination balance (interest
+        round(250000 * 0.005) = 1250.00, principal 1000 - 1250 = -250.00, so the
+        walk carries 250250 to the trueup).  The opening books -250000 and the
+        true-up 250250 - 100000 = +150250; with P1's cash (+1000) and correction
+        loan leg (-1250) the loan-linked net is -100000.00 -- exactly -(the
+        resolver's 100000 anchor, which subsumes P1) -- so the pre-anchor payment
+        is summed correctly, never the old double-count.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            # Anchor AFTER P1's 2026-02-01 due date, so P1 is pre-anchor.
+            # Trueup AFTER P1's 2026-02-01 due date, so P1 is pre-trueup.
             loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
             xfer = _settle(
                 seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"),
@@ -696,26 +692,26 @@ class TestParallelRunAgainstResolver:
             db.session.commit()
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
 
-            # Step-2 cash posted; no Step-4 correction (pre-anchor, excluded).
-            assert loan_correction_entries(db.session, shadow.id) == []
-            assert loan_posting_service.compute_loan_payment_splits(
+            # Genesis SPLITS the pre-trueup payment (Step 4 excluded it).
+            splits = loan_posting_service.compute_loan_payment_splits(
                 loan.id, scenario_id, _AS_OF,
-            ) == []
-            assert _independent_loan_linked_net(
-                loan.id, scenario_id,
-            ) == Decimal("1000.00")  # the cash only
-            assert _per_loan_correction_net(loan.id, scenario_id) == Decimal("0")
+            )
+            assert len(splits) == 1
+            assert splits[0].interest == Decimal("1250.00")
+            assert loan_correction_entries(db.session, shadow.id) != []
 
-            # The resolver subsumes P1 into the anchor -> balance is the anchor.
+            # Post the opening + true-up (the read-switch corrections).
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id, _AS_OF,
+            )
+            db.session.commit()
+
+            # -(linked net) reproduces the resolver's anchor, which subsumes P1.
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
-            assert resolver == _ANCHOR_BALANCE
-            # The naive parallel-run balance is LOW by exactly the pre-anchor cash
-            # -- the Section-10 gap, not an off-schedule divergence.
-            naive_ledger = _ledger_balance(loan.id, scenario_id, _ANCHOR_BALANCE)
-            assert naive_ledger == _ANCHOR_BALANCE - Decimal("1000.00")
-            assert naive_ledger == resolver - Decimal("1000.00")
-            # The reconciliation IDENTITIES still hold with pre-anchor cash present.
-            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+            assert resolver == _ANCHOR_BALANCE  # 100000.00
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == -_ANCHOR_BALANCE  # -100000.00, no pre-anchor pollution
 
 
 # ---------------------------------------------------------------------------

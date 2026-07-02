@@ -341,17 +341,18 @@ class TestRestoreWiring:
 class TestTrueUpWiring:
     """A balance true-up re-bases every scenario's split; Checking is never touched."""
 
-    def test_trueup_reverses_pre_anchor_resplits_downstream_checking_untouched(
+    def test_trueup_resplits_later_keeps_earlier_checking_untouched(
         self, app, db, seed_user, seed_periods,
     ):
-        """A new anchor reverses now-pre-anchor corrections and re-splits the rest.
+        """A new trueup re-splits later payments, keeps earlier, never moves Checking.
 
         P1 (due 02-01) and P2 (due 03-01) settle against 100000 @ 01-10
-        (interest 500.00 + 497.50 = 997.50).  A user-trueup of 90000 @ 02-15
-        pushes P1 pre-anchor (due 02-01 <= 02-15) and re-bases P2 from 90000:
-        interest round(90000 * 0.005) = 450.00.  After the true-up the interest
-        ledger holds ONLY 450.00, and Checking is unchanged from its settled
-        -2000.00 (the true-up sync touches only the loan's own ledgers).
+        (interest 500.00 + 497.50 = 997.50).  A user-trueup of 90000 @ 02-15 falls
+        BETWEEN them: genesis keeps P1's 500.00 (it is due before the new trueup)
+        and re-splits P2 from 90000 to round(90000 * 0.005) = 450.00, so the
+        interest ledger holds 500 + 450 = 950.00 (Step 4 reversed P1 and left only
+        450.00).  Checking is unchanged from its settled -2000.00 -- the true-up
+        sync touches only the loan's own ledgers.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -375,9 +376,10 @@ class TestTrueUpWiring:
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
 
+            # P1 (before 02-15) keeps 500.00; P2 (after) re-splits to 450.00.
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
-            ) == Decimal("450.00")
+            ) == Decimal("950.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == checking_before
@@ -574,19 +576,20 @@ class TestRouteChokepointWiring:
                 db.session, interest_ledger_id, scenario_id,
             ) == Decimal("666.67")
 
-    def test_params_payment_day_change_reverses_now_pre_anchor_payment(
+    def test_params_payment_day_change_resplits_across_trueup(
         self, app, db, seed_user, seed_periods, auth_client,
     ):
-        """Changing payment_day alone re-splits -- it moves the eligibility boundary.
+        """Changing payment_day alone re-splits -- it moves the anchor boundary.
 
         Pins the reason update_params syncs UNCONDITIONALLY, not only on a rate
-        change.  The loan's anchor is 2026-01-25.  P1 (period start 2026-01-16)
-        has monthly due date 2026-02-01 at payment_day=1 -- AFTER the anchor, so
-        it is eligible and its correction posts (interest round(100000*0.005) =
-        500.00).  POSTing /loan/params with payment_day=20 (rate unchanged) moves
-        P1's due date to 2026-01-20 (the first day-20 on or after 01-16) -- now
-        BEFORE the 2026-01-25 anchor, so P1 is pre-anchor and its correction
-        reverses to zero.
+        change.  The trueup anchor is 2026-01-25.  P1 (period start 2026-01-16) has
+        monthly due date 2026-02-01 at payment_day=1 -- AFTER the trueup, so it
+        splits on the 100000 trueup (interest round(100000 * 0.005) = 500.00).
+        POSTing /loan/params with payment_day=20 (rate unchanged) moves P1's due
+        date to 2026-01-20 (the first day-20 on or after 01-16) -- now BEFORE the
+        2026-01-25 trueup, so genesis re-splits it on the $250,000 origination
+        balance: interest round(250000 * 0.005) = 1250.00 (Step 4 reversed it to
+        zero; genesis carries the split across the boundary instead).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -609,9 +612,10 @@ class TestRouteChokepointWiring:
             )
             assert resp.status_code == 302
 
+            # P1 crosses to pre-trueup -> re-split on origination, not reversed.
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1250.00")
 
     def test_params_created_after_settle_backposts(
         self, app, db, seed_user, seed_periods, auth_client,
