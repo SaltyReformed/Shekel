@@ -1,0 +1,534 @@
+# Adversarial review: the balance architecture (Option D), end to end
+
+**Date:** 2026-07-02. **Reviewer:** independent adversarial pass, commissioned as a complete
+re-evaluation with no anchoring on past decisions.
+
+> **Remediation status (2026-07-02, branch `fix/ledger-period-attribution`):** R1 and R2 are
+> IMPLEMENTED. H2 is fixed (`8ad3a81`: the split walk posts at settlement; the tax hybrid excludes
+> settled due slots; verified live on the real Mortgage -- the early-settled period now drops by
+> the real 276.72 principal, not the 1,910.95 raw cash). H1 and the M3 storage-level class are
+> fixed (`2ffefa0`: per-(account, period) reconcile in `posting_service` and the loan payment
+> reconcile; reversals carry the period and latest date of what they reverse; the
+> `LEDGER_POSTINGS` truncate/regenerate gate refuses periods whose entries do not net to zero per
+> ledger account, proven non-vacuous by mutation). Full suite 6857 passed; pylint 10.00 with every
+> `--fail-on` checker. M3's reader-contract half (Step-5 reporting rules) and R3-R10 remain open.
+**Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
+the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
+temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
+checkers, and the four reconciliation oracles.
+**Method:** four independent audit passes (fence checkers; ledger writer/CASCADE surface; oracle
+test quality; read-switch reader trace), each claim re-verified against live code on `dev`, plus
+seven live experiments against the dev database (all mutations rolled back; final state verified
+identical). Nothing below is asserted without a citation or a demonstration.
+
+---
+
+## 1. Verdict
+
+**The architecture is sound, the direction is right, and the implementation quality is far above
+what a solo project normally achieves. The money amounts are correct -- verified live on real
+data. The residual weakness is concentrated in one theme: WHEN money is attributed (pay period
+and date), not HOW MUCH.** Two real, reachable correctness defects were found (H1, H2), both in
+period attribution, both invisible to every existing oracle because the oracles reconcile
+scenario-wide sums and are period-blind by construction. A third finding (H3) is not a defect but
+the largest un-mechanized hole in the enforcement story the project itself set as its standard.
+
+No finding here invalidates a shipped design decision. Re-examined from scratch (Section 6),
+Option D, the genesis read switch, and the staging discipline all hold up as the correct calls --
+not merely defensible ones.
+
+The single most important takeaway: **the ledger's amount invariants are machine-enforced three
+layers deep (service check, deferred DB trigger, oracles), but its period/date attribution is
+enforced zero layers deep.** Every defect found lives in that gap. Fixing the two HIGHs and
+adopting one systemic rule for how correction entries are dated (Recommendation R2) closes the
+gap before Step 5 (actuals reporting) would inherit it.
+
+---
+
+## 2. What was independently verified as sound
+
+These are not restatements of the project's own claims. Each was re-derived or re-executed during
+this review.
+
+### 2.1 Live experiments (dev database, 2026-07-02, all rolled back)
+
+1. **The headline off-schedule claim works end to end on real data.** Settling the real
+   Mortgage's next payment with a +$500 actual (cash 2,410.95) through the real chokepoint
+   (`transfer_service.update_transfer`): the ledger reader dropped by exactly 776.72
+   (= 2,410.95 cash - 1,017.24 interest accrued on the REAL running balance 177,554.69 - 616.99
+   escrow); the production read path agreed (176,777.97); the un-seeded replay still showed the
+   contractual 177,277.97 -- exactly $500 apart; Checking moved by the full -2,410.95; reverting
+   restored every number to the penny. The extra principal was captured with no true-up. This is
+   the outcome the entire arc was built for, and it works.
+2. **True-up posts a correction, not an edit.** `anchor_service.apply_loan_anchor_true_up` to
+   175,000.00: reader and production path both jumped to exactly 175,000.00; the correction
+   entry's legs were +2,554.69 on the Mortgage linked ledger and -2,554.69 on the per-loan equity
+   account -- balanced, append-only.
+3. **The deferred balance trigger works as claimed.** A raw-SQL single-leg entry was rejected at
+   COMMIT ("has 1 posting(s); >= 2 required"); a raw-SQL unbalancing UPDATE was rejected at COMMIT
+   ("postings sum to 10.00; must be 0").
+4. **The documented no-DELETE gap is real** (see M1): a raw-SQL DELETE of one leg of a balanced
+   entry succeeded silently; the trial balance broke (+500.00) with nothing at the DB tier
+   catching it. (Rolled back.)
+5. **Production-wide reconciliation holds on real data.** Per-account sweep across all 9
+   accounts: every cash account's ledger net equals its settled-source effect to the penny (diff
+   0.00), and each loan's difference equals exactly its per-loan corrections (Mortgage
+   -183,287.54 = -(equity 177,483.43 + interest 3,336.15 + escrow 2,467.96)). Trial balance 0.00;
+   zero unbalanced entries; 118 entries / 241 postings.
+6. **Reader/resolver/production three-way parity on-schedule:** all three produced 177,554.69 for
+   the Mortgage.
+7. **Finding H2 demonstrated live** (Section 3).
+
+### 2.2 Design and process strengths confirmed by code trace
+
+- **The root-cause diagnosis was accurate.** The six balance producers and their four disagreeing
+  boundary rules (`recurring_loan_balance_root_cause.md` Section 2c) were re-verified by the
+  fitness doc and again during Level-1 planning; the fix (one seam owning all four per-kind rules,
+  `app/services/balance_at.py:1-77`) matches the diagnosis exactly.
+- **Option D's fact-versus-derivation principle is applied consistently.** Confirmed facts are
+  posted once, append-only; projections stay live-computed; the one place the codebase had already
+  learned this lesson (`income_service.live_projected_net`, the demoted
+  `LoanParams.current_principal`) is extended, not contradicted.
+- **Reconcile-to-target is genuinely idempotent and self-healing.** The delta design
+  (`posting_service.py:571-784`) covers settle / revert / edit / cancel / delete / restore through
+  one code path, reads the posted side back from the ledger (so a revert-and-recategorize reverses
+  the OLD category -- the Step-3 CRITICAL fix, `posting_service.py:487-520`), and no-ops on
+  repeats. Verified in experiments 1 and 2.
+- **The sole-writer claim holds.** Every `JournalEntry` / `Posting` construction in `app/` funnels
+  through `posting_service._emit_balanced_entry` (`posting_service.py:342-395`;
+  `loan_posting_service/_anchors.py:300`, `_payments.py:242`); `LedgerAccount` is written only by
+  `ledger_account_service` (`:180, :367, :591`). No bulk ops, no raw SQL outside migrations. FK
+  actions match model-to-migration in every case.
+- **The genesis walk's pre-anchor algebra is an identity, not a cleanup.** The walk resets the
+  running balance at every anchor (`loan_posting_service/_walk.py:352-370`), so a pre-true-up
+  payment's posted principal cancels arithmetically against the true-up correction's
+  `owed_before`. The $3,821.90 naive-read-switch mis-statement class cannot regress via data
+  drift, only via a code change to the reset logic, which
+  `test_pre_anchor_payment_is_correctly_summed_under_genesis` pins.
+- **The adversarial-review-between-steps process earns its cost.** The v1 Step-4 plan shipped a
+  genuine cash-corruption CRITICAL (the `transfer_id` linkage that Step 2's `_posted_net` would
+  have double-read); the review caught it pre-implementation and the `transaction_id` linkage
+  dissolved it structurally (`implementation_plan_posting_ledger_loan_payments.md` Section 2.8,
+  5.2). The Step-3 revert-and-recategorize CRITICAL and the H1 `is_fallback` collision were caught
+  the same way. This process is a load-bearing part of the quality story and should continue.
+- **Oracle discipline is real, not theater.** Hand-computed literals, independent SQL
+  cross-checks, and executable negative controls (the cross-page seam-injection locks) are all
+  present; the loan oracle correctly re-pointed its "independent producer" at the un-seeded
+  resolver when the read switch would have made it a tautology
+  (`test_posting_ledger_loan_reconciliation.py:461-493`). Gaps exist (M4, M5, M8) but the
+  foundation is honest.
+- **Deletion/archival of a loan is guarded twice:** `ledger_accounts.loan_account_id` is
+  ON DELETE RESTRICT at the DB tier, and route Guard 5 archives any account whose ledger carries
+  postings (`routes/accounts/crud.py:631-636`).
+
+### 2.3 Scale (for the maintainability judgment)
+
+The arc's production code is ~6,900 lines (seam + posting services + models + infrastructure),
+its dedicated tests ~13,800 lines, plus 1,946 lines of checker infrastructure -- a 2:1
+test-to-code ratio on the money core, inside a suite of 6,827 tests.
+
+---
+
+## 3. Findings
+
+Ranked by severity. "Demonstrated" = reproduced live during this review. "Reachable" = a concrete
+user flow exists today. "Latent" = requires a future feature or a raw-SQL operator action.
+
+### H1 (HIGH, reachable): revert-and-move plus period truncate can strand half a reversal pair -- a permanent, unhealable ledger skew
+
+Plain-language walkthrough. You mark a $100 expense Paid in period P; the ledger books entry E1
+(+/-100, stamped with period P). Later you realize it belongs in a future period F, so you do the
+supported "revert and correct" edit: one PATCH that sets the status back to Projected AND moves
+the row to period F. The finalised-edit lock deliberately lifts on a same-request revert
+(`app/routes/transactions/mutations.py:63-66`, comment: "a settled row's period / due-date cannot
+move anyway... unless the same PATCH reverts to Projected"). The handler applies the new
+`pay_period_id` first, then reconciles last, so the reversal entry E2 is stamped with the NEW
+period F (`posting_service.py:770`, `pay_period_id=txn.pay_period_id`). The net-zero pair now
+straddles two periods: E1 in P, E2 in F.
+
+Now truncate or regenerate the not-yet-started tail containing F (a supported settings action).
+The lock classifier checks only settled TRANSACTIONS in the periods being deleted
+(`pay_period_admin.py:793-800`, `_period_ids_with_settled_transaction`) -- it never looks at
+journal entries. F holds only a Projected row, so the user sees the ordinary discard confirmation
+and proceeds. The DB CASCADE then deletes F, the moved transaction row, and E2 -- but E1 survives
+with `transaction_id` SET NULL.
+
+Failure: the cash ledger account permanently carries +/-100 with no settled source row.
+`account_posting_total != settled_transaction_effect` -- the reconciliation oracle's own
+per-account invariant is broken, **and nothing can ever heal it**: the reconcile is keyed by
+`transaction_id` (`posting_service.py:487-520`), which is now NULL. The mirror flow (settle in F,
+revert-and-move back to P, truncate F) strands the original entry the same way.
+
+Root cause: correction entries are dated/period-stamped at correction time, not at the period of
+the postings they reverse (see M3, the systemic form of this). Recommendation: R2.
+
+### H2 (HIGH, demonstrated): settling a payment in a not-yet-begun period posts its full cash with no split -- the loan balance reads ~$1,636 too low from period start until the next loan write
+
+Plain-language walkthrough. On 2026-07-02 you mark the Mortgage payment for the period starting
+2026-07-30 as Paid (nothing prevents settling a future-period transfer). Step 2's cash posting
+fires immediately (it gates on settled only, `posting_service.py:571+`), booking the full
+1,910.95 onto the loan's linked ledger, attributed to the July-30 period. But the Step-4 split
+walk EXCLUDES payments whose pay period has not begun
+(`loan_posting_service/_walk.py:259-269`, the `period_start <= as_of` eligibility bound), so no
+interest/escrow correction posts.
+
+Demonstrated live: after the settle, the confirmed reader at today was unchanged (correct -- the
+period has not begun), but the per-period map showed the 2026-07-30 period dropping by the FULL
+1,910.95 instead of the real ~275 principal. The moment that period begins, every ledger-fed
+surface (loan card, savings tile, net worth, year-end) reads the balance 1,635.81 too low
+(interest 1,018.82 + escrow 616.99), and the history rows show a phantom all-cash principal row.
+It self-heals at the next loan write (next settle, true-up, rate edit, params edit) because the
+sync is reconcile-to-target -- but there is no time-passage trigger, so the window is unbounded.
+
+Root fix (recommended): split a settled payment regardless of whether its period has begun --
+option (a) in the read-switch trace. The correction and cash legs share the entry's period, so
+the reader's period bound remains the display gate and sums stay right in both windows. This also
+restores the module's own stated invariant ("every Step-2 cash entry gets a matching
+correction," `_walk.py:465-470`). Alternative (b), gating settle to begun periods, changes a user
+affordance and is the lesser fix. Recommendation: R1.
+
+### H3 (HIGH as enforcement gap; no defect today): born-Projected is a convention, not a machine rule
+
+The status fence (W9907) matches only `<expr>.status_id = ...` assignments
+(`tools/pylint/shekel_checkers.py:843-895`). Constructor kwargs are documented out of scope,
+"governed by the separate born-Projected create rule" -- but that rule is three conventions deep
+(schemas omit `status_id`; routes overwrite with Projected; route tests), not a gate. The
+enabling form ships in production today: `data["status_id"] = ...; Transaction(**data)`
+(`app/routes/transactions/create.py:91-94, 139-144`) and `Transaction(status_id=...)`
+(`recurrence_engine.py:184-189`). A future code path constructing a born-settled row would ship
+with NULL `paid_at`, no `verify_transition`, and no ledger posting -- the exact failure mode the
+Step-3 review called its highest risk -- and every gate stays green.
+
+Two sibling forms are equally invisible and have enabling patterns in-tree for other columns:
+`setattr(txn, "status_id", ...)` (a generic setattr loop over schema data exists at
+`mutations.py:328-332`, currently guarded by a single `continue`), and bulk updates
+(`db.session.query(Transaction).update({...})` is an established pattern at
+`routes/templates.py:207, 543, 585, 674`; adding `"status_id"` to such a dict would bypass the
+seam silently). Zero violations exist today; all three are closable with small AST extensions in
+the existing checker style at zero migration cost. Recommendation: R3.
+
+### M1 (MEDIUM, demonstrated; raw-SQL surface): the ledger's append-only property does not bind at the database tier
+
+The balanced trigger deliberately has no DELETE arm (`posting_infrastructure.py:111-118`, so
+CASCADE disposal does not abort), and the ORM immutability listeners
+(`journal_entry.py:370-423`) do not fire for raw SQL. Demonstrated: a psql single-leg DELETE
+silently broke the trial balance. Additionally, the UPDATE arm checks only the NEW row's entry, so
+a raw-SQL reparent of a leg (`SET journal_entry_id = other`) leaves the OLD entry unbalanced
+unchecked. This matters for this project specifically because the operator routinely runs manual
+SQL against these databases (prod-clone verifications, migration checks).
+
+Cheap, high-value hardening: production runs the least-privilege `shekel_app` role, which today
+receives blanket `SELECT, INSERT, UPDATE, DELETE` on budget tables
+(`scripts/init_db_role.sql:94, 112`). The app never legitimately UPDATEs or DELETEs ledger rows
+directly (disposal is FK CASCADE, which PostgreSQL executes as the constraint owner, not the
+client role). `REVOKE UPDATE, DELETE ON budget.journal_entries, budget.account_postings FROM
+shekel_app` would make append-only real at the DB tier for the running app, while migrations
+(owner role) and cascades keep working. Verify the cascade behavior on the dev stack first.
+Recommendation: R4.
+
+### M2 (MEDIUM, reachable): pay-period reset wipes loan genesis entries despite its zero-settled gate
+
+The reset gate counts settled transactions only (`pay_period_admin.py:474-476, 665-692`). Loan
+opening/true-up entries exist independently of any settled transaction (a payment-less configured
+loan posts its opening at params-create, `routes/loan/params.py:119` -> `_sync.py:113-146`). So a
+user with a configured loan and zero settled rows is offered reset, and the wipe CASCADEs every
+`loan_opening` / `loan_trueup` entry. Not permanent corruption -- `LoanAnchorEvent` and
+`LoanParams` survive, so the next loan chokepoint or deploy backfill regenerates everything --
+but until then every ledger-authoritative loan read hits the missing-OPENING sentinel and
+degrades to the replay fallback, and the comment at `pay_period_admin.py:465-473` ("no posted
+period is ever wiped") overclaims. Fix: call
+`loan_posting_service.backfill_all_loan_postings()` at the end of `reset_pay_periods`, in the
+same transaction; correct the comment. Recommendation: R7.
+
+### M3 (MEDIUM, systemic): correction entries carry the period and date of the correction, not of what they correct -- and Step 5 will inherit this
+
+Three facts compound:
+1. A reversal entry's `pay_period_id` is the source row's CURRENT period
+   (`posting_service.py:770`) -- the H1 enabler.
+2. A reversal entry's `entry_date` falls back to the period start because revert clears
+   `paid_at` (`posting_service.py:151-173`) -- so a cross-year revert strands +/- amounts in two
+   different years for any reader that groups by `entry_date`.
+3. The project already hit this once and fixed it per-reader: the C10 tax-interest reader groups
+   legs by payment and attributes by the CURRENT paid date precisely because entry-date grouping
+   mis-stated both Schedule-A years (`implementation_plan_loan_read_switch.md`, Commit 10).
+
+The C10 fix is correct but local. Step 5 (income statement, balance sheet by period/date) would
+re-discover this bug class for cash and transfers. Decide the ledger-wide attribution rule ONCE,
+before Step 5: either (a) stamp reversal/delta entries with the period/date of the postings being
+reversed (read back from the ledger, the same discipline `_posted_net_by_account` already applies
+to accounts), or (b) mandate the C10 pattern (group by source, attribute by current source state)
+for every reporting reader and record it as the reader contract. Option (a) is the storage-level
+fix and also dissolves H1's precondition. Recommendation: R2.
+
+### M4 (MEDIUM): the loan parallel-run oracle's independence is convention-only after the read switch
+
+The oracle correctly uses the un-seeded `resolve_loan` as its independent reference
+(`test_posting_ledger_loan_reconciliation.py:461-493`), and the resolver package performs zero DB
+access. But (a) production never runs un-seeded for an opened loan, so the reference is a
+test-only configuration with no mechanical guard -- a future refactor that lets any resolver
+input loader consult the ledger silently collapses the parallel run to a tautology and nothing
+fails; and (b) the docstring's "shares none of its code path" overstates -- the walk and the
+replay share the amortization kernel (`app.utils.money.accrue_monthly_interest`,
+`rate_period_engine.period_for_date`, rate-period construction, the anchor loader, the shadow
+predicate). A bug in the shared kernel moves both producers in lockstep; only hand-computed
+literals catch it, and at the oracle level those exist only for fixed-rate, single-period,
+flat-escrow fixtures. Recommendation: R5, R6.
+
+### M5 (MEDIUM): the celebrated +$10 injection non-vacuity proof is manual, not executable
+
+The "+$10 interest injection failed 9 of 11 tests" evidence lives in commit messages and
+docstrings. It does not run in CI, so a later edit that weakens a value assertion loses the
+oracle's teeth undetected. The cross-page oracle already shows the pattern to copy
+(`TestSeamInjectionLock` monkeypatches and asserts the failure bites). Automate the walk
+injection the same way. Also: the Step-2/3 tamper proofs re-derive comparisons inline instead of
+driving the actual sweep helpers under `pytest.raises`, so a regression in the sweep helper
+itself stays green; and the sweeps iterate enumerations that could silently go empty (assert
+non-empty). Recommendation: R5.
+
+### M6 (MEDIUM, latent -- must precede the scenario-clone feature): two multi-scenario gaps
+
+1. A what-if scenario that holds the loan but has no payment in it gets no opening posting, reads
+   `None`, and falls back to the replay (documented as M2 in the read-switch plan). Off-schedule,
+   the baseline (ledger) and the what-if (replay) would show different balances for the same
+   loan.
+2. Scenario enumeration is "scenarios with a non-deleted payment shadow, plus baseline"
+   (`_sync.py:41-72, 113-146`). A non-baseline scenario whose payments are later all soft-deleted
+   drops out of the enumeration while its opening posting still answers -- loan-global changes
+   (params edit, true-up, rate change) then skip it, leaving a frozen-but-authoritative ledger.
+   Fix: enumerate by "has any loan-ledger posting" (distinct `journal_entries.scenario_id` on the
+   linked ledger).
+
+Both are unreachable today (only the baseline exists). Both must be resolved in the scenario-clone
+design, not discovered after it ships. Recommendation: R8.
+
+### M7 (MEDIUM): oracle-level coverage gaps where both producers could move in lockstep
+
+Never exercised at the reconciliation level (all verified absent by sweep):
+- An ARM rate step or an escrow effective-date change through the parallel run (both are
+  unit-tested per side, but a shared `rate_period_engine` / effective-dating bug moves the walk
+  and the replay together -- one oracle case with a hand-computed post-step literal closes it).
+- A biweekly due-month collision (two payments in one due month) through the reconciliation --
+  the one place reader and resolver attribution can legitimately disagree
+  (`_redistribute_to_distinct_months` is resolver-only), flagged since Step 4 (C4 note M2) but
+  never pinned.
+- A transfer OUT of a loan: `transfer_service` does not forbid it, `_assert_loan_reconciles`
+  assumes income-only shadows, and the history reader ships a live classification branch for it
+  (`_reader.py:556-560`) that no test has ever executed. Either forbid the flow or test the
+  branch.
+Recommendation: R6.
+
+### Lower-severity findings (grouped)
+
+- **L1:** pylint silently ignores unknown `--fail-on` symbols, and the gate list is maintained in
+  five places (`ci.yml:147,159`; `.pre-commit-config.yaml:28,43`; `post-edit-python.sh:67-69`).
+  A renamed checker symbol would drop its hard gate without an error; today the 10.00 floor
+  backstops it. Single-source the list or assert list-equality in the checker tests.
+- **L2:** fence allowlist hygiene: `growth_engine` is allowlisted for W9906 but calls zero fenced
+  producers (unused exemption = attack surface); the genesis-reader allowlist grants all of
+  `loan_payment_service` while the documented intent is `confirmed_loan_view` only -- keep that
+  module small.
+- **L3:** the date-precise loan scalar (`balance_at.balance_at` AMORTIZING branch) does not see a
+  true-up dated after the last confirmed payment until the next payment row -- a
+  card-versus-year-end divergence of the true-up delta. Acknowledged as the retained "due-basis"
+  semantic; now cheaply fixable (route the confirmed region to `confirmed_loan_balance_at` for
+  `as_of <= today`) but it changes year-end debt-progress semantics -- a deliberate decision, not
+  a drive-by fix.
+- **L4:** the anchors-plus-payments merge-order rule is spelled twice (`_walk.py:311-326` and
+  `_reader.py:806-816`) with cross-references but no shared code; extract the merge key into
+  `_common`.
+- **L5:** `net_worth_kernel.py:634` imports the private `loan_posting_service._reader` submodule
+  directly (documented cycle workaround; an encapsulation blemish -- re-export through a leaf or
+  accept and document).
+- **L6:** the cross-page oracle counts one producer twice: `_grid_value` and
+  `_accounts_checking_value` are byte-identical `cash_balance_map` calls, so the "6 surfaces" are
+  5 producers, and routes get only status-200 checks -- a route that drifted onto a different
+  producer would pass. Wire at least one reader to a route response value.
+- **L7:** the cash oracle's counter-ROUTING check resolves the expected category account with the
+  same `get_or_create_category_ledger_account` the writer uses -- a deterministic routing bug
+  passes both sides. Derive the expectation with a test-authored `(user, category, class)` query.
+- **L8 (doc drift, three instances found):** the two `import-outside-toplevel` rationales in
+  `loan_payment_service.py` (~:551, ~:590) claim "loan_resolver imports from this module" --
+  no longer true (docstring references only; the lazy imports may be removable); the
+  "cascade-imbalance impossibility argument" in `ledger_account.py:141-155` /
+  `journal_entry.py:255-262` is stale post-Step-3/4 (the operative guard is route Guard 5 --
+  `archive_helpers.account_has_ledger_postings`); the reset comment overclaim (M2).
+- **L9 (policy edge):** `entry_date` is the UTC civil date by design
+  (`posting_service.py:128-148`) while the user's display timezone is America/New_York. A settle
+  clicked ~8pm ET on Dec 31 books Jan 1 UTC, shifting tax-year attribution (mortgage interest
+  now; the whole income statement under Step 5). Decide once: accept (document in the tax
+  surface) or attribute tax-year figures by display-timezone civil date.
+- **L10:** an envelope whose credit entries exceed its effective amount would flip the sign of
+  `effective - credit_sum` (an expense becoming net cash inflow). Nothing rejects or pins the
+  shape; add a guard or a pinned test.
+- **L11:** legacy origination `LoanAnchorEvent` rows are dead data kept append-only, correctly
+  ignored by the single loader (`loan_loaders.py:110-120` filters USER_TRUEUP); risk is only a
+  future consumer querying the table without the filter. The single-loader convention is the
+  guard; keep it.
+
+### Informational (architecture boundaries, all documented somewhere, gathered here)
+
+- **The modeling boundary on interest and escrow:** interest accrues per payment event, not per
+  time -- a skipped month books no interest, so a loan in deferment/forbearance flat-lines in the
+  ledger while the real loan grows; and every payment is attributed the full configured escrow,
+  so a $100 token payment books 616.99 escrow + full interest and a large negative principal,
+  where a real lender would hold it in suspense. Internally consistent, cash-correct, and the
+  true-up remains the correction tool; the D13 statement-split override is the eventual fix.
+  Worth one paragraph in the architecture-of-record so it is a stated boundary, not a surprise.
+- **The trial balance does not close app-wide** until cash gets opening-equity postings (Step 5):
+  loans sum to absolute balances, cash to deltas. Documented; the standing trap is any future
+  reader assuming `account_posting_total` is a balance. The asymmetry argues for finishing Step 5
+  rather than pausing indefinitely.
+- **Two backfill philosophies coexist:** raw-SQL-in-migration (Steps 2-3, duplicating the effect
+  formula in SQL, oracle-guarded) versus deploy-hook service-reuse (Step 4+, backfill ==
+  go-forward by construction). The second is strictly better; standardize on it for Step 5.
+- **Equity accounts are write-only** until Step-5 reporting reads them; integrity rests on the
+  balanced trigger + construction + the injected-leg trial-balance test. Acceptable staging.
+- **The grid/obligations panel pointed at a loan account shows the cash-flow view** (deliberate,
+  documented INTEREST-only accrual design, `balance_at.py:702-733`).
+- **`amount_overrides` None-semantics differ by kind** (PLAIN auto-builds live income; INTEREST
+  uses stored) -- the seam documents and normalizes it inside `grid_balance_view`
+  (`balance_at.py:906-917`) rather than fixing the producer asymmetry. Acceptable; a future
+  producer-contract normalization would delete a lot of documentation.
+- **Balance-bearing rich functions stay outside the W9906 fence by the documented SRP line**
+  (`resolve_loan`, `project_balance`, `confirmed_loan_history_rows`,
+  `confirmed_loan_interest_in_year`) -- a consumer could re-derive a balance from them without a
+  checker firing. That judgment line is assigned to review, not the machine; remember it when new
+  callers appear.
+
+---
+
+## 4. The seven questions, answered directly
+
+**Is this DRY?** Yes, with named residuals. One balanced-write path for every source; one
+accrual helper shared by split and replay (extracted when a reviewer caught the copy); shared
+eligibility predicates and loaders; the unified single-walk sync. Residuals: the merge-order rule
+spelled twice (L4), the Step-2/3 backfill SQL duplicating the Python effect formula (guarded, and
+superseded by the Step-4 pattern), the five-place gate list (L1), one duplicated oracle reader
+(L6).
+
+**Is this SOLID?** Largely yes, and demonstrably so where it was hard: the status seam extraction
+(`status_seam.py` as a leaf module breaking a real import cycle), the two-domain-seams-over-
+shared-primitives decision (rejecting a type-switching merged seam), the reader/writer split
+inside `loan_posting_service`, the loan_loaders leaf extraction as a genuine layering fix.
+Dependency direction (consumers -> seam -> engines) holds. Blemishes: the private `_reader`
+reach-in (L5), the cross-module use of underscore-prefixed primitives as package-private
+convention, and module-granular fence allowlists standing in for function-granular intent (L2).
+
+**Is this fully normalized?** Yes where it counts, with deliberate and documented
+denormalizations: `scenario_id`/`user_id` on journal entries (tenancy/isolation), display-name
+snapshots on ledger accounts (posted history must survive renames), `is_fallback` +
+`kind_id` making the four row kinds storage-enforced rather than NULL-pattern conventions.
+Temporal escrow chose real normalization (range-dated versions) over a per-payment snapshot. The
+anchor concept has three artifacts (immutable `LoanParams` origination, `user_trueup` rows as
+source documents, derived genesis postings) -- coherent under the fact-versus-derivation rule,
+with reconcile-to-target keeping derived in sync with source in the same transaction.
+
+**Is this robust?** For amounts: yes, three layers deep (service pre-check, deferred DB trigger,
+oracles), and the live experiments bear it out. For period/date attribution: no -- that is
+exactly where H1, H2, and M3 live, and no layer enforces it. For raw-SQL operator error: one
+demonstrated gap (M1) with a cheap DB-tier hardening available. Concurrency: version_id
+optimistic locks on the transfer/transaction paths; the loan-global paths rely on
+single-transaction reconcile-to-target (documented as acceptable for a solo user).
+
+**Is this maintainable for a solo developer?** The documentation and gate culture is the best
+part of this codebase: every invariant is written down next to the code that carries it, and the
+checkers turn conventions into build failures. Two honest risks. First, conceptual surface: seven
+fence checkers, four ledger row kinds, three sync services, two views in one seam, and a
+walk-with-resets -- returning to this cold in a year is viable only because the docstrings are
+excellent, which leads to the second risk: doc drift. This review found three instances of
+load-bearing comments that are no longer true (L8). The docs ARE part of the machine here; a
+periodic drift pass (or extending the checkers to verify claims like allowlist accuracy) is
+maintenance, not polish.
+
+**Is this future-proof and extensible?** The fence plus the oracles make extension structurally
+safe -- a new surface cannot re-derive a balance, and a new posting source reuses one write path.
+Three things must land before their triggering features: the multi-scenario gaps before scenario
+clone (M6), the correction-dating rule before Step 5 reporting (M3), and the D13 statement-split
+override before promising lender-exact histories. The revisit-triggers list in the fitness doc
+(multi-currency, external import, regulated reporting) remains the honest boundary of the design.
+
+**Is this financially correct?** For every dollar amount: yes, to the penny, verified live on
+real data (off-schedule capture, true-up corrections, production-wide reconciliation, three-way
+producer parity). For WHEN dollars are attributed: two real defects (H1 period-stranding, H2
+early-settle mis-split), one systemic semantics gap (M3), and one policy edge (L9 UTC tax-year).
+For WHAT the model claims about the outside world: internally consistent but payment-event-driven
+(the deferment/suspense boundary above) -- a modeling choice to document, not a bug.
+
+---
+
+## 5. Re-evaluation of the decisions (no anchoring)
+
+Each major decision re-examined from scratch against the alternatives it beat.
+
+- **Option D (double-entry confirmed ledger + live projections) over Level-1-only.** Level 1
+  alone would have fenced the display-divergence bug class. It would NOT have given you:
+  off-schedule payments captured without true-ups (demonstrated working), the end of the
+  per-payment true-up band-aid, the sum-to-zero self-check, or an audit-grade confirmed history.
+  Given this app manages your real finances and the loan true-up history was a recurring source
+  of wrong balances, the extra investment bought real correctness, not rigor theater. The
+  fitness doc's own rejection of E/F (materializing projections) remains exactly right. VERDICT:
+  correct call. The one caveat: Option D's value is only fully realized when Step 5 closes the
+  cash asymmetry -- see R9.
+- **Genesis (opening-equity + sum of postings) over the anchor-based reader.** The anchor-based
+  intermediate would have kept a read-time boundary filter -- the precise pattern the root-cause
+  doc identified as the bug generator. Genesis made the pre-anchor problem an algebraic identity
+  instead of a cleanup. VERDICT: correct, and the more-correct-design-sequenced-safely discipline
+  (write-only Step 4, parallel-run, then flip) is the pattern to repeat.
+- **Real split from actual cash (v2) over the contractual mirror (v1).** The adversarial review
+  that forced this rewrite was the single highest-value review in the arc. VERDICT: correct.
+- **Posting at `is_settled` (Paid/Received), not at Settled.** Verified: nothing ever assigns
+  SETTLED, so the alternative was a dead pilot. VERDICT: correct.
+- **Per-category ledger accounts now (D1)** rather than one Income/one Expense. Buys the Step-5
+  income statement with no repoint. VERDICT: correct.
+- **Configured escrow, effective-dated (temporal escrow), no inflation on recorded values.**
+  The normalization choice was right and the on-schedule cancellation invariant
+  (`escrow_split == escrow_built`) is well-argued. VERDICT: correct.
+- **Escrow as Expense (D8), impound-asset deferred; statement-split override deferred (D13).**
+  Both acceptable staging; D13 is the eventual answer to the token-payment modeling boundary.
+- **Born-Projected (create rule)** -- right rule, incomplete enforcement (H3).
+- **Keeping the presentation gates after Level 1** (fitness doc refinement 2) -- right;
+  presentation windows are not balance semantics.
+- **The C11 forks decided by the agent under standing directive, awaiting ratification:**
+  (a) retire the ORIGINATION anchor write but KEEP `user_trueup` rows as the operator's source
+  document -- on review this is not a compromise but the correct reading of fact-versus-
+  derivation: the true-up is a dated operator assertion (a fact) from which the correction
+  posting is derived and self-heals; retiring it would have re-invented the same store under a
+  new name. RECOMMEND RATIFY. (b) The six-commit C11 decomposition -- mechanically sound,
+  independently green, reviewed per commit. RECOMMEND RATIFY.
+
+**What should have been done differently** (two things, both recoverable now):
+1. When the first reversal entry shipped (Step 2, Commit 4), the ledger needed a stated rule for
+   how corrections are dated and period-attributed. It was never written, and H1/M3/the C10 bug
+   are all downstream of that omission. Adopt the rule now (R2).
+2. The split walk's period-begun eligibility bound was inherited from the resolver's replay
+   semantics into the WRITE path, where it does not belong -- the write side should mirror the
+   cash posting's settled-only gate (H2/R1).
+
+---
+
+## 6. Recommendations, prioritized
+
+| # | Priority | Action |
+|---|----------|--------|
+| R1 | NOW | Fix H2: make the split walk include settled payments regardless of period-begun (write-side gate = settled only, matching the cash leg). Add the "early settle, then time passes" oracle case that would have caught it. |
+| R2 | NOW (before Step 5) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. |
+| R3 | SOON | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. |
+| R4 | SOON | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). |
+| R5 | SOON | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. |
+| R6 | SOON | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch; one settled-row revert-and-move oracle case (pairs with R2). |
+| R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). |
+| R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
+| R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
+| R10 | HOUSEKEEPING | Doc-drift batch (L8): the two stale import rationales, the stale impossibility argument in the two model docstrings, the reset comment. Single-source the `--fail-on` list (L1). Trim `growth_engine` from the W9906 allowlist (L2). De-duplicate the cross-page grid/checking readers or wire one to a route value (L6). Decide the L9 timezone policy for tax attribution and the L10 over-credit guard. Ratify the two C11 forks (Section 5). |
+
+---
+
+## 7. Experiment log (for reproducibility)
+
+All experiments ran 2026-07-02 against the dev database (`shekel-dev-db`, migration head
+`f3d6b1a8c2e4`, 118 entries / 241 postings / trial balance 0.00 before and after). Mutating
+probes wrapped every write in one session with `db.session.commit` stubbed to `flush` where a
+service commits internally, and ended with `ROLLBACK`; final counts and transfer statuses were
+re-verified identical. Probe scripts: `offschedule_probe.py`, `trueup_probe.py`,
+`early_settle_probe.py` (session scratchpad; reproducible from the descriptions in Sections 2.1
+and 3).
