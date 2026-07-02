@@ -215,7 +215,9 @@ class _ProjectionPrep:
 
 
 def _build_forward_inputs(
-    loan_inputs: LoanInputs, as_of: date,
+    loan_inputs: LoanInputs,
+    as_of: date,
+    forward_seed_balance: Decimal | None = None,
 ) -> _ProjectionPrep:
     """Replay the past and assemble the shared inputs for the three forward slices.
 
@@ -228,6 +230,19 @@ def _build_forward_inputs(
     Args:
         loan_inputs: The loan's loaded input bundle.
         as_of: The replay/projection boundary date.
+        forward_seed_balance: The genesis-ledger confirmed balance at
+            ``as_of`` (the read switch, plan Section 8), or ``None`` to keep
+            the schedule-replay balance.  When supplied it overrides ONLY the
+            projection's starting BALANCE, not its starting date or remaining
+            months: those are the count of confirmed payments replayed (which
+            is identical either way -- the ledger and the replay process the
+            same confirmed payments), so only the resulting balance differs,
+            and it does so exactly off-schedule (the ledger books the REAL
+            principal paid, the replay the SCHEDULED principal).  The forward
+            slices then amortize the real owed balance over the remaining
+            contractual months.  The confirmed-history rows are still the
+            replay's rows here (their per-payment ledger restatement is a later
+            commit); they do not feed the forward projection's seed.
 
     Returns:
         A :class:`_ProjectionPrep` with the shared projection inputs, the
@@ -289,8 +304,19 @@ def _build_forward_inputs(
     # (recorded recast or schedule-derived), which is what makes the
     # projected rows and the loan card agree at every date, not just at
     # ``as_of`` (DH-#1).
+    #
+    # The starting BALANCE is the read switch's one seam (plan Section 8):
+    # the genesis-ledger confirmed balance when supplied, else the
+    # schedule-replay balance.  The starting DATE and remaining MONTHS stay
+    # the replay's -- they count confirmed payments, which is identical
+    # under both (see the ``forward_seed_balance`` arg doc), so seeding the
+    # real owed balance amortizes it over the same remaining term.
+    starting_balance = (
+        replay.balance_as_of if forward_seed_balance is None
+        else forward_seed_balance
+    )
     projection_inputs = ProjectionInputs(
-        starting_balance=replay.balance_as_of,
+        starting_balance=starting_balance,
         starting_date=replay.next_pay_date,
         remaining_months=replay.remaining_months_as_of,
         payment_day=loan_inputs.loan_params.payment_day,
@@ -308,6 +334,7 @@ def compute_payoff_scenarios(
     loan_inputs: LoanInputs,
     extra_monthly: Decimal,
     as_of: date,
+    forward_seed_balance: Decimal | None = None,
 ) -> PayoffScenarios:
     """Single source of truth for the Payoff Calculator's three scenarios.
 
@@ -371,6 +398,13 @@ def compute_payoff_scenarios(
             (``months_saved == 0``, ``interest_saved == 0``).
         as_of: Evaluation date.  The replay/projection boundary.
             Typically ``date.today()`` from the route.
+        forward_seed_balance: The genesis-ledger confirmed balance at
+            ``as_of`` (the read switch, plan Section 8), or ``None`` to keep
+            the schedule-replay balance as the forward seed.  Threaded to
+            :func:`_build_forward_inputs`; see its arg doc for why only the
+            starting balance is overridden.  The caller reads it once (via
+            ``loan_payment_service.confirmed_loan_seed``) so the chart/summary
+            project from the same real owed balance the loan card shows.
 
     Returns:
         A :class:`PayoffScenarios` with the three forward slices and
@@ -380,7 +414,7 @@ def compute_payoff_scenarios(
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             ``._periods.select_latest_anchor``).
     """
-    prep = _build_forward_inputs(loan_inputs, as_of)
+    prep = _build_forward_inputs(loan_inputs, as_of, forward_seed_balance)
 
     # All three forward slices share starting state; only override
     # presence and extra_monthly vary.  The architectural plan's
@@ -470,6 +504,7 @@ def target_date_outlook(
     loan_inputs: LoanInputs,
     target_date: date,
     as_of: date,
+    forward_seed_balance: Decimal | None = None,
 ) -> TargetDateOutlook:
     """Answer "when does my plan pay off, and what extra hits my target?".
 
@@ -491,6 +526,12 @@ def target_date_outlook(
         target_date: The user's desired payoff date.
         as_of: Evaluation date (the replay/projection boundary);
             typically ``date.today()`` from the route.
+        forward_seed_balance: The genesis-ledger confirmed balance at
+            ``as_of`` (the read switch, plan Section 8), or ``None`` to keep
+            the schedule-replay balance.  Threaded to
+            :func:`_build_forward_inputs` so the required-extra search runs
+            against the real owed balance -- the same balance the loan card
+            and the payoff calculator's other results show.
 
     Returns:
         A :class:`TargetDateOutlook`; see its attribute docs for the
@@ -500,7 +541,7 @@ def target_date_outlook(
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             ``._periods.select_latest_anchor``).
     """
-    prep = _build_forward_inputs(loan_inputs, as_of)
+    prep = _build_forward_inputs(loan_inputs, as_of, forward_seed_balance)
 
     committed_forward = project_forward(
         prep.projection_inputs,

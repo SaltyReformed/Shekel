@@ -13,7 +13,7 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING
 
 from flask import render_template, request
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
@@ -26,6 +26,8 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
+from app.services.loan_payment_service import confirmed_loan_seed
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
 
@@ -78,7 +80,7 @@ def _build_payoff_summary(scenarios, state):
     )
 
 
-def _payoff_extra_payment_result(params, account_id, ctx, data):
+def _payoff_extra_payment_result(params, account_id, ctx, data, forward_seed_balance):
     """Render the extra-payment payoff scenario partial.
 
     One ``compute_payoff_scenarios`` call drives both the chart series
@@ -96,6 +98,10 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
         account_id: Debt account id (anchor-event load).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
+        forward_seed_balance: The genesis-ledger confirmed balance (plan
+            Section 8), read once by the caller; threaded into the composer
+            so the projected payoff amortizes the real owed balance the loan
+            card shows.  ``None`` falls back to the anchor replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -110,6 +116,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
         ),
         extra_monthly=extra,
         as_of=date.today(),
+        forward_seed_balance=forward_seed_balance,
     )
 
     chart_labels, balances = _build_chart_series({
@@ -138,7 +145,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     )
 
 
-def _payoff_target_date_result(params, account_id, ctx, data):
+def _payoff_target_date_result(params, account_id, ctx, data, forward_seed_balance):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -170,6 +177,12 @@ def _payoff_target_date_result(params, account_id, ctx, data):
             plan-aware outlook).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
+        forward_seed_balance: The genesis-ledger confirmed balance (plan
+            Section 8), read once by the caller; threaded into the plan-aware
+            outlook so its required-extra search runs against the real owed
+            balance.  The RAW search already uses ``ctx.state.current_balance``,
+            which is the same seeded balance (``ctx`` resolves through
+            ``resolve_loan_seeded``).  ``None`` falls back to the anchor replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -211,6 +224,7 @@ def _payoff_target_date_result(params, account_id, ctx, data):
             ),
             target_date=target_date,
             as_of=date.today(),
+            forward_seed_balance=forward_seed_balance,
         )
 
     total_monthly = (
@@ -254,10 +268,19 @@ def payoff_calculate(account_id):
     # rendered on the loan card (E-18 / Commit 15).
     ctx = _load_loan_context(account, params)
 
+    # Read switch (plan Section 8): read the genesis-ledger confirmed balance
+    # ONCE and thread it into whichever mode's forward projection runs, so the
+    # payoff / target-date results project from the same real owed balance the
+    # loan card shows.  ``require_owner`` already gated ownership above.
+    scenario = get_baseline_scenario(current_user.id)
+    seed = confirmed_loan_seed(
+        account_id, scenario.id if scenario else None, date.today(),
+    )
+
     if mode == "extra_payment":
-        return _payoff_extra_payment_result(params, account_id, ctx, data)
+        return _payoff_extra_payment_result(params, account_id, ctx, data, seed)
     if mode == "target_date":
-        return _payoff_target_date_result(params, account_id, ctx, data)
+        return _payoff_target_date_result(params, account_id, ctx, data, seed)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",

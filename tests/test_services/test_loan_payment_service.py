@@ -11,7 +11,7 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -24,11 +24,16 @@ from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
 from app.services.loan_payment_service import (
     compute_contractual_pi,
+    confirmed_loan_seed,
     get_payment_history,
+    load_anchor_events,
+    load_loan_context,
+    load_loan_params,
     prepare_payments_for_engine,
+    resolve_loan_seeded,
 )
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service
+from app.services import account_service, loan_resolver
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -830,3 +835,84 @@ class TestPreparePaymentsForEngine:
         assert len(result) == 2
         assert result[0].payment_date == date(2026, 12, 5)
         assert result[1].payment_date == date(2027, 2, 1)
+
+
+class TestReadSwitchSeedHelpers:
+    """``confirmed_loan_seed`` / ``resolve_loan_seeded`` -- the read-switch seam.
+
+    These pin the SAFETY half of the loan read switch (plan Section 8): the
+    seed reader falls back to ``None`` -- routing the resolver to its anchor
+    replay, exactly the pre-switch behaviour -- whenever the genesis ledger
+    cannot answer (no scenario, a future date, or a loan with no OPENING
+    posting).  ``_create_loan_account`` builds a loan with a linked ledger but
+    NO genesis postings, so it exercises that fallback directly; the "reads the
+    real ledger balance" half is pinned end-to-end by the reconciliation oracle
+    (``TestReadSwitchProductionPath``), which needs posted genesis.
+    """
+
+    def test_seed_is_none_without_a_scenario(self, app, db, seed_user):
+        """No scenario -> ``None`` (there is no scenario to scope postings to)."""
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            assert confirmed_loan_seed(loan.id, None, date.today()) is None
+
+    def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
+        """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
+
+        The confirmed ledger answers only ``as_of <= today``; the seam returns
+        ``None`` for a future date so the resolver projects it, rather than
+        letting the reader raise.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            future = date.today() + timedelta(days=1)
+            assert confirmed_loan_seed(
+                loan.id, seed_user["scenario"].id, future,
+            ) is None
+
+    def test_seed_is_none_for_an_unopened_loan(self, app, db, seed_user):
+        """A configured loan with no OPENING posting -> ``None`` (needs-setup route).
+
+        ``_create_loan_account`` posts no genesis, so the reader finds no OPENING
+        leg and the seam returns ``None`` -- never a misleading ``$0`` -- so the
+        resolver stays on its anchor replay.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            assert confirmed_loan_seed(
+                loan.id, seed_user["scenario"].id, date.today(),
+            ) is None
+
+    def test_resolve_loan_seeded_falls_back_to_anchor_replay_without_genesis(
+        self, app, db, seed_user,
+    ):
+        """Without genesis, the seeded helper == the un-seeded resolver, to the penny.
+
+        The load-bearing safety property: a loan the ledger has not opened
+        resolves exactly as it did before the read switch.  ``resolve_loan_seeded``
+        reads a ``None`` seed and threads it through, so ``resolve_loan`` runs its
+        anchor replay unchanged -- identical to calling it with no seed.
+        Non-vacuous: the balance is a real, positive figure (the resolver ran), and
+        equality would break if the fallback fed a wrong seed instead of ``None``.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+            params = load_loan_params(loan.id)
+            ctx = load_loan_context(loan.id, scenario_id, params)
+            loan_inputs = loan_resolver.LoanInputs(
+                params, load_anchor_events(loan.id),
+                ctx.payments, ctx.rate_changes,
+            )
+
+            seeded = resolve_loan_seeded(
+                loan_inputs, loan.id, scenario_id, date.today(),
+            )
+            unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
+
+            assert seeded.current_balance == unseeded.current_balance
+            assert seeded.current_balance > Decimal("0.00")

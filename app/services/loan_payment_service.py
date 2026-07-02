@@ -54,9 +54,10 @@ from app.utils.balance_predicates import (
 if TYPE_CHECKING:
     # Type-only import: ``loan_resolver`` imports from this module
     # (``load_loan_context``), so a runtime top-level import would be
-    # circular.  ``resolve_account_loan`` returns its ``LoanState``; the
-    # value is produced via the function-local import below.
-    from app.services.loan_resolver import LoanState
+    # circular.  ``resolve_account_loan`` returns its ``LoanState`` and
+    # ``resolve_loan_seeded`` takes a ``LoanInputs``; both values are
+    # produced / passed via the function-local imports below.
+    from app.services.loan_resolver import LoanInputs, LoanState
 
 logger = logging.getLogger(__name__)
 
@@ -691,6 +692,123 @@ def prepare_payments_for_engine(
     return _redistribute_to_distinct_months(sorted_payments, payment_day)
 
 
+def confirmed_loan_seed(
+    account_id: int, scenario_id: int | None, as_of: date,
+) -> Decimal | None:
+    """Read the genesis-ledger confirmed loan balance for the resolver seed, or None.
+
+    The read switch's SINGLE injection point (plan Section 8): the one and
+    only call site of the genesis reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`), so
+    the whole app reads a loan's confirmed balance from the ledger through
+    exactly this function.  Every ``forward_seed_balance`` the three db-facing
+    loaders and the loan-detail chart / payoff calculators thread into the
+    resolver comes from here, which is why the reader has one seam for the
+    W9906 balance-producer fence to allowlist when it joins the fence (plan
+    Section 11), and why the loaders cannot drift on HOW the ledger is read.
+
+    Returns ``None`` -- so the caller falls back to the resolver's anchor
+    replay, exactly today's behaviour -- whenever the confirmed ledger cannot
+    answer:
+
+    * ``scenario_id`` is ``None`` (no baseline scenario, so no scenario to
+      scope postings to);
+    * ``as_of`` is after today (a future date is a forward projection, out of
+      the confirmed reader's domain -- the resolver projects it, and asking
+      the reader would raise); or
+    * the reader itself returns ``None`` -- the loan has no OPENING posting in
+      the scenario: an unconfigured loan, a what-if the opening was never
+      posted into (the C4 M2 case), or any loan not yet backfilled with
+      genesis postings.
+
+    For those three cases the ``None`` fallback makes the read switch safe by
+    construction: a loan the ledger has not opened resolves exactly as it did
+    before the switch.  The ONE case that does NOT fall back is a genuinely
+    broken chart-of-accounts -- a loan account with no linked ledger account at
+    all -- where the reader raises ``PostingError`` rather than returning
+    ``None``, failing loud on the invariant violation (the project's fail-loud
+    rule; :func:`._reader._ledger_account_for` is designed to raise, not paper
+    over a missing pairing).  Every account is paired with a linked ledger by
+    the account-create hook and the Step-2 backfill, so a configured loan cannot
+    reach that path in practice.
+
+    Args:
+        account_id: The loan account whose confirmed balance to read.  The
+            caller MUST have already established that the current user owns it
+            (the reader trusts this arg, matching the sibling
+            ``account_posting_total`` convention); the scenario scope is a
+            second guard, since a cross-owner account has no postings in this
+            user's scenario and so reads ``None``.
+        scenario_id: The baseline scenario id, or ``None``.
+        as_of: The evaluation date; typically ``date.today()``.
+
+    Returns:
+        The ledger-confirmed balance owed as a ``Decimal``, or ``None`` to
+        fall back to the resolver's anchor replay.
+
+    Raises:
+        PostingError: If the loan account has no linked ledger account (a
+            broken chart-of-accounts pairing, from
+            :func:`._reader._ledger_account_for`) -- the one non-fallback path.
+    """
+    if scenario_id is None or as_of > date.today():
+        return None
+    # Pylint: ``import-outside-toplevel`` -- loan_posting_service's walk/sync
+    # import this module (``load_loan_params`` etc.), so resolving the reader
+    # here rather than at module top keeps the dependency one-directional (the
+    # same pattern the loan_resolver imports use).  Imported from its defining
+    # ``_reader`` submodule -- which imports nothing from here -- rather than the
+    # package, so the static import graph carries no ``loan_payment_service ->
+    # loan_posting_service`` cycle for the package's walk/sync back-edge to close.
+    from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
+        confirmed_loan_balance_at,
+    )
+    return confirmed_loan_balance_at(account_id, scenario_id, as_of)
+
+
+def resolve_loan_seeded(
+    loan_inputs: "LoanInputs",
+    account_id: int,
+    scenario_id: int | None,
+    as_of: date,
+) -> "LoanState":
+    """Resolve a loan with its genesis-ledger confirmed balance as the seed.
+
+    The single injection helper the read switch (plan Section 8) routes the
+    three db-facing loaders through -- :func:`resolve_account_loan`, the loan
+    route's ``_resolve``, and the savings dashboard's
+    ``_compute_loan_account`` -- so they cannot drift on HOW the ledger seeds
+    the resolver: read the confirmed balance once via
+    :func:`confirmed_loan_seed`, then run the pure resolver with it threaded as
+    ``forward_seed_balance`` (which overrides BOTH the headline balance and the
+    forward projection seed, so they cannot desync off-schedule).
+
+    When the ledger cannot answer (``confirmed_loan_seed`` returns ``None``),
+    the resolver falls back to its anchor replay -- the pre-switch behaviour --
+    so this is safe for any loan the ledger has not opened.
+
+    Args:
+        loan_inputs: The loan's loaded :class:`LoanInputs` bundle.  The caller
+            builds it, since the three loaders each load slightly different
+            surrounding data (the route also needs the context, the savings
+            tile the paid-off probe).
+        account_id: The loan account, already owner-checked by the caller.
+        scenario_id: The baseline scenario id, or ``None``.
+        as_of: The evaluation date; typically ``date.today()``.
+
+    Returns:
+        The resolved :class:`~app.services.loan_resolver.LoanState`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
+    # module (``load_loan_context``), so resolving it here rather than at
+    # module top keeps the dependency one-directional.
+    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
+    seed = confirmed_loan_seed(account_id, scenario_id, as_of)
+    return loan_resolver.resolve_loan(
+        loan_inputs, as_of, forward_seed_balance=seed,
+    )
+
+
 def resolve_account_loan(
     account_id: int, scenario_id: int, today: date
 ) -> "tuple[LoanParams, LoanState] | None":
@@ -700,7 +818,10 @@ def resolve_account_loan(
     events + context, run the resolver" preamble shared by the debt-strategy
     route and the year-end schedule generation.  Centralizing it keeps the
     two consumers from drifting on HOW a loan account is resolved (which
-    inputs feed :func:`loan_resolver.resolve_loan`, in what order).
+    inputs feed :func:`loan_resolver.resolve_loan`, in what order).  Since the
+    read switch (plan Section 8) it resolves through :func:`resolve_loan_seeded`
+    so its ``current_balance`` is the genesis-ledger confirmed balance (falling
+    back to the anchor replay when the ledger has not opened the loan).
 
     Returns ``None`` when the account has no ``LoanParams`` row (it is not a
     configured loan); the caller skips it.  Unlike
@@ -712,7 +833,8 @@ def resolve_account_loan(
 
     Args:
         account_id: The debt account to resolve.
-        scenario_id: The active budget scenario (for payment history).
+        scenario_id: The active budget scenario (for payment history and the
+            ledger seed scope).
         today: The as-of date passed through to the resolver.
 
     Returns:
@@ -729,11 +851,11 @@ def resolve_account_loan(
         return None
     anchor_events = load_anchor_events(account_id)
     ctx = load_loan_context(account_id, scenario_id, params)
-    state = loan_resolver.resolve_loan(
+    state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
             params, anchor_events, ctx.payments, ctx.rate_changes,
         ),
-        today,
+        account_id, scenario_id, today,
     )
     return params, state
 

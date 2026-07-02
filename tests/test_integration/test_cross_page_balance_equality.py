@@ -872,6 +872,59 @@ class TestLoanCrossPageEquality:
                 "loan kind"
             )
 
+    def test_scalar_surfaces_read_the_ledger_off_schedule(
+        self, app, cross_page_loan_off_schedule_ctx, auth_client,
+    ):
+        """The /savings tile and loan-detail producer read the LEDGER off-schedule.
+
+        The C8 read switch (plan Section 8): both SCALAR loan surfaces resolve
+        through ``resolve_loan_seeded``, so an off-schedule loan -- one confirmed
+        payment far above the scheduled P&I -- shows the genesis-ledger confirmed
+        balance (the REAL principal paid down), NOT the schedule replay.  The
+        fixture pins the ledger balance and the un-seeded replay balance and the
+        assertion below requires them to DIVERGE, so "surfaces == ledger" is
+        non-vacuous: before the switch these surfaces WERE the replay.
+
+        Scoped to the two SCALAR surfaces -- the /savings tile
+        (``_compute_loan_account``) and the loan-detail producer
+        (``resolve_account_loan``).  The per-period MAP surfaces (year-end /
+        net-worth trend) flip with the confirmed-balance map in plan Section 9, so
+        they still read the replay here and are deliberately not asserted.
+        """
+        with app.app_context():
+            ctx = cross_page_loan_off_schedule_ctx
+            ledger = ctx["ledger"]
+            replay = ctx["replay"]
+
+            # Non-vacuity: the loan is genuinely off-schedule -- the genesis reader
+            # opened it (not None) and its real balance is STRICTLY BELOW the
+            # schedule replay by the extra principal the replay drops.
+            assert ledger is not None, "fixture did not open the loan in the ledger"
+            assert ledger < replay, (
+                f"fixture is not off-schedule: ledger {ledger!r} not < replay "
+                f"{replay!r}; the surface check would be vacuous"
+            )
+
+            # Both scalar surfaces now read the ledger balance, not the replay.
+            savings_tile = _savings_tile_value(ctx)
+            loan_detail = _loan_detail_value(ctx)
+            assert savings_tile == loan_detail == ledger, (
+                f"scalar surfaces disagree with the ledger off-schedule: "
+                f"savings_tile={savings_tile!r}, loan_detail={loan_detail!r}, "
+                f"ledger={ledger!r}"
+            )
+            # And crucially they are NOT the old schedule-replay value -- the flip.
+            assert savings_tile != replay, (
+                f"the /savings tile still reads the schedule replay {replay!r}; "
+                "the read switch did not move it onto the ledger"
+            )
+
+            # Route wiring: the /savings page renders the off-schedule loan.
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200, (
+                f"/savings returned {resp.status_code} for the off-schedule loan"
+            )
+
 
 class TestPropertyCrossPageEquality:
     """Every property surface reports the same market value V.

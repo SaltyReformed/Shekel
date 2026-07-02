@@ -141,6 +141,7 @@ from app.services import (
     anchor_service,
     loan_payment_service,
     loan_posting_service,
+    loan_resolver,
     pay_period_service,
     posting_service,
 )
@@ -459,18 +460,35 @@ def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
 def _resolver_balance(
     loan_account_id: int, scenario_id: int, as_of: date
 ) -> Decimal:
-    """Return the resolver's current balance for a loan (the parallel reference).
+    """Return the UN-SEEDED resolver's current balance -- the parallel reference.
 
-    Runs the production read path (``resolve_account_loan``) that every displayed
-    loan balance flows through.  The resolver derives its balance by replaying the
-    SCHEDULED payment forward from the latest anchor and discards the cash, so it
-    is a genuinely independent producer -- it never reads the posted ledger.
+    The oracle's genuinely independent producer: it replays the SCHEDULED payment
+    (``principal = period_pi - interest``) forward from the latest anchor and
+    discards the cash, so it NEVER reads the posted ledger -- the load-bearing
+    property the whole parallel run rests on (module docstring invariants 1 / 7).
+
+    Since the read switch (plan Section 8) the PRODUCTION path
+    ``resolve_account_loan`` reads the ledger -- it threads the confirmed balance
+    in as ``forward_seed_balance`` -- so calling it here would make the "resolver"
+    read the very ledger it is meant to cross-check, collapsing the parallel run
+    to a tautology.  This helper therefore builds the SAME ``LoanInputs`` but runs
+    ``resolve_loan`` WITHOUT the seed, preserving the schedule-replay reference.
+    The SEEDED production path is verified separately -- that it now equals the
+    ledger off-schedule is the read switch, pinned by
+    ``TestReadSwitchProductionPath``.
     """
-    resolved = loan_payment_service.resolve_account_loan(
-        loan_account_id, scenario_id, as_of,
+    params = loan_payment_service.load_loan_params(loan_account_id)
+    assert params is not None, "loan is not resolvable (no LoanParams)"
+    anchor_events = loan_payment_service.load_anchor_events(loan_account_id)
+    ctx = loan_payment_service.load_loan_context(
+        loan_account_id, scenario_id, params,
     )
-    assert resolved is not None, "loan is not resolvable (no LoanParams)"
-    _, state = resolved
+    state = loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, anchor_events, ctx.payments, ctx.rate_changes,
+        ),
+        as_of,
+    )
     return state.current_balance
 
 
@@ -1667,3 +1685,108 @@ class TestReaderParallelRunAgainstResolver:
             ) is None
             _assert_loan_reconciles(loan, baseline.id, _AS_OF)
             _assert_loan_reconciles(loan, whatif.id, _AS_OF)
+
+
+class TestReadSwitchProductionPath:
+    """The production loan read path now returns the LEDGER balance (the flip).
+
+    Every displayed loan balance flows through
+    ``loan_payment_service.resolve_account_loan``.  Before the read switch it
+    replayed the SCHEDULED payment from the anchor and dropped the cash, so
+    off-schedule it disagreed with the posted ledger (that disagreement is what
+    the classes above pin, via the un-seeded ``_resolver_balance``).  Since plan
+    Section 8 it threads the genesis-ledger confirmed balance in as
+    ``forward_seed_balance``, so its ``current_balance`` now EQUALS the ledger /
+    reader and DIVERGES from the un-seeded schedule replay by exactly the extra /
+    short principal.
+
+    This is the read switch itself, pinned end-to-end at the service the surfaces
+    call.  It is the deliberate complement of ``_resolver_balance``: that helper
+    stays on the un-seeded replay to keep the oracle's parallel run honest; this
+    class proves the SEEDED production path moved onto the ledger.
+    """
+
+    def test_production_path_reads_the_ledger_off_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """resolve_account_loan == the ledger / reader, NOT the schedule replay.
+
+        Two identical $100,000 @ 6% loans (interest 500.00, so one scheduled P&I
+        governs both deltas).  An EXTRA $2,000 payment books real principal 1,500
+        -> the production path owes 98,500.00, equal to the reader and the
+        independent linked-net query, and LESS than the un-seeded replay by exactly
+        (cash 2,000 - scheduled P&I).  A SHORT $1,000 payment books real principal
+        500 -> 99,500.00, MORE than the replay by exactly (scheduled P&I - cash
+        1,000).  The strict divergence from the replay is what makes this
+        non-vacuous: before the flip the production path WAS the replay, so it
+        would have equalled it here.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            extra_loan = _make_loan(seed_user, name="Extra Prod Loan")
+            short_loan = _make_loan(seed_user, name="Short Prod Loan")
+            # Identical params -> one scheduled P&I (balance-independent) governs
+            # both deltas; reading it does not perturb the balance being tested.
+            monthly_pi = loan_payment_service.resolve_account_loan(
+                extra_loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(
+                seed_user, extra_loan, seed_periods[_P1], amount=Decimal("2000.00"),
+            )
+            _settle(
+                seed_user, short_loan, seed_periods[_P1], amount=Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            # The production read path every displayed loan balance flows through.
+            extra_production = loan_payment_service.resolve_account_loan(
+                extra_loan.id, scenario_id, _AS_OF,
+            )[1].current_balance
+            short_production = loan_payment_service.resolve_account_loan(
+                short_loan.id, scenario_id, _AS_OF,
+            )[1].current_balance
+
+            # The flip: production == ledger == reader (the hand-computed balances).
+            assert extra_production == Decimal("98500.00")
+            assert extra_production == _ledger_balance(extra_loan.id, scenario_id)
+            assert extra_production == _reader_balance(extra_loan.id, scenario_id)
+            assert short_production == Decimal("99500.00")
+            assert short_production == _ledger_balance(short_loan.id, scenario_id)
+            assert short_production == _reader_balance(short_loan.id, scenario_id)
+
+            # Non-vacuous: production is NOT the un-seeded schedule replay -- it
+            # diverges by exactly the extra / short principal the replay drops.
+            extra_replay = _resolver_balance(extra_loan.id, scenario_id, _AS_OF)
+            short_replay = _resolver_balance(short_loan.id, scenario_id, _AS_OF)
+            assert extra_production < extra_replay
+            assert extra_replay - extra_production == Decimal("2000.00") - monthly_pi
+            assert short_production > short_replay
+            assert short_production - short_replay == monthly_pi - Decimal("1000.00")
+
+    def test_production_path_matches_replay_on_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """On-schedule the seed is invisible: production == replay == ledger.
+
+        Paying exactly the scheduled P&I books the same real principal the replay
+        schedules, so seeding the confirmed balance changes nothing: the production
+        path, the un-seeded replay, and the ledger all agree.  This guards against
+        the seed perturbing the on-schedule case (a regression that would show a
+        loan card drifting from its schedule even when the user pays exactly).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            db.session.commit()
+
+            production = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].current_balance
+            assert production == _resolver_balance(loan.id, scenario_id, _AS_OF)
+            assert production == _ledger_balance(loan.id, scenario_id)

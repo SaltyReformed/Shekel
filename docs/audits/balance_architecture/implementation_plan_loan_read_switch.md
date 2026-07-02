@@ -304,6 +304,72 @@ teardown pattern; `tests/` is outside the design-smell scope and not CI-gated. F
 `test_loan_posting_backfill.py` (two docstrings updated: the manual step is now DONE), this plan, and the
 memory.
 
+## As-built: Commit 8 (2026-07-02, green on `dev`, NOT yet committed)
+
+C8 is **the flip** -- the FIRST commit where a loan's displayed current balance reads from the genesis
+ledger instead of the resolver's anchor replay. **This governs where it disagrees with Section 4 item 8
+and Section 3.5 below.**
+
+**The seam.** A new optional `forward_seed_balance: Decimal | None = None` on `resolve_loan`,
+`compute_payoff_scenarios`, `target_date_outlook`, and `_build_forward_inputs`. When supplied it overrides
+BOTH the headline `current_balance` AND the forward projection's `starting_balance` (Section 3.5's "one
+value, threaded once" -- the docstring warns against the desync the prior draft's two-mechanism override
+risked). Only the balance is overridden: `next_pay_date` / `remaining_months` come from the confirmed-payment
+COUNT and DATES, identical seeded or not, so the projection amortizes the real owed balance over the same
+remaining term. `None` leaves the resolver on its anchor replay, byte-identical to pre-C8 (the existing 42
+resolver tests pass unchanged).
+
+**The one injection helper.** `loan_payment_service.confirmed_loan_seed(account_id, scenario_id, as_of)` is
+the SINGLE call site of the genesis reader (`confirmed_loan_balance_at`) -- the seam C11 allowlists for the
+W9906 fence. It returns `None` (-> resolver anchor-replay fallback) when the ledger cannot answer:
+`scenario_id is None`, `as_of > today` (a projection, guarded BEFORE the reader so its raise is never hit),
+or the reader returns `None` (no OPENING posting: unconfigured / M2 what-if / un-backfilled). The ONE
+non-fallback path is a loan with no linked ledger at all (`PostingError`, fail-loud -- unreachable for a
+configured loan). `resolve_loan_seeded(loan_inputs, account_id, scenario_id, as_of)` is the shared "read
+seed + resolve" the three loaders route through.
+
+**Wired: the three loaders PLUS the on-page forward projections (developer chose the fuller scope over the
+plan-literal three).** A firsthand trace found the plan's "three loaders" leaves the loan-detail chart /
+schedule tab and the payoff / target-date calculators on the anchor replay -- they call
+`compute_payoff_scenarios` / `target_date_outlook` DIRECTLY, bypassing `resolve_loan` -- so off-schedule the
+card (ledger) would visibly disagree with the chart on the SAME page (exactly the desync Section 3.5 warns
+of). Developer chose (AskUserQuestion) to seed those too: `resolve_account_loan` / `_helpers._resolve` /
+`_projections._compute_loan_account` via `resolve_loan_seeded`; `dashboard._build_dashboard_scenarios`
+(refactored to take `loan_inputs` + `scenario_id`, floor via `dataclasses.replace`) and `calculators.py`
+read the seed via `confirmed_loan_seed`. `_loan_ever_paid_off` (`date.max`) and `_resolve_loan_piti`
+(balance-independent PITI) stay UN-seeded, correctly.
+
+**Landmine C8 surfaced (NOT in the plan): the flip breaks the reconciliation oracle's independence.**
+`test_posting_ledger_loan_reconciliation.py`'s `_resolver_balance` used `resolve_account_loan` as the
+"independent producer that never reads the ledger" (its load-bearing invariant) -- but C8 makes
+`resolve_account_loan` read the ledger, so that producer would collapse to a tautology. FIX: `_resolver_balance`
+now builds the SAME `LoanInputs` and calls `resolve_loan` UN-seeded (the exact pre-flip producer), restoring
+independence with every divergence/agreement assertion unchanged. NEW `TestReadSwitchProductionPath` (2 tests)
+pins the flip itself: the SEEDED production path == ledger == reader off-schedule and DIVERGES from the
+un-seeded replay by exactly the extra/short principal (non-vacuous). LESSON: a read switch that flips a
+producer the oracle used as its independent reference must re-point the oracle at the un-seeded producer, or
+the oracle silently goes vacuous.
+
+**NEW R0401 (not in the plan).** `confirmed_loan_seed`'s import of `loan_posting_service` closed a static
+cycle (`loan_posting_service/_sync.py` imports `loan_payment_service` at module top). FIX: import
+`confirmed_loan_balance_at` from its defining `_reader` submodule (which imports nothing back), so the static
+graph carries no cycle; lazy + runtime-safe.
+
+**M1 (code-reviewer MEDIUM, accepted staging -- NOT a C8 defect).** C8 flips the SCALAR balances but leaves
+the confirmed HISTORY rows (amortization table, C11) and the per-period MAPS (net-worth trend / year-end, C9)
+on the replay, so OFF-schedule the card disagrees with its own schedule table and the trend until C9 + C11
+land. Intentional (the plan stages scalar/map/history separately); prod is entirely on-schedule today (C7),
+so ledger == replay and the window is inert until a real off-schedule payment. The whole arc PRs to prod
+together, closing the window. The intra-page card-vs-table discontinuity is unasserted (pinning a transient
+artifact resolved in C11 is not worth a test).
+
+**Gates:** full suite **6815** (baseline 6805 + 10 new tests: `TestForwardSeedBalance` 3, `TestReadSwitchSeedHelpers`
+4, `TestReadSwitchProductionPath` 2, off-schedule cross-page 1); `pylint app/` 10.00 all `--fail-on`; adversarial
+`code-reviewer` NO Critical/High (it re-derived every literal + the oracle equivalences). NO migration -> no
+template rebuild. Files: the resolver package (`_state`/`_payoff`), `loan_payment_service.py`,
+`routes/loan/{_helpers,dashboard,calculators}.py`, `savings_dashboard_service/_projections.py`, and the four
+touched test files + `conftest.py` (the off-schedule fixture).
+
 ---
 
 ## 1. What changed from the anchor-based draft, and why

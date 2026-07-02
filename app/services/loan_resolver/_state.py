@@ -132,7 +132,11 @@ def compute_monthly_payment_baseline(
     ).period_pi
 
 
-def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
+def resolve_loan(
+    loan_inputs: LoanInputs,
+    as_of: date,
+    forward_seed_balance: Decimal | None = None,
+) -> LoanState:
     """Resolve a loan to its (balance, payment, schedule, payoff, interest).
 
     Single-source-of-truth producer for every loan-touching surface.
@@ -182,6 +186,16 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
             ValueError.  Only confirmed payments are replayed.
         as_of: The evaluation date.  Drives the current-balance walk
             and the out-of-window monthly-payment computation.
+        forward_seed_balance: The genesis-ledger confirmed balance at
+            ``as_of`` (the read switch, plan Section 8), or ``None`` to keep
+            the anchor-replay balance.  When supplied it becomes BOTH the
+            ``current_balance`` AND the forward projection's starting balance
+            (threaded to :func:`._payoff.compute_payoff_scenarios`) -- one
+            value, threaded once, so the headline balance and the schedule
+            cannot desync off-schedule.  ``None`` leaves this function on the
+            anchor replay unchanged (an unconfigured loan, or a caller that
+            deliberately reads the schedule balance -- e.g. the "ever paid
+            off" ``date.max`` probe).
 
     Returns:
         A :class:`LoanState` with the five resolver fields.
@@ -229,21 +243,27 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
         loan_inputs=dataclasses.replace(loan_inputs, payments=confirmed),
         extra_monthly=ZERO_MONEY,
         as_of=as_of,
+        forward_seed_balance=forward_seed_balance,
     )
     schedule = list(scenarios.history_rows) + list(
         scenarios.committed_forward
     )
 
-    # Current balance is schedule-driven: replay advances one scheduled
-    # step per confirmed payment from the latest anchor (principal =
-    # period P&I - interest).  The cash amount and escrow never enter,
-    # so an escrow change cannot drift the recorded balance.  Derived
-    # via the same ``_replay_from_anchor`` the composer uses, but as its
-    # own call independent of the schedule generation above so a future
-    # projection change cannot silently move it.
-    current_balance_full = _replay_from_anchor(
-        loan_inputs, periods, as_of,
-    ).balance_as_of
+    # Current balance: the genesis-ledger confirmed balance when the read
+    # switch supplies it (plan Section 8), else the schedule-replay balance.
+    # The replay advances one scheduled step per confirmed payment from the
+    # latest anchor (principal = period P&I - interest), discarding the cash
+    # and escrow.  Threading ONE ``forward_seed_balance`` here AND into the
+    # composer above (never two mechanisms) keeps this headline balance and
+    # the schedule's forward seed identical, so they cannot desync
+    # off-schedule.  The schedule-replay call stays independent of the
+    # composer's own so a future projection change cannot silently move the
+    # unseeded balance.
+    current_balance_full = (
+        _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
+        if forward_seed_balance is None
+        else forward_seed_balance
+    )
 
     # Monthly P&I is the current rate period's level payment, held
     # constant within the period and recast only at an adjustment

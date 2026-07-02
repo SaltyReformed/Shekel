@@ -21,7 +21,10 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.loan_payment_service import load_loan_context
+from app.services.loan_payment_service import (
+    load_loan_context,
+    resolve_loan_seeded,
+)
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
 
@@ -154,12 +157,17 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id):
         .filter_by(account_id=acct.id)
         .all()
     )
-    state = loan_resolver.resolve_loan(
+    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
+    # the /savings tile's ``current_balance`` is the genesis-ledger confirmed
+    # balance (falling back to the anchor replay when the ledger has not opened
+    # this loan).  ``acct`` comes from the user's own account set, so ownership
+    # is already established for the reader's trust-the-caller contract.
+    state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
             acct_loan_params, anchor_events,
             loan_ctx.payments, loan_ctx.rate_changes,
         ),
-        date.today(),
+        acct.id, scenario_id, date.today(),
     )
     return _LoanAccountResult(
         current_balance=state.current_balance,

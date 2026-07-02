@@ -31,7 +31,11 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.loan_payment_service import LoanContext, load_loan_context
+from app.services.loan_payment_service import (
+    LoanContext,
+    load_loan_context,
+    resolve_loan_seeded,
+)
 from app.services.loan_resolver import LoanState
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
@@ -188,11 +192,17 @@ def _resolve(account, params) -> tuple[LoanState, LoanContext]:
     scenario_id = scenario.id if scenario else None
     ctx = load_loan_context(account.id, scenario_id, params)
     anchor_events = _load_anchor_events(account.id)
-    state = loan_resolver.resolve_loan(
+    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
+    # the loan card's ``current_balance`` is the genesis-ledger confirmed
+    # balance (falling back to the anchor replay when the ledger has not
+    # opened this loan).  Ownership was already verified by ``_load_loan_account
+    # -> get_or_404`` before this runs, satisfying the reader's trust-the-caller
+    # contract.
+    state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
             params, anchor_events, ctx.payments, ctx.rate_changes,
         ),
-        date.today(),
+        account.id, scenario_id, date.today(),
     )
     return state, ctx
 
