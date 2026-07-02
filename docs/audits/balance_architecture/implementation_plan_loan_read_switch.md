@@ -1,7 +1,10 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: IN PROGRESS -- reconciled as-built through Commit 6 (2026-07-02; C1-C5 committed on `dev`,
-C6 green on `dev` and not yet committed). Written 2026-07-01 after an
+Status: IN PROGRESS -- reconciled as-built through Commit 7 (2026-07-02; C1-C6 committed on `dev`;
+C7 = the reader gap-test + the prod-clone up/down verification, green on `dev` and not yet committed).
+**Commit 7's runtime code (backfill posts genesis, boundary migration, deploy hook) already landed in
+Commit 4** (the unification folded it in); C7 adds only the verification the plan named. Written
+2026-07-01 after an
 adversarial review of the anchor-based draft
 (`~/.claude/plans/i-have-finished-docs-audits-balance-arch-squishy-snowglobe.md`, superseded) and a
 firsthand code trace. The developer chose the genesis (opening-equity) design over the anchor-based
@@ -232,6 +235,74 @@ pre-existing `_make_loan` / `test_two_owners` / migration-teardown R09xx/W0212 f
 9.85). NO migration (test-only) -> no template rebuild. Files: `test_posting_ledger_loan_reconciliation.py`
 (module docstring invariant 7; `_reader_balance` / `_reader_period_map` / `_seed_boundary_loan` helpers;
 the new class).
+
+## As-built: Commit 7 (2026-07-02, green + verified on `dev`, NOT yet committed)
+
+**C7's RUNTIME CODE already shipped in Commit 4 -- a firsthand trace + a green test run confirmed it.**
+The plan (written pre-C4) assumed C4 would wire only go-forward postings, leaving C7 to extend the
+backfill to genesis. But C4's unification did both at once: `backfill_all_loan_postings` was rewired onto
+`sync_loan_postings_all_scenarios` (ONE `walk_loan_ledger` per (loan, scenario), which loads ALL anchors,
+resets at each, and emits a correction per anchor + a split per payment), so it ALREADY posts the opening +
+every payment correction + every true-up for every loan across every scenario. The boundary migration
+`f3d6b1a8c2e4` (current head) and the deploy hook `backfill_loan_payment_postings_after_migration`
+(`scripts/init_database.py`, docstring already updated to "opening/true-up/splits") also landed in C4. The
+genesis backfill tests landed in C4 too (`test_loan_posting_backfill.py` +236; the oracle's
+`TestBackfillEqualsGoForward` +178). So C7 is NOT new backfill code -- it is the two verifications the plan's
+C7 line names ("backfill == go-forward" was already covered; "the oracle detects the unposted-opening gap
+before and zero mismatches after" and "verify up/down on the prod-clone dev DB" were not).
+
+**1. The reader gap-test (the one real code gap; the oracle, not the backfill suite).** No test ran the C5
+reader -- `confirmed_loan_balance_at` / `confirmed_loan_balance_map`, the exact functions C8/C9 wire --
+around the backfill (verified: neither the backfill suite nor `TestBackfillEqualsGoForward` called it). New
+`TestBackfillEqualsGoForward::test_reader_reads_none_before_backfill_then_matches_resolver_after`: an
+on-schedule payment, then clear all genesis postings (the two boundary teardowns) -> BOTH reader producers
+return `None` (the unposted-opening GAP; a read switch flipped HERE would show needs-setup) while the
+resolver -- which never reads the ledger -- is unchanged; then backfill -> the scalar AND every period of the
+map read back == the resolver to the penny. Closes the transitivity gap (backfill == go-forward and reader ==
+resolver-on-go-forward were each proven, but reader == resolver on a BACKFILLED loan was not asserted
+directly). Non-vacuous the gold-standard way: the `+$10` injection at `_walk.py:200` (NOT `money.py`, shared
+with the resolver) makes the reader `99011.12` vs the resolver `99001.12` -- fails the test. Class docstring
+generalized to cover both faces (ledger equivalence + reader authority).
+
+**2. The prod-clone executable up/down verification (the plan's C7 manual step) -- DONE, all clean.** Run on
+an ISOLATED clone (`shekel_c7verify`, `pg_dump` of the live prod-clone dev DB into a throwaway database,
+dropped after) so the live `shekel-dev-app` (Up 47h) was never disrupted; the live dev DB was confirmed
+untouched (still `e2a9f1c7b4d6`, 0 genesis). The clone carried TWO real loans -- the Mortgage (orig $202,000
+2018-12, one true-up to $177,829.83, WITH pre-anchor payments) and the Van Loan (orig $32,402.45 2023-02,
+TWO true-ups). Four stages:
+
+- **Baseline** (`e2a9f1c7b4d6`, pre-read-switch): trial balance 0.00; reader `None` for both loans (the gap);
+  resolver Mortgage 177,554.69 / Van 15,663.59.
+- **Upgrade + deploy-hook backfill** (`e2a9f1c7b4d6` -> `d1b22f59ba5b` -> `f3d6b1a8c2e4` via the real
+  `init_database.py`): clean; genesis posted (opening 2, trueup 3, payment 6); trial balance 0.00; and
+  **the genesis reader == the resolver to the PENNY on BOTH real loans** (Mortgage 177,554.69, Van
+  15,663.59). This directly resolves the Step-4 "$3,821.90 naive-read-switch mis-statement": genesis
+  reproduces the resolver on the real Mortgage WITH pre-anchor payments, because the true-up correction
+  absorbs the pre-anchor history (the 275.14 below the true-up is the one on-schedule post-true-up payment).
+  (The reader == resolver equality held here because every post-true-up payment was on-schedule; the read
+  switch's value is the OFF-schedule case, which the synthetic oracle covers -- the real-data run proves the
+  reconciliation, not that real payments are always on-schedule.)
+- **Downgrade** (`f3d6b1a8c2e4` -> `d1b22f59ba5b` -> `e2a9f1c7b4d6`): the RESTRICT-unblock the boundary
+  migration exists for, proven WITH real data -- the genesis teardown cleared the opening/true-up postings +
+  equity accounts BEFORE the ref-seed deleted the `opening`/`trueup`/`equity_opening` ref rows under their
+  RESTRICT FKs, so it did NOT jam. Genesis gone, the 6 Step-4 payment corrections survive, trial balance 0.00.
+- **Re-upgrade + backfill**: identical re-post to the upgrade stage (reader == resolver == same values);
+  a second backfill posts NOTHING new (114 -> 114 entries) -- idempotent, reversible.
+
+**Scope boundary (C7 vs C8).** The plan's Section-7 item-6 manual step also lists "mark the Mortgage's next
+payment Paid -> the balance drops on the loan card / savings tile / net worth." That is a READ-SWITCH (C8+)
+behavior -- reads still flow through the resolver until C8, so it is NOT verifiable at C7 and is deferred to
+the flip. C7 verified the C7-scoped half: the ledger sums to the displayed balance on real data, and the
+migration round-trip.
+
+**Gates:** full suite (run alone) shown at commit; `pylint app/` 10.00 all `--fail-on` (app/ unchanged by C7 --
+the `+$10` injection was reverted with zero diff); NO migration (test + docs only) -> no template rebuild. The
+oracle test file's only pylint findings are the pre-existing accepted set (C0302 module size, R09xx on
+`_make_loan` / `test_two_owners`, migration-teardown W0212) -- C7 adds two more W0212 of the SAME sanctioned
+teardown pattern; `tests/` is outside the design-smell scope and not CI-gated. Files:
+`test_posting_ledger_loan_reconciliation.py` (the new reader test + generalized class docstring),
+`test_loan_posting_backfill.py` (two docstrings updated: the manual step is now DONE), this plan, and the
+memory.
 
 ---
 
@@ -485,11 +556,14 @@ reversible.
    draft's `$1,000`-pollution guard with a "pre-origination payment is included" assertion); a true-up
    correction case; a Dec-31 boundary; two scenarios; a no-opening -> `None` case. Re-run the `+$10`
    interest-bug non-vacuity injection against the reader.
-7. **Historical backfill (deploy hook + boundary migration).** Post opening + all payment corrections +
-   true-up corrections for every existing loan across scenarios, reusing the go-forward sync so
-   backfill == go-forward by construction (the Step-4 pattern, `loan_posting_service.py:832-863` +
-   `scripts/init_database.py`). Verify up/down on the prod-clone dev DB; the oracle detects the
-   unposted-opening gap before and zero mismatches after.
+7. **Historical backfill (deploy hook + boundary migration). DONE (runtime code in C4; the two
+   verifications in C7 -- see "As-built: Commit 7" above).** The backfill (`backfill_all_loan_postings` ->
+   `sync_loan_postings_all_scenarios`), the boundary migration (`f3d6b1a8c2e4`), and the deploy hook all
+   landed in C4's unification; backfill == go-forward by construction and was already pinned by
+   `TestBackfillEqualsGoForward`. C7 added the reader gap-test (the oracle detects the unposted-opening gap
+   before -> reader `None`, and zero mismatches after -> reader == resolver) and ran the prod-clone up/down
+   verification on an isolated clone of the live dev DB (genesis reader == resolver to the penny on the real
+   Mortgage + a two-true-up loan; the RESTRICT-unblock downgrade ran clean; idempotent re-post).
 8. **Read switch: current balance (the flip).** Consolidate the three db-facing loaders
    (`resolve_account_loan`, `routes/loan/_helpers._resolve`,
    `savings_dashboard_service/_projections._compute_loan_account`) into one injection helper (fixes the

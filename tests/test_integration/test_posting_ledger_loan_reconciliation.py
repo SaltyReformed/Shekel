@@ -275,6 +275,26 @@ def _seed_boundary_loan(bare_user):
     return loan, ctx, checking, periods
 
 
+def _clear_all_loan_postings():
+    """Reproduce the pre-wiring historical state: remove EVERY loan posting.
+
+    Runs the two boundary migrations' own raw-SQL teardowns in real
+    downgrade-chain order -- the genesis teardown FIRST (the opening / true-up
+    entries + per-loan opening-equity accounts), THEN the Step-4 payment teardown
+    (the loan_payment corrections + interest / escrow / refund accounts) -- then
+    commits.  The order is load-bearing: the genesis boundary migration
+    (``f3d6b1a8c2e4``) is the head, above the Step-4 boundary, so its teardown
+    runs first in a real downgrade; running the payment teardown first would
+    strand the per-loan opening-equity legs on an already-deleted account.
+    Single-sources that ordering so the callers (the backfill-equivalence and the
+    reader-gap tests) cannot drift on it -- the same helper the backfill suite
+    keeps as ``_clear_corrections``.
+    """
+    _GENESIS_MIGRATION._remove_loan_genesis_postings(_db.session)
+    _BACKFILL_MIGRATION._remove_loan_payment_postings(_db.session)
+    _db.session.commit()
+
+
 # ---------------------------------------------------------------------------
 # Independent reconciliation queries (test-authored, NOT the service helpers)
 # ---------------------------------------------------------------------------
@@ -1040,7 +1060,18 @@ class TestScenarioAndOwnerIsolation:
 
 
 class TestBackfillEqualsGoForward:
-    """A ledger rebuilt by the backfill reconciles identically to the go-forward one."""
+    """The backfill reproduces the go-forward ledger AND makes the reader authoritative.
+
+    Two faces of the C7 backfill guarantee (plan 8.8 / Section 4 commit 7): a
+    ledger rebuilt by the backfill reconciles identically to the go-forward one
+    (leg for leg), and the genesis READER the read switch consumes -- ``None``
+    while no opening is posted -- reads back == the resolver to the penny once the
+    backfill posts it.  The second is the plan's "the oracle detects the unposted-
+    opening gap before and zero mismatches after," proven on the exact
+    ``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map`` producers the
+    read switch (plan Sections 8-9) flips onto -- so the historical-data path is
+    pinned directly, not only by transitivity through Sections 5 and 7.
+    """
 
     def test_backfilled_ledger_reconciles_identically(
         self, app, db, seed_user, seed_periods,
@@ -1071,12 +1102,8 @@ class TestBackfillEqualsGoForward:
             assert forward_per_loan == Decimal("100997.50")
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
-            # Reproduce the pre-wiring state (no loan postings) via the two
-            # boundary teardowns in real downgrade-chain order (genesis first),
-            # then backfill.
-            _GENESIS_MIGRATION._remove_loan_genesis_postings(db.session)
-            _BACKFILL_MIGRATION._remove_loan_payment_postings(db.session)
-            db.session.commit()
+            # Reproduce the pre-wiring state (no loan postings), then backfill.
+            _clear_all_loan_postings()
             assert _per_loan_correction_net(loan.id, scenario_id) == Decimal("0")
             loan_posting_service.backfill_all_loan_postings()
             db.session.commit()
@@ -1089,6 +1116,87 @@ class TestBackfillEqualsGoForward:
                 loan.id, scenario_id,
             ) == forward_per_loan
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+    def test_reader_reads_none_before_backfill_then_matches_resolver_after(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The reader shows the unposted-opening gap before backfill, == resolver after.
+
+        The read switch (plan Section 8) turns every displayed loan balance onto the
+        genesis reader, so the C7 backfill is what makes that reader authoritative on
+        HISTORICAL data -- a loan / payment settled before the go-forward wiring
+        shipped, carrying no postings.  This is the plan's "gap before, zero
+        mismatches after," pinned on the exact producers the switch flips onto:
+
+        * BEFORE the backfill (openings cleared) the reader returns ``None`` --
+          needs-setup, the unposted-opening GAP -- for BOTH the scalar (the C8
+          producer) and the per-period map (the C9 producer), while the resolver,
+          which never reads the ledger, still reports the true balance unchanged.
+          A read switch flipped HERE would wrongly show this loan needs-setup.
+        * AFTER the backfill both read back == the resolver to the penny.
+
+        On-schedule (cash == scheduled P&I, no escrow), so the reader's real
+        principal equals the resolver's scheduled principal and the two agree
+        exactly.  The resolver is invariant across the clear / backfill (the
+        teardowns remove only postings, not the anchors / transactions it replays),
+        so it is the stable independent reference both phases pin to.  Non-vacuity:
+        the after-balance is the $100,000 anchor less the real principal (scheduled
+        P&I - 500.00 interest), not the untouched anchor, and the map steps strictly
+        down as the payment lands.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            db.session.commit()
+
+            # The resolver never reads the ledger, so its balance is invariant across
+            # the clear / backfill -- the stable reference for both phases.  The
+            # go-forward reader already matches it (the C6 gate); the contrast is the
+            # point: authoritative now, None in a moment, == again after.
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            assert _reader_balance(loan.id, scenario_id) == resolver
+
+            # Reproduce the pre-wiring historical state (no loan postings).
+            _clear_all_loan_postings()
+
+            # BEFORE: the unposted-opening gap.  No OPENING leg -> the reader cannot
+            # produce a balance (both producers return None), yet the resolver -- which
+            # never read the ledger -- is unchanged, so the gap is purely the ledger's.
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, _AS_OF,
+            ) is None
+            assert loan_posting_service.confirmed_loan_balance_map(
+                loan.id, scenario_id, seed_periods,
+            ) is None
+            assert _resolver_balance(loan.id, scenario_id, _AS_OF) == resolver
+
+            loan_posting_service.backfill_all_loan_postings()
+            db.session.commit()
+
+            # AFTER: zero mismatch.  The scalar (C8 producer) and every period of the
+            # map (C9 producer) read back == the resolver to the penny.
+            reader = _reader_balance(loan.id, scenario_id)
+            assert reader == resolver, f"reader {reader} != resolver {resolver}"
+            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            for period in seed_periods:
+                assert balance_map[period.id] == _resolver_balance(
+                    loan.id, scenario_id, period.start_date,
+                ), (
+                    f"period {period.period_index}: map {balance_map[period.id]} "
+                    f"!= resolver at {period.start_date}"
+                )
+            # Non-vacuity: the anchor less the real principal (not the untouched
+            # anchor), and the map steps strictly down as the payment lands.
+            assert reader == _ANCHOR_BALANCE - (scheduled_pi - Decimal("500.00"))
+            assert balance_map[seed_periods[0].id] == _ANCHOR_BALANCE
+            assert (
+                balance_map[seed_periods[_P1].id]
+                < balance_map[seed_periods[0].id]
+            )
 
 
 # ---------------------------------------------------------------------------

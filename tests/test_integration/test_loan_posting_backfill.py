@@ -29,10 +29,14 @@ The migration's executable downgrade/upgrade round-trip through Alembic runs
 cleanly (verified on the freshly-built template); the downgrade's data removal is
 checked behaviorally here (``_remove_loan_payment_postings`` is DELETE-based, so it
 runs on the shared test session) plus a source-level guard, and the with-data
-prod-clone round-trip is the Commit-7 manual step.  The deploy hook that runs the
-backfill in production (``scripts/init_database.py``) is covered by a
-commit-contract test that observes the persisted correction from a separate
-database connection (a mere flush would be invisible to it).
+prod-clone round-trip was verified in Commit 7 on an isolated clone of the live
+prod-clone dev DB (the genesis reader reconciled to the resolver to the penny on
+the real Mortgage and a two-true-up loan; the executable downgrade cleared the
+genesis postings + equity accounts before the ref-seed delete, so the RESTRICT FKs
+did not jam).  The deploy hook that runs the backfill in production
+(``scripts/init_database.py``) is covered by a commit-contract test that observes
+the persisted correction from a separate database connection (a mere flush would be
+invisible to it).
 """
 from __future__ import annotations
 
@@ -653,8 +657,10 @@ class TestDowngradeReversible:
     A behavioral check (``_remove_loan_payment_postings`` is DELETE-based, so it
     runs cleanly on the shared test session) plus a source-level guard against a
     future edit silently re-routing the teardown past one of the two artifacts it
-    must remove.  The executable up/down round-trip is verified against the
-    prod-clone dev DB in the Commit-7 manual step.
+    must remove.  The executable up/down round-trip was verified in Commit 7 against
+    a clone of the prod-clone dev DB carrying real genesis data (the downgrade
+    cleared the genesis postings + equity accounts before the ref-seed delete, so
+    the RESTRICT FKs did not jam).
     """
 
     def test_downgrade_removes_loan_data_keeps_step2(
