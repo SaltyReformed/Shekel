@@ -205,15 +205,18 @@ def _loan_schedule_start_index(
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
-    A loan's resolver schedule is TODAY-forward: it projects from the
-    current resolved balance to payoff, with no rows for the loan's past.
+    A loan's schedule has no rows before its first recorded payment:
     :func:`app.services.account_projection.compute_loan_period_balance_map`
     therefore returns the loan's CURRENT balance, held flat, for every period
     before the schedule's first payment -- today's balance, not the real
     amortized balance the loan actually had then.  So a loan is "honest" only
-    from the first period whose ``end_date`` reaches its first scheduled
-    payment onward; before that the trend would carry today's balance flat
-    backward through the loan's real past.
+    from the first period whose ``end_date`` reaches its first schedule row
+    onward; before that the trend would carry today's balance flat backward
+    through the loan's real past.  For a GENESIS loan the confirmed rows are
+    ledger-derived from the loan's FIRST recorded payment (the history read
+    switch), so the honest window extends back over the real recorded
+    history -- which the C9 splice fills with ledger-real balances -- where a
+    replay-fallback loan's rows start at its latest anchor.
 
     Returns that first honest ``period_index``, or ``None`` when the loan
     does not constrain the window: an empty schedule (a paid-off or

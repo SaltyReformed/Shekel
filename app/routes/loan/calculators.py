@@ -13,12 +13,11 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING
 
 from flask import render_template, request
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _build_chart_series,
-    _load_anchor_events,
     _load_loan_account,
     _load_loan_context,
     _payoff_schema,
@@ -26,6 +25,9 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
+from app.services.loan_loaders import load_loan_anchor_facts
+from app.services.loan_payment_service import confirmed_loan_view
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
 
@@ -78,7 +80,7 @@ def _build_payoff_summary(scenarios, state):
     )
 
 
-def _payoff_extra_payment_result(params, account_id, ctx, data):
+def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
     """Render the extra-payment payoff scenario partial.
 
     One ``compute_payoff_scenarios`` call drives both the chart series
@@ -92,10 +94,15 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     empty when the loan has no payments.
 
     Args:
-        params: ORM :class:`LoanParams` instance.
-        account_id: Debt account id (anchor-event load).
+        params: ORM :class:`LoanParams` instance (also the anchor-fact
+            synthesis source).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
+        confirmed_view: The genesis-ledger confirmed view, read once by the
+            caller; threaded into the composer so the projected payoff
+            amortizes the real owed balance -- and charts the ledger-derived
+            confirmed history -- the loan card shows.  ``None`` falls back to
+            the anchor replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -104,12 +111,13 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_resolver.LoanInputs(
             loan_params=params,
-            anchor_events=_load_anchor_events(account_id),
+            anchor_events=load_loan_anchor_facts(params),
             payments=ctx.loan.payments,
             rate_changes=ctx.loan.rate_changes,
         ),
         extra_monthly=extra,
         as_of=date.today(),
+        confirmed_view=confirmed_view,
     )
 
     chart_labels, balances = _build_chart_series({
@@ -138,7 +146,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data):
     )
 
 
-def _payoff_target_date_result(params, account_id, ctx, data):
+def _payoff_target_date_result(params, ctx, data, confirmed_view):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -165,11 +173,17 @@ def _payoff_target_date_result(params, account_id, ctx, data):
     expose on :class:`LoanState`.
 
     Args:
-        params: ORM :class:`LoanParams` instance.
-        account_id: Debt account id (anchor-event load for the
-            plan-aware outlook).
+        params: ORM :class:`LoanParams` instance (also the anchor-fact
+            synthesis source for the plan-aware outlook).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
+        confirmed_view: The genesis-ledger confirmed view, read once by the
+            caller; threaded into the plan-aware outlook so its
+            required-extra search runs against the real owed balance.  The
+            RAW search already uses ``ctx.state.current_balance``, which is
+            the same ledger balance (``ctx`` resolves through
+            ``resolve_loan_seeded``).  ``None`` falls back to the anchor
+            replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -205,12 +219,13 @@ def _payoff_target_date_result(params, account_id, ctx, data):
         outlook = loan_resolver.target_date_outlook(
             loan_inputs=loan_resolver.LoanInputs(
                 loan_params=params,
-                anchor_events=_load_anchor_events(account_id),
+                anchor_events=load_loan_anchor_facts(params),
                 payments=ctx.loan.payments,
                 rate_changes=ctx.loan.rate_changes,
             ),
             target_date=target_date,
             as_of=date.today(),
+            confirmed_view=confirmed_view,
         )
 
     total_monthly = (
@@ -254,10 +269,20 @@ def payoff_calculate(account_id):
     # rendered on the loan card (E-18 / Commit 15).
     ctx = _load_loan_context(account, params)
 
+    # Read switch: read the genesis-ledger confirmed view ONCE and thread it
+    # into whichever mode's forward projection runs, so the payoff /
+    # target-date results project from the same real owed balance -- and
+    # chart the same ledger-derived confirmed history -- the loan card shows.
+    # ``require_owner`` already gated ownership above.
+    scenario = get_baseline_scenario(current_user.id)
+    view = confirmed_loan_view(
+        account_id, scenario.id if scenario else None, date.today(),
+    )
+
     if mode == "extra_payment":
-        return _payoff_extra_payment_result(params, account_id, ctx, data)
+        return _payoff_extra_payment_result(params, ctx, data, view)
     if mode == "target_date":
-        return _payoff_target_date_result(params, account_id, ctx, data)
+        return _payoff_target_date_result(params, ctx, data, view)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",
@@ -352,6 +377,16 @@ def _build_refinance_comparison(state, data, params):
     are pre-computed server-side (MED-04 / E-16) so the template renders
     without inline arithmetic.
 
+    The current side is measured FORWARD-ONLY -- the non-confirmed slice
+    of ``state.schedule`` -- because the refinance side is inherently
+    forward-only (a brand-new loan from today): "Remaining Term" is the
+    count of payments still ahead, and "Total Interest" the interest
+    still to be paid.  Counting confirmed history rows here would weigh
+    sunk months / sunk interest against a from-today refinance -- already
+    skewed when the schedule carried post-anchor history, and badly so
+    once the history read switch made the confirmed slice the loan's
+    FULL recorded history.
+
     Args:
         state: Resolver :class:`LoanState` for the current loan.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
@@ -374,15 +409,22 @@ def _build_refinance_comparison(state, data, params):
         refi_principal, data["new_rate"], refi_term, params.payment_day,
     )
 
+    # Forward-only baseline: what is still AHEAD on the current loan (the
+    # like-for-like basis against a from-today refinance; see the docstring).
+    forward_rows = [row for row in state.schedule if not row.is_confirmed]
+    current_remaining_interest = round_money(sum(
+        (row.interest for row in forward_rows), Decimal("0.00"),
+    ))
+
     monthly_savings = state.monthly_payment - refi_monthly
     break_even_months = _refinance_break_even(closing_costs, monthly_savings)
     principal_diff = refi_principal - current_real_principal
 
     return {
         "current_monthly": state.monthly_payment,
-        "current_total_interest": state.total_interest,
+        "current_total_interest": current_remaining_interest,
         "current_payoff": state.payoff_date,
-        "current_remaining_months": len(state.schedule),
+        "current_remaining_months": len(forward_rows),
         "current_principal": current_real_principal,
         "refi_monthly": refi_monthly,
         "refi_total_interest": refi_total_interest,
@@ -391,10 +433,10 @@ def _build_refinance_comparison(state, data, params):
         # Term delta (new term minus current remaining), pre-computed
         # server-side so the template renders without inline arithmetic
         # (MED-04 / E-16, same rationale as principal_diff above).
-        "term_diff": refi_term - len(state.schedule),
+        "term_diff": refi_term - len(forward_rows),
         "refi_principal": refi_principal,
         "monthly_savings": monthly_savings,
-        "interest_savings": state.total_interest - refi_total_interest,
+        "interest_savings": current_remaining_interest - refi_total_interest,
         "break_even_months": break_even_months,
         "closing_costs": closing_costs,
         "principal_diff": principal_diff,

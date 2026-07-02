@@ -794,6 +794,50 @@ def _investment_dashboard_value(ctx):
     )["current_balance"]
 
 
+def _loan_schedule_table_value(ctx):
+    """Read the amortization table's LAST CONFIRMED row balance (C11 surface).
+
+    The loan-detail schedule tab renders ``LoanState.schedule``; its last
+    confirmed row's ``remaining_balance`` is the balance the table shows the
+    user beside their most recent real payment.  Since the C11 history read
+    switch those confirmed rows are ledger-derived, so this must equal the
+    loan card / tile to the penny.  A loan with no confirmed row yet reads
+    the card's ``current_balance`` (an empty table shows no history), keeping
+    the reader total for the on-schedule kind test too.
+    """
+    resolved = loan_payment_service.resolve_account_loan(
+        ctx["account_id"], ctx["scenario_id"], date.today(),
+    )
+    assert resolved is not None, (
+        f"resolve_account_loan returned None for loan "
+        f"account_id={ctx['account_id']}"
+    )
+    _params, state = resolved
+    confirmed_rows = [row for row in state.schedule if row.is_confirmed]
+    if not confirmed_rows:
+        return state.current_balance
+    return confirmed_rows[-1].remaining_balance
+
+
+def _balance_at_scalar_value(ctx, target):
+    """Read the ``balance_at`` DATE-PRECISE loan scalar at *target* (C11 surface).
+
+    The year-end debt-progress section values a loan at exact civil dates via
+    ``balance_at.balance_at`` -- a walk over the resolver schedule's rows.
+    Since the C11 history read switch those rows carry the ledger's REAL
+    per-payment balances, so the date-precise scalar at any date through the
+    LAST CONFIRMED payment equals the ledger balance (the C9-deferred scalar
+    half).  Evaluated at a caller-chosen date rather than today because the
+    scalar's walk keeps its pre-existing DUE-BASIS attribution beyond the
+    confirmed rows: a scheduled payment due before ``target`` but not yet
+    made is counted as if paid (the period-end-keyed F-21 semantic), so at
+    "today" with an overdue payment it deliberately reads below the card.
+    """
+    return balance_at.balance_at(
+        ctx["account"], ctx["scenario"], target,
+    )
+
+
 # Per-kind reader dicts.  Each maps a surface name to a reader returning the
 # SAME canonical positive quantity (the account's balance), so one
 # ``_assert_surfaces_equal`` call locks every kind.  The shared
@@ -803,6 +847,7 @@ _LOAN_SURFACE_READERS = {
     "loan_detail": _loan_detail_value,
     "year_end": _loan_year_end_value,
     "net_worth_trend": _trend_liabilities_value,
+    "schedule_table": _loan_schedule_table_value,
 }
 _PROPERTY_SURFACE_READERS = {
     "savings": _savings_tile_value,
@@ -870,6 +915,95 @@ class TestLoanCrossPageEquality:
             assert resp.status_code == 200, (
                 f"/accounts/<id>/loan returned {resp.status_code} for the "
                 "loan kind"
+            )
+
+    def test_all_surfaces_read_the_ledger_off_schedule(
+        self, app, cross_page_loan_off_schedule_ctx, auth_client,
+    ):
+        """All SIX loan surfaces read the LEDGER off-schedule (C8 + C9 + C11).
+
+        The C8 read switch (plan Section 8) flipped the two SCALAR surfaces --
+        the /savings tile (``_compute_loan_account``) and the loan-detail
+        producer (``resolve_account_loan``).  The C9 per-period read switch
+        (plan Section 9) flipped the two MAP surfaces -- the year-end
+        net-worth aggregate and the net-worth-trend liabilities lane, both
+        fed by the ``balance_at`` seam's per-period map, spliced from the
+        confirmed ledger for begun periods.  The C11 history read switch
+        flips the last two: the amortization TABLE's confirmed rows (now
+        ledger-derived, so its last confirmed row equals the card) and the
+        ``balance_at`` DATE-PRECISE scalar (the year-end debt-progress walk,
+        which now walks ledger-real row balances -- the C9-deferred half),
+        asserted at the last confirmed payment's due date, the edge of the
+        confirmed domain (beyond it the walk keeps its pre-existing
+        due-basis projection attribution -- see ``_balance_at_scalar_value``).
+        Off-schedule -- one confirmed payment far above the scheduled P&I --
+        every surface shows the genesis-ledger confirmed balance (the REAL
+        principal paid down), NOT the schedule replay.
+
+        The fixture pins the ledger balance and the un-seeded replay balance;
+        the assertions require them to DIVERGE, so "surfaces == ledger" is
+        non-vacuous: before the C8/C9/C11 switches these surfaces WERE the
+        replay.  This closes the C8 M1 deferral in full: the card, its own
+        schedule table, the trend, and the year-end all agree off-schedule.
+        """
+        with app.app_context():
+            ctx = cross_page_loan_off_schedule_ctx
+            ledger = ctx["ledger"]
+            replay = ctx["replay"]
+
+            # Non-vacuity: the loan is genuinely off-schedule -- the genesis reader
+            # opened it (not None) and its real balance is STRICTLY BELOW the
+            # schedule replay by the extra principal the replay drops.
+            assert ledger is not None, "fixture did not open the loan in the ledger"
+            assert ledger < replay, (
+                f"fixture is not off-schedule: ledger {ledger!r} not < replay "
+                f"{replay!r}; the surface check would be vacuous"
+            )
+
+            # Every loan surface -- the two C8 scalars AND the two C9 maps --
+            # now reads the ledger at today, so the whole cross-page set agrees
+            # on the real balance off-schedule (the M1 divergence is closed).
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _LOAN_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(
+                surface_values, ledger, "loan kind (off-schedule)",
+            )
+
+            # And crucially none still reads the old schedule-replay value: each
+            # surface -- scalar and map alike -- moved onto the ledger (the flip).
+            for name, value in surface_values.items():
+                assert value != replay, (
+                    f"surface {name!r} still reads the schedule replay "
+                    f"{replay!r}; the read switch did not move it onto the ledger"
+                )
+
+            # The C9-deferred DATE-PRECISE scalar: at the last confirmed
+            # payment's due date -- the edge of the confirmed domain, where
+            # nothing has settled since -- the ledger-derived rows make the
+            # walk read the REAL balance, equal to today's card, and NOT the
+            # replay's scheduled figure.
+            resolved = loan_payment_service.resolve_account_loan(
+                ctx["account_id"], ctx["scenario_id"], date.today(),
+            )
+            confirmed_rows = [
+                row for row in resolved[1].schedule if row.is_confirmed
+            ]
+            assert confirmed_rows, "fixture lost its confirmed payment"
+            scalar = _balance_at_scalar_value(
+                ctx, confirmed_rows[-1].payment_date,
+            )
+            assert scalar == ledger, (
+                f"balance_at scalar {scalar!r} != ledger {ledger!r} at the "
+                "last confirmed due date; the C11 scalar half regressed"
+            )
+            assert scalar != replay
+
+            # Route wiring: the /savings page renders the off-schedule loan.
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200, (
+                f"/savings returned {resp.status_code} for the off-schedule loan"
             )
 
 

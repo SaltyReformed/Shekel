@@ -25,6 +25,7 @@ from app.utils.money import round_money
 
 from ._periods import (
     ZERO_MONEY,
+    ConfirmedLedgerView,
     LoanInputs,
     _replay_from_anchor,
     _terms_from_periods,
@@ -215,7 +216,9 @@ class _ProjectionPrep:
 
 
 def _build_forward_inputs(
-    loan_inputs: LoanInputs, as_of: date,
+    loan_inputs: LoanInputs,
+    as_of: date,
+    confirmed_view: ConfirmedLedgerView | None = None,
 ) -> _ProjectionPrep:
     """Replay the past and assemble the shared inputs for the three forward slices.
 
@@ -228,6 +231,22 @@ def _build_forward_inputs(
     Args:
         loan_inputs: The loan's loaded input bundle.
         as_of: The replay/projection boundary date.
+        confirmed_view: The loan's genesis-ledger confirmed view (the read
+            switch), or ``None`` to keep the anchor replay for both halves.
+            When supplied, its ``balance`` overrides the projection's starting
+            BALANCE and its ``history_rows`` REPLACE the replay's confirmed
+            rows (the ledger rows arrive complete, actual extra included, so
+            the D-1 extra re-derivation below is skipped for them).  The
+            starting date and remaining months stay the replay's: both derive
+            from the LAST post-anchor payment (or the anchor date when none),
+            a fact the two producers agree on even where their ROW SETS differ
+            (the ledger keeps pre-true-up payments and true due dates; the
+            replay drops the former and redistributes biweekly collisions) --
+            so only the balance and the row economics differ, and they do so
+            exactly off-schedule (the ledger books the REAL principal /
+            interest paid, the replay the SCHEDULED figures).  The forward
+            slices then amortize the real owed balance over the remaining
+            contractual months.
 
     Returns:
         A :class:`_ProjectionPrep` with the shared projection inputs, the
@@ -240,12 +259,14 @@ def _build_forward_inputs(
     periods = resolve_periods(
         loan_inputs.loan_params, loan_inputs.rate_changes,
     )
-    # The balance is schedule-driven: replay advances one scheduled step
-    # per confirmed payment from the latest anchor, reducing principal by
-    # (period P&I - interest).  The cash amount and escrow never enter,
-    # so an escrow change cannot drift the recorded balance, and the
-    # historical rows match the loan card's current_balance by
-    # construction (both read this same engine via ``_replay_from_anchor``).
+    # The replay balance is schedule-driven: replay advances one scheduled
+    # step per confirmed payment from the latest anchor, reducing principal
+    # by (period P&I - interest).  The cash amount and escrow never enter,
+    # so an escrow change cannot drift the recorded balance.  Under the read
+    # switch the replay still supplies the projection's starting DATE and
+    # remaining MONTHS (payment-count facts, identical under both
+    # producers); its rows and balance are the fallback when no ledger view
+    # is supplied.
     replay = _replay_from_anchor(loan_inputs, periods, as_of)
 
     # Contractual P&I for the forward projection is the SAME current-
@@ -260,26 +281,31 @@ def _build_forward_inputs(
         loan_inputs.loan_params.payment_day,
     )
 
-    # Surface historical overpayments via the ``extra_payment`` field
-    # without coupling replay back to the threshold/preparation cycle.
-    # Replay returns ``extra_payment=0`` (see its docstring); applying the
-    # SSOT ``contractual`` here shows the schedule's Extra column as the
-    # difference between each recorded payment and the resolver's
-    # monthly_payment.  A user paying exactly
-    # ``state.monthly_payment + monthly_escrow`` has extra 0; a $2080
-    # payment against $1580 contractual surfaces $500.  This closes the
-    # D-1 divergence ("historical extra computed against original-terms
-    # even for an ARM whose rate has adjusted") because ``contractual``
-    # IS the ARM-aware SSOT value.
-    history_rows = [
-        dataclasses.replace(
-            row,
-            extra_payment=round_money(
-                max(row.payment - contractual, ZERO_MONEY)
-            ),
-        )
-        for row in replay.rows
-    ]
+    if confirmed_view is not None:
+        # The ledger rows carry their ACTUAL economics -- principal,
+        # interest, and extra measured against the governing period's
+        # contractual P&I -- so they are used verbatim (re-deriving extra
+        # here would wipe the actual value: the ledger row's ``payment`` is
+        # already the contractual-shaped portion).
+        history_rows = list(confirmed_view.history_rows)
+    else:
+        # Surface historical overpayments via the ``extra_payment`` field
+        # without coupling replay back to the threshold/preparation cycle.
+        # Replay returns ``extra_payment=0`` (see its docstring); applying
+        # the SSOT ``contractual`` here shows the schedule's Extra column as
+        # the difference between each recorded payment and the resolver's
+        # monthly_payment.  This closes the D-1 divergence ("historical
+        # extra computed against original-terms even for an ARM whose rate
+        # has adjusted") because ``contractual`` IS the ARM-aware SSOT value.
+        history_rows = [
+            dataclasses.replace(
+                row,
+                extra_payment=round_money(
+                    max(row.payment - contractual, ZERO_MONEY)
+                ),
+            )
+            for row in replay.rows
+        ]
 
     # The projection's terms feed is the loan's FULL rate-period set
     # (past periods included), so every forward month -- including the
@@ -289,8 +315,18 @@ def _build_forward_inputs(
     # (recorded recast or schedule-derived), which is what makes the
     # projected rows and the loan card agree at every date, not just at
     # ``as_of`` (DH-#1).
+    #
+    # The starting BALANCE is the read switch's one seam: the genesis-ledger
+    # confirmed balance when a view is supplied, else the schedule-replay
+    # balance.  The starting DATE and remaining MONTHS stay the replay's
+    # (see the ``confirmed_view`` arg doc), so seeding the real owed balance
+    # amortizes it over the same remaining term.
+    starting_balance = (
+        replay.balance_as_of if confirmed_view is None
+        else confirmed_view.balance
+    )
     projection_inputs = ProjectionInputs(
-        starting_balance=replay.balance_as_of,
+        starting_balance=starting_balance,
         starting_date=replay.next_pay_date,
         remaining_months=replay.remaining_months_as_of,
         payment_day=loan_inputs.loan_params.payment_day,
@@ -308,6 +344,7 @@ def compute_payoff_scenarios(
     loan_inputs: LoanInputs,
     extra_monthly: Decimal,
     as_of: date,
+    confirmed_view: ConfirmedLedgerView | None = None,
 ) -> PayoffScenarios:
     """Single source of truth for the Payoff Calculator's three scenarios.
 
@@ -371,6 +408,14 @@ def compute_payoff_scenarios(
             (``months_saved == 0``, ``interest_saved == 0``).
         as_of: Evaluation date.  The replay/projection boundary.
             Typically ``date.today()`` from the route.
+        confirmed_view: The loan's genesis-ledger confirmed view (the read
+            switch) -- its balance seeds the forward slices and its
+            ledger-derived rows become ``history_rows`` -- or ``None`` to keep
+            the anchor replay for both.  Threaded to
+            :func:`_build_forward_inputs`; see its arg doc.  The caller reads
+            it once (via ``loan_payment_service.confirmed_loan_view``) so the
+            chart / summary / table all derive from the same real owed
+            balance and actual history the loan card shows.
 
     Returns:
         A :class:`PayoffScenarios` with the three forward slices and
@@ -380,7 +425,7 @@ def compute_payoff_scenarios(
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             ``._periods.select_latest_anchor``).
     """
-    prep = _build_forward_inputs(loan_inputs, as_of)
+    prep = _build_forward_inputs(loan_inputs, as_of, confirmed_view)
 
     # All three forward slices share starting state; only override
     # presence and extra_monthly vary.  The architectural plan's
@@ -470,6 +515,7 @@ def target_date_outlook(
     loan_inputs: LoanInputs,
     target_date: date,
     as_of: date,
+    confirmed_view: ConfirmedLedgerView | None = None,
 ) -> TargetDateOutlook:
     """Answer "when does my plan pay off, and what extra hits my target?".
 
@@ -491,6 +537,11 @@ def target_date_outlook(
         target_date: The user's desired payoff date.
         as_of: Evaluation date (the replay/projection boundary);
             typically ``date.today()`` from the route.
+        confirmed_view: The loan's genesis-ledger confirmed view (the read
+            switch), or ``None`` to keep the anchor replay.  Threaded to
+            :func:`_build_forward_inputs` so the required-extra search runs
+            against the real owed balance -- the same balance the loan card
+            and the payoff calculator's other results show.
 
     Returns:
         A :class:`TargetDateOutlook`; see its attribute docs for the
@@ -500,7 +551,7 @@ def target_date_outlook(
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             ``._periods.select_latest_anchor``).
     """
-    prep = _build_forward_inputs(loan_inputs, as_of)
+    prep = _build_forward_inputs(loan_inputs, as_of, confirmed_view)
 
     committed_forward = project_forward(
         prep.projection_inputs,

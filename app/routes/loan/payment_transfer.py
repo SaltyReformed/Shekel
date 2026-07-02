@@ -29,7 +29,7 @@ from app.routes.loan._helpers import (
     _resolve_loan_state,
     _transfer_schema,
 )
-from app.services import escrow_calculator, loan_payment_service
+from app.services import escrow_calculator, loan_loaders
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ def _resolve_transfer_amount(account, params, data):
         return data["amount"], False
 
     state = _resolve_loan_state(account, params)
-    escrow_components = loan_payment_service.load_active_escrow_components(
+    escrow_components = loan_loaders.load_active_escrow_components(
         account.id,
     )
     transfer_amount = escrow_calculator.calculate_total_payment(

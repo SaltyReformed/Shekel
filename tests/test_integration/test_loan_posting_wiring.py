@@ -50,22 +50,15 @@ from tests._test_helpers import (
     ledger_net,
     loan_correction_entries,
     loan_income_shadow,
+    SPLIT_LOAN,
 )
 
-# A 6% loan on a $100,000 anchor accrues exactly $500.00 the first month; the
-# round numbers keep every split hand-computable.  The trueup anchor ($100,000)
-# is deliberately distinct from origination ($250,000), so a correct interest
-# figure proves the walk seeds from the trueup anchor, not origination.
-_ANCHOR_BALANCE = Decimal("100000.00")
-_RATE = Decimal("0.06000")
-_ANCHOR_DATE = date(2026, 1, 10)
-_ORIGINATION_PRINCIPAL = Decimal("250000.00")
-_ORIGINATION_DATE = date(2025, 1, 1)
-
-# seed_periods indices whose monthly due date (payment_day=1) lands in a
-# DISTINCT month after the anchor: P1 start 2026-01-16 -> due 02-01; P2 start
-# 2026-02-13 -> due 03-01; P3 start 2026-03-13 -> due 04-01.
-_P1, _P2, _P3 = 1, 3, 5
+# The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
+# distinct so a correct interest figure proves the walk's anchor reset); see
+# SPLIT_LOAN in tests/_test_helpers.py.  _P1/_P2/_P3 are the seed_periods indices
+# (payment_day=1) due 02-01 / 03-01 / 04-01, in distinct months after the anchor.
+(_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
+ _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
 
 
 @pytest.fixture(autouse=True)
@@ -116,8 +109,10 @@ class TestSettleWiringAutoPosts:
 
         Arithmetic: interest round(100000 * 0.005) = 500.00; principal 500.00.
         The wiring fires inside update_transfer's settle path, so right after
-        create_settled_transfer the loan nets to the real principal (+500) and
-        the interest ledger holds +500 -- Checking moved only by the Step-2 cash.
+        create_settled_transfer the payment correction (+500 principal) AND the
+        opening (-250000) + true-up (+150000) are posted: the loan-linked ledger
+        nets -99500.00 == -(current balance 99500), the interest ledger holds
+        +500, and Checking moved only by the Step-2 cash.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -128,9 +123,10 @@ class TestSettleWiringAutoPosts:
 
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            # Genesis: opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
             assert ledger_net(
                 db.session, _interest_ledger(loan).id, scenario_id,
             ) == Decimal("500.00")
@@ -153,7 +149,9 @@ class TestSettleWiringAutoPosts:
         (principal 98.50, no cap, NO refund).  Its presence therefore pins both
         that the split reads effective (actual) cash AND that the wiring runs the
         sync AFTER the actual is applied in update_transfer (the actual-after-
-        status ordering).  The loan itself nets to the real principal, 300.00.
+        status ordering).  With the opening (-250000) and true-up (+249700 =
+        250000 - 300) also posted, the loan-linked ledger nets 0.00 -- the loan is
+        paid off (its 300.00 principal exactly retires the 300 balance).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -174,9 +172,10 @@ class TestSettleWiringAutoPosts:
             assert ledger_net(
                 db.session, refund_ledger.id, scenario_id,
             ) == Decimal("698.50")
+            # Paid off: opening (-250000) + true-up (+249700) + principal (+300).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("300.00")
+            ) == Decimal("0.00")
 
 
 class TestRevertAndDeletePostFullCashReversal:
@@ -189,8 +188,11 @@ class TestRevertAndDeletePostFullCashReversal:
 
         The correction (Loan -500 / Interest +500) carries a NULL transfer_id,
         so the Step-2 cash reader sees only the +1,000 cash on the loan ledger
-        and posts the FULL -1,000 reversal: Checking returns to 0 (not 500), and
-        the loan sync reverses the now-projected payment's correction to zero.
+        and posts the FULL -1,000 reversal: Checking returns to 0 (not 500).  The
+        loan sync reverses the now-projected payment's correction; the opening
+        (-250000) + true-up (+150000) remain (the revert does not touch them), so
+        the loan-linked ledger returns to the trued-up baseline -100000.00 ==
+        -(verified balance 100000).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -198,9 +200,10 @@ class TestRevertAndDeletePostFullCashReversal:
             loan = _make_loan(seed_user)
             xfer = _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()
+            # Opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -212,10 +215,11 @@ class TestRevertAndDeletePostFullCashReversal:
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("0.00")
-            # Loan + interest back to zero (cash reversed AND correction reversed).
+            # Payment correction + cash reversed; opening + true-up remain, so the
+            # loan returns to the trued-up baseline -(verified 100000).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("-100000.00")
             assert ledger_net(
                 db.session, _interest_ledger(loan).id, scenario_id,
             ) == Decimal("0.00")
@@ -223,12 +227,14 @@ class TestRevertAndDeletePostFullCashReversal:
     def test_hard_delete_strands_nothing_and_full_cash_reversal(
         self, app, db, seed_user, seed_periods,
     ):
-        """Hard-deleting a corrected payment leaves every ledger at zero.
+        """Hard-deleting a corrected payment strands nothing; the loan resets to baseline.
 
-        reverse-before-delete zeroes the correction while the shadow id still
-        exists (the CASCADE then SET-NULLs the entry's transaction_id), and the
-        Step-2 reverse-before posts the FULL cash reversal.  Nothing stranded:
-        Checking, the loan, and the interest ledger all net to zero.
+        reverse-before-delete zeroes the payment correction while the shadow id
+        still exists (the CASCADE then SET-NULLs the entry's transaction_id), and
+        the Step-2 reverse-before posts the FULL cash reversal.  Nothing stranded:
+        Checking and the interest ledger net to zero, and the loan-linked ledger
+        returns to the trued-up baseline -100000.00 (opening + true-up remain --
+        the delete touches only the payment correction).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -246,9 +252,10 @@ class TestRevertAndDeletePostFullCashReversal:
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("0.00")
+            # Opening + true-up remain; only the payment correction is reversed.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("-100000.00")
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
             ) == Decimal("0.00")
@@ -272,9 +279,11 @@ class TestRevertAndDeletePostFullCashReversal:
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("0.00")
+            # Payment correction reversed; opening + true-up remain, so the loan
+            # returns to the trued-up baseline -(verified 100000).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("-100000.00")
 
     def test_delete_resplits_downstream_payments(
         self, app, db, seed_user, seed_periods,
@@ -313,7 +322,13 @@ class TestRestoreWiring:
     def test_restore_reposts_correction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Delete (reverses to 0) then restore (re-posts principal 500)."""
+        """Settle (-99500), soft-delete (baseline -100000), restore (-99500 again).
+
+        The loan-linked ledger carries the opening (-250000) + true-up (+150000)
+        throughout; the payment correction (+500 principal) is reversed on delete
+        and re-posted on restore, so the linked total moves -99500 -> -100000 ->
+        -99500 (the -100000 baseline is the trued-up balance with no payment).
+        """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
@@ -321,7 +336,7 @@ class TestRestoreWiring:
             db.session.commit()
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
 
             transfer_service.delete_transfer(
                 xfer.id, seed_user["user"].id, soft=True,
@@ -329,29 +344,30 @@ class TestRestoreWiring:
             db.session.commit()
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("-100000.00")
 
             transfer_service.restore_transfer(xfer.id, seed_user["user"].id)
             db.session.commit()
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
 
 
 class TestTrueUpWiring:
     """A balance true-up re-bases every scenario's split; Checking is never touched."""
 
-    def test_trueup_reverses_pre_anchor_resplits_downstream_checking_untouched(
+    def test_trueup_resplits_later_keeps_earlier_checking_untouched(
         self, app, db, seed_user, seed_periods,
     ):
-        """A new anchor reverses now-pre-anchor corrections and re-splits the rest.
+        """A new trueup re-splits later payments, keeps earlier, never moves Checking.
 
         P1 (due 02-01) and P2 (due 03-01) settle against 100000 @ 01-10
-        (interest 500.00 + 497.50 = 997.50).  A user-trueup of 90000 @ 02-15
-        pushes P1 pre-anchor (due 02-01 <= 02-15) and re-bases P2 from 90000:
-        interest round(90000 * 0.005) = 450.00.  After the true-up the interest
-        ledger holds ONLY 450.00, and Checking is unchanged from its settled
-        -2000.00 (the true-up sync touches only the loan's own ledgers).
+        (interest 500.00 + 497.50 = 997.50).  A user-trueup of 90000 @ 02-15 falls
+        BETWEEN them: genesis keeps P1's 500.00 (it is due before the new trueup)
+        and re-splits P2 from 90000 to round(90000 * 0.005) = 450.00, so the
+        interest ledger holds 500 + 450 = 950.00 (Step 4 reversed P1 and left only
+        450.00).  Checking is unchanged from its settled -2000.00 -- the true-up
+        sync touches only the loan's own ledgers.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -375,9 +391,10 @@ class TestTrueUpWiring:
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
 
+            # P1 (before 02-15) keeps 500.00; P2 (after) re-splits to 450.00.
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
-            ) == Decimal("450.00")
+            ) == Decimal("950.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == checking_before
@@ -574,19 +591,20 @@ class TestRouteChokepointWiring:
                 db.session, interest_ledger_id, scenario_id,
             ) == Decimal("666.67")
 
-    def test_params_payment_day_change_reverses_now_pre_anchor_payment(
+    def test_params_payment_day_change_resplits_across_trueup(
         self, app, db, seed_user, seed_periods, auth_client,
     ):
-        """Changing payment_day alone re-splits -- it moves the eligibility boundary.
+        """Changing payment_day alone re-splits -- it moves the anchor boundary.
 
         Pins the reason update_params syncs UNCONDITIONALLY, not only on a rate
-        change.  The loan's anchor is 2026-01-25.  P1 (period start 2026-01-16)
-        has monthly due date 2026-02-01 at payment_day=1 -- AFTER the anchor, so
-        it is eligible and its correction posts (interest round(100000*0.005) =
-        500.00).  POSTing /loan/params with payment_day=20 (rate unchanged) moves
-        P1's due date to 2026-01-20 (the first day-20 on or after 01-16) -- now
-        BEFORE the 2026-01-25 anchor, so P1 is pre-anchor and its correction
-        reverses to zero.
+        change.  The trueup anchor is 2026-01-25.  P1 (period start 2026-01-16) has
+        monthly due date 2026-02-01 at payment_day=1 -- AFTER the trueup, so it
+        splits on the 100000 trueup (interest round(100000 * 0.005) = 500.00).
+        POSTing /loan/params with payment_day=20 (rate unchanged) moves P1's due
+        date to 2026-01-20 (the first day-20 on or after 01-16) -- now BEFORE the
+        2026-01-25 trueup, so genesis re-splits it on the $250,000 origination
+        balance: interest round(250000 * 0.005) = 1250.00 (Step 4 reversed it to
+        zero; genesis carries the split across the boundary instead).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -609,9 +627,10 @@ class TestRouteChokepointWiring:
             )
             assert resp.status_code == 302
 
+            # P1 crosses to pre-trueup -> re-split on origination, not reversed.
             assert ledger_net(
                 db.session, interest_ledger_id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1250.00")
 
     def test_params_created_after_settle_backposts(
         self, app, db, seed_user, seed_periods, auth_client,

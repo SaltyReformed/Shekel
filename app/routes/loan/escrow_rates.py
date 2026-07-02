@@ -27,7 +27,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import (
     escrow_calculator,
-    loan_payment_service,
+    loan_loaders,
     loan_posting_service,
 )
 from app.utils.auth_helpers import require_owner
@@ -197,7 +197,7 @@ def add_escrow(account_id):
 
     logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
 
-    escrow_components = loan_payment_service.load_active_escrow_components(
+    escrow_components = loan_loaders.load_active_escrow_components(
         account.id,
     )
 
@@ -240,7 +240,7 @@ def delete_escrow(account_id, component_id):
     db.session.commit()
     logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
 
-    escrow_components = loan_payment_service.load_active_escrow_components(
+    escrow_components = loan_loaders.load_active_escrow_components(
         account.id,
     )
 

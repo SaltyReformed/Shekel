@@ -48,14 +48,31 @@ from app.models.tax_config import (
 )
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import amortization_engine, paycheck_calculator
+from app.services import (
+    amortization_engine,
+    loan_loaders,
+    loan_payment_service,
+    loan_resolver,
+    paycheck_calculator,
+)
 from app.services.interest_projection import calculate_interest
 from app.services.tax_config_service import load_tax_configs
+from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.year_end_summary_service import compute_year_end_summary
 from app.services.year_end_summary_service._balances import (
     _compute_pre_anchor_interest,
+    _generate_debt_schedules,
+)
+from app.services.year_end_summary_service._income_tax import (
+    _compute_mortgage_interest,
 )
 from app.services import account_service
+from tests._test_helpers import (
+    SPLIT_LOAN,
+    create_loan_with_trueup,
+    create_settled_transfer,
+    freeze_today,
+)
 
 ZERO = Decimal("0")
 TWO_PLACES = Decimal("0.01")
@@ -747,6 +764,177 @@ class TestMortgageInterest:
         assert actual == expected
         # Partial year should have less interest than full year.
         assert actual < Decimal("10000")
+
+
+def _paid_utc(year, month, day):
+    """Return a noon-UTC settle instant, so its civil date is unambiguous."""
+    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+
+
+def _genesis_off_schedule_loan(seed_user, seed_periods):
+    """Create a genesis SPLIT_LOAN with an OFF-schedule confirmed history.
+
+    Trued up to $100,000 (origination $250,000 @ 6% on 2025-01-01), then a
+    $2,000 (extra) payment and a $1,000 payment, both PAID mid-2026, so their
+    real split posts to the genesis ledger:
+
+      P1 ($2,000): interest round(100000 * 0.005) = 500.00; principal 1,500.00;
+                   real balance 98,500.00.
+      P2 ($1,000): interest round(98500 * 0.005) = 492.50 -- on the REAL balance,
+                   NOT the schedule replay's ~99,900 (the replay advances by the
+                   scheduled principal, not the actual extra).
+
+    Ledger interest for 2026 is therefore 500.00 + 492.50 = 992.50 -- the ACTUAL
+    figure the schedule replay does not reproduce.  Returns the loan account.
+    """
+    (orig_principal, orig_date, rate, anchor_balance,
+     anchor_date, p1, p2, _p3) = SPLIT_LOAN
+    loan = create_loan_with_trueup(
+        seed_user, db.session, origination_principal=orig_principal,
+        anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
+        origination_date=orig_date,
+    )
+    create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan, seed_periods[p1],
+        amount=Decimal("2000.00"), paid_at=_paid_utc(2026, 2, 15),
+    )
+    create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan, seed_periods[p2],
+        amount=Decimal("1000.00"), paid_at=_paid_utc(2026, 3, 15),
+    )
+    db.session.commit()
+    return loan
+
+
+class TestMortgageInterestGenesisHybrid:
+    """The tax hybrid: ledger-ACTUAL (settled) + schedule-PROJECTED interest.
+
+    A genesis loan's confirmed interest reads from the ledger -- correct even for
+    an off-schedule payment, where the schedule replay is not -- attributed by
+    each payment's civil paid date (the tax-correct basis); the future remainder
+    comes from the schedule.  A loan with no genesis opening falls back to the
+    full schedule (the existing ``TestIncomeAndTax`` mortgage cases cover that
+    byte-identical path).
+    """
+
+    def test_current_year_is_ledger_actual_plus_projected(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The current year is ledger-actual to date PLUS the schedule's future.
+
+        With today frozen at 2026-04-01, the two OFF-schedule confirmed payments
+        are ledger history (992.50, the ACTUAL figure) and the rest of 2026 is
+        projected.  The hybrid is exactly ledger-confirmed + schedule-projected,
+        both halves non-zero.  Since the C11 history read switch the schedule's
+        confirmed rows are themselves LEDGER-derived, so their interest sum now
+        AGREES with the tax figure (the display and the deduction unified); the
+        non-vacuity divergence is therefore pinned against the UN-SEEDED
+        replay's confirmed rows -- the pre-switch producer, which off-schedule
+        still shows the scheduled interest, not the actual.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 4, 1))
+            scenario_id = seed_user["scenario"].id
+            loan = _genesis_off_schedule_loan(seed_user, seed_periods)
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            debt = debt_schedules[loan.id]
+
+            ledger_confirmed = confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            )
+            projected = sum(
+                (
+                    row.interest for row in debt.schedule
+                    if not row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+            schedule_confirmed = sum(
+                (
+                    row.interest for row in debt.schedule
+                    if row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+            hybrid = _compute_mortgage_interest(2026, debt_schedules, scenario_id)
+
+            # Exactly ledger-actual (confirmed) + schedule (projected), both nonzero.
+            assert hybrid == ledger_confirmed + projected
+            assert ledger_confirmed == Decimal("992.50")
+            assert projected > Decimal("0.00")
+            # C11 unification: the schedule's confirmed rows are ledger-derived,
+            # so the amortization table's interest column now AGREES with the
+            # Schedule A figure -- one truth for the confirmed region.
+            assert schedule_confirmed == ledger_confirmed
+            # Non-vacuity: the UN-SEEDED replay (the pre-switch producer) still
+            # shows the SCHEDULED confirmed interest, which off-schedule differs
+            # from the ledger's actual figure the hybrid uses.
+            params = loan_loaders.load_loan_params(loan.id)
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            replay_state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params, loan_loaders.load_loan_anchor_facts(params),
+                    ctx.payments, ctx.rate_changes,
+                ),
+                date(2026, 4, 1),
+            )
+            replay_confirmed = sum(
+                (
+                    row.interest for row in replay_state.schedule
+                    if row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+            assert replay_confirmed != ledger_confirmed
+            assert hybrid != replay_confirmed + projected
+
+    def test_interest_deducts_in_the_year_it_was_paid(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A 2026-scheduled payment PAID in 2025 deducts in 2025 (all-ledger year).
+
+        Mortgage interest is deductible in the year PAID.  A period-``P1`` payment
+        (scheduled 2026) settled on 2025-12-20 attributes its 500.00 interest to
+        2025 -- a year with NO amortization rows (the loan's first payment is
+        2026), so the figure is PURE ledger (the "past year, all-ledger" case).
+        The old payment-date behaviour would report 0.00 for 2025.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            scenario_id = seed_user["scenario"].id
+            (orig_principal, orig_date, rate, anchor_balance,
+             anchor_date, p1, _p2, _p3) = SPLIT_LOAN
+            loan = create_loan_with_trueup(
+                seed_user, db.session, origination_principal=orig_principal,
+                anchor_balance=anchor_balance, anchor_date=anchor_date,
+                rate=rate, origination_date=orig_date,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2025, 12, 20),
+            )
+            db.session.commit()
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+
+            # 2025 has NO amortization rows (first payment is 2026), so the figure
+            # is PURE ledger -- the "all-ledger" year.
+            schedule_2025 = sum(
+                (
+                    row.interest
+                    for row in debt_schedules[loan.id].schedule
+                    if row.payment_date.year == 2025
+                ),
+                Decimal("0.00"),
+            )
+            assert schedule_2025 == Decimal("0.00")
+            # The paid-in-2025 interest deducts in 2025 (500.00), not its 2026
+            # scheduled year -- the tax-correct paid-date basis.
+            assert _compute_mortgage_interest(
+                2025, debt_schedules, scenario_id,
+            ) == Decimal("500.00")
 
 
 # ── Spending by Category Tests ────────────────────────────────────

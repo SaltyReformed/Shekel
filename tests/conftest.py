@@ -1538,6 +1538,114 @@ def cross_page_loan_ctx(db, seed_user):
     }
 
 
+def _unseeded_replay_balance(loan_id, scenario_id, as_of):
+    """Return a loan's un-seeded schedule-replay balance (the pre-switch value).
+
+    The balance the resolver derives from its anchor replay ALONE -- no genesis
+    seed -- so a cross-page fixture can pin what a loan's scalar surfaces showed
+    BEFORE the read switch and assert the ledger diverges from it off-schedule.
+    """
+    # Pylint: ``import-outside-toplevel`` -- the app services are loaded lazily,
+    # the convention every helper in this conftest follows.
+    # pylint: disable=import-outside-toplevel
+    from app.services import loan_loaders, loan_payment_service, loan_resolver
+
+    params = loan_loaders.load_loan_params(loan_id)
+    ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
+    return loan_resolver.resolve_loan(
+        loan_resolver.LoanInputs(
+            params, loan_loaders.load_loan_anchor_facts(params),
+            ctx.payments, ctx.rate_changes,
+        ),
+        as_of,
+    ).current_balance
+
+
+@pytest.fixture()
+def cross_page_loan_off_schedule_ctx(db, seed_user):
+    """A GENESIS loan with an OFF-SCHEDULE confirmed payment (the read switch).
+
+    Unlike ``cross_page_loan_ctx`` -- which posts no genesis and so resolves via
+    the anchor-replay fallback -- this loan is OPENED in the ledger (a settled
+    payment fires the genesis sync: opening + true-up corrections + the payment
+    split) and its one confirmed payment pays cash far above the scheduled P&I,
+    so the REAL principal it books down diverges from the schedule replay.  The
+    read switch (plan Section 8) makes the SCALAR surfaces -- the /savings tile
+    (``_compute_loan_account``) and the loan-detail producer
+    (``resolve_account_loan``) -- read that real ledger balance, NOT the replay.
+
+    Returns the reader-shaped ctx plus ``ledger`` (the genesis reader's balance,
+    what the surfaces must now show) and ``replay`` (the un-seeded resolver's
+    schedule balance, what they showed BEFORE the switch); the test asserts the
+    two DIVERGE so the "surfaces == ledger" equality is non-vacuous.  Since the
+    Section 9 per-period read switch, the year-end and net-worth-trend MAP
+    surfaces ALSO read the confirmed ledger off-schedule, so the whole
+    four-surface set agrees on the real balance (see
+    ``test_all_surfaces_read_the_ledger_off_schedule``).
+    """
+    # Pylint: ``import-outside-toplevel`` -- the app services / test helpers are
+    # loaded lazily, the convention every fixture in this conftest follows.
+    # pylint: disable=import-outside-toplevel
+    from app.services import loan_posting_service
+    from tests._test_helpers import (
+        create_loan_with_trueup,
+        create_settled_transfer,
+    )
+
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    today = date.today()
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    # Origination two years back at $250k, trued up to $200k a year back (before
+    # the payment), 6% fixed.  origination != anchor so the walk seeds from the
+    # true-up, and the loan carries the opening + true-up genesis corrections.
+    loan = create_loan_with_trueup(
+        seed_user, db.session,
+        origination_principal=Decimal("250000.00"),
+        anchor_balance=Decimal("200000.00"),
+        anchor_date=date(today.year - 1, 1, 1),
+        rate=Decimal("0.06000"),
+        origination_date=date(today.year - 2, 1, 1),
+        name="Off-Schedule Loan",
+    )
+
+    # One OFF-SCHEDULE payment ($5,000 cash vs ~$1,499 scheduled P&I) two months
+    # before today, so its pay period has begun and the ledger books the extra
+    # ~$3,500 of real principal the schedule replay drops on the floor.
+    anchor_idx = next(
+        i for i, p in enumerate(all_periods) if p.id == anchor_period.id
+    )
+    payment_period = all_periods[anchor_idx - 2]
+    create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan, payment_period,
+        amount=Decimal("5000.00"),
+    )
+    db.session.commit()
+
+    # The genesis reader (what the surfaces now read) vs the un-seeded schedule
+    # replay (what they read before the switch): off-schedule they DIVERGE.
+    ledger = loan_posting_service.confirmed_loan_balance_at(
+        loan.id, scenario.id, today,
+    )
+    replay = _unseeded_replay_balance(loan.id, scenario.id, today)
+
+    return {
+        "user_id": user.id,
+        "account": loan,
+        "account_id": loan.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "ledger": ledger,
+        "replay": replay,
+    }
+
+
 @pytest.fixture()
 def cross_page_property_ctx(db, seed_user):
     """Single isolated appreciating Property, anchor == current period.

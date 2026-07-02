@@ -48,8 +48,10 @@ triple.  Two failure modes appeared on the displayed cards:
 
 The resolver collapses both onto a single derivation:
 
-1. Pick the latest ``LoanAnchorEvent`` (Commit 12 guarantees every
-   loan has at least one -- the origination event).
+1. Pick the latest anchor fact (``loan_loaders.load_loan_anchor_facts``
+   synthesizes the origination fact from the immutable LoanParams and
+   loads the stored user true-ups, so every configured loan has at
+   least one).
 2. Replay only ``is_confirmed`` payments whose true monthly due date
    (``rate_period_engine.monthly_due_date`` of the pay-period-start the
    payment is keyed to) is strictly after the anchor date.  Comparing
@@ -73,11 +75,11 @@ The resolver collapses both onto a single derivation:
 
 ## What the resolver is NOT
 
-* Not a query layer.  Callers load ``LoanAnchorEvent`` rows,
+* Not a query layer.  Callers load the anchor facts,
   ``PaymentRecord`` instances, and ``RateChangeRecord`` instances
   themselves (typically via ``loan_payment_service.load_loan_context``
-  for the payment + rate-change feeds, and a direct query for the
-  anchor events).
+  for the payment + rate-change feeds, and
+  ``loan_loaders.load_loan_anchor_facts`` for the anchors).
 * Not a payment preparation step.  ``payments`` is expected to be
   the already-prepared list from
   ``loan_payment_service.prepare_payments_for_engine`` (escrow
@@ -94,6 +96,7 @@ from ._payoff import (
     target_date_outlook,
 )
 from ._periods import (
+    ConfirmedLedgerView,
     LoanInputs,
     engine_terms,
     resolve_periods,
@@ -106,6 +109,7 @@ from ._state import (
 )
 
 __all__ = [
+    "ConfirmedLedgerView",
     "LoanInputs",
     "LoanState",
     "PayoffScenarios",

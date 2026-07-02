@@ -227,9 +227,14 @@ class PostingKindEnum(enum.Enum):
     ``escrow`` / ``refund`` are the four legs of a confirmed loan payment's
     real-split correction (Build-Order Step 4) -- the loan principal
     adjustment, the accrued interest expense, the configured escrow expense,
-    and the payoff-overpayment refund receivable.  Later Build-Order steps
-    add further kinds via data migrations.  Values match
-    ``ref.posting_kinds.name``.
+    and the payoff-overpayment refund receivable.  ``opening`` / ``trueup``
+    are the two-leg kinds the loan read switch adds (Build-Order Step 4,
+    second half): ``opening`` books a loan's origination balance once as a
+    balanced opening-equity entry so the ledger is authoritative for the
+    confirmed balance, and ``trueup`` books an append-only dated correction
+    that drives the ledger balance to a user-verified value without rewriting
+    the prior payment postings.  Later Build-Order steps add further kinds
+    via data migrations.  Values match ``ref.posting_kinds.name``.
     """
 
     TRANSFER = "transfer"
@@ -239,6 +244,8 @@ class PostingKindEnum(enum.Enum):
     INTEREST = "interest"
     ESCROW = "escrow"
     REFUND = "refund"
+    OPENING = "opening"
+    TRUEUP = "trueup"
 
 
 class PostingSourceEnum(enum.Enum):
@@ -247,14 +254,21 @@ class PostingSourceEnum(enum.Enum):
     ``transfer`` is a settled transfer (Build-Order Step 2); ``transaction``
     is an ordinary settled cash transaction (Build-Order Step 3);
     ``loan_payment`` is the real-split correction appended to a confirmed
-    loan-payment transfer (Build-Order Step 4); later steps add ``paycheck``
-    and ``credit_payback`` via data migrations.  Values match
-    ``ref.posting_sources.name``.
+    loan-payment transfer (Build-Order Step 4).  ``loan_opening`` /
+    ``loan_trueup`` are the source events the loan read switch adds
+    (Build-Order Step 4, second half): ``loan_opening`` tags the once-per-loan
+    opening-equity entry booked at origination, and ``loan_trueup`` tags an
+    append-only loan-balance correction entry.  Neither links a transfer nor a
+    transaction (both source FKs are nullable); the source kind is what
+    disambiguates them.  Later steps add ``paycheck`` and ``credit_payback``
+    via data migrations.  Values match ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
     TRANSACTION = "transaction"
     LOAN_PAYMENT = "loan_payment"
+    LOAN_OPENING = "loan_opening"
+    LOAN_TRUEUP = "loan_trueup"
 
 
 class LedgerAccountKindEnum(enum.Enum):
@@ -274,12 +288,21 @@ class LedgerAccountKindEnum(enum.Enum):
         fallback  -- the per-(owner, class) Uncategorized bucket.
         orphan    -- a former category row whose category was deleted.
 
-    The last three are the per-loan ledger accounts Step 4's loan-payment
+    The next three are the per-loan ledger accounts Step 4's loan-payment
     correction books into:
 
         loan_interest -- the loan's accrued-interest Expense account.
         loan_escrow   -- the loan's configured-escrow Expense account.
         loan_refund   -- the loan's payoff-overpayment refund Asset account.
+
+    The loan read switch (Build-Order Step 4, second half) adds one more
+    per-loan account:
+
+        equity_opening -- the loan's opening-balance Equity account, the
+                          credit counter-leg of the once-per-loan
+                          opening-equity entry that books the origination
+                          balance so the ledger is authoritative for the
+                          loan's confirmed balance.
 
     Application code resolves these via ``ref_cache.ledger_account_kind_id``
     and compares against the integer ID -- never the string ``name`` --
@@ -294,3 +317,4 @@ class LedgerAccountKindEnum(enum.Enum):
     LOAN_INTEREST = "loan_interest"
     LOAN_ESCROW = "loan_escrow"
     LOAN_REFUND = "loan_refund"
+    EQUITY_OPENING = "equity_opening"

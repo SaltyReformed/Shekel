@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
+from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.net_worth_kernel import DebtSchedule
 from app.services.tax_config_service import load_tax_configs_for_year
 
@@ -151,33 +152,97 @@ def _assemble_income_result(
 def _compute_mortgage_interest(
     year: int,
     debt_schedules: dict[int, DebtSchedule],
+    scenario_id: int,
 ) -> Decimal:
-    """Sum mortgage/loan interest paid during the calendar year.
+    """Sum mortgage/loan interest PAID during the calendar year.
 
-    Uses pre-generated amortization schedules (with properly prepared
-    payments) and sums the interest portion of payments whose
-    payment_date falls in the target year.
-
-    This number appears on Schedule A (itemized deductions) so
-    accuracy is critical.
+    Schedule A (itemized deductions) reports the interest a loan's payments
+    actually paid during the year, so accuracy is critical.  Per loan this is a
+    HYBRID of ledger-actual and schedule-projected interest
+    (:func:`_loan_year_interest`): the ACTUAL interest of confirmed (settled)
+    payments comes from the genesis ledger -- correct even for an off-schedule
+    (extra / short) payment, where the amortization schedule's replayed figure is
+    not -- while the PROJECTED interest of the year's not-yet-confirmed payments
+    comes from the schedule.  A loan the ledger does not own (no genesis opening
+    posting) falls back to the schedule alone, unchanged from before the read
+    switch.
 
     Args:
         year: Calendar year to sum interest for.
-        debt_schedules: account_id ->
+        debt_schedules: loan account_id ->
             :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
             from _generate_debt_schedules().
+        scenario_id: The budget scenario the schedules were generated in; scopes
+            the ledger read to the same scenario.
 
     Returns:
         Total interest paid across all loan accounts in the year.
     """
-    total_interest = ZERO
+    return sum(
+        (
+            _loan_year_interest(loan_account_id, debt, scenario_id, year)
+            for loan_account_id, debt in debt_schedules.items()
+        ),
+        ZERO,
+    )
 
-    for debt in debt_schedules.values():
-        for row in debt.schedule:
-            if row.payment_date.year == year:
-                total_interest += row.interest
 
-    return total_interest
+def _loan_year_interest(
+    loan_account_id: int,
+    debt: DebtSchedule,
+    scenario_id: int,
+    year: int,
+) -> Decimal:
+    """Return one loan's interest PAID during *year* (ledger-actual + projected).
+
+    The per-loan hybrid behind :func:`_compute_mortgage_interest`:
+
+    * the ACTUAL interest of confirmed payments comes from the genesis ledger
+      (:func:`app.services.loan_posting_service.confirmed_loan_interest_in_year`),
+      attributed to each payment's civil paid date -- the tax-correct basis, and
+      correct for off-schedule payments where the schedule's replayed interest is
+      not; PLUS
+    * the schedule's PROJECTED interest for the year's not-yet-confirmed rows
+      (``not row.is_confirmed``) -- the confirmed rows are excluded because their
+      interest is the ledger's actual figure, not the schedule's.
+
+    When the loan has no genesis opening posting (an un-backfilled loan, or one
+    the ledger does not own) the reader returns ``None`` and this sums the FULL
+    schedule (confirmed history + projection) by ``payment_date`` -- byte-identical
+    to the pre-read-switch behaviour.
+
+    Args:
+        loan_account_id: The loan account whose paid interest to compute.
+        debt: The loan's :class:`~app.services.net_worth_kernel.DebtSchedule`
+            (its amortization schedule).
+        scenario_id: The budget scenario to scope the ledger read to.
+        year: The calendar year to sum interest for.
+
+    Returns:
+        The loan's interest paid during *year* as a ``Decimal``.
+    """
+    confirmed = confirmed_loan_interest_in_year(
+        loan_account_id, scenario_id, year,
+    )
+    if confirmed is None:
+        # No genesis authority: sum the FULL schedule (confirmed history +
+        # projection), byte-identical to the pre-read-switch behaviour.
+        return sum(
+            (
+                row.interest for row in debt.schedule
+                if row.payment_date.year == year
+            ),
+            ZERO,
+        )
+    # Ledger-actual (confirmed) + schedule-projected (not-yet-confirmed rows).
+    projected = sum(
+        (
+            row.interest for row in debt.schedule
+            if not row.is_confirmed and row.payment_date.year == year
+        ),
+        ZERO,
+    )
+    return confirmed + projected
 
 
 def _empty_income_tax() -> dict:

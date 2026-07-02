@@ -9,6 +9,7 @@ end_date sync (a deliberate write on a GET, R-4) also lives here because the
 dashboard is where the payoff date is computed with full payment context.
 """
 
+import dataclasses
 import logging
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
@@ -26,13 +27,15 @@ from app.models.transfer_template import TransferTemplate
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _build_chart_series,
-    _load_anchor_events,
     _load_loan_account,
     _load_loan_context,
 )
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import AmortizationRow, AmortizationSummary
+from app.services.loan_loaders import load_loan_anchor_facts
+from app.services.loan_payment_service import confirmed_loan_view
 from app.services.rate_period_engine import payment_number
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.log_events import (
     BUSINESS,
@@ -306,7 +309,7 @@ def _update_transfer_end_date(
     )
 
 
-def _build_dashboard_scenarios(params, anchor_events, payments, rate_changes, as_of):
+def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
     """Run the main + floor payoff-scenario composer calls for the dashboard.
 
     Commit 5 of the amortization-engine split: two
@@ -326,29 +329,43 @@ def _build_dashboard_scenarios(params, anchor_events, payments, rate_changes, as
     stand if I cancel all extras today."  Both share the same
     ``anchor_events`` so a future trueup cannot drift between them.
 
+    Read switch: reads the genesis-ledger confirmed view ONCE via
+    :func:`loan_payment_service.confirmed_loan_view` and threads it into BOTH
+    composer calls as ``confirmed_view``, so the chart / schedule tab /
+    summary all derive from the same real owed balance AND ledger-derived
+    confirmed history the loan card (:func:`._helpers._resolve`) shows --
+    they cannot desync off-schedule.
+
+    Args:
+        loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
+            ALL payments (the main scenario); the floor derives its
+            confirmed-only variant from it.
+        scenario_id: The baseline scenario id (or ``None``) for the ledger
+            seed scope.
+        as_of: The replay/projection boundary (typically ``date.today()``).
+
     Returns:
         Tuple of (scenarios_main, scenarios_floor) PayoffScenarios.
     """
-    scenarios_main = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=loan_resolver.LoanInputs(
-            loan_params=params,
-            anchor_events=anchor_events,
-            payments=payments,
-            rate_changes=rate_changes,
-        ),
-        extra_monthly=Decimal("0.00"),
-        as_of=as_of,
+    view = confirmed_loan_view(
+        loan_inputs.loan_params.account_id, scenario_id, as_of,
     )
-    confirmed_payments = [p for p in payments if p.is_confirmed]
+    scenarios_main = loan_resolver.compute_payoff_scenarios(
+        loan_inputs=loan_inputs,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+        confirmed_view=view,
+    )
+    confirmed_payments = [
+        p for p in (loan_inputs.payments or []) if p.is_confirmed
+    ]
     scenarios_floor = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=loan_resolver.LoanInputs(
-            loan_params=params,
-            anchor_events=anchor_events,
-            payments=confirmed_payments,
-            rate_changes=rate_changes,
+        loan_inputs=dataclasses.replace(
+            loan_inputs, payments=confirmed_payments,
         ),
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
+        confirmed_view=view,
     )
     return scenarios_main, scenarios_floor
 
@@ -603,14 +620,21 @@ def dashboard(account_id):
         )
 
     ctx = _load_loan_context(account, params)
+    scenario = get_baseline_scenario(current_user.id)
+    loan_inputs = loan_resolver.LoanInputs(
+        loan_params=params,
+        anchor_events=load_loan_anchor_facts(params),
+        payments=ctx.loan.payments,
+        rate_changes=ctx.loan.rate_changes,
+    )
     scenarios_main, scenarios_floor = _build_dashboard_scenarios(
-        params, _load_anchor_events(account.id),
-        ctx.loan.payments, ctx.loan.rate_changes, date.today(),
+        loan_inputs, scenario.id if scenario else None, date.today(),
     )
     # PLANNED-trajectory schedule: real confirmed history + projected /
-    # contractual forward.  Resolver still owns current_balance and
-    # monthly_payment so the loan card / debt card / net-worth liability
-    # cannot diverge (the E-18 invariant).
+    # contractual forward.  The loan card's current_balance and the
+    # forward projection here both seed from the SAME genesis-ledger
+    # balance (plan Section 8), so the card / debt card / net-worth
+    # liability and the chart cannot diverge (the E-18 invariant).
     planned_schedule = (
         scenarios_main.history_rows + scenarios_main.committed_forward
     )

@@ -155,9 +155,9 @@ class EscrowComponent(AccountScopedMixin, TimestampMixin, db.Model):
     The monthly figure at a date is summed by
     :func:`app.services.escrow_calculator.calculate_monthly_escrow` over the
     components active on that date: TODAY's set via
-    :func:`app.services.loan_payment_service.load_active_escrow_components`, or a
+    :func:`app.services.loan_loaders.load_active_escrow_components`, or a
     PAST payment's set by loading every version with
-    :func:`app.services.loan_payment_service.load_all_escrow_components` and
+    :func:`app.services.loan_loaders.load_all_escrow_components` and
     filtering with :meth:`is_active_on`.
     """
 

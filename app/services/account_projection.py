@@ -266,6 +266,67 @@ def compute_loan_period_balance_map(
     return balances
 
 
+def splice_confirmed_and_projected_loan_balances(
+    periods: list,
+    confirmed_map: "OrderedDict[int, Decimal]",
+    projected_map: "OrderedDict[int, Decimal]",
+    as_of: date,
+) -> "OrderedDict[int, Decimal]":
+    """Read the confirmed ledger for begun periods, the projection for the future.
+
+    The genesis per-period read switch (plan Section 9): a loan's per-period
+    balance map is authoritative from two producers over two disjoint regions,
+    keyed on whether each period has BEGUN by *as_of* (today):
+
+    * **Begun (``period.start_date <= as_of``): the confirmed ledger.**  The
+      genesis sum-of-postings map
+      (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`),
+      which reflects the REAL principal booked by every settled payment -- so
+      an off-schedule payment (extra or short) lands in the balance exactly,
+      where the resolver's replay-driven *projected_map* would show only the
+      SCHEDULED principal.  This is the whole point of the read switch: the
+      past reads facts, not a re-amortization.
+    * **Future (``period.start_date > as_of``): the re-seeded projection.**  The
+      *projected_map* forward rows, which the read switch already re-seeds from
+      the ledger's confirmed balance (the ``ConfirmedLedgerView`` threaded into
+      the resolver), so the loan amortizes its REAL owed balance over the
+      remaining term.  The confirmed
+      map cannot answer the future -- it carries the last confirmed balance
+      flat -- so the projection owns the future tail.
+
+    Both inputs are keyed by ``period.id`` over the SAME *periods*, so every
+    period is present in each; the splice simply chooses the authoritative
+    source per period.  Pure: no I/O; the caller
+    (:func:`app.services.net_worth_kernel._build_amortizing_balance_map`) reads
+    both maps, then splices here so the boundary rule lives in one place beside
+    the schedule-only :func:`compute_loan_period_balance_map` it overlays.
+
+    Args:
+        periods: The pay periods to key the result by (the output domain and
+            order).  Each must appear in both *confirmed_map* and
+            *projected_map*.
+        confirmed_map: The genesis ledger per-period map (begun periods read
+            this).  Keyed by ``period.id``.
+        projected_map: The resolver schedule per-period map (future periods
+            read this).  Keyed by ``period.id``.
+        as_of: The confirmed/projection boundary date (typically
+            ``date.today()``): a period whose ``start_date`` is on or before it
+            has begun and reads the ledger; a later period reads the
+            projection.
+
+    Returns:
+        An ``OrderedDict`` mapping ``period.id`` to the authoritative
+        cent-quantized balance for each period.
+    """
+    result: "OrderedDict[int, Decimal]" = OrderedDict()
+    for period in periods:
+        if period.start_date <= as_of:
+            result[period.id] = confirmed_map[period.id]
+        else:
+            result[period.id] = projected_map[period.id]
+    return result
+
+
 def find_period_containing_date(periods: list, target: date):
     """Return the pay period whose interval contains *target*.
 

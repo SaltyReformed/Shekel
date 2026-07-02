@@ -141,15 +141,17 @@ _REF_TABLE_SEEDS = (
     # identical rows so a freshly upgraded DB resolves those enums before
     # this idempotent reseed runs.  ``PostingKind`` / ``PostingSource``
     # seeded only ``transfer`` in Step 2; Step 3 added the ``income`` /
-    # ``expense`` kinds and the ``transaction`` source; Step 4 adds the
+    # ``expense`` kinds and the ``transaction`` source; Step 4 added the
     # ``principal`` / ``interest`` / ``escrow`` / ``refund`` loan-correction
-    # kinds and the ``loan_payment`` source (each inline-seeded by its own
-    # migration, the same dual-seed pattern), and later steps INSERT more.
+    # kinds and the ``loan_payment`` source; the loan read switch (Step 4,
+    # second half) adds the ``opening`` / ``trueup`` kinds and the
+    # ``loan_opening`` / ``loan_trueup`` sources (each inline-seeded by its
+    # own migration, the same dual-seed pattern), and later steps INSERT more.
     # ``LedgerAccountKind`` (Step 4) is the explicit row-kind discriminator
-    # for ``budget.ledger_accounts``: the four kinds the chart already uses
-    # plus the three per-loan accounts the loan-payment correction books
-    # into.  Names match the enum ``.value`` strings in ``app/enums.py``
-    # exactly.
+    # for ``budget.ledger_accounts``: the four kinds the chart already uses,
+    # the three per-loan accounts the loan-payment correction books into, and
+    # the ``equity_opening`` per-loan Equity account the read switch adds.
+    # Names match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("LedgerAccountClass", [
         {"name": "Asset",     "is_debit_normal": True},
         {"name": "Liability", "is_debit_normal": False},
@@ -160,11 +162,16 @@ _REF_TABLE_SEEDS = (
     ("PostingKind", [
         "transfer", "income", "expense",
         "principal", "interest", "escrow", "refund",
+        "opening", "trueup",
     ]),
-    ("PostingSource", ["transfer", "transaction", "loan_payment"]),
+    ("PostingSource", [
+        "transfer", "transaction", "loan_payment",
+        "loan_opening", "loan_trueup",
+    ]),
     ("LedgerAccountKind", [
         "linked", "category", "fallback", "orphan",
         "loan_interest", "loan_escrow", "loan_refund",
+        "equity_opening",
     ]),
 )
 # pylint: enable=line-too-long

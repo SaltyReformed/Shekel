@@ -11,7 +11,7 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -22,13 +22,18 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
+from app.services import loan_loaders
 from app.services.loan_payment_service import (
     compute_contractual_pi,
+    confirmed_loan_view,
     get_payment_history,
+    load_loan_context,
+    load_loan_params,
     prepare_payments_for_engine,
+    resolve_loan_seeded,
 )
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service
+from app.services import account_service, loan_resolver
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -550,14 +555,6 @@ class TestComputeContractualPiArmAware:
     threshold leaked the original-terms P&I).
     """
 
-    class _FakeAnchor:
-        """Duck-typed LoanAnchorEvent for the resolver baseline."""
-
-        def __init__(self, anchor_balance, anchor_date, created_at):
-            self.anchor_balance = anchor_balance
-            self.anchor_date = anchor_date
-            self.created_at = created_at
-
     def test_arm_post_adjustment_holds_level_period_payment(
         self,
     ):
@@ -589,12 +586,10 @@ class TestComputeContractualPiArmAware:
             is_arm=True,
             arm_first_adjustment_months=60,  # 5/1 ARM, window ended 2023-12.
         )
-        anchor = self._FakeAnchor(
-            anchor_balance=Decimal("177999.54"),
-            anchor_date=date(2026, 2, 15),
-            created_at=date(2026, 2, 15),
-        )
         # ARM rate at 6.875% since origination (no recorded adjustment).
+        # (No anchor data at all: the reduced $177,999.54 balance can no
+        # longer even be EXPRESSED to this function -- the structural form
+        # of "the anchor balance no longer influences the payment".)
         rate_changes = [
             RateChangeRecord(
                 effective_date=date(2018, 12, 1),
@@ -603,7 +598,6 @@ class TestComputeContractualPiArmAware:
         ]
         result = compute_contractual_pi(
             params,
-            anchor_events=[anchor],
             rate_changes=rate_changes,
             as_of=date(2026, 5, 21),
         )
@@ -613,14 +607,14 @@ class TestComputeContractualPiArmAware:
         assert result == Decimal("1326.99")
 
     def test_fixed_rate_with_anchor_still_returns_original_terms(self):
-        """C1-4: fixed-rate loans return original-terms regardless of anchor.
+        """C1-4: fixed-rate loans return original-terms regardless of anchors.
 
         Pre-payments accelerate the payoff date on a fixed-rate
-        loan; the contractual P&I stays at the original amount.
-        Routing through the resolver baseline preserves this --
-        the fixed-rate branch in
-        :func:`loan_resolver._compute_monthly_payment` ignores
-        ``current_balance`` and uses ``original_principal``.
+        loan; the contractual P&I stays at the original amount.  Since
+        the read switch's final commit the anchor-independence is
+        STRUCTURAL: the function takes no anchor feed at all -- the
+        period P&I derives from the immutable params + rate-change feed
+        only, so no balance data can perturb it.
 
         DH-#56: the rate is sourced from the origination
         RateChangeRecord, not the retired ``LoanParams.interest_rate``
@@ -636,14 +630,8 @@ class TestComputeContractualPiArmAware:
             payment_day=1,
             is_arm=False,
         )
-        anchor = self._FakeAnchor(
-            anchor_balance=Decimal("200000.00"),
-            anchor_date=date(2026, 5, 1),
-            created_at=date(2026, 5, 1),
-        )
         result = compute_contractual_pi(
             params,
-            anchor_events=[anchor],
             rate_changes=[
                 RateChangeRecord(
                     effective_date=params.origination_date,
@@ -657,16 +645,15 @@ class TestComputeContractualPiArmAware:
         assert result == Decimal("1516.96")
 
     def test_empty_anchor_events_still_returns_original_terms(self):
-        """C1-5: empty anchor_events does not affect the period P&I.
+        """C1-5: the period P&I derives from params + rate feed alone.
 
-        Mirrors a hypothetical pre-anchor-backfill caller; production
-        callers always pass a non-empty list (Commit 12's backfill
-        invariant).  ``compute_contractual_pi`` does not read
-        anchor_events (the period P&I is anchor-independent), so an
-        empty list yields the same original-terms amortization.  The
-        rate still comes from the rate-change feed (DH-#56 retired the
-        ``LoanParams.interest_rate`` column); an empty feed is the only
-        thing that raises.
+        The old signature accepted an unused ``anchor_events`` feed for
+        caller compatibility; the read switch's final commit removed it,
+        making the anchor-independence structural.  This pins the
+        original-terms amortization from exactly the two inputs the
+        function reads -- the immutable params and the rate-change feed
+        (DH-#56 retired the ``LoanParams.interest_rate`` column); an
+        empty feed is the only thing that raises.
         """
         from app.services.amortization_engine import RateChangeRecord  # pylint: disable=import-outside-toplevel
         params = LoanParams(
@@ -680,7 +667,6 @@ class TestComputeContractualPiArmAware:
         )
         result = compute_contractual_pi(
             params,
-            anchor_events=[],
             rate_changes=[
                 RateChangeRecord(
                     effective_date=params.origination_date,
@@ -830,3 +816,83 @@ class TestPreparePaymentsForEngine:
         assert len(result) == 2
         assert result[0].payment_date == date(2026, 12, 5)
         assert result[1].payment_date == date(2027, 2, 1)
+
+
+class TestReadSwitchSeedHelpers:
+    """``confirmed_loan_view`` / ``resolve_loan_seeded`` -- the read-switch seam.
+
+    These pin the SAFETY half of the loan read switch: the view reader falls
+    back to ``None`` -- routing the resolver to its anchor replay, exactly
+    the pre-switch behaviour -- whenever the genesis ledger cannot answer (no
+    scenario, a future date, or a loan with no OPENING posting).  ``_create_loan_account`` builds a loan with a linked ledger but
+    NO genesis postings, so it exercises that fallback directly; the "reads the
+    real ledger balance" half is pinned end-to-end by the reconciliation oracle
+    (``TestReadSwitchProductionPath``), which needs posted genesis.
+    """
+
+    def test_seed_is_none_without_a_scenario(self, app, db, seed_user):
+        """No scenario -> ``None`` (there is no scenario to scope postings to)."""
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            assert confirmed_loan_view(loan.id, None, date.today()) is None
+
+    def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
+        """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
+
+        The confirmed ledger answers only ``as_of <= today``; the seam returns
+        ``None`` for a future date so the resolver projects it, rather than
+        letting the reader raise.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            future = date.today() + timedelta(days=1)
+            assert confirmed_loan_view(
+                loan.id, seed_user["scenario"].id, future,
+            ) is None
+
+    def test_seed_is_none_for_an_unopened_loan(self, app, db, seed_user):
+        """A configured loan with no OPENING posting -> ``None`` (needs-setup route).
+
+        ``_create_loan_account`` posts no genesis, so the reader finds no OPENING
+        leg and the seam returns ``None`` -- never a misleading ``$0`` -- so the
+        resolver stays on its anchor replay.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            assert confirmed_loan_view(
+                loan.id, seed_user["scenario"].id, date.today(),
+            ) is None
+
+    def test_resolve_loan_seeded_falls_back_to_anchor_replay_without_genesis(
+        self, app, db, seed_user,
+    ):
+        """Without genesis, the seeded helper == the un-seeded resolver, to the penny.
+
+        The load-bearing safety property: a loan the ledger has not opened
+        resolves exactly as it did before the read switch.  ``resolve_loan_seeded``
+        reads a ``None`` seed and threads it through, so ``resolve_loan`` runs its
+        anchor replay unchanged -- identical to calling it with no seed.
+        Non-vacuous: the balance is a real, positive figure (the resolver ran), and
+        equality would break if the fallback fed a wrong seed instead of ``None``.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+            params = load_loan_params(loan.id)
+            ctx = load_loan_context(loan.id, scenario_id, params)
+            loan_inputs = loan_resolver.LoanInputs(
+                params, loan_loaders.load_loan_anchor_facts(params),
+                ctx.payments, ctx.rate_changes,
+            )
+
+            seeded = resolve_loan_seeded(
+                loan_inputs, loan.id, scenario_id, date.today(),
+            )
+            unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
+
+            assert seeded.current_balance == unseeded.current_balance
+            assert seeded.current_balance > Decimal("0.00")

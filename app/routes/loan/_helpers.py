@@ -17,7 +17,6 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import (
@@ -31,7 +30,12 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.loan_payment_service import LoanContext, load_loan_context
+from app.services.loan_loaders import load_loan_anchor_facts
+from app.services.loan_payment_service import (
+    LoanContext,
+    load_loan_context,
+    resolve_loan_seeded,
+)
 from app.services.loan_resolver import LoanState
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
@@ -123,33 +127,6 @@ def _require_configured_loan(account_id):
     return account, params, account_type
 
 
-def _load_anchor_events(account_id: int) -> list[LoanAnchorEvent]:
-    """Load every :class:`LoanAnchorEvent` for a loan account.
-
-    The resolver selects the latest event by ``(anchor_date,
-    created_at) DESC`` -- ordering is its responsibility, not the
-    loader's.  Returning an unsorted list keeps the call site noise-
-    free and matches the integration-test pattern from
-    :mod:`tests.test_integration.test_loan_principal_settles`.
-
-    Args:
-        account_id: The debt account ID.
-
-    Returns:
-        List of :class:`LoanAnchorEvent` rows (possibly empty for
-        loans created before the Commit-12 backfill OR before F-9
-        was closed by Commit 15).  An empty list is a data invariant
-        violation; ``loan_resolver.resolve_loan`` raises ValueError
-        loudly so the operator sees the gap rather than a silently
-        wrong number.
-    """
-    return (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account_id)
-        .all()
-    )
-
-
 @dataclass(frozen=True)
 class _RouteLoanContext:
     """Resolver state plus the loaded loan context for the loan ROUTE surfaces.
@@ -187,12 +164,19 @@ def _resolve(account, params) -> tuple[LoanState, LoanContext]:
     scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
     ctx = load_loan_context(account.id, scenario_id, params)
-    anchor_events = _load_anchor_events(account.id)
-    state = loan_resolver.resolve_loan(
+    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
+    # the loan card's ``current_balance`` is the genesis-ledger confirmed
+    # balance (falling back to the anchor replay when the ledger has not
+    # opened this loan).  The anchor facts are synthesized from the immutable
+    # params + the loan's true-up events.  Ownership was already verified by
+    # ``_load_loan_account -> get_or_404`` before this runs, satisfying the
+    # reader's trust-the-caller contract.
+    state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
-            params, anchor_events, ctx.payments, ctx.rate_changes,
+            params, load_loan_anchor_facts(params),
+            ctx.payments, ctx.rate_changes,
         ),
-        date.today(),
+        account.id, scenario_id, date.today(),
     )
     return state, ctx
 

@@ -13,9 +13,10 @@ Three entry points:
     per-(owner, class) Uncategorized fallback an ordinary settled
     transaction's category leg books into.
   * :func:`get_or_create_loan_ledger_account` (Step 4) lazily materialises
-    the three per-loan accounts a confirmed loan payment's real-split
-    correction books into -- the loan's ``loan_interest`` and ``loan_escrow``
-    Expense accounts and its ``loan_refund`` Asset account.
+    the per-loan accounts: the ``loan_interest`` and ``loan_escrow`` Expense
+    accounts and the ``loan_refund`` Asset account a confirmed loan payment's
+    real-split correction books into, plus the ``equity_opening`` Equity
+    account the loan read switch books the origination balance into.
 
 Both are idempotent (a repeat call is a no-op).  The Step-2 tests pin:
 
@@ -45,11 +46,11 @@ exist).
 The Step-4 tests likewise pin the loan resolver's behaviour (the per-loan
 shape CHECK and per-(loan, kind) unique are covered by
 ``test_models/test_ledger_account``): correct per-loan row shape, class by
-kind (interest/escrow Expense, refund Asset), and name snapshot; idempotency;
-the three kinds coexisting on one loan; independence across loans; and the
-two load-bearing guards the columns-only shape CHECK cannot enforce -- the
-kind must be a loan kind, and the account must be an amortizing loan owned by
-the calling user.
+kind (interest/escrow Expense, refund Asset, equity_opening Equity), and name
+snapshot; idempotency; the four kinds coexisting on one loan; independence
+across loans; and the two load-bearing guards the columns-only shape CHECK
+cannot enforce -- the kind must be a loan kind, and the account must be an
+amortizing loan owned by the calling user.
 """
 from __future__ import annotations
 
@@ -199,6 +200,11 @@ def _expense_class_id():
 def _asset_class_id():
     """Resolve the Asset ledger-account-class PK (test convenience)."""
     return ref_cache.ledger_account_class_id(LedgerAccountClassEnum.ASSET)
+
+
+def _equity_class_id():
+    """Resolve the Equity ledger-account-class PK (test convenience)."""
+    return ref_cache.ledger_account_class_id(LedgerAccountClassEnum.EQUITY)
 
 
 def _loan_ledger_rows(loan_account_id):
@@ -619,11 +625,12 @@ class TestLoanLedgerAccountResolver:
     """``get_or_create_loan_ledger_account`` materialises per-loan rows.
 
     Build-Order Step 4's chart resolver: one ``loan_interest`` and one
-    ``loan_escrow`` Expense account and one ``loan_refund`` Asset account per
-    loan, lazily and idempotently.  These tests pin the resolver's behaviour
-    (the storage-tier shape CHECK and per-(loan, kind) unique are covered by
-    ``test_models/test_ledger_account.py::TestLoanLedgerShapeAndUnique``):
-    correct shape / class / name snapshot per kind; idempotency; the three
+    ``loan_escrow`` Expense account, one ``loan_refund`` Asset account, and one
+    ``equity_opening`` Equity account (the loan read switch's opening-balance
+    account) per loan, lazily and idempotently.  These tests pin the resolver's
+    behaviour (the storage-tier shape CHECK and per-(loan, kind) unique are
+    covered by ``test_models/test_ledger_account.py::TestLoanLedgerShapeAndUnique``):
+    correct shape / class / name snapshot per kind; idempotency; the four
     kinds coexisting for one loan; and independence across two loans.
     """
 
@@ -634,6 +641,8 @@ class TestLoanLedgerAccountResolver:
          LedgerAccountClassEnum.EXPENSE, "Escrow"),
         (LedgerAccountKindEnum.LOAN_REFUND,
          LedgerAccountClassEnum.ASSET, "Refund"),
+        (LedgerAccountKindEnum.EQUITY_OPENING,
+         LedgerAccountClassEnum.EQUITY, "Opening"),
     ])
     def test_creates_loan_row_with_correct_shape_per_kind(
         self, app, db, seed_user, kind, expected_class, expected_suffix,
@@ -644,8 +653,12 @@ class TestLoanLedgerAccountResolver:
         at the loan; ``account_id`` / ``category_id`` NULL and ``is_fallback``
         False (the per-loan column shape); ``kind_id`` the requested loan kind;
         ``class_id`` the class that kind implies (interest/escrow -> Expense,
-        refund -> Asset); ``name`` snapshots "<loan name> -- <suffix>";
-        ``user_id`` the owner; the row is flushed (``id`` assigned).
+        refund -> Asset, equity_opening -> Equity); ``name`` snapshots
+        "<loan name> -- <suffix>"; ``user_id`` the owner; the row is flushed
+        (``id`` assigned).  The ``equity_opening`` case is the loan read
+        switch's opening-balance account -- a fourth per-loan kind that reuses
+        the same resolver, guards, and ``uq_ledger_accounts_loan`` unique as the
+        three correction kinds, differing only in its Equity class.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -693,23 +706,27 @@ class TestLoanLedgerAccountResolver:
             assert second.id == first.id
             assert len(_loan_ledger_rows(loan.id)) == 1
 
-    def test_three_kinds_one_loan_yield_three_distinct_rows(
+    def test_four_kinds_one_loan_yield_four_distinct_rows(
         self, app, db, seed_user,
     ):
-        """Resolving all three kinds for one loan yields three distinct rows.
+        """Resolving all four kinds for one loan yields four distinct rows.
 
-        A loan has up to three per-loan accounts -- interest, escrow, refund --
-        each a separate chart entry under the (loan, kind) key.  All three carry
-        the same ``loan_account_id``; their ``kind_id`` / ``class_id`` / ``id``
-        differ (interest + escrow Expense, refund Asset).
+        A loan has up to four per-loan accounts -- interest, escrow, refund, and
+        the read switch's opening-balance equity account -- each a separate
+        chart entry under the (loan, kind) key.  All four carry the same
+        ``loan_account_id``; their ``kind_id`` / ``class_id`` / ``id`` differ
+        (interest + escrow Expense, refund Asset, opening Equity).  This also
+        proves ``equity_opening`` coexists with the three correction kinds
+        rather than colliding on ``uq_ledger_accounts_loan`` (its distinct
+        ``kind_id`` keeps it a separate row).
         """
         with app.app_context():
             user_id = seed_user["user"].id
             loan = create_account_of_type(
-                seed_user, _db.session, "Mortgage", "Triple Loan",
+                seed_user, _db.session, "Mortgage", "Quad Loan",
             )
 
-            interest, escrow, refund = (
+            interest, escrow, refund, opening = (
                 ledger_account_service.get_or_create_loan_ledger_account(
                     user_id, loan.id, kind,
                 )
@@ -717,14 +734,16 @@ class TestLoanLedgerAccountResolver:
                     LedgerAccountKindEnum.LOAN_INTEREST,
                     LedgerAccountKindEnum.LOAN_ESCROW,
                     LedgerAccountKindEnum.LOAN_REFUND,
+                    LedgerAccountKindEnum.EQUITY_OPENING,
                 )
             )
 
-            assert len({interest.id, escrow.id, refund.id}) == 3
-            assert len(_loan_ledger_rows(loan.id)) == 3
+            assert len({interest.id, escrow.id, refund.id, opening.id}) == 4
+            assert len(_loan_ledger_rows(loan.id)) == 4
             assert interest.class_id == _expense_class_id()
             assert escrow.class_id == _expense_class_id()
             assert refund.class_id == _asset_class_id()
+            assert opening.class_id == _equity_class_id()
 
     def test_same_kind_two_loans_independent(self, app, db, seed_user):
         """The same kind on two loans yields two distinct rows.
@@ -793,7 +812,7 @@ class TestLoanLedgerResolverValidation:
     Because ``ck_ledger_accounts_loan_shape`` is columns-only (it cannot pin
     ``kind_id`` to the loan kinds, nor verify ``loan_account_id`` references a
     loan), these guards are the sole defense against a malformed per-loan chart
-    entry: the kind must be one of the three loan kinds, and the account must
+    entry: the kind must be one of the four loan kinds, and the account must
     be an amortizing loan owned by the calling user.
     """
 

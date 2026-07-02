@@ -8,6 +8,7 @@ rate history, and payoff calculator across multiple loan types.
 import re
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -343,6 +344,139 @@ class TestLoanSetup:
         )
         assert origination_rate.interest_rate == Decimal("0.05000")
         assert params.term_months == 60
+
+    def test_create_params_writes_no_anchor_event_and_posts_the_opening(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Setup writes NO LoanAnchorEvent; the ledger opening is the record.
+
+        The read switch's final commit retired the origination event write:
+        the origination anchor is synthesized from the immutable LoanParams,
+        so setup leaves the event table EMPTY and instead posts the genesis
+        OPENING (-original_principal on the loan's linked ledger, so the
+        confirmed-balance reader answers the full $30,000 owed).  The
+        dashboard must still resolve and render -- the resolver's replay
+        fallback runs on the synthesized facts, never a stored row.
+        """
+        loan_type = (
+            db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        )
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="No-Event Setup Loan",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "current_principal": "30000.00",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+
+        # No anchor event row of ANY kind was written.
+        from app.models.loan_anchor_event import (  # pylint: disable=import-outside-toplevel
+            LoanAnchorEvent,
+        )
+        assert (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .count()
+        ) == 0
+
+        # The genesis OPENING posted instead: the reader answers the full
+        # original principal owed in the baseline scenario.
+        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
+        assert loan_posting_service.confirmed_loan_balance_at(
+            account.id, seed_user["scenario"].id, date.today(),
+        ) == Decimal("30000.00")
+
+        # And the dashboard resolves on the synthesized facts.
+        page = auth_client.get(f"/accounts/{account.id}/loan")
+        assert page.status_code == 200
+        assert b"30,000.00" in page.data
+
+    def test_post_retirement_loan_trueup_lifecycle(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Setup (zero events) then a true-up: the card reads the asserted value.
+
+        The post-retirement lifecycle end-to-end through the ROUTES: a loan
+        created with NO stored anchor rows at all, then a $25,000 true-up
+        asserted through the dashboard form.  The true-up appends the ONE
+        ``user_trueup`` event (the source document), the genesis sync books
+        its TRUEUP correction so the confirmed-balance reader answers the
+        asserted $25,000 (opening -30,000 + correction +5,000, negated), and
+        the dashboard card renders it -- proving a loan that never had an
+        origination event supports the whole assert-and-display flow.
+        """
+        loan_type = (
+            db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        )
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Lifecycle Loan",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "current_principal": "30000.00",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/trueup",
+            data={
+                "anchor_balance": "25000.00",
+                "anchor_date": "2025-06-01",
+            },
+        )
+        assert resp.status_code == 302
+
+        from app.models.loan_anchor_event import (  # pylint: disable=import-outside-toplevel
+            LoanAnchorEvent,
+        )
+        events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .all()
+        )
+        # Exactly ONE stored row: the user's assertion.  No origination row.
+        assert len(events) == 1
+        assert events[0].anchor_balance == Decimal("25000.00")
+
+        # The ledger reconciled to the asserted value...
+        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
+        assert loan_posting_service.confirmed_loan_balance_at(
+            account.id, seed_user["scenario"].id, date.today(),
+        ) == Decimal("25000.00")
+        # ...and the card shows it.
+        page = auth_client.get(f"/accounts/{account.id}/loan")
+        assert page.status_code == 200
+        assert b"25,000.00" in page.data
 
     def test_create_params_already_configured(self, auth_client, seed_user, db, seed_periods):
         """POST setup when params exist redirects with info flash."""
@@ -4804,6 +4938,90 @@ class TestRefinanceCalculator:
         assert "$186,513.24" in html
         # Interest savings.
         assert "$68,572.58" in html
+
+
+class TestRefinanceForwardOnlyBaseline:
+    """The refinance comparison measures the CURRENT loan forward-only.
+
+    The refinance side is inherently forward-only (a brand-new loan from
+    today), so the current side must be too: "Remaining Term" counts the
+    payments still ahead and "Total Interest" the interest still to be
+    paid.  Before this rule the builder used whole-schedule aggregates
+    (``len(state.schedule)`` / ``state.total_interest``), which counted
+    sunk history months and sunk interest against the from-today
+    refinance -- and the history read switch made the confirmed slice the
+    loan's FULL recorded history, inflating both on exactly the trued-up
+    loans the arc targets.
+    """
+
+    def test_confirmed_rows_are_excluded_from_the_current_baseline(self):
+        """History rows never inflate remaining term or remaining interest.
+
+        A synthetic state with 2 CONFIRMED rows (interest 500.00 + 497.50,
+        sunk) and 2 FORWARD rows (interest 400.00 + 300.00, still owed):
+        the comparison's current side must read 2 remaining months and
+        700.00 remaining interest -- NOT the whole-schedule 4 months /
+        1,697.50 -- and both the term delta and the interest savings must
+        derive from the forward-only figures (savings = 700.00 minus the
+        refi's own projected interest; term_diff = 12 - 2).
+        """
+        # Pylint: ``import-outside-toplevel`` -- route-private helper under
+        # test; imported here so the module import stays route-surface only.
+        from app.routes.loan.calculators import (  # pylint: disable=import-outside-toplevel
+            _build_refinance_comparison,
+        )
+        from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+            AmortizationRow,
+        )
+        from app.services.loan_resolver import LoanState  # pylint: disable=import-outside-toplevel
+
+        def _row(month, day, interest, balance, confirmed):
+            return AmortizationRow(
+                month=month, payment_date=date(2026, month, day),
+                payment=Decimal("1000.00"), principal=Decimal("500.00"),
+                interest=interest, extra_payment=Decimal("0.00"),
+                remaining_balance=balance, is_confirmed=confirmed,
+                interest_rate=Decimal("0.06"),
+            )
+
+        schedule = [
+            _row(1, 1, Decimal("500.00"), Decimal("99500.00"), True),
+            _row(2, 1, Decimal("497.50"), Decimal("99000.00"), True),
+            _row(3, 1, Decimal("400.00"), Decimal("98500.00"), False),
+            _row(4, 1, Decimal("300.00"), Decimal("98000.00"), False),
+        ]
+        state = LoanState(
+            current_balance=Decimal("99000.00"),
+            monthly_payment=Decimal("1000.00"),
+            current_rate=Decimal("0.06"),
+            schedule=schedule,
+            payoff_date=date(2026, 4, 1),
+            # Whole-schedule sum (500 + 497.50 + 400 + 300) -- the figure
+            # the current side must NOT read.
+            total_interest=Decimal("1697.50"),
+        )
+        params = SimpleNamespace(payment_day=1)
+        data = {
+            "closing_costs": Decimal("0.00"),
+            "new_principal": None,
+            "new_term_months": 12,
+            "new_rate": Decimal("0.05"),
+        }
+
+        comparison = _build_refinance_comparison(state, data, params)
+
+        # Forward-only: 2 remaining months, 400 + 300 = 700.00 remaining
+        # interest; savings and term delta derive from the same figures.
+        assert comparison["current_remaining_months"] == 2
+        assert comparison["current_total_interest"] == Decimal("700.00")
+        assert comparison["term_diff"] == 10
+        assert comparison["interest_savings"] == (
+            Decimal("700.00") - comparison["refi_total_interest"]
+        )
+        # Non-vacuity: the whole-schedule aggregates differ, so the
+        # forward-only rule is doing real work here.
+        assert comparison["current_remaining_months"] != len(state.schedule)
+        assert comparison["current_total_interest"] != state.total_interest
 
 
 class TestRefinanceAndPayoffByDateProjectForwardMigration:

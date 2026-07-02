@@ -49,12 +49,11 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
     compute_loan_period_balance_map,
+    splice_confirmed_and_projected_loan_balances,
 )
 from app.services.investment_projection import adapt_deductions
-from app.services.loan_payment_service import (
-    query_shadow_income,
-    resolve_account_loan,
-)
+from app.services.loan_loaders import query_shadow_income
+from app.services.loan_payment_service import resolve_account_loan
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.utils.balance_predicates import account_period_scope_clause
 
@@ -453,16 +452,10 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     # present -> a :class:`DebtSchedule` -> loan path.
     if (kind is AccountProjectionKind.AMORTIZING
             and debt_schedule is not None):
-        # F-21 / Commit 19: route through the shared
-        # ``compute_loan_period_balance_map`` so the year-end liability
-        # column and the savings-dashboard loan card consume the same
-        # period-end-keyed balance derivation.  The schedule's
-        # resolver-derived ``current_balance`` is the pre-first-payment
-        # fallback -- NOT the original principal, which made the loan leap
-        # down to its real balance the moment the first upcoming payment
-        # landed (a phantom liability drop / net-worth jump).
-        return compute_loan_period_balance_map(
-            debt_schedule.schedule, periods, debt_schedule.current_balance,
+        # Genesis per-period read switch (plan Section 9): confirmed ledger
+        # for begun periods, re-seeded projection after (see the helper).
+        return _build_amortizing_balance_map(
+            account, scenario, periods, debt_schedule,
         )
 
     # Investment accounts: use the growth engine.  The base balance
@@ -588,6 +581,67 @@ def investment_base_balance_map(
         The ``OrderedDict`` period_id -> Decimal cash-basis balance.
     """
     return balance_resolver.balances_for(account, scenario.id, periods).balances
+
+
+def _build_amortizing_balance_map(
+    account: Account,
+    scenario: Scenario,
+    periods: list,
+    debt_schedule: "DebtSchedule",
+) -> "OrderedDict[int, Decimal]":
+    """Build an amortizing loan's per-period map: ledger past, projection future.
+
+    The AMORTIZING branch of :func:`build_account_balance_map` (the genesis
+    per-period read switch, plan Section 9): the schedule-derived map
+    (:func:`app.services.account_projection.compute_loan_period_balance_map`,
+    whose ``current_balance`` fallback -- NOT the original principal -- is the
+    F-21 / Commit 19 pre-first-payment value), with the confirmed ledger
+    balance
+    (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`)
+    overlaid on every begun period and the re-seeded projection kept for the
+    future
+    (:func:`app.services.account_projection.splice_confirmed_and_projected_loan_balances`).
+    The ledger books the REAL principal each settled payment paid, so an
+    off-schedule payment moves the PAST balances exactly, where the schedule
+    replay shows only scheduled principal.  ``None`` (no OPENING posting: an
+    unconfigured / un-backfilled loan, or a what-if never posted into) leaves
+    the whole map on the schedule-only baseline, byte-identical to the
+    pre-switch behaviour (safe by construction).  The direct reader call is
+    fence-clean: this module is in the W9906 seam cluster the reader joins at
+    plan Section 11.
+
+    Args:
+        account: The loan account (its id and the scenario scope the ledger
+            read; the caller owns the ownership check).
+        scenario: The baseline scenario.
+        periods: All user pay periods (output domain, keyed by ``period.id``).
+        debt_schedule: This account's :class:`DebtSchedule` (resolver schedule
+            plus the read-switch-seeded current balance).
+
+    Returns:
+        The period_id -> Decimal map: confirmed ledger for begun periods,
+        re-seeded projection after; schedule-only when the loan is not opened
+        in the ledger.
+    """
+    projected_map = compute_loan_period_balance_map(
+        debt_schedule.schedule, periods, debt_schedule.current_balance,
+    )
+    # Pylint: ``import-outside-toplevel`` -- imported from the defining
+    # ``_reader`` submodule (which imports nothing back from here) rather than
+    # the package, so the static import graph carries no
+    # ``net_worth_kernel -> loan_posting_service`` cycle at module load, the
+    # same lazy-seam pattern the loan_payment_service genesis reads use.
+    from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
+        confirmed_loan_balance_map,
+    )
+    confirmed_map = confirmed_loan_balance_map(
+        account.id, scenario.id, periods,
+    )
+    if confirmed_map is None:
+        return projected_map
+    return splice_confirmed_and_projected_loan_balances(
+        periods, confirmed_map, projected_map, date.today(),
+    )
 
 
 def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-many-positional-arguments

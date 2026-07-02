@@ -30,6 +30,7 @@ from app.services.amortization_engine import (
     RateChangeRecord,
 )
 from app.services.loan_resolver import (
+    ConfirmedLedgerView,
     LoanInputs,
     LoanState,
     PayoffScenarios,
@@ -756,15 +757,16 @@ def test_payoff_date_and_total_interest():
 
 
 def test_empty_anchor_events_raises_value_error():
-    """The Commit-12 backfill guarantee is structural: empty raises loud.
+    """The anchor-fact guarantee is structural: empty raises loud.
 
-    If a caller hands the resolver an empty anchor-event list, the
-    Commit-12 invariant has been violated and silently producing a
-    "no anchor, project from origination" answer would mask the
-    bug.  The resolver raises ValueError to surface it.
+    A configured loan's origination anchor is SYNTHESIZED from its
+    immutable params (``loan_loaders.load_loan_anchor_facts``), so an
+    empty anchor list means the caller bypassed the shared loader;
+    silently producing a "no anchor, project from origination" answer
+    would mask the bug.  The resolver raises ValueError to surface it.
     """
     params = _arm_400k_params()
-    with pytest.raises(ValueError, match="at least one LoanAnchorEvent"):
+    with pytest.raises(ValueError, match="at least one anchor fact"):
         resolve_loan(
             LoanInputs(params, [], None, _rate_feed(params)),
             date(2026, 6, 1),
@@ -2121,3 +2123,129 @@ class TestTargetDateOutlook:
         )
         assert outlook.required_extra is not None
         assert outlook.required_extra > Decimal("0.00")
+
+
+class TestConfirmedLedgerView:
+    """The read-switch seam: ``confirmed_view`` (the ConfirmedLedgerView bundle).
+
+    The one bundle the loan read switch threads into the resolver so a loan's
+    displayed balance, its confirmed schedule rows, and every figure projected
+    from them come from the genesis ledger, not the schedule replay.
+    Supplying it overrides the headline ``current_balance``, the forward
+    projection's starting balance, AND the schedule's confirmed slice (one
+    bundle, threaded once), so the card, the table, and the chart cannot
+    desync off-schedule; omitting it (``None``) leaves the resolver on its
+    anchor replay, unchanged.  These pin the seam directly at
+    ``resolve_loan``, ``compute_payoff_scenarios``, and
+    ``target_date_outlook`` -- the three entry points the loaders and the
+    loan-detail chart / payoff calculators wire.  The fixtures carry no
+    payments, so the view's ``history_rows`` are the empty ledger history a
+    payment-less opened loan reads.
+    """
+
+    AS_OF = date(2026, 1, 1)
+    SEED = Decimal("290000.00")
+
+    def _view(self):
+        """The payment-less ledger view: the seed balance, no history rows."""
+        return ConfirmedLedgerView(balance=self.SEED, history_rows=[])
+
+    def _fixed_300k(self):
+        """$300k / 6% / 360mo from 2026-01-01, origination anchor, no payments."""
+        params = FakeLoanParams(
+            origination_date=date(2026, 1, 1),
+            term_months=360,
+            original_principal=Decimal("300000.00"),
+            interest_rate=Decimal("0.06"),
+            payment_day=1,
+        )
+        return params, _origination_anchor(params)
+
+    def test_resolve_loan_seed_overrides_balance_and_projection(self):
+        """A seed overrides current_balance AND the projection, not the payment.
+
+        The origination anchor puts the un-seeded balance at the full $300,000.
+        Seeding $290,000 (a $10,000 lower confirmed balance, as an off-schedule
+        paydown would leave) makes ``current_balance`` exactly the seed, and the
+        forward projection amortizes the seed: at $1,798.65 contractual P&I and
+        0.5% monthly interest the first projected row pays
+        1,798.65 - round(290000 * 0.005)=1,450.00 -> 348.65 of principal, leaving
+        289,651.35 (vs 299,701.35 un-seeded: 300000 - (1798.65 - 1500.00)).  The
+        seed is balance-only: the rate-period-derived payment and rate do not
+        move, while the lower balance pays off sooner with less total interest.
+        """
+        params, anchor = self._fixed_300k()
+        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
+
+        seeded = resolve_loan(
+            loan_inputs, self.AS_OF, confirmed_view=self._view(),
+        )
+        unseeded = resolve_loan(loan_inputs, self.AS_OF)
+
+        # Headline: the seed IS the current balance; None keeps the anchor replay.
+        assert seeded.current_balance == self.SEED
+        assert unseeded.current_balance == Decimal("300000.00")
+
+        # Forward projection seeds from the same value (first projected row).
+        assert seeded.schedule[0].remaining_balance == Decimal("289651.35")
+        assert unseeded.schedule[0].remaining_balance == Decimal("299701.35")
+
+        # Balance-only: the payment and rate do not move; the lower balance pays
+        # off sooner and accrues less total interest.
+        assert seeded.monthly_payment == unseeded.monthly_payment
+        assert seeded.current_rate == unseeded.current_rate
+        assert seeded.total_interest < unseeded.total_interest
+        assert seeded.payoff_date < unseeded.payoff_date
+
+    def test_compute_payoff_scenarios_seeds_the_forward_slices(self):
+        """The composer's forward slices start from the seed, not the replay.
+
+        The direct-call path the loan-detail chart and the payoff calculator wire
+        (they bypass ``resolve_loan``).  With the $290,000 seed the committed
+        slice's first row leaves 289,651.35 (vs 299,701.35 un-seeded) and its
+        life-of-remaining interest is strictly less.
+        """
+        params, anchor = self._fixed_300k()
+        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
+
+        seeded = compute_payoff_scenarios(
+            loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF, confirmed_view=self._view(),
+        )
+        unseeded = compute_payoff_scenarios(
+            loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+        )
+        assert seeded.committed_forward[0].remaining_balance == Decimal(
+            "289651.35"
+        )
+        assert unseeded.committed_forward[0].remaining_balance == Decimal(
+            "299701.35"
+        )
+        assert (
+            seeded.total_interest_committed < unseeded.total_interest_committed
+        )
+
+    def test_target_date_outlook_uses_the_seed(self):
+        """A lower seed retires the plan sooner in the target-date outlook.
+
+        With no projected plan the committed outlook is pure contractual from the
+        starting balance, so the $290,000 seed retires the loan strictly BEFORE
+        the un-seeded $300,000 -- proving the seed reaches
+        ``target_date_outlook``'s projection (the target-date calculator's
+        plan-aware path).
+        """
+        params, anchor = self._fixed_300k()
+        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
+        target = date(2060, 1, 1)
+
+        seeded = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs, target_date=target,
+            as_of=self.AS_OF, confirmed_view=self._view(),
+        )
+        unseeded = loan_resolver.target_date_outlook(
+            loan_inputs=loan_inputs, target_date=target, as_of=self.AS_OF,
+        )
+        assert (
+            seeded.committed_payoff_date < unseeded.committed_payoff_date
+        )

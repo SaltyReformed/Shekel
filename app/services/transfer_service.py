@@ -39,9 +39,9 @@ from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services._transfer_loan_posting import (
-    _resync_loan_payment_postings_after_delete,
+    _resync_loan_postings_after_delete,
     _reverse_loan_payment_before_delete,
-    _sync_loan_payment_postings_if_loan,
+    _sync_loan_postings_if_loan,
 )
 from app.services._transfer_ownership import (
     _get_owned_account,
@@ -646,12 +646,13 @@ def update_transfer(transfer_id, user_id, **kwargs):
         posting_service.sync_transfer_postings(
             xfer, settled=current_status.is_settled,
         )
-        # Build-Order Step 4: a settle / revert / amount / actual edit of a
-        # loan payment re-splits that loan's confirmed payments (the principal
-        # / interest / escrow split couples on the running balance).  Runs LAST
-        # -- after the Step-2 cash entry is in step -- and is a no-op for a
-        # non-loan transfer.
-        _sync_loan_payment_postings_if_loan(xfer)
+        # Posting ledger: a settle / revert / amount / actual edit of a loan
+        # payment re-reconciles that loan's full genesis ledger -- its
+        # confirmed-payment splits (which couple on the running balance) and its
+        # opening / true-up anchor corrections (a pre-true-up payment edit moves
+        # a true-up's owed_before).  Runs LAST -- after the Step-2 cash entry is
+        # in step -- and is a no-op for a non-loan transfer.
+        _sync_loan_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,
@@ -759,12 +760,13 @@ def delete_transfer(transfer_id, user_id, soft=False):
         )
         result = None
 
-    # ── Downstream re-split (Build-Order Step 4) ───────────────────
-    # After the payment is gone, re-split the LATER payments whose running
-    # balance the deletion changed.  Idempotent and self-healing; skipped
-    # entirely for a non-loan transfer.
+    # ── Downstream re-reconcile (posting ledger) ───────────────────
+    # After the payment is gone, re-reconcile the loan's genesis ledger: the
+    # LATER payments whose running balance the deletion changed AND any true-up
+    # whose owed_before it moved.  Idempotent and self-healing; skipped entirely
+    # for a non-loan transfer.
     if is_loan_payment:
-        _resync_loan_payment_postings_after_delete(loan_account_id, scenario_id)
+        _resync_loan_postings_after_delete(loan_account_id, scenario_id)
     return result
 
 
@@ -981,9 +983,10 @@ def restore_transfer(transfer_id, user_id):
     posting_service.sync_transfer_postings(
         xfer, settled=restored_status.is_settled,
     )
-    # Build-Order Step 4: re-post the split correction for a restored, settled
-    # loan payment (a no-op for a restored projected or non-loan transfer).
-    _sync_loan_payment_postings_if_loan(xfer)
+    # Posting ledger: re-reconcile the loan's genesis ledger for a restored,
+    # settled loan payment -- its split correction plus the opening / true-up
+    # corrections (a no-op for a restored projected or non-loan transfer).
+    _sync_loan_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_RESTORED, BUSINESS,

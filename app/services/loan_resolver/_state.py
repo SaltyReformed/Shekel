@@ -15,7 +15,6 @@ from decimal import Decimal
 
 from app.services.amortization_engine import (
     AmortizationRow,
-    PaymentRecord,
     RateChangeRecord,
 )
 from app.services.rate_period_engine import period_for_date
@@ -24,6 +23,7 @@ from app.utils.money import round_money
 from ._payoff import compute_payoff_scenarios
 from ._periods import (
     ZERO_MONEY,
+    ConfirmedLedgerView,
     LoanInputs,
     _replay_from_anchor,
     resolve_periods,
@@ -83,10 +83,8 @@ class LoanState:
 
 def compute_monthly_payment_baseline(
     loan_params,
-    anchor_events: list,
     rate_changes: list[RateChangeRecord] | None,
     as_of: date,
-    payments: list[PaymentRecord] | None = None,
 ) -> Decimal:
     """Return the loan's current monthly P&I -- the rate-period level payment.
 
@@ -102,37 +100,33 @@ def compute_monthly_payment_baseline(
     The monthly P&I is the level payment of the rate period containing
     ``as_of`` (see :func:`build_rate_periods`): held constant within the
     period and recast only at a rate adjustment.  It is independent of
-    the running balance, so ``anchor_events`` and ``payments`` are
-    accepted for caller compatibility only and are not read.
+    the running balance, so no anchor or payment feed is taken (the
+    read-switch arc's final commit dropped the old unused
+    compatibility parameters).
 
     Args:
         loan_params: Loan parameter object exposing the fields
             :func:`build_rate_periods` reads (origination, principal,
             base rate, term, ARM cadence).
-        anchor_events: Accepted for caller compatibility; unused -- the
-            period P&I does not depend on the anchor balance.
         rate_changes: Optional ARM rate-history feeding each period's
             rate and any recorded recast P&I.  ``None`` or empty for a
             fixed-rate loan.
         as_of: Evaluation date; selects the governing rate period.
-        payments: Accepted for caller compatibility; unused.
 
     Returns:
         Rounded Decimal monthly P&I, equal to
         ``resolve_loan(...).monthly_payment`` for the same inputs.
     """
-    # Pylint: ``unused-argument`` -- ``anchor_events`` and ``payments`` are
-    # unused: the current period's level P&I is anchor-independent -- a
-    # property of the loan's contractual rate-period structure, not of the
-    # running balance.  Both stay in the signature for caller compatibility
-    # (loan_payment_service.compute_contractual_pi passes them).
-    # pylint: disable=unused-argument
     return period_for_date(
         resolve_periods(loan_params, rate_changes), as_of,
     ).period_pi
 
 
-def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
+def resolve_loan(
+    loan_inputs: LoanInputs,
+    as_of: date,
+    confirmed_view: ConfirmedLedgerView | None = None,
+) -> LoanState:
     """Resolve a loan to its (balance, payment, schedule, payoff, interest).
 
     Single-source-of-truth producer for every loan-touching surface.
@@ -182,6 +176,17 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
             ValueError.  Only confirmed payments are replayed.
         as_of: The evaluation date.  Drives the current-balance walk
             and the out-of-window monthly-payment computation.
+        confirmed_view: The loan's genesis-ledger confirmed view (the read
+            switch), or ``None`` to keep the anchor replay.  When supplied,
+            its ``balance`` becomes BOTH the ``current_balance`` AND the
+            forward projection's starting balance, and its ``history_rows``
+            become the schedule's confirmed slice (threaded once to
+            :func:`._payoff.compute_payoff_scenarios`) -- one bundle, so the
+            headline balance, the schedule's history, and the projection
+            cannot desync off-schedule.  ``None`` leaves this function on the
+            anchor replay unchanged (an unconfigured loan, or a caller that
+            deliberately reads the schedule balance -- e.g. the "ever paid
+            off" ``date.max`` probe).
 
     Returns:
         A :class:`LoanState` with the five resolver fields.
@@ -229,21 +234,27 @@ def resolve_loan(loan_inputs: LoanInputs, as_of: date) -> LoanState:
         loan_inputs=dataclasses.replace(loan_inputs, payments=confirmed),
         extra_monthly=ZERO_MONEY,
         as_of=as_of,
+        confirmed_view=confirmed_view,
     )
     schedule = list(scenarios.history_rows) + list(
         scenarios.committed_forward
     )
 
-    # Current balance is schedule-driven: replay advances one scheduled
-    # step per confirmed payment from the latest anchor (principal =
-    # period P&I - interest).  The cash amount and escrow never enter,
-    # so an escrow change cannot drift the recorded balance.  Derived
-    # via the same ``_replay_from_anchor`` the composer uses, but as its
-    # own call independent of the schedule generation above so a future
-    # projection change cannot silently move it.
-    current_balance_full = _replay_from_anchor(
-        loan_inputs, periods, as_of,
-    ).balance_as_of
+    # Current balance: the genesis-ledger confirmed balance when the read
+    # switch supplies a view, else the schedule-replay balance.  The replay
+    # advances one scheduled step per confirmed payment from the latest
+    # anchor (principal = period P&I - interest), discarding the cash and
+    # escrow.  Threading ONE ``confirmed_view`` here AND into the composer
+    # above (never two mechanisms) keeps this headline balance, the
+    # schedule's confirmed rows, and the forward seed identical, so they
+    # cannot desync off-schedule.  The schedule-replay call stays independent
+    # of the composer's own so a future projection change cannot silently
+    # move the unseeded balance.
+    current_balance_full = (
+        _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
+        if confirmed_view is None
+        else confirmed_view.balance
+    )
 
     # Monthly P&I is the current rate period's level payment, held
     # constant within the period and recast only at an adjustment

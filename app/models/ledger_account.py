@@ -2,8 +2,9 @@
 Shekel Budget App -- Ledger Account Model (budget schema)
 
 The chart of accounts for the double-entry posting ledger (Build-Order
-Step 2; extended with the per-category cash chart in Step 3 and the per-loan
-interest / escrow / refund accounts in Step 4).  Every posting leg
+Step 2; extended with the per-category cash chart in Step 3, the per-loan
+interest / escrow / refund accounts in Step 4, and the per-loan opening-equity
+account in the loan read switch).  Every posting leg
 (``budget.account_postings``) lands in exactly one ledger account, and every
 ledger account carries a ``class_id`` fixing how a reader later interprets
 that account's accumulated debit-positive posting balance (Asset/Expense are
@@ -18,7 +19,7 @@ on which of ``account_id`` / ``category_id`` / ``is_fallback`` /
 discriminator; it is stamped by the sole writer (``ledger_account_service``)
 on exactly the same trust contract ``class_id`` carries (see "Storage-tier
 shape enforcement" below for what the constraints do and do not police).
-Seven kinds coexist in one table:
+Eight kinds coexist in one table:
 
 * **linked** (``account_id`` set, ``category_id`` NULL, ``is_fallback``
   False, ``loan_account_id`` NULL) -- one per real ``budget.accounts`` row,
@@ -58,6 +59,15 @@ Seven kinds coexist in one table:
   account, and its payoff-overpayment refund Asset account.  ``name``
   snapshots a per-loan label naming the loan and the component; at most one
   of each kind exists per loan (``uq_ledger_accounts_loan``).
+* **equity_opening** (``loan_account_id`` set, ``account_id`` NULL,
+  ``category_id`` NULL, ``is_fallback`` False) -- the loan's opening-balance
+  Equity account: the credit counter-leg of the once-per-loan opening-equity
+  entry the loan read switch (Build-Order Step 4, second half) books at
+  origination so the ledger is authoritative for the loan's confirmed balance.
+  It shares the per-loan column shape and the ``uq_ledger_accounts_loan``
+  unique with the three correction accounts above, differing only in class
+  (Equity) and in what books it (the opening entry, not the payment
+  correction).  ``name`` snapshots a per-loan "<loan> -- Opening" label.
 
 **Why ``is_fallback`` exists.**  A fallback and an orphan are BOTH
 ``(account_id NULL, category_id NULL)`` -- nothing in those two columns
@@ -90,7 +100,7 @@ Orphans carry no uniqueness by design.
 
 **Why ``ck_ledger_accounts_loan_shape`` does not pin ``kind_id`` to the loan
 kinds.**  A CHECK constraint cannot contain a subquery, so "this row's
-``kind_id`` is one of the three loan kinds" is inexpressible without
+``kind_id`` is one of the four loan kinds" is inexpressible without
 embedding the seeded ``ref.ledger_account_kinds`` row IDs as literals -- which
 the project forbids (ref IDs are resolved through ``ref_cache``, never
 hardcoded).  The CHECK therefore policies the column *shape* of a loan row,
@@ -152,8 +162,8 @@ the seeded ``ref.ledger_account_kinds`` rows are non-removable invariants,
 and a kind delete would strand every ledger account of that kind.
 
 ``loan_account_id`` is ``ON DELETE RESTRICT``.  It links a per-loan
-interest / escrow / refund row to the loan ``budget.accounts`` row whose
-payments that account splits, and is NULL on every other kind.  RESTRICT
+interest / escrow / refund / opening row to the loan ``budget.accounts`` row
+it books against, and is NULL on every other kind.  RESTRICT
 (not SET NULL or CASCADE) because such a row accumulates immutable postings:
 SET NULL would strand the row's kind (a ``loan_interest`` row with no loan),
 and CASCADE would delete a posting-bearing chart entry and orphan its legs
@@ -194,10 +204,10 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     ``category_id`` linking a per-category Income/Expense row to its budget
     category, an ``is_fallback`` flag marking the per-(owner, class)
     Uncategorized bucket, an optional ``loan_account_id`` linking a per-loan
-    interest / escrow / refund row to the loan whose payments it splits, and
+    interest / escrow / refund / opening row to the loan it books against, and
     an optional display ``name`` (set on the non-linked category / fallback /
     orphan / per-loan rows; a linked row derives its label from
-    ``account.name``).  See the module docstring for the seven-kind taxonomy,
+    ``account.name``).  See the module docstring for the eight-kind taxonomy,
     why the loan shape CHECK does not pin ``kind_id``, why ``is_fallback``
     exists, the display rule, and the FK-action rationale (the CASCADE
     impossibility argument for ``account_id``, the RESTRICT for ``class_id`` /
@@ -256,15 +266,16 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
             postgresql_where=db.text("is_fallback"),
         ),
         # At most one *per-loan* ledger account of each kind per loan -- one
-        # ``loan_interest``, one ``loan_escrow``, one ``loan_refund`` per
-        # (owner, loan).  Partial (``WHERE loan_account_id IS NOT NULL``) so it
-        # constrains only the per-loan rows; every other kind carries NULL
-        # ``loan_account_id`` and falls outside this index.  ``kind_id`` is in
-        # the key because a single loan has up to three distinct per-loan rows
-        # (interest / escrow / refund), each a separate chart entry; all three
-        # key columns are non-NULL within the predicate's scope, so ordinary
-        # NULL-distinct unique semantics apply cleanly.  The ``postgresql_where``
-        # text matches the migration's index DDL byte-for-byte so autogenerate
+        # ``loan_interest``, one ``loan_escrow``, one ``loan_refund``, one
+        # ``equity_opening`` per (owner, loan).  Partial (``WHERE
+        # loan_account_id IS NOT NULL``) so it constrains only the per-loan
+        # rows; every other kind carries NULL ``loan_account_id`` and falls
+        # outside this index.  ``kind_id`` is in the key because a single loan
+        # has up to four distinct per-loan rows (interest / escrow / refund /
+        # opening), each a separate chart entry; all three key columns are
+        # non-NULL within the predicate's scope, so ordinary NULL-distinct
+        # unique semantics apply cleanly.  The ``postgresql_where`` text
+        # matches the migration's index DDL byte-for-byte so autogenerate
         # produces no spurious diff.
         db.Index(
             "uq_ledger_accounts_loan",
@@ -306,7 +317,7 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         # it carries no real-account link, no category link, and is not the
         # fallback, so it can never also be a linked / category / fallback row
         # and so falls outside every other partial unique above.  This pins
-        # the column *shape* of the three loan kinds; that the row's ``kind_id``
+        # the column *shape* of the four loan kinds; that the row's ``kind_id``
         # is in fact one of the loan kinds is the sole writer's contract (a
         # CHECK cannot subquery ``ref.ledger_account_kinds`` and the project
         # forbids hardcoding its IDs -- see the module docstring's
@@ -341,9 +352,9 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         nullable=False,
     )
     # The explicit row-kind discriminator (linked / category / fallback /
-    # orphan / loan_interest / loan_escrow / loan_refund).  NOT NULL -- every
-    # row names its kind positively; readers branch on this integer ID, never
-    # on which other FKs are NULL.  Stamped by the sole writer
+    # orphan / loan_interest / loan_escrow / loan_refund / equity_opening).
+    # NOT NULL -- every row names its kind positively; readers branch on this
+    # integer ID, never on which other FKs are NULL.  Stamped by the sole writer
     # (``ledger_account_service``) on the same trust contract as ``class_id``.
     # RESTRICT: the seeded ``ref.ledger_account_kinds`` rows are non-removable
     # invariants.  Explicit convention FK name (the naming convention is not
@@ -391,8 +402,8 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=True,
     )
-    # The loan ``budget.accounts`` row whose payments a per-loan interest /
-    # escrow / refund row splits; NULL on every other kind.  RESTRICT (NOT SET
+    # The loan ``budget.accounts`` row a per-loan interest / escrow / refund /
+    # opening row books against; NULL on every other kind.  RESTRICT (NOT SET
     # NULL or CASCADE): a per-loan row accumulates immutable postings, so the
     # loan account cannot be deleted while it has these rows -- SET NULL would
     # strand the kind, CASCADE would orphan posting legs (see the module
@@ -439,8 +450,9 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     account = db.relationship(
         "Account", lazy="joined", foreign_keys="LedgerAccount.account_id",
     )
-    # The loan a per-loan interest / escrow / refund row splits, via
-    # ``loan_account_id``.  ``lazy="select"`` (load on access, no eager JOIN):
+    # The loan a per-loan interest / escrow / refund / opening row books
+    # against, via ``loan_account_id``.  ``lazy="select"`` (load on access, no
+    # eager JOIN):
     # a per-loan row's display label is its own ``name`` snapshot, never
     # navigated through this relationship, so eager-loading would add a JOIN no
     # display path consumes.  One-directional (no backref on Account), so an

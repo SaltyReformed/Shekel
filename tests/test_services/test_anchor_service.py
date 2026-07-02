@@ -861,7 +861,7 @@ class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
             with patch(
-                "app.services.loan_posting_service.is_unique_violation",
+                "app.services.loan_posting_service._sync.is_unique_violation",
                 return_value=False,
             ):
                 with pytest.raises(IntegrityError):
