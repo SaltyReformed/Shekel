@@ -202,6 +202,26 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.net_worth_kernel",
 })
 
+# Genesis loan-ledger balance readers (W9906, the read switch's final commit):
+# the confirmed balance-at-T readers over the posting ledger.  Same fence, one
+# WIDER allowlist: beyond the seam + engine cluster, exactly two modules may
+# call them -- ``loan_posting_service`` (the defining package; its sync/oracle
+# internals legitimately compose its own readers) and ``loan_payment_service``
+# (whose ``confirmed_loan_view`` is the ONE sanctioned injection seam the
+# resolver-bound consumers read the ledger through).  Any other caller is
+# re-inventing the read switch's seam.  NOT listed, by the same SRP line the
+# header comment draws: ``confirmed_loan_history_rows`` (rich schedule-row
+# detail the view seam composes, the ledger analog of ``resolve_loan``) and
+# ``confirmed_loan_interest_in_year`` (a tax figure, not a balance-at-T).
+_LOAN_LEDGER_READER_PRODUCERS = frozenset({
+    "confirmed_loan_balance_at",
+    "confirmed_loan_balance_map",
+})
+_LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
+    "app.services.loan_posting_service",
+    "app.services.loan_payment_service",
+})
+
 # Status seam (W9907): the single attribute the transaction status seam owns.
 # Every non-transfer ``Transaction.status_id`` assignment must go through
 # ``status_seam.apply_status_change``; only the seam's own module and
@@ -367,21 +387,31 @@ def _is_non_authoritative_loan_balance(node: nodes.NodeNG) -> bool:
     return False
 
 
-def _called_balance_producer(node: nodes.Call) -> str | None:
-    """Return the guarded balance-producer name ``node`` calls, or ``None``.
+def _called_name_in(node: nodes.Call, names: frozenset[str]) -> str | None:
+    """Return the called name if it is in ``names``, else ``None``.
 
     Matches the bare-name import form (``balances_for(...)``) and the attribute
     form (``balance_resolver.balances_for(...)``) alike, mirroring
     :func:`_is_loan_balance_map_call`; name matching keeps the checker fast, and
-    these balance-map producers are distinctive enough to carry no realistic
+    the guarded producer names are distinctive enough to carry no realistic
     collision risk.  ``node`` is the call expression under inspection.
     """
     func = node.func
-    if isinstance(func, nodes.Name) and func.name in _BALANCE_PRODUCERS:
+    if isinstance(func, nodes.Name) and func.name in names:
         return func.name
-    if isinstance(func, nodes.Attribute) and func.attrname in _BALANCE_PRODUCERS:
+    if isinstance(func, nodes.Attribute) and func.attrname in names:
         return func.attrname
     return None
+
+
+def _called_balance_producer(node: nodes.Call) -> str | None:
+    """Return the guarded balance-producer name ``node`` calls, or ``None``.
+
+    Thin wrapper over :func:`_called_name_in` for the general balance-producer
+    set (:data:`_BALANCE_PRODUCERS`); the genesis loan-ledger readers have
+    their own set + allowlist (:data:`_LOAN_LEDGER_READER_PRODUCERS`).
+    """
+    return _called_name_in(node, _BALANCE_PRODUCERS)
 
 
 def _module_in_allowlist(node: nodes.NodeNG, modules: frozenset[str]) -> bool:
@@ -766,7 +796,12 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "SOLID dependency direction consumers -> seam -> engines. Only the "
             "seam and the engine cluster it composes (balance_resolver, "
             "balance_calculator, account_projection, growth_engine, "
-            "net_worth_kernel) may call a producer. The rich projection-detail "
+            "net_worth_kernel) may call a producer. The genesis loan-ledger "
+            "readers (confirmed_loan_balance_at / confirmed_loan_balance_map) "
+            "are fenced the same way with a wider allowlist: their defining "
+            "loan_posting_service package and loan_payment_service, whose "
+            "confirmed_loan_view is the read switch's single injection seam. "
+            "The rich projection-detail "
             "primitives project_balance and resolve_loan / resolve_account_loan "
             "are NOT producers and are not flagged -- they return "
             "ProjectedBalance / LoanState detail the seam composes, kept "
@@ -775,21 +810,33 @@ class ShekelBalanceSeamChecker(BaseChecker):
     }
 
     def visit_call(self, node: nodes.Call) -> None:
-        """Flag a balance-producer call made outside the seam + engine cluster.
+        """Flag a balance-producer call made outside its sanctioned modules.
 
         ``node`` is every call expression; only a call to one of the guarded
-        balance producers from a module NOT in the seam allowlist is reported.
-        The producer-name check (a frozenset lookup on the called name) runs
+        balance producers from a module NOT in its allowlist is reported.  The
+        producer-name check (a frozenset lookup on the called name) runs
         first, so the module-identity walk runs only for an actual producer
-        call.
+        call.  Two producer sets share the one message: the general balance
+        producers (seam + engine cluster only) and the genesis loan-ledger
+        readers (additionally the defining ``loan_posting_service`` package
+        and the ``loan_payment_service`` view seam -- the read switch's single
+        injection point).
         """
         producer = _called_balance_producer(node)
-        if producer is None:
+        if producer is not None:
+            if not _in_balance_seam_cluster(node):
+                self.add_message(
+                    "shekel-balance-producer-bypass", node=node,
+                    args=(producer,),
+                )
             return
-        if _in_balance_seam_cluster(node):
+        reader = _called_name_in(node, _LOAN_LEDGER_READER_PRODUCERS)
+        if reader is None:
+            return
+        if _module_in_allowlist(node, _LOAN_LEDGER_READER_MODULES):
             return
         self.add_message(
-            "shekel-balance-producer-bypass", node=node, args=(producer,),
+            "shekel-balance-producer-bypass", node=node, args=(reader,),
         )
 
 

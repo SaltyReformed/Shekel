@@ -1,8 +1,9 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: IN PROGRESS -- reconciled as-built through Commit 9 (2026-07-02; C1-C8 committed on `dev`
-[through `37342c4`]; C9 = the per-period MAP read switch, green on `dev` and not yet committed. The
-SCALAR half of the plan's commit-9 line was DEFERRED to C11 -- see "As-built: Commit 9").
+Status: COMPLETE -- reconciled as-built through Commit 11 (2026-07-02; C1-C10 committed on `dev`
+through `2042569`; C11 shipped as SIX further commits -- see "As-built: Commit 11" -- ending the arc:
+reads are ledger-authoritative, the origination anchor write is retired, the readers are fenced. The
+whole arc is on `dev`, NOT yet PR'd to `main`.
 **Commit 7's runtime code (backfill posts genesis, boundary migration, deploy hook) already landed in
 Commit 4** (the unification folded it in); C7 adds only the verification the plan named. Written
 2026-07-01 after an
@@ -516,6 +517,96 @@ docstring), `year_end_summary_service/_income_tax.py` (`_compute_mortgage_intere
 `_loan_year_interest`, `scenario_id` threaded), `_orchestrator.py` (passes `scenario.id`), and the
 three test files (`test_loan_posting_service.py`, `test_year_end_summary_service.py`,
 `test_loan_unified_figures.py` [the one direct-call signature caller]).
+
+## As-built: Commit 11 (2026-07-02, on `dev`; shipped as SIX commits)
+
+C11 is the arc's final commit: the resolver's read-time replay of confirmed history is retired from
+every surface, the amortization table is ledger-derived, the origination anchor write is retired, and
+the genesis readers join the W9906 fence. **This governs where it disagrees with Section 4 item 11 and
+Section 2 below.** Shipped as six independently-green commits (each adversarially reviewed):
+
+1. **`loan_loaders` leaf extraction (prep, `2397764`).** The pure row loaders + `query_shadow_income`
+   moved from `loan_payment_service` into a new leaf `app/services/loan_loaders.py` (+
+   `load_rate_history`, deduplicating the raw rate query). NECESSARY, not cosmetic: pylint's R0401
+   counts function-local imports, so the C11a reader's need for the loaders inside
+   `loan_posting_service._reader` -- while `loan_payment_service` lazily imports that same `_reader` --
+   was a true structural cycle no lazy import could break. The leaf breaks it by layering.
+2. **C11a -- the ledger-derived history reader (`e6ca220`).** `confirmed_loan_history_rows` in
+   `_reader`: one `AmortizationRow` per confirmed payment from POSTED legs (interest = the
+   `loan_interest` legs per shadow, shared with the C10 tax reader via `_interest_net_by_shadow`;
+   principal = the payment's linked net; running balance = cumulative linked net with anchors/other
+   events at their entry dates in the write walk's order). Row algebra matches forward rows:
+   `principal + interest == payment + extra_payment`, extra vs the governing `period_pi`, so the
+   schedule totals need no special-casing. **Adversarial-review H2 (fixed pre-commit): classification
+   is source-kind + payment-lineage aware** -- non-confirmed payment lineage (reverted / cancelled /
+   soft-deleted residue at TWO entry dates; early-settled future-period payments) is DROPPED exactly,
+   while transfer-outs / raw settled transactions stay honest dated events. On-schedule rows are
+   byte-identical to the replay's (pinned field-by-field against `resolve_loan`), EXCEPT biweekly
+   due-month collisions (two same-month rows at true due dates -- more truthful; balances agree).
+3. **C11b -- the history/read flip (`62151a8`).** The C8 scalar `forward_seed_balance` is replaced by
+   ONE bundled `ConfirmedLedgerView(balance, history_rows)` threaded once through `resolve_loan` /
+   `compute_payoff_scenarios` / `target_date_outlook`; `confirmed_loan_seed` becomes
+   `confirmed_loan_view` (all-or-nothing: either half `None` -> whole view `None`, so no path can pair
+   a ledger balance with replay rows). Flips: the amortization table + chart history prefix (actual
+   economics, pre-true-up payments the replay hid now shown), the `balance_at` DATE-PRECISE scalar
+   (the C9-deferred half -- exact through the last confirmed payment; beyond it the walk keeps its
+   pre-existing DUE-BASIS projection attribution, so at today-with-an-overdue-payment it deliberately
+   reads below the card: a scheduled-but-unmade payment is counted as made only on the projection
+   side), and the C10 tax hybrid's confirmed region now AGREES with the displayed schedule. Closes C8
+   M1 in full (cross-page oracle: all SIX loan surfaces == ledger off-schedule). Replay stays as the
+   projection's starting-date/remaining-months producer and the None-view fallback (M2 what-if /
+   fresh user / un-backfilled), byte-identical.
+4. **Refinance forward-only baseline (`5e0c26e`, review H1).** `_build_refinance_comparison` compared
+   a from-today refinance against WHOLE-schedule aggregates (`len(state.schedule)`,
+   `state.total_interest`) -- pre-existing skew that C11b widened to the full recorded history on
+   trued-up loans. Root fix: the current side reads the FORWARD (non-confirmed) slice only; the
+   hand-pinned all-forward literals ($255,085.82 / $68,572.58) are byte-identical.
+5. **C11c -- retire the origination anchor write (`d723273`).** **AMENDS the FULL decision (Section
+   2): the `user_trueup` write is KEPT.** A true-up is the operator's dated balance assertion -- the
+   SOURCE DOCUMENT the self-healing TRUEUP reconcile derives `owed_before - V` from and re-derives
+   against when pre-true-up history changes; without stored `V`, a later payment edit silently
+   violates the asserted balance (worked example in the C11c commit message), and any replacement
+   store is `LoanAnchorEvent` renamed. The ORIGINATION write IS retired: it was a verbatim copy of
+   the immutable `LoanParams` (verified on real prod data), so `create_params` no longer writes it and
+   ALL consumers synthesize it via the new `loan_loaders.LoanAnchorFact` +
+   `load_loan_anchor_facts(params)` -- the ONE anchor loader the genesis walk AND every
+   resolver-input builder share (the walk keys OPENING/TRUEUP on `fact.is_opening`; the synthesized
+   origination carries the earliest UTC instant so same-day true-ups still win the latest-anchor
+   tie). Legacy origination rows: kept as append-only history, ignored by every consumer, no
+   migration. Dead weight removed: `load_anchor_events`, the route-local anchor loader,
+   `_resolve_loan_piti`'s no-anchor guard, and `compute_contractual_pi` /
+   `compute_monthly_payment_baseline`'s unused anchor/payments compat params.
+6. **C11d -- the W9906 fence + docs (this commit).** `confirmed_loan_balance_at` /
+   `confirmed_loan_balance_map` join the fence with a reader-specific allowlist: the seam cluster
+   PLUS the defining `loan_posting_service` package and `loan_payment_service` (whose
+   `confirmed_loan_view` is the single injection seam). `confirmed_loan_history_rows` (rich rows, the
+   ledger analog of `resolve_loan`) and `confirmed_loan_interest_in_year` (a tax figure) stay
+   unfenced by the checker's SRP line. 4 new checker tests (76 total); real-pylint non-vacuity proven
+   by an injected route-level bypass (flagged, reverted).
+
+**Developer-decision record.** The two C11 forks (anchor-fact storage; commit decomposition) were put
+to the developer via AskUserQuestion on 2026-07-02; the session was unattended (60s timeout), so the
+agent proceeded on the standing directive ("the option that results in the most financially correct,
+most DRY, SOLID, fully normalized... app possible") with its recommended options, flagged for
+ratification: (a) retire origination write only / keep `user_trueup` as the assertion store; (b) split
+into the commits above. Both are reversible individually if the developer rules otherwise.
+
+**Open notes carried out of C11:**
+
+- **Due-basis scalar at today (documented above):** `balance_at`'s loan walk counts a scheduled
+  payment due-but-unmade once the walk crosses the confirmed edge. Consistent with the F-21
+  period-end-keyed semantic and only visible between a due date and its settle; the C9 map reads
+  confirmed-carried-flat at today instead. If ever unwanted, the fix is a confirmed-only walk for
+  `as_of <= today` -- a semantic change to the year-end debt-progress figures, deliberately NOT made
+  unilaterally.
+- The savings net-worth trend's honest-history window now starts at a genesis loan's FIRST recorded
+  payment (was: latest anchor); honest (C9 spliced ledger balances fill it) but the window start is
+  unpinned by a dedicated test (review L3).
+- `confirmed_loan_view` costs ~6 queries per loan resolution (balance + history reader loads);
+  acceptable at personal scale, noted for any future batching.
+- The plan's Section 7 item 6 manual prod-clone step (mark the Mortgage's next payment Paid ->
+  card/tile/net-worth drop by the REAL principal, no true-up prompt) is now verifiable post-flip;
+  performed against the dev DB (a prod clone) after C11d -- see the session log / memory.
 
 ---
 

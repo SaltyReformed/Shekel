@@ -14,6 +14,8 @@ from pylint.testutils import CheckerTestCase, MessageTest
 from shekel_checkers import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
+    _LOAN_LEDGER_READER_MODULES,
+    _LOAN_LEDGER_READER_PRODUCERS,
     _STATUS_SEAM_MODULES,
     ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
@@ -724,6 +726,75 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                 "shekel-balance-producer-bypass",
                 node=node,
                 args=("balances_for",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_every_loan_ledger_reader_from_a_consumer(self) -> None:
+        """EVERY genesis loan-ledger reader is flagged from a consumer module.
+
+        The read switch's final commit fences the confirmed balance readers:
+        a route or dashboard calling one directly bypasses the
+        ``confirmed_loan_view`` injection seam.  Bound to the reader set
+        itself so a future reader added to the frozenset is automatically
+        covered.
+        """
+        for reader in sorted(_LOAN_LEDGER_READER_PRODUCERS):
+            node = self._producer_call(
+                f"{reader}(account_id, scenario_id, as_of)",
+                "app.routes.loan.dashboard",
+            )
+            with self.assertAddsMessages(
+                MessageTest(
+                    "shekel-balance-producer-bypass",
+                    node=node,
+                    args=(reader,),
+                ),
+                ignore_position=True,
+            ):
+                self.checker.visit_call(node)
+
+    def test_allows_loan_ledger_reader_from_every_sanctioned_module(self) -> None:
+        """Each reader-allowlisted module may call a genesis reader; not flagged.
+
+        The reader allowlist is the seam cluster PLUS the defining
+        ``loan_posting_service`` package and the ``loan_payment_service``
+        view seam; each is asserted, so narrowing the set surfaces here
+        rather than as a surprise W9906 on the injection path.
+        """
+        for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
+            node = self._producer_call(
+                "confirmed_loan_balance_at(account_id, scenario_id, as_of)",
+                module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_call(node)
+
+    def test_allows_loan_ledger_reader_from_posting_package_submodule(self) -> None:
+        """The defining package's submodules stay inside the reader fence.
+
+        ``loan_posting_service`` is a package; its ``_reader`` / oracle-facing
+        internals resolve to submodule names and must remain exempt via the
+        package-prefix match.
+        """
+        node = self._producer_call(
+            "confirmed_loan_balance_at(account_id, scenario_id, as_of)",
+            "app.services.loan_posting_service._reader",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_loan_ledger_reader_fails_closed_in_unresolvable_module(self) -> None:
+        """An unresolvable module name fails closed for the readers too."""
+        node = self._producer_call(
+            "confirmed_loan_balance_map(account_id, scenario_id, periods)", "",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("confirmed_loan_balance_map",),
             ),
             ignore_position=True,
         ):
