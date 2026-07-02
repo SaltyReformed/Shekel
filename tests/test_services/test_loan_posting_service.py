@@ -49,18 +49,16 @@ from tests._test_helpers import (
     ledger_net,
     loan_correction_entries,
     loan_income_shadow,
+    SPLIT_LOAN,
 )
 
-# A 6% loan on a $100,000 anchor accrues exactly $500.00 the first month
-# (100000 * 0.06 / 12); the round numbers keep every split hand-computable.
-_ANCHOR_BALANCE = Decimal("100000.00")
-_RATE = Decimal("0.06000")
-_ANCHOR_DATE = date(2026, 1, 10)
+# The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
+# distinct so a correct interest figure proves the walk's anchor reset); see
+# SPLIT_LOAN in tests/_test_helpers.py.  _P1/_P2/_P3 are the seed_periods indices
+# (payment_day=1) due 02-01 / 03-01 / 04-01, in distinct months after the anchor.
+(_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
+ _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
 _AS_OF = date(2026, 12, 31)
-# Distinct from the anchor so a correct interest figure proves the walk seeds
-# from the trueup anchor, not the (larger) origination principal.
-_ORIGINATION_PRINCIPAL = Decimal("250000.00")
-_ORIGINATION_DATE = date(2025, 1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +169,6 @@ def _entry_legs(entry_id):
         .filter_by(journal_entry_id=entry_id)
         .all()
     }
-
-
-# Period indices (seed_periods starts 2026-01-02, biweekly) whose monthly
-# due date (payment_day=1) lands in a DISTINCT month after the anchor:
-#   period 1 start 2026-01-16 -> due 2026-02-01
-#   period 3 start 2026-02-13 -> due 2026-03-01
-#   period 5 start 2026-03-13 -> due 2026-04-01
-_P1, _P2, _P3 = 1, 3, 5
 
 
 # ---------------------------------------------------------------------------

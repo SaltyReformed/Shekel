@@ -10,8 +10,34 @@ import pathlib
 import re
 import sys
 
+from collections import namedtuple
 from datetime import date as _real_date, datetime as _real_datetime
 from decimal import Decimal
+
+
+# The synthetic split-loan fixture shared verbatim by the three parallel
+# loan-posting suites (unit / reconciliation-oracle / wiring): a $250,000 loan
+# originated 2025-01-01 at 6%, trued up to $100,000 on 2026-01-10.  The trueup
+# balance deliberately differs from origination so a correct interest figure
+# proves the walk's anchor reset (a payment before the trueup accrues on
+# $250,000, one after on $100,000).  ``p1`` / ``p2`` / ``p3`` are the
+# ``seed_periods`` indices whose monthly due dates (payment_day=1) land in
+# distinct months after the anchor (02-01 / 03-01 / 04-01).  Single-sourced here
+# so a fixture change touches one place, not three; each suite unpacks it into
+# its own module-level names.
+_SplitLoan = namedtuple(
+    "_SplitLoan",
+    "origination_principal origination_date rate anchor_balance anchor_date "
+    "p1 p2 p3",
+)
+SPLIT_LOAN = _SplitLoan(
+    origination_principal=Decimal("250000.00"),
+    origination_date=_real_date(2025, 1, 1),
+    rate=Decimal("0.06000"),
+    anchor_balance=Decimal("100000.00"),
+    anchor_date=_real_date(2026, 1, 10),
+    p1=1, p2=3, p3=5,
+)
 
 
 def select_option_values(html: str, select_key: str) -> list[str]:

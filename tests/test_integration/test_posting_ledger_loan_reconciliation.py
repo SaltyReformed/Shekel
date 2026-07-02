@@ -136,28 +136,21 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    SPLIT_LOAN,
 )
 
-# A 6% loan on a $100,000 anchor accrues exactly $500.00 the first month
-# (100000 * 0.06 / 12); the round numbers keep every split hand-computable.  The
-# trueup anchor ($100,000) is deliberately distinct from origination ($250,000),
-# so a correct interest figure also proves the walk seeds from the trueup anchor.
-_ANCHOR_BALANCE = Decimal("100000.00")
-_RATE = Decimal("0.06000")
-_ANCHOR_DATE = date(2026, 1, 10)
-_ORIGINATION_PRINCIPAL = Decimal("250000.00")
-_ORIGINATION_DATE = date(2025, 1, 1)
+# The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
+# distinct so a correct interest figure proves the walk's anchor reset); see
+# SPLIT_LOAN in tests/_test_helpers.py.  _P1/_P2/_P3 are the seed_periods indices
+# (payment_day=1) due 02-01 / 03-01 / 04-01 -- distinct months after the anchor,
+# so the resolver's biweekly-collision redistribution never shifts a date and the
+# parallel run is exact.
+(_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
+ _ANCHOR_DATE, _P1, _P2, _P3) = SPLIT_LOAN
 
 # The frozen as-of: after every payment period used, so each settled payment is
 # historical (eligible) and the resolver / wiring see the same today.
 _AS_OF = date(2026, 5, 15)
-
-# seed_periods indices whose monthly due date (payment_day=1) lands in a DISTINCT
-# month after the anchor -- so the resolver's biweekly-collision redistribution
-# never shifts a payment's date and the parallel run is exact: P1 start
-# 2026-01-16 -> due 02-01; P2 start 2026-02-13 -> due 03-01; P3 start 2026-03-13
-# -> due 04-01.
-_P1, _P2, _P3 = 1, 3, 5
 
 # The Commit-6 boundary migration, loaded so its idempotent raw-SQL teardown
 # (``_remove_loan_payment_postings``) can reproduce the pre-wiring historical
