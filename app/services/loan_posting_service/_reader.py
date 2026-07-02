@@ -39,12 +39,16 @@ from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.orm import joinedload
+
 from app import ref_cache
-from app.enums import PostingKindEnum
+from app.enums import LedgerAccountKindEnum, PostingKindEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
-from app.services.posting_service import _ledger_account_for
+from app.models.transaction import Transaction
+from app.services.posting_service import _civil_settle_date, _ledger_account_for
 from app.utils.money import round_money
 
 _ZERO_MONEY = Decimal("0.00")
@@ -289,3 +293,108 @@ def confirmed_loan_balance_map(
         # cumulative yields ``0.00``, never ``-0.00`` (see the scalar reader).
         balances[period.id] = round_money(_ZERO_MONEY - cumulative)
     return balances
+
+
+def confirmed_loan_interest_in_year(
+    loan_account_id: int, scenario_id: int, year: int,
+) -> Decimal | None:
+    """Return a loan's ACTUAL interest PAID in a calendar year (genesis ledger).
+
+    The tax-reporting read side of the genesis loan sub-ledger: the real
+    interest a loan's confirmed payments actually paid during *year*, for
+    Schedule A.  Each confirmed payment posts its accrued interest onto the
+    loan's per-loan ``loan_interest`` Expense ledger (:mod:`._payments`); this
+    sums that ACTUAL interest -- not the amortization schedule's replayed figure,
+    which is wrong for an off-schedule (extra / short) payment -- so the
+    deduction reflects the interest truly paid.
+
+    **Attributed by each payment's CURRENT civil paid date, not by the posting's
+    entry date.**  Mortgage interest is deductible in the year it was PAID, so a
+    payment's NET interest (its original split PLUS any later true-up / rate
+    re-split delta) is attributed to
+    :func:`app.services.posting_service._civil_settle_date` of its shadow's
+    current ``paid_at`` -- the very civil paid date the entry itself is dated by.
+    Grouping the legs by their payment shadow and attributing the NET (rather
+    than summing each leg by its own entry date) is what makes this robust to a
+    reversal: reverting a payment clears its ``paid_at``, so its reversal leg is
+    dated at the pay-period start (the ``_civil_settle_date`` NULL fallback),
+    which can fall in a DIFFERENT year than the original leg -- but the payment's
+    NET interest is then zero, so it drops out of every year cleanly rather than
+    stranding a spurious +/- interest across the year boundary.  A re-settled or
+    edited-paid-date payment likewise reports its net at its CURRENT paid date.
+
+    Only ``loan_interest``-kind legs are summed, so escrow and payoff-refund legs
+    (neither a Schedule A mortgage-interest deduction) never leak in.
+
+    Returns ``None`` when the loan has no OPENING posting in the scenario (an
+    unconfigured / un-backfilled loan, or a what-if the opening was never posted
+    into -- :func:`_has_opening_posting`), so the caller falls back to the
+    schedule rather than reporting a misleading ``$0``.  A configured loan with
+    no confirmed interest in *year* returns ``Decimal("0.00")``.
+
+    Reads only -- no writes, no commit.
+
+    Args:
+        loan_account_id: The loan account whose paid interest to sum.
+        scenario_id: The budget scenario to scope to (postings are
+            scenario-scoped via ``journal_entries.scenario_id``).
+        year: The calendar year to sum interest paid within.
+
+    Returns:
+        The actual interest paid during *year* as a cent-quantized ``Decimal``,
+        or ``None`` when the loan has no opening posting in the scenario.
+
+    Raises:
+        PostingError: If the loan account has no linked ledger account (from
+            :func:`._ledger_account_for`).
+    """
+    linked = _ledger_account_for(loan_account_id)
+    if not _has_opening_posting(linked.id, scenario_id):
+        return None
+    interest_kind_id = ref_cache.ledger_account_kind_id(
+        LedgerAccountKindEnum.LOAN_INTEREST
+    )
+    # Each payment shadow's NET interest across every ``loan_interest`` leg it
+    # carries -- the original split plus any true-up / rate re-split delta or
+    # reversal -- keyed by the shadow, in one grouped load.  A reverted payment's
+    # legs net to zero here, so no payment-status filter is needed: it simply
+    # contributes nothing.  A HARD-deleted payment's legs carry a NULL
+    # ``transaction_id`` (``journal_entries.transaction_id`` is ``ON DELETE SET
+    # NULL``) after its correction was already reversed to zero
+    # (:func:`._payments.reverse_loan_payment_postings_for_shadow` runs before the
+    # delete); the ``isnot(None)`` filter drops that dead group explicitly -- a
+    # deleted payment is not a deduction -- rather than leaning on the shadow load
+    # to silently skip a ``None`` key.
+    net_by_shadow = dict(
+        db.session.query(
+            JournalEntry.transaction_id, db.func.sum(Posting.amount),
+        )
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
+        .filter(
+            LedgerAccount.loan_account_id == loan_account_id,
+            LedgerAccount.kind_id == interest_kind_id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.transaction_id.isnot(None),
+        )
+        .group_by(JournalEntry.transaction_id)
+        .all()
+    )
+    if not net_by_shadow:
+        return _ZERO_MONEY
+    # Attribute each payment's net interest to its CURRENT civil paid date's year
+    # (the tax-correct basis; see the docstring), reading ``paid_at`` and the
+    # pay-period start back from the shadow so a since-cleared ``paid_at`` falls
+    # back exactly as the entry dating did (:func:`_civil_settle_date`).
+    shadows = (
+        db.session.query(Transaction)
+        .options(joinedload(Transaction.pay_period))
+        .filter(Transaction.id.in_(net_by_shadow.keys()))
+        .all()
+    )
+    total = _ZERO_MONEY
+    for shadow in shadows:
+        paid_date = _civil_settle_date(shadow.paid_at, shadow.pay_period)
+        if paid_date.year == year:
+            total += net_by_shadow[shadow.id]
+    return round_money(total)

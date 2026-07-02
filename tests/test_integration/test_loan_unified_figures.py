@@ -303,9 +303,12 @@ def test_total_interest_one_definition(
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
             [account], seed_user["scenario"].id,
         )
+        # This loan has no genesis opening posting (LoanParams added directly,
+        # no create_params chokepoint), so the hybrid falls back to the full
+        # schedule -- byte-identical to the labeled resolver subset below.
         calendar_year_interest = (
             year_end_summary_service._income_tax._compute_mortgage_interest(
-                2026, debt_schedules,
+                2026, debt_schedules, seed_user["scenario"].id,
             )
         )
 

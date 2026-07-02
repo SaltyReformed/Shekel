@@ -111,7 +111,9 @@ def _build_summary(
     income_tax = _compute_income_tax(
         user_id, year, ctx["year_periods"], ctx["salary_profiles"],
     )
-    mortgage_interest = _compute_mortgage_interest(year, debt_schedules)
+    mortgage_interest = _compute_mortgage_interest(
+        year, debt_schedules, scenario.id,
+    )
     income_tax["mortgage_interest_total"] = mortgage_interest
 
     return {

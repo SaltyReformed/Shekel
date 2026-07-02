@@ -462,6 +462,61 @@ migration (pure reader consumer) -> no template rebuild. Files: `account_project
 `test_net_worth_kernel.py`, `test_cross_page_balance_equality.py`, and `conftest.py` (the off-schedule
 fixture docstring). `balance_at.py` UNCHANGED (scalar -> C11).
 
+## As-built: Commit 10 (2026-07-02, green on `dev`, NOT yet committed)
+
+C10 is the **tax-interest hybrid**. `_compute_mortgage_interest` now returns, per loan
+(`_loan_year_interest`), the ledger-ACTUAL interest of confirmed payments PLUS the schedule-PROJECTED
+interest of the year's not-yet-confirmed rows -- replacing the old "sum every schedule row by
+`payment_date.year`", which used the schedule's REPLAYED interest even for off-schedule payments (the
+replay advances by the contractual `period_pi`, so it never reflects an extra/short payment's real
+split; `rate_period_engine.py:598`). A loan with no genesis opening posting falls back to the full
+schedule -- byte-identical to pre-C10 (the existing non-genesis mortgage tests pass unchanged).
+
+**DESIGN CHANGE vs Section 3.6 (developer-ratified this session via AskUserQuestion + a worked
+example): attribute ledger interest by each payment's CURRENT civil paid date, NOT by the posting's
+`entry_date`.** Section 3.6's `Sigma(ledger INTEREST postings with entry_date in year)` is WRONG across
+a year boundary: reverting a payment CLEARS `paid_at` (`transfer_service.py:478`), so its reversal leg
+is dated at `pay_period.start_date` (the `_civil_settle_date` NULL fallback), which can land in a
+DIFFERENT year than the original interest leg -- stranding a spurious +/- interest and mis-stating BOTH
+Schedule A years. The new reader `confirmed_loan_interest_in_year` GROUPS the loan's `loan_interest`
+legs by their payment shadow (`journal_entries.transaction_id`) and attributes each payment's NET
+interest to `_civil_settle_date(shadow.paid_at, shadow.pay_period)`, so a reverted payment (net zero)
+drops out of every year cleanly, and a re-settle / edited-paid-date reports its net at its current paid
+date. For on-schedule payments this equals the entry-date sum, so no common-case number moves. Only
+`LOAN_INTEREST`-kind legs are summed (escrow / refund excluded); `None` when no OPENING posting.
+
+**Key traced facts.** (1) `LOAN_INTEREST` legs are written ONLY by `_reconcile_loan_payment`
+(`_payments.py:254`, `transaction_id=shadow.id`); a HARD-deleted payment's legs are `ON DELETE SET
+NULL` after being reversed-to-zero pre-delete, so the reader's explicit `transaction_id IS NOT NULL`
+filter (code-reviewer L1) drops that dead group by intent, not incidentally. (2) The resolver projects
+from the LAST CONFIRMED payment forward (NOT from today), so a year always carries projected rows
+unless fully settled -- "past year all ledger" is the projected=0 special case (the paid-in-2025
+integration test, whose loan has no 2025 schedule rows). (3) The confirmed/projected partition is exact
+and non-overlapping: a settled payment is only in the ledger (its schedule row is `is_confirmed=True`,
+excluded from the projected sum, or absent when pre-anchor); a non-settled payment is only in
+schedule-projected (no ledger leg).
+
+**Tests.** `TestConfirmedLoanInterestReader` (8 unit: on-schedule, running sum, paid-date attribution,
+cross-year revert nets to zero [the headline -- non-vacuity PROVEN by swapping the reader to a naive
+by-entry-date sum, which fails ONLY this test], hard-deleted payment not deducted, None sentinel,
+scenario isolation, escrow excluded) + `TestMortgageInterestGenesisHybrid` (2 integration: current-year
+ledger+projected with an explicit new!=old divergence; paid-in-2025 all-ledger year). Existing
+`TestIncomeAndTax` mortgage cases (non-genesis) unchanged.
+
+**Adversarial `code-reviewer`: NO Critical/High/Medium** (it re-derived the partition completeness, the
+IDOR-clean caller chain, the sign, and the non-vacuity from source). 2 LOW, both fixed: L1 (the
+"never NULL" comment was wrong -- `transaction_id` is SET NULL on hard delete -> added the explicit
+`isnot(None)` filter + accurate comment + the hard-delete test); L2 (a tautological test assertion ->
+removed).
+
+**Gates:** full suite **6827** (baseline 6817 + 10). `pylint app/ scripts/` 10.00 all `--fail-on`. NO
+migration -> no template rebuild. Files: `loan_posting_service/_reader.py`
+(`confirmed_loan_interest_in_year`), `loan_posting_service/__init__.py` (re-export + `._reader`
+docstring), `year_end_summary_service/_income_tax.py` (`_compute_mortgage_interest` +
+`_loan_year_interest`, `scenario_id` threaded), `_orchestrator.py` (passes `scenario.id`), and the
+three test files (`test_loan_posting_service.py`, `test_year_end_summary_service.py`,
+`test_loan_unified_figures.py` [the one direct-call signature caller]).
+
 ---
 
 ## 1. What changed from the anchor-based draft, and why

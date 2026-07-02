@@ -27,7 +27,7 @@ All money is ``Decimal`` from strings.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -1812,3 +1812,290 @@ class TestConfirmedLoanBalanceReaderFuturePeriods:
                 loan_posting_service.confirmed_loan_balance_at(
                     loan.id, scenario_id, seed_periods[4].start_date,
                 )
+
+
+def _paid_on(year: int, month: int, day: int) -> datetime:
+    """Return a noon-UTC settle instant, so its civil date is unambiguous."""
+    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+
+
+class TestConfirmedLoanInterestReader:
+    """The reader reports a loan's ACTUAL interest paid in a year, by paid date.
+
+    ``confirmed_loan_interest_in_year`` sums the per-loan ``loan_interest``
+    legs -- the same $500.00-on-$100,000 splits the split tests above prove --
+    and attributes each payment's NET interest to its CURRENT civil paid date,
+    so a reverted payment nets to zero rather than stranding across a year
+    boundary.  Every payment is settled with an EXPLICIT ``paid_at`` so the
+    attribution year is deterministic (not wall-clock dependent).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _frozen_today(self, monkeypatch):
+        """Freeze today after the seed window so the settle walk is stable.
+
+        The settle wiring walks confirmed payments with pay-period start
+        ``<= date.today()``; 2027-01-01 sits after the Jan-May 2026 seed periods,
+        so every settled payment is confirmed regardless of the wall clock.  The
+        interest reader itself takes a YEAR (no ``as_of <= today`` guard), so the
+        attribution comes solely from each payment's explicit ``paid_at``.
+        """
+        freeze_today(monkeypatch, _FROZEN_TODAY)
+
+    def test_single_payment_interest_by_paid_year(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One $1,000 payment paid in 2026 reports $500.00 interest for 2026 only.
+
+        Trued up to $100,000, one post-anchor $1,000 payment accrues interest
+        round(100000 * 0.005) = 500.00.  Paid 2026-03-15, so 2026 sees the full
+        500.00 and the adjacent years see nothing.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 3, 15),
+            )
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("500.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("0.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2027,
+            ) == Decimal("0.00")
+
+    def test_running_interest_across_payments(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Three 2026 payments sum their real interest: 500 + 497.50 + 494.99.
+
+        The running-balance walk accrues on the shrinking real balance
+        (100000 -> 99500 -> 98997.50): interest 500.00 / 497.50 / 494.99, so the
+        year's paid interest is 1492.49 -- the ACTUAL figure, from the ledger.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            for period in (
+                seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
+            ):
+                create_settled_transfer(
+                    seed_user, db.session, seed_user["account"], loan, period,
+                    amount=Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
+                )
+            db.session.commit()
+
+            # 500.00 + 497.50 + 494.99 = 1492.49.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("1492.49")
+
+    def test_interest_follows_the_paid_date_not_the_pay_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A 2026-period payment PAID in 2025 reports its interest in 2025.
+
+        Mortgage interest is deductible in the year PAID, not the year the
+        payment was scheduled.  A period-``_P1`` payment (a 2026 pay period)
+        settled with ``paid_at`` 2025-12-20 attributes its 500.00 interest to
+        2025, and 2026 sees nothing -- proving the reader keys on the civil paid
+        date, not the pay period.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2025, 12, 20),
+            )
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("500.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("0.00")
+
+    def test_reverted_payment_nets_to_zero_across_the_year_boundary(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment reverted across a year boundary strands NO interest.
+
+        The headline of the by-paid-date design.  A ``_P1`` payment (a 2026 pay
+        period) is settled with ``paid_at`` 2025-12-20, so its 500.00 interest
+        first lands in 2025.  Reverting it clears ``paid_at``, so the reversal
+        leg is dated at the pay-period START (2026) -- a DIFFERENT year than the
+        original.  Because the reader groups the legs by their payment and
+        attributes the NET (here zero), the payment drops out of BOTH years,
+        instead of the +500 / -500 that summing each leg by its own entry date
+        would strand.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2025, 12, 20),
+            )
+            db.session.commit()
+            # Pre-revert: the 500.00 is attributed to the 2025 paid date.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("500.00")
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            # Post-revert: the payment's net interest is zero -- it strands
+            # nothing in EITHER year (the reversal at the 2026 period start does
+            # not leave a spurious -500 in 2026, nor the +500 in 2025).
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("0.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("0.00")
+
+    def test_unconfigured_loan_returns_none(
+        self, app, db, seed_user,
+    ):
+        """A loan with no OPENING posting reads None, so the caller falls back.
+
+        ``create_loan_account`` alone posts no genesis opening (the sync is not
+        run), so the loan is unconfigured in the ledger: the reader returns
+        ``None`` (route to the schedule), never a misleading $0.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
+                rate=_RATE, origination_date=_ORIGINATION_DATE,
+            )
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) is None
+
+    def test_interest_is_scenario_scoped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each scenario reports only its own paid interest, never the other's.
+
+        The baseline settles TWO payments (interest 500.00 + 497.50 = 997.50); a
+        what-if settles ONE (interest 500.00).  Each scenario's reader returns
+        only its own total -- a leak would sum them (1497.50) -- so the genesis
+        interest read is scenario-scoped.
+        """
+        with app.app_context():
+            baseline = seed_user["scenario"]
+            whatif = Scenario(
+                user_id=seed_user["user"].id, name="What-if", is_baseline=False,
+            )
+            db.session.add(whatif)
+            db.session.commit()
+
+            loan = _make_loan(seed_user)
+            for period in (seed_periods[_P1], seed_periods[_P2]):
+                create_settled_transfer(
+                    seed_user, db.session, seed_user["account"], loan, period,
+                    amount=Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
+                )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 6, 1), scenario=whatif,
+            )
+            db.session.commit()
+
+            # 500.00 + 497.50 = 997.50 in the baseline; 500.00 in the what-if.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, baseline.id, 2026,
+            ) == Decimal("997.50")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, whatif.id, 2026,
+            ) == Decimal("500.00")
+
+    def test_escrow_is_excluded(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Only ``loan_interest`` legs count; escrow is not deductible interest.
+
+        A $1,200/yr ($100/mo) escrow loan settles a $1,000 payment: the split is
+        interest 500.00, escrow 100.00, principal 400.00.  The reader reports the
+        500.00 interest ONLY -- the $100.00 escrow (posted to its own ledger) is
+        excluded, so the figure is not the 600.00 an all-per-loan-legs sum gives.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user, escrow_annual=Decimal("1200.00"))
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 3, 15),
+            )
+            db.session.commit()
+
+            # Escrow WAS posted (proving the exclusion is real, not vacuous).
+            escrow_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_ESCROW,
+            )
+            assert _ledger_net(escrow_ledger.id, scenario_id) == Decimal("100.00")
+            # ...but only the 500.00 interest is reported.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("500.00")
+
+    def test_hard_deleted_payment_is_not_deducted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A hard-deleted payment contributes no interest (its legs are SET NULL).
+
+        Settling P1 ($1,000, interest 500.00) then P2 ($1,000, interest 497.50 on
+        the 99,500 balance) totals 997.50.  HARD-deleting P2 reverses its
+        correction to zero BEFORE the delete SET-NULLs the entry's
+        ``transaction_id``; the reader's ``transaction_id IS NOT NULL`` filter
+        drops the dead legs, leaving only P1's surviving 500.00 -- a deleted
+        payment is not a deduction.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 3, 15),
+            )
+            deleted = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P2], amount=Decimal("1000.00"),
+                paid_at=_paid_on(2026, 4, 15),
+            )
+            db.session.commit()
+            # Both count before the delete: 500.00 + 497.50 = 997.50.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("997.50")
+
+            transfer_service.delete_transfer(
+                deleted.id, seed_user["user"].id, soft=False,
+            )
+            db.session.commit()
+
+            # Only the surviving P1's 500.00 remains.
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("500.00")
