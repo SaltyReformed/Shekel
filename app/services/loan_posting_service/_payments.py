@@ -397,15 +397,16 @@ def sync_loan_payment_postings(
 
     Idempotent and self-healing: a re-run with no change writes nothing, and a
     missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
-    (never Checking).  Reads ``as_of`` as the upper bound on which payments are
-    historical; the go-forward wiring passes ``date.today()``.  Flushes but does
-    not commit (the caller owns the transaction).
+    (never Checking).  ``as_of`` bounds the walk's ANCHORS only; every settled
+    payment splits, whatever its pay period (settlement is the confirming
+    event -- see :func:`.._walk._settled_income_shadows`).  The go-forward
+    wiring passes ``date.today()``.  Flushes but does not commit (the caller
+    owns the transaction).
 
     Args:
         loan_account_id: The loan whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date (a payment whose pay period has not begun by
-            it is a projection, excluded from the confirmed set).
+        as_of: The walk's anchor boundary (anchors after it do not reset).
     """
     reconcile_loan_payment_splits(
         loan_account_id, scenario_id,

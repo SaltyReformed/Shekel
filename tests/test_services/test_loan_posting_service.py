@@ -916,6 +916,83 @@ class TestSyncLoanPaymentPostings:
             assert result is None
             assert len(_correction_entries(shadow.id)) == entries_before
 
+    def test_early_settled_payment_splits_at_settle(
+        self, app, db, monkeypatch, seed_user, seed_periods,
+    ):
+        """A payment settled before its period begins posts its split immediately.
+
+        Settlement is the confirming event (the 2026-07-02 adversarial review's
+        R1, fixing H2): the Step-2 cash entry posts the moment a payment
+        settles, so the split correction must post in the SAME moment or the
+        loan-linked ledger holds raw cash with no interest backout from the
+        payment's period start until the next loan write.  Both entries carry
+        the payment's OWN pay period, so the readers' period bound still keeps
+        the early payment out of every balance displayed before its period
+        begins.
+
+        Frozen today 2026-02-10: the P1 payment's period has begun, the P3
+        payment's (due 04-01) has not.  Arithmetic: P1 splits interest
+        100000 * 0.005 = 500.00 -> balance 99500; the early P3 payment splits
+        NEXT on that running balance -- interest round(99500 * 0.005) = 497.50,
+        principal 1000 - 497.50 = 502.50 -> balance 98997.50.  So:
+
+        * the P3 correction exists AT SETTLE (no manual sync), legs
+          Loan -497.50 / Interest +497.50, attributed to P3's period;
+        * the scalar reader at today still reads 99500.00 (period not begun);
+        * the map at P3's period reads the REAL 98997.50 -- NOT the raw-cash
+          98500.00 (= 99500 - 1000) the pre-fix ledger showed (H2's
+          demonstrated mis-statement, the assertion that fails on the old
+          code).
+        """
+        with app.app_context():
+            frozen = date(2026, 2, 10)
+            freeze_today(monkeypatch, frozen)
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            _, early_shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+            )
+            db.session.commit()
+            # The premise: P1's period has begun by the frozen today, P3's has
+            # not (its due 04-01 payment is an EARLY settle).
+            assert seed_periods[_P1].start_date <= frozen
+            assert seed_periods[_P3].start_date > frozen
+
+            # The correction posted at settle, through the transfer wiring --
+            # no manual sync call -- attributed to the payment's own period.
+            entries = _correction_entries(early_shadow.id)
+            assert len(entries) == 1
+            assert entries[0].pay_period_id == seed_periods[_P3].id
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            legs = _entry_legs(entries[0].id)
+            assert legs[_linked_ledger_id(loan)] == (
+                Decimal("-497.50"),
+                ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+            )
+            assert legs[interest_ledger.id] == (
+                Decimal("497.50"),
+                ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
+            )
+
+            # Display is untouched today: the scalar excludes the not-yet-begun
+            # period (100000 - 500 = 99500.00, the P1-only balance).
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, frozen,
+            ) == Decimal("99500.00")
+
+            # At P3's period the map shows the REAL principal drop: 99500 -
+            # 502.50 = 98997.50 -- never the raw cash 99500 - 1000 = 98500.00
+            # the unsplit ledger showed (H2).
+            balance_map = loan_posting_service.confirmed_loan_balance_map(
+                loan.id, scenario_id, seed_periods,
+            )
+            assert balance_map[seed_periods[_P3].id] == Decimal("98997.50")
+
 
 # ---------------------------------------------------------------------------
 # reverse + stale-correction reversal

@@ -394,32 +394,6 @@ def _independent_settled_income_cash(
     )
 
 
-def _settled_income_shadows_after(
-    loan_account_id: int, scenario_id: int, as_of: date
-) -> int:
-    """Count a loan's settled income shadows whose pay period begins after as_of.
-
-    A future-dated settled payment is a projection the confirmed ledger must not
-    silently absorb (plan 8.3 / the read switch); the completeness sweep asserts
-    this is zero so such a row is flagged, not passed over.
-    """
-    return (
-        _db.session.query(Transaction.id)
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-        .filter(
-            Transaction.account_id == loan_account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id
-            == ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
-            PayPeriod.start_date > as_of,
-        )
-        .count()
-    )
-
-
 def _trial_balance() -> Decimal:
     """Return ``SUM(account_postings.amount)`` over the whole ledger."""
     return (
@@ -557,14 +531,17 @@ def _reader_period_map(
 def _assert_completeness(
     loan_account_id: int, scenario_id: int, as_of: date
 ) -> None:
-    """Assert every eligible confirmed payment that owes a correction has one.
+    """Assert every settled payment that owes a correction has one.
 
-    Plan 8.3: for each eligible confirmed payment (the split walk's output), a
-    non-zero non-principal part (interest + escrow + excess) means the loan's cash
-    is partly non-principal, so a correction MUST exist; an all-principal payment
-    (a zero-rate, no-escrow, no-overpay payment) legitimately carries none.  Also
-    asserts no settled payment is future-dated (a read-switch concern), so such a
-    row is flagged rather than silently excluded.
+    Plan 8.3: for each settled payment (the split walk's output -- since the R1
+    split-at-settlement fix that is EVERY settled payment, including one whose
+    pay period has not yet begun), a non-zero non-principal part (interest +
+    escrow + excess) means the loan's cash is partly non-principal, so a
+    correction MUST exist; an all-principal payment (a zero-rate, no-escrow,
+    no-overpay payment) legitimately carries none.  The pre-R1 "future-dated
+    settled payment is flagged, not covered" sentinel is retired: settlement is
+    now the confirming event, so an early-settled payment is inside this
+    guarantee, not outside it.
     """
     splits = loan_posting_service.compute_loan_payment_splits(
         loan_account_id, scenario_id, as_of,
@@ -574,16 +551,10 @@ def _assert_completeness(
         entries = loan_correction_entries(_db.session, split.income_shadow.id)
         if non_principal != Decimal("0"):
             assert entries, (
-                f"eligible payment shadow {split.income_shadow.id} has non-"
+                f"settled payment shadow {split.income_shadow.id} has non-"
                 f"principal {non_principal} but no correction -- an uncorrected "
                 f"Step-2 cash entry"
             )
-    assert _settled_income_shadows_after(
-        loan_account_id, scenario_id, as_of,
-    ) == 0, (
-        "a settled loan payment is future-dated -- the confirmed completeness "
-        "guarantee does not cover it (a read-switch concern)"
-    )
 
 
 def _assert_loan_reconciles(
@@ -1441,6 +1412,75 @@ class TestReaderParallelRunAgainstResolver:
                 balance_map[seed_periods[9].id]
                 == balance_map[seed_periods[_P2].id]
             )
+
+    def test_early_settled_payment_keeps_the_parallel_run_exact(
+        self, app, db, monkeypatch, seed_user, seed_periods,
+    ):
+        """A payment settled before its period begins never desyncs the ledger.
+
+        The R1 regression lock for the 2026-07-02 review's H2 ("early settle,
+        then time passes"): with today re-frozen MID-window (2026-02-10), the
+        P3 payment (due 04-01) settles EARLY.  Its Step-2 cash entry posts at
+        settle -- and since R1 its split correction posts in the SAME moment --
+        so when its period later begins, the linked ledger nets to the REAL
+        principal, not the raw cash.  Pinned via the independent resolver: the
+        map equals the un-seeded replay at EVERY period start, through the
+        early-settled period and the carried-flat tail (on-schedule cash, so
+        the two producers must agree to the penny).  On the pre-R1 ledger the
+        map read LOW by the payment's full interest from P3's period start
+        until the next loan write -- exactly what this parallel run catches.
+
+        Today's displays stay untouched: the scalar reader at the frozen today
+        equals the resolver at today (both exclude the not-yet-begun period).
+        The full reconciliation sweep runs last -- completeness now covers the
+        early-settled payment (its correction must exist at settle).
+        """
+        with app.app_context():
+            frozen = date(2026, 2, 10)
+            freeze_today(monkeypatch, frozen)
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            monthly_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, frozen,
+            )[1].monthly_payment
+
+            _settle(seed_user, loan, seed_periods[_P1], amount=monthly_pi)
+            _settle(seed_user, loan, seed_periods[_P3], amount=monthly_pi)
+            db.session.commit()
+            # The premise: P1's period has begun by the frozen today; P3's has
+            # not -- an EARLY settle.
+            assert seed_periods[_P1].start_date <= frozen
+            assert seed_periods[_P3].start_date > frozen
+
+            # The parallel run holds at EVERY period start -- including P3's
+            # period and the tail after it, where the pre-R1 ledger carried the
+            # raw cash (no interest backout) and this assertion fails.
+            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            for period in seed_periods:
+                resolver_at_start = _resolver_balance(
+                    loan.id, scenario_id, period.start_date,
+                )
+                assert balance_map[period.id] == resolver_at_start, (
+                    f"period {period.period_index} (start {period.start_date}):"
+                    f" map {balance_map[period.id]} != resolver "
+                    f"{resolver_at_start}"
+                )
+            # Non-vacuity: the early-settled period genuinely steps the balance
+            # down (the map is not trivially flat past P1).
+            assert (
+                balance_map[seed_periods[_P3].id]
+                < balance_map[seed_periods[_P1].id]
+            )
+
+            # Today's scalar is untouched by the early settle: reader ==
+            # resolver at the frozen today (both exclude the unbegun period).
+            assert _reader_balance(
+                loan.id, scenario_id, frozen,
+            ) == _resolver_balance(loan.id, scenario_id, frozen)
+
+            # The sweep: identities, per-entry balance, trial balance, and the
+            # completeness guarantee that now covers the early settle.
+            _assert_loan_reconciles(loan, scenario_id, frozen)
 
     def test_scalar_reader_diverges_by_the_exact_principal_delta_off_schedule(
         self, app, db, seed_user, seed_periods,

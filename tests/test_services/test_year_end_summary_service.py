@@ -936,6 +936,86 @@ class TestMortgageInterestGenesisHybrid:
                 2025, debt_schedules, scenario_id,
             ) == Decimal("500.00")
 
+    def test_early_settled_payment_is_counted_exactly_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """An early-settled payment's due slot leaves the projected term.
+
+        A payment settled BEFORE its pay period begins posts its actual
+        interest at settle (the R1 split-at-settlement rule), attributed to
+        its paid year -- but the schedule replay bounds confirmed payments by
+        "period has begun", so the same due slot's row stays
+        ``is_confirmed=False``.  Counting that row in the projected term would
+        double-count the slot; the partition rule is "a slot is projected iff
+        no settled payment occupies it"
+        (``loan_loaders.load_settled_payment_due_months``).
+
+        Frozen 2026-02-10: P1 (due 02-01, begun) and P3 (due 04-01, EARLY)
+        both settle.  Ledger interest = P1 500.00 (100000 * 0.005) + P3 497.50
+        (round(99500 * 0.005)) = 997.50, both paid 2026.  The hybrid must be
+        ledger + projected-minus-the-April-slot; the pre-fix hybrid (ledger +
+        every not-confirmed 2026 row) reads HIGHER by exactly the April row's
+        interest -- the double count this test kills.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 2, 10))
+            scenario_id = seed_user["scenario"].id
+            (orig_principal, orig_date, rate, anchor_balance,
+             anchor_date, p1, _p2, p3) = SPLIT_LOAN
+            loan = create_loan_with_trueup(
+                seed_user, db.session, origination_principal=orig_principal,
+                anchor_balance=anchor_balance, anchor_date=anchor_date,
+                rate=rate, origination_date=orig_date,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 5),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p3], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 10),
+            )
+            db.session.commit()
+            # The premise: P3's period has not begun by the frozen today (an
+            # EARLY settle), so its schedule row is not replay-confirmed.
+            assert seed_periods[p3].start_date > date(2026, 2, 10)
+
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            debt = debt_schedules[loan.id]
+            ledger_confirmed = confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            )
+            # P1 500.00 + early P3 497.50, both paid (and deductible) in 2026.
+            assert ledger_confirmed == Decimal("997.50")
+
+            # The April due slot still projects a not-confirmed row (the
+            # replay's period-begun bound cannot see the early settle) ...
+            april_rows = [
+                row for row in debt.schedule
+                if not row.is_confirmed
+                and (row.payment_date.year, row.payment_date.month) == (2026, 4)
+            ]
+            assert len(april_rows) == 1
+            assert april_rows[0].interest > Decimal("0.00")
+            naive_projected = sum(
+                (
+                    row.interest for row in debt.schedule
+                    if not row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+
+            # ... but the hybrid excludes it: ledger + projected WITHOUT the
+            # settled April slot.  The pre-fix hybrid (ledger + every
+            # not-confirmed row) reads higher by exactly that row's interest.
+            hybrid = _compute_mortgage_interest(2026, debt_schedules, scenario_id)
+            assert hybrid == (
+                ledger_confirmed + naive_projected - april_rows[0].interest
+            )
+            assert hybrid < ledger_confirmed + naive_projected
+
 
 # ── Spending by Category Tests ────────────────────────────────────
 
