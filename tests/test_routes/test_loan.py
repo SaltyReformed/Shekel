@@ -8,6 +8,7 @@ rate history, and payoff calculator across multiple loan types.
 import re
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -4804,6 +4805,90 @@ class TestRefinanceCalculator:
         assert "$186,513.24" in html
         # Interest savings.
         assert "$68,572.58" in html
+
+
+class TestRefinanceForwardOnlyBaseline:
+    """The refinance comparison measures the CURRENT loan forward-only.
+
+    The refinance side is inherently forward-only (a brand-new loan from
+    today), so the current side must be too: "Remaining Term" counts the
+    payments still ahead and "Total Interest" the interest still to be
+    paid.  Before this rule the builder used whole-schedule aggregates
+    (``len(state.schedule)`` / ``state.total_interest``), which counted
+    sunk history months and sunk interest against the from-today
+    refinance -- and the history read switch made the confirmed slice the
+    loan's FULL recorded history, inflating both on exactly the trued-up
+    loans the arc targets.
+    """
+
+    def test_confirmed_rows_are_excluded_from_the_current_baseline(self):
+        """History rows never inflate remaining term or remaining interest.
+
+        A synthetic state with 2 CONFIRMED rows (interest 500.00 + 497.50,
+        sunk) and 2 FORWARD rows (interest 400.00 + 300.00, still owed):
+        the comparison's current side must read 2 remaining months and
+        700.00 remaining interest -- NOT the whole-schedule 4 months /
+        1,697.50 -- and both the term delta and the interest savings must
+        derive from the forward-only figures (savings = 700.00 minus the
+        refi's own projected interest; term_diff = 12 - 2).
+        """
+        # Pylint: ``import-outside-toplevel`` -- route-private helper under
+        # test; imported here so the module import stays route-surface only.
+        from app.routes.loan.calculators import (  # pylint: disable=import-outside-toplevel
+            _build_refinance_comparison,
+        )
+        from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+            AmortizationRow,
+        )
+        from app.services.loan_resolver import LoanState  # pylint: disable=import-outside-toplevel
+
+        def _row(month, day, interest, balance, confirmed):
+            return AmortizationRow(
+                month=month, payment_date=date(2026, month, day),
+                payment=Decimal("1000.00"), principal=Decimal("500.00"),
+                interest=interest, extra_payment=Decimal("0.00"),
+                remaining_balance=balance, is_confirmed=confirmed,
+                interest_rate=Decimal("0.06"),
+            )
+
+        schedule = [
+            _row(1, 1, Decimal("500.00"), Decimal("99500.00"), True),
+            _row(2, 1, Decimal("497.50"), Decimal("99000.00"), True),
+            _row(3, 1, Decimal("400.00"), Decimal("98500.00"), False),
+            _row(4, 1, Decimal("300.00"), Decimal("98000.00"), False),
+        ]
+        state = LoanState(
+            current_balance=Decimal("99000.00"),
+            monthly_payment=Decimal("1000.00"),
+            current_rate=Decimal("0.06"),
+            schedule=schedule,
+            payoff_date=date(2026, 4, 1),
+            # Whole-schedule sum (500 + 497.50 + 400 + 300) -- the figure
+            # the current side must NOT read.
+            total_interest=Decimal("1697.50"),
+        )
+        params = SimpleNamespace(payment_day=1)
+        data = {
+            "closing_costs": Decimal("0.00"),
+            "new_principal": None,
+            "new_term_months": 12,
+            "new_rate": Decimal("0.05"),
+        }
+
+        comparison = _build_refinance_comparison(state, data, params)
+
+        # Forward-only: 2 remaining months, 400 + 300 = 700.00 remaining
+        # interest; savings and term delta derive from the same figures.
+        assert comparison["current_remaining_months"] == 2
+        assert comparison["current_total_interest"] == Decimal("700.00")
+        assert comparison["term_diff"] == 10
+        assert comparison["interest_savings"] == (
+            Decimal("700.00") - comparison["refi_total_interest"]
+        )
+        # Non-vacuity: the whole-schedule aggregates differ, so the
+        # forward-only rule is doing real work here.
+        assert comparison["current_remaining_months"] != len(state.schedule)
+        assert comparison["current_total_interest"] != state.total_interest
 
 
 class TestRefinanceAndPayoffByDateProjectForwardMigration:

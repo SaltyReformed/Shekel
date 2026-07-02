@@ -378,6 +378,16 @@ def _build_refinance_comparison(state, data, params):
     are pre-computed server-side (MED-04 / E-16) so the template renders
     without inline arithmetic.
 
+    The current side is measured FORWARD-ONLY -- the non-confirmed slice
+    of ``state.schedule`` -- because the refinance side is inherently
+    forward-only (a brand-new loan from today): "Remaining Term" is the
+    count of payments still ahead, and "Total Interest" the interest
+    still to be paid.  Counting confirmed history rows here would weigh
+    sunk months / sunk interest against a from-today refinance -- already
+    skewed when the schedule carried post-anchor history, and badly so
+    once the history read switch made the confirmed slice the loan's
+    FULL recorded history.
+
     Args:
         state: Resolver :class:`LoanState` for the current loan.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
@@ -400,15 +410,22 @@ def _build_refinance_comparison(state, data, params):
         refi_principal, data["new_rate"], refi_term, params.payment_day,
     )
 
+    # Forward-only baseline: what is still AHEAD on the current loan (the
+    # like-for-like basis against a from-today refinance; see the docstring).
+    forward_rows = [row for row in state.schedule if not row.is_confirmed]
+    current_remaining_interest = round_money(sum(
+        (row.interest for row in forward_rows), Decimal("0.00"),
+    ))
+
     monthly_savings = state.monthly_payment - refi_monthly
     break_even_months = _refinance_break_even(closing_costs, monthly_savings)
     principal_diff = refi_principal - current_real_principal
 
     return {
         "current_monthly": state.monthly_payment,
-        "current_total_interest": state.total_interest,
+        "current_total_interest": current_remaining_interest,
         "current_payoff": state.payoff_date,
-        "current_remaining_months": len(state.schedule),
+        "current_remaining_months": len(forward_rows),
         "current_principal": current_real_principal,
         "refi_monthly": refi_monthly,
         "refi_total_interest": refi_total_interest,
@@ -417,10 +434,10 @@ def _build_refinance_comparison(state, data, params):
         # Term delta (new term minus current remaining), pre-computed
         # server-side so the template renders without inline arithmetic
         # (MED-04 / E-16, same rationale as principal_diff above).
-        "term_diff": refi_term - len(state.schedule),
+        "term_diff": refi_term - len(forward_rows),
         "refi_principal": refi_principal,
         "monthly_savings": monthly_savings,
-        "interest_savings": state.total_interest - refi_total_interest,
+        "interest_savings": current_remaining_interest - refi_total_interest,
         "break_even_months": break_even_months,
         "closing_costs": closing_costs,
         "principal_diff": principal_diff,
