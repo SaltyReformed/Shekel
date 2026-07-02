@@ -1179,6 +1179,116 @@ class TestRevertAndRecategorizeReconciles:
             _assert_full_reconciliation(scenario_id)
 
 
+class TestRevertAndMoveReconciles:
+    """A revert+move PATCH keeps every period's ledger attribution intact."""
+
+    def test_revert_move_resettle_attributes_per_period(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Settle in P, revert+move to F in one PATCH, re-settle; per-period ties.
+
+        The route-level R2 regression (the 2026-07-02 adversarial review's H1
+        class): a Paid $50 expense in period P is reverted to Projected AND
+        moved to a future period F in ONE PATCH (the finalised lock lifts on
+        the revert), then re-settled.  The handler applies the new
+        ``pay_period_id`` BEFORE the end-of-handler reconcile, so a reversal
+        stamped with the row's current period would land in F -- leaving P's
+        entry and its reversal straddling two periods, where truncating F
+        CASCADE-deletes half the pair and permanently strands the other
+        (``transaction_id`` SET NULL, unhealable).  Under the R2 attribution
+        rule the reversal lands in P: P's entries net to zero per ledger
+        account, F carries exactly the re-settled -50/+50, and the whole
+        sweep ties after every step.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            original = seed_periods_today[0]
+            moved_to = seed_periods_today[5]
+            txn = add_txn(
+                db.session, seed_user, original, "Groceries", "50.00",
+                category_key="Groceries",
+            )
+            db.session.commit()
+            txn_id = txn.id
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # Revert AND move in one PATCH (the H1 flow).
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "status_id": str(projected_id),
+                    "pay_period_id": str(moved_to.id),
+                },
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+            # The reversal landed in the ORIGINAL period: P nets to zero per
+            # ledger account, and F holds no entries at all yet.
+            assert _period_ledger_nets(txn_id, original.id) == {}
+            assert not _entry_ids_in_period(txn_id, moved_to.id)
+
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"status_id": str(done_id)},
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # F carries exactly the re-settled split; P still nets to zero.
+            cash_ledger = (
+                _db.session.query(LedgerAccount.id)
+                .filter(LedgerAccount.account_id == seed_user["account"].id)
+                .scalar()
+            )
+            moved_nets = _period_ledger_nets(txn_id, moved_to.id)
+            assert moved_nets[cash_ledger] == Decimal("-50.00")
+            assert sum(moved_nets.values()) == Decimal("0.00")
+            assert _period_ledger_nets(txn_id, original.id) == {}
+
+
+def _period_ledger_nets(transaction_id, pay_period_id):
+    """Return ``{ledger_account_id: net}`` for one transaction in one period.
+
+    Zero nets are dropped, so a period whose entries fully cancel (an
+    original + its reversal) returns ``{}`` -- the R2 attribution tests'
+    "nets to zero per ledger account" shape.  Independent of the service's
+    own per-period reader (a direct grouped query).
+    """
+    rows = (
+        _db.session.query(
+            Posting.ledger_account_id, _db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            JournalEntry.transaction_id == transaction_id,
+            JournalEntry.pay_period_id == pay_period_id,
+        )
+        .group_by(Posting.ledger_account_id)
+        .all()
+    )
+    return {
+        ledger_id: net for ledger_id, net in rows if net != 0
+    }
+
+
+def _entry_ids_in_period(transaction_id, pay_period_id):
+    """Return the journal-entry ids a transaction holds in one period."""
+    return [
+        entry_id for (entry_id,) in (
+            _db.session.query(JournalEntry.id)
+            .filter(
+                JournalEntry.transaction_id == transaction_id,
+                JournalEntry.pay_period_id == pay_period_id,
+            )
+            .all()
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Reverted transaction reconciles at zero (append-only correction discipline)
 # ---------------------------------------------------------------------------

@@ -24,8 +24,14 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import (
+    PostingKindEnum,
+    PostingSourceEnum,
+    StatusEnum,
+)
 from app.exceptions import PayPeriodDiscardRequired, PayPeriodLocked
+from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -34,6 +40,7 @@ from app.services import (
     pay_period_admin,
     pay_period_service,
     period_population,
+    posting_service,
     transfer_service,
 )
 from app.services.pay_period_admin import PeriodLockReason
@@ -61,6 +68,44 @@ def _future_periods(db_session, seed_user, count=6, start=date(2026, 7, 3)):
     )
     db_session.commit()
     return periods
+
+
+def _emit_untethered_entry(db_session, seed_user, savings, period, amount):
+    """Post one balanced entry whose per-account nets are NON-zero in *period*.
+
+    The shape a loan opening / true-up correction has -- balanced across two
+    ledger accounts (Checking ``-amount`` / Savings ``+amount``), each with a
+    non-zero net, linked to NO transaction or transfer -- so the LEDGER_POSTINGS
+    gate is exercised without a settled source row (which would trip the
+    higher-precedence SETTLED_TXN lock instead).  Built directly on the models
+    (tests are unfenced); the deferred balanced-journal trigger accepts it.
+    """
+    ledger_ids = {
+        account_id: ledger_id
+        for ledger_id, account_id in db_session.query(
+            LedgerAccount.id, LedgerAccount.account_id,
+        ).filter(LedgerAccount.account_id.isnot(None)).all()
+    }
+    entry = JournalEntry(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        pay_period_id=period.id,
+        entry_date=period.start_date,
+        source_kind_id=ref_cache.posting_source_id(PostingSourceEnum.TRANSFER),
+        description="Untethered balanced correction",
+    )
+    db_session.add(entry)
+    transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+    entry.postings.append(Posting(
+        ledger_account_id=ledger_ids[seed_user["account"].id],
+        amount=-amount, posting_kind_id=transfer_kind,
+    ))
+    entry.postings.append(Posting(
+        ledger_account_id=ledger_ids[savings.id],
+        amount=amount, posting_kind_id=transfer_kind,
+    ))
+    db_session.flush()
+    return entry
 
 
 def _count_periods(db_session, user_id):
@@ -294,6 +339,100 @@ class TestTruncateHardLocks:
             assert excinfo.value.blocking.get(periods[2].id) == (
                 PeriodLockReason.ACCOUNT_ANCHOR
             )
+
+    def test_unbalanced_ledger_postings_block_and_delete_nothing(
+        self, app, db, seed_user,
+    ):
+        """A period whose postings do not net to zero per ledger is hard-locked.
+
+        The R2 defense-in-depth gate (the 2026-07-02 adversarial review):
+        ``journal_entries.pay_period_id`` is ON DELETE CASCADE and the
+        balanced-journal trigger never fires on DELETE, so truncating a period
+        holding a NON-self-cancelling entry (the shape a loan opening /
+        true-up correction has -- balanced across two ledger accounts, each
+        with a non-zero net) would silently mis-state both accounts.  The
+        entry here is built directly in that shape (no settled transaction,
+        so the pre-existing SETTLED_TXN lock cannot mask the new gate):
+        Checking -100 / Savings +100 in a to-delete period.  Truncate must
+        refuse with LEDGER_POSTINGS and delete nothing.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=4)
+            user_id = seed_user["user"].id
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
+            )
+            db.session.flush()
+            _emit_untethered_entry(
+                db.session, seed_user, savings, periods[2],
+                Decimal("100.00"),
+            )
+            db.session.commit()
+            before = _count_periods(db.session, user_id)
+
+            with pytest.raises(PayPeriodLocked) as excinfo:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_index=periods[1].period_index,
+                )
+
+            assert excinfo.value.blocking.get(periods[2].id) == (
+                PeriodLockReason.LEDGER_POSTINGS
+            )
+            assert _count_periods(db.session, user_id) == before
+            assert db.session.query(JournalEntry).filter_by(
+                pay_period_id=periods[2].id,
+            ).count() == 1
+
+    def test_zero_netting_reversal_pair_does_not_block(
+        self, app, db, seed_user,
+    ):
+        """A period whose entries fully cancel per ledger account may truncate.
+
+        The other half of the R2 gate: after a settle-in-F,
+        revert-and-move-to-P flow, F holds the original entry AND its reversal
+        (the R2 attribution rule keeps the reversal in the period it
+        reverses), netting every ledger account to zero.  Cascading that pair
+        moves no account's sum, so the gate must NOT block -- truncating F
+        succeeds, the moved (now Projected) transaction survives in P, and
+        the whole-ledger trial balance stays zero.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=4)
+            user_id = seed_user["user"].id
+            keep_period = seed_user["bootstrap_period"]
+            txn = add_txn(
+                db.session, seed_user, periods[2], "Early Bill", "100.00",
+                status_enum=StatusEnum.DONE, category_key="Groceries",
+            )
+            db.session.commit()
+            posting_service.sync_transaction_postings(txn, settled=True)
+            db.session.commit()
+
+            # The H1 mirror flow: revert AND move back to the kept period.
+            txn.pay_period_id = keep_period.id
+            txn.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            db.session.flush()
+            posting_service.sync_transaction_postings(txn, settled=False)
+            db.session.commit()
+            # F holds the self-cancelling pair; the source row left it.
+            assert db.session.query(JournalEntry).filter_by(
+                pay_period_id=periods[2].id,
+            ).count() == 2
+
+            deleted = pay_period_admin.truncate_pay_periods(
+                user_id, keep_through_index=periods[1].period_index,
+                confirm_discard=True,
+            )
+
+            assert deleted == 2
+            # The moved transaction survives in the kept period; the cascade
+            # removed the netted pair without moving any account's sum.
+            assert db.session.get(Transaction, txn.id) is not None
+            assert db.session.query(
+                db.func.coalesce(db.func.sum(Posting.amount), Decimal("0")),
+            ).scalar() == Decimal("0")
+            assert_pay_period_invariants(db.session, user_id)
 
     def test_recurrence_anchor_blocks(self, app, db, seed_user):
         """A rule's start period in the window is hard-locked."""

@@ -30,6 +30,7 @@ from app.exceptions import (
 )
 from app.extensions import db
 from app.models.account import Account
+from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
@@ -82,15 +83,16 @@ class PeriodLockReason(enum.Enum):
 
     HISTORICAL = "historical"
     SETTLED_TXN = "settled"
+    LEDGER_POSTINGS = "ledger_postings"
     ACCOUNT_ANCHOR = "account_anchor"
     RECURRENCE_ANCHOR = "recurrence_anchor"
 
 
 def _resolve_lock(
-    *, is_historical: bool, has_settled: bool,
+    *, is_historical: bool, has_settled: bool, has_unbalanced_ledger: bool,
     is_account_anchor: bool, is_recurrence_anchor: bool,
 ) -> PeriodLockReason | None:
-    """Apply the lock-reason precedence to four already-computed booleans.
+    """Apply the lock-reason precedence to five already-computed booleans.
 
     The single source of truth for the ordering, shared by the
     single-period and bulk classifiers so the two query strategies
@@ -101,6 +103,10 @@ def _resolve_lock(
         is_historical: The period has already ended (``end_date`` is
             before the reference date).
         has_settled: The period holds a non-deleted settled transaction.
+        has_unbalanced_ledger: The period's journal entries do NOT net to
+            zero per ledger account -- posted financial state a CASCADE
+            delete would mis-state (see
+            :func:`_period_ids_with_unbalanced_ledger`).
         is_account_anchor: An account's ``current_anchor_period_id``
             points at the period.
         is_recurrence_anchor: A recurrence rule's ``start_period_id``
@@ -114,6 +120,8 @@ def _resolve_lock(
         return PeriodLockReason.HISTORICAL
     if has_settled:
         return PeriodLockReason.SETTLED_TXN
+    if has_unbalanced_ledger:
+        return PeriodLockReason.LEDGER_POSTINGS
     if is_account_anchor:
         return PeriodLockReason.ACCOUNT_ANCHOR
     if is_recurrence_anchor:
@@ -149,7 +157,7 @@ def classify_periods_bulk(
     """Classify many periods with set queries instead of N x 3 scalar ones.
 
     Returns ``{period.id: PeriodLockReason | None}`` identical to calling
-    :func:`classify_period_lock` on each period, but with three set
+    :func:`classify_period_lock` on each period, but with four set
     queries total plus the in-memory date check -- the no-N+1 path the
     truncate operation runs over its to-delete window.
 
@@ -168,6 +176,7 @@ def classify_periods_bulk(
         return {}
 
     settled = _period_ids_with_settled_transaction(period_ids)
+    unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
     anchors = _period_ids_that_are_account_anchors(period_ids)
     rule_anchors = _period_ids_that_are_recurrence_anchors(period_ids)
 
@@ -175,6 +184,7 @@ def classify_periods_bulk(
         period.id: _resolve_lock(
             is_historical=period.end_date < as_of,
             has_settled=period.id in settled,
+            has_unbalanced_ledger=period.id in unbalanced,
             is_account_anchor=period.id in anchors,
             is_recurrence_anchor=period.id in rule_anchors,
         )
@@ -295,14 +305,18 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
         pid: reason for pid, reason in locks.items() if reason is not None
     }
     if blocking:
-        # Build-Order Step 3 note: a period holding settled (posted)
-        # transactions classifies as locked here, so truncate refuses it -- the
-        # same protection reset gets from its zero-settled gate.
+        # Posting-ledger protection, two layers: a period holding settled
+        # (posted) transactions classifies SETTLED_TXN, and a period whose
+        # journal entries do not net to zero per ledger account (a loan
+        # opening / true-up correction, or attribution drift) classifies
+        # LEDGER_POSTINGS -- so truncate refuses both.
         # journal_entries.pay_period_id is ON DELETE CASCADE, so deleting a
-        # posted period would dispose its ledger entries + legs at the DB tier
+        # posted period disposes its ledger entries + legs at the DB tier
         # (outside the ORM, where the balanced-journal trigger never fires on
-        # DELETE).  Whoever relaxes this lock MUST first reverse those
-        # transactions' postings (posting_service.reverse_postings_before_delete).
+        # DELETE); that is safe only for a period whose postings net to zero
+        # per account (a self-cancelling original + reversal pair).  Whoever
+        # relaxes these locks MUST first reverse the postings
+        # (posting_service.reverse_postings_before_delete / the loan sync).
         raise PayPeriodLocked(blocking)
 
     period_ids = [p.id for p in to_delete]
@@ -797,6 +811,42 @@ def _period_ids_with_settled_transaction(period_ids: list[int]) -> set[int]:
         Transaction.status_id.in_(settled_status_ids()),
         Transaction.is_deleted.is_(False),
     ).distinct().all()
+    return {row[0] for row in rows}
+
+
+def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:
+    """Return the ``period_ids`` whose entries do NOT net to zero per ledger.
+
+    The double-entry gate of the lock classifier (the 2026-07-02 adversarial
+    review's R2 defense-in-depth): ``journal_entries.pay_period_id`` is
+    ``ON DELETE CASCADE``, so deleting a period disposes its entries and legs
+    at the DB tier -- outside the ORM, where the balanced-journal trigger
+    never fires on DELETE.  That disposal is safe ONLY when the period's
+    postings net to zero per ledger account (e.g. an original + its reversal,
+    which the R2 attribution rule keeps in one period): the cascade then
+    removes a self-cancelling pair and no account's sum moves.  A period
+    whose postings carry a NON-zero per-account net -- a loan opening /
+    true-up correction, or any attribution drift -- holds posted financial
+    state a cascade would silently mis-state, so it hard-locks.
+
+    A period holding a settled transaction is already locked upstream
+    (``SETTLED_TXN`` precedence); this catches the posted state settled-row
+    counting cannot see.
+
+    Args:
+        period_ids: The pay-period ids being classified.
+
+    Returns:
+        The subset whose postings have a non-zero net on any ledger account.
+    """
+    rows = (
+        db.session.query(JournalEntry.pay_period_id)
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .filter(JournalEntry.pay_period_id.in_(period_ids))
+        .group_by(JournalEntry.pay_period_id, Posting.ledger_account_id)
+        .having(db.func.sum(Posting.amount) != 0)
+        .all()
+    )
     return {row[0] for row in rows}
 
 

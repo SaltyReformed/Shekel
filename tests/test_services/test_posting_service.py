@@ -132,6 +132,40 @@ def _entries_for_transaction(transaction_id):
     )
 
 
+def _period_nets(entries):
+    """Return ``{pay_period_id: {ledger_account_id: net}}`` over *entries*.
+
+    The per-period reconciliation view the R2 attribution tests assert on:
+    an INDEPENDENT re-grouping of the entries' legs by the entry's pay period
+    and the leg's ledger account (never the service's own
+    ``_posted_by_period``), so the tests re-derive the nets the production
+    reconcile must have produced.
+    """
+    nets: dict[int, dict] = {}
+    for entry in entries:
+        per_ledger = nets.setdefault(entry.pay_period_id, {})
+        for leg in (
+            _db.session.query(Posting)
+            .filter_by(journal_entry_id=entry.id)
+            .all()
+        ):
+            per_ledger[leg.ledger_account_id] = (
+                per_ledger.get(leg.ledger_account_id, Decimal("0.00"))
+                + leg.amount
+            )
+    return nets
+
+
+def _period_nets_for_transaction(transaction_id):
+    """Per-period, per-ledger nets over a transaction's journal entries."""
+    return _period_nets(_entries_for_transaction(transaction_id))
+
+
+def _period_nets_for_transfer(transfer_id):
+    """Per-period, per-ledger nets over a transfer's journal entries."""
+    return _period_nets(_entries_for_transfer(transfer_id))
+
+
 def _ledger_total(ledger_account_id):
     """Return the net of all posting legs on one ledger account.
 
@@ -385,7 +419,7 @@ class TestSyncIdempotency:
     """A repeat sync at the same target writes nothing."""
 
     def test_repeat_settle_is_noop(self, app, db, seed_user, savings):
-        """Re-syncing an already-auto-posted settle returns None, no 2nd entry.
+        """Re-syncing an already-auto-posted settle returns [], no 2nd entry.
 
         Arithmetic: ``create_settled_transfer`` auto-posted +100 to the Savings
         ledger (Commit-5 wiring), so both manual re-syncs see current 100 ==
@@ -409,8 +443,8 @@ class TestSyncIdempotency:
             )
             _db.session.commit()
 
-            assert first is None
-            assert second is None
+            assert first == []
+            assert second == []
             assert len(_entries_for_transfer(transfer.id)) == 1
 
     def test_cancel_with_nothing_posted_is_noop(
@@ -442,7 +476,7 @@ class TestSyncIdempotency:
             )
             _db.session.commit()
 
-            assert result is None
+            assert result == []
             assert _entries_for_transfer(transfer.id) == []
 
 
@@ -483,12 +517,11 @@ class TestSyncReversal:
             transfer.amount = Decimal("999.00")
             _db.session.flush()
 
-            reversal = posting_service.sync_transfer_postings(
+            [reversal] = posting_service.sync_transfer_postings(
                 transfer, settled=False,
             )
             _db.session.commit()
 
-            assert reversal is not None
             legs = _legs_by_ledger(reversal.id)
             assert legs[savings_ledger] == Decimal("-100.00")
             assert legs[checking_ledger] == Decimal("100.00")
@@ -802,7 +835,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -858,7 +891,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Salary", LedgerAccountClassEnum.INCOME,
             ).id
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -901,7 +934,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -940,7 +973,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -960,7 +993,7 @@ class TestTransactionAllCreditNoop:
         Arithmetic: a single $40 credit entry, ``actual_amount`` = 40, so
         ``effect = effective(40) - credit_sum(40) = 0``.  The target is
         ``{cash: 0, category: 0}``, nothing is posted yet, so every delta is
-        zero and the sync is a no-op (returns None) -- the entire $40 flows
+        zero and the sync is a no-op (returns []) -- the entire $40 flows
         through the separate CC Payback instead.
         """
         with app.app_context():
@@ -979,7 +1012,7 @@ class TestTransactionAllCreditNoop:
             )
             _db.session.commit()
 
-            assert result is None
+            assert result == []
             assert _entries_for_transaction(txn.id) == []
 
 
@@ -987,10 +1020,10 @@ class TestTransactionIdempotency:
     """A repeat sync at the same target writes nothing."""
 
     def test_repeat_settle_is_noop(self, app, db, seed_user):
-        """Re-syncing an already-posted settle returns None, no 2nd entry.
+        """Re-syncing an already-posted settle returns [], no 2nd entry.
 
         Arithmetic: the first settle posts -50 / +50; the second sync sees
-        current == target (delta 0 on every account) and writes nothing.  This
+        current == target (zero deltas on every account and period) and writes nothing.  This
         is the double-mark-done guard -- a repeated settle never double-posts.
         """
         with app.app_context():
@@ -1009,8 +1042,8 @@ class TestTransactionIdempotency:
             )
             _db.session.commit()
 
-            assert first is not None
-            assert second is None
+            assert len(first) == 1
+            assert second == []
             assert len(_entries_for_transaction(txn.id)) == 1
 
 
@@ -1040,12 +1073,11 @@ class TestTransactionReversal:
             posting_service.sync_transaction_postings(txn, settled=True)
             _db.session.commit()
 
-            reversal = posting_service.sync_transaction_postings(
+            [reversal] = posting_service.sync_transaction_postings(
                 txn, settled=False,
             )
             _db.session.commit()
 
-            assert reversal is not None
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 seed_user["account"].id, _scenario_id(seed_user),
@@ -1137,12 +1169,11 @@ class TestTransactionReversal:
 
             # Recategorize WITHOUT reverting; re-sync while still settled.
             txn.category_id = seed_user["categories"]["Rent"].id
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
 
-            assert entry is not None
             b_ledger = _resolve_category_ledger(
                 seed_user, "Rent", LedgerAccountClassEnum.EXPENSE,
             ).id
@@ -1182,7 +1213,7 @@ class TestTransactionCounterLegRouting:
             )
             _db.session.commit()
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -1217,7 +1248,7 @@ class TestTransactionCounterLegRouting:
             )
             _db.session.commit()
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -1265,7 +1296,7 @@ class TestTransactionShadowNoop:
             )
             _db.session.commit()
 
-            assert result is None
+            assert result == []
             # No transaction-sourced entry exists for the shadow.
             assert _entries_for_transaction(shadow.id) == []
 
@@ -1294,7 +1325,7 @@ class TestTransactionEntryDate:
             txn.paid_at = datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc)
             _db.session.commit()
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -1316,7 +1347,7 @@ class TestTransactionEntryDate:
             )
             _db.session.commit()
 
-            entry = posting_service.sync_transaction_postings(
+            [entry] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
@@ -1460,3 +1491,128 @@ class TestSettledTransactionEffect:
             assert posting_service.settled_transaction_effect(
                 seed_user["account"].id, _scenario_id(seed_user),
             ) == Decimal("-140.00")
+
+
+# ---------------------------------------------------------------------------
+# Period attribution: corrections land in the period they correct (review R2)
+# ---------------------------------------------------------------------------
+
+
+class TestPeriodAttribution:
+    """A reversal carries the period and date of the postings it reverses.
+
+    The 2026-07-02 adversarial review's R2 rule (fixing H1): the supported
+    revert-and-move PATCH applies the new ``pay_period_id`` BEFORE the
+    end-of-handler reconcile, so a reversal stamped with the source row's
+    CURRENT period would land in the NEW period -- leaving the original entry
+    and its reversal straddling two periods, where a later truncate of the new
+    period CASCADE-deletes one half and permanently strands the other
+    (``transaction_id`` SET NULL, unhealable).  The reconcile instead reads
+    the posted side back per period, so the reversal nets the ORIGINAL period
+    to zero and inherits the latest entry date it reverses.
+    """
+
+    def test_revert_and_move_reverses_into_the_original_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The reversal lands in the settle period, dated by the settle date.
+
+        Settle a $100 expense in period P (paid 2026-01-05, so the settle
+        entry is dated 2026-01-05 in P).  Simulate the revert-and-move PATCH
+        exactly as the handler applies it -- ``pay_period_id`` moved to F and
+        ``paid_at`` cleared BEFORE the reconcile -- then reconcile with
+        ``settled=False``.  The reversal entry must carry period P (never F)
+        and the inherited 2026-01-05 date (never F's start or today), so P
+        nets to zero per ledger account and F holds nothing.  A later
+        re-settle posts into F alone.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            moved_to = seed_periods[5]
+            txn = add_txn(
+                _db.session, seed_user, period, "Groceries", "100.00",
+                status_enum=StatusEnum.DONE, category_key="Groceries",
+            )
+            txn.paid_at = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+            _db.session.commit()
+            cash_ledger = _ledger_id(seed_user["account"])
+
+            [settle_entry] = posting_service.sync_transaction_postings(
+                txn, settled=True,
+            )
+            _db.session.commit()
+            assert settle_entry.pay_period_id == period.id
+            assert settle_entry.entry_date == date(2026, 1, 5)
+
+            # The revert-and-move PATCH, as _apply_regular_update applies it:
+            # the new period and the cleared paid_at land BEFORE the reconcile.
+            txn.pay_period_id = moved_to.id
+            txn.paid_at = None
+            _db.session.flush()
+            [reversal] = posting_service.sync_transaction_postings(
+                txn, settled=False,
+            )
+            _db.session.commit()
+
+            # The R2 rule: the reversal carries the ORIGINAL period and the
+            # settle entry's date -- the pre-fix code stamped it with the NEW
+            # period (moved_to) and the reversal-time fallback date.
+            assert reversal.pay_period_id == period.id
+            assert reversal.entry_date == date(2026, 1, 5)
+            legs = _legs_by_ledger(reversal.id)
+            assert legs[cash_ledger] == Decimal("100.00")
+
+            # Period P nets to zero per ledger account; F holds nothing.
+            per_period = _period_nets_for_transaction(txn.id)
+            assert per_period[period.id][cash_ledger] == Decimal("0.00")
+            assert moved_to.id not in per_period
+
+            # A later re-settle posts into the NEW period alone (paid_at is
+            # cleared, so the entry dates at F's start -- the settle fallback).
+            [resettle] = posting_service.sync_transaction_postings(
+                txn, settled=True,
+            )
+            _db.session.commit()
+            assert resettle.pay_period_id == moved_to.id
+            assert resettle.entry_date == moved_to.start_date
+            per_period = _period_nets_for_transaction(txn.id)
+            assert per_period[period.id][cash_ledger] == Decimal("0.00")
+            assert per_period[moved_to.id][cash_ledger] == Decimal("-100.00")
+
+    def test_transfer_revert_and_move_reverses_into_the_original_period(
+        self, app, db, seed_user, seed_periods, savings,
+    ):
+        """The transfer reversal lands in the settle period, like a transaction.
+
+        Settle a $100 Checking -> Savings transfer in period P (auto-posted at
+        creation), move it to F with ``paid_at``-equivalent state as the
+        transfer PATCH leaves it, and reconcile ``settled=False``: the
+        reversal entry carries P, both ledgers net to zero in P, and F holds
+        nothing -- the transfer twin of the transaction case above.
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            moved_to = seed_periods[5]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, seed_user["account"], savings,
+                period, amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            checking_ledger = _ledger_id(seed_user["account"])
+            savings_ledger = _ledger_id(savings)
+
+            transfer.pay_period_id = moved_to.id
+            _db.session.flush()
+            [reversal] = posting_service.sync_transfer_postings(
+                transfer, settled=False,
+            )
+            _db.session.commit()
+
+            assert reversal.pay_period_id == period.id
+            legs = _legs_by_ledger(reversal.id)
+            assert legs[savings_ledger] == Decimal("-100.00")
+            assert legs[checking_ledger] == Decimal("100.00")
+            per_period = _period_nets_for_transfer(transfer.id)
+            assert per_period[period.id][savings_ledger] == Decimal("0.00")
+            assert per_period[period.id][checking_ledger] == Decimal("0.00")
+            assert moved_to.id not in per_period

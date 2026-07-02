@@ -913,7 +913,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
 
-            assert result is None
+            assert result == []
             assert len(_correction_entries(shadow.id)) == entries_before
 
     def test_early_settled_payment_splits_at_settle(
@@ -1001,6 +1001,64 @@ class TestSyncLoanPaymentPostings:
 
 class TestReverseLoanPaymentPostings:
     """A correction reverses cleanly before a delete, and stale ones self-heal."""
+
+    def test_revert_and_move_reverses_into_the_original_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A reverted-and-moved payment's correction reverses into its old period.
+
+        The loan twin of the R2 attribution rule (the 2026-07-02 review's H1
+        class): one ``update_transfer`` call reverts the payment to Projected
+        AND moves it to a later period -- the shadows carry the NEW period by
+        the time the loan wiring reconciles.  The stale correction must
+        reverse into the period it was POSTED in (P1's), never the shadow's
+        new one, so the correction pair nets P1's period to zero and the new
+        period holds no loan_payment entries at all.  Arithmetic: the P1
+        split was interest 500.00 / principal 500.00, so the reversal legs
+        are Loan +500.00 / Interest -500.00 in P1's period, and the interest
+        ledger nets back to zero.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            db.session.commit()
+            original_period_id = seed_periods[_P1].id
+            moved_to = seed_periods[_P3]
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                pay_period_id=moved_to.id,
+            )
+            db.session.commit()
+
+            entries = _correction_entries(shadow.id)
+            assert len(entries) == 2
+            reversal = entries[-1]
+            # The R2 rule: the reversal carries the ORIGINAL period -- the
+            # pre-fix code stamped it with the shadow's NEW period.
+            assert reversal.pay_period_id == original_period_id
+            assert all(
+                entry.pay_period_id == original_period_id for entry in entries
+            )
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            legs = _entry_legs(reversal.id)
+            assert legs[_linked_ledger_id(loan)] == (
+                Decimal("500.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+            )
+            assert legs[interest_ledger.id] == (
+                Decimal("-500.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
+            )
+            assert _ledger_net(interest_ledger.id, scenario_id) == (
+                Decimal("0.00")
+            )
 
     def test_reverse_zeroes_the_correction(
         self, app, db, seed_user, seed_periods,
