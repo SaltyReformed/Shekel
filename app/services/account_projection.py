@@ -288,8 +288,9 @@ def splice_confirmed_and_projected_loan_balances(
       past reads facts, not a re-amortization.
     * **Future (``period.start_date > as_of``): the re-seeded projection.**  The
       *projected_map* forward rows, which the read switch already re-seeds from
-      the ledger's confirmed balance (C8 ``forward_seed_balance``), so the loan
-      amortizes its REAL owed balance over the remaining term.  The confirmed
+      the ledger's confirmed balance (the ``ConfirmedLedgerView`` threaded into
+      the resolver), so the loan amortizes its REAL owed balance over the
+      remaining term.  The confirmed
       map cannot answer the future -- it carries the last confirmed balance
       flat -- so the projection owns the future tail.
 

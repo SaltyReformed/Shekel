@@ -48,7 +48,13 @@ from app.models.tax_config import (
 )
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import amortization_engine, paycheck_calculator
+from app.services import (
+    amortization_engine,
+    loan_loaders,
+    loan_payment_service,
+    loan_resolver,
+    paycheck_calculator,
+)
 from app.services.interest_projection import calculate_interest
 from app.services.tax_config_service import load_tax_configs
 from app.services.loan_posting_service import confirmed_loan_interest_in_year
@@ -819,9 +825,12 @@ class TestMortgageInterestGenesisHybrid:
         With today frozen at 2026-04-01, the two OFF-schedule confirmed payments
         are ledger history (992.50, the ACTUAL figure) and the rest of 2026 is
         projected.  The hybrid is exactly ledger-confirmed + schedule-projected,
-        both halves non-zero, and it DIVERGES from the old all-schedule sum by
-        exactly the ledger-vs-replay correction on the confirmed region -- the
-        headline off-schedule fix.
+        both halves non-zero.  Since the C11 history read switch the schedule's
+        confirmed rows are themselves LEDGER-derived, so their interest sum now
+        AGREES with the tax figure (the display and the deduction unified); the
+        non-vacuity divergence is therefore pinned against the UN-SEEDED
+        replay's confirmed rows -- the pre-switch producer, which off-schedule
+        still shows the scheduled interest, not the actual.
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 4, 1))
@@ -853,11 +862,33 @@ class TestMortgageInterestGenesisHybrid:
             assert hybrid == ledger_confirmed + projected
             assert ledger_confirmed == Decimal("992.50")
             assert projected > Decimal("0.00")
-            # It diverges from the OLD all-schedule sum: the confirmed region reads
-            # the ledger's actual figure, not the replay's (off-schedule, they
-            # differ), so the hybrid total differs too.
-            assert ledger_confirmed != schedule_confirmed
-            assert hybrid != schedule_confirmed + projected
+            # C11 unification: the schedule's confirmed rows are ledger-derived,
+            # so the amortization table's interest column now AGREES with the
+            # Schedule A figure -- one truth for the confirmed region.
+            assert schedule_confirmed == ledger_confirmed
+            # Non-vacuity: the UN-SEEDED replay (the pre-switch producer) still
+            # shows the SCHEDULED confirmed interest, which off-schedule differs
+            # from the ledger's actual figure the hybrid uses.
+            params = loan_loaders.load_loan_params(loan.id)
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            replay_state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params, loan_loaders.load_anchor_events(loan.id),
+                    ctx.payments, ctx.rate_changes,
+                ),
+                date(2026, 4, 1),
+            )
+            replay_confirmed = sum(
+                (
+                    row.interest for row in replay_state.schedule
+                    if row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+            assert replay_confirmed != ledger_confirmed
+            assert hybrid != replay_confirmed + projected
 
     def test_interest_deducts_in_the_year_it_was_paid(
         self, app, db, seed_user, seed_periods, monkeypatch,

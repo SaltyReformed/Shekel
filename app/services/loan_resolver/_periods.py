@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from app.services.amortization_engine import (
+    AmortizationRow,
     PaymentRecord,
     PeriodTerms,
     RateChangeRecord,
@@ -216,6 +217,41 @@ def engine_terms(loan_params, rate_changes) -> list[PeriodTerms]:
         The loan's full :class:`PeriodTerms` schedule.
     """
     return _terms_from_periods(resolve_periods(loan_params, rate_changes))
+
+
+@dataclass(frozen=True)
+class ConfirmedLedgerView:
+    """A loan's genesis-ledger confirmed state: the balance AND its history rows.
+
+    The read switch's ONE injection value (superseding the C8 scalar
+    ``forward_seed_balance``): the ledger-confirmed balance as of the
+    evaluation date plus the ledger-derived confirmed schedule rows that
+    produced it.  Bundled -- never threaded as two parameters -- so the
+    headline balance, the forward projection's seed, and the amortization
+    table's confirmed rows can never desync: they either ALL come from the
+    ledger (a view is supplied) or ALL come from the anchor replay (``None``),
+    the same one-value-threaded-once lesson the C8 seam recorded.
+
+    Produced only by
+    :func:`app.services.loan_payment_service.confirmed_loan_view` (the single
+    reader call site); the pure resolver consumes it blind.
+
+    Attributes:
+        balance: The ledger-confirmed balance owed as of the evaluation date
+            (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).
+            Becomes BOTH ``LoanState.current_balance`` and the forward
+            projection's starting balance.
+        history_rows: The ledger-derived confirmed schedule rows
+            (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
+            chronological, each carrying its payment's ACTUAL principal /
+            interest and the real running balance.  Becomes the confirmed
+            slice of every schedule surface (``LoanState.schedule``,
+            ``PayoffScenarios.history_rows``).  May be empty (a configured
+            loan with no confirmed payment yet).
+    """
+
+    balance: Decimal
+    history_rows: list[AmortizationRow]
 
 
 @dataclass(frozen=True)

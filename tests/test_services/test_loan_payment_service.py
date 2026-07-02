@@ -24,7 +24,7 @@ from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
 from app.services.loan_payment_service import (
     compute_contractual_pi,
-    confirmed_loan_seed,
+    confirmed_loan_view,
     get_payment_history,
     load_anchor_events,
     load_loan_context,
@@ -838,13 +838,12 @@ class TestPreparePaymentsForEngine:
 
 
 class TestReadSwitchSeedHelpers:
-    """``confirmed_loan_seed`` / ``resolve_loan_seeded`` -- the read-switch seam.
+    """``confirmed_loan_view`` / ``resolve_loan_seeded`` -- the read-switch seam.
 
-    These pin the SAFETY half of the loan read switch (plan Section 8): the
-    seed reader falls back to ``None`` -- routing the resolver to its anchor
-    replay, exactly the pre-switch behaviour -- whenever the genesis ledger
-    cannot answer (no scenario, a future date, or a loan with no OPENING
-    posting).  ``_create_loan_account`` builds a loan with a linked ledger but
+    These pin the SAFETY half of the loan read switch: the view reader falls
+    back to ``None`` -- routing the resolver to its anchor replay, exactly
+    the pre-switch behaviour -- whenever the genesis ledger cannot answer (no
+    scenario, a future date, or a loan with no OPENING posting).  ``_create_loan_account`` builds a loan with a linked ledger but
     NO genesis postings, so it exercises that fallback directly; the "reads the
     real ledger balance" half is pinned end-to-end by the reconciliation oracle
     (``TestReadSwitchProductionPath``), which needs posted genesis.
@@ -855,7 +854,7 @@ class TestReadSwitchSeedHelpers:
         with app.app_context():
             loan = _create_loan_account(seed_user)
             db.session.commit()
-            assert confirmed_loan_seed(loan.id, None, date.today()) is None
+            assert confirmed_loan_view(loan.id, None, date.today()) is None
 
     def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
         """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
@@ -868,7 +867,7 @@ class TestReadSwitchSeedHelpers:
             loan = _create_loan_account(seed_user)
             db.session.commit()
             future = date.today() + timedelta(days=1)
-            assert confirmed_loan_seed(
+            assert confirmed_loan_view(
                 loan.id, seed_user["scenario"].id, future,
             ) is None
 
@@ -882,7 +881,7 @@ class TestReadSwitchSeedHelpers:
         with app.app_context():
             loan = _create_loan_account(seed_user)
             db.session.commit()
-            assert confirmed_loan_seed(
+            assert confirmed_loan_view(
                 loan.id, seed_user["scenario"].id, date.today(),
             ) is None
 

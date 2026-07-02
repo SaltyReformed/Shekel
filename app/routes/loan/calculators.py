@@ -26,7 +26,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
-from app.services.loan_payment_service import confirmed_loan_seed
+from app.services.loan_payment_service import confirmed_loan_view
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
@@ -80,7 +80,7 @@ def _build_payoff_summary(scenarios, state):
     )
 
 
-def _payoff_extra_payment_result(params, account_id, ctx, data, forward_seed_balance):
+def _payoff_extra_payment_result(params, account_id, ctx, data, confirmed_view):
     """Render the extra-payment payoff scenario partial.
 
     One ``compute_payoff_scenarios`` call drives both the chart series
@@ -98,10 +98,11 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, forward_seed_bal
         account_id: Debt account id (anchor-event load).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
-        forward_seed_balance: The genesis-ledger confirmed balance (plan
-            Section 8), read once by the caller; threaded into the composer
-            so the projected payoff amortizes the real owed balance the loan
-            card shows.  ``None`` falls back to the anchor replay.
+        confirmed_view: The genesis-ledger confirmed view, read once by the
+            caller; threaded into the composer so the projected payoff
+            amortizes the real owed balance -- and charts the ledger-derived
+            confirmed history -- the loan card shows.  ``None`` falls back to
+            the anchor replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -116,7 +117,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, forward_seed_bal
         ),
         extra_monthly=extra,
         as_of=date.today(),
-        forward_seed_balance=forward_seed_balance,
+        confirmed_view=confirmed_view,
     )
 
     chart_labels, balances = _build_chart_series({
@@ -145,7 +146,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, forward_seed_bal
     )
 
 
-def _payoff_target_date_result(params, account_id, ctx, data, forward_seed_balance):
+def _payoff_target_date_result(params, account_id, ctx, data, confirmed_view):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -177,12 +178,13 @@ def _payoff_target_date_result(params, account_id, ctx, data, forward_seed_balan
             plan-aware outlook).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
-        forward_seed_balance: The genesis-ledger confirmed balance (plan
-            Section 8), read once by the caller; threaded into the plan-aware
-            outlook so its required-extra search runs against the real owed
-            balance.  The RAW search already uses ``ctx.state.current_balance``,
-            which is the same seeded balance (``ctx`` resolves through
-            ``resolve_loan_seeded``).  ``None`` falls back to the anchor replay.
+        confirmed_view: The genesis-ledger confirmed view, read once by the
+            caller; threaded into the plan-aware outlook so its
+            required-extra search runs against the real owed balance.  The
+            RAW search already uses ``ctx.state.current_balance``, which is
+            the same ledger balance (``ctx`` resolves through
+            ``resolve_loan_seeded``).  ``None`` falls back to the anchor
+            replay.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -224,7 +226,7 @@ def _payoff_target_date_result(params, account_id, ctx, data, forward_seed_balan
             ),
             target_date=target_date,
             as_of=date.today(),
-            forward_seed_balance=forward_seed_balance,
+            confirmed_view=confirmed_view,
         )
 
     total_monthly = (
@@ -268,19 +270,20 @@ def payoff_calculate(account_id):
     # rendered on the loan card (E-18 / Commit 15).
     ctx = _load_loan_context(account, params)
 
-    # Read switch (plan Section 8): read the genesis-ledger confirmed balance
-    # ONCE and thread it into whichever mode's forward projection runs, so the
-    # payoff / target-date results project from the same real owed balance the
-    # loan card shows.  ``require_owner`` already gated ownership above.
+    # Read switch: read the genesis-ledger confirmed view ONCE and thread it
+    # into whichever mode's forward projection runs, so the payoff /
+    # target-date results project from the same real owed balance -- and
+    # chart the same ledger-derived confirmed history -- the loan card shows.
+    # ``require_owner`` already gated ownership above.
     scenario = get_baseline_scenario(current_user.id)
-    seed = confirmed_loan_seed(
+    view = confirmed_loan_view(
         account_id, scenario.id if scenario else None, date.today(),
     )
 
     if mode == "extra_payment":
-        return _payoff_extra_payment_result(params, account_id, ctx, data, seed)
+        return _payoff_extra_payment_result(params, account_id, ctx, data, view)
     if mode == "target_date":
-        return _payoff_target_date_result(params, account_id, ctx, data, seed)
+        return _payoff_target_date_result(params, account_id, ctx, data, view)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",

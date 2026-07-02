@@ -29,12 +29,12 @@ balance (:func:`app.services.account_projection.compute_loan_period_balance_map`
 a posting's period start is a real boundary and periods are contiguous, so
 ``<= period.start`` and ``<= period.end`` select the identical posting set.
 
-**Wiring status.**  The current-balance scalar is wired through the
-``loan_payment_service.confirmed_loan_seed`` seam (read switch C8), the
-per-period map through ``net_worth_kernel._build_amortizing_balance_map`` (C9),
-and the tax interest through the year-end hybrid (C10); the history-rows reader
-is wired by the final read-switch commit, where the readers also join the
-balance-producer fence.  Reads only -- no writes, no commit.
+**Wiring status.**  The current-balance scalar AND the history rows are wired
+through the ``loan_payment_service.confirmed_loan_view`` seam (read switch C8,
+bundled at C11), the per-period map through
+``net_worth_kernel._build_amortizing_balance_map`` (C9), and the tax interest
+through the year-end hybrid (C10); the readers join the balance-producer fence
+in the final read-switch commit.  Reads only -- no writes, no commit.
 """
 
 from bisect import bisect_right

@@ -24,6 +24,7 @@ from app.utils.money import round_money
 from ._payoff import compute_payoff_scenarios
 from ._periods import (
     ZERO_MONEY,
+    ConfirmedLedgerView,
     LoanInputs,
     _replay_from_anchor,
     resolve_periods,
@@ -135,7 +136,7 @@ def compute_monthly_payment_baseline(
 def resolve_loan(
     loan_inputs: LoanInputs,
     as_of: date,
-    forward_seed_balance: Decimal | None = None,
+    confirmed_view: ConfirmedLedgerView | None = None,
 ) -> LoanState:
     """Resolve a loan to its (balance, payment, schedule, payoff, interest).
 
@@ -186,12 +187,13 @@ def resolve_loan(
             ValueError.  Only confirmed payments are replayed.
         as_of: The evaluation date.  Drives the current-balance walk
             and the out-of-window monthly-payment computation.
-        forward_seed_balance: The genesis-ledger confirmed balance at
-            ``as_of`` (the read switch, plan Section 8), or ``None`` to keep
-            the anchor-replay balance.  When supplied it becomes BOTH the
-            ``current_balance`` AND the forward projection's starting balance
-            (threaded to :func:`._payoff.compute_payoff_scenarios`) -- one
-            value, threaded once, so the headline balance and the schedule
+        confirmed_view: The loan's genesis-ledger confirmed view (the read
+            switch), or ``None`` to keep the anchor replay.  When supplied,
+            its ``balance`` becomes BOTH the ``current_balance`` AND the
+            forward projection's starting balance, and its ``history_rows``
+            become the schedule's confirmed slice (threaded once to
+            :func:`._payoff.compute_payoff_scenarios`) -- one bundle, so the
+            headline balance, the schedule's history, and the projection
             cannot desync off-schedule.  ``None`` leaves this function on the
             anchor replay unchanged (an unconfigured loan, or a caller that
             deliberately reads the schedule balance -- e.g. the "ever paid
@@ -243,26 +245,26 @@ def resolve_loan(
         loan_inputs=dataclasses.replace(loan_inputs, payments=confirmed),
         extra_monthly=ZERO_MONEY,
         as_of=as_of,
-        forward_seed_balance=forward_seed_balance,
+        confirmed_view=confirmed_view,
     )
     schedule = list(scenarios.history_rows) + list(
         scenarios.committed_forward
     )
 
     # Current balance: the genesis-ledger confirmed balance when the read
-    # switch supplies it (plan Section 8), else the schedule-replay balance.
-    # The replay advances one scheduled step per confirmed payment from the
-    # latest anchor (principal = period P&I - interest), discarding the cash
-    # and escrow.  Threading ONE ``forward_seed_balance`` here AND into the
-    # composer above (never two mechanisms) keeps this headline balance and
-    # the schedule's forward seed identical, so they cannot desync
-    # off-schedule.  The schedule-replay call stays independent of the
-    # composer's own so a future projection change cannot silently move the
-    # unseeded balance.
+    # switch supplies a view, else the schedule-replay balance.  The replay
+    # advances one scheduled step per confirmed payment from the latest
+    # anchor (principal = period P&I - interest), discarding the cash and
+    # escrow.  Threading ONE ``confirmed_view`` here AND into the composer
+    # above (never two mechanisms) keeps this headline balance, the
+    # schedule's confirmed rows, and the forward seed identical, so they
+    # cannot desync off-schedule.  The schedule-replay call stays independent
+    # of the composer's own so a future projection change cannot silently
+    # move the unseeded balance.
     current_balance_full = (
         _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
-        if forward_seed_balance is None
-        else forward_seed_balance
+        if confirmed_view is None
+        else confirmed_view.balance
     )
 
     # Monthly P&I is the current rate period's level payment, held

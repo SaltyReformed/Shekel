@@ -33,7 +33,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import AmortizationRow, AmortizationSummary
-from app.services.loan_payment_service import confirmed_loan_seed
+from app.services.loan_payment_service import confirmed_loan_view
 from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -329,11 +329,12 @@ def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
     stand if I cancel all extras today."  Both share the same
     ``anchor_events`` so a future trueup cannot drift between them.
 
-    Read switch (plan Section 8): reads the genesis-ledger confirmed balance
-    ONCE via :func:`loan_payment_service.confirmed_loan_seed` and threads it
-    into BOTH composer calls as ``forward_seed_balance``, so the chart /
-    schedule tab / summary project from the same real owed balance the loan
-    card (:func:`._helpers._resolve`) shows -- they cannot desync off-schedule.
+    Read switch: reads the genesis-ledger confirmed view ONCE via
+    :func:`loan_payment_service.confirmed_loan_view` and threads it into BOTH
+    composer calls as ``confirmed_view``, so the chart / schedule tab /
+    summary all derive from the same real owed balance AND ledger-derived
+    confirmed history the loan card (:func:`._helpers._resolve`) shows --
+    they cannot desync off-schedule.
 
     Args:
         loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
@@ -346,14 +347,14 @@ def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
     Returns:
         Tuple of (scenarios_main, scenarios_floor) PayoffScenarios.
     """
-    seed = confirmed_loan_seed(
+    view = confirmed_loan_view(
         loan_inputs.loan_params.account_id, scenario_id, as_of,
     )
     scenarios_main = loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
-        forward_seed_balance=seed,
+        confirmed_view=view,
     )
     confirmed_payments = [
         p for p in (loan_inputs.payments or []) if p.is_confirmed
@@ -364,7 +365,7 @@ def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
         ),
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
-        forward_seed_balance=seed,
+        confirmed_view=view,
     )
     return scenarios_main, scenarios_floor
 

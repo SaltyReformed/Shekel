@@ -94,6 +94,7 @@ from ._payoff import (
     target_date_outlook,
 )
 from ._periods import (
+    ConfirmedLedgerView,
     LoanInputs,
     engine_terms,
     resolve_periods,
@@ -106,6 +107,7 @@ from ._state import (
 )
 
 __all__ = [
+    "ConfirmedLedgerView",
     "LoanInputs",
     "LoanState",
     "PayoffScenarios",

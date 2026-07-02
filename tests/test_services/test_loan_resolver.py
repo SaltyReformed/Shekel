@@ -30,6 +30,7 @@ from app.services.amortization_engine import (
     RateChangeRecord,
 )
 from app.services.loan_resolver import (
+    ConfirmedLedgerView,
     LoanInputs,
     LoanState,
     PayoffScenarios,
@@ -2123,22 +2124,30 @@ class TestTargetDateOutlook:
         assert outlook.required_extra > Decimal("0.00")
 
 
-class TestForwardSeedBalance:
-    """The read-switch seam: ``forward_seed_balance`` (plan Section 8).
+class TestConfirmedLedgerView:
+    """The read-switch seam: ``confirmed_view`` (the ConfirmedLedgerView bundle).
 
-    The one value the loan read switch threads into the resolver so a loan's
-    displayed balance -- and every figure projected from it -- comes from the
-    genesis ledger, not the schedule replay.  Supplying it overrides BOTH the
-    headline ``current_balance`` AND the forward projection's starting balance
-    (one value, threaded once), so the card and the schedule cannot desync
-    off-schedule; omitting it (``None``) leaves the resolver on its anchor
-    replay, unchanged.  These pin the seam directly at ``resolve_loan``,
-    ``compute_payoff_scenarios``, and ``target_date_outlook`` -- the three entry
-    points the loaders and the loan-detail chart / payoff calculators wire.
+    The one bundle the loan read switch threads into the resolver so a loan's
+    displayed balance, its confirmed schedule rows, and every figure projected
+    from them come from the genesis ledger, not the schedule replay.
+    Supplying it overrides the headline ``current_balance``, the forward
+    projection's starting balance, AND the schedule's confirmed slice (one
+    bundle, threaded once), so the card, the table, and the chart cannot
+    desync off-schedule; omitting it (``None``) leaves the resolver on its
+    anchor replay, unchanged.  These pin the seam directly at
+    ``resolve_loan``, ``compute_payoff_scenarios``, and
+    ``target_date_outlook`` -- the three entry points the loaders and the
+    loan-detail chart / payoff calculators wire.  The fixtures carry no
+    payments, so the view's ``history_rows`` are the empty ledger history a
+    payment-less opened loan reads.
     """
 
     AS_OF = date(2026, 1, 1)
     SEED = Decimal("290000.00")
+
+    def _view(self):
+        """The payment-less ledger view: the seed balance, no history rows."""
+        return ConfirmedLedgerView(balance=self.SEED, history_rows=[])
 
     def _fixed_300k(self):
         """$300k / 6% / 360mo from 2026-01-01, origination anchor, no payments."""
@@ -2168,7 +2177,7 @@ class TestForwardSeedBalance:
         loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
 
         seeded = resolve_loan(
-            loan_inputs, self.AS_OF, forward_seed_balance=self.SEED,
+            loan_inputs, self.AS_OF, confirmed_view=self._view(),
         )
         unseeded = resolve_loan(loan_inputs, self.AS_OF)
 
@@ -2200,7 +2209,7 @@ class TestForwardSeedBalance:
 
         seeded = compute_payoff_scenarios(
             loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF, forward_seed_balance=self.SEED,
+            as_of=self.AS_OF, confirmed_view=self._view(),
         )
         unseeded = compute_payoff_scenarios(
             loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
@@ -2231,7 +2240,7 @@ class TestForwardSeedBalance:
 
         seeded = loan_resolver.target_date_outlook(
             loan_inputs=loan_inputs, target_date=target,
-            as_of=self.AS_OF, forward_seed_balance=self.SEED,
+            as_of=self.AS_OF, confirmed_view=self._view(),
         )
         unseeded = loan_resolver.target_date_outlook(
             loan_inputs=loan_inputs, target_date=target, as_of=self.AS_OF,

@@ -470,7 +470,7 @@ def _resolver_balance(
 
     Since the read switch (plan Section 8) the PRODUCTION path
     ``resolve_account_loan`` reads the ledger -- it threads the confirmed balance
-    in as ``forward_seed_balance`` -- so calling it here would make the "resolver"
+    in as the ``ConfirmedLedgerView`` -- so calling it here would make the "resolver"
     read the very ledger it is meant to cross-check, collapsing the parallel run
     to a tautology.  This helper therefore builds the SAME ``LoanInputs`` but runs
     ``resolve_loan`` WITHOUT the seed, preserving the schedule-replay reference.
@@ -1696,8 +1696,8 @@ class TestReadSwitchProductionPath:
     replayed the SCHEDULED payment from the anchor and dropped the cash, so
     off-schedule it disagreed with the posted ledger (that disagreement is what
     the classes above pin, via the un-seeded ``_resolver_balance``).  Since plan
-    Section 8 it threads the genesis-ledger confirmed balance in as
-    ``forward_seed_balance``, so its ``current_balance`` now EQUALS the ledger /
+    Section 8 it threads the genesis-ledger confirmed view in (the
+    ``ConfirmedLedgerView`` bundle since C11), so its ``current_balance`` now EQUALS the ledger /
     reader and DIVERGES from the un-seeded schedule replay by exactly the extra /
     short principal.
 
@@ -1764,6 +1764,62 @@ class TestReadSwitchProductionPath:
             assert extra_replay - extra_production == Decimal("2000.00") - monthly_pi
             assert short_production > short_replay
             assert short_production - short_replay == monthly_pi - Decimal("1000.00")
+
+    def test_production_schedule_confirmed_rows_are_the_ledger_rows(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The production schedule's confirmed rows ARE the ledger history (C11).
+
+        The history read switch: ``resolve_account_loan``'s schedule -- the
+        amortization table, the chart's history prefix, the date-precise
+        ``balance_at`` walk -- now carries the LEDGER-derived confirmed rows,
+        equal to ``confirmed_loan_history_rows`` verbatim.  Off-schedule (an
+        EXTRA $2,000 payment on the $100,000 balance: interest 500.00, real
+        principal 1,500.00, balance 98,500.00) the row shows the ACTUAL
+        economics, while the un-seeded replay's row still shows the SCHEDULED
+        principal (period P&I - 500.00) and a higher balance -- the strict
+        per-row divergence that makes the flip non-vacuous.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user, name="History Flip Loan")
+            _settle(
+                seed_user, loan, seed_periods[_P1], amount=Decimal("2000.00"),
+            )
+            db.session.commit()
+
+            _params, state = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )
+            confirmed_rows = [r for r in state.schedule if r.is_confirmed]
+            assert confirmed_rows == (
+                loan_posting_service.confirmed_loan_history_rows(
+                    loan.id, scenario_id, _AS_OF,
+                )
+            )
+            (row,) = confirmed_rows
+            assert row.interest == Decimal("500.00")
+            assert row.principal == Decimal("1500.00")
+            assert row.remaining_balance == Decimal("98500.00")
+
+            # The un-seeded replay's row is the SCHEDULED split -- strictly
+            # different, so "production rows == ledger rows" is non-vacuous.
+            params = loan_loaders.load_loan_params(loan.id)
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            replay_state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params, loan_loaders.load_anchor_events(loan.id),
+                    ctx.payments, ctx.rate_changes,
+                ),
+                _AS_OF,
+            )
+            (replay_row,) = [
+                r for r in replay_state.schedule if r.is_confirmed
+            ]
+            assert replay_row.principal != row.principal
+            assert replay_row.remaining_balance > row.remaining_balance
 
     def test_production_path_matches_replay_on_schedule(
         self, app, db, seed_user, seed_periods,
