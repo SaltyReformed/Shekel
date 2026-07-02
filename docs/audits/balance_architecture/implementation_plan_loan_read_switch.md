@@ -1,16 +1,53 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: DRAFT, superseding the anchor-based draft
-(`~/.claude/plans/i-have-finished-docs-audits-balance-arch-squishy-snowglobe.md`). Written
-2026-07-01 after an adversarial review of that draft and a firsthand code trace. The developer chose
-the genesis (opening-equity) design over the anchor-based intermediate, and chose to fix the
-mortgage-interest-for-taxes surface in this arc.
+Status: IN PROGRESS -- reconciled as-built through Commit 3 (2026-07-01). Written 2026-07-01 after an
+adversarial review of the anchor-based draft
+(`~/.claude/plans/i-have-finished-docs-audits-balance-arch-squishy-snowglobe.md`, superseded) and a
+firsthand code trace. The developer chose the genesis (opening-equity) design over the anchor-based
+intermediate, chose to fix the mortgage-interest-for-taxes surface in this arc, and (2026-07-01) chose
+**FULL** -- retire `LoanAnchorEvent` -- over MINIMAL for the read switch (Section 2).
 
 This is the deferred second half of Build-Order Step 4 of Option D
 (`level1_level2_scope_and_fitness.md`, build-order item 4: "Post confirmed loan payments with their
 real principal / interest split; **retire the read-time replay of confirmed history**"). Step 4
 shipped WRITE-ONLY (PR #51); this plan makes the ledger the authoritative source for a loan's
 confirmed balance and retires the resolver's confirmed replay.
+
+## As-built through Commit 3 (2026-07-01, on `dev`, not yet PR'd)
+
+Commits 1-3 are done and committed. Two design changes were made during Commit 3; **this section governs
+where it disagrees with Sections 3.1-3.3 below** (those are kept for rationale but describe the
+pre-Commit-3 design -- the code is the unified design described here):
+
+1. **The walk RESETS at every anchor -- Section 3.2 as-written was WRONG.** Section 3.2's "the
+   running-balance walk is unchanged; only the starting point and the eligibility lower bound change" is
+   INCOMPLETE and would fail this plan's own penny-exact oracle for every trued-up loan (every fixture +
+   the real Mortgage): a from-origination walk that does NOT reset at a user-trueup accrues post-trueup
+   interest on the wrong balance. The walk seeds at zero and, in ONE chronological merge of anchors +
+   payments, RESETS the running balance to each anchor's verified value as it is reached (a payment due
+   exactly on an anchor date sorts BEFORE the reset, so it is subsumed -- the strict
+   `anchor_date < monthly_due_date` boundary, pinned by a dedicated test). Proven (unit + code-reviewer's
+   independent re-derivation): `-(sum of linked postings)` reproduces the resolver penny-for-penny on a
+   trued-up loan (the pre-anchor payment corrections cancel against the anchor correction; the pre-anchor
+   payments' interest still lands in the interest ledger).
+
+2. **Opening and true-up are ONE mechanism ("anchor correction").** Sections 3.1 and 3.3 describe them
+   separately; they are the SAME operation: each anchor posts `owed_before - anchor_balance` to the
+   loan-linked ledger and its negative to the per-loan `equity_opening` account, tagged OPENING for the
+   origination anchor (where `owed_before` is 0, giving `-original_principal`) and TRUEUP for a
+   user-trueup. `sync_loan_anchor_corrections` reconciles them, keyed by `(source_kind_id, entry_date)`,
+   self-healing when a pre-trueup payment moves an earlier anchor's `owed_before`.
+
+**Structure:** the walk change pushed `loan_posting_service.py` (863 lines) over the 1000-line gate, so it
+is now a package (mirroring `loan_resolver`):
+`loan_posting_service/{_walk,_common,_payments,_anchors,_sync,__init__}.py`. Public API and every caller
+unchanged.
+
+**Commits (on `dev`, not yet PR'd):** C1 ref migration `f8a93f1` (docs `2550590`); C2 chart resolver
+`3ce8f9b`; C3 opening+true-up posting service `0a0370c` + test-constant dedupe `a7c4a76`. C3's
+`sync_loan_anchor_corrections` is built + unit-tested but UNWIRED (that is Commit 4); the payment-walk
+change is wired but inert on reads. Full suite 6781; `pylint app/` 10.00; adversarial code-reviewer no
+Critical/High.
 
 ---
 
@@ -90,10 +127,11 @@ from a ledger-derived history adapter (which is strictly more correct -- it woul
 interest/principal per month, where today's schedule-replay table is wrong off-schedule). MINIMAL keeps
 the resolver generating that table.
 
-Recommendation: **FULL**, reached by staging the `LoanAnchorEvent` retirement as the final, independently
-reversible commit -- so the whole arc is reversible right up to the last step, and the retirement lands
-only once every consumer is proven to read the ledger. The commit list below is written for FULL; the
-"MINIMAL stops here" marker shows where to truncate.
+Recommendation: **FULL** -- **DECIDED by the developer 2026-07-01.** Reached by staging the
+`LoanAnchorEvent` retirement as the final, independently reversible commit -- so the whole arc is
+reversible right up to the last step, and the retirement lands only once every consumer is proven to read
+the ledger. The commit list below is written for FULL; the "MINIMAL stops here" marker is now moot (kept
+only to show what FULL adds beyond it).
 
 ---
 
@@ -129,6 +167,12 @@ equity_opening ledger (Equity)   +(original_principal)   [kind OPENING]
   its postings' per-loan ledger account, not an entry back-link.
 
 ### 3.2 Corrections for every confirmed payment from origination (change to Step 4's walk)
+
+> **As-built correction (see the top banner):** this section's "the running-balance walk is unchanged"
+> is WRONG. The walk must ALSO reset the running balance to each anchor's verified value as it is
+> reached; without that reset a trued-up loan's post-anchor interest is computed on the wrong balance and
+> the reader diverges from the resolver. The paragraph below is kept for the from-origination rationale
+> only.
 
 Today `compute_loan_payment_splits` walks from `select_latest_anchor` and only splits post-latest-anchor
 payments (`loan_posting_service.py:357,369`). Change it to walk from **origination**, splitting every
@@ -214,20 +258,40 @@ adversarial `code-reviewer` pass on the staged diff, full suite as the final gat
 commit 8 (the first read switch); the `LoanAnchorEvent` retirement (commit 11) is last and independently
 reversible.
 
-1. **Ref migration (inert).** Add `LedgerAccountKindEnum.EQUITY_OPENING`, `PostingKindEnum.OPENING` and
-   `.TRUEUP`, `PostingSourceEnum.LOAN_OPENING` and `.LOAN_TRUEUP`; seed `ref.ledger_account_kinds`,
-   `ref.posting_kinds`, `ref.posting_sources`; add `ref_cache` accessors already exist generically.
-   Working downgrade that deletes the seeded rows. No new tables or columns; no `AUDITED_TABLES` change.
-2. **Equity-opening chart resolver (inert).** Extend `get_or_create_loan_ledger_account`'s
-   `_LOAN_LEDGER_KINDS` with `EQUITY_OPENING -> (EQUITY, "Opening")`; the amortizing-loan + kind guards
-   already cover it. Unit tests.
-3. **Opening + true-up posting service (inert, write-only).** `sync_loan_opening_posting` (per scenario)
-   and the true-up correction path in `loan_posting_service`; change the split walk to start from
-   origination and drop the eligibility lower bound; retire the "pushed behind anchor" stale case. Unit
-   tests with hand-computed literals (a mid-life loan; a true-up; a payoff overpayment).
-4. **Wire opening + true-up at the chokepoints (inert on reads).** `create_params` posts the opening;
-   `apply_loan_anchor_true_up` posts a correction (FULL: instead of the anchor row; MINIMAL: alongside
-   it). Idempotent reconcile-to-target, touching only the loan's ledgers.
+1. **Ref migration (inert). DONE (`f8a93f1`).** Add `LedgerAccountKindEnum.EQUITY_OPENING`,
+   `PostingKindEnum.OPENING` and `.TRUEUP`, `PostingSourceEnum.LOAN_OPENING` and `.LOAN_TRUEUP`; seed
+   `ref.ledger_account_kinds`, `ref.posting_kinds`, `ref.posting_sources`; working downgrade that deletes
+   the seeded rows. No new tables or columns; no `AUDITED_TABLES` change.
+2. **Equity-opening chart resolver (inert). DONE (`3ce8f9b`).** Extend
+   `get_or_create_loan_ledger_account`'s `_LOAN_LEDGER_KINDS` with `EQUITY_OPENING -> (EQUITY, "Opening")`;
+   the amortizing-loan + kind guards already cover it. Unit tests.
+3. **Opening + true-up posting service (inert, write-only). DONE (`0a0370c`; test-const dedupe
+   `a7c4a76`).** As-built (see top banner) this UNIFIED the opening + true-up into one "anchor correction"
+   (`sync_loan_anchor_corrections`, keyed by `(source_kind_id, entry_date)`, self-healing) and made the
+   split walk RESET at every anchor via one chronological anchors+payments merge (Section 3.2's "walk
+   unchanged" was wrong). Retired the "pushed behind anchor" stale case. Split `loan_posting_service` into
+   a package. Unit tests with hand-computed literals (mid-life reset, opening, true-up, payoff, self-heal,
+   payment-due-on-anchor tie-break).
+4. **Wire opening + true-up at the chokepoints (inert on reads). NEXT.** `create_params` posts the opening
+   (note: a payment-less new loan has NO scenario in `_scenarios_with_loan_payments`, so the opening needs
+   its own baseline-scenario wiring, not just the existing all-scenarios payment sync);
+   `apply_loan_anchor_true_up` posts the correction. **FULL (decided): stop writing the `LoanAnchorEvent`
+   row here** -- the anchor correction posting replaces it. (The resolver keeps reading `LoanAnchorEvent`
+   until commit 11, so a coexistence window is unavoidable; stage the event-write retirement so commits
+   4-10 stay reversible.) Idempotent reconcile-to-target, touching only the loan's ledgers. **Two
+   landmines surfaced by the C3 code-reviewer, both handled HERE:**
+   - **Oracle identity (b) breaks.** `test_posting_ledger_loan_reconciliation.py`'s
+     `_assert_loan_reconciles` identity (b) (`account_posting_total(loan) == settled_transfer_effect -
+     per_loan_correction_net`) holds in C3 only because no `_assert_loan_reconciles` fixture posts anchor
+     corrections. `_per_loan_correction_net` keys on `ledger_accounts.loan_account_id`, which ALSO matches
+     the per-loan `equity_opening` account -- so once C4 (and the C7 backfill) post opening/true-up, the
+     equity legs land in `per_loan_correction_net` and the opening/true-up linked legs in
+     `account_posting_total`, but neither is in `settled_transfer_effect`, breaking (b). Update (b) to net
+     out the anchor corrections (exclude `equity_opening` + the OPENING/TRUEUP-kind linked legs) when they
+     go live.
+   - **Double walk.** Once both syncs are wired, each chokepoint calls `walk_loan_ledger` TWICE (via
+     `sync_loan_payment_postings` and `sync_loan_anchor_corrections`), each doing ~5 DB loads +
+     O(payments) replay. Fold both reconciles behind ONE `walk_loan_ledger` call per (loan, scenario).
 5. **The reader (inert).** `confirmed_loan_balance_at` / `confirmed_loan_balance_map`, `None` sentinel,
    future-`as_of` domain guard. Unit tests with hand-computed literals.
 6. **Oracle gate (before any flip).** Extend `test_posting_ledger_loan_reconciliation.py`: reader ==
