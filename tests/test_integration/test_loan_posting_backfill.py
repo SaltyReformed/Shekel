@@ -56,7 +56,7 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.scenario import Scenario
 from app.services import (
-    loan_payment_service,
+    loan_loaders,
     loan_posting_service,
     posting_service,
 )
@@ -442,7 +442,7 @@ class TestBackfillCoverage:
             loan_b = _make_loan(seed_user, name="Loan B")
             loan_c = _make_loan(seed_second_user, name="Loan C")
 
-            ids = loan_payment_service.load_all_loan_account_ids()
+            ids = loan_loaders.load_all_loan_account_ids()
 
             assert ids == sorted([loan_a.id, loan_b.id, loan_c.id])
 

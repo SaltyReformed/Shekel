@@ -52,10 +52,8 @@ from app.services.account_projection import (
     splice_confirmed_and_projected_loan_balances,
 )
 from app.services.investment_projection import adapt_deductions
-from app.services.loan_payment_service import (
-    query_shadow_income,
-    resolve_account_loan,
-)
+from app.services.loan_loaders import query_shadow_income
+from app.services.loan_payment_service import resolve_account_loan
 from app.services.projection_inputs import build_investment_projection_inputs
 from app.utils.balance_predicates import account_period_scope_clause
 

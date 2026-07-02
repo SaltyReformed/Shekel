@@ -33,7 +33,7 @@ from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.transaction import Transaction
 from app.services import (
     escrow_calculator,
-    loan_payment_service,
+    loan_loaders,
     loan_resolver,
 )
 from app.services.rate_period_engine import (
@@ -225,7 +225,7 @@ def _confirmed_shadows_through(
     """Return a loan's settled income shadows through ``as_of``, in payment order.
 
     The genesis walk's payment set: the settled loan-side income shadows
-    (:func:`app.services.loan_payment_service.query_shadow_income` supplies the
+    (:func:`app.services.loan_loaders.query_shadow_income` supplies the
     shared "what counts as shadow income" predicate -- transfer-linked, Income
     type, non-deleted, non-excluded), narrowed to the settled statuses and to
     payments whose pay period has begun by ``as_of`` -- and NOTHING ELSE.  Unlike
@@ -253,7 +253,7 @@ def _confirmed_shadows_through(
         start then ``id``.
     """
     settled_shadows = (
-        loan_payment_service.query_shadow_income(loan_account_id, scenario_id)
+        loan_loaders.query_shadow_income(loan_account_id, scenario_id)
         .filter(Transaction.status_id.in_(settled_status_ids()))
         .all()
     )
@@ -413,25 +413,25 @@ def walk_loan_ledger(
         :class:`LoanParams` (not yet resolvable -- the N1 guard) or no anchor
         event (a degenerate direct-insert fixture).
     """
-    params = loan_payment_service.load_loan_params(loan_account_id)
+    params = loan_loaders.load_loan_params(loan_account_id)
     if params is None:
         # Not a configured loan yet (e.g. a payment settled before its
         # LoanParams was created); nothing to walk until it is resolvable.
         return LoanLedgerWalk([], [])
-    anchor_events = loan_payment_service.load_anchor_events(loan_account_id)
+    anchor_events = loan_loaders.load_anchor_events(loan_account_id)
     if not anchor_events:
         # The origination backfill guarantees at least one anchor per loan; an
         # empty list only arises in a degenerate direct-insert test fixture.
         return LoanLedgerWalk([], [])
 
     periods = loan_resolver.resolve_periods(
-        params, loan_payment_service.load_rate_changes(loan_account_id),
+        params, loan_loaders.load_rate_changes(loan_account_id),
     )
     # EVERY escrow version (active + removed), loaded once; each payment's
     # escrow is summed over the versions in effect ON that payment's date, so a
     # since-removed version still applies to a historical payment and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
-    escrow_components = loan_payment_service.load_all_escrow_components(
+    escrow_components = loan_loaders.load_all_escrow_components(
         loan_account_id,
     )
     shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)

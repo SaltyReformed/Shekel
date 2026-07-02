@@ -28,7 +28,7 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import loan_payment_service
+from app.services import loan_loaders
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 
@@ -200,7 +200,7 @@ def backfill_all_loan_postings() -> list[int]:
 
     The one-time, production-wide historical backfill: for every configured loan
     account, across all owners
-    (:func:`app.services.loan_payment_service.load_all_loan_account_ids`),
+    (:func:`app.services.loan_loaders.load_all_loan_account_ids`),
     reconcile its opening, true-up, and confirmed-payment corrections via
     :func:`sync_loan_postings_all_scenarios`.  This posts the corrections for any
     loan / payment settled BEFORE the go-forward wiring shipped (which therefore
@@ -223,7 +223,7 @@ def backfill_all_loan_postings() -> list[int]:
         The loan account ids reconciled, ascending -- for the deploy log and
         test introspection (empty on a loan-free database).
     """
-    loan_account_ids = loan_payment_service.load_all_loan_account_ids()
+    loan_account_ids = loan_loaders.load_all_loan_account_ids()
     for loan_account_id in loan_account_ids:
         sync_loan_postings_all_scenarios(loan_account_id)
     return loan_account_ids

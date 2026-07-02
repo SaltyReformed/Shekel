@@ -1548,13 +1548,13 @@ def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     # Pylint: ``import-outside-toplevel`` -- the app services are loaded lazily,
     # the convention every helper in this conftest follows.
     # pylint: disable=import-outside-toplevel
-    from app.services import loan_payment_service, loan_resolver
+    from app.services import loan_loaders, loan_payment_service, loan_resolver
 
-    params = loan_payment_service.load_loan_params(loan_id)
+    params = loan_loaders.load_loan_params(loan_id)
     ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
     return loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
-            params, loan_payment_service.load_anchor_events(loan_id),
+            params, loan_loaders.load_anchor_events(loan_id),
             ctx.payments, ctx.rate_changes,
         ),
         as_of,

@@ -99,7 +99,7 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
 
     Like :func:`calculate_monthly_escrow`, this does NOT filter by active state
     -- the caller supplies the set to display (the currently-active components,
-    via :func:`app.services.loan_payment_service.load_active_escrow_components`).
+    via :func:`app.services.loan_loaders.load_active_escrow_components`).
     Processing the identical set both functions receive keeps the rows-sum-to-
     badge invariant true for ANY input, rather than only when the caller happens
     to pre-filter removed components out (they both would otherwise diverge on a
@@ -139,9 +139,9 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
 
     The caller supplies the component set relevant to the date in question
     -- the components active today
-    (:func:`app.services.loan_payment_service.load_active_escrow_components`)
+    (:func:`app.services.loan_loaders.load_active_escrow_components`)
     or, for a past payment's date, every version
-    (:func:`app.services.loan_payment_service.load_all_escrow_components`)
+    (:func:`app.services.loan_loaders.load_all_escrow_components`)
     filtered by :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
     This function no longer filters by active state itself; it sums exactly the
     components handed to it.

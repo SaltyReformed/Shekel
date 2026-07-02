@@ -139,6 +139,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
     anchor_service,
+    loan_loaders,
     loan_payment_service,
     loan_posting_service,
     loan_resolver,
@@ -477,9 +478,9 @@ def _resolver_balance(
     ledger off-schedule is the read switch, pinned by
     ``TestReadSwitchProductionPath``.
     """
-    params = loan_payment_service.load_loan_params(loan_account_id)
+    params = loan_loaders.load_loan_params(loan_account_id)
     assert params is not None, "loan is not resolvable (no LoanParams)"
-    anchor_events = loan_payment_service.load_anchor_events(loan_account_id)
+    anchor_events = loan_loaders.load_anchor_events(loan_account_id)
     ctx = loan_payment_service.load_loan_context(
         loan_account_id, scenario_id, params,
     )
