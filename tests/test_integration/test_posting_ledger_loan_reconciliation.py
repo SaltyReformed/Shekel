@@ -49,6 +49,19 @@ against a displayed balance.  The invariants below are plan Section 8.
   6. **Backfill == go-forward (plan 8.8).**  The historical backfill and the
      go-forward wiring post identical corrections, so a ledger rebuilt by the
      backfill reconciles identically to the go-forward one.
+  7. **The genesis READER parallel run (the read switch's gate, plan 4-commit-6 /
+     8.2).**  Invariants 1-6 pin the posted LEDGER against the resolver via the
+     test's OWN independent ``-(sum of linked postings)`` query (``_ledger_balance``);
+     this pins the PRODUCTION reader the read switch actually wires --
+     ``confirmed_loan_balance_at`` (a point in time) and ``confirmed_loan_balance_map``
+     (every period boundary) -- as a THIRD independent producer, proven == the
+     resolver on-schedule and divergent by exactly the extra / short principal
+     off-schedule, including a pre-true-up payment, a mid-life true-up, a
+     calendar-year boundary, two scenarios, and the unconfigured -> ``None`` route.
+     The ``TestConfirmedLoanBalanceReader`` UNIT tests pin the reader against
+     hand-computed literals; this pins it against the independent resolver, so a
+     reader bug a literal happened to share is still caught (the ``+$10`` injection
+     below fails these too).
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
 payment's ``actual_amount`` makes the loan-aware invariant FAIL (a real ledger
@@ -125,12 +138,17 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
+    anchor_service,
     loan_payment_service,
     loan_posting_service,
+    pay_period_service,
     posting_service,
 )
+from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
+    create_account_of_type,
+    create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     find_loan_ledger_account,
@@ -215,6 +233,46 @@ def _settle(user, loan, period, amount=Decimal("1000.00"), scenario=None):
         user, _db.session, user["account"], loan, period,
         amount=amount, scenario=scenario,
     )
+
+
+def _seed_boundary_loan(bare_user):
+    """Set up a fresh user with periods straddling 2025-12-31 and a loan.
+
+    The year-boundary fixture (extracted so the boundary test does not carry the
+    setup as a dozen locals).  ``seed_periods`` locks its owner to 2026 and
+    ``generate_pay_periods`` rejects backfilling earlier periods, so a
+    boundary-straddling window needs a periodless ``bare_user``.  Generates six
+    biweekly periods from 2025-12-25 (so ``periods[0]`` straddles the year end and
+    ``periods[2]`` is a distinct January month), a baseline scenario, a Checking
+    account to pay from, and an origination-only $100,000 loan originated a month
+    before the window (both payments post-origination -- a clean sum with no
+    anchor-reset subtlety; a 360-month term so it never pays off here).
+
+    Args:
+        bare_user: The ``bare_user`` fixture dict (a user with no periods).
+
+    Returns:
+        ``(loan, ctx, checking, periods)`` -- the loan account, a seed-user-shaped
+        context dict (``user`` + baseline ``scenario``) the transfer/loan helpers
+        accept, the Checking account to pay from, and the ordered pay periods.
+    """
+    user_id = bare_user["user"].id
+    periods = pay_period_service.generate_pay_periods(
+        user_id=user_id, start_date=date(2025, 12, 25),
+        num_periods=6, cadence_days=14,
+    )
+    _db.session.flush()
+    scenario = Scenario(user_id=user_id, name="Baseline", is_baseline=True)
+    _db.session.add(scenario)
+    _db.session.flush()
+    ctx = {"user": bare_user["user"], "scenario": scenario}
+    checking = create_account_of_type(ctx, _db.session, "Checking", "Checking")
+    loan = create_loan_account(
+        ctx, _db.session, name="Boundary Loan",
+        principal=Decimal("100000.00"), rate=Decimal("0.06000"),
+        origination_date=date(2025, 11, 1), term=360,
+    )
+    return loan, ctx, checking, periods
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +469,50 @@ def _ledger_balance(loan_account_id: int, scenario_id: int) -> Decimal:
     formula -- there is no pre-anchor exclusion to assume away.
     """
     return -_independent_loan_linked_net(loan_account_id, scenario_id)
+
+
+def _reader_balance(
+    loan_account_id: int, scenario_id: int, as_of: date = _AS_OF,
+) -> Decimal:
+    """Return the genesis reader's confirmed balance -- the read switch's producer.
+
+    Runs the PRODUCTION scalar reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) the read
+    switch (plan Section 8) turns every displayed loan balance onto, so the
+    parallel run pits the exact function that will feed the balance -- not a
+    stand-in -- against the resolver.  Asserts non-``None`` because every caller
+    here builds a CONFIGURED loan (an opening is posted), so a ``None`` would be a
+    reader defect, not an unconfigured loan (the ``None`` route is proven directly
+    by its own test).
+    """
+    result = loan_posting_service.confirmed_loan_balance_at(
+        loan_account_id, scenario_id, as_of,
+    )
+    assert result is not None, (
+        f"reader returned None for configured loan {loan_account_id} in scenario "
+        f"{scenario_id} -- no OPENING posting where one was expected"
+    )
+    return result
+
+
+def _reader_period_map(
+    loan_account_id: int, scenario_id: int, periods: list[PayPeriod],
+) -> "dict[int, Decimal]":
+    """Return the genesis reader's per-period balance map (the C9 producer).
+
+    Runs the PRODUCTION per-period reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`) the
+    per-period read switch (plan Section 9) turns the AMORTIZING confirmed region
+    onto.  Asserts non-``None`` for the same reason as :func:`_reader_balance`.
+    """
+    result = loan_posting_service.confirmed_loan_balance_map(
+        loan_account_id, scenario_id, periods,
+    )
+    assert result is not None, (
+        f"reader map returned None for configured loan {loan_account_id} in "
+        f"scenario {scenario_id} -- no OPENING posting where one was expected"
+    )
+    return result
 
 
 def _assert_completeness(
@@ -1088,3 +1190,372 @@ class TestOracleIsNotVacuous:
 
             # Discard the injected leg; the deferred trigger never fires.
             db.session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 7. The genesis reader parallel run -- the read switch's gate (plan 4-commit-6)
+# ---------------------------------------------------------------------------
+
+
+class TestReaderParallelRunAgainstResolver:
+    """The genesis READER reads back == the resolver -- the gate before the flip.
+
+    Sections 1-6 pin the posted LEDGER against the resolver through the test's OWN
+    independent ``-(sum of linked postings)`` query.  This section pins the
+    PRODUCTION reader the read switch (plan Sections 8-10) turns every displayed
+    loan balance onto -- ``confirmed_loan_balance_at`` at a point in time and
+    ``confirmed_loan_balance_map`` at every period boundary -- as a THIRD
+    independent producer run in the SAME test as the resolver.  On an on-schedule
+    payment the two must agree to the penny; off-schedule they must diverge by
+    exactly the extra / short principal (the reader books the REAL principal from
+    the cash, the resolver only the SCHEDULED principal).
+
+    Non-duplicative with the ``TestConfirmedLoanBalanceReader`` UNIT tests: those
+    pin the reader against hand-computed literals; this pins it against the
+    resolver, an independent producer that shares none of the reader's code path
+    and never reads the ledger -- so a reader bug the literal happened to share is
+    still caught.  The ``+$10`` interest injection (module docstring) fails every
+    test here that asserts a value, exactly as it fails Sections 1-3.
+    """
+
+    def test_scalar_reader_matches_resolver_on_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """On-schedule, the reader's point-in-time balance == the resolver's.
+
+        Paying exactly the scheduled monthly P&I is on-schedule (the loan carries
+        no escrow, so cash == P&I), so the reader's real principal (cash - interest)
+        equals the resolver's scheduled principal (P&I - interest) and the two
+        balances -- derived by disjoint code paths from the same $100,000 anchor --
+        agree to the penny.  Non-vacuity: the balance dropped below the anchor by
+        exactly the real principal (scheduled P&I - round(100000 * 0.005) = P&I -
+        500.00 interest), and the production reader equals the test's own
+        independent linked-net query (a genuine third opinion, not the resolver).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            db.session.commit()
+
+            reader = _reader_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            # Three independent producers agree: the production reader, the resolver
+            # replay, and the test's own independent linked-net query.
+            assert reader == resolver, f"reader {reader} != resolver {resolver}"
+            assert reader == _ledger_balance(loan.id, scenario_id)
+            # Non-vacuity: the balance is the $100,000 anchor less the real
+            # principal (P&I - 500.00 interest), not the untouched anchor.
+            assert reader == _ANCHOR_BALANCE - (scheduled_pi - Decimal("500.00"))
+
+    def test_period_map_matches_resolver_across_the_window(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The per-period map == the resolver at every period start (walk + tail).
+
+        Two on-schedule payments (periods 1 and 3, due 02-01 / 03-01) net in as
+        their pay periods begin.  The reader map keys each period by its START, and
+        the resolver caps its replay by the SAME pay-period start
+        (``rate_period_engine.replay_schedule``), so ``map[P]`` equals the resolver
+        resolved as of ``P.start_date`` for every period here -- through the
+        stepping-down region (periods 0-3) and the carried-flat tail (periods 4-9,
+        where ``current_balance`` counts only confirmed payments, so it too carries
+        flat).  Non-vacuity: the map is not constant -- it steps strictly down as
+        each payment lands, then holds.
+
+        The equivalence is exact because every anchor precedes the read window: the
+        opening (clamped to period 0) and the SPLIT_LOAN true-up (2026-01-10, in
+        period 0) both net in at period 0, so no period shows a pre-true-up
+        balance.  The map across a MID-LIFE true-up -- where the reader keeps
+        pre-true-up history while the resolver reseeds from the later anchor, a
+        deliberate divergence -- is the per-period read switch's concern (plan
+        Section 9), not this gate's.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            _settle(seed_user, loan, seed_periods[_P2], amount=scheduled_pi)
+            db.session.commit()
+
+            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            # Per-period parallel run: the map's value for each period equals the
+            # resolver resolved as of that period's START (both select confirmed
+            # postings / payments by pay-period start <= the date).
+            for period in seed_periods:
+                resolver_at_start = _resolver_balance(
+                    loan.id, scenario_id, period.start_date,
+                )
+                assert balance_map[period.id] == resolver_at_start, (
+                    f"period {period.period_index} (start {period.start_date}): "
+                    f"map {balance_map[period.id]} != resolver {resolver_at_start}"
+                )
+            # Non-vacuity: not trivially constant -- 100,000 before any payment,
+            # strictly down as P1 (period 1) then P2 (period 3) net in, then flat.
+            assert balance_map[seed_periods[0].id] == _ANCHOR_BALANCE
+            assert (
+                balance_map[seed_periods[_P1].id]
+                < balance_map[seed_periods[0].id]
+            )
+            assert (
+                balance_map[seed_periods[_P2].id]
+                < balance_map[seed_periods[_P1].id]
+            )
+            # The tail carries the last confirmed balance flat (no later payment).
+            assert (
+                balance_map[seed_periods[9].id]
+                == balance_map[seed_periods[_P2].id]
+            )
+
+    def test_scalar_reader_diverges_by_the_exact_principal_delta_off_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Off-schedule, the reader diverges from the resolver by exactly the delta.
+
+        The reader books the REAL principal from the actual cash; the resolver
+        replays only the SCHEDULED principal (it ignores the cash) and would need an
+        anchor true-up to catch up.  On the $100,000 balance @ 6% (interest 500.00):
+        an EXTRA $2,000 payment -> real principal 1,500, reader owes 98,500.00, LESS
+        than the resolver by exactly (cash 2,000 - scheduled P&I); a SHORT $1,000
+        payment -> real principal 500, reader owes 99,500.00, MORE than the resolver
+        by exactly (scheduled P&I - cash 1,000).  Two loans with identical params,
+        so the same scheduled P&I governs both deltas.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            extra_loan = _make_loan(seed_user, name="Extra Loan")
+            short_loan = _make_loan(seed_user, name="Short Loan")
+            # Identical params -> identical scheduled P&I (rate-period level
+            # payment, balance-independent), so one figure governs both deltas.
+            monthly_pi = loan_payment_service.resolve_account_loan(
+                extra_loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(
+                seed_user, extra_loan, seed_periods[_P1], amount=Decimal("2000.00"),
+            )
+            _settle(
+                seed_user, short_loan, seed_periods[_P1], amount=Decimal("1000.00"),
+            )
+            db.session.commit()
+
+            extra_reader = _reader_balance(extra_loan.id, scenario_id)
+            extra_resolver = _resolver_balance(extra_loan.id, scenario_id, _AS_OF)
+            short_reader = _reader_balance(short_loan.id, scenario_id)
+            short_resolver = _resolver_balance(short_loan.id, scenario_id, _AS_OF)
+
+            # Extra: real principal 2000 - 500 = 1500 -> 98,500.00, owing LESS than
+            # the resolver by exactly (cash - scheduled P&I).
+            assert extra_reader == Decimal("98500.00")
+            assert extra_reader < extra_resolver
+            assert extra_resolver - extra_reader == Decimal("2000.00") - monthly_pi
+            # Short: real principal 1000 - 500 = 500 -> 99,500.00, owing MORE than
+            # the resolver by exactly (scheduled P&I - cash).
+            assert short_reader == Decimal("99500.00")
+            assert short_reader > short_resolver
+            assert short_reader - short_resolver == monthly_pi - Decimal("1000.00")
+
+    def test_reader_includes_the_pre_trueup_payment(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A pre-true-up payment is summed by the reader, not excluded -- == resolver.
+
+        Genesis retires the read-switch boundary the prior draft carved out: the
+        reader sums EVERY payment from origination with no post-anchor filter, so a
+        payment made BEFORE the latest anchor is absorbed by the anchor correction,
+        never double-counted.  With the true-up at 2026-02-15, P1 (due 02-01) is
+        pre-true-up; the reader still reproduces the resolver's $100,000 anchor
+        balance (which subsumes P1) exactly -- no pre-anchor pollution to exclude.
+
+        The reader VALUE here is split-INVARIANT: a wrong interest split on the
+        pre-true-up payment cancels against the true-up's ``owed_before`` on the
+        one running-balance walk, so ``reader == 100000`` no matter what interest
+        posted.  So the split is pinned DIRECTLY (as the Section-1 sibling
+        ``test_pre_anchor_payment_is_correctly_summed_under_genesis`` does) -- else
+        the ``+$10`` injection would slip past this test, which the class docstring
+        claims it does not.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            # True-up AFTER P1's 2026-02-01 due date, so P1 is pre-true-up.
+            loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
+            db.session.commit()
+
+            # Pin the split value directly (the reader value below is
+            # split-invariant): the pre-true-up payment splits on the $250,000
+            # origination balance -> interest round(250000 * 0.005) = 1250.00.
+            splits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert splits[0].interest == Decimal("1250.00")
+
+            reader = _reader_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            # The pre-true-up payment is summed AND absorbed by the true-up, so the
+            # reader reproduces the resolver's anchor balance to the penny.
+            assert reader == resolver
+            assert reader == _ANCHOR_BALANCE  # 100000.00, no pre-anchor pollution
+
+    def test_reader_reflects_a_mid_life_true_up_correction(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A user balance true-up moves the reader to the verified value -- == resolver.
+
+        After a $1,000 payment the reader owes 99,500.00.  The user reconciles the
+        statement and asserts the real balance is $95,000 on 2026-03-01 -- an
+        append-only true-up correction posted through the real chokepoint
+        (``anchor_service.apply_loan_anchor_true_up``), not an edit.  The reader
+        jumps to 95,000.00 (the true-up's ``owed_before`` absorbs the earlier
+        payment) and the resolver, reseeded from the new latest anchor, agrees --
+        95,000 is distinct from both the pre-true-up 99,500 and the 100,000 anchor,
+        so the reader demonstrably reflects the correction.  The whole ledger still
+        reconciles (the correction is a balanced linked + equity pair).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
+            db.session.commit()
+            # Pre-true-up: after the $1,000 payment the reader owes 99,500.00
+            # (100000 - (1000 cash - 500 interest)).
+            assert _reader_balance(loan.id, scenario_id) == Decimal("99500.00")
+
+            outcome = anchor_service.apply_loan_anchor_true_up(
+                account=loan, anchor_balance=Decimal("95000.00"),
+                anchor_date=date(2026, 3, 1),
+            )
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+
+            reader = _reader_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            # The reader jumps to the verified value; the resolver reseeds to it.
+            assert reader == Decimal("95000.00")
+            assert reader == resolver
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+    def test_reader_bounds_confirmed_postings_at_the_year_boundary(
+        self, app, db, bare_user,
+    ):
+        """The reader's pay-period-start bound separates December from January.
+
+        A pay period straddling 2025-12-31 (start 2025-12-25) holds a December
+        payment; a later period (start 2026-01-22) holds a January one.  The reader
+        bounds by pay-period START, so as of 2025-12-31 it counts the straddling
+        period's payment (start 12-25 <= 12-31) but NOT the January one (start
+        01-22 > 12-31) -- matching the resolver, which caps its replay by the same
+        pay-period start.  As of a later date it counts both.  This proves the date
+        bound (and the resolver parallel run) hold across a calendar-year rollover,
+        the foundation the year-end / tax surfaces (plan 3.6 / commit 10) build on.
+
+        Uses ``bare_user`` via ``_seed_boundary_loan``: ``seed_periods`` locks its
+        owner to 2026 and ``generate_pay_periods`` rejects backfilling earlier
+        periods, so a boundary-straddling window needs a periodless user.
+        """
+        with app.app_context():
+            loan, ctx, checking, periods = _seed_boundary_loan(bare_user)
+            scenario_id = ctx["scenario"].id
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            # periods[0] (2025-12-25 .. 2026-01-07) straddles 12-31; periods[2]
+            # (2026-01-22 .. 2026-02-04, due 02-01) is a distinct January month.
+            create_settled_transfer(
+                ctx, db.session, checking, loan, periods[0], amount=scheduled_pi,
+            )
+            create_settled_transfer(
+                ctx, db.session, checking, loan, periods[2], amount=scheduled_pi,
+            )
+            db.session.commit()
+
+            year_end = date(2025, 12, 31)
+            reader_dec = _reader_balance(loan.id, scenario_id, year_end)
+            # As of Dec 31: only the December (straddling) payment has netted in --
+            # 100,000 less its real principal (scheduled P&I - 500.00 interest).
+            assert reader_dec == _resolver_balance(loan.id, scenario_id, year_end)
+            assert reader_dec == Decimal("100000.00") - (
+                scheduled_pi - Decimal("500.00")
+            )
+            # As of after both periods: both payments have netted in, still ==
+            # resolver, and strictly below the Dec-31 balance (January lowered it).
+            reader_both = _reader_balance(loan.id, scenario_id, _AS_OF)
+            assert reader_both == _resolver_balance(loan.id, scenario_id, _AS_OF)
+            assert reader_both < reader_dec
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+    def test_reader_is_scenario_scoped_and_none_when_unopened(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The reader reads each scenario's own balance, and None where unopened.
+
+        On-schedule payments net independently per scenario: the baseline gets one
+        (balance 100,000 - one principal) and the what-if two (100,000 - two
+        principals), each reading its OWN balance == its OWN resolver, the what-if's
+        second payment lowering only the what-if (neither leaks into the other).  A
+        THIRD scenario the loan was never opened into has no OPENING posting, so the
+        reader returns ``None`` -- routing a read-switch caller to needs-setup,
+        never a misleading $0 or another scenario's balance (the M2 latent
+        multi-scenario guard, plan Section 4).
+        """
+        with app.app_context():
+            baseline = seed_user["scenario"]
+            whatif = Scenario(
+                user_id=seed_user["user"].id, name="What-if", is_baseline=False,
+            )
+            unopened = Scenario(
+                user_id=seed_user["user"].id, name="Unopened", is_baseline=False,
+            )
+            db.session.add_all([whatif, unopened])
+            db.session.commit()
+
+            loan = _make_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, baseline.id, _AS_OF,
+            )[1].monthly_payment
+            # Baseline: one on-schedule payment.  What-if: two (a second period).
+            _settle(
+                seed_user, loan, seed_periods[_P1], amount=scheduled_pi,
+                scenario=baseline,
+            )
+            _settle(
+                seed_user, loan, seed_periods[_P1], amount=scheduled_pi,
+                scenario=whatif,
+            )
+            _settle(
+                seed_user, loan, seed_periods[_P2], amount=scheduled_pi,
+                scenario=whatif,
+            )
+            db.session.commit()
+
+            baseline_reader = _reader_balance(loan.id, baseline.id)
+            whatif_reader = _reader_balance(loan.id, whatif.id)
+            # Each scenario reads its OWN balance == its own resolver.
+            assert baseline_reader == _resolver_balance(
+                loan.id, baseline.id, _AS_OF,
+            )
+            assert whatif_reader == _resolver_balance(loan.id, whatif.id, _AS_OF)
+            # Isolation: the what-if's SECOND payment lowers only the what-if; the
+            # baseline still reflects just its one payment (neither leaks).
+            assert whatif_reader < baseline_reader
+            assert baseline_reader == _ANCHOR_BALANCE - (
+                scheduled_pi - Decimal("500.00")
+            )
+            # A scenario the loan was never opened into -> None (needs-setup),
+            # never the baseline's balance or a bare $0.  Both readers agree.
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, unopened.id, _AS_OF,
+            ) is None
+            assert loan_posting_service.confirmed_loan_balance_map(
+                loan.id, unopened.id, seed_periods,
+            ) is None
+            _assert_loan_reconciles(loan, baseline.id, _AS_OF)
+            _assert_loan_reconciles(loan, whatif.id, _AS_OF)

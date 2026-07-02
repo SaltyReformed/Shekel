@@ -1,7 +1,7 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: IN PROGRESS -- reconciled as-built through Commit 4 (2026-07-01; C4 green on `dev`, not yet
-committed). Written 2026-07-01 after an
+Status: IN PROGRESS -- reconciled as-built through Commit 6 (2026-07-02; C1-C5 committed on `dev`,
+C6 green on `dev` and not yet committed). Written 2026-07-01 after an
 adversarial review of the anchor-based draft
 (`~/.claude/plans/i-have-finished-docs-audits-balance-arch-squishy-snowglobe.md`, superseded) and a
 firsthand code trace. The developer chose the genesis (opening-equity) design over the anchor-based
@@ -174,6 +174,64 @@ that turns a request parameter into a reader call.
 
 Files: `loan_posting_service/_reader.py` (new), `loan_posting_service/__init__.py`,
 `tests/test_services/test_loan_posting_service.py`.
+
+## As-built: Commit 6 (2026-07-02, green on `dev`, NOT yet committed)
+
+C6 is the oracle gate before any read switch. It extends the loan reconciliation oracle
+(`test_posting_ledger_loan_reconciliation.py`) with a new `TestReaderParallelRunAgainstResolver` class
+(7 tests) that parallel-runs the C5 READER (`confirmed_loan_balance_at` scalar +
+`confirmed_loan_balance_map`) against the resolver as a THIRD independent producer. This is distinct
+from Sections 1-6 (which parallel-run the test's OWN independent `-(sum of linked postings)` query) and
+from the C5 UNIT tests (which pin the reader against hand-computed literals): C6 pins the exact function
+the read switch (C8/C9) wires against an independent producer that shares none of its code path. **Test
+only; no app code changed.**
+
+**The equivalence the gate rests on (verified by a firsthand trace + the code-reviewer's independent
+re-derivation, not assumed).** Both the reader and the resolver cap by PAY-PERIOD START: the reader sums
+linked postings whose `pay_period.start_date <= as_of` (`_reader.py:193`), and
+`rate_period_engine.replay_schedule`'s as-of cap is `period_start <= as_of`
+(`is_confirmed_payment_eligible`, `:319`; docstring `:696` "the as_of cap uses the pay-period start").
+So `confirmed_loan_balance_map(periods)[P] == resolve_account_loan(loan, scenario, P.start_date)
+.current_balance` for EVERY period, on-schedule; the map test asserts it across the whole 10-period
+`seed_periods` window (stepping-down region periods 0-3 + carried-flat tail periods 4-9, since
+`current_balance` counts only confirmed payments and so also carries flat). The equivalence is exact
+because every anchor precedes the read window: the SPLIT_LOAN anchor (2026-01-10) and the origination
+opening (clamped to the earliest period via `_anchors._resolve_anchor_pay_period`) BOTH land in period 0
+(2026-01-02..01-15), so opening + true-up are counted in every period and no period shows a pre-true-up
+balance. The map across a MID-LIFE true-up (reader keeps pre-true-up history, resolver reseeds -- a
+deliberate divergence) is C9's concern, noted in the map test docstring.
+
+**Seven tests, one per plan-4-commit-6 / 7.2 case:** scalar on-schedule (`reader == resolver ==`
+independent ledger query); per-period map across the window (+ non-vacuity steps-down + carry-flat);
+off-schedule diverges by EXACTLY the principal delta (extra `resolver - reader == 2000 - monthly_pi`;
+short `reader - resolver == monthly_pi - 1000`); the pre-true-up payment summed (`== 100000` anchor, no
+pollution -- split pinned DIRECTLY via `compute_loan_payment_splits[0].interest == 1250.00` because the
+reader value there is split-invariant); a mid-life true-up through the real `apply_loan_anchor_true_up`
+chokepoint (reader jumps 99500 -> 95000 == resolver); a calendar-year boundary on a `bare_user` with a
+period straddling 2025-12-31 (reader at 2025-12-31 counts the straddling period's payment by its START,
+excludes the January one -- both due-months distinct, no biweekly-collision shift -- == resolver);
+scenario isolation (baseline 1 payment / what-if 2, each `== its own resolver`, neither leaks) + the
+unconfigured -> `None` route.
+
+**Non-vacuity re-proven the gold-standard way.** Re-running the `+$10` interest-bug injection at
+`_walk.py:200` (NOT `money.py`, which the resolver shares in lockstep) failed ALL 7 new tests -- every
+value assertion, via the independent resolver / hand-computed literals. (The pre-true-up test's reader
+VALUE is split-invariant -- a wrong split cancels against the true-up's `owed_before` on the one walk --
+so its split is pinned DIRECTLY on `compute_loan_payment_splits`, a code-reviewer MEDIUM fixed here so
+the "fails every value test" claim is true and the test is not vacuous; its Step-4 sibling
+`test_pre_anchor_payment_is_correctly_summed_under_genesis` pins the same split the same way.)
+
+**Code-reviewer:** no Critical/High (it re-derived every equivalence from source and recomputed every
+literal). 1 MEDIUM (pre-true-up test's non-vacuity claim was false -- fixed by restoring the direct split
+pin) + 3 LOW (a "pre-origination" misnomer -> renamed `test_reader_includes_the_pre_trueup_payment`; the
+map docstring's "EVERY period" generality qualified to the anchor-in-period-0 fixture; `too-many-lines`
+on the test module is not a gate -- `tests/` is outside the design-smell pylint scope) -- all addressed.
+
+**Gates:** full suite **6804** (baseline 6797 + 7); the test file adds ZERO new pylint findings (the 6
+pre-existing `_make_loan` / `test_two_owners` / migration-teardown R09xx/W0212 findings unchanged; score
+9.85). NO migration (test-only) -> no template rebuild. Files: `test_posting_ledger_loan_reconciliation.py`
+(module docstring invariant 7; `_reader_balance` / `_reader_period_map` / `_seed_boundary_loan` helpers;
+the new class).
 
 ---
 
