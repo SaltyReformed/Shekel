@@ -9,13 +9,18 @@ principal, monthly payment, and full amortisation schedule on read.
 Two row provenances are recorded via the ``source_id`` FK into
 ``ref.loan_anchor_sources``:
 
-* ``origination`` -- materialised once per loan from the immutable
-  :class:`LoanParams` fields (``origination_date``,
-  ``original_principal``) by the Commit 12 backfill migration.  Every
-  loan carries exactly one origination event.
+* ``origination`` -- LEGACY ONLY (the read switch's final commit retired
+  this write): rows materialised from the immutable :class:`LoanParams`
+  fields (``origination_date``, ``original_principal``) by the Commit 12
+  backfill migration and, until the retirement, by ``create_params``.
+  Every consumer now SYNTHESIZES the origination anchor from the params
+  (``loan_loaders.load_loan_anchor_facts``) and ignores these rows --
+  they are value-identical append-only history, kept, never read.
 * ``user_trueup`` -- appended by the loan dashboard's balance-edit
   flow (Commit 16, decision D-C) whenever the operator asserts a new
-  dated balance.  Mirrors the checking-account ``AccountAnchorHistory``
+  dated balance: the operator's SOURCE DOCUMENT, from which the genesis
+  ledger's self-healing TRUEUP correction is derived and re-derived.
+  Mirrors the checking-account ``AccountAnchorHistory``
   UX so the mental model is consistent across account types.
 
 This table is **structurally append-only**.  Application code never

@@ -29,13 +29,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.transaction import Transaction
 from app.services import (
     escrow_calculator,
     loan_loaders,
     loan_resolver,
 )
+from app.services.loan_loaders import LoanAnchorFact
 from app.services.rate_period_engine import (
     monthly_due_date,
     period_for_date,
@@ -104,11 +104,15 @@ class LoanAnchorCorrection:
     walked balance) books nothing.
 
     Attributes:
-        anchor: The :class:`~app.models.loan_anchor_event.LoanAnchorEvent` this
+        anchor: The :class:`~app.services.loan_loaders.LoanAnchorFact` this
             correction books for -- supplies ``anchor_balance`` (the verified
             value the balance resets to), ``anchor_date`` (the correction's civil
-            entry date), ``source_id`` (origination vs. user-trueup, which tags
-            the leg and journal-entry kinds), and ``account_id``.
+            entry date), ``is_opening`` (origination vs. user-trueup, which tags
+            the leg and journal-entry kinds), and ``account_id``.  The
+            origination fact is synthesized from the immutable
+            :class:`LoanParams`; a user-trueup fact wraps its stored
+            ``user_trueup`` event (the read switch retired the origination
+            event write).
         owed_before: The walk's running balance JUST BEFORE this anchor resets it
             -- ``Decimal("0.00")`` for the origination anchor (always the first
             event), the amortized balance carried down from the prior anchor for a
@@ -116,7 +120,7 @@ class LoanAnchorCorrection:
             ``owed_before - anchor_balance``.
     """
 
-    anchor: LoanAnchorEvent
+    anchor: LoanAnchorFact
     owed_before: Decimal
 
 
@@ -266,7 +270,7 @@ def _confirmed_shadows_through(
 
 
 def _merge_anchor_and_payment_events(
-    anchor_events: list[LoanAnchorEvent],
+    anchor_facts: list[LoanAnchorFact],
     shadows: list[Transaction],
     payment_day: int,
     as_of: date,
@@ -286,13 +290,14 @@ def _merge_anchor_and_payment_events(
     Anchors dated after ``as_of`` are dropped (an anchor cannot reset the balance
     as of a date before it); the shadows are already capped at ``as_of`` by the
     caller.  Within a type, ties break deterministically -- anchors by
-    ``created_at`` (mirroring :func:`select_latest_anchor`), payments by their
+    ``created_at`` (mirroring :func:`select_latest_anchor`; the synthesized
+    origination fact carries the earliest possible instant), payments by their
     caller-supplied ``(pay_period.start_date, id)`` order -- preserved by a stable
     sort of the payments-then-anchors concatenation.
 
     Args:
-        anchor_events: The loan's :class:`~app.models.loan_anchor_event.LoanAnchorEvent`
-            rows (any order; filtered to ``anchor_date <= as_of`` and sorted here).
+        anchor_facts: The loan's :class:`~app.services.loan_loaders.LoanAnchorFact`
+            list (any order; filtered to ``anchor_date <= as_of`` and sorted here).
         shadows: The confirmed income shadows, PRE-SORTED by
             ``(pay_period.start_date, id)`` (:func:`_confirmed_shadows_through`).
         payment_day: The loan's contractual due day (drives each payment's due date).
@@ -300,11 +305,11 @@ def _merge_anchor_and_payment_events(
 
     Returns:
         ``(is_anchor, item)`` tuples in walk order (``item`` is a
-        :class:`~app.models.loan_anchor_event.LoanAnchorEvent` when ``is_anchor``,
+        :class:`~app.services.loan_loaders.LoanAnchorFact` when ``is_anchor``,
         else a settled income :class:`~app.models.transaction.Transaction`).
     """
     anchors_in_window = sorted(
-        (anchor for anchor in anchor_events if anchor.anchor_date <= as_of),
+        (anchor for anchor in anchor_facts if anchor.anchor_date <= as_of),
         key=lambda anchor: (anchor.anchor_date, anchor.created_at),
     )
     # Payment tag 0 sorts before anchor tag 1 on an equal date, so a payment due
@@ -352,7 +357,7 @@ def _replay_events(
             anchor_corrections.append(
                 LoanAnchorCorrection(anchor=item, owed_before=balance)
             )
-            balance = Decimal(str(item.anchor_balance))
+            balance = item.anchor_balance
             continue
         payment_escrow = escrow_calculator.calculate_monthly_escrow([
             comp for comp in escrow_components
@@ -410,19 +415,18 @@ def walk_loan_ledger(
     Returns:
         A :class:`LoanLedgerWalk` (payment splits + anchor corrections, both
         chronological).  Both lists are empty when the loan has no
-        :class:`LoanParams` (not yet resolvable -- the N1 guard) or no anchor
-        event (a degenerate direct-insert fixture).
+        :class:`LoanParams` (not yet resolvable -- the N1 guard); a configured
+        loan always walks, since its origination anchor is synthesized.
     """
     params = loan_loaders.load_loan_params(loan_account_id)
     if params is None:
         # Not a configured loan yet (e.g. a payment settled before its
         # LoanParams was created); nothing to walk until it is resolvable.
         return LoanLedgerWalk([], [])
-    anchor_events = loan_loaders.load_anchor_events(loan_account_id)
-    if not anchor_events:
-        # The origination backfill guarantees at least one anchor per loan; an
-        # empty list only arises in a degenerate direct-insert test fixture.
-        return LoanLedgerWalk([], [])
+    # The origination anchor is SYNTHESIZED from the immutable params, so a
+    # configured loan ALWAYS has at least one fact -- the old "no anchor
+    # events" degenerate-fixture guard is structurally unreachable now.
+    anchor_facts = loan_loaders.load_loan_anchor_facts(params)
 
     periods = loan_resolver.resolve_periods(
         params, loan_loaders.load_rate_changes(loan_account_id),
@@ -436,7 +440,7 @@ def walk_loan_ledger(
     )
     shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)
     events = _merge_anchor_and_payment_events(
-        anchor_events, shadows, params.payment_day, as_of,
+        anchor_facts, shadows, params.payment_day, as_of,
     )
     payment_splits, anchor_corrections = _replay_events(
         events, periods, escrow_components,
@@ -475,8 +479,8 @@ def compute_loan_payment_splits(
     Returns:
         One :class:`LoanPaymentSplit` per confirmed payment through ``as_of``, in
         chronological (pay-period-start) order.  Empty (``[]``) when the loan has
-        no :class:`LoanParams` (not yet resolvable -- the N1 guard), no anchor
-        event, or no confirmed payment.
+        no :class:`LoanParams` (not yet resolvable -- the N1 guard) or no
+        confirmed payment.
     """
     return walk_loan_ledger(
         loan_account_id, scenario_id, as_of,

@@ -480,13 +480,13 @@ def _resolver_balance(
     """
     params = loan_loaders.load_loan_params(loan_account_id)
     assert params is not None, "loan is not resolvable (no LoanParams)"
-    anchor_events = loan_loaders.load_anchor_events(loan_account_id)
+    anchor_facts = loan_loaders.load_loan_anchor_facts(params)
     ctx = loan_payment_service.load_loan_context(
         loan_account_id, scenario_id, params,
     )
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
-            params, anchor_events, ctx.payments, ctx.rate_changes,
+            params, anchor_facts, ctx.payments, ctx.rate_changes,
         ),
         as_of,
     )
@@ -1810,7 +1810,7 @@ class TestReadSwitchProductionPath:
             )
             replay_state = loan_resolver.resolve_loan(
                 loan_resolver.LoanInputs(
-                    params, loan_loaders.load_anchor_events(loan.id),
+                    params, loan_loaders.load_loan_anchor_facts(params),
                     ctx.payments, ctx.rate_changes,
                 ),
                 _AS_OF,

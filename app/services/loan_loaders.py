@@ -21,12 +21,14 @@ This service queries ONLY budget.transactions (transfer invariant #5).
 It NEVER queries budget.transfers.
 """
 
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import LoanAnchorSourceEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent, RateHistory
@@ -34,6 +36,106 @@ from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
 from app.utils.balance_predicates import balance_excluded_status_ids
+
+# The synthesized origination anchor's created_at: the earliest possible
+# instant (UTC-aware, comparable with the timestamptz ``created_at`` of real
+# user-trueup rows), so a true-up asserted ON the origination date still wins
+# the resolver's ``(anchor_date, created_at)`` latest-anchor tie-break --
+# exactly as the stored origination row (created at loan setup, before any
+# true-up) did.
+_ORIGINATION_CREATED_AT = datetime.min.replace(tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class LoanAnchorFact:
+    """One dated balance assertion for a loan, as plain data.
+
+    The single anchor shape BOTH anchor consumers walk (the read switch's
+    final commit): the genesis posting walk derives its opening / true-up
+    corrections from these, and the loan resolver's replay fallback consumes
+    them as its duck-typed anchor events (it reads ``anchor_date`` /
+    ``anchor_balance`` / ``created_at``, all here).  Two provenances:
+
+    * **The origination anchor is SYNTHESIZED from the immutable
+      :class:`LoanParams`** (``origination_date`` / ``original_principal``)
+      rather than read from a stored row -- the origination
+      :class:`LoanAnchorEvent` write is retired, since that row was always a
+      verbatim copy of the params (verified on production data).  Legacy
+      stored origination rows are ignored, not migrated: append-only history,
+      value-identical to the synthesis.
+    * **A user true-up is a real stored fact** (the ``user_trueup``
+      :class:`LoanAnchorEvent` the balance-edit flow appends): the operator's
+      dated balance assertion, the source document the self-healing TRUEUP
+      correction is derived from and re-derived against.
+
+    Attributes:
+        account_id: The loan account the assertion belongs to.
+        anchor_date: The date the balance was asserted (origination date for
+            the opening).
+        anchor_balance: The asserted balance owed (the original principal for
+            the opening), cent-quantized ``Decimal``.
+        is_opening: ``True`` for the synthesized origination anchor, ``False``
+            for a user true-up -- drives the OPENING vs TRUEUP posting kinds.
+        created_at: The assertion's creation instant (the latest-anchor
+            tie-break); the synthesized origination uses the earliest
+            possible UTC instant so any same-day true-up wins.
+    """
+
+    account_id: int
+    anchor_date: date
+    anchor_balance: Decimal
+    is_opening: bool
+    created_at: datetime
+
+
+def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
+    """Return a loan's anchor facts: the synthesized origination + true-ups.
+
+    The one anchor loader every consumer shares (the genesis walk and every
+    resolver-input builder), so no two sites can disagree on what a loan's
+    anchors are.  The origination anchor is synthesized from the immutable
+    *params* (never read from a stored row -- see :class:`LoanAnchorFact`);
+    the user true-ups are the loan's ``user_trueup``
+    :class:`LoanAnchorEvent` rows, in no guaranteed order (consumers sort by
+    ``(anchor_date, created_at)`` where order matters).
+
+    Args:
+        params: The loan's :class:`LoanParams` row (supplies the account id
+            and the immutable origination fields).
+
+    Returns:
+        The :class:`LoanAnchorFact` list -- always non-empty (the origination
+        fact is always first), so a configured loan is always resolvable.
+    """
+    trueup_source_id = ref_cache.loan_anchor_source_id(
+        LoanAnchorSourceEnum.USER_TRUEUP,
+    )
+    trueup_events = (
+        db.session.query(LoanAnchorEvent)
+        .filter(
+            LoanAnchorEvent.account_id == params.account_id,
+            LoanAnchorEvent.source_id == trueup_source_id,
+        )
+        .all()
+    )
+    facts = [LoanAnchorFact(
+        account_id=params.account_id,
+        anchor_date=params.origination_date,
+        anchor_balance=Decimal(str(params.original_principal)),
+        is_opening=True,
+        created_at=_ORIGINATION_CREATED_AT,
+    )]
+    facts.extend(
+        LoanAnchorFact(
+            account_id=event.account_id,
+            anchor_date=event.anchor_date,
+            anchor_balance=Decimal(str(event.anchor_balance)),
+            is_opening=False,
+            created_at=event.created_at,
+        )
+        for event in trueup_events
+    )
+    return facts
 
 
 def _rate_change_records_from(
@@ -177,33 +279,6 @@ def load_all_loan_account_ids() -> list[int]:
         .all()
     )
     return [account_id for (account_id,) in rows]
-
-
-def load_anchor_events(account_id: int) -> list:
-    """Load every :class:`LoanAnchorEvent` for a loan account (unordered).
-
-    The shared anchor-history loader for the loan consumers
-    (:func:`app.services.loan_payment_service.resolve_account_loan`, the loan
-    PITI resolver, and the Step-4
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits`); the
-    resolver and the split walk both select the latest event from the returned
-    list via :func:`app.services.loan_resolver.select_latest_anchor` (so the
-    ordering is irrelevant here and not imposed).  Centralising the query keeps
-    the consumers from drifting on how a loan's anchor history is read.
-
-    Args:
-        account_id: The loan account whose anchor events to load.
-
-    Returns:
-        The account's :class:`LoanAnchorEvent` rows (possibly empty -- the
-        origination backfill guarantees at least one in production, but a
-        direct-insert test fixture may have none).
-    """
-    return (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account_id)
-        .all()
-    )
 
 
 def load_active_escrow_components(account_id: int) -> list:

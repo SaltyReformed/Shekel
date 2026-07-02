@@ -14,13 +14,12 @@ from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
-from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.services import balance_at, loan_resolver
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import (
     load_loan_context,
     resolve_loan_seeded,
@@ -92,7 +91,7 @@ def _current_balance_from_map(balances, acct, ctx):
     return balances.get(ctx.current_period.id)
 
 
-def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
+def _loan_ever_paid_off(acct_loan_params, anchor_facts, loan_ctx):
     """Return whether confirmed payments have EVER retired this loan.
 
     Distinct from "balance is zero as of today": the per-tile current
@@ -107,7 +106,8 @@ def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
 
     Args:
         acct_loan_params: The account's LoanParams.
-        anchor_events: The account's LoanAnchorEvent rows.
+        anchor_facts: The account's anchor facts (synthesized origination +
+            true-ups, from ``loan_loaders.load_loan_anchor_facts``).
         loan_ctx: The loaded loan context (payments + rate changes).
 
     Returns:
@@ -118,7 +118,7 @@ def _loan_ever_paid_off(acct_loan_params, anchor_events, loan_ctx):
         return False
     ever_state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
-            acct_loan_params, anchor_events,
+            acct_loan_params, anchor_facts,
             loan_ctx.payments, loan_ctx.rate_changes,
         ),
         date.max,
@@ -152,11 +152,7 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id):
         A :class:`_LoanAccountResult` with the resolver-derived figures.
     """
     loan_ctx = load_loan_context(acct.id, scenario_id, acct_loan_params)
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=acct.id)
-        .all()
-    )
+    anchor_facts = load_loan_anchor_facts(acct_loan_params)
     # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
     # the /savings tile's ``current_balance`` is the genesis-ledger confirmed
     # balance (falling back to the anchor replay when the ledger has not opened
@@ -164,7 +160,7 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id):
     # is already established for the reader's trust-the-caller contract.
     state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
-            acct_loan_params, anchor_events,
+            acct_loan_params, anchor_facts,
             loan_ctx.payments, loan_ctx.rate_changes,
         ),
         acct.id, scenario_id, date.today(),
@@ -175,7 +171,7 @@ def _compute_loan_account(acct, acct_loan_params, scenario_id):
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
         is_paid_off=_loan_ever_paid_off(
-            acct_loan_params, anchor_events, loan_ctx,
+            acct_loan_params, anchor_facts, loan_ctx,
         ),
     )
 

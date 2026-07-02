@@ -2178,7 +2178,7 @@ class TestConfirmedLoanHistoryRows:
             state = loan_resolver.resolve_loan(
                 loan_resolver.LoanInputs(
                     params,
-                    loan_loaders.load_anchor_events(loan.id),
+                    loan_loaders.load_loan_anchor_facts(params),
                     ctx.payments,
                     ctx.rate_changes,
                 ),
@@ -2338,7 +2338,7 @@ class TestConfirmedLoanHistoryRows:
             state = loan_resolver.resolve_loan(
                 loan_resolver.LoanInputs(
                     params,
-                    loan_loaders.load_anchor_events(loan.id),
+                    loan_loaders.load_loan_anchor_facts(params),
                     ctx.payments,
                     ctx.rate_changes,
                 ),

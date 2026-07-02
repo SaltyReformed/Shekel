@@ -282,11 +282,13 @@ class LoanInputs:
             work unchanged; duck-typed test fixtures work too (the type
             hint is a typing-only forward reference, not a runtime
             constraint).
-        anchor_events: Non-empty list of LoanAnchorEvent-shaped objects
-            (``anchor_date``, ``anchor_balance``, ``created_at``).
-            Commit 12's origination backfill guarantees at least one per
-            loan; an empty list raises ``ValueError`` when the latest
-            anchor is selected.
+        anchor_events: Non-empty list of anchor-shaped objects
+            (``anchor_date``, ``anchor_balance``, ``created_at``) --
+            in production the :class:`~app.services.loan_loaders.LoanAnchorFact`
+            list from ``load_loan_anchor_facts`` (the synthesized
+            origination fact plus stored true-ups), so a configured loan
+            always has at least one; an empty list raises ``ValueError``
+            when the latest anchor is selected.
         payments: Prepared :class:`PaymentRecord` list from
             :func:`app.services.loan_payment_service.prepare_payments_for_engine`
             (escrow subtracted, biweekly redistributed).  ``None`` or
@@ -326,16 +328,18 @@ def select_latest_anchor(anchor_events: list) -> object:
         The single most recent event.
 
     Raises:
-        ValueError: If ``anchor_events`` is empty.  Commit 12's
-            origination backfill guarantees at least one event per
-            loan; an empty list signals a data invariant violation
-            the caller must surface, not silently paper over.
+        ValueError: If ``anchor_events`` is empty.  A configured loan's
+            origination anchor is synthesized from its immutable params
+            (``loan_loaders.load_loan_anchor_facts``), so an empty list
+            signals the caller bypassed the shared loader -- a data
+            invariant violation to surface, not silently paper over.
     """
     if not anchor_events:
         raise ValueError(
-            "loan_resolver requires at least one LoanAnchorEvent; "
-            "Commit 12 backfill should have produced an origination "
-            "event for every loan -- received an empty list."
+            "loan_resolver requires at least one anchor fact; a "
+            "configured loan's origination anchor is synthesized from "
+            "its LoanParams via loan_loaders.load_loan_anchor_facts -- "
+            "received an empty list."
         )
     return max(
         anchor_events,
@@ -357,7 +361,9 @@ def _replay_from_anchor(
     anchor and starting replay from its verified balance is identical
     work for both, so it lives here once: the resolver's
     independently-derived balance and the composer's history rows walk
-    the same replay and cannot diverge.
+    the same replay and cannot diverge.  Under the read switch this
+    replay is the None-view FALLBACK for balances and rows, and still
+    supplies the forward projection's starting date / remaining months.
 
     Only confirmed payments reduce the balance.  An unconfirmed payment
     is a Projected transfer the user has not yet marked received; it is

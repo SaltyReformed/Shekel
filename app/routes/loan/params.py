@@ -2,7 +2,9 @@
 Shekel Budget App -- Loan route package: parameter management.
 
 Initial loan-parameter creation, parameter updates, and the dated balance
-true-up (an append-only :class:`LoanAnchorEvent`).  All three are
+true-up (an append-only ``user_trueup`` :class:`LoanAnchorEvent`; the
+origination event write is retired -- the origination anchor is synthesized
+from the immutable :class:`LoanParams`).  All three are
 redirect-style POST handlers that flash and return to the dashboard.
 """
 
@@ -12,11 +14,8 @@ from decimal import Decimal
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app import ref_cache
-from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
@@ -101,32 +100,22 @@ def create_params(account_id):
         monthly_pi=None,
     ))
 
-    # Origination LoanAnchorEvent (E-18 / Commit 15; closes F-9).
-    # The loan resolver requires at least one event per loan; Commit
-    # 12's migration backfilled events for every pre-existing loan,
-    # but new loans created post-migration need an explicit
-    # origination event written here so the dashboard's resolver
-    # call does not raise ValueError on first render.  Mirrors
-    # ``account_service.create_account``'s paired-row insert pattern
-    # for :class:`AccountAnchorHistory`.
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=params.origination_date,
-        anchor_balance=params.original_principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
+    # NO origination LoanAnchorEvent is written (the read switch's final
+    # commit retired it): the origination anchor is a verbatim copy of the
+    # immutable LoanParams fields, so every consumer -- the genesis posting
+    # walk and the resolver's replay fallback -- SYNTHESIZES it from the
+    # params via ``loan_loaders.load_loan_anchor_facts``.  Only a user
+    # balance true-up appends a ``user_trueup`` event (the operator's
+    # assertion, a real fact with no other home).
 
-    # Posting ledger (read switch): now that the params / origination rate /
-    # anchor exist, reconcile the loan's full genesis ledger.  For a brand-new
+    # Posting ledger (read switch): now that the params / origination rate
+    # exist, reconcile the loan's full genesis ledger.  For a brand-new
     # loan this posts the OPENING (-original_principal onto the loan, its
     # positive onto a per-loan opening-equity account) in the baseline scenario
     # -- the payment-less case the all-scenarios sync covers by including the
     # baseline.  A loan that had payments settled before it was configured (not
     # yet resolvable, so uncorrected) also gets those payments' split
-    # corrections back-posted here.  Inert on displayed balances until the read
-    # switch (reads still flow through the resolver).
+    # corrections back-posted here.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
 

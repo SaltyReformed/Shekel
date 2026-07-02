@@ -875,7 +875,7 @@ class TestMortgageInterestGenesisHybrid:
             )
             replay_state = loan_resolver.resolve_loan(
                 loan_resolver.LoanInputs(
-                    params, loan_loaders.load_anchor_events(loan.id),
+                    params, loan_loaders.load_loan_anchor_facts(params),
                     ctx.payments, ctx.rate_changes,
                 ),
                 date(2026, 4, 1),

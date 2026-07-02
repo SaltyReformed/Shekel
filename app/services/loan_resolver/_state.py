@@ -15,7 +15,6 @@ from decimal import Decimal
 
 from app.services.amortization_engine import (
     AmortizationRow,
-    PaymentRecord,
     RateChangeRecord,
 )
 from app.services.rate_period_engine import period_for_date
@@ -84,10 +83,8 @@ class LoanState:
 
 def compute_monthly_payment_baseline(
     loan_params,
-    anchor_events: list,
     rate_changes: list[RateChangeRecord] | None,
     as_of: date,
-    payments: list[PaymentRecord] | None = None,
 ) -> Decimal:
     """Return the loan's current monthly P&I -- the rate-period level payment.
 
@@ -103,31 +100,23 @@ def compute_monthly_payment_baseline(
     The monthly P&I is the level payment of the rate period containing
     ``as_of`` (see :func:`build_rate_periods`): held constant within the
     period and recast only at a rate adjustment.  It is independent of
-    the running balance, so ``anchor_events`` and ``payments`` are
-    accepted for caller compatibility only and are not read.
+    the running balance, so no anchor or payment feed is taken (the
+    read-switch arc's final commit dropped the old unused
+    compatibility parameters).
 
     Args:
         loan_params: Loan parameter object exposing the fields
             :func:`build_rate_periods` reads (origination, principal,
             base rate, term, ARM cadence).
-        anchor_events: Accepted for caller compatibility; unused -- the
-            period P&I does not depend on the anchor balance.
         rate_changes: Optional ARM rate-history feeding each period's
             rate and any recorded recast P&I.  ``None`` or empty for a
             fixed-rate loan.
         as_of: Evaluation date; selects the governing rate period.
-        payments: Accepted for caller compatibility; unused.
 
     Returns:
         Rounded Decimal monthly P&I, equal to
         ``resolve_loan(...).monthly_payment`` for the same inputs.
     """
-    # Pylint: ``unused-argument`` -- ``anchor_events`` and ``payments`` are
-    # unused: the current period's level P&I is anchor-independent -- a
-    # property of the loan's contractual rate-period structure, not of the
-    # running balance.  Both stay in the signature for caller compatibility
-    # (loan_payment_service.compute_contractual_pi passes them).
-    # pylint: disable=unused-argument
     return period_for_date(
         resolve_periods(loan_params, rate_changes), as_of,
     ).period_pi

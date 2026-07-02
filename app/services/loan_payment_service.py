@@ -48,7 +48,7 @@ from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_loaders import (
     _rate_change_records_from,
     load_active_escrow_components,
-    load_anchor_events,
+    load_loan_anchor_facts,
     load_loan_params,
     load_rate_history,
     query_shadow_income,
@@ -149,14 +149,6 @@ def load_loan_context(
     rate_history_records = load_rate_history(account_id)
     rate_changes = _rate_change_records_from(rate_history_records)
 
-    # Anchor events for the SSOT monthly_payment calculation.  Commit
-    # 12's origination backfill guarantees at least one anchor per
-    # loan; an empty list only arises in direct unit-test invocations
-    # that bypass the backfill, and compute_contractual_pi tolerates it
-    # (the period P&I is anchor-independent -- it reads the rate-change
-    # feed, not the anchor).
-    anchor_events = load_anchor_events(account_id)
-
     # Payment history from shadow income transactions.
     raw_payments = (
         get_payment_history(account_id, scenario_id)
@@ -178,11 +170,7 @@ def load_loan_context(
     # true P&I, under-subtracts escrow, and leaks a few cents per
     # row into the schedule's "Payment" column.
     contractual_pi = compute_contractual_pi(
-        loan_params,
-        anchor_events=anchor_events,
-        rate_changes=rate_changes,
-        as_of=date.today(),
-        payments=raw_payments,
+        loan_params, rate_changes, date.today(),
     )
     payments = prepare_payments_for_engine(
         raw_payments, loan_params.payment_day,
@@ -273,10 +261,8 @@ def get_payment_history(
 
 def compute_contractual_pi(
     params: LoanParams,
-    anchor_events: list | None = None,
-    rate_changes: list[RateChangeRecord] | None = None,
+    rate_changes: list[RateChangeRecord] | None,
     as_of: date | None = None,
-    payments: list[PaymentRecord] | None = None,
 ) -> Decimal:
     """Return the SSOT monthly P&I number for a loan.
 
@@ -292,20 +278,18 @@ def compute_contractual_pi(
     the ``LoanParams.interest_rate`` column, so the rate now comes
     exclusively from ``rate_changes``; the prior legacy pure-LoanParams
     fallback (which read the column) is gone.  The value is independent
-    of the running balance, so ``anchor_events`` and ``payments`` are
-    accepted for caller compatibility only and are not read.
+    of the running balance, so no anchor or payment feed is taken (the
+    read-switch arc's final commit dropped the old unused
+    compatibility parameters).
 
     Args:
         params: LoanParams model instance with ``original_principal``,
             ``term_months``, and the ARM cadence fields.
-        anchor_events: Accepted for caller compatibility; unused (the
-            period P&I does not depend on the anchor balance).
         rate_changes: The loan's rate-change feed (origination row plus
             any ARM adjustments).  Required -- an empty/``None`` feed
             raises in the resolver, because every loan must carry an
             origination :class:`RateHistory` row.
         as_of: Optional evaluation date.  Defaults to ``date.today()``.
-        payments: Accepted for caller compatibility; unused.
 
     Returns:
         Decimal monthly P&I payment, or ``Decimal("0")`` when
@@ -323,17 +307,11 @@ def compute_contractual_pi(
     # top-level circular import (loan_resolver imports ``load_loan_context``
     # from this module, so a top-level import here would be circular).
     from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
-    # ``anchor_events`` and ``payments`` are unused by the baseline (the
-    # period P&I is anchor-independent); passed through for signature
-    # compatibility.  The rate comes from ``rate_changes`` (DH-#56 retired
+    # The rate comes from ``rate_changes`` (DH-#56 retired
     # ``LoanParams.interest_rate``), so an empty feed raises in the
     # resolver rather than silently defaulting to a wrong payment.
     return loan_resolver.compute_monthly_payment_baseline(
-        params,
-        anchor_events or [],
-        rate_changes,
-        as_of or date.today(),
-        payments=payments,
+        params, rate_changes, as_of or date.today(),
     )
 
 
@@ -593,12 +571,11 @@ def resolve_account_loan(
     back to the anchor replay when the ledger has not opened the loan).
 
     Returns ``None`` when the account has no ``LoanParams`` row (it is not a
-    configured loan); the caller skips it.  Unlike
-    :func:`_resolve_loan_piti`, an account WITH params but no anchor events
-    is still resolved here -- both callers screen those out downstream
-    (debt-strategy via its zero-balance/zero-payment guard, the year-end
-    feed via the resulting empty schedule), so the no-anchor short-circuit
-    that PITI needs is intentionally absent.
+    configured loan); the caller skips it.  A configured loan is always
+    resolvable -- its origination anchor fact is synthesized from the
+    immutable params -- so there is no anchor-based short-circuit here or
+    in :func:`_resolve_loan_piti` (the two differ only in what they
+    return).
 
     Args:
         account_id: The debt account to resolve.
@@ -618,11 +595,11 @@ def resolve_account_loan(
     params = load_loan_params(account_id)
     if params is None:
         return None
-    anchor_events = load_anchor_events(account_id)
+    anchor_facts = load_loan_anchor_facts(params)
     ctx = load_loan_context(account_id, scenario_id, params)
     state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
-            params, anchor_events, ctx.payments, ctx.rate_changes,
+            params, anchor_facts, ctx.payments, ctx.rate_changes,
         ),
         account_id, scenario_id, today,
     )
@@ -634,10 +611,12 @@ def _resolve_loan_piti(
 ) -> Decimal | None:
     """Resolve a loan's full live monthly payment (P&I + escrow), or None.
 
-    Returns None when the loan has no ``LoanParams`` row or no anchor
-    events (it cannot be resolved, so its shadows keep their stored amount).
-    ``resolve_loan(...).monthly_payment`` is the rate-period P&I;
-    ``context.monthly_escrow`` adds the escrow component to reach PITI.
+    Returns None when the loan has no ``LoanParams`` row (it cannot be
+    resolved, so its shadows keep their stored amount); a configured loan
+    is always resolvable, since its origination anchor fact is synthesized
+    from the immutable params.  ``resolve_loan(...).monthly_payment`` is the
+    rate-period P&I; ``context.monthly_escrow`` adds the escrow component to
+    reach PITI.
     """
     # Pylint: ``import-outside-toplevel`` -- loan_resolver imports nothing
     # from this module, so resolving it here rather than at module top
@@ -647,12 +626,10 @@ def _resolve_loan_piti(
     if params is None:
         return None
     context = load_loan_context(loan_account_id, scenario_id, params)
-    anchor_events = load_anchor_events(loan_account_id)
-    if not anchor_events:
-        return None
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
-            params, anchor_events, context.payments, context.rate_changes,
+            params, load_loan_anchor_facts(params),
+            context.payments, context.rate_changes,
         ),
         as_of,
     )

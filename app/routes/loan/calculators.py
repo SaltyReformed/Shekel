@@ -18,7 +18,6 @@ from flask_login import current_user, login_required
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _build_chart_series,
-    _load_anchor_events,
     _load_loan_account,
     _load_loan_context,
     _payoff_schema,
@@ -26,6 +25,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
+from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import confirmed_loan_view
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -80,7 +80,7 @@ def _build_payoff_summary(scenarios, state):
     )
 
 
-def _payoff_extra_payment_result(params, account_id, ctx, data, confirmed_view):
+def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
     """Render the extra-payment payoff scenario partial.
 
     One ``compute_payoff_scenarios`` call drives both the chart series
@@ -94,8 +94,8 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, confirmed_view):
     empty when the loan has no payments.
 
     Args:
-        params: ORM :class:`LoanParams` instance.
-        account_id: Debt account id (anchor-event load).
+        params: ORM :class:`LoanParams` instance (also the anchor-fact
+            synthesis source).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
         confirmed_view: The genesis-ledger confirmed view, read once by the
@@ -111,7 +111,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, confirmed_view):
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_resolver.LoanInputs(
             loan_params=params,
-            anchor_events=_load_anchor_events(account_id),
+            anchor_events=load_loan_anchor_facts(params),
             payments=ctx.loan.payments,
             rate_changes=ctx.loan.rate_changes,
         ),
@@ -146,7 +146,7 @@ def _payoff_extra_payment_result(params, account_id, ctx, data, confirmed_view):
     )
 
 
-def _payoff_target_date_result(params, account_id, ctx, data, confirmed_view):
+def _payoff_target_date_result(params, ctx, data, confirmed_view):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -173,9 +173,8 @@ def _payoff_target_date_result(params, account_id, ctx, data, confirmed_view):
     expose on :class:`LoanState`.
 
     Args:
-        params: ORM :class:`LoanParams` instance.
-        account_id: Debt account id (anchor-event load for the
-            plan-aware outlook).
+        params: ORM :class:`LoanParams` instance (also the anchor-fact
+            synthesis source for the plan-aware outlook).
         ctx: Loan context from :func:`_load_loan_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
         confirmed_view: The genesis-ledger confirmed view, read once by the
@@ -220,7 +219,7 @@ def _payoff_target_date_result(params, account_id, ctx, data, confirmed_view):
         outlook = loan_resolver.target_date_outlook(
             loan_inputs=loan_resolver.LoanInputs(
                 loan_params=params,
-                anchor_events=_load_anchor_events(account_id),
+                anchor_events=load_loan_anchor_facts(params),
                 payments=ctx.loan.payments,
                 rate_changes=ctx.loan.rate_changes,
             ),
@@ -281,9 +280,9 @@ def payoff_calculate(account_id):
     )
 
     if mode == "extra_payment":
-        return _payoff_extra_payment_result(params, account_id, ctx, data, view)
+        return _payoff_extra_payment_result(params, ctx, data, view)
     if mode == "target_date":
-        return _payoff_target_date_result(params, account_id, ctx, data, view)
+        return _payoff_target_date_result(params, ctx, data, view)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",

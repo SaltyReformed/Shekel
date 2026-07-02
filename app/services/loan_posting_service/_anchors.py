@@ -36,13 +36,11 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
-    LoanAnchorSourceEnum,
     PostingKindEnum,
     PostingSourceEnum,
 )
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.pay_period import PayPeriod
 from app.services import account_projection, ledger_account_service
 from app.services.posting_service import (
@@ -51,6 +49,8 @@ from app.services.posting_service import (
     _emit_balanced_entry,
     _ledger_account_for,
 )
+
+from app.services.loan_loaders import LoanAnchorFact
 
 from ._common import delta_legs, loan_owner_id, summed_posting_legs
 from ._walk import LoanAnchorCorrection, walk_loan_ledger
@@ -64,28 +64,26 @@ _LegMap = dict[int, tuple[Decimal, int]]
 
 
 def _anchor_correction_kinds(
-    anchor: LoanAnchorEvent,
+    anchor: LoanAnchorFact,
 ) -> tuple[PostingSourceEnum, PostingKindEnum]:
     """Return the (journal source kind, posting leg kind) for an anchor's correction.
 
     The origination anchor books the loan's OPENING (source ``loan_opening``, leg
     kind ``opening``); every other anchor is a user balance assertion and books a
-    TRUE-UP (source ``loan_trueup``, leg kind ``trueup``).  Keyed off the anchor's
-    ``source_id`` compared to the ``origination`` ref id -- the only two seeded
-    anchor sources are ``origination`` and ``user_trueup``, so "not origination"
-    is exactly "user-trueup".
+    TRUE-UP (source ``loan_trueup``, leg kind ``trueup``).  Keyed off the fact's
+    ``is_opening`` flag -- the synthesized origination fact is the only opening
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`), so "not
+    opening" is exactly "user-trueup".
 
     Args:
-        anchor: The anchor event whose correction kinds to resolve.
+        anchor: The :class:`~app.services.loan_loaders.LoanAnchorFact` whose
+            correction kinds to resolve.
 
     Returns:
         ``(PostingSourceEnum, PostingKindEnum)`` -- ``(LOAN_OPENING, OPENING)`` for
         the origination anchor, else ``(LOAN_TRUEUP, TRUEUP)``.
     """
-    origination_source_id = ref_cache.loan_anchor_source_id(
-        LoanAnchorSourceEnum.ORIGINATION,
-    )
-    if anchor.source_id == origination_source_id:
+    if anchor.is_opening:
         return PostingSourceEnum.LOAN_OPENING, PostingKindEnum.OPENING
     return PostingSourceEnum.LOAN_TRUEUP, PostingKindEnum.TRUEUP
 
@@ -121,7 +119,7 @@ def _loan_anchor_correction_target(
     """
     anchor = correction.anchor
     loan_account_id = anchor.account_id
-    verified = Decimal(str(anchor.anchor_balance))
+    verified = anchor.anchor_balance
     linked_amount = correction.owed_before - verified
     if linked_amount == 0:
         return {}

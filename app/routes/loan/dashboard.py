@@ -27,12 +27,12 @@ from app.models.transfer_template import TransferTemplate
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _build_chart_series,
-    _load_anchor_events,
     _load_loan_account,
     _load_loan_context,
 )
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import AmortizationRow, AmortizationSummary
+from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import confirmed_loan_view
 from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
@@ -623,7 +623,7 @@ def dashboard(account_id):
     scenario = get_baseline_scenario(current_user.id)
     loan_inputs = loan_resolver.LoanInputs(
         loan_params=params,
-        anchor_events=_load_anchor_events(account.id),
+        anchor_events=load_loan_anchor_facts(params),
         payments=ctx.loan.payments,
         rate_changes=ctx.loan.rate_changes,
     )

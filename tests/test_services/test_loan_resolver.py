@@ -757,15 +757,16 @@ def test_payoff_date_and_total_interest():
 
 
 def test_empty_anchor_events_raises_value_error():
-    """The Commit-12 backfill guarantee is structural: empty raises loud.
+    """The anchor-fact guarantee is structural: empty raises loud.
 
-    If a caller hands the resolver an empty anchor-event list, the
-    Commit-12 invariant has been violated and silently producing a
-    "no anchor, project from origination" answer would mask the
-    bug.  The resolver raises ValueError to surface it.
+    A configured loan's origination anchor is SYNTHESIZED from its
+    immutable params (``loan_loaders.load_loan_anchor_facts``), so an
+    empty anchor list means the caller bypassed the shared loader;
+    silently producing a "no anchor, project from origination" answer
+    would mask the bug.  The resolver raises ValueError to surface it.
     """
     params = _arm_400k_params()
-    with pytest.raises(ValueError, match="at least one LoanAnchorEvent"):
+    with pytest.raises(ValueError, match="at least one anchor fact"):
         resolve_loan(
             LoanInputs(params, [], None, _rate_feed(params)),
             date(2026, 6, 1),
