@@ -328,43 +328,40 @@ def _stale_loan_payment_shadows(
     )
 
 
-def sync_loan_payment_postings(
-    loan_account_id: int, scenario_id: int, as_of: date,
+def reconcile_loan_payment_splits(
+    loan_account_id: int,
+    scenario_id: int,
+    splits: list[LoanPaymentSplit],
 ) -> None:
-    """Reconcile a loan's per-payment split corrections to reality, idempotently.
+    """Reconcile a loan's per-payment corrections to a PRE-WALKED split list.
 
-    Computes the real split of every confirmed payment from origination
-    (:func:`compute_loan_payment_splits`), reconciles each payment's correction
-    to its target legs (:func:`_reconcile_loan_payment` /
+    The reconcile half of the payment sync, taking the splits already produced
+    by :func:`walk_loan_ledger` rather than re-walking, so the unified
+    :func:`app.services.loan_posting_service.sync_loan_postings` can drive BOTH
+    the payment and the anchor reconcile off ONE walk (the anchor half is
+    :func:`._anchors.reconcile_loan_anchor_corrections`), never the two walks a
+    pair of self-contained syncs would cost.  Reconciles each payment's
+    correction to its target legs (:func:`_reconcile_loan_payment` /
     :func:`_loan_payment_target`), then reverses any correction whose payment is
-    no longer confirmed (:func:`_stale_loan_payment_shadows`).  WHOLE-loan because
-    interest accrues on the running balance -- re-splitting one payment (a
-    true-up, a rate change, an amount edit) re-splits every LATER one -- so a
-    per-payment sync could leave the downstream corrections stale.
+    no longer confirmed (:func:`_stale_loan_payment_shadows`).
 
-    Posts ONLY the payment-split corrections; the loan's opening / true-up
-    corrections are reconciled separately by
-    :func:`app.services.loan_posting_service.sync_loan_anchor_corrections` (they
-    share the same :func:`walk_loan_ledger` running balance but book against the
-    loan's opening-equity account, not a payment shadow).
-
-    Idempotent and self-healing: a re-run with no change writes nothing
-    (reconcile-to-target sees ``delta == 0`` everywhere), and a missed call
-    repairs at the next sync.  Touches ONLY the loan's own ledgers (linked,
-    interest, escrow, refund) -- never Checking (the Step-2 cash entry is
-    immutable and correct), so a loan sync can never move a cash balance.
-
-    Reads ``as_of`` as the upper bound on which payments are historical; the
-    go-forward wiring passes ``date.today()``.  Flushes but does not commit (the
-    caller owns the transaction).
+    WHOLE-loan because interest accrues on the running balance -- re-splitting
+    one payment (a true-up, a rate change, an amount edit) re-splits every LATER
+    one -- so a per-payment reconcile could leave the downstream corrections
+    stale; the caller therefore passes the loan's FULL split list, not a subset.
+    Idempotent and self-healing: a re-run with the same splits writes nothing
+    (reconcile-to-target sees ``delta == 0`` everywhere).  Touches ONLY the
+    loan's own ledgers (linked, interest, escrow, refund) -- never Checking (the
+    Step-2 cash entry is immutable and correct), so a loan sync can never move a
+    cash balance.  Flushes but does not commit (the caller owns the transaction).
 
     Args:
-        loan_account_id: The loan whose corrections to reconcile.
+        loan_account_id: The loan whose corrections to reconcile (scopes the
+            stale-shadow reversal query).
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date (a payment whose pay period has not begun by
-            it is a projection, excluded from the confirmed set).
+        splits: The loan's confirmed payment splits from
+            :func:`walk_loan_ledger` (the WHOLE list through the walk's as-of).
     """
-    splits = compute_loan_payment_splits(loan_account_id, scenario_id, as_of)
     synced_shadow_ids: set[int] = set()
     for split in splits:
         synced_shadow_ids.add(split.income_shadow.id)
@@ -380,6 +377,40 @@ def sync_loan_payment_postings(
         loan_account_id, scenario_id, synced_shadow_ids,
     ):
         _reconcile_loan_payment(shadow, {})
+
+
+def sync_loan_payment_postings(
+    loan_account_id: int, scenario_id: int, as_of: date,
+) -> None:
+    """Walk a loan's confirmed payments and reconcile ONLY their split corrections.
+
+    The payment-only sync: computes the real split of every confirmed payment
+    from origination (:func:`compute_loan_payment_splits`) and reconciles them
+    (:func:`reconcile_loan_payment_splits`).  Posts ONLY the payment-split
+    corrections; the loan's opening / true-up corrections are reconciled
+    separately by
+    :func:`app.services.loan_posting_service.sync_loan_anchor_corrections`, and
+    the go-forward chokepoints reconcile BOTH in one walk via
+    :func:`app.services.loan_posting_service.sync_loan_postings`.  This
+    single-half entry point remains for reconciling payments in isolation (the
+    split-value unit tests).
+
+    Idempotent and self-healing: a re-run with no change writes nothing, and a
+    missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
+    (never Checking).  Reads ``as_of`` as the upper bound on which payments are
+    historical; the go-forward wiring passes ``date.today()``.  Flushes but does
+    not commit (the caller owns the transaction).
+
+    Args:
+        loan_account_id: The loan whose corrections to reconcile.
+        scenario_id: The budget scenario to reconcile within.
+        as_of: The evaluation date (a payment whose pay period has not begun by
+            it is a projection, excluded from the confirmed set).
+    """
+    reconcile_loan_payment_splits(
+        loan_account_id, scenario_id,
+        compute_loan_payment_splits(loan_account_id, scenario_id, as_of),
+    )
 
 
 def reverse_loan_payment_postings_for_shadow(income_shadow: Transaction) -> None:

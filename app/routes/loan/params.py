@@ -118,12 +118,16 @@ def create_params(account_id):
         ),
     ))
 
-    # Build-Order Step 4: a loan that had payments settled before it was
-    # configured was not yet resolvable, so those payments carry no split
-    # correction.  Now that the params / origination rate / anchor exist,
-    # back-post the corrections for every scenario's confirmed payments
-    # (a no-op for the common case of a brand-new loan with no payments).
-    loan_posting_service.sync_loan_payment_postings_all_scenarios(account.id)
+    # Posting ledger (read switch): now that the params / origination rate /
+    # anchor exist, reconcile the loan's full genesis ledger.  For a brand-new
+    # loan this posts the OPENING (-original_principal onto the loan, its
+    # positive onto a per-loan opening-equity account) in the baseline scenario
+    # -- the payment-less case the all-scenarios sync covers by including the
+    # baseline.  A loan that had payments settled before it was configured (not
+    # yet resolvable, so uncorrected) also gets those payments' split
+    # corrections back-posted here.  Inert on displayed balances until the read
+    # switch (reads still flow through the resolver).
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
 
     logger.info("Created loan params for account %d", account.id)
@@ -168,12 +172,14 @@ def update_params(account_id):
         if field in _PARAM_FIELDS:
             setattr(params, field, value)
 
-    # Build-Order Step 4: a params edit can change the origination rate (via
+    # Posting ledger: a params edit can change the origination rate (via
     # ``_upsert_origination_rate`` above) OR the ``payment_day`` -- both move
     # the confirmed-payment split (the rate drives interest; ``payment_day``
-    # drives the monthly-due-date eligibility boundary), so re-sync every
-    # scenario's corrections UNCONDITIONALLY, not only on the rate path.
-    loan_posting_service.sync_loan_payment_postings_all_scenarios(account.id)
+    # drives the monthly-due-date eligibility boundary) AND any true-up's
+    # ``owed_before`` (the running balance a later true-up corrects from), so
+    # re-sync every scenario's full genesis ledger UNCONDITIONALLY, not only on
+    # the rate path.
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")

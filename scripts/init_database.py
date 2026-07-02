@@ -163,21 +163,22 @@ def migrate_existing_database():
 
 
 def backfill_loan_payment_postings_after_migration():
-    """Post historical loan-payment split corrections after the chain is at head.
+    """Post the historical loan genesis ledger after the chain is at head.
 
-    Build-Order Step 4, Commit 6.  The real-split loan-payment backfill cannot
-    run inside an Alembic migration: it needs the ``ref_cache`` / service layer,
-    and this migration host builds the app with ``init_ref_cache=False`` (the
+    Build-Order Step 4 + the read switch.  Posts every loan's opening, true-up,
+    and confirmed-payment corrections.  This backfill cannot run inside an
+    Alembic migration: it needs the ``ref_cache`` / service layer, and this
+    migration host builds the app with ``init_ref_cache=False`` (the
     pre-migration bootstrap window; see the ``3104f87`` deploy fix), so
     ``ref_cache`` is off while migrations run.  Unlike the Step-2 / Step-3 cash
     backfills, the loan split is a running-balance walk over rate periods and
     effective-dated escrow -- not a one-line SQL formula -- so it cannot be
     reproduced in raw SQL without duplicating the money-critical split engine.
     So it runs HERE, once the chain has reached head and every ref row (the
-    loan-payment posting kinds / source, the ledger-account kinds) and schema
-    object the split service needs exists: initialise ``ref_cache`` against the
-    now-migrated database, then delegate to the idempotent
-    :func:`app.services.loan_posting_service.backfill_all_loan_payment_postings`.
+    posting kinds / sources, the ledger-account kinds) and schema object the
+    service needs exists: initialise ``ref_cache`` against the now-migrated
+    database, then delegate to the idempotent
+    :func:`app.services.loan_posting_service.backfill_all_loan_postings`.
 
     Runs only on the existing-database path (the fresh-database branch stamps
     Alembic without running migrations and has no loan payments to post, and its
@@ -188,7 +189,7 @@ def backfill_loan_payment_postings_after_migration():
     balanced-journal trigger validates every entry at that COMMIT, so an
     unbalanced correction aborts the deploy loud.
     """
-    print("Backfilling historical loan-payment split corrections...")
+    print("Backfilling historical loan genesis ledger (opening/true-up/splits)...")
     # Discard the idle read transaction ``is_fresh_database()`` opened before the
     # migrations ran, so ``ref_cache.init`` reads on a FRESH transaction that sees
     # the migration-seeded Step-4 ref rows.  Correct today under READ COMMITTED
@@ -196,9 +197,9 @@ def backfill_loan_payment_postings_after_migration():
     # transaction rather than carrying it across the reads.
     db.session.rollback()
     ref_cache.init(db.session)
-    posted = loan_posting_service.backfill_all_loan_payment_postings()
+    posted = loan_posting_service.backfill_all_loan_postings()
     db.session.commit()
-    print(f"Loan-payment split backfill complete ({len(posted)} loan(s) reconciled).")
+    print(f"Loan genesis-ledger backfill complete ({len(posted)} loan(s) reconciled).")
 
 
 if __name__ == "__main__":

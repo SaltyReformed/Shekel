@@ -568,16 +568,26 @@ class TestComputeLoanPaymentSplits:
 
 
 class TestSyncLoanPaymentPostings:
-    """Syncing posts one balanced correction per payment; the loan nets to principal."""
+    """Syncing posts one balanced correction per payment.
+
+    The setup settles through the transfer service, which fires the go-forward
+    wiring and posts the loan's opening + true-up corrections alongside the
+    payment splits, so ``account_posting_total(loan)`` is the FULL genesis balance
+    ``-(current balance)``.  The payment split itself is pinned by the correction
+    entry and the per-loan interest / escrow / refund legs, which the opening /
+    true-up corrections never touch.
+    """
 
     def test_sync_posts_one_balanced_correction(
         self, app, db, seed_user, seed_periods,
     ):
         """The correction is Loan -500 / Interest +500, summing to zero.
 
-        Arithmetic: cash 1000, interest 500, principal 500.  The loan-linked
-        ledger nets Step-2 cash (+1000) + correction loan leg (-500) = +500 ==
-        principal; the loan_interest ledger nets +500.00.
+        Arithmetic: cash 1000, interest 500, principal 500.  The correction's
+        loan leg (-500) nets against the Step-2 cash (+1000) to +500 of principal;
+        the loan_interest ledger nets +500.00.  With the wiring's opening (-250000)
+        and true-up (+150000) also posted, the loan-linked ledger nets to
+        -(current balance 99500) = -99500.00.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -611,23 +621,26 @@ class TestSyncLoanPaymentPostings:
                 Decimal("500.00"),
                 ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
             )
-            # Loan nets to the real principal; interest ledger holds the interest.
+            # Genesis: opening (-250000) + true-up (+150000) + principal (+500)
+            # = -(current balance 99500); interest ledger holds the +500.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
             assert _ledger_net(interest_ledger.id, scenario_id) == Decimal("500.00")
 
     def test_sync_posts_each_payment_in_a_multi_payment_loan(
         self, app, db, seed_user, seed_periods,
     ):
-        """Three payments each get a correction; the loan nets to summed principal.
+        """Three payments each get a correction; the loan nets to -(final balance).
 
         Arithmetic (the running-balance walk from
         ``test_running_balance_across_payments``): principals 500.00 + 502.50 +
-        505.01 = 1507.51, so the loan-linked ledger nets the three Step-2 cash
-        legs (+3000) plus the three correction loan legs (-1492.49) = 1507.51 ==
-        anchor 100000 - final balance 98492.49.  A second whole-loan sync writes
-        nothing (idempotent across every payment).
+        505.01 = 1507.51, so the three Step-2 cash legs (+3000) plus the three
+        correction loan legs (-1492.49) contribute +1507.51 of principal.  With
+        the opening (-250000) and true-up (+150000) the loan-linked ledger nets
+        -250000 + 150000 + 1507.51 = -98492.49 == -(anchor 100000 - 1507.51) =
+        -(final balance 98492.49).  A second whole-loan sync writes nothing
+        (idempotent across every payment).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -649,7 +662,7 @@ class TestSyncLoanPaymentPostings:
             assert all(len(_correction_entries(s.id)) == 1 for s in shadows)
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("1507.51")
+            ) == Decimal("-98492.49")
 
             # Idempotent across the whole loan: a re-sync adds no entries.
             loan_posting_service.sync_loan_payment_postings(
@@ -705,8 +718,10 @@ class TestSyncLoanPaymentPostings:
         """A payoff overpayment books a refund-receivable leg.
 
         Arithmetic (anchor 300 @ 6%, cash 1000): interest 1.50, principal
-        300.00, excess 698.50.  The loan_refund ledger nets +698.50; the loan
-        nets Step-2 cash 1000 - correction 700 = +300.00 == principal.
+        300.00, excess 698.50.  The loan_refund ledger nets +698.50; the payment
+        contributes +300.00 of principal (cash 1000 - correction 700).  With the
+        opening (-250000) and true-up (+249700 = 250000 - 300) the loan-linked
+        ledger nets -300 + 300 = 0.00 -- the loan is paid off, -(balance 0).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -728,7 +743,7 @@ class TestSyncLoanPaymentPostings:
             assert _ledger_net(refund_ledger.id, scenario_id) == Decimal("698.50")
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("300.00")
+            ) == Decimal("0.00")
 
     def test_sync_never_touches_checking(
         self, app, db, seed_user, seed_periods,
@@ -785,14 +800,16 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
 
-            # The transfer-id-keyed reader sees only the cash leg.
+            # The transfer-id-keyed reader sees only the cash leg -- neither the
+            # payment correction nor the opening / true-up (all NULL transfer_id).
             assert _transfer_filtered_loan_net(
                 xfer.id, loan_ledger,
             ) == Decimal("1000.00")
-            # But the full ledger (cash + correction) nets to principal.
+            # But the full ledger (opening -250000 + true-up +150000 + cash 1000
+            # + correction -500) nets to -(current balance 99500) = -99500.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
 
     def test_new_trueup_resplits_later_payments_and_keeps_earlier(
         self, app, db, seed_user, seed_periods,
@@ -896,11 +913,13 @@ class TestReverseLoanPaymentPostings:
     def test_reverse_zeroes_the_correction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Reversing a payment's correction returns the loan ledger to cash-only.
+        """Reversing a payment's correction drops the loan ledger to opening+cash.
 
         After the reverse, the per-shadow loan_payment net is zero on every
-        ledger, so the loan-linked ledger holds only the Step-2 cash (+1000)
-        and the interest ledger nets to 0.00.
+        ledger, so the interest ledger nets to 0.00 and the loan-linked ledger
+        holds the Step-2 cash (+1000) plus the still-posted opening + true-up
+        (-100000) -- the reverse touches only the payment correction, never the
+        anchor corrections -- for a net of -99000.00.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -920,10 +939,12 @@ class TestReverseLoanPaymentPostings:
             loan_posting_service.reverse_loan_payment_postings_for_shadow(shadow)
             db.session.commit()
 
-            # The correction net (cash leg + reversal) is zero everywhere.
+            # The payment correction net (cash leg + reversal) is zero on the
+            # per-loan ledgers; the linked ledger keeps cash (+1000) + the
+            # opening / true-up (-100000) = -99000.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("1000.00")
+            ) == Decimal("-99000.00")
             assert _ledger_net(interest_ledger.id, scenario_id) == Decimal("0")
 
     def test_reverse_is_a_noop_for_an_unposted_shadow(
@@ -963,9 +984,13 @@ class TestReverseLoanPaymentPostings:
     ):
         """A payment that leaves the eligible set is reversed by the next sync.
 
-        Settle + sync (one correction), then un-settle the payment (directly,
-        standing in for the Commit-5 revert wiring) and re-sync: the now-stale
-        correction is reversed to zero, so the loan ledger returns to cash-only.
+        Settle + sync (one correction; loan-linked -99500 = opening -250000 +
+        true-up +150000 + principal 500), then un-settle the payment (directly,
+        standing in for the revert wiring) and re-sync: the now-stale correction
+        is reversed, so the loan-linked ledger drops to the opening + true-up +
+        the un-reversed Step-2 cash (1000) = -99000.  (The raw un-settle leaves
+        the cash entry in place; the payment-only re-sync touches neither the
+        cash nor the anchor corrections.)
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -980,7 +1005,7 @@ class TestReverseLoanPaymentPostings:
             db.session.commit()
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
 
             # Un-settle (revert) the payment directly, then re-sync.
             db.session.query(Transaction).filter(
@@ -992,10 +1017,11 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
 
-            # The correction is reversed; the loan holds only the Step-2 cash.
+            # The correction is reversed; the loan holds the un-reversed Step-2
+            # cash (1000) plus the still-posted opening + true-up (-100000).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("1000.00")
+            ) == Decimal("-99000.00")
 
 
 # ---------------------------------------------------------------------------
@@ -1195,58 +1221,64 @@ class TestSyncLoanAnchorCorrections:
     def test_trueup_self_heals_when_a_pre_trueup_payment_is_added(
         self, app, db, seed_user, seed_periods,
     ):
-        """Adding a pre-trueup payment re-bases the true-up to hold -(verified).
+        """Settling a pre-trueup payment re-bases the true-up in the SAME reconcile.
 
         The true-up correction is owed_before - verified, and owed_before moves
-        when a pre-trueup payment changes -- so the reconcile must self-heal, not
-        leave a stale snapshot.  Origination $250,000, trueup $100,000 @
-        2026-02-15: the opening (-250000) and true-up (250000 - 100000 = +150000)
-        net the linked ledger to -100000.00.  Settling P1 (due 02-01, PRE-trueup,
-        cash 1000) posts its split (interest round(250000 * 0.005) = 1250,
-        principal -250) and grows owed_before to 250250 -- leaving the true-up
-        STALE at +150000, so the linked net drifts to -100250.00.  Re-syncing the
-        anchor corrections re-bases the true-up to 250250 - 100000 = +150250 (a
-        +250 delta), returning the linked net to -100000.00 -- exactly -(the
-        verified $100,000), the pre-trueup payment fully absorbed.
+        when a pre-trueup payment changes -- so the reconcile must self-heal
+        (reconcile-to-target), not leave a stale snapshot.  Origination $250,000,
+        trueup $100,000 @ 2026-02-15: with no payments the opening (-250000) and
+        true-up (250000 - 100000 = +150000) net the linked ledger to -100000.00,
+        and the per-loan opening-equity ledger holds their negatives, +100000.00.
+        Settling P1 (due 02-01, PRE-trueup, cash 1000) splits it on the origination
+        balance (interest round(250000 * 0.005) = 1250, principal -250) and grows
+        owed_before to 250250 -- and because the settle fires the UNIFIED sync
+        (:func:`sync_loan_postings`), the true-up re-bases to 250250 - 100000 =
+        +150250 (a +250 linked delta) in the SAME transaction, so the linked ledger
+        STAYS -100000.00 == -(verified $100,000), the pre-trueup payment fully
+        absorbed; the equity ledger re-bases to 250000 - 150250 = +99750.00.  No
+        stale window is ever observable through the go-forward path.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user, anchor_date=date(2026, 2, 15))
+            # The opening + true-up (and their per-loan equity ledger) are posted
+            # lazily on this first sync.
             loan_posting_service.sync_loan_anchor_corrections(
                 loan.id, scenario_id, _AS_OF,
             )
             db.session.commit()
+            equity_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.EQUITY_OPENING,
+            )
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-100000.00")
+            # Opening (+250000) + true-up (-150000) on the equity ledger.
+            assert _ledger_net(
+                equity_ledger.id, scenario_id,
+            ) == Decimal("100000.00")
 
-            # A pre-trueup payment grows owed_before; the true-up goes stale.
+            # Settle a pre-trueup payment; the unified wiring re-bases the true-up
+            # in the same transaction (no manual anchor re-sync needed).
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             db.session.commit()
-            loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
-            )
-            db.session.commit()
+
+            # Self-healed automatically: linked still -(verified 100000); the
+            # equity ledger re-based to opening (+250000) + true-up (-150250).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("-100250.00")  # stale true-up, pre-anchor split posted
+            ) == Decimal("-100000.00")
+            assert _ledger_net(
+                equity_ledger.id, scenario_id,
+            ) == Decimal("99750.00")
 
-            # Re-sync the anchor corrections: the true-up re-bases and self-heals.
-            loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
-            )
-            db.session.commit()
-            assert posting_service.account_posting_total(
-                loan.id, scenario_id,
-            ) == Decimal("-100000.00")  # self-healed (original + a +250 delta)
-
-            # A further sync is a no-op: no new entry, the healed balance holds.
+            # A further unified sync is a no-op: no new true-up entry, balance holds.
             trueups_after_heal = len(_anchor_correction_entries(
                 loan.id, scenario_id, PostingSourceEnum.LOAN_TRUEUP,
             ))
-            loan_posting_service.sync_loan_anchor_corrections(
+            loan_posting_service.sync_loan_postings(
                 loan.id, scenario_id, _AS_OF,
             )
             db.session.commit()
@@ -1302,3 +1334,49 @@ class TestSyncLoanAnchorCorrections:
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-100000.00")
+
+
+# ---------------------------------------------------------------------------
+# sync_loan_postings_all_scenarios -- the unified loan-global entry point
+# ---------------------------------------------------------------------------
+
+
+class TestUnifiedAllScenariosSync:
+    """The all-scenarios sync posts a payment-less loan's opening in the baseline."""
+
+    def test_posts_opening_for_a_payment_less_loan_in_the_baseline(
+        self, app, db, seed_user,
+    ):
+        """A brand-new loan with no payments gets its opening posted in the baseline.
+
+        A payment-less loan is in NO scenario's payment set
+        (``_scenarios_with_loan_payments`` is empty), so the all-scenarios sync
+        must add the owner's baseline -- otherwise ``create_params`` would post no
+        opening for a fresh loan.  Origination $250,000, trueup $100,000: the
+        opening (-250000) + true-up (+150000) net the baseline linked ledger to
+        -100000.00 == -(anchor 100000), and the per-loan opening-equity ledger
+        holds +100000; no payment-correction ledger is minted (there is no
+        payment).  This is the ``create_params`` N1 path the chokepoint relies on.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id  # the owner's baseline
+            loan = _make_loan(seed_user)  # no payments settled
+
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            # Opening (-250000) + true-up (+150000), no payment.
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == Decimal("-100000.00")
+            equity_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.EQUITY_OPENING,
+            )
+            assert equity_ledger is not None
+            assert _ledger_net(
+                equity_ledger.id, scenario_id,
+            ) == Decimal("100000.00")
+            # No payment-correction ledger is minted without a payment.
+            assert _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            ) is None

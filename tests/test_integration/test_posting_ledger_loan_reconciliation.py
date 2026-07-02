@@ -10,9 +10,10 @@ is validated against the SOURCE (the shadow cash rows and the anchor), never
 against a displayed balance.  The invariants below are plan Section 8.
 
   1. **Parallel run vs the resolver (the headline, plan 8.2).**  The ledger's view
-     of the current balance is ``anchor_balance - sum(principal postings)`` (the
-     linked-ledger net is exactly the summed real principal, Step-2 cash plus the
-     Step-4 correction).  The resolver derives its balance INDEPENDENTLY -- it
+     of the current balance is the genesis ``-(sum of the loan's linked-ledger
+     postings)`` -- the opening (-original_principal), every true-up, and every
+     payment's principal (Step-2 cash plus the Step-4 correction).  The resolver
+     derives its balance INDEPENDENTLY -- it
      never reads the ledger; it replays the SCHEDULED payment
      (``principal = period_pi - interest``) forward from the same latest anchor
      and discards the cash entirely (``rate_period_engine.replay_schedule``).  So
@@ -25,10 +26,12 @@ against a displayed balance.  The invariants below are plan Section 8.
   2. **Supersedes the cash per-account invariant for loans (plan 8.7).**  The
      Step-2 / Step-3 oracle asserts ``account_posting_total(A) ==
      settled_transfer_effect(A) + settled_transaction_effect(A)``.  That BREAKS
-     for a loan once corrections exist: the linked ledger nets to principal, not
-     to the cash.  The loan-aware invariant is ``account_posting_total(loan) ==
-     settled_transfer_effect(loan) - sum(interest + escrow + excess corrections)
-     == anchor - current_balance``.  One test drives this where the cash
+     for a loan once corrections exist: the linked ledger nets to -(current
+     balance), not to the cash.  The loan-aware invariant is
+     ``account_posting_total(loan) == settled_transfer_effect(loan) -
+     per_loan_correction_net`` where ``per_loan_correction_net`` is the sum of the
+     per-loan legs -- interest / escrow / excess PLUS the opening-equity legs (the
+     negatives of the opening + true-up).  One test drives this where the cash
      invariant provably fails.
   3. **Completeness over the full post-anchor set (plan 8.3).**  Every eligible
      confirmed payment whose split has a non-zero non-principal part carries a
@@ -152,11 +155,15 @@ from tests._test_helpers import (
 # historical (eligible) and the resolver / wiring see the same today.
 _AS_OF = date(2026, 5, 15)
 
-# The Commit-6 boundary migration, loaded so its idempotent raw-SQL teardown
-# (``_remove_loan_payment_postings``) can reproduce the pre-wiring historical
-# state directly -- the same pattern the backfill suite uses.
+# The two boundary migrations, loaded so their raw-SQL teardowns can reproduce
+# the pre-wiring historical state directly (the same pattern the backfill suite
+# uses).  The genesis teardown (opening / true-up + equity accounts) runs before
+# the Step-4 payment teardown -- the real downgrade-chain order.
 _BACKFILL_MIGRATION = load_migration_module(
     "e2a9f1c7b4d6_backfill_loan_payment_split_postings.py"
+)
+_GENESIS_MIGRATION = load_migration_module(
+    "f3d6b1a8c2e4_loan_genesis_postings_data_boundary.py"
 )
 
 
@@ -389,29 +396,21 @@ def _resolver_balance(
     return state.current_balance
 
 
-def _ledger_balance(
-    loan_account_id: int, scenario_id: int, anchor_balance: Decimal
-) -> Decimal:
-    """Return the ledger's view of the current balance.
+def _ledger_balance(loan_account_id: int, scenario_id: int) -> Decimal:
+    """Return the ledger's genesis view of the current balance.
 
-    ``anchor_balance - sum(principal postings)``: the linked-ledger net is exactly
-    the summed real principal paid since the anchor (Step-2 cash plus the Step-4
-    correction), so subtracting it from the anchor is the ledger's current
-    balance -- the quantity the read switch (plan Section 10) will display.
-
-    ASSUMES the loan has NO PRE-ANCHOR settled payment.  Step 2 posted every
-    settled transfer's cash, including one that came due before the latest anchor;
-    such a payment's cash sits on the linked ledger with NO Step-4 correction
-    (the split excludes it, plan 2.5), so it would over-reduce this figure.  The
-    latest anchor already subsumes that history, so reconciling / netting it out
-    is the read switch's "pre-anchor cleanup" (plan Section 10), out of scope for
-    this write-only step.  Every fixture here settles only POST-anchor payments
-    (the trueup anchor is 2026-01-10; the payment due dates are 02-01/03-01/04-01),
-    so the identity holds; the parallel run must not be given a pre-anchor payment.
+    ``-(sum of the loan's linked-ledger postings)``: under genesis the linked
+    ledger carries the opening (-original_principal), every true-up correction,
+    and every payment's principal (the Step-2 cash plus the Step-4 correction), so
+    the negated sum IS the confirmed balance the read switch (plan Section 10)
+    displays -- no anchor read, no boundary rule.  Numerically identical to the
+    Step-4 formula this replaces (``anchor - linked_net``) on a
+    post-anchor-only loan, because the opening + true-up legs sum to -(anchor) on
+    the linked ledger; but genesis also SUMS a pre-anchor payment correctly (its
+    principal is subsumed by the true-up's owed_before), so -- unlike the Step-4
+    formula -- there is no pre-anchor exclusion to assume away.
     """
-    return anchor_balance - _independent_loan_linked_net(
-        loan_account_id, scenario_id,
-    )
+    return -_independent_loan_linked_net(loan_account_id, scenario_id)
 
 
 def _assert_completeness(
@@ -555,16 +554,17 @@ class TestParallelRunAgainstResolver:
             )
             db.session.commit()
 
-            ledger = _ledger_balance(loan.id, scenario_id, _ANCHOR_BALANCE)
+            ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert ledger == resolver, (
                 f"on-schedule ledger {ledger} != resolver {resolver}"
             )
-            # Non-vacuity: the loan paid down by the real principal, cash (the
-            # scheduled P&I) minus the round(100000 * 0.005) = 500.00 interest.
+            # Non-vacuity: the genesis linked total is opening (-250000) + true-up
+            # (+150000) + the real principal (scheduled P&I - round(100000*0.005)
+            # = -500.00 interest), i.e. principal - _ANCHOR_BALANCE.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == scheduled_pi - Decimal("500.00")
+            ) == scheduled_pi - Decimal("500.00") - _ANCHOR_BALANCE
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             assert len(loan_correction_entries(db.session, shadow.id)) == 1
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
@@ -591,7 +591,7 @@ class TestParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[_P2], amount=scheduled_pi)
             db.session.commit()
 
-            ledger = _ledger_balance(loan.id, scenario_id, _ANCHOR_BALANCE)
+            ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert ledger == resolver
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
@@ -615,13 +615,14 @@ class TestParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
             db.session.commit()
 
-            ledger = _ledger_balance(loan.id, scenario_id, _ANCHOR_BALANCE)
+            ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             # The ledger's real balance, hand-computed.
             assert ledger == Decimal("99500.00")
+            # Genesis: opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("500.00")  # real principal
+            ) == Decimal("-99500.00")
             # They DIVERGE, and the ledger (short paydown) owes MORE.
             assert ledger != resolver
             assert resolver < ledger
@@ -646,12 +647,13 @@ class TestParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("2000.00"))
             db.session.commit()
 
-            ledger = _ledger_balance(loan.id, scenario_id, _ANCHOR_BALANCE)
+            ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert ledger == Decimal("98500.00")
+            # Genesis: opening (-250000) + true-up (+150000) + principal (+1500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("1500.00")  # real principal
+            ) == Decimal("-98500.00")
             # They DIVERGE, and the ledger (extra paydown) owes LESS.
             assert ledger != resolver
             assert ledger < resolver
@@ -725,10 +727,12 @@ class TestSupersedesCashInvariantForLoans:
         settled_transaction_effect(A)``.  For this loan after one $1,000 payment
         the settled transfer effect (cash in) is +1,000 and there are no ordinary
         transactions, so the cash invariant would demand the ledger net +1,000 --
-        but the loan nets to the real principal +500 (the correction moved the
-        $500 interest off it).  So the cash invariant PROVABLY breaks (+500 !=
-        +1000), while the loan-aware superseding invariant
-        (``== settled_transfer_effect - non-principal corrections``) holds.
+        but under genesis the loan-linked ledger nets -99500 (the $500 interest
+        moved off it, plus the opening -250000 and true-up +150000).  So the cash
+        invariant PROVABLY breaks (-99500 != +1000), while the loan-aware
+        superseding invariant (``linked == settled_transfer_effect - per-loan
+        corrections``, the per-loan side now including the opening-equity legs)
+        holds.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -748,10 +752,13 @@ class TestSupersedesCashInvariantForLoans:
             # The cash per-account invariant would demand linked == cash + txn.
             assert cash_effect == Decimal("1000.00")
             assert txn_effect == Decimal("0.00")
-            assert linked == Decimal("500.00")
+            # Genesis: opening (-250000) + true-up (+150000) + principal (+500).
+            assert linked == Decimal("-99500.00")
             assert linked != cash_effect + txn_effect  # the cash invariant BREAKS
-            # The loan-aware superseding invariant holds.
-            assert non_principal == Decimal("500.00")  # the interest moved off
+            # The loan-aware superseding invariant holds; the per-loan side is the
+            # $500 interest plus the opening-equity legs (+100000 = -(opening
+            # -250000 + true-up +150000)).
+            assert non_principal == Decimal("100500.00")
             assert linked == cash_effect - non_principal
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
@@ -774,10 +781,12 @@ class TestRichFixtureFullSweep:
         1,895.00 > 1,000, so principal caps at the 1,000 balance and the surplus
         1,895 - 1,000 = 895.00 routes to the Refund receivable; the loan closes at
         0.  So the correction books interest +5.00 (Expense), escrow +100.00
-        (Expense), refund +895.00 (Asset), and the loan leg -1,000.00 -- the loan
-        nets Step-2 cash 2,000 - 1,000 correction = +1,000 == principal.  Three
-        per-loan ledgers are minted and the whole sweep ties (this is the only
-        fixture exercising interest + escrow + refund together).
+        (Expense), refund +895.00 (Asset), and the loan leg -1,000.00.  The
+        payment contributes +1,000 of principal; with the opening (-250000) and
+        true-up (+249000 = 250000 - 1000) the loan-linked ledger nets 0.00 -- the
+        loan is paid off.  FOUR per-loan ledgers are minted (interest, escrow,
+        refund, opening-equity) and the whole sweep ties (this is the only fixture
+        exercising interest + escrow + refund together).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -798,23 +807,23 @@ class TestRichFixtureFullSweep:
             assert _loan_ledger_net(
                 loan, LedgerAccountKindEnum.LOAN_REFUND, scenario_id,
             ) == Decimal("895.00")
-            # The loan nets to the real principal; the non-principal sums to 1,000.
+            # Paid off: opening (-250000) + true-up (+249000) + principal (+1000).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
-            ) == Decimal("1000.00")
+            ) == Decimal("0.00")
+            # Per-loan net = non-principal (1000) + opening-equity legs (+1000,
+            # the negatives of opening -250000 + true-up +249000).
             assert _per_loan_correction_net(
                 loan.id, scenario_id,
-            ) == Decimal("1000.00")
+            ) == Decimal("2000.00")
             # The loan is paid off: the ledger balance is zero.
-            assert _ledger_balance(
-                loan.id, scenario_id, Decimal("1000.00"),
-            ) == Decimal("0.00")
-            # Three per-loan ledger accounts exist (interest, escrow, refund).
+            assert _ledger_balance(loan.id, scenario_id) == Decimal("0.00")
+            # Four per-loan ledger accounts: interest, escrow, refund, opening-equity.
             assert (
                 db.session.query(LedgerAccount)
                 .filter_by(loan_account_id=loan.id)
                 .count()
-            ) == 3
+            ) == 4
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
 
@@ -832,10 +841,11 @@ class TestScenarioAndOwnerIsolation:
         """A payment in each of two scenarios reconciles independently.
 
         The loan's anchor and rate live on the account, so a $1,000 payment splits
-        the same in both scenarios (interest 500, principal 500).  Scoped to the
-        baseline the loan nets +500; scoped to the what-if it also nets +500 -- and
-        neither picks up the other (never +1,000).  Each scenario's whole sweep
-        ties on its own.
+        the same in both scenarios (interest 500, principal 500); the opening +
+        true-up post per-scenario too.  Scoped to the baseline the loan-linked
+        ledger nets -99500 (opening -250000 + true-up +150000 + principal 500);
+        scoped to the what-if it also nets -99500 -- and neither picks up the
+        other (never -199000).  Each scenario's whole sweep ties on its own.
         """
         with app.app_context():
             baseline = seed_user["scenario"]
@@ -856,13 +866,13 @@ class TestScenarioAndOwnerIsolation:
             )
             db.session.commit()
 
-            # Each scenario nets +500 in isolation -- never +1,000.
+            # Each scenario nets -99500 in isolation -- never -199000.
             assert posting_service.account_posting_total(
                 loan.id, baseline.id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
             assert posting_service.account_posting_total(
                 loan.id, whatif.id,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
             _assert_loan_reconciles(loan, baseline.id, _AS_OF)
             _assert_loan_reconciles(loan, whatif.id, _AS_OF)
 
@@ -891,12 +901,14 @@ class TestScenarioAndOwnerIsolation:
 
             scenario1 = seed_user["scenario"].id
             scenario2 = seed_second_user["scenario"].id
+            # Genesis linked net = opening (-250000) + true-up (+150000) + real
+            # principal: owner 1 -> -99500 (+500), owner 2 -> -98500 (+1500).
             assert posting_service.account_posting_total(
                 loan1.id, scenario1,
-            ) == Decimal("500.00")
+            ) == Decimal("-99500.00")
             assert posting_service.account_posting_total(
                 loan2.id, scenario2,
-            ) == Decimal("1500.00")
+            ) == Decimal("-98500.00")
 
             # Ownership is normalized onto the journal entry, not the posting.
             assert not hasattr(Posting, "user_id")
@@ -933,13 +945,14 @@ class TestBackfillEqualsGoForward:
     ):
         """Clearing then backfilling a payment's correction restores the same ledger.
 
-        Settling posts the correction go-forward (Commit 5); the sweep ties.
-        Clearing the corrections with the migration's own teardown reproduces the
-        pre-wiring historical state (settled, no correction), and the historical
-        backfill (``backfill_all_loan_payment_postings``, reusing the identical
-        go-forward sync) re-posts them.  The linked and per-loan nets return to
-        their exact go-forward values and the whole sweep reconciles again --
-        backfill == go-forward, leg for leg.
+        Settling posts the payment corrections AND the opening / true-up
+        go-forward; the sweep ties.  Clearing every loan posting (the anchor
+        corrections first, then the migration's own payment teardown) reproduces
+        the pre-wiring historical state (settled, no postings), and the historical
+        backfill (``backfill_all_loan_postings``, reusing the identical go-forward
+        sync) re-posts them all.  The linked and per-loan nets return to their
+        exact go-forward values and the whole sweep reconciles again -- backfill
+        == go-forward, leg for leg.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -950,15 +963,20 @@ class TestBackfillEqualsGoForward:
 
             forward_linked = _independent_loan_linked_net(loan.id, scenario_id)
             forward_per_loan = _per_loan_correction_net(loan.id, scenario_id)
-            assert forward_linked == Decimal("1002.50")  # 500 + 502.50 principal
-            assert forward_per_loan == Decimal("997.50")  # 500 + 497.50 interest
+            # Opening (-250000) + true-up (+150000) + principal (500 + 502.50).
+            assert forward_linked == Decimal("-98997.50")
+            # Interest (500 + 497.50) + opening-equity legs (+100000).
+            assert forward_per_loan == Decimal("100997.50")
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
-            # Reproduce the pre-Commit-5 state, then run the historical backfill.
+            # Reproduce the pre-wiring state (no loan postings) via the two
+            # boundary teardowns in real downgrade-chain order (genesis first),
+            # then backfill.
+            _GENESIS_MIGRATION._remove_loan_genesis_postings(db.session)
             _BACKFILL_MIGRATION._remove_loan_payment_postings(db.session)
             db.session.commit()
             assert _per_loan_correction_net(loan.id, scenario_id) == Decimal("0")
-            loan_posting_service.backfill_all_loan_payment_postings()
+            loan_posting_service.backfill_all_loan_postings()
             db.session.commit()
 
             # The backfilled nets equal the go-forward nets, and the sweep ties.

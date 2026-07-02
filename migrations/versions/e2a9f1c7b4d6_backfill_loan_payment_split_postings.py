@@ -46,7 +46,7 @@ backfill policy (``db239773c2fd``) forbids importing the service here.  So the
 forward population runs in the deploy's POST-migration app context --
 ``scripts/init_database.py::backfill_loan_payment_postings_after_migration``,
 which initialises ``ref_cache`` against the migrated database, then calls the
-idempotent ``loan_posting_service.backfill_all_loan_payment_postings``.  It is
+idempotent ``loan_posting_service.backfill_all_loan_postings``.  It is
 reconcile-to-target, so it is safe on every deploy and never double-posts a
 go-forward correction.  ``scripts/build_test_template.py`` and a bare
 ``flask db upgrade`` do not run that hook, but the test template is loan-free
@@ -144,10 +144,14 @@ def _remove_loan_payment_postings(connection):
     Alembic bind (``op.get_bind()``) or a test session.  Deletes the
     ``source_kind = loan_payment`` journal entries FIRST (their legs cascade via
     ``fk_account_postings_journal_entry_id``), then the ``loan_account_id IS NOT
-    NULL`` per-loan ledger accounts -- which are posting-free by then, since only
-    loan-payment correction legs ever land on a per-loan account.  The Step-2
-    cash entries, the ``transfer`` / ``transaction`` entries, and the linked /
-    category / fallback ledger accounts are untouched.
+    NULL`` per-loan ledger accounts -- posting-free by then.  The read switch adds
+    a fourth per-loan account kind, the opening-equity account carrying the
+    genesis opening / true-up legs; but the higher-revision genesis boundary
+    migration (``f3d6b1a8c2e4``) removes those accounts and their legs FIRST in
+    the downgrade chain, so only the loan-payment-fed interest / escrow / refund
+    rows remain here (and their loan-payment legs are gone once the entries above
+    are deleted).  The Step-2 cash entries, the ``transfer`` / ``transaction``
+    entries, and the linked / category / fallback ledger accounts are untouched.
 
     Args:
         connection: A SQLAlchemy bind (``op.get_bind()`` in the migration, or a

@@ -299,7 +299,7 @@ def load_all_loan_account_ids() -> list[int]:
     only once it has a :class:`LoanParams` row (:func:`load_loan_params`;
     :func:`app.services.loan_posting_service.compute_loan_payment_splits` returns
     ``[]`` otherwise), so this is exactly the set the one-time historical backfill
-    (:func:`app.services.loan_posting_service.backfill_all_loan_payment_postings`)
+    (:func:`app.services.loan_posting_service.backfill_all_loan_postings`)
     iterates.  Deliberately NOT user-scoped: it is a system / deploy-time sweep
     over every owner's loans -- like the Step-2 / Step-3 settled-row backfills --
     and each posted correction still carries its own owner (from the payment

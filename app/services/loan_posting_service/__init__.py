@@ -27,11 +27,13 @@ keep working unchanged:
 
 * :mod:`._walk` -- the shared foundation: the single chronological walk that
   produces every correction, plus the split / correction dataclasses.
-* :mod:`._common` -- the shared reconcile primitive (``delta_legs``).
-* :mod:`._payments` -- the per-payment split reconcile + sync.
-* :mod:`._anchors` -- the opening + true-up correction reconcile + sync.
-* :mod:`._sync` -- the loan-GLOBAL all-scenarios sync, duplicate translation, and
-  historical backfill.
+* :mod:`._common` -- the shared reconcile primitive (``delta_legs``) and the
+  loan owner loader.
+* :mod:`._payments` -- the per-payment split reconcile + payment-only sync.
+* :mod:`._anchors` -- the opening + true-up correction reconcile + anchor-only sync.
+* :mod:`._sync` -- the UNIFIED per-scenario sync (``sync_loan_postings``: one walk,
+  both reconciles), the loan-GLOBAL all-scenarios sync, the duplicate translation,
+  and the historical backfill.
 
 ## Shared infrastructure and isolation
 
@@ -44,11 +46,15 @@ resolver can never drift on the rate path or the anchor boundary.  Flask-isolate
 plain data in, plain values out; flushes but never commits (the caller owns the
 transaction boundary).
 
-**Write status.**  The payment splits are wired (Step 4); the opening / true-up
-anchor corrections (:func:`sync_loan_anchor_corrections`) are built and unit-proven
-here but NOT yet wired at the chokepoints (that is the next commit).  Reads still
-flow through the resolver / ``balance_at`` seam until the read switch flips them
-onto ``sum(loan-ledger postings)``.
+**Write status.**  Both halves are wired at the go-forward chokepoints via the
+unified :func:`sync_loan_postings` (loan-params create / edit, the balance
+true-up, the ARM rate / origination-rate change, and every transfer settle /
+revert / edit / delete / restore), so a loan's opening, true-ups, and confirmed
+payments are all posted as they happen.  Reads still flow through the resolver /
+``balance_at`` seam until the read switch flips them onto ``sum(loan-ledger
+postings)``; the anchor-correction postings are therefore inert on displayed
+balances until then, and the ``LoanAnchorEvent`` write is retired only once every
+reader has moved (the final read-switch commit).
 """
 
 from ._anchors import sync_loan_anchor_corrections
@@ -57,9 +63,10 @@ from ._payments import (
     sync_loan_payment_postings,
 )
 from ._sync import (
-    backfill_all_loan_payment_postings,
+    backfill_all_loan_postings,
     sync_all_scenarios_or_duplicate,
-    sync_loan_payment_postings_all_scenarios,
+    sync_loan_postings,
+    sync_loan_postings_all_scenarios,
 )
 from ._walk import (
     LoanAnchorCorrection,
@@ -73,12 +80,13 @@ __all__ = [
     "LoanAnchorCorrection",
     "LoanLedgerWalk",
     "LoanPaymentSplit",
-    "backfill_all_loan_payment_postings",
+    "backfill_all_loan_postings",
     "compute_loan_payment_splits",
     "reverse_loan_payment_postings_for_shadow",
     "sync_all_scenarios_or_duplicate",
     "sync_loan_anchor_corrections",
     "sync_loan_payment_postings",
-    "sync_loan_payment_postings_all_scenarios",
+    "sync_loan_postings",
+    "sync_loan_postings_all_scenarios",
     "walk_loan_ledger",
 ]

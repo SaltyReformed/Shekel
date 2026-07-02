@@ -1,6 +1,7 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: IN PROGRESS -- reconciled as-built through Commit 3 (2026-07-01). Written 2026-07-01 after an
+Status: IN PROGRESS -- reconciled as-built through Commit 4 (2026-07-01; C4 green on `dev`, not yet
+committed). Written 2026-07-01 after an
 adversarial review of the anchor-based draft
 (`~/.claude/plans/i-have-finished-docs-audits-balance-arch-squishy-snowglobe.md`, superseded) and a
 firsthand code trace. The developer chose the genesis (opening-equity) design over the anchor-based
@@ -48,6 +49,69 @@ unchanged.
 `sync_loan_anchor_corrections` is built + unit-tested but UNWIRED (that is Commit 4); the payment-walk
 change is wired but inert on reads. Full suite 6781; `pylint app/` 10.00; adversarial code-reviewer no
 Critical/High.
+
+## As-built: Commit 4 (2026-07-01, green on `dev`, NOT yet committed)
+
+C4 wires the anchor corrections at every go-forward chokepoint. **This governs where it disagrees with
+Section 4 item 4 and Section 2 below.** Two developer decisions this session REVERSED the plan-as-written:
+
+1. **KEEP writing `LoanAnchorEvent` (do NOT stop it in C4).** A firsthand trace found Section 4 item 4's
+   "stop writing the `LoanAnchorEvent` row here" was self-contradictory: the resolver reads it live
+   (`select_latest_anchor`, which raises on empty -- dropping the origination write 500s the loan
+   dashboard on a new loan) AND the correction walk (`walk_loan_ledger` -> `load_anchor_events`) DERIVES
+   the anchor corrections FROM those rows, so stopping the write starves the very mechanism meant to
+   replace it. Keeping the write is what makes C4 additive and inert on reads; the write retirement stays
+   at **Commit 11** (as plan item 11 already said). Developer confirmed.
+
+2. **Unify everywhere (folds the "double walk" landmine).** ONE `sync_loan_postings(loan, scenario,
+   as_of)` does ONE `walk_loan_ledger`, then reconciles BOTH halves via `reconcile_loan_payment_splits`
+   (`_payments`) + `reconcile_loan_anchor_corrections` (`_anchors`), extracted from the old single-half
+   syncs. `sync_loan_postings_all_scenarios` iterates `_scenarios_with_loan_payments` UNION {baseline}
+   (baseline inclusion posts a payment-less loan's opening at `create_params`). Every prior payment-sync
+   caller moved to the unified functions: `create_params` / `update_params`, the transfer
+   settle/revert/delete/restore wiring (`_transfer_loan_posting.py`; helpers renamed
+   `_sync_loan_postings_if_loan` / `_resync_loan_postings_after_delete`), `sync_all_scenarios_or_duplicate`
+   (true-up + rate), and the backfill (renamed `backfill_all_loan_postings`). `loan_owner_id` extracted to
+   `_common`. The single-half `sync_loan_payment_postings` / `sync_loan_anchor_corrections` are KEPT as
+   isolated test seams.
+
+**Landmine corrections (Section 4 item 4's two C4 landmines were partly wrong):**
+
+- **"Oracle identity (b) breaks" was MISDIAGNOSED.** Identities (b)/(c) `linked == income - per_loan` HOLD
+  (anchor corrections are balanced linked+equity pairs, exactly as payment corrections are linked+per-loan
+  pairs; re-derived + oracle green). What actually broke was the oracle's `_ledger_balance` helper
+  (pre-genesis `anchor - linked_net`) -> fixed to the genesis `-linked_net` (numerically identical on a
+  post-anchor-only loan, so `ledger == resolver` still holds). Under genesis `account_posting_total(loan)`
+  shifts from "principal" to `-(current balance)`; every updated test literal is `old - V` (V = the
+  fixture's anchor balance), verified against actual output; the `+$10` non-vacuity injections still fire.
+- **Double walk** folded by the single-walk `sync_loan_postings` (as planned).
+
+**NEW boundary migration `f3d6b1a8c2e4` (code-reviewer HIGH, fixed in C4 -- NOT in the original 11-commit
+list).** Booking genesis postings BROKE the head migration's downgrade: C1's ref-seed `d1b22f59ba5b` (the
+head) DELETEs the loan_opening/loan_trueup sources + opening/trueup kinds + equity_opening kind, and all
+three referencing FKs (`journal_entries.source_kind_id`, `account_postings.posting_kind_id`,
+`ledger_accounts.kind_id`) are `ondelete=RESTRICT`, so once any genesis posting exists that downgrade
+fails. C1's own docstring anticipated this ("blocks until the higher revisions are downgraded first").
+FIX (developer chose add-now over defer-to-C7): new head `f3d6b1a8c2e4` (down_rev d1b22f59ba5b) with a
+NO-OP upgrade (genesis is booked at runtime, mirroring Step-4's `e2a9f1c7b4d6`) + a downgrade
+`_remove_loan_genesis_postings` (delete loan_opening/loan_trueup entries [legs cascade], then the
+equity_opening accounts by kind_id). Verified: Alembic head->base->head; the teardown removes REAL genesis
+data (booked through the app) keeping payment/cash/linked; an executed unblock assertion (no posting
+carries the opening/trueup kind post-teardown). Both adversarial reviews clean. LESSON: a runtime-booking
+commit whose data references RESTRICT ref rows MUST land the higher-revision teardown migration WITH the
+booking.
+
+**M2 (code-reviewer MEDIUM, deferred to the read switch -- NOT a C4 defect).** A what-if scenario that
+holds the loan but has NO payment IN it nets $0 (no opening -- it is in neither
+`_scenarios_with_loan_payments` nor {baseline} unless it IS the baseline). Inert now (reads on the
+resolver, account-scoped); the read-switch reader (C8+) must fall back or post per-displayed-scenario
+before flipping, or a what-if would show a $0 loan. Multi-scenario is latent (only baseline exists today).
+
+**Gates:** full suite **6785** (baseline 6781 + 4 new tests); `pylint app/ scripts/` 10.00 all
+`--fail-on`; migration up/down verified; test template rebuilt to the new head (36 audit triggers
+unchanged). Files: the `loan_posting_service` package (`_sync`/`_payments`/`_anchors`/`_common`/`__init__`),
+`_transfer_loan_posting.py` + `transfer_service.py`, `routes/loan/params.py`, `scripts/init_database.py`,
+the new + touched migrations, and the four loan-posting test files.
 
 ---
 

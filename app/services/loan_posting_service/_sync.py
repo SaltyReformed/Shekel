@@ -1,11 +1,23 @@
-"""Loan posting orchestration: all-scenarios sync, duplicate translation, backfill.
+"""Loan posting orchestration: unified per-scenario sync, all-scenarios, backfill.
 
-The loan-GLOBAL entry points that drive the per-scenario payment sync
-(:func:`app.services.loan_posting_service.sync_loan_payment_postings`) across every
-scenario a loan has payments in -- a balance true-up, a rate change, and a
-params edit all live on the loan ACCOUNT, not a scenario, so they re-base the
-confirmed-payment split in every scenario at once.  Also the one-time historical
-backfill.  Flushes but never commits -- the caller owns the transaction boundary.
+The entry points that drive a loan's FULL genesis reconcile -- both the
+per-payment split corrections (:mod:`._payments`) and the opening / true-up
+anchor corrections (:mod:`._anchors`) -- off ONE running-balance walk
+(:func:`._walk.walk_loan_ledger`) per (loan, scenario), so the two halves share
+the balance interest accrued on and no chokepoint walks the loan twice:
+
+* :func:`sync_loan_postings` -- one scenario, one walk, both reconciles.
+* :func:`sync_loan_postings_all_scenarios` -- every scenario a loan has payments
+  in, PLUS the owner's baseline (so a payment-less new loan's opening still
+  posts).  A balance true-up, a rate change, and a params edit all live on the
+  loan ACCOUNT, not a scenario, so they re-base the confirmed split AND the
+  anchor corrections in every scenario at once.
+* :func:`sync_all_scenarios_or_duplicate` -- the same, wrapped for the two
+  chokepoints that append a unique-constrained row and translate its duplicate.
+* :func:`backfill_all_loan_postings` -- the one-time historical sweep, reusing
+  the identical go-forward sync so backfill == go-forward by construction.
+
+Flushes but never commits -- the caller owns the transaction boundary.
 """
 
 from datetime import date
@@ -17,9 +29,13 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import loan_payment_service
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 
-from ._payments import sync_loan_payment_postings
+from ._anchors import reconcile_loan_anchor_corrections
+from ._common import loan_owner_id
+from ._payments import reconcile_loan_payment_splits
+from ._walk import walk_loan_ledger
 
 
 def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
@@ -30,9 +46,10 @@ def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
     loan-GLOBAL change re-bases.  A balance true-up, a rate change, and a
     params edit all live on the loan ACCOUNT, not a scenario, so they move the
     confirmed-payment split in every scenario the loan has payments in;
-    :func:`sync_loan_payment_postings_all_scenarios` reconciles each in turn.
-    A projected-only scenario is harmlessly included -- its sync is a no-op,
-    since only a settled payment posts a correction.
+    :func:`sync_loan_postings_all_scenarios` reconciles each in turn (adding the
+    baseline so a payment-less loan is not skipped).  A projected-only scenario
+    is harmlessly included -- its sync is a no-op, since only a settled payment
+    posts a correction.
 
     Args:
         loan_account_id: The loan whose payment scenarios to enumerate.
@@ -55,46 +72,95 @@ def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
     return sorted(row[0] for row in rows)
 
 
-def sync_loan_payment_postings_all_scenarios(loan_account_id: int) -> None:
-    """Reconcile a loan's split corrections across EVERY scenario, as of today.
+def sync_loan_postings(
+    loan_account_id: int, scenario_id: int, as_of: date,
+) -> None:
+    """Reconcile a loan's FULL genesis ledger in one scenario, off ONE walk.
 
-    The loan-GLOBAL chokepoint entry point (a balance true-up, a rate change, a
-    loan-params create / edit): the anchor and rate live on the loan account,
-    not the scenario, so such a change re-bases the confirmed-payment split in
-    every scenario the loan has payments in.  Loops
-    :func:`_scenarios_with_loan_payments` through
-    :func:`sync_loan_payment_postings` as of ``date.today()`` -- the same as-of
-    the loan reads use
-    (:func:`app.services.loan_payment_service.resolve_account_loan`).
+    The unified per-scenario chokepoint: walks the loan's anchors and confirmed
+    payments ONCE (:func:`walk_loan_ledger`), then reconciles BOTH halves off
+    that single walk -- the per-payment split corrections
+    (:func:`._payments.reconcile_loan_payment_splits`) and the opening / true-up
+    anchor corrections (:func:`._anchors.reconcile_loan_anchor_corrections`).
+    Because a pre-true-up payment change moves a later true-up's ``owed_before``
+    (and every payment's split rides the same running balance), the two halves
+    must reconcile TOGETHER off the same walk; splitting them would risk a stale
+    true-up or a double walk (the two full-loan walks a pair of self-contained
+    syncs would each cost).
 
-    A brand-new or unresolvable loan (no confirmed payments) syncs nothing.
     Idempotent and self-healing: a re-run at the same state writes nothing.
-    Flushes but does not commit (the caller owns the transaction).
+    Touches ONLY the loan's own ledgers (linked, interest, escrow, refund,
+    opening-equity) -- never Checking, so a loan sync can never move a cash
+    balance.  Reads ``as_of`` as the upper bound on which payments / anchors are
+    historical; the go-forward wiring passes ``date.today()``.  Flushes but does
+    not commit (the caller owns the transaction).
+
+    Args:
+        loan_account_id: The loan whose full ledger to reconcile.
+        scenario_id: The budget scenario to reconcile within.
+        as_of: The evaluation date (a payment whose pay period has not begun by
+            it, or an anchor after it, is not yet historical).
+    """
+    walk = walk_loan_ledger(loan_account_id, scenario_id, as_of)
+    reconcile_loan_payment_splits(
+        loan_account_id, scenario_id, walk.payment_splits,
+    )
+    reconcile_loan_anchor_corrections(
+        loan_account_id, scenario_id, walk.anchor_corrections,
+    )
+
+
+def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
+    """Reconcile a loan's full genesis ledger across EVERY scenario, as of today.
+
+    The loan-GLOBAL chokepoint entry point (loan-params create / edit, a balance
+    true-up, a rate change): the anchor and rate live on the loan account, not
+    the scenario, so such a change re-bases the confirmed-payment split AND the
+    anchor corrections in every scenario the loan is displayed in.  Loops
+    :func:`sync_loan_postings` (as of ``date.today()``, the same as-of the loan
+    reads use) over the union of:
+
+    * every scenario the loan has a payment in
+      (:func:`_scenarios_with_loan_payments`), and
+    * the owner's BASELINE scenario -- so a payment-less loan (a brand-new loan
+      at params-create, before any payment settles) still gets its opening
+      posted, and so the baseline is never skipped.  The opening is per-scenario
+      (postings are scenario-scoped); today only the baseline exists, so this is
+      one entry in practice, but it is forward-compatible with scenario clone.
+
+    A brand-new or unresolvable loan (no anchors) syncs nothing.  Idempotent and
+    self-healing.  Flushes but does not commit (the caller owns the transaction).
 
     Args:
         loan_account_id: The loan whose corrections to reconcile across every
-            scenario it has payments in.
+            scenario it is displayed in.
     """
     as_of = date.today()
-    for scenario_id in _scenarios_with_loan_payments(loan_account_id):
-        sync_loan_payment_postings(loan_account_id, scenario_id, as_of)
+    scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
+    owner_id = loan_owner_id(loan_account_id)
+    if owner_id is not None:
+        baseline = get_baseline_scenario(owner_id)
+        if baseline is not None:
+            scenario_ids.add(baseline.id)
+    for scenario_id in sorted(scenario_ids):
+        sync_loan_postings(loan_account_id, scenario_id, as_of)
 
 
 def sync_all_scenarios_or_duplicate(
     loan_account_id: int, unique_index_name: str,
 ) -> bool:
-    """Re-split a loan across scenarios and flush, reporting a same-key duplicate.
+    """Re-sync a loan across scenarios and flush, reporting a same-key duplicate.
 
     The shared body of the two loan-GLOBAL chokepoints that append a
-    unique-constrained row and THEN re-split -- the balance true-up (which adds
+    unique-constrained row and THEN re-sync -- the balance true-up (which adds
     a :class:`~app.models.loan_anchor_event.LoanAnchorEvent`) and the ARM rate
     change (which adds a :class:`~app.models.loan_features.RateHistory` row).
-    Runs :func:`sync_loan_payment_postings_all_scenarios` (whose queries
-    autoflush the caller's just-added row) then an explicit flush, so a same-key
-    duplicate the pending row collides on surfaces HERE -- inside one ``try`` --
-    and is translated to a ``False`` return instead of leaking as a 500 at a
-    later, unguarded commit.  The sync and the flush share the ``try`` precisely
-    because the sync's autoflush is what triggers the pending row's INSERT.
+    Runs :func:`sync_loan_postings_all_scenarios` (whose queries autoflush the
+    caller's just-added row) then an explicit flush, so a same-key duplicate the
+    pending row collides on surfaces HERE -- inside one ``try`` -- and is
+    translated to a ``False`` return instead of leaking as a 500 at a later,
+    unguarded commit.  The sync and the flush share the ``try`` precisely because
+    the sync's autoflush is what triggers the pending row's INSERT.
 
     Flushes but does NOT commit (the caller owns the transaction and its
     outcome / response handling).  On a duplicate it rolls back -- discarding
@@ -103,7 +169,7 @@ def sync_all_scenarios_or_duplicate(
 
     Args:
         loan_account_id: The loan whose corrections to reconcile across every
-            scenario it has payments in.
+            scenario it is displayed in.
         unique_index_name: The unique index / constraint the caller's pending
             row can collide on (``uq_loan_anchor_events_acct_date_bal_day`` for
             a true-up, ``uq_rate_history_account_effective_date`` for a rate
@@ -119,7 +185,7 @@ def sync_all_scenarios_or_duplicate(
             an unexpected constraint failure must surface, never be swallowed.
     """
     try:
-        sync_loan_payment_postings_all_scenarios(loan_account_id)
+        sync_loan_postings_all_scenarios(loan_account_id)
         db.session.flush()
         return True
     except IntegrityError as exc:
@@ -129,23 +195,23 @@ def sync_all_scenarios_or_duplicate(
         return False
 
 
-def backfill_all_loan_payment_postings() -> list[int]:
-    """Reconcile every loan's split corrections across all scenarios (the backfill).
+def backfill_all_loan_postings() -> list[int]:
+    """Reconcile every loan's full genesis ledger across all scenarios (backfill).
 
     The one-time, production-wide historical backfill: for every configured loan
     account, across all owners
     (:func:`app.services.loan_payment_service.load_all_loan_account_ids`),
-    reconcile its confirmed payment corrections to the real split via
-    :func:`sync_loan_payment_postings_all_scenarios`.  This posts the correction
-    for any payment settled BEFORE the go-forward wiring shipped (which therefore
+    reconcile its opening, true-up, and confirmed-payment corrections via
+    :func:`sync_loan_postings_all_scenarios`.  This posts the corrections for any
+    loan / payment settled BEFORE the go-forward wiring shipped (which therefore
     carries none), so the ledger is complete on real historical data.
 
     Reuses the SAME per-loan sync the go-forward chokepoints call, so a
     backfilled correction is identical to the go-forward one by construction --
-    there is no second split implementation that could drift from it.  Idempotent
-    and self-healing via reconcile-to-target: a payment that already carries a
-    go-forward correction is already at target, so nothing is re-posted -- the
-    backfill never double-posts, and a re-run at the same state writes nothing.
+    there is no second implementation that could drift.  Idempotent and
+    self-healing via reconcile-to-target: a loan already carrying its go-forward
+    corrections is already at target, so nothing is re-posted -- the backfill
+    never double-posts, and a re-run at the same state writes nothing.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary: the
     deploy hook
@@ -159,5 +225,5 @@ def backfill_all_loan_payment_postings() -> list[int]:
     """
     loan_account_ids = loan_payment_service.load_all_loan_account_ids()
     for loan_account_id in loan_account_ids:
-        sync_loan_payment_postings_all_scenarios(loan_account_id)
+        sync_loan_postings_all_scenarios(loan_account_id)
     return loan_account_ids

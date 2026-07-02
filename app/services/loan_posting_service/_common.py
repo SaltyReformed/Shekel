@@ -1,20 +1,51 @@
-"""Shared reconcile primitive for the loan posting sub-modules.
+"""Shared reconcile + loader primitives for the loan posting sub-modules.
 
-The one piece the payment-correction reconcile (:mod:`._payments`) and the
-anchor-correction reconcile (:mod:`._anchors`) genuinely share: turning a
-``target`` ledger-leg map and the ``posted`` ledger-leg map into the balanced
-DELTA legs that move posted to target.  Extracted here so neither reconcile
-re-spells the loop (a ``duplicate-code`` finding) and both agree on the
-delta / kind-fallback rules exactly.
+The pieces the payment-correction reconcile (:mod:`._payments`), the
+anchor-correction reconcile (:mod:`._anchors`), and the loan-global
+orchestration (:mod:`._sync`) genuinely share, extracted here so no consumer
+re-spells them (a ``duplicate-code`` finding) and all agree exactly:
+
+* :func:`delta_legs` -- turn a ``target`` ledger-leg map and the ``posted``
+  ledger-leg map into the balanced DELTA legs that move posted to target.
+* :func:`summed_posting_legs` -- the grouped "what is already posted" query
+  shape the two posted-leg readers share.
+* :func:`loan_owner_id` -- resolve a loan account's owner id, needed by the
+  anchor reconcile (its per-loan equity account + pay periods) and by the
+  all-scenarios sync (the baseline scenario the opening must post in).
 """
 
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_service import _PostingLeg
 
 _ZERO_MONEY = Decimal("0.00")
+
+
+def loan_owner_id(loan_account_id: int) -> int | None:
+    """Return a loan account's owner (``auth.users.id``), or ``None`` if absent.
+
+    The shared owner resolver for the loan posting package: the anchor reconcile
+    (:func:`._anchors.reconcile_loan_anchor_corrections`) needs it for the
+    per-loan opening-equity account and the NOT NULL ``pay_period_id``, and the
+    all-scenarios sync (:func:`._sync.sync_loan_postings_all_scenarios`) needs it
+    to resolve the baseline scenario the opening must post in even when the loan
+    has no payments.  ``None`` only for a missing / deleted account, which every
+    caller treats as "nothing to reconcile".
+
+    Args:
+        loan_account_id: The loan account whose owner to resolve.
+
+    Returns:
+        The owner's user id, or ``None`` when the account row is absent.
+    """
+    return (
+        db.session.query(Account.user_id)
+        .filter(Account.id == loan_account_id)
+        .scalar()
+    )
 
 
 def summed_posting_legs(extra_columns: list, filters: list):

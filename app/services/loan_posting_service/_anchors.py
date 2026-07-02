@@ -41,7 +41,6 @@ from app.enums import (
     PostingSourceEnum,
 )
 from app.extensions import db
-from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.pay_period import PayPeriod
@@ -53,7 +52,7 @@ from app.services.posting_service import (
     _ledger_account_for,
 )
 
-from ._common import delta_legs, summed_posting_legs
+from ._common import delta_legs, loan_owner_id, summed_posting_legs
 from ._walk import LoanAnchorCorrection, walk_loan_ledger
 
 logger = logging.getLogger(__name__)
@@ -320,45 +319,44 @@ def _emit_anchor_correction_entry(
     return entry
 
 
-def sync_loan_anchor_corrections(
-    loan_account_id: int, scenario_id: int, as_of: date,
+def reconcile_loan_anchor_corrections(
+    loan_account_id: int,
+    scenario_id: int,
+    corrections: list[LoanAnchorCorrection],
 ) -> None:
-    """Reconcile a loan's opening + true-up corrections to reality, idempotently.
+    """Reconcile a loan's opening + true-up corrections to a PRE-WALKED list.
 
-    Walks the loan's anchors into their corrections (:func:`walk_loan_ledger`),
-    builds the per-``(source kind, date)`` target legs
-    (:func:`_anchor_correction_targets`), reads back what is posted
-    (:func:`_posted_loan_anchor_correction_legs`), and emits ONE balanced delta
-    per key that differs -- posting a new opening / true-up, adjusting a true-up
-    whose ``owed_before`` moved (a pre-true-up payment changed), or reversing one
-    a matching balance retired.
+    The reconcile half of the anchor sync, taking the corrections already
+    produced by :func:`walk_loan_ledger` rather than re-walking, so the unified
+    :func:`app.services.loan_posting_service.sync_loan_postings` can drive BOTH
+    the payment and the anchor reconcile off ONE walk (the payment half is
+    :func:`._payments.reconcile_loan_payment_splits`).  Builds the
+    per-``(source kind, date)`` target legs (:func:`_anchor_correction_targets`),
+    reads back what is posted (:func:`_posted_loan_anchor_correction_legs`), and
+    emits ONE balanced delta per key that differs -- posting a new opening /
+    true-up, adjusting a true-up whose ``owed_before`` moved (a pre-true-up
+    payment changed), or reversing one a matching balance retired.
 
     Idempotent and self-healing: a re-run at the same state writes nothing
     (every delta is zero).  Touches ONLY the loan's own linked and opening-equity
-    ledgers.  A loan with no anchors (unresolvable) or an owner that cannot be
-    resolved is a no-op.  Flushes but does not commit (the caller owns the
-    transaction).
+    ledgers.  An empty *corrections* list (an unresolvable loan) or an owner that
+    cannot be resolved is a no-op.  Flushes but does not commit (the caller owns
+    the transaction).
 
     Args:
         loan_account_id: The loan whose anchor corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date; anchors after it are not yet corrections.
+        corrections: The loan's anchor corrections from :func:`walk_loan_ledger`
+            (origination opening + user-trueups on or before the walk's as-of).
 
     Raises:
         PostingError: If the loan has anchor corrections to post but its owner has
             no pay periods (a broken invariant -- a correction needs a period).
     """
-    owner_id = (
-        db.session.query(Account.user_id)
-        .filter(Account.id == loan_account_id)
-        .scalar()
-    )
-    if owner_id is None:
-        return
-    corrections = walk_loan_ledger(
-        loan_account_id, scenario_id, as_of,
-    ).anchor_corrections
     if not corrections:
+        return
+    owner_id = loan_owner_id(loan_account_id)
+    if owner_id is None:
         return
     periods = (
         db.session.query(PayPeriod)
@@ -383,3 +381,35 @@ def sync_loan_anchor_corrections(
         _emit_anchor_correction_entry(
             owner_id, scenario_id, key, period, legs,
         )
+
+
+def sync_loan_anchor_corrections(
+    loan_account_id: int, scenario_id: int, as_of: date,
+) -> None:
+    """Walk a loan's anchors and reconcile ONLY their opening / true-up corrections.
+
+    The anchor-only sync: walks the loan's anchors into their corrections
+    (:func:`walk_loan_ledger`) and reconciles them
+    (:func:`reconcile_loan_anchor_corrections`).  Posts ONLY the opening /
+    true-up corrections; the go-forward chokepoints reconcile BOTH the payment
+    and anchor halves in one walk via
+    :func:`app.services.loan_posting_service.sync_loan_postings`.  This
+    single-half entry point remains for reconciling anchors in isolation (the
+    opening / true-up unit tests).
+
+    A loan with no anchors (unresolvable) is a no-op.  Flushes but does not
+    commit (the caller owns the transaction).
+
+    Args:
+        loan_account_id: The loan whose anchor corrections to reconcile.
+        scenario_id: The budget scenario to reconcile within.
+        as_of: The evaluation date; anchors after it are not yet corrections.
+
+    Raises:
+        PostingError: If the loan has anchor corrections to post but its owner has
+            no pay periods (a broken invariant -- a correction needs a period).
+    """
+    reconcile_loan_anchor_corrections(
+        loan_account_id, scenario_id,
+        walk_loan_ledger(loan_account_id, scenario_id, as_of).anchor_corrections,
+    )
