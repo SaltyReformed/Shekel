@@ -273,6 +273,156 @@ class TestBuildAccountBalanceMap:
             assert balances[all_periods[-1].id] == Decimal("240000.00")
 
 
+class TestAmortizingReadSwitch:
+    """The C9 genesis per-period read switch: ledger past, projection future.
+
+    ``_build_amortizing_balance_map`` overlays the confirmed genesis ledger on
+    every period that has begun by today and keeps the re-seeded schedule
+    projection for the future, via the pure
+    :func:`app.services.account_projection.splice_confirmed_and_projected_loan_balances`.
+    One class pins the pure splice boundary rule directly, and one pins the
+    whole builder end-to-end on an off-schedule genesis loan (where the ledger
+    and the schedule replay genuinely diverge).
+    """
+
+    def test_splice_reads_ledger_for_begun_periods_projection_after(self):
+        """Periods begun by as_of read confirmed_map; later periods read projected_map.
+
+        Three periods with deliberately DIFFERENT confirmed vs projected values
+        so the per-period source choice is observable; ``as_of`` is the middle
+        period's start, so the ``<=`` boundary is inclusive (a period starting
+        ON as_of has begun and reads the ledger):
+          - p1 start 2026-01-01 <= as_of -> confirmed 100.00 (not projected 999)
+          - p2 start 2026-06-15 == as_of -> confirmed  90.00 (not projected 888)
+          - p3 start 2026-12-31 >  as_of -> projected  80.00 (not confirmed 777)
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention keeps the top-level import block minimal.
+        # pylint: disable=import-outside-toplevel
+        from collections import OrderedDict
+        from datetime import date as _date
+        from types import SimpleNamespace
+
+        from app.services.account_projection import (
+            splice_confirmed_and_projected_loan_balances,
+        )
+
+        as_of = _date(2026, 6, 15)
+        periods = [
+            SimpleNamespace(id=1, start_date=_date(2026, 1, 1)),
+            SimpleNamespace(id=2, start_date=_date(2026, 6, 15)),
+            SimpleNamespace(id=3, start_date=_date(2026, 12, 31)),
+        ]
+        confirmed = OrderedDict([
+            (1, Decimal("100.00")),
+            (2, Decimal("90.00")),
+            (3, Decimal("777.00")),
+        ])
+        projected = OrderedDict([
+            (1, Decimal("999.00")),
+            (2, Decimal("888.00")),
+            (3, Decimal("80.00")),
+        ])
+
+        result = splice_confirmed_and_projected_loan_balances(
+            periods, confirmed, projected, as_of,
+        )
+
+        # p1 and p2 have begun (start <= as_of) -> confirmed ledger; p3 is
+        # future (start > as_of) -> schedule projection.
+        assert result[1] == Decimal("100.00")
+        assert result[2] == Decimal("90.00")   # start == as_of is "begun"
+        assert result[3] == Decimal("80.00")
+        # Keyed by period.id in the given period order.
+        assert list(result.keys()) == [1, 2, 3]
+
+    def test_builder_splices_ledger_past_and_projection_future(
+        self, app, cross_page_loan_off_schedule_ctx,
+    ):
+        """build_account_balance_map reads the ledger for begun periods, projection after.
+
+        The shared off-schedule genesis fixture: one settled payment far above
+        the scheduled P&I in a past period, so the confirmed ledger (REAL
+        principal) diverges from the schedule replay.  Over a window spanning
+        past AND future, the dense map must equal the confirmed-ledger map for
+        every period begun by today and the schedule-projection map for every
+        future period -- the plan Section 9 splice, verified in the real
+        builder (not just the pure helper above).
+
+        Non-vacuous both ways: at least one begun period's confirmed ledger
+        differs from the schedule replay (the off-schedule divergence the read
+        switch exists for), and at least one future period's projection differs
+        from the flat-carried confirmed balance (so "future reads projection"
+        is not silently equal to "future reads the carried-flat ledger").
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention keeps the top-level import block minimal.
+        # pylint: disable=import-outside-toplevel
+        from datetime import date as _date
+
+        from app.services.account_projection import (
+            compute_loan_period_balance_map,
+        )
+        from app.services.loan_posting_service import confirmed_loan_balance_map
+
+        with app.app_context():
+            ctx = cross_page_loan_off_schedule_ctx
+            loan = ctx["account"]
+            scenario = ctx["scenario"]
+            periods = ctx["all_periods"]
+            today = _date.today()
+
+            debt_schedule = net_worth_kernel.generate_debt_schedules(
+                [loan], scenario.id,
+            )[loan.id]
+            dense = net_worth_kernel.build_account_balance_map(
+                loan, scenario, periods,
+                debt_schedule=debt_schedule,
+                investment_params=None,
+                deductions=[],
+                salary_gross_biweekly=Decimal("0.00"),
+            )
+            confirmed = confirmed_loan_balance_map(
+                loan.id, scenario.id, periods,
+            )
+            projected = compute_loan_period_balance_map(
+                debt_schedule.schedule, periods, debt_schedule.current_balance,
+            )
+
+            assert dense is not None
+            # The genesis fixture opened the loan in the ledger.
+            assert confirmed is not None
+
+            begun_divergence = False
+            future_divergence = False
+            for period in periods:
+                if period.start_date <= today:
+                    assert dense[period.id] == confirmed[period.id], (
+                        f"begun period {period.id} ({period.start_date}) read "
+                        f"{dense[period.id]!r}, expected the confirmed ledger "
+                        f"{confirmed[period.id]!r}"
+                    )
+                    if confirmed[period.id] != projected[period.id]:
+                        begun_divergence = True
+                else:
+                    assert dense[period.id] == projected[period.id], (
+                        f"future period {period.id} ({period.start_date}) read "
+                        f"{dense[period.id]!r}, expected the schedule "
+                        f"projection {projected[period.id]!r}"
+                    )
+                    if projected[period.id] != confirmed[period.id]:
+                        future_divergence = True
+
+            assert begun_divergence, (
+                "no begun period had confirmed != projected; the "
+                "ledger-vs-replay assertion is vacuous (loan not off-schedule)"
+            )
+            assert future_divergence, (
+                "no future period had projection != confirmed; the "
+                "projection-vs-carry-flat assertion is vacuous"
+            )
+
+
 class TestInterestByPeriodForAccount:
     """Tests for ``interest_by_period_for_account`` (interest-earned accessor).
 

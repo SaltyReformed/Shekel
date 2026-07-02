@@ -1577,9 +1577,11 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     Returns the reader-shaped ctx plus ``ledger`` (the genesis reader's balance,
     what the surfaces must now show) and ``replay`` (the un-seeded resolver's
     schedule balance, what they showed BEFORE the switch); the test asserts the
-    two DIVERGE so the "surfaces == ledger" equality is non-vacuous.  The
-    per-period map surfaces (year-end / net-worth trend) are deliberately NOT
-    included: they read the confirmed-balance MAP, whose flip is plan Section 9.
+    two DIVERGE so the "surfaces == ledger" equality is non-vacuous.  Since the
+    Section 9 per-period read switch, the year-end and net-worth-trend MAP
+    surfaces ALSO read the confirmed ledger off-schedule, so the whole
+    four-surface set agrees on the real balance (see
+    ``test_all_surfaces_read_the_ledger_off_schedule``).
     """
     # Pylint: ``import-outside-toplevel`` -- the app services / test helpers are
     # loaded lazily, the convention every fixture in this conftest follows.

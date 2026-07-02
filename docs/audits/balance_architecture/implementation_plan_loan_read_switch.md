@@ -1,7 +1,8 @@
 # Implementation plan: the loan read switch (genesis posting ledger)
 
-Status: IN PROGRESS -- reconciled as-built through Commit 7 (2026-07-02; C1-C6 committed on `dev`;
-C7 = the reader gap-test + the prod-clone up/down verification, green on `dev` and not yet committed).
+Status: IN PROGRESS -- reconciled as-built through Commit 9 (2026-07-02; C1-C8 committed on `dev`
+[through `37342c4`]; C9 = the per-period MAP read switch, green on `dev` and not yet committed. The
+SCALAR half of the plan's commit-9 line was DEFERRED to C11 -- see "As-built: Commit 9").
 **Commit 7's runtime code (backfill posts genesis, boundary migration, deploy hook) already landed in
 Commit 4** (the unification folded it in); C7 adds only the verification the plan named. Written
 2026-07-01 after an
@@ -369,6 +370,97 @@ artifact resolved in C11 is not worth a test).
 template rebuild. Files: the resolver package (`_state`/`_payoff`), `loan_payment_service.py`,
 `routes/loan/{_helpers,dashboard,calculators}.py`, `savings_dashboard_service/_projections.py`, and the four
 touched test files + `conftest.py` (the off-schedule fixture).
+
+## As-built: Commit 9 (2026-07-02, green on `dev`, NOT yet committed)
+
+C9 is **the per-period MAP read switch** -- the net-worth surfaces that read a loan's
+per-period balance map (the /savings net-worth trend and the year-end net-worth Section 5)
+now read the genesis confirmed ledger for every period that has BEGUN by today, keeping the
+C8-reseeded schedule projection for the future. This closes M1 for the map surfaces (the C8
+cross-page test's deferred half). **This governs where it disagrees with Section 4 item 9 and
+Section 3.6 below.**
+
+**SCOPE REFINEMENT (developer-ratified this session): the SCALAR is DEFERRED to C11 -- C9 is
+the MAP only.** The plan's commit-9 line ("map + past scalar") is REVERSED for the scalar half.
+A firsthand trace found the ONLY consumer of the date-precise loan scalar
+(`balance_at.balance_at`) is the year-end **debt-progress** section, which reads `balance_at(Dec
+31 of the target year)` -- a date that is routinely OUTSIDE the user's pay-period window (verified:
+`seed_periods` is 10 biweekly periods spanning Jan-May 2026, yet the debt-progress test reads Dec
+31 2025 and Dec 31 2026). The current date-precise scalar answers those out-of-window dates by
+walking the UNBOUNDED amortization schedule; the per-period map is BOUNDED to the window (an
+out-of-window date falls through to `resolve_anchor`). So "route the scalar through the map"
+cannot answer the year-end dates. The scalar's off-schedule correctness resolves CLEANLY at C11:
+once the schedule's history rows become ledger-derived, the same date-precise walk is
+ledger-correct -- unbounded, symmetric (no boundary off-by-one), attribution unchanged, the
+date-precision invariant preserved. So **`balance_at.py` is intentionally unchanged in C9.**
+(Correction to this session's earlier framing: it over-stated the cost as "re-derive every
+debt-progress literal" + "reverse the date-precision invariant"; both are wrong -- every existing
+debt-progress / net-worth test loan is NON-genesis, so it hits the schedule-only fallback and its
+hand-computed literals are byte-identical, and the scalar is untouched.)
+
+**The mechanism (two new functions, one behavior).**
+
+- `account_projection.splice_confirmed_and_projected_loan_balances(periods, confirmed_map,
+  projected_map, as_of)` -- PURE, fence-cluster: for each period, `start_date <= as_of` (begun)
+  reads `confirmed_map`, else `projected_map`. The boundary rule lives in one tested place.
+- `net_worth_kernel._build_amortizing_balance_map(account, scenario, periods, debt_schedule)` --
+  the AMORTIZING branch of `build_account_balance_map`. Builds the schedule map
+  (`compute_loan_period_balance_map`, whose `current_balance` fallback is the F-21 pre-first-payment
+  value), reads the confirmed ledger map (`confirmed_loan_balance_map`), and splices. `confirmed_map
+  is None` (no OPENING posting: unconfigured / un-backfilled / a what-if never posted into) returns
+  the schedule-only map, **byte-identical to pre-C9** (safe by construction).
+
+**NO loan_payment_service funnel (differs from the C8 scalar's `confirmed_loan_seed` pattern).** The
+map reader is called DIRECTLY from `net_worth_kernel` (a lazy import of `loan_posting_service._reader`,
+keeping the static graph acyclic). Two reasons this is cleaner than a `loan_payment_service` funnel:
+(1) `net_worth_kernel` is already in `_BALANCE_SEAM_MODULES`, so the call is fence-clean now and when
+the reader joins the W9906 fence at C11 -- no new module to allowlist; (2) adding the funnel pushed
+`loan_payment_service` over the 1000-line gate (a package split is out of C9's scope). `net_worth_kernel`
+crossing 1000 lines was resolved by tightening the new helper's docstring, NOT a package split.
+
+**The load-bearing equivalence (verified by the code-reviewer's independent re-derivation).**
+`confirmed_loan_balance_map[current_period] == confirmed_loan_balance_at(today) ==
+debt_schedule.current_balance` (the C8 seed): both sum the linked postings whose pay period started
+by today, and no pay period starts in `(current_period.start_date, today]` (periods are contiguous
+and the current one contains today), so the sets are identical. The `<=` boundary is therefore what
+makes the trend/year-end map at today AGREE with the /savings tile and loan-detail scalar (a `<`
+would desync them). Locked by the cross-page test (map-at-today == scalar == ledger) and the
+inclusive-boundary unit test.
+
+**Intended behavior change (an improvement, GENESIS loans only).** For a genesis loan, pre-payment /
+pre-anchor begun periods now show the REAL historical trajectory (declining from the origination /
+anchor balance; `0.00` before origination) instead of the old flat-current-balance-carried-backward.
+Post-payment begun periods are unchanged on-schedule (`confirmed == resolver`, the C6 oracle). Prod
+is entirely on-schedule (C7), so the CURRENT balance and recent history are unchanged; only a genesis
+loan whose origination/first-payment sits INSIDE the visible window shows the improved back-history.
+
+**Tests.** The cross-page oracle's `test_scalar_surfaces_read_the_ledger_off_schedule` was broadened
+to `test_all_surfaces_read_the_ledger_off_schedule`: off-schedule, ALL FOUR loan surfaces (the two C8
+scalars + the two C9 maps -- year-end net-worth + net-worth trend) read the ledger, closing the C8
+deferral. New `TestAmortizingReadSwitch` (2): a PURE splice test pinning the inclusive begun boundary
+(a period with `start == as_of` reads confirmed), and an end-to-end `build_account_balance_map` test
+on the off-schedule genesis fixture asserting `dense[begun] == confirmed` and `dense[future] ==
+projected` with explicit `begun_divergence` + `future_divergence` guards so neither half passes
+vacuously. **Non-vacuity proven the gold-standard way:** reverting the app splice to HEAD makes the
+broadened cross-page test FAIL (the map surfaces read the replay); restoring it passes.
+
+**Code-reviewer:** NO Critical/High (it re-derived the `<=`-boundary equivalence from source,
+confirmed no KeyError -- both maps key every period in the one shared list -- confirmed C9 adds NO new
+`PostingError` surface [C8's `resolve_account_loan -> confirmed_loan_seed -> _ledger_account_for`
+already runs on the same non-None scenario at `today` when producing the `debt_schedule`], and
+confirmed the W9906 fence is clean). 1 LOW fixed (a docstring xref `_amortizing_balance_map` ->
+`_build_amortizing_balance_map`). 2 LOW accepted: (L2) the map-vs-scalar interim inconsistency IS the
+ratified C11 deferral -- recommend sequencing C11 promptly; (L3) `date.today()` is evaluated
+independently by `generate_debt_schedules` and the splice (a midnight-rollover microsecond race),
+negligible and consistent with the existing `generate_debt_schedules` pattern -- if ever wanted
+deterministic, carry `as_of` on the `DebtSchedule` bundle.
+
+**Gates:** full suite **6817** (baseline 6815 + 2 new `TestAmortizingReadSwitch`; the cross-page test
+was broadened in place, net 0). `pylint app/ scripts/` 10.00 all `--fail-on` (incl. W9906). NO
+migration (pure reader consumer) -> no template rebuild. Files: `account_projection.py` (the splice),
+`net_worth_kernel.py` (`_build_amortizing_balance_map` + the AMORTIZING branch),
+`test_net_worth_kernel.py`, `test_cross_page_balance_equality.py`, and `conftest.py` (the off-schedule
+fixture docstring). `balance_at.py` UNCHANGED (scalar -> C11).
 
 ---
 

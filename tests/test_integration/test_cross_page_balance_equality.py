@@ -872,24 +872,27 @@ class TestLoanCrossPageEquality:
                 "loan kind"
             )
 
-    def test_scalar_surfaces_read_the_ledger_off_schedule(
+    def test_all_surfaces_read_the_ledger_off_schedule(
         self, app, cross_page_loan_off_schedule_ctx, auth_client,
     ):
-        """The /savings tile and loan-detail producer read the LEDGER off-schedule.
+        """All FOUR loan surfaces read the LEDGER off-schedule (C8 scalars + C9 maps).
 
-        The C8 read switch (plan Section 8): both SCALAR loan surfaces resolve
-        through ``resolve_loan_seeded``, so an off-schedule loan -- one confirmed
-        payment far above the scheduled P&I -- shows the genesis-ledger confirmed
-        balance (the REAL principal paid down), NOT the schedule replay.  The
-        fixture pins the ledger balance and the un-seeded replay balance and the
-        assertion below requires them to DIVERGE, so "surfaces == ledger" is
-        non-vacuous: before the switch these surfaces WERE the replay.
+        The C8 read switch (plan Section 8) flipped the two SCALAR surfaces --
+        the /savings tile (``_compute_loan_account``) and the loan-detail
+        producer (``resolve_account_loan``).  The C9 per-period read switch
+        (plan Section 9) flips the two MAP surfaces -- the year-end net-worth
+        aggregate and the net-worth-trend liabilities lane, both fed by the
+        ``balance_at`` seam's per-period map, now spliced from the confirmed
+        ledger for begun periods.  Off-schedule -- one confirmed payment far
+        above the scheduled P&I -- every surface shows the genesis-ledger
+        confirmed balance (the REAL principal paid down), NOT the schedule
+        replay.
 
-        Scoped to the two SCALAR surfaces -- the /savings tile
-        (``_compute_loan_account``) and the loan-detail producer
-        (``resolve_account_loan``).  The per-period MAP surfaces (year-end /
-        net-worth trend) flip with the confirmed-balance map in plan Section 9, so
-        they still read the replay here and are deliberately not asserted.
+        The fixture pins the ledger balance and the un-seeded replay balance;
+        the assertions require them to DIVERGE, so "surfaces == ledger" is
+        non-vacuous: before the C8/C9 switches these surfaces WERE the replay.
+        This closes the C8 deferral -- the map surfaces were read the replay and
+        deliberately unasserted there until Section 9 landed.
         """
         with app.app_context():
             ctx = cross_page_loan_off_schedule_ctx
@@ -905,19 +908,24 @@ class TestLoanCrossPageEquality:
                 f"{replay!r}; the surface check would be vacuous"
             )
 
-            # Both scalar surfaces now read the ledger balance, not the replay.
-            savings_tile = _savings_tile_value(ctx)
-            loan_detail = _loan_detail_value(ctx)
-            assert savings_tile == loan_detail == ledger, (
-                f"scalar surfaces disagree with the ledger off-schedule: "
-                f"savings_tile={savings_tile!r}, loan_detail={loan_detail!r}, "
-                f"ledger={ledger!r}"
+            # Every loan surface -- the two C8 scalars AND the two C9 maps --
+            # now reads the ledger at today, so the whole cross-page set agrees
+            # on the real balance off-schedule (the M1 divergence is closed).
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _LOAN_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(
+                surface_values, ledger, "loan kind (off-schedule)",
             )
-            # And crucially they are NOT the old schedule-replay value -- the flip.
-            assert savings_tile != replay, (
-                f"the /savings tile still reads the schedule replay {replay!r}; "
-                "the read switch did not move it onto the ledger"
-            )
+
+            # And crucially none still reads the old schedule-replay value: each
+            # surface -- scalar and map alike -- moved onto the ledger (the flip).
+            for name, value in surface_values.items():
+                assert value != replay, (
+                    f"surface {name!r} still reads the schedule replay "
+                    f"{replay!r}; the read switch did not move it onto the ledger"
+                )
 
             # Route wiring: the /savings page renders the off-schedule loan.
             resp = auth_client.get("/savings")
