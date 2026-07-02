@@ -136,6 +136,16 @@ user flow exists today. "Latent" = requires a future feature or a raw-SQL operat
 
 ### H1 (HIGH, reachable): revert-and-move plus period truncate can strand half a reversal pair -- a permanent, unhealable ledger skew
 
+> **FIXED 2026-07-02** (`2ffefa0`, R2): all three reconciles (transfer, transaction, loan split)
+> now reconcile per (ledger account, pay period), so the reversal lands in period P -- the pair
+> nets P to zero and F never holds a stray half.  Defense-in-depth: the truncate/regenerate
+> classifier gained a `LEDGER_POSTINGS` hard lock for any period whose entries do not net to zero
+> per ledger account (mutation-proven).  Regression locks: the route-level revert-and-move PATCH
+> test (`test_posting_ledger_cash_reconciliation.py::TestRevertAndMoveReconciles`), the unit
+> attribution locks in `test_posting_service.py::TestPeriodAttribution`, the loan twin in
+> `test_loan_posting_service.py`, and the truncate gate pair in `test_pay_period_truncate.py`.
+> The walkthrough below describes the pre-fix code (its line numbers predate the fix).
+
 Plain-language walkthrough. You mark a $100 expense Paid in period P; the ledger books entry E1
 (+/-100, stamped with period P). Later you realize it belongs in a future period F, so you do the
 supported "revert and correct" edit: one PATCH that sets the status back to Projected AND moves
@@ -163,6 +173,20 @@ Root cause: correction entries are dated/period-stamped at correction time, not 
 the postings they reverse (see M3, the systemic form of this). Recommendation: R2.
 
 ### H2 (HIGH, demonstrated): settling a payment in a not-yet-begun period posts its full cash with no split -- the loan balance reads ~$1,636 too low from period start until the next loan write
+
+> **FIXED 2026-07-02** (`8ad3a81`, R1): the walk now splits EVERY settled payment
+> (`_settled_income_shadows`, no period bound on the write side; the readers and the history
+> reader keep the period-begun display bound via `_confirmed_shadows_through`).  Verified live on
+> the same real Mortgage payment: the 2026-07-30 period now drops by the real 276.72 principal
+> (1,910.95 cash - 1,017.24 interest - 616.99 escrow), not the raw cash, with today's balance
+> untouched.  Companion fix: the year-end tax hybrid excludes projected schedule rows whose due
+> slot a settled payment occupies (`loan_loaders.load_settled_payment_due_months`), so an
+> early-settled payment's interest is counted exactly once -- and interest paid early across a
+> year boundary deducts in the year PAID.  Regression locks:
+> `test_early_settled_payment_splits_at_settle` (proven to fail on the pre-fix walk),
+> `test_early_settled_payment_keeps_the_parallel_run_exact` (oracle, via the independent
+> resolver), and `test_early_settled_payment_is_counted_exactly_once` (tax).  The walkthrough
+> below describes the pre-fix code.
 
 Plain-language walkthrough. On 2026-07-02 you mark the Mortgage payment for the period starting
 2026-07-30 as Paid (nothing prevents settling a future-period transfer). Step 2's cash posting
@@ -241,6 +265,15 @@ period is ever wiped") overclaims. Fix: call
 same transaction; correct the comment. Recommendation: R7.
 
 ### M3 (MEDIUM, systemic): correction entries carry the period and date of the correction, not of what they correct -- and Step 5 will inherit this
+
+> **PARTIALLY RESOLVED 2026-07-02** (`2ffefa0`): the storage-level rule -- option (a) below -- is
+> adopted for all three sources: a reversal entry carries the pay period of the postings it
+> reverses and inherits the latest `entry_date` it reverses, so a plain revert now nets in place
+> for date-grouped reporting (facts 1 and 2 below are fixed; a plain revert's entry_date is now
+> the original settle date, not the period-start fallback).  STILL OPEN: recording the
+> reader-contract half as a stated rule for Step-5 reporting readers (the C10 group-by-source
+> pattern remains the right shape for paid-date-attributed figures), and the residual edge where
+> multiple posted dates inside one period collapse to the latest.
 
 Three facts compound:
 1. A reversal entry's `pay_period_id` is the source row's CURRENT period
@@ -425,7 +458,10 @@ with reconcile-to-target keeping derived in sync with source in the same transac
 
 **Is this robust?** For amounts: yes, three layers deep (service pre-check, deferred DB trigger,
 oracles), and the live experiments bear it out. For period/date attribution: no -- that is
-exactly where H1, H2, and M3 live, and no layer enforces it. For raw-SQL operator error: one
+exactly where H1, H2, and M3 live, and no layer enforces it. *(Since fixed: the R1/R2 remediation
+adopted the per-period reconcile and attribution rule and added the `LEDGER_POSTINGS` lock, so
+attribution now has a storage-level rule plus a classifier gate enforcing it -- see the header
+note and the per-finding annotations.)* For raw-SQL operator error: one
 demonstrated gap (M1) with a cheap DB-tier hardening available. Concurrency: version_id
 optimistic locks on the transfer/transaction paths; the loan-global paths rely on
 single-transaction reconcile-to-target (documented as acceptable for a solo user).
@@ -451,6 +487,8 @@ override before promising lender-exact histories. The revisit-triggers list in t
 real data (off-schedule capture, true-up corrections, production-wide reconciliation, three-way
 producer parity). For WHEN dollars are attributed: two real defects (H1 period-stranding, H2
 early-settle mis-split), one systemic semantics gap (M3), and one policy edge (L9 UTC tax-year).
+*(Since fixed: H1 and H2 are remediated and live-verified, and M3's storage half is adopted --
+see the header note; L9 and M3's reader-contract half remain open.)*
 For WHAT the model claims about the outside world: internally consistent but payment-event-driven
 (the deferment/suspense boundary above) -- a modeling choice to document, not a bug.
 
@@ -510,13 +548,13 @@ Each major decision re-examined from scratch against the alternatives it beat.
 
 | # | Priority | Action |
 |---|----------|--------|
-| R1 | NOW | Fix H2: make the split walk include settled payments regardless of period-begun (write-side gate = settled only, matching the cash leg). Add the "early settle, then time passes" oracle case that would have caught it. |
-| R2 | NOW (before Step 5) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. |
+| R1 | **DONE 2026-07-02** (`8ad3a81`) | Fix H2: make the split walk include settled payments regardless of period-begun (write-side gate = settled only, matching the cash leg). Add the "early settle, then time passes" oracle case that would have caught it. As-built: `_settled_income_shadows` (write side, unbounded) split from `_confirmed_shadows_through` (display side, kept); tax-hybrid partition fix added (`load_settled_payment_due_months`); oracle + unit + tax regression locks, all mutation-proven; live-verified on the real Mortgage. |
+| R2 | **DONE 2026-07-02** (`2ffefa0`) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. As-built: per-(account, period) reconcile in `posting_service` (`_posted_by_period`/`_reconcile_periods`; syncs return entry lists) and the loan payment reconcile; `PeriodLockReason.LEDGER_POSTINGS` gate (blocks non-netting periods, allows self-cancelling pairs), mutation-proven; `posting_service` size-split into `posting_reads.py`. M3's reader-contract half for Step-5 readers is NOT covered here and stays open. |
 | R3 | SOON | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. |
 | R4 | SOON | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). |
 | R5 | SOON | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. |
-| R6 | SOON | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch; one settled-row revert-and-move oracle case (pairs with R2). |
-| R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). |
+| R6 | SOON (partly done) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. The settled-row revert-and-move oracle case landed with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
+| R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). (The TRUNCATE variant -- wiping a current-period true-up correction -- is already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so its re-sync is still owed.) |
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
 | R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
 | R10 | HOUSEKEEPING | Doc-drift batch (L8): the two stale import rationales, the stale impossibility argument in the two model docstrings, the reset comment. Single-source the `--fail-on` list (L1). Trim `growth_engine` from the W9906 allowlist (L2). De-duplicate the cross-page grid/checking readers or wire one to a route value (L6). Decide the L9 timezone policy for tax attribution and the L10 over-credit guard. Ratify the two C11 forks (Section 5). |
