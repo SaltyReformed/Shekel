@@ -91,15 +91,16 @@ def sync_loan_postings(
     Idempotent and self-healing: a re-run at the same state writes nothing.
     Touches ONLY the loan's own ledgers (linked, interest, escrow, refund,
     opening-equity) -- never Checking, so a loan sync can never move a cash
-    balance.  Reads ``as_of`` as the upper bound on which payments / anchors are
-    historical; the go-forward wiring passes ``date.today()``.  Flushes but does
-    not commit (the caller owns the transaction).
+    balance.  ``as_of`` bounds the walk's ANCHORS only; every settled payment
+    splits, whatever its pay period (settlement is the confirming event -- see
+    :func:`._walk._settled_income_shadows`).  The go-forward wiring passes
+    ``date.today()``.  Flushes but does not commit (the caller owns the
+    transaction).
 
     Args:
         loan_account_id: The loan whose full ledger to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date (a payment whose pay period has not begun by
-            it, or an anchor after it, is not yet historical).
+        as_of: The walk's anchor boundary (an anchor after it does not reset).
     """
     walk = walk_loan_ledger(loan_account_id, scenario_id, as_of)
     reconcile_loan_payment_splits(
@@ -195,6 +196,31 @@ def sync_all_scenarios_or_duplicate(
         return False
 
 
+def _reconcile_loan_account_ids(loan_account_ids: list[int]) -> list[int]:
+    """Reconcile the given loan accounts across all their scenarios; return them.
+
+    The shared body of the deploy-wide backfill
+    (:func:`backfill_all_loan_postings`) and the per-user reset re-sync
+    (:func:`resync_user_loan_postings`): each id is reconciled through
+    :func:`sync_loan_postings_all_scenarios`, the identical go-forward sync (so a
+    reconciled correction is identical to a go-forward one by construction --
+    there is no second implementation that could drift).  The two public
+    functions differ ONLY in their enumerator (all loans vs one user's), which
+    stays with each of them; this holds the loop itself in one place.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary.
+
+    Args:
+        loan_account_ids: The loan account ids to reconcile.
+
+    Returns:
+        ``loan_account_ids`` unchanged, for the callers' return contract.
+    """
+    for loan_account_id in loan_account_ids:
+        sync_loan_postings_all_scenarios(loan_account_id)
+    return loan_account_ids
+
+
 def backfill_all_loan_postings() -> list[int]:
     """Reconcile every loan's full genesis ledger across all scenarios (backfill).
 
@@ -223,7 +249,42 @@ def backfill_all_loan_postings() -> list[int]:
         The loan account ids reconciled, ascending -- for the deploy log and
         test introspection (empty on a loan-free database).
     """
-    loan_account_ids = loan_loaders.load_all_loan_account_ids()
-    for loan_account_id in loan_account_ids:
-        sync_loan_postings_all_scenarios(loan_account_id)
-    return loan_account_ids
+    return _reconcile_loan_account_ids(loan_loaders.load_all_loan_account_ids())
+
+
+def resync_user_loan_postings(user_id: int) -> list[int]:
+    """Reconcile every loan a SINGLE user owns across all its scenarios.
+
+    The per-user counterpart to :func:`backfill_all_loan_postings`: iterates only
+    *user_id*'s configured loans
+    (:func:`app.services.loan_loaders.load_loan_account_ids_for_user`) and
+    reconciles each through :func:`sync_loan_postings_all_scenarios`, reusing the
+    identical go-forward sync so a re-synced correction is identical to a
+    go-forward one by construction -- there is no second implementation that could
+    drift.
+
+    The caller is ``pay_period_admin.reset_pay_periods``: a full reset wipes the
+    user's pay periods, and ``journal_entries.pay_period_id`` is ON DELETE
+    CASCADE, so the wipe disposes this user's loan opening / true-up genesis
+    entries (which exist independently of any settled transaction, so the reset's
+    zero-settled gate does NOT keep them safe).  The loan's SOURCE facts survive
+    the wipe -- :class:`~app.models.loan_params.LoanParams` and its true-up
+    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry no
+    ``pay_period_id`` -- so this re-derives and re-posts the genesis corrections
+    onto the rebuilt schedule, attributed to the new periods.  Scoped to the one
+    user because a reset is a single-user operation: unlike the deploy backfill it
+    must not reconcile other owners' loans inside the reset transaction.
+
+    Idempotent and self-healing via reconcile-to-target.  Flushes but does NOT
+    commit -- the caller owns the transaction boundary (the reset's route commit).
+
+    Args:
+        user_id: The owning user whose loans to reconcile.
+
+    Returns:
+        The loan account ids reconciled, ascending (empty when the user has no
+        loan).
+    """
+    return _reconcile_loan_account_ids(
+        loan_loaders.load_loan_account_ids_for_user(user_id)
+    )

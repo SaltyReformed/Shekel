@@ -1,12 +1,30 @@
-"""Shared definitions for the balanced-journal constraint trigger.
+"""Shared definitions for the posting ledger's database-tier integrity kit.
 
-The double-entry posting ledger (Build-Order Step 2,
-:mod:`app.models.journal_entry`) requires a per-journal-entry invariant that
-PostgreSQL cannot express as a row-level CHECK: every entry's posting legs
-must ``SUM(amount) = 0`` and there must be ``COUNT(*) >= 2`` of them.  Both
-are cross-row facts about an entry, so they live in a **deferred constraint
-trigger** that validates at COMMIT -- after all of an entry's legs are
-inserted -- rather than after the first leg.
+Two pieces live here: the balanced-journal constraint trigger and the
+append-only privilege posture for the least-privilege ``shekel_app`` role.
+
+**The balanced-journal trigger.**  The double-entry posting ledger
+(Build-Order Step 2, :mod:`app.models.journal_entry`) requires a
+per-journal-entry invariant that PostgreSQL cannot express as a row-level
+CHECK: every entry's posting legs must ``SUM(amount) = 0`` and there must be
+``COUNT(*) >= 2`` of them.  Both are cross-row facts about an entry, so they
+live in a **deferred constraint trigger** that validates at COMMIT -- after
+all of an entry's legs are inserted -- rather than after the first leg.
+
+**The append-only privilege posture** (the 2026-07-02 adversarial review's
+M1/R4).  The trigger deliberately has no DELETE arm (CASCADE disposal would
+see a transient ``COUNT < 2`` mid-cascade), and its UPDATE arm checks only
+the NEW row's entry -- so a raw-SQL single-leg DELETE, or a raw-SQL reparent
+of a leg, silently breaks the trial balance (demonstrated live in the
+review).  The ORM immutability listeners do not fire for raw SQL either.
+:func:`apply_ledger_append_only_privileges` closes that surface at the
+database tier: ``REVOKE UPDATE, DELETE`` on ``budget.journal_entries`` and
+``budget.account_postings`` from ``shekel_app``, so the running app -- and an
+attacker who pivots into its role -- can only ever APPEND.  Referential
+actions are unaffected: PostgreSQL executes CASCADE / SET NULL as the table
+owner, not the client role (verified live on the dev stack: a pay-period
+delete as ``shekel_app`` cascaded 18 entries + 37 postings; a transaction
+delete nulled the entry back-link -- both with the revoke in force).
 
 Three callers must produce identical trigger infrastructure, exactly as
 :mod:`app.audit_infrastructure` keeps the audit trigger in lock-step across
@@ -31,6 +49,18 @@ its three callers:
 
 Centralising the SQL here is the only way to keep those three call sites
 from drifting.
+
+The privilege posture has the same three Python callers (the Alembic
+migration for existing databases, ``scripts/init_database.py`` for the
+fresh-DB path that stamps past the migration chain, and
+``scripts/build_test_template.py`` for the test template) **plus one psql
+caller that cannot import this module**: ``scripts/init_db_role.sql``, which
+``entrypoint.sh`` re-runs on EVERY container start and whose blanket
+``GRANT ... ON ALL TABLES IN SCHEMA budget`` would otherwise silently
+re-grant ``UPDATE, DELETE`` on the ledger tables at each restart, undoing a
+one-time migration.  That file carries the same targeted REVOKE in SQL form
+with a cross-reference here; a change to either MUST be mirrored in the
+other.
 
 **Caller contract: the table must already exist.**  Unlike
 :func:`app.audit_infrastructure.apply_audit_infrastructure`, this function is
@@ -177,3 +207,79 @@ def remove_posting_infrastructure(executor: Callable[[str], object]) -> None:
     """
     executor(_DROP_TRIGGER_SQL)
     executor(f"DROP FUNCTION IF EXISTS {_TRIGGER_FUNCTION_NAME}()")
+
+
+# The least-privilege runtime role (provisioned by scripts/init_db_role.sql)
+# and the two append-only ledger tables the posture applies to.
+# ledger_accounts is deliberately NOT listed: it is mutable by design
+# (display-name snapshots, archival), and only the journal is append-only.
+_APP_ROLE = "shekel_app"
+_LEDGER_TABLES = "budget.journal_entries, budget.account_postings"
+
+# Both statements are wrapped in a role-existence guard (the same pattern the
+# audit rebuild migration a5be2a99ea14 uses) so they succeed on a database
+# where the production app role has never been provisioned -- a developer
+# laptop, CI, or the per-worker test clones, where the role exists only for
+# the duration of a role-privilege test.  REVOKE and GRANT are idempotent, so
+# re-running either is indistinguishable from running it once.
+_REVOKE_LEDGER_WRITE_SQL = f"""
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = '{_APP_ROLE}') THEN
+        REVOKE UPDATE, DELETE ON {_LEDGER_TABLES} FROM {_APP_ROLE};
+    END IF;
+END$$
+"""
+
+_GRANT_LEDGER_WRITE_SQL = f"""
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = '{_APP_ROLE}') THEN
+        GRANT UPDATE, DELETE ON {_LEDGER_TABLES} TO {_APP_ROLE};
+    END IF;
+END$$
+"""
+
+
+def apply_ledger_append_only_privileges(executor: Callable[[str], object]) -> None:
+    """Idempotently revoke ``UPDATE, DELETE`` on the ledger tables from the app role.
+
+    Makes the ledger's append-only property real at the DATABASE tier for the
+    running application (review M1/R4): the deferred balanced trigger has no
+    DELETE arm and its UPDATE arm checks only the NEW row's entry, and the ORM
+    immutability listeners do not fire for raw SQL -- so without this posture
+    a raw-SQL single-leg DELETE silently breaks the trial balance.  ``SELECT``
+    and ``INSERT`` are untouched (appending reversal/delta entries is the
+    correction mechanism), and referential actions keep working because
+    PostgreSQL executes CASCADE / SET NULL as the table owner, not the client
+    role (verified live on the dev stack, 2026-07-02).
+
+    A no-op when the ``shekel_app`` role does not exist (see the guard's
+    comment above), and idempotent when it does.  The caller MUST have
+    already created both ledger tables (the same caller contract as
+    :func:`apply_posting_infrastructure`); ``scripts/init_db_role.sql``
+    carries its own table-existence guard because it runs BEFORE migrations
+    on a fresh boot.
+
+    Args:
+        executor: Single-argument callable that accepts a SQL string and
+            runs it.  Same contract as :func:`apply_posting_infrastructure`;
+            must run with a role privileged to REVOKE (the owner role -- the
+            migration runner, the entrypoint, and the test-template builder
+            all do).
+    """
+    executor(_REVOKE_LEDGER_WRITE_SQL)
+
+
+def remove_ledger_append_only_privileges(executor: Callable[[str], object]) -> None:
+    """Inverse of :func:`apply_ledger_append_only_privileges` (migration downgrade).
+
+    Restores the blanket-DML posture ``scripts/init_db_role.sql`` grants on
+    every ``budget`` table, so a downgraded database matches the pre-R4
+    grant state exactly.  Role-guarded and idempotent like the apply side.
+
+    Args:
+        executor: Single-argument callable that accepts a SQL string and
+            runs it.  Same contract as :func:`apply_posting_infrastructure`.
+    """
+    executor(_GRANT_LEDGER_WRITE_SQL)

@@ -78,6 +78,7 @@ from ._reader import (
 )
 from ._sync import (
     backfill_all_loan_postings,
+    resync_user_loan_postings,
     sync_all_scenarios_or_duplicate,
     sync_loan_postings,
     sync_loan_postings_all_scenarios,
@@ -100,6 +101,7 @@ __all__ = [
     "confirmed_loan_balance_map",
     "confirmed_loan_history_rows",
     "confirmed_loan_interest_in_year",
+    "resync_user_loan_postings",
     "reverse_loan_payment_postings_for_shadow",
     "sync_all_scenarios_or_duplicate",
     "sync_loan_anchor_corrections",

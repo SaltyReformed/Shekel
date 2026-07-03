@@ -136,8 +136,10 @@ class LoanLedgerWalk:
     the balance interest accrued on, the way three independent walks could).
 
     Attributes:
-        payment_splits: One :class:`LoanPaymentSplit` per confirmed payment whose
-            pay period has begun by the walk's ``as_of``, chronological.
+        payment_splits: One :class:`LoanPaymentSplit` per settled payment --
+            including one whose pay period has not yet begun (settlement is the
+            confirming event; the readers' period bound governs display) --
+            chronological.
         anchor_corrections: One :class:`LoanAnchorCorrection` per anchor
             (origination + user-trueups) dated on or before ``as_of``,
             chronological.
@@ -221,24 +223,35 @@ def _split_one_payment(
     return split, balance - principal
 
 
-def _confirmed_shadows_through(
+def _settled_income_shadows(
     loan_account_id: int,
     scenario_id: int,
-    as_of: date,
 ) -> list[Transaction]:
-    """Return a loan's settled income shadows through ``as_of``, in payment order.
+    """Return a loan's settled income shadows, in payment order, NO period bound.
 
     The genesis walk's payment set: the settled loan-side income shadows
     (:func:`app.services.loan_loaders.query_shadow_income` supplies the
     shared "what counts as shadow income" predicate -- transfer-linked, Income
-    type, non-deleted, non-excluded), narrowed to the settled statuses and to
-    payments whose pay period has begun by ``as_of`` -- and NOTHING ELSE.  Unlike
-    the Step-4 :func:`app.services.rate_period_engine.is_confirmed_payment_eligible`
-    filter this drops the post-anchor LOWER bound: genesis walks EVERY confirmed
-    payment from origination, because the anchor boundary is now a running-balance
-    RESET in :func:`walk_loan_ledger`, not a payment exclusion.  So a pre-anchor
-    payment is split and posted (its principal effect is later subsumed by the
-    anchor correction), never silently dropped.
+    type, non-deleted, non-excluded), narrowed to the settled statuses -- and
+    NOTHING ELSE.  Two bounds the resolver's
+    :func:`app.services.rate_period_engine.is_confirmed_payment_eligible` filter
+    applies are deliberately ABSENT here:
+
+    * **No post-anchor LOWER bound.**  Genesis walks EVERY confirmed payment
+      from origination, because the anchor boundary is a running-balance RESET
+      in :func:`walk_loan_ledger`, not a payment exclusion.  A pre-anchor
+      payment is split and posted (its principal effect is later subsumed by
+      the anchor correction), never silently dropped.
+    * **No period-begun UPPER bound.**  Settlement is the confirming event: the
+      Step-2 cash entry posts the moment a payment settles, so the split
+      correction must post in the SAME moment or the loan-linked ledger holds
+      raw cash with no interest / escrow backout from the payment's period
+      start until the next loan write (the 2026-07-02 adversarial review's H2 --
+      demonstrated as a ~$1,636 understatement on the real Mortgage).  Both
+      entries carry the payment's ``pay_period_id``, so the READERS' period
+      bound still keeps an early-settled payment out of every displayed balance
+      until its period begins -- posting early changes when the fact is
+      RECORDED, never when it is SHOWN.
 
     Sorted by pay-period start -- the app's canonical payment chronology
     (``get_payment_history`` orders identically) and the order the running balance
@@ -249,24 +262,51 @@ def _confirmed_shadows_through(
     Args:
         loan_account_id: The loan account whose shadows to load.
         scenario_id: The budget scenario to scope to.
-        as_of: The evaluation date (the upper boundary; a payment whose pay period
-            has not begun by it is a forward projection, excluded).
 
     Returns:
-        The settled income shadows through ``as_of``, ascending by pay-period
-        start then ``id``.
+        Every settled income shadow, ascending by pay-period start then ``id``.
     """
     settled_shadows = (
         loan_loaders.query_shadow_income(loan_account_id, scenario_id)
         .filter(Transaction.status_id.in_(settled_status_ids()))
         .all()
     )
-    eligible = [
-        shadow for shadow in settled_shadows
+    settled_shadows.sort(
+        key=lambda shadow: (shadow.pay_period.start_date, shadow.id)
+    )
+    return settled_shadows
+
+
+def _confirmed_shadows_through(
+    loan_account_id: int,
+    scenario_id: int,
+    as_of: date,
+) -> list[Transaction]:
+    """Return the settled shadows whose pay period has begun by ``as_of``.
+
+    The DISPLAY subset of :func:`_settled_income_shadows`: the payments the
+    balance readers count as confirmed history at ``as_of`` (their shared
+    "period has begun" bound).  The history reader
+    (:func:`.._reader.confirmed_loan_history_rows`) consumes this so its rows
+    match the balance readers' cut; the WRITE-side walk deliberately does NOT
+    (it posts a split for every settled payment -- see
+    :func:`_settled_income_shadows` for why).
+
+    Args:
+        loan_account_id: The loan account whose shadows to load.
+        scenario_id: The budget scenario to scope to.
+        as_of: The display boundary; a payment whose pay period has not begun
+            by it is a forward projection, excluded.
+
+    Returns:
+        The settled income shadows through ``as_of``, ascending by pay-period
+        start then ``id``.
+    """
+    return [
+        shadow
+        for shadow in _settled_income_shadows(loan_account_id, scenario_id)
         if shadow.pay_period.start_date <= as_of
     ]
-    eligible.sort(key=lambda shadow: (shadow.pay_period.start_date, shadow.id))
-    return eligible
 
 
 def _merge_anchor_and_payment_events(
@@ -288,8 +328,11 @@ def _merge_anchor_and_payment_events(
     EVERY anchor rather than the latest only.
 
     Anchors dated after ``as_of`` are dropped (an anchor cannot reset the balance
-    as of a date before it); the shadows are already capped at ``as_of`` by the
-    caller.  Within a type, ties break deterministically -- anchors by
+    as of a date before it); the shadows are NOT capped -- every settled payment
+    walks (see :func:`_settled_income_shadows`), and a not-yet-begun payment's
+    future due date simply sorts after every in-window anchor, so it can never
+    perturb an anchor's ``owed_before``.  Within a type, ties break
+    deterministically -- anchors by
     ``created_at`` (mirroring :func:`select_latest_anchor`; the synthesized
     origination fact carries the earliest possible instant), payments by their
     caller-supplied ``(pay_period.start_date, id)`` order -- preserved by a stable
@@ -388,9 +431,11 @@ def walk_loan_ledger(
       origination anchor is always the first event, so its ``owed_before`` is
       zero and its correction is the OPENING; a user-trueup's correction is the
       append-only TRUE-UP that reproduces the resolver's balance jump.
-    * At a confirmed payment whose pay period has begun by ``as_of``: divide its
-      ACTUAL cash into interest / escrow / principal / excess on the current
-      running balance (:func:`_split_one_payment`), then advance the balance.
+    * At a settled payment -- INCLUDING one whose pay period has not yet begun
+      (settlement is the confirming event; see :func:`_settled_income_shadows`)
+      -- divide its ACTUAL cash into interest / escrow / principal / excess on
+      the current running balance (:func:`_split_one_payment`), then advance
+      the balance.
 
     Resetting at EVERY anchor -- rather than seeding from the latest anchor only,
     as the Step-4 walk and the resolver do -- is what lets a from-origination
@@ -409,8 +454,9 @@ def walk_loan_ledger(
     Args:
         loan_account_id: The loan account whose ledger to walk.
         scenario_id: The budget scenario the payments live in.
-        as_of: The evaluation date; anchors after it do not reset, and a payment
-            whose pay period has not begun by it is a forward projection, excluded.
+        as_of: The anchor boundary; anchors after it do not reset.  Payments are
+            NOT bounded by it -- every settled payment splits, whatever its pay
+            period (see :func:`_settled_income_shadows`).
 
     Returns:
         A :class:`LoanLedgerWalk` (payment splits + anchor corrections, both
@@ -438,7 +484,7 @@ def walk_loan_ledger(
     escrow_components = loan_loaders.load_all_escrow_components(
         loan_account_id,
     )
-    shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)
+    shadows = _settled_income_shadows(loan_account_id, scenario_id)
     events = _merge_anchor_and_payment_events(
         anchor_facts, shadows, params.payment_day, as_of,
     )
@@ -454,8 +500,8 @@ def compute_loan_payment_splits(
     """Return the real split of a loan's confirmed payments from origination.
 
     The payment-split view of the genesis ledger walk
-    (:func:`walk_loan_ledger`): one :class:`LoanPaymentSplit` per confirmed
-    payment whose pay period has begun by ``as_of``, in chronological order, each
+    (:func:`walk_loan_ledger`): one :class:`LoanPaymentSplit` per settled
+    payment (whatever its pay period), in chronological order, each
     dividing its ACTUAL cash into interest / escrow / principal / excess on the
     reset-aware running balance (see :func:`_split_one_payment` for the
     per-payment math).  Because principal is ``cash - interest - escrow``, an
@@ -473,14 +519,14 @@ def compute_loan_payment_splits(
     Args:
         loan_account_id: The loan account whose confirmed payments to split.
         scenario_id: The budget scenario the payments live in.
-        as_of: The evaluation date; a payment whose pay period has not begun by
-            it is a forward projection and is excluded.
+        as_of: The anchor boundary (anchors after it do not reset).  Payments
+            are NOT bounded by it (see :func:`_settled_income_shadows`).
 
     Returns:
-        One :class:`LoanPaymentSplit` per confirmed payment through ``as_of``, in
-        chronological (pay-period-start) order.  Empty (``[]``) when the loan has
-        no :class:`LoanParams` (not yet resolvable -- the N1 guard) or no
-        confirmed payment.
+        One :class:`LoanPaymentSplit` per settled payment, in chronological
+        (pay-period-start) order.  Empty (``[]``) when the loan has no
+        :class:`LoanParams` (not yet resolvable -- the N1 guard) or no settled
+        payment.
     """
     return walk_loan_ledger(
         loan_account_id, scenario_id, as_of,

@@ -554,10 +554,12 @@ def _classify_linked_nets(
        before the SET NULL) drops for the same reason, as does a
        ``transaction``-source group with a NULL ``transaction_id``.
     3. **A genuine non-payment balance event.**  The opening, each true-up, a
-       transfer OUT of the loan, a raw settled transaction typed onto the loan
-       account -- applied at its ``entry_date`` (the write walk's anchor rule);
-       events dated after *as_of* are dropped, mirroring the walk's anchor
-       bound.
+       transfer OUT of the loan (forbidden at creation since review R6 -- see
+       :func:`app.services._transfer_loan_posting._reject_transfer_out_of_loan`
+       -- so this arm now defends only any pre-guard legacy row), a raw settled
+       transaction typed onto the loan account -- applied at its ``entry_date``
+       (the write walk's anchor rule); events dated after *as_of* are dropped,
+       mirroring the walk's anchor bound.
 
     Args:
         entry_nets: The per-entry nets from :func:`_linked_entry_nets`.
@@ -612,7 +614,9 @@ def _is_dropped_payment_residue(
       loan's payment lineage (reverted / cancelled / soft-deleted /
       future-period payment cash) or NULL (hard-delete residue) -- a
       ``transfer_id`` OUTSIDE the lineage is a transfer out of the loan, a
-      real balance event that is KEPT;
+      real balance event that is KEPT (that flow is forbidden at creation
+      since review R6, so this KEEP arm now defends only a pre-guard legacy
+      row);
     * a ``transaction``-source group with a NULL ``transaction_id`` is an
       ordinary transaction's hard-delete residue (reversed to zero before
       the SET NULL).

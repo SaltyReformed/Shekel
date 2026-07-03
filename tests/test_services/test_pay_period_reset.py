@@ -30,8 +30,14 @@ import pytest
 
 from app import ref_cache
 from app.exceptions import PayPeriodResetBlocked, ValidationError
-from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    PostingSourceEnum,
+    RecurrencePatternEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.models.account import Account, AccountAnchorHistory
+from app.models.journal_entry import JournalEntry
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
@@ -39,9 +45,11 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
     balance_resolver,
+    loan_posting_service,
     pay_period_admin,
     pay_period_service,
     pay_schedule_service,
+    posting_service,
 )
 from scripts.integrity_check import (
     check_balance_anomalies,
@@ -50,6 +58,7 @@ from scripts.integrity_check import (
 from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
+    create_loan_with_trueup,
     create_savings_account,
     freeze_today,
     make_expense_template,
@@ -62,6 +71,38 @@ from tests._test_helpers import (
 # resolved anchor period.
 FROZEN_TODAY = date(2026, 6, 15)
 _NEW_START = date(2026, 6, 5)
+
+# A configured loan for the genesis-resync regression (review M2 / R7):
+# origination $250,000, trued up to $100,000, so its genesis ledger nets
+# -(100000) = opening -250000 + true-up +150000.  Both anchor dates predate the
+# rebuilt schedule's 2026-06-05 start, so after reset every correction
+# re-attributes to the new earliest period.
+_LOAN_ORIGINATION = Decimal("250000.00")
+_LOAN_ANCHOR_BALANCE = Decimal("100000.00")
+_LOAN_ANCHOR_DATE = date(2026, 1, 10)
+_LOAN_ORIGINATION_DATE = date(2025, 1, 1)
+_LOAN_RATE = Decimal("0.06000")
+_LOAN_GENESIS_NET = Decimal("-100000.00")
+
+
+def _loan_genesis_entries(db_session, user_id):
+    """Return the user's loan opening + true-up journal entries.
+
+    The genesis corrections a full reset must re-post: their
+    ``source_kind_id`` is ``loan_opening`` or ``loan_trueup`` (never a
+    settled-transaction source), and each carries a ``pay_period_id`` that
+    CASCADE-deletes with the wiped periods.
+    """
+    opening = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
+    trueup = ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP)
+    return (
+        db_session.query(JournalEntry)
+        .filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.source_kind_id.in_([opening, trueup]),
+        )
+        .all()
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -529,3 +570,71 @@ class TestResetRefusals:
             account = db.session.get(Account, account.id)
             assert account.current_anchor_period_id == before_anchor
             assert_pay_period_invariants(db.session, user_id)
+
+
+class TestResetResyncsLoanGenesis:
+    """A full reset re-posts the loan genesis entries the period wipe cascades.
+
+    A configured loan's opening / true-up postings carry a ``pay_period_id`` and
+    so CASCADE-delete with the wiped periods, yet they exist independently of any
+    settled transaction -- the zero-settled reset gate does NOT protect them.
+    Their source facts (``LoanParams``, the ``user_trueup`` ``LoanAnchorEvent``)
+    survive, so reset must re-derive and re-post them onto the rebuilt schedule
+    in the same transaction (review M2 / R7).  Without the re-sync the loan's
+    ledger reads empty until the next loan write and every ledger-authoritative
+    loan surface degrades to the replay fallback.
+    """
+
+    def test_genesis_reposted_and_reconciles_after_reset(
+        self, app, db, seed_user,
+    ):
+        """Genesis nets -(anchor) before AND after reset, re-attributed anew.
+
+        Opening -250000 + true-up +150000 = -100000 == -(anchor 100000).  Before
+        reset the two entries attribute to old periods; the wipe CASCADE-deletes
+        them; the re-sync re-posts exactly two entries (opening + true-up), now
+        attributed to the rebuilt schedule's earliest period (both anchor dates
+        precede its 2026-06-05 start), and the loan-linked ledger nets -100000
+        again -- it would be 0 without the fix.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            _seed_old_schedule(db.session, seed_user)
+            loan = create_loan_with_trueup(
+                seed_user, db.session,
+                origination_principal=_LOAN_ORIGINATION,
+                anchor_balance=_LOAN_ANCHOR_BALANCE,
+                anchor_date=_LOAN_ANCHOR_DATE,
+                rate=_LOAN_RATE,
+                origination_date=_LOAN_ORIGINATION_DATE,
+            )
+            # Post the genesis corrections (opening + true-up) as the precondition.
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            old_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            before = _loan_genesis_entries(db.session, user_id)
+            assert len(before) == 2
+            assert {e.pay_period_id for e in before} <= old_ids
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == _LOAN_GENESIS_NET
+
+            new_periods = pay_period_admin.reset_pay_periods(
+                user_id, new_start_date=_NEW_START, num_periods=6,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            # The genesis entries re-post onto the rebuilt schedule: exactly two,
+            # attributed to the new earliest period (both anchor dates precede
+            # it), and the loan-linked ledger reconciles to -(anchor) again.
+            after = _loan_genesis_entries(db.session, user_id)
+            assert len(after) == 2
+            assert {e.pay_period_id for e in after} == {new_periods[0].id}
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == _LOAN_GENESIS_NET
+            assert_pay_period_invariants(db.session, user_id)
+            assert all(r.passed for r in check_referential_integrity(db.session))

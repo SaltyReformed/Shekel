@@ -34,7 +34,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import joinedload
 
@@ -43,7 +42,7 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import escrow_calculator
+from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_loaders import (
     _rate_change_records_from,
@@ -55,19 +54,6 @@ from app.services.loan_loaders import (
 )
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import is_projected
-
-if TYPE_CHECKING:
-    # Type-only import: ``loan_resolver`` imports from this module
-    # (``load_loan_context``), so a runtime top-level import would be
-    # circular.  ``resolve_account_loan`` returns its ``LoanState``,
-    # ``resolve_loan_seeded`` takes a ``LoanInputs``, and
-    # ``confirmed_loan_view`` returns a ``ConfirmedLedgerView``; all are
-    # produced / passed via the function-local imports below.
-    from app.services.loan_resolver import (
-        ConfirmedLedgerView,
-        LoanInputs,
-        LoanState,
-    )
 
 logger = logging.getLogger(__name__)
 
@@ -303,10 +289,6 @@ def compute_contractual_pi(
     """
     if params.original_principal is None:
         return Decimal("0")
-    # Pylint: ``import-outside-toplevel`` -- local import avoids a
-    # top-level circular import (loan_resolver imports ``load_loan_context``
-    # from this module, so a top-level import here would be circular).
-    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
     # The rate comes from ``rate_changes`` (DH-#56 retired
     # ``LoanParams.interest_rate``), so an empty feed raises in the
     # resolver rather than silently defaulting to a wrong payment.
@@ -427,7 +409,7 @@ def prepare_payments_for_engine(
 
 def confirmed_loan_view(
     account_id: int, scenario_id: int | None, as_of: date,
-) -> "ConfirmedLedgerView | None":
+) -> "loan_resolver.ConfirmedLedgerView | None":
     """Read a loan's genesis-ledger confirmed view (balance + history), or None.
 
     The read switch's SINGLE injection point: the one and only call site of
@@ -489,10 +471,16 @@ def confirmed_loan_view(
     """
     if scenario_id is None or as_of > date.today():
         return None
-    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
-    # module (``load_loan_context``), so resolving it here rather than at
-    # module top keeps the dependency one-directional.
-    from app.services import loan_posting_service, loan_resolver  # pylint: disable=import-outside-toplevel
+    # Pylint: ``import-outside-toplevel`` -- the confirmed-ledger readers
+    # (``loan_posting_service``) are imported HERE, inside the read switch's
+    # sole injection point, ON PURPOSE rather than at module top: it keeps the
+    # posted-ledger reader out of module scope so this module's resolver-feeding
+    # loaders (``load_loan_context`` and siblings) stay ledger-free.  That
+    # property is enforced by ``TestResolverIsLedgerFree``, which scans this
+    # module MINUS its read-switch functions -- a top-level ledger import would
+    # fail it.  (``loan_resolver`` is a plain top-level import; only the ledger
+    # reader must stay function-local.)
+    from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
     balance = loan_posting_service.confirmed_loan_balance_at(
         account_id, scenario_id, as_of,
     )
@@ -513,11 +501,11 @@ def confirmed_loan_view(
 
 
 def resolve_loan_seeded(
-    loan_inputs: "LoanInputs",
+    loan_inputs: "loan_resolver.LoanInputs",
     account_id: int,
     scenario_id: int | None,
     as_of: date,
-) -> "LoanState":
+) -> "loan_resolver.LoanState":
     """Resolve a loan with its genesis-ledger confirmed view threaded in.
 
     The single injection helper the read switch routes the three db-facing
@@ -546,10 +534,6 @@ def resolve_loan_seeded(
     Returns:
         The resolved :class:`~app.services.loan_resolver.LoanState`.
     """
-    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
-    # module (``load_loan_context``), so resolving it here rather than at
-    # module top keeps the dependency one-directional.
-    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
     view = confirmed_loan_view(account_id, scenario_id, as_of)
     return loan_resolver.resolve_loan(
         loan_inputs, as_of, confirmed_view=view,
@@ -558,7 +542,7 @@ def resolve_loan_seeded(
 
 def resolve_account_loan(
     account_id: int, scenario_id: int, today: date
-) -> "tuple[LoanParams, LoanState] | None":
+) -> "tuple[LoanParams, loan_resolver.LoanState] | None":
     """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
 
     The per-account "load LoanParams (skip if unconfigured), load anchor
@@ -588,10 +572,6 @@ def resolve_account_loan(
         resolved :class:`~app.services.loan_resolver.LoanState` -- or
         ``None`` if the account has no ``LoanParams``.
     """
-    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports from this
-    # module (``load_loan_context``), so resolving it here rather than at
-    # module top keeps the dependency one-directional.
-    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
     params = load_loan_params(account_id)
     if params is None:
         return None
@@ -618,10 +598,6 @@ def _resolve_loan_piti(
     rate-period P&I; ``context.monthly_escrow`` adds the escrow component to
     reach PITI.
     """
-    # Pylint: ``import-outside-toplevel`` -- loan_resolver imports nothing
-    # from this module, so resolving it here rather than at module top
-    # keeps the dependency one-directional.
-    from app.services import loan_resolver  # pylint: disable=import-outside-toplevel
     params = load_loan_params(loan_account_id)
     if params is None:
         return None

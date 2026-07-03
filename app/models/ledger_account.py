@@ -141,14 +141,22 @@ that is disposed of -- never corrected -- when its real account is deleted.
 **FK-action rationale (the cascade-imbalance impossibility argument).**
 ``account_id`` is ``ON DELETE CASCADE`` so a freshly-created *empty*
 account deletes cleanly, taking its (postings-free) ledger account with
-it.  A ledger account that *has* postings can never be reached by an
-account delete: such an account necessarily has settled transfer **shadow
-transactions**, and ``transactions.account_id`` /
-``transfers.from|to_account_id`` are ``ON DELETE RESTRICT``
-(``transaction.py``, ``transfer.py``) -- the account delete is refused
-before any cascade fires.  So CASCADE can never orphan a posting leg.
-(Accounts with history are *archived*, ``is_active=False``, never
-deleted.)  The relationship to :class:`~app.models.account.Account` is
+it.  An account whose linked ledger *has* postings is instead kept off the
+hard-delete path by route **Guard 5** (``archive_helpers.account_has_ledger_postings``
+in ``routes/accounts/crud.py``), which archives (``is_active=False``) any such
+account rather than deleting it.  That guard -- not the shadow-transaction
+RESTRICT FKs -- is what makes the impossibility hold, because a settled
+transfer's postings OUTLIVE the transfer: a transfer hard-delete SET-NULLs
+``journal_entries.transfer_id`` but keeps the immutable legs, so once the
+shadows are gone the RESTRICT FKs on ``transactions.account_id`` /
+``transfers.from|to_account_id`` (``transaction.py`` / ``transfer.py``) no
+longer cover the case on their own.  With Guard 5 in front, only a
+posting-free account ever reaches the CASCADE, so CASCADE can never orphan a
+posting leg; those RESTRICT FKs on any still-live shadows, plus the
+``loan_account_id`` RESTRICT below (a loan-correction row survives even with no
+settled transaction at all), are the DB-tier second layer.  (Accounts with
+history are *archived*, never deleted.)  The relationship to
+:class:`~app.models.account.Account` is
 deliberately one-directional (no backref): ``Account`` has no awareness
 of its ledger account, so deleting an account never triggers an ORM
 SET-NULL on the ledger row -- the database-level CASCADE is what removes

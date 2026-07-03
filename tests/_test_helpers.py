@@ -722,6 +722,87 @@ def ledger_accounts_for_account(db_session, account_id):
     )
 
 
+def make_balanced_entry(
+    session, seed_user, *, from_ledger_id, to_ledger_id,
+    amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
+    source_kind=None, posting_kind=None, period_id=None,
+):
+    """Create and commit one balanced journal entry (two legs summing to zero).
+
+    The from leg is ``-amount`` (credit), the to leg is ``+amount`` (debit),
+    so the deferred balanced trigger passes at commit.  Returns the committed
+    :class:`~app.models.journal_entry.JournalEntry`.  Shared by the
+    journal-entry model suite and the ledger append-only role-privilege suite
+    (previously module-local to the former -- a duplicate-code finding once
+    the R4 tests needed the same shape).
+
+    ``source_kind`` / ``transfer_id`` / ``transaction_id`` / ``posting_kind``
+    default to the transfer shape (Step 2); a Step-3 transaction-sourced
+    entry passes ``source_kind=PostingSourceEnum.TRANSACTION``,
+    ``transaction_id=<id>``, and ``posting_kind=PostingKindEnum.EXPENSE`` (or
+    ``INCOME``).  Both concrete FKs default to ``None`` so a caller sets
+    exactly the one its source kind implies.  ``source_kind`` /
+    ``posting_kind`` default to ``None`` (resolved lazily to the TRANSFER
+    members) so the enums are not imported at module load, matching this
+    module's collection-time-safety convention.
+
+    Args:
+        session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies the user,
+            scenario, and bootstrap period).
+        from_ledger_id: Ledger account id for the ``-amount`` leg.
+        to_ledger_id: Ledger account id for the ``+amount`` leg.
+        amount: The leg magnitude (Decimal).
+        transfer_id: Optional ``budget.transfers`` back-link.
+        transaction_id: Optional ``budget.transactions`` back-link.
+        source_kind: :class:`~app.enums.PostingSourceEnum` member, or
+            ``None`` for TRANSFER.
+        posting_kind: :class:`~app.enums.PostingKindEnum` member, or
+            ``None`` for TRANSFER.
+        period_id: Pay period id, or ``None`` for the bootstrap period.
+
+    Returns:
+        The committed :class:`~app.models.journal_entry.JournalEntry`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # convention as the helpers above (no app symbols imported at module
+    # load); load the enums, cache, and models lazily here.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import PostingKindEnum, PostingSourceEnum
+    from app.models.journal_entry import JournalEntry, Posting
+
+    if source_kind is None:
+        source_kind = PostingSourceEnum.TRANSFER
+    if posting_kind is None:
+        posting_kind = PostingKindEnum.TRANSFER
+    if period_id is None:
+        period_id = seed_user["bootstrap_period"].id
+    entry = JournalEntry(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        pay_period_id=period_id,
+        entry_date=_real_date(2026, 1, 15),
+        source_kind_id=ref_cache.posting_source_id(source_kind),
+        transfer_id=transfer_id,
+        transaction_id=transaction_id,
+        description="Test entry",
+    )
+    session.add(entry)
+    session.flush()
+    kind_id = ref_cache.posting_kind_id(posting_kind)
+    session.add(Posting(
+        journal_entry_id=entry.id, ledger_account_id=from_ledger_id,
+        amount=-amount, posting_kind_id=kind_id,
+    ))
+    session.add(Posting(
+        journal_entry_id=entry.id, ledger_account_id=to_ledger_id,
+        amount=amount, posting_kind_id=kind_id,
+    ))
+    session.commit()
+    return entry
+
+
 def loan_correction_entries(db_session, shadow_id):
     """Return the Build-Order Step 4 loan_payment corrections under a shadow.
 
