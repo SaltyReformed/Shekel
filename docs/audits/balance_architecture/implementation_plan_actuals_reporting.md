@@ -115,8 +115,14 @@ in throughout. Developer approval: 2026-07-03.
   shares kinds with.  New wiring tests: unprompted create/true-up/self-heal
   end-to-end, reset re-post, create_baseline recovery, and the four
   type-guard route cases.  Full suite (run alone) 7008 passed;
-  `pylint app/` 10.00 clean.
+  `pylint app/` 10.00 clean.  The review's surviving findings (M2
+  settled-transfer attribution seam, M1 scenario-creation sync, the C1
+  timeliness note, the L1 transitional downgrade hazard) are scheduled as
+  follow-up commits F1-F3 at the foot of Section 6; L1 closes inside C7.
 - C7 (backfill + boundary migration) -- pending
+- F1 (settled-transfer attribution seam) / F3 (timeliness display-tz) --
+  follow-up commits after C13; F2 (scenario-creation sync) pinned to R8.
+  See Section 6, "Follow-up commits".
 - C8 (write-side oracle) -- pending
 - C9 (reporting service) -- pending
 - C10 (routes + templates) -- pending
@@ -505,7 +511,14 @@ tests pin an 8:05pm-ET Dec-31 settle to the earlier year.
    and `create_baseline`; the `seed_user` reorder + `_drop_seed_user_bootstrap` resync; the
    enumerated test-file updates from Section 5.
 7. **C7 -- Backfill**: `backfill_all_account_anchor_postings` + the deploy-hook extension + the
-   data-boundary migration; idempotence / no-double-post / downgrade-scope tests.
+   data-boundary migration; idempotence / no-double-post / downgrade-scope tests.  The boundary
+   migration also closes the C6-to-C7 transitional downgrade hazard the C6 review flagged (L1):
+   with corrections posted go-forward but no boundary migration beneath them, a downgrade below
+   the ref-source migration `a4c8e2f6b1d3` on a populated DB fails RESTRICT on the
+   `account_opening`/`account_trueup` rows -- loud, not silent, but open until C7 lands.  C7 also
+   makes true the promise the loan boundary test's kind sweep now relies on
+   (`test_loan_posting_backfill.py`: the account-correction sources are excluded because "their
+   OWN boundary migration downgrades first in the linear chain").
 8. **C8 -- Write-side oracle.**
 9. **C9 -- Reporting service** + service tests.
 10. **C10 -- Routes + templates + tabs** + route tests.
@@ -516,6 +529,49 @@ tests pin an 8:05pm-ET Dec-31 settle to the earlier year.
     M3 (reader half) / R9 / the header note in the review doc; update
     `level1_level2_scope_and_fitness.md` Status. Final gate: full suite alone + `pylint app/
     scripts/` 10.00, output shown.
+
+### Follow-up commits (from the per-commit adversarial reviews)
+
+Root-cause work the reviews surfaced that is real but NOT money-wrong today -- every current
+caller was verified safe, so none of these gates Step 5's PR.  Recorded as commits so they are
+scheduled work, not lore.  F1 and F3 land on this branch after C13 (or as the first commits of
+the next arc); F2 is a requirement pinned to R8's owner.
+
+- **F1 -- Settled-transfer attribution-mutation seam (C6 review M2).**
+  `transfer_service.update_transfer` accepts `pay_period_id` and `paid_at` on a SETTLED transfer
+  with no ledger reconcile (`_POSTING_RELEVANT_FIELDS` omits both; the invariant note now sits on
+  that constant), so a future service caller could move the walk's attribution with no delta
+  entries and no effect-time self-heal -- a silently stale anchor correction.  Today the routes
+  make this unreachable (the finalised lock refuses settled-row period edits; the shadow PATCH
+  drops `pay_period_id` and passes `paid_at` only with a status change; carry-forward moves
+  Projected rows only).  The commit: add `pay_period_id` to `_POSTING_RELEVANT_FIELDS` (the
+  reconcile is idempotent, and a settled-row period move then reconciles R2-correctly AND fires
+  the tail self-heal), and for `paid_at` -- which changes attribution WITHOUT changing any leg,
+  so the tail cannot see it -- resync the two endpoint accounts' corrections directly
+  (`sync_account_anchor_postings` per (account, scenario)) when a settled transfer's `paid_at`
+  kwarg is applied.  Rejected: refusing settled-row mutation at the service tier (would hard-code
+  today's route policy into the service and still leave the seam untested); a band-aid reader
+  workaround.  Tests: a service-level settled period-move and a settled `paid_at`-only edit, each
+  asserting the absolute invariant holds with no manual sync.
+
+- **F2 -- Scenario-creation correction sync (C6 review M1; lands WITH R8 / scenario clone, not
+  before).**  A non-baseline scenario receives an account's opening only via the effect-time
+  self-heal, which fires only when the scenario's first settle lands at-or-before the latest
+  assertion instant (in practice: same UTC day) -- otherwise the scenario's ledger reads
+  changes-only until the next account-global sync.  Unreachable today (the only
+  scenario-creation surfaces are registration and `create_baseline`, both baseline-only; both
+  statement tabs read the baseline only).  The requirement, pinned here so R8 cannot miss it:
+  any path that creates or clones a non-baseline scenario must run
+  `sync_account_anchor_postings(account_id, new_scenario_id)` for each of the owner's non-loan
+  accounts in the same transaction.  The two oracle sweeps
+  (`test_posting_ledger_reconciliation.py` / `..._cash_...`) document the same-day caveat and
+  must have their scenario caveats retired by that commit.
+
+- **F3 -- Payment-timeliness display-timezone pass (C1 review, out of scope for L9).**
+  `_spending.py:306` and `Transaction.days_paid_before_due` still truncate `paid_at` in UTC --
+  the same wall-clock class L9 fixed for Schedule-A, but statistics rather than tax-year money.
+  The commit: route both through `app.utils.dates.to_display_civil_date` with boundary tests
+  (an 8:05pm-ET settle on the due date must not count as paid late/early by UTC drift).
 
 ## 7. Verification (end-to-end)
 
