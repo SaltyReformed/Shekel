@@ -11,8 +11,17 @@
  *
  * Built through the ShekelChart factory API so dataset colors
  * re-resolve on theme toggle, and re-initialized after every
- * ``htmx:afterSwap`` so the what-if readiness re-render rebuilds the
- * chart (the same lifecycle as dashboard_pulse.js).  The wrapper div's
+ * ``htmx:afterSettle`` so the what-if readiness re-render rebuilds the
+ * chart.  afterSettle, NOT afterSwap: htmx's settle phase (~20ms after
+ * the swap) restores the id-matched canvas's original attributes, and
+ * the incoming canvas has no ``width``/``height`` attributes -- so a
+ * chart initialized at afterSwap had the very attributes Chart.js just
+ * wrote stripped mid-animation, collapsing the bitmap to a default
+ * 300x150 slice of the wrapper (the acceptance-drive "partial chart /
+ * only a section" defect; probed live: hasAttribute(width/height)
+ * flipped to false after settle, nondeterministically per race).
+ * Initializing after settle means htmx has finished touching
+ * attributes before Chart.js sizes the canvas.  The wrapper div's
  * CSS height + ``maintainAspectRatio: false`` keep the canvas usable on
  * mobile (the old gap chart's fixed aspectRatio 8 collapsed to ~49px
  * at phone widths -- audit finding V1).
@@ -164,7 +173,7 @@
     initChart(document);
   }
 
-  document.body.addEventListener("htmx:afterSwap", function (event) {
+  document.body.addEventListener("htmx:afterSettle", function (event) {
     initChart(event.target || document);
   });
 })();
