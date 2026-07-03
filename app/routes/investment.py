@@ -126,14 +126,14 @@ def _resolve_salary_profile_url(action: str | None, profile_id: int | None):
 
     * ``action == "edit"`` and ``profile_id is not None`` ->
       ``url_for("salary.edit_profile", profile_id=...)``.
-    * ``action == "list"`` -> ``url_for("salary.list_profiles")``.
+    * ``action == "list"`` -> ``url_for("salary.cockpit")``.
     * Otherwise (no contribution prompt or transfer path) ->
       ``None``, matching the pre-extraction default.
     """
     if action == "edit" and profile_id is not None:
         return url_for("salary.edit_profile", profile_id=profile_id)
     if action == "list":
-        return url_for("salary.list_profiles")
+        return url_for("salary.cockpit")
     return None
 
 

@@ -195,10 +195,10 @@ def _create_other_user_profile():
 
 
 class TestProfileList:
-    """Tests for GET /salary and GET /salary/new."""
+    """Tests for GET /salary (the cockpit) and GET /salary/new."""
 
-    def test_list_profiles(self, app, auth_client, seed_user, seed_periods):
-        """GET /salary renders the salary profiles list."""
+    def test_cockpit_renders(self, app, auth_client, seed_user, seed_periods):
+        """GET /salary renders the salary cockpit for the primary profile."""
         with app.app_context():
             _create_profile(seed_user)
 
@@ -206,6 +206,8 @@ class TestProfileList:
 
             assert response.status_code == 200
             assert b"Day Job" in response.data
+            assert b"Net per paycheck" in response.data
+            assert b"Where this paycheck goes" in response.data
 
     def test_new_profile_form(self, app, auth_client, seed_user):
         """GET /salary/new renders the salary profile creation form."""
@@ -1393,10 +1395,14 @@ class TestDeductionFrequencyDisplay:
 
 
 class TestBreakdown:
-    """Tests for breakdown and projection views."""
+    """Tests for the retired-breakdown redirect stubs and projection view."""
 
-    def test_breakdown_renders(self, app, auth_client, seed_user, seed_periods):
-        """GET /salary/<id>/breakdown/<period_id> renders the breakdown page."""
+    def test_breakdown_redirects_to_cockpit(self, app, auth_client, seed_user, seed_periods):
+        """GET /salary/<id>/breakdown/<period_id> 302s into the cockpit.
+
+        The per-period breakdown page was folded into the cockpit; the URL
+        is now an ownership-checked redirect stub carrying the focus params.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -1404,35 +1410,39 @@ class TestBreakdown:
                 f"/salary/{profile.id}/breakdown/{seed_periods[0].id}"
             )
 
-            assert response.status_code == 200
-            assert b"Paycheck Breakdown" in response.data
-            assert b"Gross Biweekly Pay" in response.data
-            assert b"Net Biweekly Paycheck" in response.data
+            assert response.status_code == 302
+            assert f"profile={profile.id}" in response.location
+            assert f"period={seed_periods[0].id}" in response.location
 
     def test_breakdown_current_redirects(self, app, auth_client, seed_user, seed_periods):
-        """GET /salary/<id>/breakdown redirects to the current period breakdown."""
+        """GET /salary/<id>/breakdown 302s into the cockpit at the current period."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get(f"/salary/{profile.id}/breakdown")
 
             assert response.status_code == 302
-            assert f"/salary/{profile.id}/breakdown/" in response.location
+            assert f"profile={profile.id}" in response.location
+            assert "period=" in response.location
 
     def test_projection_renders(self, app, auth_client, seed_user, seed_periods):
-        """GET /salary/<id>/projection renders the projection table."""
+        """GET /salary/<id>/projection renders the projection ledger."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get(f"/salary/{profile.id}/projection")
 
             assert response.status_code == 200
-            assert b"Salary Projection" in response.data
+            assert b"Projection ledger" in response.data
             assert b"Day Job" in response.data
-            assert b"Net Biweekly" in response.data
+            assert b"Annual Salary" in response.data
 
     def test_breakdown_no_current_period(self, app, auth_client, seed_user):
-        """GET /salary/<id>/breakdown with no periods flashes a warning."""
+        """GET /salary/<id>/breakdown with no periods lands on the cockpit blocker.
+
+        The stub redirects to the cockpit carrying only the profile; the
+        cockpit then shows its generate-periods empty state.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -3158,146 +3168,65 @@ class TestCalibrationServerDerivedSnapshot:
 
 
 class TestButtonPlacement:
-    """Tests for prominent View Breakdown / View Projection buttons on salary pages."""
+    """Tests for the edit form's navigation buttons (Fable 5 rebuild).
 
-    def test_salary_list_buttons_link_to_correct_routes(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Action icons on the list page link to the correct breakdown/projection URLs."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-
-            response = auth_client.get("/salary")
-            html = response.data.decode()
-
-            assert f"/salary/{profile.id}/breakdown" in html
-            assert f"/salary/{profile.id}/projection" in html
-
-    def test_salary_list_buttons_per_profile(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Each profile on the list page has breakdown and projection action icons."""
-        with app.app_context():
-            profile1 = _create_profile(seed_user)
-
-            # Create a second profile for the same user.
-            filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-            cat = (
-                db.session.query(Category)
-                .filter_by(
-                    user_id=seed_user["user"].id,
-                    group_name="Income",
-                    item_name="Salary",
-                )
-                .first()
-            )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id, pattern_id=every_period.id
-            )
-            db.session.add(rule)
-            db.session.flush()
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=cat.id,
-                recurrence_rule_id=rule.id,
-                transaction_type_id=income_type.id,
-                name="Side Gig",
-                default_amount=Decimal("30000.00") / 26,
-                is_active=True,
-            )
-            db.session.add(template)
-            db.session.flush()
-            profile2 = SalaryProfile(
-                user_id=seed_user["user"].id,
-                scenario_id=seed_user["scenario"].id,
-                template_id=template.id,
-                filing_status_id=filing_status.id,
-                name="Side Gig",
-                annual_salary=Decimal("30000.00"),
-                state_code="NC",
-                pay_periods_per_year=26,
-            )
-            db.session.add(profile2)
-            db.session.commit()
-
-            response = auth_client.get("/salary")
-            html = response.data.decode()
-
-            # Both profiles should have breakdown and projection URLs.
-            assert f"/salary/{profile1.id}/breakdown" in html
-            assert f"/salary/{profile1.id}/projection" in html
-            assert f"/salary/{profile2.id}/breakdown" in html
-            assert f"/salary/{profile2.id}/projection" in html
+    The former salary LIST page (and its per-row action buttons) was
+    removed; the restyled edit form carries "Open cockpit" / "Projection
+    ledger" / "Tax settings" buttons on the submit row instead of the old
+    "View Breakdown" / "View Projection" pair.  These tests pin the new
+    contract: labels, targets (cockpit with the profile focused, the
+    projection page, the honest direct settings link), and the
+    create-form's hidden state.
+    """
 
     def test_salary_form_edit_buttons_appear_before_deductions(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """On the edit form, View Breakdown/Projection buttons appear before the Deductions section."""
+        """Edit-form nav buttons appear before the Deductions section."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get(f"/salary/{profile.id}/edit")
             html = response.data.decode()
 
-            breakdown_pos = html.index("View Breakdown")
-            projection_pos = html.index("View Projection")
+            cockpit_pos = html.index("Open cockpit")
+            projection_pos = html.index("Projection ledger")
             deductions_pos = html.index('id="deductions-section"')
 
-            assert breakdown_pos < deductions_pos
+            assert cockpit_pos < deductions_pos
             assert projection_pos < deductions_pos
 
     def test_salary_form_edit_buttons_link_to_correct_routes(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Edit form buttons link to the correct breakdown/projection URLs for the profile."""
+        """Edit-form buttons target the cockpit (profile focused), the
+        projection page, and the DIRECT settings tax section (no redirect
+        bounce through /salary/tax-config)."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.get(f"/salary/{profile.id}/edit")
             html = response.data.decode()
 
-            assert f"/salary/{profile.id}/breakdown" in html
+            assert f"/salary?profile={profile.id}" in html
             assert f"/salary/{profile.id}/projection" in html
+            assert "/settings?section=tax" in html
 
     def test_salary_form_create_hides_buttons(
         self, app, auth_client, seed_user
     ):
-        """The create-profile form does not show View Breakdown or View Projection buttons."""
+        """The create-profile form hides the profile-scoped nav buttons."""
         with app.app_context():
             response = auth_client.get("/salary/new")
             html = response.data.decode()
 
-            assert "View Breakdown" not in html
-            assert "View Projection" not in html
-
-    def test_salary_list_existing_buttons_preserved(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Action column buttons link to breakdown and projection pages."""
-        with app.app_context():
-            profile = _create_profile(seed_user)
-
-            response = auth_client.get("/salary")
-            html = response.data.decode()
-
-            # Each URL appears twice: once in the desktop icon buttons
-            # (d-none d-md-inline) and once in the mobile action dropdown
-            # (d-md-none). The 5A.3 Name-column duplicates are still gone.
-            breakdown_url = f"/salary/{profile.id}/breakdown"
-            assert html.count(breakdown_url) == 2
-
-            projection_url = f"/salary/{profile.id}/projection"
-            assert html.count(projection_url) == 2
+            assert "Open cockpit" not in html
+            assert "Projection ledger" not in html
 
     def test_salary_form_buttons_inline_with_submit(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """View Breakdown/Projection buttons appear on the same row as Update Profile."""
+        """Nav buttons share the submit row, above the deductions section."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -3306,25 +3235,24 @@ class TestButtonPlacement:
 
             # The buttons and the submit button share a flex container.
             submit_pos = html.index("Update Profile")
-            breakdown_pos = html.index("View Breakdown")
-            projection_pos = html.index("View Projection")
+            cockpit_pos = html.index("Open cockpit")
+            projection_pos = html.index("Projection ledger")
             deductions_pos = html.index('id="deductions-section"')
 
             # Buttons are near the submit button, before the deductions section.
-            assert breakdown_pos > submit_pos
-            assert breakdown_pos < deductions_pos
+            assert cockpit_pos > submit_pos
+            assert cockpit_pos < deductions_pos
             assert projection_pos < deductions_pos
 
-            # Only one set of breakdown/projection links (old bottom ones removed).
-            breakdown_url = f"/salary/{profile.id}/breakdown"
-            assert html.count(breakdown_url) == 1
+            # Exactly one projection link on the form (the old duplicate
+            # bottom set stays removed).
             projection_url = f"/salary/{profile.id}/projection"
             assert html.count(projection_url) == 1
 
     def test_breakdown_route_accessible_from_button(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """The breakdown URL that buttons link to returns a successful response."""
+        """The breakdown URL that buttons link to redirects into the cockpit."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -3333,7 +3261,7 @@ class TestButtonPlacement:
             )
 
             assert response.status_code == 200
-            assert b"Paycheck Breakdown" in response.data
+            assert b"Where this paycheck goes" in response.data
 
     def test_projection_route_accessible_from_button(
         self, app, auth_client, seed_user, seed_periods
@@ -3345,106 +3273,478 @@ class TestButtonPlacement:
             response = auth_client.get(f"/salary/{profile.id}/projection")
 
             assert response.status_code == 200
-            assert b"Salary Projection" in response.data
+            assert b"Projection ledger" in response.data
 
 
-# ── Salary Listing Button Cleanup (5A.3) ────────────────────────
+# ── Cockpit (rebuilt /salary landing page) ────────────────────────
 
 
-class TestSalaryListingButtonCleanup:
-    """Verify duplicate View Breakdown / View Projection buttons were removed from /salary.
+def _create_inactive_profile(seed_user, name="Old Job"):
+    """Create an INACTIVE salary profile for the seed user.
 
-    Task 5A.3 removed full-width labeled buttons from the Name column,
-    keeping only the compact icon buttons in the Actions column.
+    Distinct name so it does not collide with ``_create_profile``'s
+    ``uq_salary_profiles_user_scenario_name`` on the same scenario.
+
+    Returns:
+        SalaryProfile: the created inactive profile.
     """
+    income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
+    filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
+    cat = (
+        db.session.query(Category)
+        .filter_by(user_id=seed_user["user"].id, group_name="Income", item_name="Salary")
+        .first()
+    )
+    if not cat:
+        cat = Category(user_id=seed_user["user"].id, group_name="Income", item_name="Salary")
+        db.session.add(cat)
+        db.session.flush()
+    rule = RecurrenceRule(user_id=seed_user["user"].id, pattern_id=every_period.id)
+    db.session.add(rule)
+    db.session.flush()
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=cat.id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=income_type.id,
+        name=name,
+        default_amount=Decimal("40000.00") / 26,
+        is_active=False,
+    )
+    db.session.add(template)
+    db.session.flush()
+    profile = SalaryProfile(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        template_id=template.id,
+        filing_status_id=filing_status.id,
+        name=name,
+        annual_salary=Decimal("40000.00"),
+        state_code="NC",
+        pay_periods_per_year=26,
+        is_active=False,
+    )
+    db.session.add(profile)
+    db.session.commit()
+    return profile
 
-    def test_salary_listing_no_duplicate_buttons(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Name column no longer contains labeled View Breakdown / View Projection buttons."""
-        with app.app_context():
-            _create_profile(seed_user)
 
-            response = auth_client.get("/salary")
-            html = response.data.decode()
+def _capture_render(app, auth_client, url, template_name):
+    """Return the (response, context) captured for ``template_name`` at ``url``.
 
-            # The labeled button text "View Breakdown" and "View Projection" only
-            # appeared in the Name column's full-width buttons. The Actions column
-            # uses title attributes ("Breakdown", "Projection") without "View" prefix.
-            assert "View Breakdown" not in html
-            assert "View Projection" not in html
+    Uses Flask's ``template_rendered`` signal to read the exact context the
+    route handed ``render_template`` (the cockpit/projection templates are
+    thin in P1; asserting on the context is the precise contract check).
+    """
+    # Pylint: import-outside-toplevel -- deferred import is the file-wide
+    # test convention.
+    from flask import template_rendered  # pylint: disable=import-outside-toplevel
 
-            # The flex container that held the duplicate buttons should be gone.
-            assert 'd-flex gap-2 mt-1' not in html
+    recorded = []
 
-    def test_salary_action_icons_still_functional(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Actions column icon buttons link to the correct breakdown and projection URLs."""
+    def _record(sender, template, context, **extra):
+        recorded.append((template, context))
+
+    template_rendered.connect(_record, app)
+    try:
+        response = auth_client.get(url)
+    finally:
+        template_rendered.disconnect(_record, app)
+    matches = [c for t, c in recorded if t.name == template_name]
+    return response, (matches[0] if matches else None)
+
+
+class TestCockpitContext:
+    """Cockpit context contract: selection, chips, composition, chart JSON."""
+
+    def test_context_single_profile(self, app, auth_client, seed_user, seed_periods):
+        """Chips/composition are hand-correct for a no-tax $75,000 profile.
+
+        With no tax configs, every withholding is $0, so net == gross.
+        Gross biweekly = round_money(75000 / 26) = 2884.62 (75000 / 26 =
+        2884.6153..., half-up to cents).  Net == gross == 2884.62; annual
+        salary (no raises) stays 75000.00; take-home = 2884.62/2884.62*100
+        = 100; net is 100.0% of gross.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
 
-            response = auth_client.get("/salary")
-            html = response.data.decode()
+            response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
 
-            breakdown_url = f"/salary/{profile.id}/breakdown"
-            projection_url = f"/salary/{profile.id}/projection"
+            assert response.status_code == 200
+            assert ctx is not None
+            assert ctx["empty_state"] is None
+            assert ctx["profile"].id == profile.id
+            assert ctx["chips"]["gross"] == Decimal("2884.62")
+            assert ctx["chips"]["annual_salary"] == Decimal("75000.00")
+            assert ctx["chips"]["take_home_rate_pct"] == Decimal("100")
+            assert ctx["composition"]["net"] == Decimal("2884.62")
+            assert ctx["composition"]["taxes_total"] == Decimal("0")
+            assert ctx["composition"]["pct_net"] == Decimal("100.0")
 
-            # Action icon buttons carry title attributes for accessibility.
-            assert 'title="Breakdown"' in html
-            assert 'title="Projection"' in html
+    def test_chart_json_structure(self, app, auth_client, seed_user, seed_periods):
+        """chart_json carries the periods/thirds/raises/today contract.
 
-            # Each URL appears twice: desktop icon buttons + mobile dropdown.
-            assert html.count(breakdown_url) == 2
-            assert html.count(projection_url) == 2
+        seed_periods anchors on 2026-01-02, cadence 14: three periods start
+        in January (01-02, 01-16, 01-30), so the 01-30 period is a third
+        paycheck.  With no raises the raises list is empty; today is frozen
+        at 2026-03-20.
+        """
+        # Pylint: import-outside-toplevel -- file-wide test convention.
+        import json  # pylint: disable=import-outside-toplevel
 
-            # Verify the icon links contain the correct href.
-            # Find the title="Breakdown" anchor and confirm it points to the right URL.
-            breakdown_anchor_start = html.index('title="Breakdown"')
-            # Walk backwards to find the opening <a tag for this anchor.
-            breakdown_tag_start = html.rfind("<a ", 0, breakdown_anchor_start)
-            breakdown_tag = html[breakdown_tag_start:breakdown_anchor_start]
-            assert breakdown_url in breakdown_tag
-
-            projection_anchor_start = html.index('title="Projection"')
-            projection_tag_start = html.rfind("<a ", 0, projection_anchor_start)
-            projection_tag = html[projection_tag_start:projection_anchor_start]
-            assert projection_url in projection_tag
-
-    def test_salary_listing_name_column_clean(
-        self, app, auth_client, seed_user, seed_periods
-    ):
-        """Name column cells contain only the profile name with no button markup."""
         with app.app_context():
             _create_profile(seed_user)
 
-            response = auth_client.get("/salary")
-            html = response.data.decode()
+            _response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
+            chart = json.loads(ctx["chart_json"])
 
-            # The Name column <td> should be a simple single-line cell.
-            # After removal, the pattern is: <td>ProfileName</td>
-            # with no nested <a> or <div> tags containing button classes.
-            assert "<td>Day Job</td>" in html
+            assert set(chart.keys()) == {"periods", "thirds", "raises", "today"}
+            assert chart["today"] == "2026-03-20"
+            # 10 seeded periods, all inside the +18-month window.
+            assert len(chart["periods"]) == 10
+            assert all("start" in p and "net" in p for p in chart["periods"])
+            # The single third paycheck is the 2026-01-30 period.
+            assert [t["start"] for t in chart["thirds"]] == ["2026-01-30"]
+            # No raises configured.
+            assert chart["raises"] == []
 
-    def test_salary_listing_inactive_profile_no_duplicate_buttons(
+    def test_empty_state_no_profiles(self, app, auth_client, seed_user):
+        """Zero active profiles renders the create-CTA empty state."""
+        with app.app_context():
+            response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
+            assert response.status_code == 200
+            assert ctx["empty_state"] == "no_profiles"
+            assert ctx["chips"] is None
+            assert ctx["chart_json"] is None
+            assert b"New salary profile" in response.data
+
+    def test_empty_state_no_periods(self, app, auth_client, seed_user):
+        """A profile with no pay periods renders the generate-periods blocker."""
+        with app.app_context():
+            _create_profile(seed_user)  # no seed_periods fixture -> zero periods
+
+            response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
+            assert response.status_code == 200
+            assert ctx["empty_state"] == "no_periods"
+            assert ctx["profile"] is not None
+            assert ctx["chips"] is None
+            assert b"Generate pay periods" in response.data
+
+    def test_profile_query_other_user_404(self, app, auth_client, seed_user, seed_periods):
+        """?profile=<other user's id> is 404 (owned-and-active required)."""
+        with app.app_context():
+            _create_profile(seed_user)
+            other = _create_other_user_profile()
+
+            resp = auth_client.get(f"/salary?profile={other['profile'].id}")
+            assert resp.status_code == 404
+
+    def test_profile_query_inactive_404(self, app, auth_client, seed_user, seed_periods):
+        """?profile=<own but inactive id> is 404 (inactive is not a target)."""
+        with app.app_context():
+            _create_profile(seed_user)  # active default so we reach selection
+            inactive = _create_inactive_profile(seed_user)
+
+            resp = auth_client.get(f"/salary?profile={inactive.id}")
+            assert resp.status_code == 404
+
+    def test_period_query_nonexistent_404(self, app, auth_client, seed_user, seed_periods):
+        """?period=<nonexistent id> is 404."""
+        with app.app_context():
+            _create_profile(seed_user)
+            resp = auth_client.get("/salary?period=999999")
+            assert resp.status_code == 404
+
+    def test_period_query_other_user_404(self, app, auth_client, seed_user, seed_periods):
+        """?period=<other user's period id> is 404 (owned period required)."""
+        with app.app_context():
+            _create_profile(seed_user)
+            other = _create_other_user_profile()
+            other_period = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=other["user"].id)
+                .first()
+            )
+
+            resp = auth_client.get(f"/salary?period={other_period.id}")
+            assert resp.status_code == 404
+
+    def test_multi_profile_switcher(self, app, auth_client, seed_user, seed_periods):
+        """Two active profiles put both in context and render the switcher."""
+        with app.app_context():
+            _create_profile(seed_user)
+            # Second active profile (distinct name to clear the unique
+            # constraint); reactivate the helper's inactive profile.
+            second = _create_inactive_profile(seed_user, name="Side Gig")
+            second.is_active = True
+            second.template.is_active = True
+            db.session.commit()
+
+            response, ctx = _capture_render(
+                app, auth_client, "/salary", "salary/cockpit.html",
+            )
+            assert response.status_code == 200
+            assert len(ctx["profiles"]) == 2
+            assert b"Side Gig" in response.data
+            assert b"Day Job" in response.data
+
+
+class TestAnatomyFragment:
+    """HTMX anatomy fragment: owner-only, prev/next context, OOB deductions."""
+
+    def test_anatomy_renders(self, app, auth_client, seed_user, seed_periods):
+        """GET the fragment returns the composition + OOB deductions cards."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            resp = auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[5].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert 'id="anatomy-composition"' in html
+            assert 'id="anatomy-deductions"' in html
+            assert 'hx-swap-oob="true"' in html
+            assert "Where this paycheck goes" in html
+
+    def test_anatomy_prev_next_middle(self, app, auth_client, seed_user, seed_periods):
+        """A middle period exposes both prev and next stepper targets."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            resp = auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[5].id}"
+            )
+            html = resp.data.decode()
+            # Prev -> period 4, next -> period 6; both hx-get to /anatomy/.
+            assert f"/anatomy/{seed_periods[4].id}" in html
+            assert f"/anatomy/{seed_periods[6].id}" in html
+            assert html.count("/anatomy/") == 2
+
+    def test_anatomy_first_period_prev_disabled(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """Inactive salary profiles also have no duplicate buttons in the Name column."""
+        """The first period disables prev (only the next stepper hx-gets)."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            resp = auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[0].id}"
+            )
+            html = resp.data.decode()
+            # Only one active stepper (next -> period 1); prev is disabled.
+            assert html.count("/anatomy/") == 1
+            assert f"/anatomy/{seed_periods[1].id}" in html
+            assert "disabled" in html
+
+    def test_anatomy_other_user_profile_404(self, app, auth_client, seed_user, seed_periods):
+        """The fragment 404s for another user's profile."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.get(
+                f"/salary/{other['profile'].id}/anatomy/{seed_periods[0].id}"
+            )
+            assert resp.status_code == 404
+
+    def test_anatomy_nonexistent_period_404(self, app, auth_client, seed_user, seed_periods):
+        """The fragment 404s for a nonexistent period."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.get(f"/salary/{profile.id}/anatomy/999999")
+            assert resp.status_code == 404
+
+
+class TestReactivate:
+    """POST /salary/<id>/reactivate: the inverse of delete_profile."""
+
+    def test_reactivate_full_cycle(self, app, auth_client, seed_user, seed_periods):
+        """Deactivate then reactivate restores the profile, template, and txns."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            template_id = profile.template_id
+
+            # Deactivate first.
+            auth_client.post(f"/salary/{profile.id}/delete", follow_redirects=True)
+            db.session.expire_all()
+            assert db.session.get(SalaryProfile, profile.id).is_active is False
+
+            # Reactivate.
+            resp = auth_client.post(
+                f"/salary/{profile.id}/reactivate", follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"reactivated" in resp.data
+
+            db.session.expire_all()
+            refreshed = db.session.get(SalaryProfile, profile.id)
+            assert refreshed.is_active is True
+            template = db.session.get(TransactionTemplate, template_id)
+            assert template.is_active is True
+
+            # Transactions were regenerated for the reactivated template.
+            txn_count = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template_id,
+                    scenario_id=seed_user["scenario"].id,
+                )
+                .count()
+            )
+            assert txn_count > 0
+
+    def test_reactivate_already_active(self, app, auth_client, seed_user, seed_periods):
+        """Reactivating an already-active profile is a no-op info flash."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            resp = auth_client.post(
+                f"/salary/{profile.id}/reactivate", follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"already active" in resp.data
+
+    def test_reactivate_other_user_404(self, app, auth_client, seed_user):
+        """Reactivating another user's profile 404s and leaves it unchanged."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            # Deactivate the victim's profile directly.
+            other["profile"].is_active = False
+            db.session.commit()
+
+            resp = auth_client.post(f"/salary/{other['profile'].id}/reactivate")
+            assert resp.status_code == 404
+
+            db.session.expire_all()
+            assert db.session.get(
+                SalaryProfile, other["profile"].id
+            ).is_active is False
+
+    def test_reactivate_version_conflict(
+        self, app, auth_client, seed_user, seed_periods, monkeypatch
+    ):
+        """A StaleDataError during reactivation flashes, redirects, rolls back."""
         with app.app_context():
             profile = _create_profile(seed_user)
             profile.is_active = False
+            if profile.template:
+                profile.template.is_active = False
             db.session.commit()
 
-            response = auth_client.get("/salary")
-            html = response.data.decode()
+            # Force the regeneration flush to raise the concurrent-edit error
+            # the optimistic-lock guard converts into a flash + redirect.
+            # Pylint: import-outside-toplevel -- file-wide test convention.
+            from app.routes.salary import profiles as profiles_mod  # pylint: disable=import-outside-toplevel
+            from sqlalchemy.orm.exc import StaleDataError  # pylint: disable=import-outside-toplevel
 
-            # Even for inactive profiles, no labeled buttons in Name column.
-            assert "View Breakdown" not in html
-            assert "View Projection" not in html
+            def _raise_stale(_profile):
+                raise StaleDataError("simulated concurrent edit")
 
-            # The profile name still renders.
-            assert "Day Job" in html
+            monkeypatch.setattr(
+                profiles_mod, "_regenerate_salary_transactions", _raise_stale,
+            )
 
-            # Action icons still present for inactive profiles.
-            assert f"/salary/{profile.id}/breakdown" in html
-            assert f"/salary/{profile.id}/projection" in html
+            resp = auth_client.post(
+                f"/salary/{profile.id}/reactivate", follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"changed by another action" in resp.data
+
+            db.session.expire_all()
+            # Rolled back: the profile stays inactive.
+            assert db.session.get(SalaryProfile, profile.id).is_active is False
+
+
+class TestBreakdownRedirectStubs:
+    """The retired /salary/<id>/breakdown[/<pid>] ownership-checked stubs."""
+
+    def test_breakdown_period_location_params(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """The per-period stub's Location carries both profile and period."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            resp = auth_client.get(
+                f"/salary/{profile.id}/breakdown/{seed_periods[3].id}"
+            )
+            assert resp.status_code == 302
+            assert f"profile={profile.id}" in resp.location
+            assert f"period={seed_periods[3].id}" in resp.location
+
+    def test_breakdown_period_other_period_404(
+        self, app, auth_client, seed_user, seed_periods
+    ):
+        """Own profile but another user's period 404s BEFORE any redirect."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            other = _create_other_user_profile()
+            other_period = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=other["user"].id)
+                .first()
+            )
+            resp = auth_client.get(
+                f"/salary/{profile.id}/breakdown/{other_period.id}"
+            )
+            assert resp.status_code == 404
+
+    def test_breakdown_current_other_user_404(self, app, auth_client, seed_user):
+        """The current-period stub 404s for another user's profile."""
+        with app.app_context():
+            other = _create_other_user_profile()
+            resp = auth_client.get(f"/salary/{other['profile'].id}/breakdown")
+            assert resp.status_code == 404
+
+
+class TestProjectionSummary:
+    """The projection route's summary framing context (P3 renders it)."""
+
+    def test_projection_summary_values(self, app, auth_client, seed_user, seed_periods):
+        """yearly_nets sums the 10 no-tax periods; no future raise/third.
+
+        With no tax configs each of the 10 seeded periods nets its gross,
+        round_money(75000 / 26) = 2884.62, so the 2026 total is
+        2884.62 * 10 = 28846.20.  There are no raises and (after today
+        2026-03-20) no remaining third paycheck in the seeded window.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+
+            response, ctx = _capture_render(
+                app, auth_client, f"/salary/{profile.id}/projection",
+                "salary/projection.html",
+            )
+            assert response.status_code == 200
+            summary = ctx["projection_summary"]
+            assert summary["yearly_nets"] == [(2026, Decimal("28846.20"))]
+            assert summary["next_raise"] is None
+            assert summary["next_third"] is None
+
+
+class TestRaiseLabelFilter:
+    """The app-wide ``raise_label`` Jinja filter (salary raise displays)."""
+
+    def test_filter_registered_and_cleans(self, app):
+        """raise_label is registered and wraps clean_raise_label.
+
+        "MERIT +2.5000%" -> title-case + trailing-zero trim -> "Merit
+        +2.5%"; "COLA +3.0000%" -> whole number drops the dot -> "Cola
+        +3%"; None renders as "" so templates can pipe an absent event
+        through without guarding.
+        """
+        with app.app_context():
+            filter_fn = app.jinja_env.filters["raise_label"]
+            assert filter_fn("MERIT +2.5000%") == "Merit +2.5%"
+            assert filter_fn("COLA +3.0000%") == "Cola +3%"
+            assert filter_fn("MERIT +$2,000.00") == "Merit +$2,000.00"
+            assert filter_fn(None) == ""

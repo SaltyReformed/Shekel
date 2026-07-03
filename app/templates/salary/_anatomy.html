@@ -1,0 +1,133 @@
+{% from "_money_macros.html" import money %}
+{# Paycheck anatomy: the composition card (the primary HTMX swap target for
+   period stepping) plus the deductions bar-list card (an hx-swap-oob
+   sibling, so stepping to a neighbouring period updates both at once).
+   Rendered inline by the cockpit for the focused period, and returned
+   standalone by salary.anatomy for each step.  Every figure is precomputed
+   in the producer (app/services/salary_cockpit_service.py) -- this template
+   does no money math.  The OOB attribute is emitted only on the fragment
+   response (``oob``), never on the cockpit's initial inline include.
+
+   Composition-spine and deduction-bar widths are percentages applied by
+   progress_bar.js from data-progress-pct (CSP-safe; it re-applies after
+   HTMX swaps).  The deduction bar's color class suffix is GENERATED from
+   the producer's timing key -- the template never compares it. #}
+
+<div class="card" id="anatomy-composition">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-pie-chart"></i> Where this paycheck goes</h6>
+    <div class="d-flex align-items-center gap-2">
+      <span class="small text-muted">{{ focused_period.label }}</span>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Step pay period">
+        {% if prev_period_id is not none %}
+        <button type="button" class="btn btn-outline-secondary"
+                hx-get="{{ url_for('salary.anatomy', profile_id=profile.id, period_id=prev_period_id) }}"
+                hx-target="#anatomy-composition" hx-swap="outerHTML"
+                aria-label="Previous pay period">
+          <i class="bi bi-chevron-left"></i>
+        </button>
+        {% else %}
+        <button type="button" class="btn btn-outline-secondary" disabled
+                aria-label="Previous pay period">
+          <i class="bi bi-chevron-left"></i>
+        </button>
+        {% endif %}
+        {% if next_period_id is not none %}
+        <button type="button" class="btn btn-outline-secondary"
+                hx-get="{{ url_for('salary.anatomy', profile_id=profile.id, period_id=next_period_id) }}"
+                hx-target="#anatomy-composition" hx-swap="outerHTML"
+                aria-label="Next pay period">
+          <i class="bi bi-chevron-right"></i>
+        </button>
+        {% else %}
+        <button type="button" class="btn btn-outline-secondary" disabled
+                aria-label="Next pay period">
+          <i class="bi bi-chevron-right"></i>
+        </button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="card-body">
+    {% if is_third_paycheck %}
+    <div class="alert alert-info py-2">
+      <i class="bi bi-info-circle"></i> <strong>3rd paycheck</strong> --
+      some deductions (24/yr) are skipped this period.
+    </div>
+    {% endif %}
+    {% if raise_event %}
+    <div class="alert alert-success py-2">
+      <i class="bi bi-arrow-up-circle"></i> <strong>Raise:</strong> {{ raise_event|raise_label }}
+    </div>
+    {% endif %}
+
+    {# Composition spine: net kept + pre-tax + taxes + post-tax = gross,
+       with 2px surface gaps between segments. #}
+    <div class="sal-comp-bar"
+         aria-label="Net {{ composition.pct_net }} percent, pre-tax {{ composition.pct_pre_tax }} percent, taxes {{ composition.pct_taxes }} percent, post-tax {{ composition.pct_post_tax }} percent of gross">
+      <div class="sal-comp-seg sal-comp-seg--net" data-progress-pct="{{ composition.pct_net }}"></div>
+      <div class="sal-comp-seg sal-comp-seg--pre" data-progress-pct="{{ composition.pct_pre_tax }}"></div>
+      <div class="sal-comp-seg sal-comp-seg--tax" data-progress-pct="{{ composition.pct_taxes }}"></div>
+      <div class="sal-comp-seg sal-comp-seg--post" data-progress-pct="{{ composition.pct_post_tax }}"></div>
+    </div>
+
+    <div class="sal-comp-leg">
+      <span class="sal-leg-item">
+        <span class="sal-leg-sw sal-comp-seg--net"></span>
+        Net you keep
+        <span class="sal-leg-val font-mono">{{ money(composition.net) }}</span>
+        &middot; {{ "%.1f"|format(composition.pct_net) }}%
+      </span>
+      <span class="sal-leg-item">
+        <span class="sal-leg-sw sal-comp-seg--pre"></span>
+        Pre-tax deductions
+        <span class="sal-leg-val font-mono">{{ money(composition.pre_tax_total) }}</span>
+      </span>
+      <span class="sal-leg-item">
+        <span class="sal-leg-sw sal-comp-seg--tax"></span>
+        Taxes
+        <span class="sal-leg-val font-mono">{{ money(composition.taxes_total) }}</span>
+      </span>
+      <span class="sal-leg-item">
+        <span class="sal-leg-sw sal-comp-seg--post"></span>
+        Post-tax
+        <span class="sal-leg-val font-mono">{{ money(composition.post_tax_total) }}</span>
+      </span>
+    </div>
+
+    <div class="sal-comp-foot">
+      <span>Gross <span class="font-mono">{{ money(composition.gross) }}</span>
+        &middot; taxable <span class="font-mono">{{ money(composition.taxable) }}</span></span>
+      {% if composition.federal_zero_calibrated %}
+      <span><i class="bi bi-info-circle"></i>
+        federal withholding is $0.00 under your active pay-stub calibration</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card" id="anatomy-deductions"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-list-ul"></i> Deductions this paycheck</h6>
+  </div>
+  <div class="card-body">
+    {% if deduction_rows %}
+    {% for row in deduction_rows %}
+    {% if loop.first or deduction_rows[loop.index0 - 1].timing != row.timing %}
+    <div class="sal-grp-label">{{ row.timing|replace('_', '-')|title }}</div>
+    {% endif %}
+    <div class="sal-ded-row">
+      <span class="sal-ded-name">{{ row.name }}</span>
+      <div class="sal-ded-track" aria-hidden="true">
+        <div class="sal-ded-bar sal-ded-bar--{{ row.timing }}"
+             data-progress-pct="{{ row.bar_pct }}"></div>
+      </div>
+      <span class="sal-ded-amt font-mono">{{ money(row.amount) }}</span>
+    </div>
+    {% endfor %}
+    <p class="sal-note">Bars scale to the largest deduction.</p>
+    {% else %}
+    <p class="text-muted mb-0">No deductions on this paycheck.</p>
+    {% endif %}
+  </div>
+</div>

@@ -4,7 +4,7 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.cockpit') }}">Salary</a></li>
     <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Profile' if profile else 'New Profile' }}</li>
   </ol>
 </nav>
@@ -152,17 +152,21 @@
           <button type="submit" class="btn btn-primary">
             <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
           </button>
-          <a href="{{ url_for('salary.list_profiles') }}" class="btn btn-outline-secondary">Cancel</a>
+          <a href="{{ url_for('salary.cockpit') }}" class="btn btn-outline-secondary">Cancel</a>
         </div>
         {% if profile %}
         <div class="d-flex gap-2">
-          <a href="{{ url_for('salary.breakdown_current', profile_id=profile.id) }}"
-             class="btn btn-outline-info btn-sm">
-            <i class="bi bi-receipt"></i> View Breakdown
+          <a href="{{ url_for('salary.cockpit', profile=profile.id) }}"
+             class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-cash-coin"></i> Open cockpit
           </a>
           <a href="{{ url_for('salary.projection', profile_id=profile.id) }}"
-             class="btn btn-outline-primary btn-sm">
-            <i class="bi bi-graph-up"></i> View Projection
+             class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-table"></i> Projection ledger
+          </a>
+          <a href="{{ url_for('settings.show', section='tax') }}"
+             class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-sliders"></i> Tax settings
           </a>
         </div>
         {% endif %}
@@ -213,6 +217,49 @@
            class="btn btn-sm btn-outline-primary">
           <i class="bi bi-bullseye"></i> Calibrate from Pay Stub
         </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Danger zone: deactivation + inactive-profile recovery ──
+       Deactivation moved here from the removed profile-list page
+       (accounts edit-form precedent, salary_audit.md Gate A ruling 4);
+       reactivation is its inverse so deactivating is no longer one-way. #}
+    <div class="card border-danger mb-3">
+      <div class="card-header">
+        <h6 class="mb-0 text-danger"><i class="bi bi-exclamation-triangle"></i> Danger Zone</h6>
+      </div>
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+          <div>
+            <div>Deactivate this profile</div>
+            <small class="text-muted">
+              Stops paycheck generation and hides the profile from the cockpit.
+              You can reactivate it here later.
+            </small>
+          </div>
+          <form method="POST" action="{{ url_for('salary.delete_profile', profile_id=profile.id) }}"
+                data-confirm="Deactivate this salary profile?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+              <i class="bi bi-x-circle"></i> Deactivate
+            </button>
+          </form>
+        </div>
+        {% if inactive_profiles %}
+        <hr>
+        <div class="mb-1">Inactive profiles</div>
+        {% for p in inactive_profiles %}
+        <div class="d-flex justify-content-between align-items-center gap-3 py-1">
+          <small class="text-muted">{{ p.name }}</small>
+          <form method="POST" action="{{ url_for('salary.reactivate_profile', profile_id=p.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-arrow-counterclockwise"></i> Reactivate
+            </button>
+          </form>
+        </div>
+        {% endfor %}
         {% endif %}
       </div>
     </div>

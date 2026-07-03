@@ -20,6 +20,7 @@ from decimal import Decimal
 
 from flask import Flask
 
+from app.services.salary_cockpit_service import clean_raise_label
 from app.utils.dates import to_display_tz
 
 # English month names, indexed by ``month_number - 1``.  The single
@@ -165,6 +166,30 @@ def month_name(value: int | None, abbr: bool = False) -> str:
     return names[index - 1]
 
 
+def raise_label(value: str | None) -> str:
+    """Display-clean a calculator ``raise_event`` string for templates.
+
+    Thin filter wrapper over
+    :func:`app.services.salary_cockpit_service.clean_raise_label` so the
+    salary templates (the anatomy card's raise alert, the projection
+    ledger's raise badges) render the same cleaned label the cockpit
+    producers emit: title-cased type + trailing-zero-trimmed percentage
+    (``"MERIT +2.5000%"`` -> ``"Merit +2.5%"``), flat amounts kept to the
+    cent.  Presentation-only: the cleaning is pure string manipulation on
+    the calculator's own Decimal-derived text.
+
+    Args:
+        value: The verbatim ``PeriodInfo.raise_event`` string, or ``None``.
+
+    Returns:
+        The cleaned display label, or ``""`` for ``None``/empty input so a
+        template can pipe an absent event through without guarding.
+    """
+    if value is None:
+        return ""
+    return clean_raise_label(value)
+
+
 def register_template_filters(app: Flask) -> None:
     """Register every presentation filter on the given Flask app.
 
@@ -180,3 +205,4 @@ def register_template_filters(app: Flask) -> None:
     app.add_template_filter(ordinal, "ordinal")
     app.add_template_filter(months_to_years, "months_to_years")
     app.add_template_filter(month_name, "month_name")
+    app.add_template_filter(raise_label, "raise_label")

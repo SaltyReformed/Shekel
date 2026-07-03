@@ -1,88 +1,67 @@
 """
-Shekel Budget App -- Salary route package: breakdown and projection views.
+Shekel Budget App -- Salary route package: projection view + breakdown stubs.
 
-Read-only paycheck-breakdown pages for a single period (and the current
-period) plus the full multi-period salary projection table.
+The full-width multi-period salary projection table (a first-class sibling
+of the cockpit), plus the retired per-period breakdown URLs, which now
+redirect into the cockpit (the paycheck anatomy lives there).  The old
+breakdown pages were folded into the cockpit during the Fable 5 salary
+rebuild; the endpoint names are preserved as ownership-checked redirect
+stubs so existing bookmarks and in-app links keep resolving.
 """
 
-from flask import abort, flash, redirect, render_template, url_for
+from datetime import date
+
+from flask import abort, redirect, render_template, url_for
 from flask_login import current_user, login_required
-from markupsafe import Markup
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
-from app.models.pay_period import PayPeriod
-from app.services import paycheck_calculator, pay_period_service
-from app.services.tax_config_service import (
-    load_tax_configs_for_periods,
-    load_tax_configs_for_year,
-)
+from app.services import paycheck_calculator, pay_period_service, salary_cockpit_service
+from app.services.tax_config_service import load_tax_configs_for_periods
 from app.routes.salary._bp import salary_bp
+from app.routes.salary._helpers import _get_owned_profile_and_period
 
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown/<int:period_id>")
 @login_required
 @require_owner
 def breakdown(profile_id, period_id):
-    """Show paycheck breakdown for a specific period."""
-    profile = get_or_404(SalaryProfile, profile_id)
-    if profile is None:
-        abort(404)
+    """Redirect the retired per-period breakdown page to the cockpit.
 
-    period = get_or_404(PayPeriod, period_id)
-    if period is None:
-        abort(404)
-
-    periods = pay_period_service.get_all_periods(current_user.id)
-    # Resolve the breakdown period's OWN tax year (DH-#30): viewing a
-    # future-year period must use that year's brackets/FICA, not the
-    # current year's.  Falls back to the current year when the period's
-    # year has no configs.
-    tax_configs = load_tax_configs_for_year(
-        current_user.id, profile, period.start_date.year,
-    )
-    result = paycheck_calculator.calculate_paycheck(
-        profile, period, periods, tax_configs,
-        calibration=profile.calibration,
-    )
-
-    return render_template(
-        "salary/breakdown.html",
-        profile=profile,
-        period=period,
-        breakdown=result,
-        periods=periods,
-    )
+    Ownership of BOTH the profile and the period is verified before the
+    302 so a cross-user id 404s here rather than leaking existence through
+    an intermediate redirect (the project's "404 for both 'not found' and
+    'not yours'" rule; account-detail precedent).  The cockpit focuses the
+    requested profile and period via its ``?profile=&period=`` params.
+    """
+    profile, period = _get_owned_profile_and_period(profile_id, period_id)
+    return redirect(url_for(
+        "salary.cockpit", profile=profile.id, period=period.id,
+    ))
 
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown")
 @login_required
 @require_owner
 def breakdown_current(profile_id):
-    """Show paycheck breakdown for the current period.
+    """Redirect the retired current-period breakdown to the cockpit.
 
     Verifies ownership of ``profile_id`` before redirecting so a
-    cross-user request 404s here rather than producing a 302 to
-    :func:`breakdown` (which would also 404, but the intermediate
-    redirect leaks the existence of the requested profile-id slot
-    and breaks the project's "404 for both 'not found' and 'not
-    yours'" security rule -- audit commit C-31 / F-087).
+    cross-user request 404s here rather than producing a 302 that leaks
+    the existence of the requested profile-id slot (audit commit C-31 /
+    F-087).  Focuses the current period when one exists; when the user has
+    no pay periods the redirect carries only the profile and the cockpit
+    shows its generate-periods blocker.
     """
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
         abort(404)
+
     current_period = pay_period_service.get_current_period(current_user.id)
-    if not current_period:
-        flash(Markup(
-            'No pay periods found. '
-            '<a href="' + url_for("pay_periods.generate_form") + '" class="alert-link">'
-            'Generate pay periods</a> first.'
-        ), "warning")
-        return redirect(url_for("salary.list_profiles"))
+    if current_period is None:
+        return redirect(url_for("salary.cockpit", profile=profile.id))
     return redirect(url_for(
-        "salary.breakdown",
-        profile_id=profile.id,
-        period_id=current_period.id,
+        "salary.cockpit", profile=profile.id, period=current_period.id,
     ))
 
 
@@ -111,8 +90,22 @@ def projection(profile_id):
     # Pair periods with breakdowns
     projection_data = list(zip(periods, breakdowns))
 
+    # Summary framing above the ledger (restyled in P3): the next raise,
+    # the next third paycheck, and the per-calendar-year net totals.  All
+    # Decimal, derived from the same breakdowns the table renders (DRY).
+    projection_summary = {
+        "next_raise": salary_cockpit_service.next_raise_after(
+            projection_data, date.today(),
+        ),
+        "next_third": salary_cockpit_service.next_third_after(
+            projection_data, date.today(),
+        ),
+        "yearly_nets": salary_cockpit_service.yearly_net_totals(projection_data),
+    }
+
     return render_template(
         "salary/projection.html",
         profile=profile,
         projection_data=projection_data,
+        projection_summary=projection_summary,
     )

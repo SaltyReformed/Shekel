@@ -24,12 +24,15 @@ Module map:
   ``_compute_total_pre_tax``, ``_reject_if_rates_inconsistent``, the
   ``_render_*_partial`` / ``_respond_after_*_change`` HTMX responders,
   ``_get_investment_accounts``).
+* :mod:`app.routes.salary.cockpit` -- the ``GET /salary`` cockpit landing
+  page (``cockpit``) and its HTMX period-stepping fragment (``anatomy``).
 * :mod:`app.routes.salary.profiles` -- salary-profile CRUD
-  (``list_profiles``, ``new_profile``, ``create_profile``, ``edit_profile``,
-  ``update_profile``, ``delete_profile``).
+  (``new_profile``, ``create_profile``, ``edit_profile``,
+  ``update_profile``, ``delete_profile``, ``reactivate_profile``).
 * :mod:`app.routes.salary.items` -- raise and deduction add/edit/delete
   (the two parallel salary line-item families, co-located).
-* :mod:`app.routes.salary.views` -- paycheck breakdown + projection views.
+* :mod:`app.routes.salary.views` -- projection view + retired-breakdown
+  redirect stubs into the cockpit.
 * :mod:`app.routes.salary.calibration` -- the pay-stub calibration flow
   (form/preview/confirm/delete).
 * :mod:`app.routes.salary.tax_config` -- state-tax and FICA config updates.
@@ -44,6 +47,7 @@ from app.routes.salary._bp import salary_bp
 # decorators against ``salary_bp``.  The ``noqa`` markers suppress the
 # unused-import / out-of-order-import warnings that would otherwise fire
 # on what is, by design, a deferred-import side-effect registration.
+from app.routes.salary import cockpit  # noqa: F401, E402
 from app.routes.salary import profiles  # noqa: F401, E402
 from app.routes.salary import items  # noqa: F401, E402
 from app.routes.salary import views  # noqa: F401, E402
