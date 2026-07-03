@@ -48,12 +48,15 @@ plan Section 6:
      regression lock)** -- driven through the real PATCH route, then swept.
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
-transaction's estimate makes the per-account reconciliation FAIL (a real ledger
-drift would be caught), and injecting one extra leg makes the trial balance go
-non-zero (the ``= 0`` assertion is a real check, not one the per-entry trigger
-makes unconditionally true).  A reverted transaction reconciles at zero (original
-+ reversal net to zero; the source-side query drops it once it is no longer
-settled), proving the append-only correction discipline end to end.
+transaction's estimate makes the per-account reconciliation FAIL -- driven
+through the real ``_assert_full_reconciliation`` sweep helper under
+``pytest.raises``, so a regression in the helper itself is caught, not only in an
+inline re-derivation (a real ledger drift would be caught) -- and injecting one
+extra leg makes the trial balance go non-zero (the ``= 0`` assertion is a real
+check, not one the per-entry trigger makes unconditionally true).  A reverted
+transaction reconciles at zero (original + reversal net to zero; the source-side
+query drops it once it is no longer settled), proving the append-only correction
+discipline end to end.
 
 **Non-tautological by construction**, the same three independent ways as Step 2:
 
@@ -359,6 +362,14 @@ def _assert_linked_accounts_reconcile(scenario_id: int) -> None:
         _db.session.query(LedgerAccount)
         .filter(LedgerAccount.account_id.isnot(None))
         .all()
+    )
+    # Every caller settles at least one cash movement, which mints the Checking
+    # linked ledger account, so an empty result means the query silently found
+    # nothing (a minting or filter regression) and the loop below would pass
+    # vacuously -- assert non-empty so the sweep cannot be a no-op.
+    assert linked, (
+        "no linked ledger accounts to reconcile -- the linked sweep would be "
+        "vacuous (expected at least the Checking account's linked ledger)"
     )
     for ledger_account in linked:
         ledger = _independent_ledger_sum(ledger_account.account_id, scenario_id)
@@ -1179,6 +1190,116 @@ class TestRevertAndRecategorizeReconciles:
             _assert_full_reconciliation(scenario_id)
 
 
+class TestRevertAndMoveReconciles:
+    """A revert+move PATCH keeps every period's ledger attribution intact."""
+
+    def test_revert_move_resettle_attributes_per_period(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Settle in P, revert+move to F in one PATCH, re-settle; per-period ties.
+
+        The route-level R2 regression (the 2026-07-02 adversarial review's H1
+        class): a Paid $50 expense in period P is reverted to Projected AND
+        moved to a future period F in ONE PATCH (the finalised lock lifts on
+        the revert), then re-settled.  The handler applies the new
+        ``pay_period_id`` BEFORE the end-of-handler reconcile, so a reversal
+        stamped with the row's current period would land in F -- leaving P's
+        entry and its reversal straddling two periods, where truncating F
+        CASCADE-deletes half the pair and permanently strands the other
+        (``transaction_id`` SET NULL, unhealable).  Under the R2 attribution
+        rule the reversal lands in P: P's entries net to zero per ledger
+        account, F carries exactly the re-settled -50/+50, and the whole
+        sweep ties after every step.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            original = seed_periods_today[0]
+            moved_to = seed_periods_today[5]
+            txn = add_txn(
+                db.session, seed_user, original, "Groceries", "50.00",
+                category_key="Groceries",
+            )
+            db.session.commit()
+            txn_id = txn.id
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # Revert AND move in one PATCH (the H1 flow).
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "status_id": str(projected_id),
+                    "pay_period_id": str(moved_to.id),
+                },
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+            # The reversal landed in the ORIGINAL period: P nets to zero per
+            # ledger account, and F holds no entries at all yet.
+            assert _period_ledger_nets(txn_id, original.id) == {}
+            assert not _entry_ids_in_period(txn_id, moved_to.id)
+
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"status_id": str(done_id)},
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # F carries exactly the re-settled split; P still nets to zero.
+            cash_ledger = (
+                _db.session.query(LedgerAccount.id)
+                .filter(LedgerAccount.account_id == seed_user["account"].id)
+                .scalar()
+            )
+            moved_nets = _period_ledger_nets(txn_id, moved_to.id)
+            assert moved_nets[cash_ledger] == Decimal("-50.00")
+            assert sum(moved_nets.values()) == Decimal("0.00")
+            assert _period_ledger_nets(txn_id, original.id) == {}
+
+
+def _period_ledger_nets(transaction_id, pay_period_id):
+    """Return ``{ledger_account_id: net}`` for one transaction in one period.
+
+    Zero nets are dropped, so a period whose entries fully cancel (an
+    original + its reversal) returns ``{}`` -- the R2 attribution tests'
+    "nets to zero per ledger account" shape.  Independent of the service's
+    own per-period reader (a direct grouped query).
+    """
+    rows = (
+        _db.session.query(
+            Posting.ledger_account_id, _db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            JournalEntry.transaction_id == transaction_id,
+            JournalEntry.pay_period_id == pay_period_id,
+        )
+        .group_by(Posting.ledger_account_id)
+        .all()
+    )
+    return {
+        ledger_id: net for ledger_id, net in rows if net != 0
+    }
+
+
+def _entry_ids_in_period(transaction_id, pay_period_id):
+    """Return the journal-entry ids a transaction holds in one period."""
+    return [
+        entry_id for (entry_id,) in (
+            _db.session.query(JournalEntry.id)
+            .filter(
+                JournalEntry.transaction_id == transaction_id,
+                JournalEntry.pay_period_id == pay_period_id,
+            )
+            .all()
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Reverted transaction reconciles at zero (append-only correction discipline)
 # ---------------------------------------------------------------------------
@@ -1357,6 +1478,15 @@ class TestOracleIsNotVacuous:
             assert ledger == Decimal("-100.00")  # ledger unchanged
             assert effect == Decimal("-999.00")  # transaction truth drifted
             assert ledger != effect  # the oracle would catch this drift
+            # Drive the REAL production-wide sweep helper (not just the inline
+            # re-derivation above) so a regression that broke the helper itself --
+            # e.g. one that stopped comparing the linked ledger to its source --
+            # would fail here.  ``match`` pins the linked-account reconciliation
+            # message specifically, so a future edit that weakened THAT comparison
+            # but left the non-empty guard or trial balance firing under tamper no
+            # longer keeps this test green -- the tooth cannot be lost undetected.
+            with pytest.raises(AssertionError, match="combined source effect"):
+                _assert_full_reconciliation(scenario_id)
 
     def test_trial_balance_catches_an_injected_leg(self, app, db, seed_user):
         """Injecting one extra leg pushes the trial balance off zero.

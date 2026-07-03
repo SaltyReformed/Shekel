@@ -21,7 +21,7 @@ from app.models.ref import AccountType, RecurrencePattern, Status
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
-from tests._test_helpers import field_is_disabled
+from tests._test_helpers import create_loan_account, field_is_disabled
 
 
 def _create_savings_account(seed_user):
@@ -311,6 +311,50 @@ class TestTemplateCreate:
 
             assert response.status_code == 200
             assert b"Please correct the highlighted errors" in response.data
+
+    def test_create_recurring_template_from_loan_flashes_not_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A recurring template with a LOAN source flashes gracefully, not a 500.
+
+        The transfer form offers every active account as a source, so a user can
+        pick a Mortgage.  A transfer OUT of an amortizing loan is rejected by
+        ``create_transfer`` (review R6); on the RECURRING path the recurrence
+        engine fans out through that service, so an unhandled rejection would
+        500 (the T-1 defect the guard newly made reachable).  The route must
+        instead roll back and flash -- exactly as the one-time path does -- and
+        persist no template.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                {"user": seed_user["user"], "scenario": seed_user["scenario"]},
+                db.session, name="Mortgage",
+                principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+                origination_date=date(2025, 1, 1), term=360,
+            )
+            db.session.commit()
+            every_period = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period"
+            ).one()
+
+            response = auth_client.post("/transfers", data={
+                "name": "Drain The Mortgage",
+                "default_amount": "100.00",
+                "from_account_id": str(loan.id),        # loan as SOURCE
+                "to_account_id": str(seed_user["account"].id),
+                "recurrence_pattern": str(every_period.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            # Graceful: 200 (not 500), the guard's message flashed, no template.
+            assert response.status_code == 200
+            assert b"Could not create transfer" in response.data
+            assert b"out of a loan" in response.data
+            assert (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id, name="Drain The Mortgage")
+                .first()
+            ) is None
 
     def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers twice with the same name returns a flash warning

@@ -8,7 +8,7 @@ interest paid during the year, for Schedule A).
 from decimal import Decimal
 
 from app.models.salary_profile import SalaryProfile
-from app.services import paycheck_calculator
+from app.services import loan_loaders, paycheck_calculator
 from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.net_worth_kernel import DebtSchedule
 from app.services.tax_config_service import load_tax_configs_for_year
@@ -202,9 +202,12 @@ def _loan_year_interest(
       attributed to each payment's civil paid date -- the tax-correct basis, and
       correct for off-schedule payments where the schedule's replayed interest is
       not; PLUS
-    * the schedule's PROJECTED interest for the year's not-yet-confirmed rows
-      (``not row.is_confirmed``) -- the confirmed rows are excluded because their
-      interest is the ledger's actual figure, not the schedule's.
+    * the schedule's PROJECTED interest for the year's genuinely projected rows:
+      not replay-confirmed (``not row.is_confirmed``) AND not occupying a due
+      slot a SETTLED payment already holds
+      (:func:`app.services.loan_loaders.load_settled_payment_due_months` -- an
+      early-settled payment's interest is already in the ledger term, so its
+      still-``is_confirmed=False`` schedule row must not count again).
 
     When the loan has no genesis opening posting (an un-backfilled loan, or one
     the ledger does not own) the reader returns ``None`` and this sums the FULL
@@ -234,11 +237,25 @@ def _loan_year_interest(
             ),
             ZERO,
         )
-    # Ledger-actual (confirmed) + schedule-projected (not-yet-confirmed rows).
+    # Ledger-actual (confirmed) + schedule-projected.  The projected term
+    # excludes a row when EITHER the replay confirmed it (``is_confirmed`` --
+    # its interest is the ledger's actual figure) OR its due slot is occupied
+    # by a SETTLED payment the replay has not confirmed yet: an early-settled
+    # payment (settled before its pay period begins) already posted its actual
+    # interest at its paid date, while its schedule row stays
+    # ``is_confirmed=False`` -- counting that row too would double-count the
+    # slot.  The partition rule is "a slot is projected iff no settled payment
+    # occupies it" (the 2026-07-02 adversarial review's R1 companion fix).
+    settled_due_months = loan_loaders.load_settled_payment_due_months(
+        loan_account_id, scenario_id,
+    )
     projected = sum(
         (
             row.interest for row in debt.schedule
-            if not row.is_confirmed and row.payment_date.year == year
+            if not row.is_confirmed
+            and row.payment_date.year == year
+            and (row.payment_date.year, row.payment_date.month)
+            not in settled_due_months
         ),
         ZERO,
     )

@@ -93,18 +93,22 @@ def _make_loan(
     anchor_date=_ANCHOR_DATE,
     rate=_RATE,
     escrow_annual=None,
+    name="Split Loan",
 ):
     """Create an amortizing loan with a controlled user-trueup anchor.
 
     Delegates to the shared ``create_loan_with_trueup`` factory, pinning this
     suite's fixed origination principal / date (distinct from the anchor, so a
-    correct interest figure proves the walk seeds from the trueup anchor).
+    correct interest figure proves the walk seeds from the trueup anchor).  A
+    distinct *name* lets one owner carry more than one loan (the account name is
+    unique per user).
     """
     return create_loan_with_trueup(
         seed_user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
         origination_date=_ORIGINATION_DATE, escrow_annual=escrow_annual,
+        name=name,
     )
 
 
@@ -148,6 +152,20 @@ def _find_loan_ledger(loan_id, kind):
 def _ledger_net(ledger_id, scenario_id):
     """Return the net of a ledger account's posting legs (shared query helper)."""
     return ledger_net(_db.session, ledger_id, scenario_id)
+
+
+def _genesis_entry_count(user_id):
+    """Count a user's loan opening + true-up (genesis) journal entries."""
+    opening = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
+    trueup = ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP)
+    return (
+        _db.session.query(JournalEntry)
+        .filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.source_kind_id.in_([opening, trueup]),
+        )
+        .count()
+    )
 
 
 def _transfer_filtered_loan_net(transfer_id, ledger_id):
@@ -913,8 +931,85 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
 
-            assert result is None
+            assert result == []
             assert len(_correction_entries(shadow.id)) == entries_before
+
+    def test_early_settled_payment_splits_at_settle(
+        self, app, db, monkeypatch, seed_user, seed_periods,
+    ):
+        """A payment settled before its period begins posts its split immediately.
+
+        Settlement is the confirming event (the 2026-07-02 adversarial review's
+        R1, fixing H2): the Step-2 cash entry posts the moment a payment
+        settles, so the split correction must post in the SAME moment or the
+        loan-linked ledger holds raw cash with no interest backout from the
+        payment's period start until the next loan write.  Both entries carry
+        the payment's OWN pay period, so the readers' period bound still keeps
+        the early payment out of every balance displayed before its period
+        begins.
+
+        Frozen today 2026-02-10: the P1 payment's period has begun, the P3
+        payment's (due 04-01) has not.  Arithmetic: P1 splits interest
+        100000 * 0.005 = 500.00 -> balance 99500; the early P3 payment splits
+        NEXT on that running balance -- interest round(99500 * 0.005) = 497.50,
+        principal 1000 - 497.50 = 502.50 -> balance 98997.50.  So:
+
+        * the P3 correction exists AT SETTLE (no manual sync), legs
+          Loan -497.50 / Interest +497.50, attributed to P3's period;
+        * the scalar reader at today still reads 99500.00 (period not begun);
+        * the map at P3's period reads the REAL 98997.50 -- NOT the raw-cash
+          98500.00 (= 99500 - 1000) the pre-fix ledger showed (H2's
+          demonstrated mis-statement, the assertion that fails on the old
+          code).
+        """
+        with app.app_context():
+            frozen = date(2026, 2, 10)
+            freeze_today(monkeypatch, frozen)
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            _, early_shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+            )
+            db.session.commit()
+            # The premise: P1's period has begun by the frozen today, P3's has
+            # not (its due 04-01 payment is an EARLY settle).
+            assert seed_periods[_P1].start_date <= frozen
+            assert seed_periods[_P3].start_date > frozen
+
+            # The correction posted at settle, through the transfer wiring --
+            # no manual sync call -- attributed to the payment's own period.
+            entries = _correction_entries(early_shadow.id)
+            assert len(entries) == 1
+            assert entries[0].pay_period_id == seed_periods[_P3].id
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            legs = _entry_legs(entries[0].id)
+            assert legs[_linked_ledger_id(loan)] == (
+                Decimal("-497.50"),
+                ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+            )
+            assert legs[interest_ledger.id] == (
+                Decimal("497.50"),
+                ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
+            )
+
+            # Display is untouched today: the scalar excludes the not-yet-begun
+            # period (100000 - 500 = 99500.00, the P1-only balance).
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, frozen,
+            ) == Decimal("99500.00")
+
+            # At P3's period the map shows the REAL principal drop: 99500 -
+            # 502.50 = 98997.50 -- never the raw cash 99500 - 1000 = 98500.00
+            # the unsplit ledger showed (H2).
+            balance_map = loan_posting_service.confirmed_loan_balance_map(
+                loan.id, scenario_id, seed_periods,
+            )
+            assert balance_map[seed_periods[_P3].id] == Decimal("98997.50")
 
 
 # ---------------------------------------------------------------------------
@@ -924,6 +1019,64 @@ class TestSyncLoanPaymentPostings:
 
 class TestReverseLoanPaymentPostings:
     """A correction reverses cleanly before a delete, and stale ones self-heal."""
+
+    def test_revert_and_move_reverses_into_the_original_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A reverted-and-moved payment's correction reverses into its old period.
+
+        The loan twin of the R2 attribution rule (the 2026-07-02 review's H1
+        class): one ``update_transfer`` call reverts the payment to Projected
+        AND moves it to a later period -- the shadows carry the NEW period by
+        the time the loan wiring reconciles.  The stale correction must
+        reverse into the period it was POSTED in (P1's), never the shadow's
+        new one, so the correction pair nets P1's period to zero and the new
+        period holds no loan_payment entries at all.  Arithmetic: the P1
+        split was interest 500.00 / principal 500.00, so the reversal legs
+        are Loan +500.00 / Interest -500.00 in P1's period, and the interest
+        ledger nets back to zero.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+            )
+            db.session.commit()
+            original_period_id = seed_periods[_P1].id
+            moved_to = seed_periods[_P3]
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                pay_period_id=moved_to.id,
+            )
+            db.session.commit()
+
+            entries = _correction_entries(shadow.id)
+            assert len(entries) == 2
+            reversal = entries[-1]
+            # The R2 rule: the reversal carries the ORIGINAL period -- the
+            # pre-fix code stamped it with the shadow's NEW period.
+            assert reversal.pay_period_id == original_period_id
+            assert all(
+                entry.pay_period_id == original_period_id for entry in entries
+            )
+            interest_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
+            )
+            legs = _entry_legs(reversal.id)
+            assert legs[_linked_ledger_id(loan)] == (
+                Decimal("500.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+            )
+            assert legs[interest_ledger.id] == (
+                Decimal("-500.00"),
+                ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
+            )
+            assert _ledger_net(interest_ledger.id, scenario_id) == (
+                Decimal("0.00")
+            )
 
     def test_reverse_zeroes_the_correction(
         self, app, db, seed_user, seed_periods,
@@ -2600,3 +2753,74 @@ class TestConfirmedLoanHistoryRows:
                 loan_posting_service.confirmed_loan_history_rows(
                     loan.id, scenario_id, date(2027, 6, 1),
                 )
+
+
+class TestUserScopedResync:
+    """``resync_user_loan_postings`` + its enumerator reconcile ONE owner's loans.
+
+    The per-user counterpart to the deploy-wide ``backfill_all_loan_postings``,
+    called by ``pay_period_admin.reset_pay_periods`` to re-post a reset user's
+    loan genesis entries the period wipe cascades -- scoped to that one user so a
+    single-user reset never reconciles another owner's loans inside its
+    transaction (review M2 / R7).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _freeze(self, monkeypatch):
+        """Pin today after both anchor dates so the genesis walk is eligible."""
+        freeze_today(monkeypatch, date(2026, 6, 15))
+
+    def test_enumerator_returns_only_the_users_loans(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """load_loan_account_ids_for_user filters LoanParams by owner, ascending.
+
+        Two loans on the first user and one on the second: each owner's scoped
+        enumeration returns exactly its own loan ids, and the all-owners sweep
+        returns their union -- proving the join is owner-scoped, not global.
+        """
+        with app.app_context():
+            loan_a = _make_loan(seed_user, name="Loan A")
+            loan_b = _make_loan(seed_user, name="Loan B")
+            loan_c = _make_loan(seed_second_user, name="Loan C")
+            db.session.commit()
+
+            assert loan_loaders.load_loan_account_ids_for_user(
+                seed_user["user"].id,
+            ) == sorted([loan_a.id, loan_b.id])
+            assert loan_loaders.load_loan_account_ids_for_user(
+                seed_second_user["user"].id,
+            ) == [loan_c.id]
+            # The scoped sets partition the global sweep.
+            assert loan_loaders.load_all_loan_account_ids() == sorted(
+                [loan_a.id, loan_b.id, loan_c.id],
+            )
+
+    def test_resync_posts_only_the_users_genesis(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Re-syncing user 1 posts its genesis and leaves user 2's loan untouched.
+
+        Both users own a configured loan (genesis net -100000 = opening -250000 +
+        true-up +150000).  Re-syncing only the first user returns just its loan
+        id, posts its opening + true-up (the loan-linked ledger nets -100000), and
+        posts NOTHING for the second user (zero genesis entries) -- the scoping
+        that keeps a single-user reset from reconciling another owner's loans.
+        """
+        with app.app_context():
+            loan1 = _make_loan(seed_user)
+            loan2 = _make_loan(seed_second_user)
+            db.session.commit()
+            u1 = seed_user["user"].id
+            u2 = seed_second_user["user"].id
+
+            posted = loan_posting_service.resync_user_loan_postings(u1)
+            db.session.commit()
+
+            assert posted == [loan1.id]
+            assert posting_service.account_posting_total(
+                loan1.id, seed_user["scenario"].id,
+            ) == Decimal("-100000.00")
+            # User 2's loan was never visited: no genesis entries posted.
+            assert _genesis_entry_count(u2) == 0
+            assert loan2.id not in posted

@@ -12,10 +12,11 @@ read-switch seam that imports the posting package's reader -- loading through
 a shared leaf is what keeps that dependency one-directional (no import
 cycle), rather than a lazy-import workaround.
 
-This module is a LEAF: it imports models, the engine's plain
-:class:`~app.services.amortization_engine.RateChangeRecord` record, and the
-shared balance predicates -- never another loan service.  Flask-isolated,
-reads only, no commits.
+This module is a LEAF: it imports models, the pure engine primitives
+(:class:`~app.services.amortization_engine.RateChangeRecord`,
+:func:`~app.services.rate_period_engine.monthly_due_date`), and the shared
+balance predicates -- never another loan service.  Flask-isolated, reads only,
+no commits.
 
 This service queries ONLY budget.transactions (transfer invariant #5).
 It NEVER queries budget.transfers.
@@ -30,12 +31,17 @@ from sqlalchemy.orm import joinedload
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum, TxnTypeEnum
 from app.extensions import db
+from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
-from app.utils.balance_predicates import balance_excluded_status_ids
+from app.services.rate_period_engine import monthly_due_date
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    settled_status_ids,
+)
 
 # The synthesized origination anchor's created_at: the earliest possible
 # instant (UTC-aware, comparable with the timestamptz ``created_at`` of real
@@ -281,6 +287,40 @@ def load_all_loan_account_ids() -> list[int]:
     return [account_id for (account_id,) in rows]
 
 
+def load_loan_account_ids_for_user(user_id: int) -> list[int]:
+    """Return the given user's configured loan account ids, ascending.
+
+    The per-OWNER counterpart to :func:`load_all_loan_account_ids`: every
+    :class:`LoanParams` row whose account belongs to *user_id*, joined through
+    :class:`~app.models.account.Account`.  Where the all-owners sweep backs the
+    system / deploy-time backfill
+    (:func:`app.services.loan_posting_service.backfill_all_loan_postings`), this
+    scoped set backs a PER-USER re-sync: ``pay_period_admin.reset_pay_periods``
+    calls it (via
+    :func:`app.services.loan_posting_service.resync_user_loan_postings`) to
+    rebuild only the reset user's loan genesis postings after the wipe -- the
+    period CASCADE (``journal_entries.pay_period_id ON DELETE CASCADE``) disposes
+    THIS user's loan opening / true-up entries along with the periods, so the
+    reset stays inside its own single-user transaction rather than reconciling
+    every owner's loans.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The user's loan account ids, ascending (already distinct -- ``account_id``
+        is unique per :class:`LoanParams`); empty when the user has no loan.
+    """
+    rows = (
+        db.session.query(LoanParams.account_id)
+        .join(Account, Account.id == LoanParams.account_id)
+        .filter(Account.user_id == user_id)
+        .order_by(LoanParams.account_id)
+        .all()
+    )
+    return [account_id for (account_id,) in rows]
+
+
 def load_active_escrow_components(account_id: int) -> list:
     """Load a loan account's CURRENTLY-active escrow components, ordered by name.
 
@@ -341,6 +381,62 @@ def load_all_escrow_components(account_id: int) -> list:
         .filter(EscrowComponent.account_id == account_id)
         .all()
     )
+
+
+def load_settled_payment_due_months(
+    account_id: int, scenario_id: int,
+) -> set[tuple[int, int]]:
+    """Return the ``(year, month)`` due slots of a loan's SETTLED payments.
+
+    The schedule-side partition key for the year-end mortgage-interest hybrid
+    (:func:`app.services.year_end_summary_service._income_tax._loan_year_interest`):
+    a settled payment's actual interest is read from the genesis ledger and
+    attributed to its civil PAID date, so the schedule's projected row for the
+    same due slot must be excluded or the hybrid double-counts.  The resolver's
+    ``is_confirmed`` flag alone cannot make that cut -- its replay bounds
+    confirmed payments by "pay period has begun", so an EARLY-settled payment
+    (settled before its pay period starts) stays ``is_confirmed=False`` on the
+    schedule while its interest is already posted (the write side splits at
+    settlement -- see
+    :func:`app.services.loan_posting_service._walk._settled_income_shadows`).
+
+    Keyed by due (year, month) rather than the exact due date so the exclusion
+    still matches a schedule row whose display date the resolver's
+    biweekly-collision redistribution nudged within the month.  Known
+    approximation: when TWO payments share a due month (a biweekly collision)
+    and only one is settled early, the redistribution moves the second row to
+    the next month, so the month key excludes the settled slot and keeps the
+    shifted one -- matching intent; the reverse mismatch (excluding a shifted
+    row that belongs to the unsettled payment) requires the settled payment
+    itself to have been redistribution-shifted, which cannot happen (only
+    schedule DISPLAY rows shift, never the payment's own due month).
+
+    Args:
+        account_id: The loan account whose settled due slots to load.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        ``{(year, month)}`` of :func:`monthly_due_date` over the loan's settled
+        income shadows; empty for an unconfigured loan (no
+        :class:`LoanParams` -- there is no ``payment_day`` to derive a due date
+        from, and no split correction can exist either) or one with no settled
+        payment.
+    """
+    params = load_loan_params(account_id)
+    if params is None:
+        return set()
+    settled_shadows = (
+        query_shadow_income(account_id, scenario_id)
+        .filter(Transaction.status_id.in_(settled_status_ids()))
+        .all()
+    )
+    return {
+        (due.year, due.month)
+        for due in (
+            monthly_due_date(shadow.pay_period.start_date, params.payment_day)
+            for shadow in settled_shadows
+        )
+    }
 
 
 def query_shadow_income(account_id: int, scenario_id: int):
