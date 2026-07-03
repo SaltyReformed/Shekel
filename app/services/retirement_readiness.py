@@ -589,6 +589,17 @@ def _build_needed_path(
     contribution).  The result is a reference "what you would need to hold"
     trajectory whose end equals the target.
 
+    Frame note (review L2, documented not changed): the reversal walks
+    the AFTER-TAX required target back through the RAW pre-tax
+    contribution stream (the per-period employee + employer dollars are
+    contributed pre-tax, but a traditional dollar is worth ``1 - rate``
+    of an after-tax dollar).  Both endpoints are exact -- the last point
+    IS the target and today's point is a derived reference, not a
+    balance -- but with a nonzero estimated tax rate the interior points
+    sit slightly LOW (each reversal step subtracts a full pre-tax dollar
+    where the after-tax frame earns only its keep-fraction).  Accepted
+    as display-shaping for the reference line.
+
     Args:
         required_target: The net-frame required savings figure.
         projections: The per-account projection dicts (for the aggregate

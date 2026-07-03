@@ -392,6 +392,53 @@ class TestMeritHorizon:
         assert result[2031] == Decimal("110000.00")  # 100000 * 1.10
         assert result[2032] == Decimal("121000.00")  # 100000 * 1.10^2
 
+    def test_mixed_flat_and_percentage_colas_pinned_not_horizon_invariant(self):
+        """PINS current behavior: mixed flat+pct COLAs are NOT horizon-invariant (L4).
+
+        base 100,000; a flat $1,000 recurring COLA + a 10% recurring COLA,
+        both effective 2026.  ``apply_raises`` applies each raise's full
+        application count in sorted order, flat before percentage (M-01),
+        so splitting the compounding at the cutoff changes the ORDER the
+        flats interleave with the percents even though both raises are
+        pure COLAs:
+
+        continuous (N large, e.g. 10 -- cutoff beyond the range), 2030:
+          flat 5x first: 100,000 + 5,000 = 105,000
+          pct 5x:        105,000 * 1.10^5 = 105,000 * 1.61051
+                       = 169,103.55
+        horizon N=2 (cutoff 2028), 2030:
+          cutoff base:   (100,000 + 3 * 1,000) * 1.10^3
+                       = 103,000 * 1.331 = 137,093.00
+          post-cutoff (2 applications each, flat first):
+                         (137,093.00 + 2,000) * 1.21
+                       = 139,093.00 * 1.21 = 168,302.53
+
+        The 801.02 difference is the split-at-cutoff compounding-order
+        artifact this test DOCUMENTS (review finding L4) -- it is not a
+        behavioral promise, and any deliberate change to the split rule
+        must re-derive both pins.
+        """
+        raises = [
+            FakeRaise(flat_amount="1000", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+            FakeRaise(percentage="0.10", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        continuous = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 10,
+        ))
+        horizon = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 2,
+        ))
+        # (100,000 + 3,000) * 1.331 = 137,093.00 at the cutoff.
+        assert horizon[2028] == Decimal("137093.00")
+        # Continuous: (100,000 + 5,000) * 1.61051 = 169,103.55.
+        assert continuous[2030] == Decimal("169103.55")
+        # Split: (137,093.00 + 2,000) * 1.21 = 168,302.53.
+        assert horizon[2030] == Decimal("168302.53")
+
     def test_real_shaped_cola_and_merit(self):
         """Real-shaped 3% July cola + 2.5% January merit, N=5.
 

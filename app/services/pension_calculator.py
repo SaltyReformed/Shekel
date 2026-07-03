@@ -129,6 +129,18 @@ def project_salaries_by_year(
     Raise-type discrimination is by ``raise_type_id`` via the ref cache,
     never the display ``name`` string.
 
+    Known split-at-cutoff artifact (review L4, documented not changed):
+    with MIXED flat + percentage recurring COLAs the horizon is not
+    invariant even though both raises extrapolate -- ``apply_raises``
+    applies flats before percents (M-01), so compounding in two phases
+    (through the cutoff, then from the cutoff base) interleaves the flat
+    additions with the percentage compounding differently than one
+    continuous pass (pinned:
+    ``test_mixed_flat_and_percentage_colas_pinned_not_horizon_invariant``).
+    A one-time cola raise dated after the cutoff is dropped by design
+    (only RECURRING colas extrapolate); that rule awaits explicit
+    developer confirmation before any change.
+
     Args:
         annual_salary:      Decimal base salary.
         raises:             list of raise objects with .percentage,
