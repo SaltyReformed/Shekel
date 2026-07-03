@@ -72,10 +72,14 @@ def dashboard():
     closing the P3a double-compute; the levers run their own probe loads.
     The context carries exactly what the rebuilt template consumes: the
     readiness dict, the lever baselines, the per-account projections +
-    salary profiles for the accounts table, and the blended return for
-    the what-if-only assumed-return row.  The legacy gap-table context
-    (gap analysis, chart data, SWR slider default) retired with the old
-    page (P3c).
+    salary profiles for the accounts table, the blended return for the
+    what-if-only assumed-return row, and the settings row the included
+    assumptions rail echoes its stored values from (P4 live-verify
+    defect: the P3c slim dropped ``settings``, so every rail input
+    rendered its empty/fallback state -- the stored SWR invisible, the
+    merit horizon showing the template literal 5).  The legacy gap-table
+    context (gap analysis, chart data, SWR slider default) retired with
+    the old page (P3c).
     """
     data = retirement_dashboard_service.compute_gap_data(current_user.id)
     return render_template(
@@ -91,6 +95,7 @@ def dashboard():
             data["retirement_account_projections"]
         ),
         salary_profiles=data["salary_profiles"],
+        settings=data["settings"],
     )
 
 

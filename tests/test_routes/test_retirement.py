@@ -195,6 +195,37 @@ class TestRetirementDashboard:
         assert "Your planned retirement date has passed" in html
         assert "Already fully funded" not in html
 
+    def test_assumptions_rail_echoes_non_default_stored_values(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The full page renders the STORED assumption values, not fallbacks.
+
+        P4 live-verify regression: the P3c-slimmed dashboard context
+        dropped ``settings``, so the rail's inputs silently rendered
+        their empty/fallback states -- undetectable with default data
+        because the merit horizon's template fallback literal (5) equals
+        the column default.  Non-default stored values close that hole:
+          SWR 0.0350 -> to_percent 3.50 -> "%.2f" -> value="3.50"
+          merit_raise_horizon_years 7 -> value="7"
+        Neither can come from a fallback (the SWR renders '' and the
+        horizon renders 5 when settings is missing).  The unset tax rate
+        must also surface its not-set flag -- an Undefined ``settings``
+        suppressed it too.
+        """
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.safe_withdrawal_rate = Decimal("0.0350")
+        settings.merit_raise_horizon_years = 7
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'value="3.50"' in html
+        assert 'value="7"' in html
+        assert 'data-assumption-flag="tax-missing"' in html
+
     def test_dashboard_no_stale_settings_migration_message(
         self, auth_client, seed_user, db, seed_periods_today
     ):
