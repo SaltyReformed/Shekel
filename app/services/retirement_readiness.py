@@ -31,6 +31,7 @@ from app.services import growth_engine, retirement_gap_calculator
 from app.services.retirement_dashboard_service import (
     compute_gap_data,
     compute_slider_defaults,
+    resolve_retirement_date_provenance,
 )
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
@@ -151,6 +152,13 @@ def readiness_from_gap_data(data, return_rate_override=None):
         "estimated_tax_rate": effective_tax_rate,
         "tax_rate_missing": tax_rate_missing,
         "safe_withdrawal_rate": data["swr"],
+        # Acceptance-drive fix 1: who owns the resolved date.  A
+        # pension-owned date makes the assumptions rail's date row
+        # read-only with provenance (a settings save cannot move the
+        # horizon while a pension date exists).
+        "date_provenance": resolve_retirement_date_provenance(
+            data["pensions"], data["settings"],
+        ),
         "chart": _build_readiness_chart(
             data, projections, synthetic_periods,
             net.required_retirement_savings, effective_tax_rate,

@@ -571,6 +571,56 @@ def _compute_current_pay(
     )
 
 
+def resolve_retirement_date_provenance(
+    pensions: list[PensionProfile], settings: UserSettings | None,
+) -> dict:
+    """Resolve the planned retirement date WITH its provenance.
+
+    The single owner of the precedence rule (a pension's planned date
+    beats the settings date; the latest pension wins), returned with the
+    facts the assumptions rail needs to render the date row honestly
+    (acceptance-drive fix 1): when a pension owns the date, a settings
+    save cannot change the resolved horizon, so the row must show the
+    resolved date read-only with a link to the owning pension instead of
+    an input whose Save silently loses.
+
+    Args:
+        pensions: The user's active pensions.
+        settings: The user's :class:`UserSettings`, or ``None``.
+
+    Returns:
+        dict with ``date`` (the resolved date, or ``None``), ``source``
+        (``"pension"`` / ``"settings"`` / ``"none"`` -- producer-computed
+        state strings, compared literally like the lever states), and
+        ``pension_id`` / ``pension_name`` (the MAX-date owning pension
+        when ``source == "pension"``, else ``None``).
+    """
+    dated_pensions = [
+        p for p in pensions if p.planned_retirement_date is not None
+    ]
+    if dated_pensions:
+        owner = max(dated_pensions, key=lambda p: p.planned_retirement_date)
+        return {
+            "date": owner.planned_retirement_date,
+            "source": "pension",
+            "pension_id": owner.id,
+            "pension_name": owner.name,
+        }
+    if settings is not None and settings.planned_retirement_date is not None:
+        return {
+            "date": settings.planned_retirement_date,
+            "source": "settings",
+            "pension_id": None,
+            "pension_name": None,
+        }
+    return {
+        "date": None,
+        "source": "none",
+        "pension_id": None,
+        "pension_name": None,
+    }
+
+
 def resolve_planned_retirement_date(
     pensions: list[PensionProfile], settings: UserSettings | None,
 ) -> date | None:
@@ -578,7 +628,9 @@ def resolve_planned_retirement_date(
 
     Prefers the latest planned retirement date across the user's
     pensions; falls back to the retirement date stored on the user's
-    settings.
+    settings.  Delegates to
+    :func:`resolve_retirement_date_provenance` so the precedence rule
+    has exactly one definition.
 
     Args:
         pensions: The user's active pensions.
@@ -588,13 +640,7 @@ def resolve_planned_retirement_date(
         The resolved planned retirement date, or ``None`` when neither a
         pension nor the settings supply one.
     """
-    pension_dates = [
-        p.planned_retirement_date for p in pensions
-        if p.planned_retirement_date is not None
-    ]
-    if pension_dates:
-        return max(pension_dates)
-    return settings.planned_retirement_date if settings else None
+    return resolve_retirement_date_provenance(pensions, settings)["date"]
 
 
 

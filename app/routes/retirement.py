@@ -82,6 +82,7 @@ def dashboard():
     the old page (P3c).
     """
     data = retirement_dashboard_service.compute_gap_data(current_user.id)
+    readiness = retirement_readiness.readiness_from_gap_data(data)
     return render_template(
         "retirement/dashboard.html",
         current_return=(
@@ -89,13 +90,14 @@ def dashboard():
                 data,
             )["current_return"]
         ),
-        readiness=retirement_readiness.readiness_from_gap_data(data),
+        readiness=readiness,
         levers=retirement_levers.compute_lever_data(current_user.id),
         retirement_account_projections=(
             data["retirement_account_projections"]
         ),
         salary_profiles=data["salary_profiles"],
         settings=data["settings"],
+        date_provenance=readiness["date_provenance"],
     )
 
 
@@ -429,6 +431,15 @@ def update_settings():
         .filter_by(user_id=current_user.id)
         .first()
     )
+    # Acceptance-drive fix 1: the re-rendered rail needs the date row's
+    # provenance (pension-owned dates render read-only, so the fragment
+    # must know who owns the resolved date).  Resolved per render below
+    # -- the success branch must see the POST-save settings state.
+    pensions = (
+        db.session.query(PensionProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -441,6 +452,10 @@ def update_settings():
             settings=settings,
             form_data=raw_form_data,
             errors=errors,
+            date_provenance=(
+                retirement_dashboard_service
+                .resolve_retirement_date_provenance(pensions, settings)
+            ),
         ), 422
 
     if settings is None:
@@ -461,6 +476,10 @@ def update_settings():
             settings=settings,
             form_data=None,
             errors=None,
+            date_provenance=(
+                retirement_dashboard_service
+                .resolve_retirement_date_provenance(pensions, settings)
+            ),
         )
     flash("Retirement settings updated.", "success")
     return redirect(url_for("retirement.dashboard"))

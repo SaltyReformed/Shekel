@@ -226,6 +226,50 @@ class TestRetirementDashboard:
         assert 'value="7"' in html
         assert 'data-assumption-flag="tax-missing"' in html
 
+    def test_pension_owned_date_row_is_read_only_with_provenance(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A pension-owned date renders provenance, not a losing input.
+
+        Acceptance-drive fix 1: with a pension carrying a planned date,
+        the resolver ignores the settings date, so the date row must show
+        the RESOLVED date read-only, name the owning pension with a link
+        to its edit page, and point at the retire-later lever -- no date
+        input, no Save that silently loses.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # The resolved (pension) date renders read-only with provenance.
+        assert 'data-assumption-source="pension"' in html
+        assert "2048-07-01" in html  # _create_pension's planned date
+        assert "State Pension" in html
+        assert f"/retirement/pension/{pension.id}/edit" in html
+        assert "retire-later lever" in html
+        # No editable date control anywhere on the page.
+        assert 'id="assump-retirement-date"' not in html
+        assert 'name="planned_retirement_date"' not in html
+
+    def test_settings_owned_date_row_keeps_the_editable_input(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Without a pension date the editable input + Save remain."""
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="assump-retirement-date"' in html
+        assert 'value="2046-01-01"' in html
+        assert 'data-assumption-source="pension"' not in html
+
     def test_dashboard_no_stale_settings_migration_message(
         self, auth_client, seed_user, db, seed_periods_today
     ):
@@ -1830,6 +1874,28 @@ class TestAssumptionSaves:
             after.merit_raise_horizon_years,
         ) == snapshot
 
+
+    def test_fragment_renders_pension_owned_date_row(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The per-field save fragment also renders the provenance row.
+
+        Acceptance-drive fix 1: after any rail save, the re-rendered
+        fragment must keep the pension-owned date read-only (the
+        update_settings path resolves provenance itself -- it does not
+        ride the dashboard context).
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"safe_withdrawal_rate": "3.5"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-assumption-source="pension"' in html
+        assert 'id="assump-retirement-date"' not in html
 
     def test_saved_zero_tax_rate_echoes_and_clears_the_flag(
         self, auth_client, seed_user, db, seed_periods_today,

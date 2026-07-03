@@ -16,6 +16,22 @@
    parameter, so it carries both jobs directly. #}
 {% set fd = form_data|default(none) %}
 <div id="assumptions-panel">
+  {# Acceptance-drive fix 1: when a pension owns the resolved date, a
+     settings save cannot move the horizon (the resolver gives pension
+     dates precedence), so the row renders the RESOLVED date read-only
+     with its provenance -- the locked anatomy's "Retirement date ...
+     -- from <pension>" -- instead of an input whose Save silently
+     loses.  ``source`` is a producer-computed state string (like the
+     lever states), compared literally. #}
+  {% if date_provenance and date_provenance.source == 'pension' %}
+  <div class="retire-assump-row" data-assumption="planned_retirement_date">
+    <span class="retire-assump-label">Retirement date</span>
+    <span class="retire-assump-value">{{ date_provenance.date.isoformat() }}</span>
+    <span class="retire-assump-caption w-100" data-assumption-source="pension">from
+      <a href="{{ url_for('retirement.edit_pension', pension_id=date_provenance.pension_id) }}">{{ date_provenance.pension_name }}</a>
+      -- to try a later date, use the retire-later lever</span>
+  </div>
+  {% else %}
   <form method="POST" action="{{ url_for('retirement.update_settings') }}"
         hx-post="{{ url_for('retirement.update_settings') }}"
         hx-target="#assumptions-region" hx-swap="innerHTML"
@@ -29,10 +45,8 @@
     {% if errors and 'planned_retirement_date' in errors %}
     <div class="invalid-feedback">{{ errors['planned_retirement_date']|join('. ') }}</div>
     {% endif %}
-    <span class="retire-assump-caption w-100">a
-      <a href="{{ url_for('retirement.pension_list') }}">pension's</a>
-      planned date takes precedence</span>
   </form>
+  {% endif %}
 
   <form method="POST" action="{{ url_for('retirement.update_settings') }}"
         hx-post="{{ url_for('retirement.update_settings') }}"
