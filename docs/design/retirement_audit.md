@@ -603,9 +603,29 @@ hooks both events. The recurring CSP console error was traced with evidence to v
 untouched, documented. Lever lines now render typed override outcomes on an already-funded baseline
 instead of repeating the baseline copy.
 
-REMAINING: the developer acceptance drive (mutation paths: per-field saves, what-ifs, both lever
-steppers, pension CRUD, settings redirect) + the three parked rulings (Reset/delta-chip treatment;
-levers vs active what-ifs; one-time-cola-after-cutoff confirmation), then the PR to `dev`.
+**Acceptance-drive round 2 (2026-07-03, developer rulings + fixes in flight):** (1) the trajectory
+chart intermittently renders partial/clipped after what-if refreshes -- re-init timing race under
+diagnosis (afterSwap-vs-settle, stale Chart registry instance, double re-init via the OOB sibling).
+(2) DEVELOPER RULING: the retirement-date row becomes a REAL lever -- always editable, Save writes
+through to the resolved owner (the max-date pension's `planned_retirement_date`, under the pension
+form's own cross-field validation, with an "updates <pension>" provenance caption; settings save
+when no pension owns the date). This supersedes round 1's read-only pension-owned row.
+
+**ACCEPTED AND MERGED (2026-07-03).** Round 2 shipped same day (through `790eace8`; suite 6956): the
+partial-chart race root-caused to htmx's settle phase stripping Chart.js's canvas size attributes
+(re-init moved to `htmx:afterSettle`, rapid-fire probe stable; a latent same-shape exposure on other
+chart pages is noted in the commit); the date row became a REAL write-through lever per the
+developer's round-2 ruling (owning pension updated under the extracted pension-form validation,
+audit-trigger coverage asserted). Developer acceptance: "Everything works great now. This is much
+improved." The three parked rulings are ACCEPTED AS BUILT (no per-row Reset chips; levers answer at
+stored settings; one-time colas past the cutoff drop) -- revisit on demand.
+**Merged to `dev` via PR #56 (merge `71485b2b`, lint-and-test green).** Ships to prod with the next
+`dev` -> `main` PR; run /update-docs after that merge.
+
+Superseded during acceptance: the developer acceptance drive (mutation paths: per-field saves,
+what-ifs, both lever steppers, pension CRUD, settings redirect) + the three parked rulings
+(Reset/delta-chip treatment; levers vs active what-ifs; one-time-cola-after-cutoff confirmation),
+then the PR to `dev`.
 
 Branch into the main checkout (coordinated), drive on dev data: SSOT cross-checks (funded ratio
 recomputed by hand; per-account balances equal /savings to the cent), mutation paths (assumption
