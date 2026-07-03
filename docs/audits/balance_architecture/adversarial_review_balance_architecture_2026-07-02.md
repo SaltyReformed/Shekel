@@ -10,8 +10,11 @@ re-evaluation with no anchoring on past decisions.
 > fixed (`2ffefa0`: per-(account, period) reconcile in `posting_service` and the loan payment
 > reconcile; reversals carry the period and latest date of what they reverse; the
 > `LEDGER_POSTINGS` truncate/regenerate gate refuses periods whose entries do not net to zero per
-> ledger account, proven non-vacuous by mutation). Full suite 6857 passed; pylint 10.00 with every
-> `--fail-on` checker. M3's reader-contract half (Step-5 reporting rules) and R3-R10 remain open.
+> ledger account, proven non-vacuous by mutation). H3 is fixed (`ad24d84`, R3: W9907 now fences
+> all four statically visible `status_id` write forms with a born-Projected constructor rule, and
+> W9906 gained the import-level fence closing the aliased-import evasion). Full suite 6857 passed;
+> pylint 10.00 with every `--fail-on` checker. M3's reader-contract half (Step-5 reporting rules)
+> and R4-R10 remain open.
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -212,6 +215,23 @@ correction," `_walk.py:465-470`). Alternative (b), gating settle to begun period
 affordance and is the lesser fix. Recommendation: R1.
 
 ### H3 (HIGH as enforcement gap; no defect today): born-Projected is a convention, not a machine rule
+
+> **FIXED 2026-07-02** (`ad24d84`, R3): born-Projected is now a machine rule. W9907 matches all
+> four statically visible `status_id` write forms outside the seam allowlist -- direct assignment
+> (as before), the literal `setattr(x, "status_id", ...)` form, a `status_id` key or keyword in a
+> bulk `.update()`/`.values()` call, and a `Transaction`/`Transfer` constructor `status_id=`
+> kwarg whose value is not recognizably born-Projected (the ref-cache PROJECTED lookup or a
+> `projected_id` name/attribute; any other value fails closed). The optional import-level fence
+> also landed: W9906 flags a fenced producer imported BY NAME (aliased or not) outside its
+> allowlist, closing the alias evasion of call-site matching. Zero in-tree violations by
+> construction (every existing create site is genuinely born-Projected; `TransferSpec` and
+> service calls are not model constructors). Regression locks: 32 new checker tests, every
+> positive paired with its negative plus register-bound allowlist loops; non-vacuity proven
+> end-to-end through `.pylintrc` (all five write forms and the aliased import fire; the
+> recognized-Projected constructor, dynamic-`setattr` loop, and non-status bulk update stay
+> silent). Statically invisible residuals stay with review and are documented on the checker:
+> splatted `Transaction(**data)`, dynamic `setattr(txn, field, value)` loops, and a bulk payload
+> dict built away from the call. The walkthrough below describes the pre-fix code.
 
 The status fence (W9907) matches only `<expr>.status_id = ...` assignments
 (`tools/pylint/shekel_checkers.py:843-895`). Constructor kwargs are documented out of scope,
@@ -523,7 +543,8 @@ Each major decision re-examined from scratch against the alternatives it beat.
   (`escrow_split == escrow_built`) is well-argued. VERDICT: correct.
 - **Escrow as Expense (D8), impound-asset deferred; statement-split override deferred (D13).**
   Both acceptable staging; D13 is the eventual answer to the token-payment modeling boundary.
-- **Born-Projected (create rule)** -- right rule, incomplete enforcement (H3).
+- **Born-Projected (create rule)** -- right rule, incomplete enforcement (H3). *(Since
+  mechanized: R3 made it a W9907 machine rule -- see the header note and the H3 annotation.)*
 - **Keeping the presentation gates after Level 1** (fitness doc refinement 2) -- right;
   presentation windows are not balance semantics.
 - **The C11 forks decided by the agent under standing directive, awaiting ratification:**
@@ -550,7 +571,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 |---|----------|--------|
 | R1 | **DONE 2026-07-02** (`8ad3a81`) | Fix H2: make the split walk include settled payments regardless of period-begun (write-side gate = settled only, matching the cash leg). Add the "early settle, then time passes" oracle case that would have caught it. As-built: `_settled_income_shadows` (write side, unbounded) split from `_confirmed_shadows_through` (display side, kept); tax-hybrid partition fix added (`load_settled_payment_due_months`); oracle + unit + tax regression locks, all mutation-proven; live-verified on the real Mortgage. |
 | R2 | **DONE 2026-07-02** (`2ffefa0`) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. As-built: per-(account, period) reconcile in `posting_service` (`_posted_by_period`/`_reconcile_periods`; syncs return entry lists) and the loan payment reconcile; `PeriodLockReason.LEDGER_POSTINGS` gate (blocks non-netting periods, allows self-cancelling pairs), mutation-proven; `posting_service` size-split into `posting_reads.py`. M3's reader-contract half for Step-5 readers is NOT covered here and stays open. |
-| R3 | SOON | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. |
+| R3 | **DONE 2026-07-02** (`ad24d84`) | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. As-built: all three extensions plus the import fence landed. Ctor kwargs are allowed only for recognizably born-Projected values (`ref_cache.status_id(StatusEnum.PROJECTED)` / a `projected_id` name or attribute -- the only shapes in-tree); everything else fails closed. Bulk writes flag on the key/keyword regardless of value (they bypass paid_at and verify_transition even for Projected). No new message IDs, so the five-place `--fail-on` list (L1) is untouched. 108 checker tests; probe-verified through `.pylintrc`; app/ and scripts/ hold 10.00. |
 | R4 | SOON | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). |
 | R5 | SOON | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. |
 | R6 | SOON (partly done) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. The settled-row revert-and-move oracle case landed with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
