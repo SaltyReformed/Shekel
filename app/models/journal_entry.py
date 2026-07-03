@@ -255,10 +255,12 @@ class Posting(CreatedAtMixin, db.Model):
     both CASCADE -- the documented disposal paths (a tenancy delete cascades
     through the entry; a ledger-account delete cascades the leg).  Per the
     cascade-imbalance impossibility argument in
-    :class:`app.models.ledger_account.LedgerAccount`, a ledger account that
-    *has* postings can never be reached by an account delete (its settled
-    transfer shadows hold RESTRICT FKs that refuse the delete first), so the
-    ``ledger_account_id`` CASCADE never orphans -- and never fires -- a leg.
+    :class:`app.models.ledger_account.LedgerAccount`, an account whose linked
+    ledger *has* postings is archived rather than hard-deleted (route Guard 5,
+    load-bearing because a settled transfer's postings outlive the transfer
+    that wrote them), so only a posting-free account ever reaches the CASCADE
+    and the ``ledger_account_id`` CASCADE never orphans -- and in practice
+    never fires on -- a leg.
 
     Append-only: see the module docstring.  The per-entry balanced invariant
     (sum to zero, at least two legs) is enforced by the deferred constraint
