@@ -207,7 +207,6 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.balance_resolver",
     "app.services.balance_calculator",
     "app.services.account_projection",
-    "app.services.growth_engine",
     "app.services.net_worth_kernel",
 })
 
@@ -948,8 +947,8 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "dashboards) must depend on it, never on a producer directly -- the "
             "SOLID dependency direction consumers -> seam -> engines. Only the "
             "seam and the engine cluster it composes (balance_resolver, "
-            "balance_calculator, account_projection, growth_engine, "
-            "net_worth_kernel) may call a producer. The genesis loan-ledger "
+            "balance_calculator, account_projection, net_worth_kernel) may "
+            "call a producer. The genesis loan-ledger "
             "readers (confirmed_loan_balance_at / confirmed_loan_balance_map) "
             "are fenced the same way with a wider allowlist: their defining "
             "loan_posting_service package and loan_payment_service, whose "

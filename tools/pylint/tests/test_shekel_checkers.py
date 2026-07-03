@@ -550,7 +550,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     Every screen must obtain an account's balance through
     ``app.services.balance_at``; only the seam and the engine cluster it
     composes (balance_resolver, balance_calculator, account_projection,
-    growth_engine, net_worth_kernel) may call a balance producer directly. The
+    net_worth_kernel) may call a balance producer directly. The
     rule keys off the ENCLOSING module (``node.root().name``), so each case is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``)
     rather than the bare :func:`astroid.extract_node` the shape-only checkers
