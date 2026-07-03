@@ -39,6 +39,7 @@ from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services._transfer_loan_posting import (
+    _reject_transfer_out_of_loan,
     _resync_loan_postings_after_delete,
     _reverse_loan_payment_before_delete,
     _sync_loan_postings_if_loan,
@@ -355,6 +356,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     to_account = _get_owned_account(
         spec.to_account_id, spec.user_id, label="Destination account"
     )
+    _reject_transfer_out_of_loan(from_account)
     _get_owned_period(spec.pay_period_id, spec.user_id)
     _get_owned_scenario(spec.scenario_id, spec.user_id)
     _get_owned_category(spec.category_id, spec.user_id)

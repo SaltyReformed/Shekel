@@ -625,6 +625,10 @@ def _assert_loan_reconciles(
     ``_independent_settled_income_cash`` sums income shadows only, which restates
     ``settled_transfer_effect`` faithfully only while every loan shadow is income (a
     to-account leg) -- true for a payment, false for a hypothetical disbursement.
+    That assumption is now ENFORCED, not merely relied on: a transfer OUT of a
+    loan is rejected at creation
+    (``transfer_service`` / ``_reject_transfer_out_of_loan``, review R6), so every
+    loan shadow is a payment IN by construction.
     """
     loan_id = loan.id
     linked_reader = posting_service.account_posting_total(loan_id, scenario_id)
