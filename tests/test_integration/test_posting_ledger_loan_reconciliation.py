@@ -144,6 +144,7 @@ from app.enums import (
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
+from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -157,6 +158,7 @@ from app.services import (
     posting_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
+from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
 from tests._test_helpers import (
@@ -246,6 +248,20 @@ def _settle(user, loan, period, amount=Decimal("1000.00"), scenario=None):
         user, _db.session, user["account"], loan, period,
         amount=amount, scenario=scenario,
     )
+
+
+def _add_rate_change(loan, effective_date, rate):
+    """Append a :class:`RateHistory` rate change (an ARM recast) to a loan.
+
+    Mirrors the unit suite's helper (``test_loan_posting_service._add_rate_change``)
+    so both suites drive an ARM step the same way: the rate feed the walk AND
+    the resolver read (via ``load_rate_history`` / ``load_loan_context``) both
+    pick it up, so the rate step reaches both producers of the parallel run.
+    """
+    _db.session.add(RateHistory(
+        account_id=loan.id, effective_date=effective_date, interest_rate=rate,
+    ))
+    _db.session.flush()
 
 
 def _seed_boundary_loan(bare_user):
@@ -788,6 +804,58 @@ class TestParallelRunAgainstResolver:
             # They DIVERGE, and the ledger (extra paydown) owes LESS.
             assert ledger != resolver
             assert ledger < resolver
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+    def test_arm_rate_step_matches_a_hand_computed_post_step_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An ARM rate step: the ledger balance equals a HAND-COMPUTED literal.
+
+        The parallel run agrees on-schedule and diverges off, but BOTH the walk
+        and the resolver read the same ``rate_period_engine``, so a shared
+        rate-step bug would move the two producers together and the parallel run
+        alone would NOT catch it (review M4(b) / M7).  This case closes that gap
+        with a hand-computed post-step ledger balance -- the one producer a
+        shared-kernel bug cannot hide from -- which is exactly why the fixture
+        does NOT read the balance back from either producer.
+
+        A rate step to 12% effective 2026-03-01 governs P3 (pay period starts
+        2026-03-13, due 2026-04-01) while P1 (due 2026-02-01) keeps the 6%
+        origination rate.  Each payment is a $1,000 SHORT payment, so the
+        ledger's REAL principal (cash - interest) is hand-computable without the
+        schedule (the same partition ``test_arm_rate_step_changes_interest``
+        pins at the unit level):
+          P1 (6%):  interest = round(100000 * 0.06 / 12) = 500.00;
+                    principal = 1000 - 500 = 500.00; balance 99,500.00.
+          P3 (12%): interest = round( 99500 * 0.12 / 12) = 995.00;
+                    principal = 1000 - 995 =   5.00; balance 99,495.00.
+        So the ledger balance is 99,495.00 and the genesis linked total is
+        opening (-250000) + true-up (+150000) + P1 principal (+500) + P3
+        principal (+5) = -99,495.00.  The reader reads that same ledger, so it
+        agrees to the penny; the resolver books the (recast, far larger)
+        SCHEDULED principal at each rate, so it shows a LOWER balance -- the
+        short-payment divergence, now proven to survive an ARM step.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _add_rate_change(loan, date(2026, 3, 1), Decimal("0.12000"))
+            _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
+            _settle(seed_user, loan, seed_periods[_P3], amount=Decimal("1000.00"))
+            db.session.commit()
+
+            ledger = _ledger_balance(loan.id, scenario_id)
+            reader = _reader_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            # The hand-computed post-step balance -- the shared-kernel teeth.
+            assert ledger == Decimal("99495.00")
+            assert reader == Decimal("99495.00")
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == Decimal("-99495.00")
+            # The resolver books scheduled principal at each rate; short payments
+            # mean it owes LESS -- divergence survives the rate step.
+            assert resolver < ledger
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_pre_anchor_payment_is_correctly_summed_under_genesis(
@@ -2198,6 +2266,81 @@ class TestReaderParallelRunAgainstResolver:
             ) is None
             _assert_loan_reconciles(loan, baseline.id, _AS_OF)
             _assert_loan_reconciles(loan, whatif.id, _AS_OF)
+
+    def test_biweekly_due_month_collision_reconciles_but_attribution_differs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two payments in one due month: the balance reconciles, the DATING differs.
+
+        A biweekly cadence sometimes lands two monthly due dates in one calendar
+        month.  For display the resolver's replay REDISTRIBUTES the second to the
+        next month (``loan_payment_service._redistribute_to_distinct_months``, a
+        resolver-only fix); the genesis reader keeps every payment at its true
+        due date.  This is the one place the reader and the resolver attribution
+        legitimately disagree (review M7 / Step-4 note M2), never pinned until
+        now.  It pins that the disagreement is DISPLAY-ONLY -- the two producers
+        book the SAME running balance, so the balance reconciles three ways --
+        while the row DATING differs by exactly the redistribution.
+
+        ``seed_periods[1]`` (starts 2026-01-16) and ``seed_periods[2]`` (starts
+        2026-01-30) both have monthly due date 2026-02-01 (payment_day=1) -- a
+        February collision.  Both are paid on-schedule (cash == the scheduled
+        P&I), and no rate change spans the shifted month, so the resolver's
+        scheduled-principal walk and the reader's real-principal walk stay locked
+        step-for-step and the balances agree to the penny.  The reader then dates
+        BOTH rows 2026-02-01 (the true due date), where the resolver, having
+        shifted the second payment, dates its rows 2026-02-01 and 2026-03-01.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user, name="Collision Loan")
+            params = loan_loaders.load_loan_params(loan.id)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            # The collision is real: both payments' true monthly due date is 02-01.
+            assert monthly_due_date(
+                seed_periods[1].start_date, params.payment_day,
+            ) == date(2026, 2, 1)
+            assert monthly_due_date(
+                seed_periods[2].start_date, params.payment_day,
+            ) == date(2026, 2, 1)
+
+            _settle(seed_user, loan, seed_periods[1], amount=scheduled_pi)
+            _settle(seed_user, loan, seed_periods[2], amount=scheduled_pi)
+            db.session.commit()
+
+            # The balance reconciles three ways despite the collision.
+            ledger = _ledger_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            reader = _reader_balance(loan.id, scenario_id)
+            assert ledger == resolver == reader
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+            # Attribution: the reader keeps BOTH rows at the true February due
+            # date; the resolver replay redistributes the second to March.
+            reader_rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [row.payment_date for row in reader_rows] == [
+                date(2026, 2, 1), date(2026, 2, 1),
+            ]
+            ctx = loan_payment_service.load_loan_context(
+                loan.id, scenario_id, params,
+            )
+            replay_state = loan_resolver.resolve_loan(
+                loan_resolver.LoanInputs(
+                    params, loan_loaders.load_loan_anchor_facts(params),
+                    ctx.payments, ctx.rate_changes,
+                ),
+                _AS_OF,
+            )
+            replay_dates = [
+                row.payment_date
+                for row in replay_state.schedule if row.is_confirmed
+            ]
+            assert replay_dates == [date(2026, 2, 1), date(2026, 3, 1)]
 
 
 class TestReadSwitchProductionPath:
