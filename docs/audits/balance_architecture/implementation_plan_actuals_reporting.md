@@ -26,14 +26,19 @@ in throughout. Developer approval: 2026-07-03.
   a parallel checkout with a different migration head builds and clones its OWN test template.
   This branch uses `shekel_test_template_step5` via the untracked `.env`, leaving the shared
   template untouched for the concurrently-active salary-rebuild session.
-- C3 (index re-key + lookup hardening) -- IN THIS COMMIT: `uq_ledger_accounts_account` ->
+- C3 (index re-key + lookup hardening) -- DONE (`083c9655`): `uq_ledger_accounts_account` ->
   `uq_ledger_accounts_account_kind (account_id, kind_id)` (migration `b7d9f3a1c5e8`, `Review:`
   line, fail-loud twin guard on downgrade; round-tripped up/down/up on a template clone); the two
   LINKED-kind lookup filters (`posting_reads._ledger_account_for`,
   `ledger_account_service.create_ledger_account_for_account`); nine-kind model taxonomy +
   display-rule caveat + CASCADE paragraph updated; `TestPartialUnique` re-keyed with a
   twin-coexists/second-twin-rejected case. Targeted 120 + the three oracles 56, all green.
-- C4 (anchor-equity chart resolver) -- pending
+- C4 (anchor-equity chart resolver) -- IN THIS COMMIT:
+  `ledger_account_service.get_or_create_anchor_equity_account` + `_load_non_loan_account` (the
+  inverse of the loan loader: rejects AMORTIZING targets so a loan's linked ledger never gains a
+  twin -- the C6-checklist guarantee); Equity class, name snapshot, idempotent under the re-keyed
+  unique; 8 new tests incl. the C3-hardening coexistence proof (hook + `_ledger_account_for` keep
+  resolving the LINKED row beside a live twin).
 - C5 (walk + reconcile, pure) -- pending
 - C6 (lifecycle wiring + oracle supersession) -- pending
 - C7 (backfill + boundary migration) -- pending
@@ -235,7 +240,11 @@ period (the pre-approval review's CRITICAL-1). Per (account, scenario):
    `account_type_id` change that crosses the AMORTIZING boundary or flips the linked ledger's
    Asset/Liability class while the account has ledger postings (the Guard-5 pattern). Without it a
    re-typed account strands one correction family and double-counts under the other. Pre-existing
-   latent gap; Step 5 makes it visible money, so Step 5 closes it.
+   latent gap; Step 5 makes it visible money, so Step 5 closes it. **Second crossing vector (C4
+   adversarial review M2): `routes/accounts/types.py update_account_type` lets an owner flip
+   `has_amortization` on a CUSTOM type in place -- crossing the boundary with no `account_type_id`
+   change. The same C6 guard must also refuse a `has_amortization` change while the owner has
+   accounts of that type carrying ledger postings.**
 
 Scenario enumeration for account-global events: `{baseline} UNION {scenario_ids of entries with a
 posting on the account's linked ledger}` -- the cash analog of the loan rule; R8 owns the residual

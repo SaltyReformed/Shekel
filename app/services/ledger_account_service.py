@@ -28,13 +28,23 @@ the fourth is the ``equity_opening`` Equity account the loan read switch
 counter-leg of the once-per-loan opening entry that makes the ledger
 authoritative for the loan's confirmed balance).
 
+Build-Order Step 5 adds the non-loan equity side:
+:func:`get_or_create_anchor_equity_account` lazily materialises the
+per-account ``anchor_equity`` Equity account -- the counter-leg of a non-loan
+account's ``account_opening`` / ``account_trueup`` corrections.  It shares the
+``account_id`` column with the ``linked`` row (coexisting under the
+``(account_id, kind_id)`` key of ``uq_ledger_accounts_account_kind``) and,
+unlike a linked row, always snapshots a display ``name`` -- the COALESCE
+display rule is the LINKED-row rule, so readers render this row's snapshot.
+
 As the sole writer, it stamps every row's explicit ``kind_id`` discriminator
 (``LedgerAccountKindEnum`` -> ``ref.ledger_account_kinds`` id):
 ``create_ledger_account_for_account`` writes ``linked``,
 ``get_or_create_category_ledger_account`` writes ``fallback`` (the
-Uncategorized bucket) or ``category``, and
+Uncategorized bucket) or ``category``,
 ``get_or_create_loan_ledger_account`` writes one of the four per-loan kinds
-(``loan_interest`` / ``loan_escrow`` / ``loan_refund`` / ``equity_opening``).
+(``loan_interest`` / ``loan_escrow`` / ``loan_refund`` / ``equity_opening``),
+and ``get_or_create_anchor_equity_account`` writes ``anchor_equity``.
 ``kind_id`` is the authoritative discriminator readers branch on; no database
 CHECK pins it to the row shape (see
 :class:`app.models.ledger_account.LedgerAccount`), so
@@ -94,11 +104,12 @@ _FALLBACK_LEDGER_ACCOUNT_NAMES = {
 # The accounting classes a category / fallback ledger account may carry are
 # exactly the keys above (Income or Expense): an ordinary transaction's
 # counter-leg is always income or expense, while Asset/Liability belong to
-# the linked real-account rows and Equity to a future opening-balance row,
-# none of which this resolver creates.  Derived from the name map so the two
-# can never drift.  No database CHECK constrains a category row's ``class_id``,
-# so this set is the resolver's -- and the app's -- only guard against minting
-# a malformed chart entry.
+# the linked real-account rows and Equity to the per-loan ``equity_opening``
+# and per-account ``anchor_equity`` opening rows, none of which THIS resolver
+# creates.  Derived from the name map so the two can never drift.  No
+# database CHECK constrains a category row's ``class_id``, so this set is the
+# resolver's -- and the app's -- only guard against minting a malformed chart
+# entry.
 _CATEGORY_LEDGER_CLASSES = frozenset(_FALLBACK_LEDGER_ACCOUNT_NAMES)
 
 # The maximum length of a snapshotted display ``name``, read straight from the
@@ -509,6 +520,146 @@ def _load_amortizing_loan_account(user_id: int, loan_account_id: int) -> Account
             f"is not an amortizing loan (classifies as {projection_kind.value!r})"
         )
     return loan
+
+
+def _load_non_loan_account(user_id: int, account_id: int) -> Account:
+    """Load and validate the NON-loan account an anchor-equity row will link.
+
+    The inverse companion of :func:`_load_amortizing_loan_account`: resolves
+    the ``budget.accounts`` row by ``(id, user_id)`` (the tenancy filter --
+    a foreign ``account_id`` is treated as "not found") and guards that the
+    account is NOT an amortizing loan.  Loans post their anchor corrections
+    through the ``LoanAnchorEvent``-driven loan path onto their per-loan
+    ``equity_opening`` account; minting an ``anchor_equity`` twin for a loan
+    would double-book its opening across two equity accounts.  Deliberately
+    NOT filtered by ``is_active``: an archived account that carries posted
+    corrections must keep resolving its equity twin so the immutable
+    postings reconcile (archiving disables new activity, it does not erase
+    posted facts).
+
+    This guard is also what keeps the loan reconciliation oracle's
+    bare-``account_id`` ledger helpers honest by construction: the account
+    walk can never touch a loan's ``account_id``, so a loan's linked ledger
+    never gains a twin (recorded in the Step-5 plan's C6 checklist).
+
+    Args:
+        user_id: The owning user's id (the account must belong to them).
+        account_id: The non-loan ``budget.accounts`` id (non-NULL).
+
+    Returns:
+        The validated :class:`~app.models.account.Account` (a non-amortizing
+        account owned by ``user_id``), with ``account_type`` eager-loaded.
+
+    Raises:
+        ValueError: If no account with that id is owned by ``user_id``, or if
+            the account IS an amortizing loan.  Fail loud with the offending
+            id rather than minting a malformed chart entry -- no database
+            CHECK pins an ``anchor_equity`` row's target, so this guard is
+            the sole defense (the same trust contract the loan resolver
+            carries).
+    """
+    account = (
+        db.session.query(Account)
+        .filter_by(id=account_id, user_id=user_id)
+        .first()
+    )
+    if account is None:
+        raise ValueError(
+            f"cannot create an anchor-equity ledger account: no account "
+            f"with id={account_id} owned by user_id={user_id}"
+        )
+    projection_kind = classify_account(account)
+    if projection_kind is AccountProjectionKind.AMORTIZING:
+        raise ValueError(
+            f"cannot create an anchor-equity ledger account: account "
+            f"id={account_id} is an amortizing loan (loans book their "
+            f"anchor corrections onto their per-loan equity_opening "
+            f"account, never an anchor_equity twin)"
+        )
+    return account
+
+
+def get_or_create_anchor_equity_account(
+    user_id: int, account_id: int,
+) -> LedgerAccount:
+    """Ensure a non-loan account's ``anchor_equity`` Equity account exists.
+
+    The Build-Order Step 5 chart resolver: a non-loan account's
+    ``account_opening`` / ``account_trueup`` corrections book their equity
+    counter-leg into this per-account Equity account, and this lazily
+    materialises (and thereafter reuses) it.  The loan analogue is the
+    ``equity_opening`` kind resolved by
+    :func:`get_or_create_loan_ledger_account`; the two kinds never overlap
+    because :func:`_load_non_loan_account` rejects amortizing loans here and
+    ``_load_amortizing_loan_account`` rejects everything else there.
+
+    Idempotent: an existing row for the ``(account, kind)`` natural key is
+    returned unchanged (the ``uq_ledger_accounts_account_kind`` partial
+    unique would otherwise reject a duplicate).  The created row sets
+    ``account_id`` (sharing the column with the account's ``linked`` row --
+    the two coexist under the re-keyed unique), leaves ``category_id`` /
+    ``loan_account_id`` NULL and ``is_fallback`` False, carries the Equity
+    class, and ALWAYS snapshots a display ``name``
+    (``"<account name> -- Opening"``, clipped to the column width): the
+    COALESCE display rule is the LINKED-row rule, so readers branch on
+    ``kind_id`` and render this snapshot (see
+    :class:`app.models.ledger_account.LedgerAccount`).  Like every snapshot,
+    it is frozen at creation so renaming the account never rewrites posted
+    history.
+
+    Flushes so the new row's ``id`` is assigned, but does NOT commit -- the
+    caller (the Step-5 ``account_posting_service``) owns the transaction
+    boundary.
+
+    Args:
+        user_id: The owning user's id.
+        account_id: The non-loan ``budget.accounts`` id whose anchor
+            corrections this account books.  Must be a non-amortizing
+            account owned by ``user_id`` (validated when the row is first
+            created).
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount` for the
+        ``(account, anchor_equity)`` key (existing, or newly created and
+        flushed).
+
+    Raises:
+        ValueError: If (on first creation) ``account_id`` names no account
+            owned by ``user_id``, or names an amortizing loan (see
+            :func:`_load_non_loan_account`).  No database CHECK enforces
+            either, so the guard is the sole defense against a malformed
+            chart entry.
+    """
+    kind_id = ref_cache.ledger_account_kind_id(
+        LedgerAccountKindEnum.ANCHOR_EQUITY,
+    )
+    existing = (
+        db.session.query(LedgerAccount)
+        .filter_by(user_id=user_id, account_id=account_id, kind_id=kind_id)
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    account = _load_non_loan_account(user_id, account_id)
+    name = f"{account.name} -- Opening"[:_LEDGER_ACCOUNT_NAME_MAX_LEN]
+    ledger_account = LedgerAccount(
+        user_id=user_id,
+        class_id=ref_cache.ledger_account_class_id(
+            LedgerAccountClassEnum.EQUITY,
+        ),
+        kind_id=kind_id,
+        account_id=account_id,
+        name=name,
+    )
+    db.session.add(ledger_account)
+    db.session.flush()
+    logger.info(
+        "Created anchor-equity ledger account id=%d (user_id=%d, "
+        "account_id=%d)",
+        ledger_account.id, user_id, account_id,
+    )
+    return ledger_account
 
 
 def get_or_create_loan_ledger_account(

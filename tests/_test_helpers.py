@@ -705,9 +705,12 @@ def ledger_accounts_for_account(db_session, account_id):
             fetch.
 
     Returns:
-        list[:class:`~app.models.ledger_account.LedgerAccount`] -- the
-        linked rows (zero or one in normal operation; the partial unique
-        index permits at most one).
+        list[:class:`~app.models.ledger_account.LedgerAccount`] -- every
+        row carrying this ``account_id``.  Since Step 5's
+        ``uq_ledger_accounts_account_kind`` re-key, TWO rows are normal
+        once an account has anchor corrections: the ``linked`` row plus
+        its ``anchor_equity`` twin (one per account-linked kind).  Callers
+        asserting counts or shapes must say WHICH kinds they expect.
     """
     # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
     # convention as the helpers above (no app symbols imported at module
