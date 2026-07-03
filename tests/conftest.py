@@ -63,8 +63,16 @@ os.environ.setdefault(
 
 
 # Name of the PostgreSQL template database the bootstrap clones from.
-# Built by ``scripts/build_test_template.py``.
-_TEST_TEMPLATE_DATABASE = "shekel_test_template"
+# Built by ``scripts/build_test_template.py``, which honors the same
+# ``TEST_TEMPLATE_DATABASE`` override read here -- the two MUST resolve
+# the same name or the suite clones a stale template.  The override
+# exists for parallel checkouts (e.g. a feature-branch worktree whose
+# migration head differs from another live checkout's): each checkout
+# builds and clones its OWN template, so neither suite sees the other's
+# ref rows or schema.
+_TEST_TEMPLATE_DATABASE = os.environ.get(
+    "TEST_TEMPLATE_DATABASE", "shekel_test_template",
+)
 # Default admin DSN (peer auth) -- overridable via env so CI and
 # developer laptops that need TCP + password can point at their own
 # admin DB without code change.  Must NOT be the template DB itself:

@@ -15,8 +15,17 @@ in throughout. Developer approval: 2026-07-03.
 
 ## Status banner (as-built ledger; updated per commit)
 
-- C1 (L9 helper + Schedule-A switch) -- NEXT
-- C2 (ref rows) -- pending
+- C1 (L9 helper + Schedule-A switch) -- DONE (`e7c8b2e0`); counterfactual-verified boundary tests
+  at the helper, the loan reader, and the year-end hybrid; review-clean.
+- C2 (ref rows) -- IN THIS COMMIT: `account_opening`/`account_trueup` sources + `anchor_equity`
+  kind (migration `a4c8e2f6b1d3`, round-tripped up/down/up on a template clone); dual-seeded;
+  enum-driven parity tests pass unchanged. Also: `TEST_TEMPLATE_DATABASE` override wired through
+  `tests/conftest.py` + `scripts/test.sh` + a `.env` fallback in `scripts/build_test_template.py`
+  (per the commit's adversarial review: the builder must resolve the SAME name the runner clones,
+  and the runner's grep-miss under `set -euo pipefail` must not abort -- both fixed and proven), so
+  a parallel checkout with a different migration head builds and clones its OWN test template.
+  This branch uses `shekel_test_template_step5` via the untracked `.env`, leaving the shared
+  template untouched for the concurrently-active salary-rebuild session.
 - C3 (index re-key + lookup hardening) -- pending
 - C4 (anchor-equity chart resolver) -- pending
 - C5 (walk + reconcile, pure) -- pending

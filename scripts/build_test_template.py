@@ -76,6 +76,7 @@ Usage::
 """
 
 import os
+import pathlib
 import sys
 from urllib.parse import urlparse, urlunparse
 
@@ -112,8 +113,44 @@ _EXPECTED_ACCOUNT_TYPE_COUNT: int = 19
 # environment when the module was first loaded -- which is never the
 # template DB this script just created.
 # ---------------------------------------------------------------------------
+def _env_file_value(key: str) -> str | None:
+    """Return *key*'s value from the repo ``.env``, or ``None`` when absent.
+
+    The same one-key extraction contract ``scripts/test.sh`` applies (first
+    matching line, value after the first ``=``): the whole dotenv is never
+    shell-sourced or bulk-loaded because it may carry values with unquoted
+    spaces.  Needed so a bare ``python scripts/build_test_template.py`` in a
+    parallel checkout resolves the SAME template name the checkout's test
+    runs will clone (``tests/conftest.py`` reads the variable from the
+    environment, which ``test.sh`` populates from this same ``.env`` line) --
+    without it the builder would silently rebuild the DEFAULT shared
+    template at this checkout's migration head, breaking the other live
+    checkout's exact enum<->DB ref-parity tests.
+
+    Args:
+        key: The dotenv key to extract.
+
+    Returns:
+        The raw value string, or ``None`` when the file or key is absent.
+    """
+    env_path = pathlib.Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.is_file():
+        return None
+    prefix = f"{key}="
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return None
+
+
 ADMIN_URL: str = os.environ.get("TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL)
-TEMPLATE_DB: str = os.environ.get("TEST_TEMPLATE_DATABASE", _DEFAULT_TEMPLATE_DATABASE)
+# Environment wins; then the repo .env (the parallel-checkout override the
+# test runner also reads); then the shared default.
+TEMPLATE_DB: str = (
+    os.environ.get("TEST_TEMPLATE_DATABASE")
+    or _env_file_value("TEST_TEMPLATE_DATABASE")
+    or _DEFAULT_TEMPLATE_DATABASE
+)
 
 # Build the template DSN by replacing the database name (the URL's
 # path component) in the admin DSN.  Preserves scheme, host, port,

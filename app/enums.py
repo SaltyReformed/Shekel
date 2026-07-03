@@ -278,7 +278,13 @@ class PostingSourceEnum(enum.Enum):
     ``loan_trueup`` are the source events the loan read switch adds
     (Build-Order Step 4, second half): ``loan_opening`` tags the once-per-loan
     opening-equity entry booked at origination, and ``loan_trueup`` tags an
-    append-only loan-balance correction entry.  Neither links a transfer nor a
+    append-only loan-balance correction entry.  ``account_opening`` /
+    ``account_trueup`` are their NON-loan siblings (Build-Order Step 5):
+    ``account_opening`` tags the once-per-account entry booking a non-loan
+    account's earliest anchor assertion, and ``account_trueup`` tags the
+    balanced correction appended for each later anchor true-up -- together
+    they make every non-loan linked ledger sum to an ABSOLUTE balance, closing
+    the app-wide trial balance.  None of the four links a transfer or a
     transaction (both source FKs are nullable); the source kind is what
     disambiguates them.  Later steps add ``paycheck`` and ``credit_payback``
     via data migrations.  Values match ``ref.posting_sources.name``.
@@ -289,6 +295,8 @@ class PostingSourceEnum(enum.Enum):
     LOAN_PAYMENT = "loan_payment"
     LOAN_OPENING = "loan_opening"
     LOAN_TRUEUP = "loan_trueup"
+    ACCOUNT_OPENING = "account_opening"
+    ACCOUNT_TRUEUP = "account_trueup"
 
 
 class LedgerAccountKindEnum(enum.Enum):
@@ -324,6 +332,16 @@ class LedgerAccountKindEnum(enum.Enum):
                           balance so the ledger is authoritative for the
                           loan's confirmed balance.
 
+    Build-Order Step 5 adds the non-loan sibling:
+
+        anchor_equity -- a non-loan account's opening/true-up Equity account
+                         (``account_id`` set, like ``linked``), the counter-leg
+                         of its ``account_opening`` / ``account_trueup``
+                         corrections.  One per real account, coexisting with
+                         the linked row under the ``(account_id, kind_id)``
+                         partial unique that Step 5's chart migration re-keys
+                         ``uq_ledger_accounts_account`` into.
+
     Application code resolves these via ``ref_cache.ledger_account_kind_id``
     and compares against the integer ID -- never the string ``name`` --
     matching the project-wide ``ref-table: IDs for logic, strings for display
@@ -338,3 +356,4 @@ class LedgerAccountKindEnum(enum.Enum):
     LOAN_ESCROW = "loan_escrow"
     LOAN_REFUND = "loan_refund"
     EQUITY_OPENING = "equity_opening"
+    ANCHOR_EQUITY = "anchor_equity"
