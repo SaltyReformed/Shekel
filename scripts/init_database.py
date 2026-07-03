@@ -70,7 +70,10 @@ from alembic.config import Config
 from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
-from app.posting_infrastructure import apply_posting_infrastructure
+from app.posting_infrastructure import (
+    apply_ledger_append_only_privileges,
+    apply_posting_infrastructure,
+)
 from app.services import loan_posting_service
 # pylint: enable=wrong-import-position
 
@@ -96,7 +99,7 @@ def is_fresh_database():
 def init_fresh_database(app):
     """Create the schema, the audit + posting infrastructure, and stamp Alembic.
 
-    Four steps in order:
+    Five steps in order:
 
     1. ``db.create_all()`` -- materialise every SQLAlchemy-modeled
        table.  This covers the ``ref``, ``auth``, ``budget``, and
@@ -118,7 +121,13 @@ def init_fresh_database(app):
        Like the audit trigger, these are raw SQL outside the model
        registry, so ``db.create_all`` (which made the
        ``budget.account_postings`` table) does not create them.
-    4. ``alembic stamp head`` -- mark every migration as applied so
+    4. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
+       on the two ledger tables from ``shekel_app`` (review M1/R4).
+       Required on this path specifically: ``init_db_role.sql`` ran
+       BEFORE the tables existed (its table-guarded REVOKE skipped),
+       and the stamp in step 5 marks the revoke migration
+       (``e3c23fadb21d``) as applied without running it.
+    5. ``alembic stamp head`` -- mark every migration as applied so
        subsequent ``flask db upgrade`` calls only apply
        newly-authored migrations.
 
@@ -144,6 +153,19 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Posting infrastructure ready.")
+
+    # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
+    # tables were just created AFTER init_db_role.sql ran (its table-guarded
+    # REVOKE skipped), and the Alembic stamp below marks the revoke migration
+    # (e3c23fadb21d) as applied without running it -- so this call is what
+    # closes UPDATE/DELETE for shekel_app on a fresh database.  A no-op when
+    # the role does not exist; idempotent when it does.
+    print("Applying ledger append-only privileges (shekel_app)...")
+    apply_ledger_append_only_privileges(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Ledger append-only privileges ready.")
 
     # Stamp Alembic so it knows all migrations are "applied".
     alembic_cfg = Config("alembic.ini")

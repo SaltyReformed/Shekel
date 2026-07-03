@@ -550,13 +550,15 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     Every screen must obtain an account's balance through
     ``app.services.balance_at``; only the seam and the engine cluster it
     composes (balance_resolver, balance_calculator, account_projection,
-    growth_engine, net_worth_kernel) may call a balance producer directly. The
+    net_worth_kernel) may call a balance producer directly. The
     rule keys off the ENCLOSING module (``node.root().name``), so each case is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``)
     rather than the bare :func:`astroid.extract_node` the shape-only checkers
     use -- that yields an empty module name. Every flagged form is paired with
-    the conforming form that must NOT fire, and two register-bound loops assert
-    the fence covers EVERY guarded producer and EVERY allowlisted module.
+    the conforming form that must NOT fire, and register-bound loops assert
+    the fence covers EVERY guarded producer and EVERY allowlisted module --
+    at the call site AND at the import (the aliased-import evasion class the
+    2026-07-02 review's R3 closed).
     """
 
     CHECKER_CLASS = ShekelBalanceSeamChecker
@@ -800,6 +802,143 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
+    # ── the import-level fence (the aliased-import evasion class, R3) ──
+
+    @staticmethod
+    def _import_node(import_source: str, module_name: str) -> nodes.ImportFrom:
+        """Return the ImportFrom node for *import_source* parsed in *module_name*.
+
+        The enclosing module's name drives the allowlist check, so it is set
+        explicitly; the snippet is a single import statement, so the module
+        body's one statement is the ``ImportFrom`` under test.
+        """
+        module = astroid.parse(f"{import_source}\n", module_name=module_name)
+        return module.body[0]
+
+    def test_flags_aliased_producer_import_from_consumer(self) -> None:
+        """``from ... import balances_for as bf`` from a consumer is flagged.
+
+        This is the evasion class the import fence exists for: after the
+        aliased import every call reads ``bf(...)``, which matches no producer
+        name, so call-site matching alone would never fire again.
+        """
+        node = self._import_node(
+            "from app.services.balance_resolver import balances_for as bf",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("balances_for",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_every_producer_import_from_consumer(self) -> None:
+        """EVERY name in _BALANCE_PRODUCERS is flagged when imported by a consumer.
+
+        The unaliased form is flagged too -- a module that may not call a
+        producer has no legitimate reason to import it.  Bound to the producer
+        set itself, like the call-site loop, so the import fence can never
+        silently cover fewer names than the call fence.
+        """
+        for producer in sorted(_BALANCE_PRODUCERS):
+            node = self._import_node(
+                f"from app.services.engine import {producer}",
+                "app.routes.grid",
+            )
+            with self.assertAddsMessages(
+                MessageTest(
+                    "shekel-balance-producer-bypass",
+                    node=node,
+                    args=(producer,),
+                ),
+                ignore_position=True,
+            ):
+                self.checker.visit_importfrom(node)
+
+    def test_flags_multi_name_producer_import_reports_each(self) -> None:
+        """One import statement naming two producers reports both."""
+        node = self._import_node(
+            "from app.services.balance_calculator import "
+            "calculate_balances, calculate_balances_with_interest",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("calculate_balances",),
+            ),
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("calculate_balances_with_interest",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_allows_producer_import_from_every_cluster_module(self) -> None:
+        """Each engine-cluster module may import a producer (they compose each other)."""
+        for module_name in sorted(_BALANCE_SEAM_MODULES):
+            node = self._import_node(
+                "from app.services.account_projection import "
+                "compute_loan_period_balance_map",
+                module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_importfrom(node)
+
+    def test_allows_module_import_from_consumer(self) -> None:
+        """``from app.services import balance_calculator`` imports the MODULE; not flagged.
+
+        A module import keeps the producer's own name at every call site
+        (``balance_calculator.calculate_balances(...)``), where the call fence
+        already sees it -- so it needs no import-level guard.
+        """
+        node = self._import_node(
+            "from app.services import balance_calculator",
+            "app.routes.grid",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_flags_loan_ledger_reader_import_from_consumer(self) -> None:
+        """A genesis loan-ledger reader imported by a consumer is flagged (aliased or not)."""
+        node = self._import_node(
+            "from app.services.loan_posting_service import "
+            "confirmed_loan_balance_at as reader",
+            "app.routes.loan.dashboard",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("confirmed_loan_balance_at",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_allows_loan_ledger_reader_import_from_every_sanctioned_module(self) -> None:
+        """Each reader-allowlisted module may import a genesis reader.
+
+        Covers the two real in-tree import shapes: the defining package's
+        ``__init__`` re-export and net_worth_kernel's documented private
+        ``_reader`` reach-in (both resolve through the reader allowlist).
+        """
+        for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
+            node = self._import_node(
+                "from app.services.loan_posting_service._reader import "
+                "confirmed_loan_balance_map",
+                module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_importfrom(node)
+
     def test_allows_seam_entry_call_from_consumer(self) -> None:
         """A consumer calling the seam's own balance_map entry is the sanctioned path; not flagged.
 
@@ -889,16 +1028,21 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
 
 
 class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
-    """``shekel-transaction-status-bypass``: status_id assigned only via the seam.
+    """``shekel-transaction-status-bypass``: status_id written only via the seam.
 
     Every non-transfer ``Transaction.status_id`` change must route through
     ``status_seam.apply_status_change``; only that module
     (``app.services.status_seam``) and ``transfer_service`` (which mirrors status
-    onto a transfer's two shadow rows) may assign it.  Like the W9906 fence the
+    onto a transfer's two shadow rows) may write it.  Four write forms are
+    fenced (H3/R3 of the 2026-07-02 review closed the last three): direct
+    assignment, the literal ``setattr`` form, a ``status_id`` payload in a bulk
+    ``.update()`` / ``.values()`` call, and a born-settled ``Transaction`` /
+    ``Transfer`` constructor kwarg.  Like the W9906 fence the
     rule keys off the ENCLOSING module (``node.root().name``), so each snippet is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``).
     Every flagged form is paired with the conforming form that must NOT fire, and
-    a register-bound loop asserts every allowlisted module is exempt.
+    register-bound loops assert every allowlisted module is exempt from every
+    form.
     """
 
     CHECKER_CLASS = ShekelTransactionStatusBypassChecker
@@ -1035,3 +1179,324 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
         )
         with self.assertNoMessages():
             self.checker.visit_assignattr(node)
+
+    # ── the call-shaped write forms (H3/R3: ctor, setattr, bulk) ──────
+
+    @staticmethod
+    def _status_call(call_source: str, module_name: str) -> nodes.Call:
+        """Return the Call node of *call_source* parsed in *module_name*.
+
+        Mirrors the seam checker's ``_producer_call``: the snippet is a single
+        statement (a plain expression or an assignment), so the module body's
+        one statement carries the OUTER call under test as its ``value`` --
+        exactly the node a real run dispatches to ``visit_call`` for the
+        method-call forms (``.update`` / ``.values``), whose inner calls are
+        separate nodes.
+        """
+        module = astroid.parse(f"{call_source}\n", module_name=module_name)
+        return module.body[0].value
+
+    def test_flags_born_settled_ctor(self) -> None:
+        """Transaction(status_id=done_id) constructs a born-settled row; flagged.
+
+        A born-settled row would carry NULL paid_at, skip verify_transition,
+        and emit no ledger posting -- the H3 failure mode.
+        """
+        node = self._status_call(
+            "txn = Transaction(status_id=done_id, name=name)",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_ctor_with_settled_ref_cache_lookup(self) -> None:
+        """A ref-cache lookup of a NON-Projected member in a ctor is flagged."""
+        node = self._status_call(
+            "txn = Transaction(status_id=ref_cache.status_id(StatusEnum.PAID))",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_ctor_with_opaque_status_variable(self) -> None:
+        """An unrecognizable ctor status value fails closed and is flagged.
+
+        ``Transaction(status_id=some_status)`` cannot be statically proven
+        Projected; the fence's dangerous mode is the false negative, so the
+        author must spell the value in a canonical Projected form (the
+        ref-cache PROJECTED lookup or a projected_id name) or settle through
+        the seam after creation.
+        """
+        node = self._status_call(
+            "txn = Transaction(status_id=some_status)",
+            "app.routes.transactions.create",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_transfer_ctor_born_settled(self) -> None:
+        """Transfer(status_id=done_id) outside the seam modules is flagged too."""
+        node = self._status_call(
+            "xfer = Transfer(status_id=done_id)",
+            "app.routes.transfers.mutations",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_attribute_form_model_ctor(self) -> None:
+        """models.Transaction(status_id=done_id) -- the qualified ctor -- is flagged."""
+        node = self._status_call(
+            "txn = models.Transaction(status_id=done_id)",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_ctor_born_projected_ref_cache_lookup(self) -> None:
+        """Transaction(status_id=ref_cache.status_id(StatusEnum.PROJECTED)) is the rule; not flagged.
+
+        The credit-workflow / carry-forward create form.
+        """
+        node = self._status_call(
+            "payback = Transaction("
+            "status_id=ref_cache.status_id(StatusEnum.PROJECTED), name=name)",
+            "app.services.credit_workflow",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_ctor_born_projected_plan_attribute(self) -> None:
+        """Transaction(status_id=plan.projected_id) -- the recurrence-engine form -- is not flagged."""
+        node = self._status_call(
+            "txn = Transaction(status_id=plan.projected_id)",
+            "app.services.recurrence_engine",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_ctor_born_projected_bare_name(self) -> None:
+        """A bare projected_id local as the ctor status is recognized; not flagged.
+
+        (A Transfer constructed outside transfer_service would violate the
+        transfer INVARIANTS -- but that is a different rule with its own
+        guards, not the status fence's concern.)
+        """
+        node = self._status_call(
+            "xfer = Transfer(status_id=projected_id)",
+            "app.routes.transfers.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_ctor_splat_kwargs(self) -> None:
+        """Transaction(**data) carries no named status kwarg; not flagged.
+
+        The create-route form: statically invisible, governed by the
+        documented convention (the schema omits status_id and the route
+        assigns Projected into the dict unconditionally).
+        """
+        node = self._status_call(
+            "txn = Transaction(**data)",
+            "app.routes.transactions.create",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_ctor_without_status_kwarg(self) -> None:
+        """A model ctor with no status_id kwarg is not this fence's concern."""
+        node = self._status_call(
+            "txn = Transaction(name=name, estimated_amount=amount)",
+            "app.services.some_import_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_transfer_spec_with_any_status(self) -> None:
+        """TransferSpec(status_id=...) is a service spec, not a model ctor; not flagged.
+
+        The spec is consumed by transfer_service.create_transfer, which owns
+        the actual model construction inside the allowlist.
+        """
+        node = self._status_call(
+            "spec = transfer_service.TransferSpec(status_id=done_id)",
+            "app.routes.transfers.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_service_call_with_status_kwarg(self) -> None:
+        """update_transfer(..., status_id=...) is the sanctioned service path; not flagged."""
+        node = self._status_call(
+            "transfer_service.update_transfer("
+            "xfer_id, user_id, status_id=cancelled_id)",
+            "app.routes.transactions.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_born_settled_ctor_in_transfer_service(self) -> None:
+        """transfer_service constructs shadows with the parent's status; exempt.
+
+        Shadow rows are born with spec.status_id / the parent transfer's
+        status -- not necessarily Projected -- and transfer_service is the
+        sanctioned owner of that construction.
+        """
+        node = self._status_call(
+            "shadow = Transaction(status_id=spec.status_id)",
+            "app.services.transfer_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_flags_setattr_status_literal(self) -> None:
+        """setattr(txn, \"status_id\", value) writes the column past the AssignAttr visitor; flagged."""
+        node = self._status_call(
+            'setattr(txn, "status_id", value)',
+            "app.routes.transactions.mutations",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_setattr_status_literal_in_seam(self) -> None:
+        """The seam module may use any write form it owns; not flagged."""
+        node = self._status_call(
+            'setattr(txn, "status_id", new_status_id)',
+            "app.services.status_seam",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_setattr_other_literal_field(self) -> None:
+        """setattr of a different literal field is not this fence's concern."""
+        node = self._status_call(
+            'setattr(txn, "notes", value)',
+            "app.routes.transactions.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_setattr_dynamic_field_loop(self) -> None:
+        """setattr(txn, field, value) -- the schema-loop form -- is not matched.
+
+        Statically invisible: the mutations route's loop excludes status_id
+        with a ``continue`` and routes it through the seam; that guard stays
+        with review and the route tests, as documented on the checker.
+        """
+        node = self._status_call(
+            "setattr(txn, field, value)",
+            "app.routes.transactions.mutations",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_flags_query_update_with_status_string_key(self) -> None:
+        """A bulk Query.update carrying a \"status_id\" key bypasses the seam; flagged."""
+        node = self._status_call(
+            "db.session.query(Transaction).update("
+            '{"status_id": done_id}, synchronize_session="fetch")',
+            "app.routes.templates",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_update_with_column_attribute_key(self) -> None:
+        """The column-object key form ({Transaction.status_id: ...}) is flagged too."""
+        node = self._status_call(
+            "query.update({Transaction.status_id: done_id})",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_values_with_status_keyword(self) -> None:
+        """update(Transaction).values(status_id=...) -- the Core form -- is flagged."""
+        node = self._status_call(
+            "update(Transaction).values(status_id=done_id)",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_update_with_dict_builder(self) -> None:
+        """query.update(dict(status_id=...)) -- the dict() builder -- is flagged."""
+        node = self._status_call(
+            "query.update(dict(status_id=done_id))",
+            "app.services.some_import_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_update_without_status_key(self) -> None:
+        """The in-tree bulk soft-delete form (is_deleted only) is not flagged."""
+        node = self._status_call(
+            'query.update({"is_deleted": True}, synchronize_session="fetch")',
+            "app.routes.templates",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_update_with_filing_status_key(self) -> None:
+        """filing_status_id (the tax tables) is a different key; not matched."""
+        node = self._status_call(
+            'query.update({"filing_status_id": fs_id})',
+            "app.services.tax_config_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_dict_update_with_non_literal_payload(self) -> None:
+        """context.update(extra) -- a payload passed by name -- is not statically visible.
+
+        The in-tree plain-dict merge form; a bulk-write payload built away
+        from the call is a documented residual, not a false positive.
+        """
+        node = self._status_call(
+            "context.update(extra_context)",
+            "app.routes.settings",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_every_seam_module_for_call_forms(self) -> None:
+        """EVERY allowlisted module is exempt from the call-shaped forms too.
+
+        The companion to test_allows_every_seam_module: binds the call-form
+        exemption to :data:`_STATUS_SEAM_MODULES` itself, using the strictest
+        form (a born-settled ctor).
+        """
+        for module_name in sorted(_STATUS_SEAM_MODULES):
+            node = self._status_call(
+                "txn = Transaction(status_id=done_id)", module_name,
+            )
+            with self.assertNoMessages():
+                self.checker.visit_call(node)

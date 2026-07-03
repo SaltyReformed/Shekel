@@ -99,6 +99,36 @@ GRANT SELECT
 GRANT USAGE
     ON ALL SEQUENCES IN SCHEMA auth, budget, salary, ref TO shekel_app;
 
+-- ── Posting ledger: append-only for the runtime role ──────────────
+-- The double-entry journal (budget.journal_entries + account_postings)
+-- is append-only: corrections are new reversing entries, never edits,
+-- and disposal is FK CASCADE, which PostgreSQL executes as the table
+-- owner -- so the runtime role never needs UPDATE or DELETE there.
+-- Revoking them makes append-only real at the database tier (the
+-- 2026-07-02 balance-architecture review, M1/R4: a raw-SQL single-leg
+-- DELETE otherwise breaks the trial balance silently -- the balanced
+-- trigger has no DELETE arm by design).
+--
+-- This block MUST follow the blanket GRANT above and MUST live in this
+-- file (not only in migration e3c23fadb21d): entrypoint.sh re-runs this
+-- file on every container start, so the blanket GRANT re-opens
+-- UPDATE/DELETE on the ledger tables at each boot and this REVOKE
+-- re-closes it in the same run.  Guarded on table existence because on
+-- a FRESH database this file runs before the tables are created --
+-- that first boot's posture is closed later in the same start by
+-- scripts/init_database.py (apply_ledger_append_only_privileges, the
+-- shared SQL in app/posting_infrastructure.py; keep both in sync).
+DO $$
+BEGIN
+    IF to_regclass('budget.journal_entries') IS NOT NULL
+       AND to_regclass('budget.account_postings') IS NOT NULL THEN
+        REVOKE UPDATE, DELETE
+            ON budget.journal_entries, budget.account_postings
+            FROM shekel_app;
+    END IF;
+END
+$$;
+
 -- ── Default privileges for future objects ─────────────────────────
 -- ALTER DEFAULT PRIVILEGES is scoped to the role that runs it (the
 -- "FOR ROLE" clause defaults to current_user, which is shekel_user

@@ -78,6 +78,9 @@ _PP_LOCK_BADGES = {
     pay_period_admin.PeriodLockReason.SETTLED_TXN: (
         "Settled", "bg-warning text-dark",
     ),
+    pay_period_admin.PeriodLockReason.LEDGER_POSTINGS: (
+        "Posted", "bg-warning text-dark",
+    ),
     pay_period_admin.PeriodLockReason.ACCOUNT_ANCHOR: (
         "Anchor", "bg-info text-dark",
     ),

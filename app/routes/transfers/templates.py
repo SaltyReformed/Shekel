@@ -615,9 +615,10 @@ def _materialize_initial_transfers(template, rule, start_period_id):
         start_period_id: The submitted start-period id, or ``None``.
 
     Returns:
-        A redirect ``Response`` when the one-time path hits an invalid period
-        or the service rejects the transfer (the caller returns it verbatim);
-        ``None`` on success so the caller proceeds to commit.
+        A redirect ``Response`` when either path hits an invalid period or the
+        service rejects the transfer (e.g. a loan as the source account) -- the
+        caller returns it verbatim; ``None`` on success so the caller proceeds
+        to commit.
     """
     once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
     is_one_time = rule.pattern_id == once_id
@@ -661,8 +662,19 @@ def _materialize_initial_transfers(template, rule, start_period_id):
                 flash(f"Could not create transfer: {exc}", "danger")
                 return redirect(url_for("transfers.new_transfer_template"))
     elif rule:
-        # Recurring transfer: delegate to the recurrence engine.
-        generate_transfers_for_all_periods(template)
+        # Recurring transfer: delegate to the recurrence engine.  Wrap in the
+        # SAME guard the one-time branch uses: the recurrence engine fans out
+        # through ``create_transfer``, which now rejects a loan as the source
+        # account (a transfer OUT of an amortizing loan), so an unhandled
+        # rejection here would 500 on a clean, user-reachable action (the
+        # transfer form offers every active account as a source).  Roll back
+        # the flushed template / rule and flash, exactly as the ONCE path does.
+        try:
+            generate_transfers_for_all_periods(template)
+        except (NotFoundError, ShekelValidationError) as exc:
+            db.session.rollback()
+            flash(f"Could not create transfer: {exc}", "danger")
+            return redirect(url_for("transfers.new_transfer_template"))
 
     return None
 
