@@ -51,12 +51,6 @@
       </a>
     </li>
     <li class="nav-item">
-      <a class="nav-link{{ ' active' if active_section == 'retirement' }}"
-         href="{{ url_for('settings.show', section='retirement') }}">
-        Retirement
-      </a>
-    </li>
-    <li class="nav-item">
       <a class="nav-link{{ ' active' if active_section == 'companions' }}"
          href="{{ url_for('settings.show', section='companions') }}">
         Companions
@@ -95,10 +89,6 @@
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'account-types' }}">
         <i class="bi bi-bank"></i> Account Types
       </a>
-      <a href="{{ url_for('settings.show', section='retirement') }}"
-         class="list-group-item list-group-item-action{{ ' active' if active_section == 'retirement' }}">
-        <i class="bi bi-briefcase"></i> Retirement
-      </a>
       <a href="{{ url_for('settings.show', section='companions') }}"
          class="list-group-item list-group-item-action{{ ' active' if active_section == 'companions' }}">
         <i class="bi bi-people"></i> Companions
@@ -126,8 +116,6 @@
       {% include "settings/_tax_config.html" %}
     {% elif active_section == 'account-types' %}
       {% include "settings/_account_types.html" %}
-    {% elif active_section == 'retirement' %}
-      {% include "settings/_retirement.html" %}
     {% elif active_section == 'companions' %}
       {% include "settings/_companion.html" %}
     {% elif active_section == 'security' %}

@@ -208,13 +208,21 @@ class TestSettingsDashboard:
             assert b"Tax Configuration" in resp.data
             assert b"Federal Tax Brackets" in resp.data
 
-    def test_settings_dashboard_retirement_section(self, app, auth_client, seed_user):
-        """GET /settings?section=retirement renders retirement settings."""
+    def test_settings_dashboard_retirement_section_redirects(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /settings?section=retirement redirects to /retirement.
+
+        Gate A ruling 6 (retirement rebuild P3a): the Settings >
+        Retirement section retired -- the assumptions panel on the
+        retirement page is the persistent home for its three fields plus
+        the merit horizon, so an old bookmark 302s there instead of
+        rendering a settings section.
+        """
         with app.app_context():
             resp = auth_client.get("/settings?section=retirement")
-            assert resp.status_code == 200
-            assert b"Retirement Settings" in resp.data
-            assert b'name="safe_withdrawal_rate"' in resp.data
+            assert resp.status_code == 302
+            assert "/retirement" in resp.headers["Location"]
 
     def test_settings_dashboard_account_types_section(self, app, auth_client, seed_user):
         """GET /settings?section=account-types renders account type management."""
