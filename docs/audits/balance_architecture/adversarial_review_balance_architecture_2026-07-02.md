@@ -38,7 +38,7 @@ re-evaluation with no anchoring on past decisions.
 > checker (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
 > further module split is warranted, tracked in R10 -- now DONE, see below). M3's reader-contract
 > half (Step-5 reporting rules), R8, and R9 remain open; R10 housekeeping is IN PROGRESS
-> (transfer_service split, L1, L8, L2 all DONE 2026-07-03; the shekel_checkers split, L6, and L10
+> (transfer_service split, L1, L8, L2, L10 all DONE 2026-07-03; the shekel_checkers split and L6
 > remain, plus the L9 / C11 decisions owed to the developer -- per-sub-item commits in the R10 note
 > under the Section 6 table).
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
@@ -768,10 +768,20 @@ Each major decision re-examined from scratch against the alternatives it beat.
 >   from `_BALANCE_SEAM_MODULES` (and thus `_LOAN_LEDGER_READER_MODULES`) plus
 >   the W9906 message description and the test docstring; W9906 on the file is
 >   clean without the exemption, proving it was dead.
-> - **Remaining:** the `shekel_checkers.py` package split; L6 (cross-page reader
->   de-dup / wire one to a route value); L10 (over-credit envelope guard); and
->   the two DECISIONS owed to the developer -- L9 (timezone tax attribution) and
->   the C11 ratifications (Section 5). The L2 note that the genesis-reader
+> - **L10 over-credit envelope guard -- DONE** (`e329bbbb`): the sign flip
+>   (credit entries exceeding `effective`, turning an expense into a net cash
+>   inflow) is structurally impossible -- `TransactionEntry.amount` is
+>   `CHECK (amount > 0)` and a settled envelope's `actual_amount` = sum of ALL
+>   entries, so `effective - Sigma(credit) = Sigma(debit) >= 0` always. Pinned
+>   with a test (debit $1 / credit $99, actual $100 -> cash leg -1.00, never
+>   positive) that fails if `actual` ever drifts below the credit sum or the
+>   positive-amount CHECK is relaxed. A pinned test, not a runtime guard, is the
+>   right fix: the invariant already holds by construction and a guard would be
+>   dead code (rule 13).
+> - **Remaining:** the `shekel_checkers.py` package split and L6 (cross-page
+>   reader de-dup / wire one to a route value); plus the two DECISIONS owed to
+>   the developer -- L9 (timezone tax attribution) and the C11 ratifications
+>   (Section 5). The L2 note that the genesis-reader
 >   allowlist still grants all of `loan_payment_service` (intent:
 >   `confirmed_loan_view` only) is left as-is: function-granularity W9906 is a
 >   larger checker change, and the R5 follow-up already fences that module at
