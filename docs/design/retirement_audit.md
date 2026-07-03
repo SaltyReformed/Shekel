@@ -502,7 +502,22 @@ resolver so they agree.
 - **P2c lever fragment endpoint.** One HTMX GET recomputing both lever outcome lines from stepper
   values, schema-validated like the existing `RetirementGapQuerySchema` pattern.
 
-### P3 -- page rebuild to direction D (Fable)
+### P3 -- page rebuild to direction D -- COMPLETE 2026-07-03
+
+Shipped in three sub-phases on `feat/retirement-rebuild` (pushed, HEAD `8a4a7a5e`); full suite 6944
+passed with no exceptions, pylint 10.00/10. P3a (Opus): per-field assumption saves through the
+evolved `update_settings`, the `/retirement/readiness` what-if fragment with baseline-vs-override
+deltas, Settings > Retirement retired (302 + partial deleted). P3b (Fable builder): the direction-D
+page -- `retirement.css`, `retirement_path_chart.js` (maintainAspectRatio:false kills V1),
+`retirement_controls.js`, income card as an OOB sibling of every readiness response so meter and
+verdict cannot disagree; assumed-return row is what-if-only. P3c (Opus): adversarial review of P3b's
+display-shaping service additions (verdict: correct; pinned by 7 hand-computed tests incl. the meter
+reconciliation identity), the 11 old-page tests realigned without weakening, and the legacy gap
+surface trimmed rule-7-swept (gap route/template/chart JS, folded schema, chart_data +
+pension_benefit producers, the double-compute). D6 fixed (per-pension derivation footer). Acceptance
+deviations recorded for the P4 drive: saves reload the page; return what-if starts empty beside the
+blended value; countdown lives in the page header; straight chart segments; "Covered" hero state
+when the pension covers everything.
 
 - Rewrite `retirement/dashboard.html` + new partials (readiness, assumptions rail, levers, income
   composition, accounts, pension footer); per-screen `retirement.css`; new
