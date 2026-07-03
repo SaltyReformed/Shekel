@@ -130,6 +130,98 @@ class TestEmployerContribution:
         assert calculate_employer_contribution(None, Decimal("200")) == ZERO
 
 
+class TestEmployerGrossOverride:
+    """P1b / fork F3: the optional per-period gross override."""
+
+    def test_gross_override_replaces_constant_flat_base(self):
+        """An override drives the flat-percentage employer base for the period.
+
+        The params carry a $2500 constant gross; the override supplies
+        $4000, so a 5% flat employer contribution is 5% of the override:
+        4000 * 0.05 = 200.00 (not 2500 * 0.05 = 125.00).
+        """
+        params = {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        assert calculate_employer_contribution(
+            params, Decimal("0"), Decimal("4000"),
+        ) == Decimal("200.00")
+
+    def test_none_override_keeps_constant_base(self):
+        """Omitting the override keeps the byte-identical constant-base value.
+
+        2500 * 0.05 = 125.00, unchanged from the pre-P1b path.
+        """
+        params = {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        assert calculate_employer_contribution(
+            params, Decimal("0"),
+        ) == Decimal("125.00")
+
+
+class TestSalaryBasisEmployerBase:
+    """P1b / fork F3: project_balance grows the employer base per period."""
+
+    def _flat_params(self):
+        """A 5%-flat employer-params dict with a $1000 constant base."""
+        return {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("1000"),
+        }
+
+    def test_salary_basis_grows_flat_employer_per_period(self):
+        """The per-period salary basis lifts the flat-employer base each year.
+
+        Two single-period years with growth zeroed (to isolate the
+        employer contribution).  The basis returns $1000 gross for 2030 and
+        $2000 for 2031, so the 5% flat employer contribution is 50.00 then
+        100.00 -- the base tracks the projected salary rather than freezing.
+        """
+        periods = [
+            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
+            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
+        ]
+        gross_by_year = {2030: Decimal("1000.00"), 2031: Decimal("2000.00")}
+        result = project_balance(
+            current_balance=Decimal("0"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=self._flat_params(),
+            salary_basis=lambda period: gross_by_year[period.start_date.year],
+        )
+        # 1000 * 0.05 = 50.00; 2000 * 0.05 = 100.00.
+        assert result[0].employer_contribution == Decimal("50.00")
+        assert result[1].employer_contribution == Decimal("100.00")
+
+    def test_no_salary_basis_keeps_constant_employer_base(self):
+        """Without a basis every period uses the constant employer gross.
+
+        Same two years; the constant $1000 base yields 50.00 both periods
+        (1000 * 0.05) -- the behavior every non-retirement consumer keeps.
+        """
+        periods = [
+            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
+            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
+        ]
+        result = project_balance(
+            current_balance=Decimal("0"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=self._flat_params(),
+        )
+        assert result[0].employer_contribution == Decimal("50.00")
+        assert result[1].employer_contribution == Decimal("50.00")
+
+
 # ── Tests: cap_contribution_at_limit (HIGH-07) ──────────────────
 
 

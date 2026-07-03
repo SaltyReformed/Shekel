@@ -10,6 +10,7 @@ All functions are pure (no DB access) -- data is passed in as arguments.
 
 import logging
 from collections import namedtuple
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -155,7 +156,9 @@ def cap_contribution_at_limit(
     return max(min(contribution, remaining_limit), ZERO)
 
 
-def calculate_employer_contribution(employer_params, employee_contribution):
+def calculate_employer_contribution(
+    employer_params, employee_contribution, gross_override=None,
+):
     """Calculate the employer contribution for a single pay period.
 
     Args:
@@ -168,6 +171,14 @@ def calculate_employer_contribution(employer_params, employee_contribution):
             - match_cap_percentage: Decimal (for match type)
             - gross_biweekly: Decimal (gross pay per period)
         employee_contribution: Decimal amount the employee contributed.
+        gross_override: Optional Decimal per-period gross that replaces
+            the constant ``employer_params["gross_biweekly"]`` for this
+            period (P1b / finding D3 / fork F3).  ``None`` (the default)
+            keeps the constant-base behavior every existing caller relies
+            on; the retirement projection passes a per-period gross grown
+            with the salary path so the flat-percentage employer
+            contribution tracks the projected salary rather than freezing
+            at today's gross.
 
     Returns:
         Decimal employer contribution amount.
@@ -176,7 +187,11 @@ def calculate_employer_contribution(employer_params, employee_contribution):
         return ZERO
 
     emp_type_id = employer_params.get("type_id")
-    gross = Decimal(str(employer_params.get("gross_biweekly", 0)))
+    gross = (
+        Decimal(str(gross_override))
+        if gross_override is not None
+        else Decimal(str(employer_params.get("gross_biweekly", 0)))
+    )
 
     flat_id = ref_cache.employer_contribution_type_id(
         EmployerContributionTypeEnum.FLAT_PERCENTAGE
@@ -294,12 +309,18 @@ class _PeriodInputs:
             :func:`calculate_employer_contribution`).
         annual_contribution_limit: Decimal annual cap, normalized once, or
             ``None`` for accounts with no IRS limit.
+        salary_basis: Optional per-period gross resolver (P1b / fork F3).
+            When set, ``period -> Decimal gross_biweekly`` supplies the
+            employer-contribution base for each period, overriding the
+            constant ``employer_params["gross_biweekly"]``; ``None`` keeps
+            the constant-base behavior every non-retirement consumer uses.
     """
 
     assumed_annual_return: Decimal
     periodic_contribution: Decimal
     employer_params: dict | None
     annual_contribution_limit: Decimal | None
+    salary_basis: Callable | None = None
 
 
 @dataclass
@@ -389,9 +410,18 @@ def _project_one_period(
         state.ytd_contributions,
     )
 
-    # Step 3: Employer contribution on the capped employee amount.
+    # Step 3: Employer contribution on the capped employee amount.  P1b /
+    # fork F3: when a per-period salary basis is supplied, this period's
+    # gross overrides the constant ``employer_params["gross_biweekly"]`` so
+    # the flat-percentage employer contribution grows with the projected
+    # salary instead of freezing at today's gross.
+    gross_override = (
+        inputs.salary_basis(period)
+        if inputs.salary_basis is not None
+        else None
+    )
     employer_contribution = calculate_employer_contribution(
-        inputs.employer_params, contribution
+        inputs.employer_params, contribution, gross_override,
     )
 
     # Step 4: Update balance.  Clamp to zero -- standard investment
@@ -429,6 +459,7 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
     annual_contribution_limit=None,
     ytd_contributions_start=ZERO,
     contributions=None,
+    salary_basis=None,
 ):
     """Project investment balance forward across pay periods.
 
@@ -453,20 +484,27 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
                                   A record with amount=0 is an explicit "no contribution" --
                                   distinct from a missing entry.  None or [] uses the static
                                   periodic_contribution for all periods.
+        salary_basis:             Optional ``period -> Decimal gross_biweekly`` resolver
+                                  (P1b / fork F3).  When set, it supplies the per-period
+                                  employer-contribution base, overriding the constant
+                                  ``employer_params["gross_biweekly"]`` so the flat-percentage
+                                  employer contribution grows with the projected salary; None
+                                  (the default) keeps the constant-base behavior every
+                                  non-retirement consumer relies on.
 
     Returns:
         List of ProjectedBalance, one per period.
 
-    Pylint: ``too-many-arguments`` (8/5) / ``too-many-positional-arguments``
-    (8/5) -- suppressed because ``growth_engine`` is a pure stdlib leaf
-    whose design is "all data passed in as arguments."  These eight are
+    Pylint: ``too-many-arguments`` (9/5) / ``too-many-positional-arguments``
+    (9/5) -- suppressed because ``growth_engine`` is a pure stdlib leaf
+    whose design is "all data passed in as arguments."  These nine are
     genuinely distinct projection inputs that callers vary independently
     -- the what-if overlay overrides ``periodic_contribution`` and nulls
     ``contributions``; the year-end full-year path forces
-    ``ytd_contributions_start`` to zero -- so bundling them into one
-    object would be stamp coupling, not a cohesive concept.  Every call
-    site passes these by keyword, so the positional count is moot in
-    practice.
+    ``ytd_contributions_start`` to zero; only the retirement projection
+    supplies ``salary_basis`` -- so bundling them into one object would be
+    stamp coupling, not a cohesive concept.  Every call site passes these
+    by keyword, so the positional count is moot in practice.
     """
     inputs = _PeriodInputs(
         assumed_annual_return=Decimal(str(assumed_annual_return)),
@@ -477,6 +515,7 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
             if annual_contribution_limit is not None
             else None
         ),
+        salary_basis=salary_basis,
     )
     ytd_start = Decimal(str(ytd_contributions_start))
     state = _ProjectionState(
