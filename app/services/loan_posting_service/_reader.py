@@ -59,13 +59,14 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import loan_loaders, loan_resolver
 from app.services.amortization_engine import AmortizationRow
-from app.services.posting_service import _civil_settle_date, _ledger_account_for
+from app.services.posting_service import _ledger_account_for
 from app.services.rate_period_engine import (
     RatePeriod,
     monthly_due_date,
     payment_number,
     period_for_date,
 )
+from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
 from ._walk import _confirmed_shadows_through
@@ -327,18 +328,21 @@ def confirmed_loan_interest_in_year(
     which is wrong for an off-schedule (extra / short) payment -- so the
     deduction reflects the interest truly paid.
 
-    **Attributed by each payment's CURRENT civil paid date, not by the posting's
-    entry date.**  Mortgage interest is deductible in the year it was PAID, so a
-    payment's NET interest (its original split PLUS any later true-up / rate
-    re-split delta) is attributed to
-    :func:`app.services.posting_service._civil_settle_date` of its shadow's
-    current ``paid_at`` -- the very civil paid date the entry itself is dated by.
+    **Attributed by each payment's CURRENT paid date in the DISPLAY timezone,
+    not by the posting's entry date.**  Mortgage interest is deductible in the
+    year it was PAID, so a payment's NET interest (its original split PLUS any
+    later true-up / rate re-split delta) is attributed to
+    :func:`app.utils.dates.to_display_civil_date` of its shadow's current
+    ``paid_at`` -- the user's wall-clock day, per the L9 decision (2026-07-03):
+    a settle clicked 8:05pm Eastern on Dec 31 deducts in the Dec 31 tax year,
+    even though the stored ``entry_date`` books the Jan 1 it becomes in UTC
+    (storage stays on the UTC rule; only this reading boundary converts).
     Grouping the legs by their payment shadow and attributing the NET (rather
     than summing each leg by its own entry date) is what makes this robust to a
     reversal: reverting a payment clears its ``paid_at``, so its reversal leg is
-    dated at the pay-period start (the ``_civil_settle_date`` NULL fallback),
-    which can fall in a DIFFERENT year than the original leg -- but the payment's
-    NET interest is then zero, so it drops out of every year cleanly rather than
+    dated at the pay-period start (the entry dating's NULL fallback), which can
+    fall in a DIFFERENT year than the original leg -- but the payment's NET
+    interest is then zero, so it drops out of every year cleanly rather than
     stranding a spurious +/- interest across the year boundary.  A re-settled or
     edited-paid-date payment likewise reports its net at its CURRENT paid date.
 
@@ -373,10 +377,11 @@ def confirmed_loan_interest_in_year(
     net_by_shadow = _interest_net_by_shadow(loan_account_id, scenario_id)
     if not net_by_shadow:
         return _ZERO_MONEY
-    # Attribute each payment's net interest to its CURRENT civil paid date's year
-    # (the tax-correct basis; see the docstring), reading ``paid_at`` and the
-    # pay-period start back from the shadow so a since-cleared ``paid_at`` falls
-    # back exactly as the entry dating did (:func:`_civil_settle_date`).
+    # Attribute each payment's net interest to its CURRENT paid date's year in
+    # the DISPLAY timezone (the tax-correct basis per L9; see the docstring),
+    # reading ``paid_at`` and the pay-period start back from the shadow so a
+    # since-cleared ``paid_at`` falls back to the same period start the entry
+    # dating used.
     shadows = (
         db.session.query(Transaction)
         .options(joinedload(Transaction.pay_period))
@@ -385,7 +390,9 @@ def confirmed_loan_interest_in_year(
     )
     total = _ZERO_MONEY
     for shadow in shadows:
-        paid_date = _civil_settle_date(shadow.paid_at, shadow.pay_period)
+        paid_date = to_display_civil_date(
+            shadow.paid_at, shadow.pay_period.start_date,
+        )
         if paid_date.year == year:
             total += net_by_shadow[shadow.id]
     return round_money(total)

@@ -2085,6 +2085,35 @@ class TestConfirmedLoanInterestReader:
                 loan.id, scenario_id, 2026,
             ) == Decimal("0.00")
 
+    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE L9 CASE: a settle at 8:05 PM EST Dec 31 deducts in the Dec 31 year.
+
+        A payment settled 2025-12-31 20:05 Eastern is stored as
+        2026-01-01 01:05 UTC, so its journal ``entry_date`` books 2026 (the
+        UTC storage rule).  Schedule-A attribution follows the user's
+        wall-clock day (L9, decided 2026-07-03): the 500.00 interest deducts
+        in 2025, and 2026 sees nothing.  The pre-L9 UTC attribution reported
+        the reverse.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("500.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("0.00")
+
     def test_reverted_payment_nets_to_zero_across_the_year_boundary(
         self, app, db, seed_user, seed_periods,
     ):

@@ -38,7 +38,8 @@ keep working unchanged:
   linked postings)`` (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``,
   no anchor read, no boundary filter), the ACTUAL interest its confirmed
   payments paid in a year (``confirmed_loan_interest_in_year``, for Schedule A,
-  attributed by the payment's civil paid date), and the ledger-derived
+  attributed by the payment's display-timezone civil paid date -- the L9
+  rule), and the ledger-derived
   amortization HISTORY rows (``confirmed_loan_history_rows``, each confirmed
   payment's actual principal / interest and running balance read from the
   posted legs).  Wired by the read switch.

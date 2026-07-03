@@ -936,6 +936,42 @@ class TestMortgageInterestGenesisHybrid:
                 2025, debt_schedules, scenario_id,
             ) == Decimal("500.00")
 
+    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """THE L9 CASE, through the year-end hybrid: 8:05 PM EST Dec 31 is Dec 31.
+
+        A payment settled 2025-12-31 20:05 Eastern is stored as
+        2026-01-01 01:05 UTC, so the UTC calendar day (and the stored
+        ``entry_date``) is already 2026.  Schedule-A attribution follows the
+        user's wall-clock day (L9, decided 2026-07-03): the 500.00 interest
+        deducts in 2025 -- a year with NO amortization rows, so the figure is
+        PURE ledger and the pre-L9 UTC attribution reported 0.00 here.  This
+        pins the year-end WIRING onto the display-timezone basis, not just
+        the loan reader beneath it.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            scenario_id = seed_user["scenario"].id
+            (orig_principal, orig_date, rate, anchor_balance,
+             anchor_date, p1, _p2, _p3) = SPLIT_LOAN
+            loan = create_loan_with_trueup(
+                seed_user, db.session, origination_principal=orig_principal,
+                anchor_balance=anchor_balance, anchor_date=anchor_date,
+                rate=rate, origination_date=orig_date,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+
+            assert _compute_mortgage_interest(
+                2025, debt_schedules, scenario_id,
+            ) == Decimal("500.00")
+
     def test_early_settled_payment_is_counted_exactly_once(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):

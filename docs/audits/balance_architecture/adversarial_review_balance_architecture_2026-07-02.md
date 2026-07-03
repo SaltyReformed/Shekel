@@ -563,6 +563,12 @@ Recommendation: R6.
   in the R10 housekeeping batch): the mortgage-interest Schedule-A reader now, and every Step-5
   income-statement/tax figure when Step 5 lands. Until then this is a recorded policy, not yet
   code.
+  **IMPLEMENTED (Schedule-A half) 2026-07-03, Step-5 C1** (`feat/actuals-reporting`): the new
+  `app/utils/dates.to_display_civil_date` helper (composes `to_display_date`; period-start
+  fallback mirrors the entry dating) now drives `confirmed_loan_interest_in_year`; storage stays
+  UTC. Boundary tests pin an 8:05pm-ET Dec-31 settle to the earlier year at the helper, the loan
+  reader, AND the year-end hybrid wiring. The income-statement half lands with the Step-5
+  reporting readers (`implementation_plan_actuals_reporting.md`, reader contract C-3).
 - **L10:** an envelope whose credit entries exceed its effective amount would flip the sign of
   `effective - credit_sum` (an expense becoming net cash inflow). Nothing rejects or pins the
   shape; add a guard or a pinned test.

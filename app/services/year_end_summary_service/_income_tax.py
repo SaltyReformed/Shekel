@@ -199,7 +199,8 @@ def _loan_year_interest(
 
     * the ACTUAL interest of confirmed payments comes from the genesis ledger
       (:func:`app.services.loan_posting_service.confirmed_loan_interest_in_year`),
-      attributed to each payment's civil paid date -- the tax-correct basis, and
+      attributed to each payment's display-timezone civil paid date (the L9
+      rule) -- the tax-correct basis, and
       correct for off-schedule payments where the schedule's replayed interest is
       not; PLUS
     * the schedule's PROJECTED interest for the year's genuinely projected rows:
