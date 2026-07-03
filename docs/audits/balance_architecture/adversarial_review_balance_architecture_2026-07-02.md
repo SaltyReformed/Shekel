@@ -36,8 +36,11 @@ re-evaluation with no anchoring on past decisions.
 > 6865, not the 6861 first recorded here; R6 and its G-1/T-1 follow-ups, R7, and the earlier
 > follow-up review's M-1/M-2/M-3/L-1 fixes are green); pylint holds 10.00 with every `--fail-on`
 > checker (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
-> further module split is warranted, tracked in R10). M3's reader-contract half (Step-5 reporting
-> rules) and R8-R10 remain open.
+> further module split is warranted, tracked in R10 -- now DONE, see below). M3's reader-contract
+> half (Step-5 reporting rules), R8, and R9 remain open; R10 housekeeping is IN PROGRESS
+> (transfer_service split, L1, L8, L2 all DONE 2026-07-03; the shekel_checkers split, L6, and L10
+> remain, plus the L9 / C11 decisions owed to the developer -- per-sub-item commits in the R10 note
+> under the Section 6 table).
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -725,6 +728,54 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
 | R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
 | R10 | HOUSEKEEPING | Doc-drift batch (L8): the two stale import rationales, the stale impossibility argument in the two model docstrings, the reset comment. Single-source the `--fail-on` list (L1). Trim `growth_engine` from the W9906 allowlist (L2). De-duplicate the cross-page grid/checking readers or wire one to a route value (L6). Decide the L9 timezone policy for tax attribution and the L10 over-credit guard. Ratify the two C11 forks (Section 5). Split `tools/pylint/shekel_checkers.py` into a package (added 2026-07-02: the R3 extension pushed the plugin past pylint's default module size -- ungated C0302, 1145/1000 lines -- and the file also carries pre-existing E0011/W0012 meta-noise from its own prose comments about directives plus one `too-many-locals`; the split is a gate-infrastructure change, so verify `.pylintrc` `load-plugins`, the per-edit hook, pre-commit, and CI all still load the plugin, and consider giving `tools/pylint/` its own enforced floor once clean). Also split `app/services/transfer_service.py` (added 2026-07-02: the R6 transfer-out guard wiring left it at exactly 1000/1000 lines, its `too-many-lines` cap -- the guard body itself went into the already-extracted `_transfer_loan_posting.py` to stay under, but the next single-line addition will trip C0302; a further extraction, e.g. the mutation/validation helpers, restores headroom). |
+
+> **R10 in progress (2026-07-03).** Housekeeping is being worked sub-item by
+> sub-item, each its own commit:
+>
+> - **`transfer_service.py` split -- DONE** (`a8eb95f`): the three
+>   validate-and-load guards (`_validate_positive_amount`,
+>   `_get_transfer_or_raise`, `_get_shadow_transactions`) moved to a new
+>   `_transfer_validation.py` sibling (the `_transfer_ownership` /
+>   `_transfer_loan_posting` pattern), taking the module to 874/1000 lines. The
+>   three movers write no `status_id` and construct no `Transaction`, so the
+>   W9906/W9907 fence allowlists are untouched and the status-mirroring appliers
+>   (`_build_shadow`, `_apply_status_change`, `_apply_actual_amount`) stayed in
+>   the parent module.
+> - **L1 `--fail-on` list -- DONE** (`7c15303`):
+>   `tools/pylint/tests/test_fail_on_gate_consistency.py` pins the list to an
+>   exact bijection with the registered checker messages AND asserts all five
+>   executable gate locations carry the identical list, so a renamed or
+>   mistyped symbol (which pylint silently ignores at `--fail-on`) now fails a
+>   test. Both assertions proven non-vacuous. Chosen over physical
+>   single-sourcing because GitHub-Actions YAML + pre-commit YAML + shell cannot
+>   share one fragment without a codegen step.
+> - **L8 doc-drift -- DONE** (`ee7fb4b`, `1cc03b6`): (1) the
+>   `loan_payment_service` lazy-import rationales were not merely stale but
+>   vestigial -- `loan_resolver` no longer imports the module (proven: importing
+>   it pulls in zero `loan_payment_service`), so `loan_resolver` was promoted to
+>   a top-level import, the four dead lazy imports plus the redundant
+>   `TYPE_CHECKING` block removed, and `confirmed_loan_view`'s remaining
+>   `loan_posting_service` lazy import RE-documented with its REAL reason -- the
+>   `TestResolverIsLedgerFree` fence, which scans this module minus its
+>   read-switch functions and a top-level ledger import would fail; (2) the
+>   cascade-imbalance impossibility argument in `ledger_account.py` /
+>   `journal_entry.py` was rewritten to name route Guard 5 as the operative
+>   guard (a settled transfer's postings OUTLIVE the transfer, breaking the old
+>   shadow-RESTRICT premise); (3) the reset-comment overclaim was ALREADY
+>   corrected by R7 (`654c991`).
+> - **L2 `growth_engine` allowlist trim -- DONE** (`53bb7a37`): verified it
+>   calls zero fenced producers and zero loan-ledger readers, then removed it
+>   from `_BALANCE_SEAM_MODULES` (and thus `_LOAN_LEDGER_READER_MODULES`) plus
+>   the W9906 message description and the test docstring; W9906 on the file is
+>   clean without the exemption, proving it was dead.
+> - **Remaining:** the `shekel_checkers.py` package split; L6 (cross-page reader
+>   de-dup / wire one to a route value); L10 (over-credit envelope guard); and
+>   the two DECISIONS owed to the developer -- L9 (timezone tax attribution) and
+>   the C11 ratifications (Section 5). The L2 note that the genesis-reader
+>   allowlist still grants all of `loan_payment_service` (intent:
+>   `confirmed_loan_view` only) is left as-is: function-granularity W9906 is a
+>   larger checker change, and the R5 follow-up already fences that module at
+>   function granularity for the resolver-free property.
 
 ---
 
