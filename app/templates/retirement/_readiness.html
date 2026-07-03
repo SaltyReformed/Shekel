@@ -1,0 +1,56 @@
+{% from "_money_macros.html" import money %}
+{# HTMX fragment: readiness verdict + optional what-if deltas + lever
+   outcome lines (P3a stub).  Deliberately minimal markup -- P3b restyles
+   this into the direction-D readiness card; the data contract is
+   retirement_readiness.compute_readiness_whatif (readiness / baseline /
+   deltas) plus an optional retirement_levers.compute_lever_data payload
+   under ``levers``. #}
+<div id="readiness-panel">
+  {% if readiness.retirement_date is none %}
+  <p class="text-muted mb-0" data-readiness="no-horizon">
+    Set a planned retirement date to see your readiness.
+  </p>
+  {% else %}
+  <p class="mb-1" data-readiness="verdict">
+    {% if readiness.no_savings_needed %}
+    Your pension covers the whole projected income gap -- no savings
+    needed.
+    {% else %}
+    {{ "%.1f"|format(readiness.funded_ratio|to_percent) }}% funded:
+    {{ money(readiness.projected_savings_after_tax) }} projected
+    (after tax) of {{ money(readiness.required_savings) }} needed;
+    {% if readiness.surplus_or_shortfall_after_tax < 0 %}
+    shortfall {{ money(-readiness.surplus_or_shortfall_after_tax) }}.
+    {% else %}
+    surplus {{ money(readiness.surplus_or_shortfall_after_tax) }}.
+    {% endif %}
+    {% endif %}
+    {% if readiness.tax_rate_missing %}
+    <span class="text-warning" data-readiness-flag="tax-missing">
+      Estimated retirement tax not set -- 0% assumed.
+    </span>
+    {% endif %}
+  </p>
+  <p class="mb-1" data-readiness="countdown">
+    {{ readiness.retirement_date.isoformat() }} --
+    {{ readiness.years_remaining }} years,
+    {{ readiness.periods_remaining }} paychecks away.
+  </p>
+  {% if deltas %}
+  <p class="mb-1" data-readiness="deltas">
+    {% if baseline.no_savings_needed %}
+    Was: no savings needed at your stored assumptions.
+    {% elif baseline.funded_ratio is not none %}
+    Was {{ "%.1f"|format(baseline.funded_ratio|to_percent) }}% funded.
+    {% endif %}
+    {% if deltas.funded_ratio_points is not none %}
+    Funded change: {{ deltas.funded_ratio_points }} points.
+    {% endif %}
+    Position change: {{ money(deltas.shortfall_dollars) }}.
+  </p>
+  {% endif %}
+  {% if levers %}
+  {% include "retirement/_lever_outcomes.html" %}
+  {% endif %}
+  {% endif %}
+</div>

@@ -25,9 +25,14 @@ from app.schemas.validation import (
     PensionProfileUpdateSchema,
     RetirementGapQuerySchema,
     RetirementLeverQuerySchema,
+    RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
 )
-from app.services import retirement_dashboard_service, retirement_levers
+from app.services import (
+    retirement_dashboard_service,
+    retirement_levers,
+    retirement_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +45,7 @@ _PENSION_FIELDS = {
 }
 _SETTINGS_FIELDS = {
     "safe_withdrawal_rate", "planned_retirement_date",
-    "estimated_retirement_tax_rate",
+    "estimated_retirement_tax_rate", "merit_raise_horizon_years",
 }
 
 # Name of the composite unique constraint that backstops the
@@ -57,6 +62,7 @@ _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
 _gap_query_schema = RetirementGapQuerySchema()
 _lever_query_schema = RetirementLeverQuerySchema()
+_readiness_query_schema = RetirementReadinessQuerySchema()
 
 
 @retirement_bp.route("/retirement")
@@ -71,6 +77,14 @@ def dashboard():
         "retirement/dashboard.html",
         current_swr=slider["current_swr"],
         current_return=slider["current_return"],
+        # P3a: the direction-D readiness + lever baselines ride alongside
+        # the legacy context so P3b's template rebuild finds them already
+        # wired; the CURRENT template ignores both keys (zero edits to
+        # dashboard.html in this phase).
+        readiness=retirement_readiness.compute_readiness_data(
+            current_user.id,
+        ),
+        levers=retirement_levers.compute_lever_data(current_user.id),
         **data,
     )
 
@@ -404,6 +418,55 @@ def lever_outcomes():
     )
 
 
+# ── Readiness Fragment (P3a) ─────────────────────────────────────
+
+
+@retirement_bp.route("/retirement/readiness")
+@login_required
+@require_owner
+def readiness_fragment():
+    """HTMX fragment: readiness verdict with optional what-if overrides.
+
+    Optional ``swr`` / ``return_rate`` / ``merit_raise_horizon_years``
+    query parameters recompute the readiness picture as a what-if against
+    the stored-settings baseline and return the panel's delta facts
+    (funded-ratio delta in points, shortfall delta in dollars); optional
+    ``months`` / ``contribution`` additionally recompute the lever
+    outcome lines.  All validated through
+    :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
+    Renders the minimal ``_readiness.html`` stub P3b restyles.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("retirement.dashboard"))
+
+    try:
+        query_data = _readiness_query_schema.load(request.args)
+    except ValidationError as exc:
+        return jsonify(errors=exc.messages), 422
+
+    whatif = retirement_readiness.compute_readiness_whatif(
+        current_user.id,
+        swr_override=query_data.get("swr"),
+        return_rate_override=query_data.get("return_rate"),
+        merit_horizon_override=query_data.get("merit_raise_horizon_years"),
+    )
+    lever_data = None
+    if (query_data.get("months") is not None
+            or query_data.get("contribution") is not None):
+        lever_data = retirement_levers.compute_lever_data(
+            current_user.id,
+            contribution_override=query_data.get("contribution"),
+            months_override=query_data.get("months"),
+        )
+    return render_template(
+        "retirement/_readiness.html",
+        readiness=whatif["readiness"],
+        baseline=whatif["baseline"],
+        deltas=whatif["deltas"],
+        levers=lever_data,
+    )
+
+
 # ── Retirement Settings ──────────────────────────────────────────
 
 
@@ -411,9 +474,26 @@ def lever_outcomes():
 @login_required
 @require_owner
 def update_settings():
-    """Update retirement planning settings."""
+    """Save retirement assumptions (per-field capable; P3a).
+
+    The assumptions panel posts ONE field per save; a multi-field submit
+    validates through the same all-optional schema.  Responses are
+    fragment-shaped for the panel: a validation failure renders the
+    ``_assumptions.html`` stub with field errors and the echoed input at
+    422 (fragment-friendly for both HTMX and plain posts); success
+    renders the refreshed panel for an HTMX request and falls back to a
+    flash + redirect to the retirement page otherwise.  The old
+    settings-dashboard re-render is gone -- Settings > Retirement retired
+    into this page (Gate A ruling 6).
+    """
     # Preserve original user input for form re-display on error.
     raw_form_data = dict(request.form)
+
+    settings = (
+        db.session.query(UserSettings)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -421,40 +501,31 @@ def update_settings():
     # fractions directly.
     errors = _settings_schema.validate(request.form)
     if errors:
-        settings = (
-            db.session.query(UserSettings)
-            .filter_by(user_id=current_user.id)
-            .first()
-        )
-        if not settings:
-            settings = UserSettings(user_id=current_user.id)
-        # The dashboard skeleton includes only the active section's
-        # partial; ``_retirement.html`` reads only settings/form_data/
-        # errors, so the 422 re-render supplies exactly those.
         return render_template(
-            "settings/dashboard.html",
-            active_section="retirement",
+            "retirement/_assumptions.html",
             settings=settings,
             form_data=raw_form_data,
             errors=errors,
         ), 422
 
-    data = _settings_schema.load(request.form)
-
-    settings = (
-        db.session.query(UserSettings)
-        .filter_by(user_id=current_user.id)
-        .first()
-    )
-    if not settings:
+    if settings is None:
         flash("Settings not found.", "danger")
-        return redirect(url_for("settings.show", section="retirement"))
+        return redirect(url_for("retirement.dashboard"))
 
+    data = _settings_schema.load(request.form)
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
             setattr(settings, field_name, value)
 
     db.session.commit()
     logger.info("user_id=%d updated retirement settings", current_user.id)
+
+    if request.headers.get("HX-Request"):
+        return render_template(
+            "retirement/_assumptions.html",
+            settings=settings,
+            form_data=None,
+            errors=None,
+        )
     flash("Retirement settings updated.", "success")
-    return redirect(url_for("settings.show", section="retirement"))
+    return redirect(url_for("retirement.dashboard"))

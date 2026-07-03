@@ -1757,34 +1757,35 @@ class TestIsPretaxDispatch:
             assert data["retirement_account_projections"] == []
 
 
+def _seed_underfunded(seed_user, db_session):
+    """Salary + settings retirement date + capped 401(k), no pension.
+
+    Deterministically underfunded on both levers: the ~$80k salary
+    drives a required target well over $1M (net biweekly ~ $2,200 ->
+    required = net * 26 / 0.04 ~ $1.4M) while the $10k account at 7%
+    with zero contributions projects to only ~$40k by +240 months --
+    the contribution lever solves (and its solution, roughly
+    shortfall / AF ~ $1.3M / ~1100 ~ $1,200+/period, exceeds the
+    23500 / 26 = $903.85 per-period limit headroom), and retiring
+    later alone cannot close the gap even at +180 months
+    ($10k * 1.07^35 < $110k).  Shared by the lever-fragment (P2c) and
+    readiness-fragment (P3a) route tests.
+    """
+    from app.utils.dates import add_months
+
+    _create_salary_profile(seed_user, db_session)
+    settings = (
+        db_session.query(UserSettings)
+        .filter_by(user_id=seed_user["user"].id)
+        .one()
+    )
+    settings.planned_retirement_date = add_months(date.today(), 240)
+    _create_retirement_account(seed_user, db_session)
+    db_session.commit()
+
+
 class TestLeverFragment:
     """Tests for the /retirement/levers HTMX fragment (P2c)."""
-
-    @staticmethod
-    def _seed_underfunded(seed_user, db_session):
-        """Salary + settings retirement date + capped 401(k), no pension.
-
-        Deterministically underfunded on both levers: the ~$80k salary
-        drives a required target well over $1M (net biweekly ~ $2,200 ->
-        required = net * 26 / 0.04 ~ $1.4M) while the $10k account at 7%
-        with zero contributions projects to only ~$40k by +240 months --
-        the contribution lever solves (and its solution, roughly
-        shortfall / AF ~ $1.3M / ~1100 ~ $1,200+/period, exceeds the
-        23500 / 26 = $903.85 per-period limit headroom), and retiring
-        later alone cannot close the gap even at +180 months
-        ($10k * 1.07^35 < $110k).
-        """
-        from app.utils.dates import add_months
-
-        _create_salary_profile(seed_user, db_session)
-        settings = (
-            db_session.query(UserSettings)
-            .filter_by(user_id=seed_user["user"].id)
-            .one()
-        )
-        settings.planned_retirement_date = add_months(date.today(), 240)
-        _create_retirement_account(seed_user, db_session)
-        db_session.commit()
 
     def test_redirects_without_htmx(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1827,7 +1828,7 @@ class TestLeverFragment:
         ~$1,200+/period > $903.85 headroom); the retire-later line shows
         the not-within-180-months degenerate state.
         """
-        self._seed_underfunded(seed_user, db.session)
+        _seed_underfunded(seed_user, db.session)
         resp = auth_client.get(
             "/retirement/levers", headers={"HX-Request": "true"},
         )
@@ -1851,7 +1852,7 @@ class TestLeverFragment:
         though the solver itself reports not_within_cap; contribution=100
         renders the money macro's $100.00 as the displayed amount.
         """
-        self._seed_underfunded(seed_user, db.session)
+        _seed_underfunded(seed_user, db.session)
         resp = auth_client.get(
             "/retirement/levers?contribution=100.00&months=24",
             headers={"HX-Request": "true"},
@@ -1881,3 +1882,257 @@ class TestLeverFragment:
                 f"{query}: expected 422, got {resp.status_code}"
             )
             assert "errors" in resp.get_json()
+
+
+class TestAssumptionSaves:
+    """P3a per-field assumption saves through retirement.update_settings."""
+
+    def test_merit_horizon_persists(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A single-field merit-horizon POST persists the new value.
+
+        The column defaults to 5 (P1a migration); posting 10 stores the
+        plain integer (no percent conversion on a year count).
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "merit_raise_horizon_years": "10",
+        })
+        assert resp.status_code == 302
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.merit_raise_horizon_years == 10
+
+    def test_merit_horizon_out_of_bounds_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """51 exceeds the schema Range (0-50, mirroring the DB CHECK).
+
+        The stored value must stay at the column default of 5.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "merit_raise_horizon_years": "51",
+        })
+        assert resp.status_code == 422
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.merit_raise_horizon_years == 5
+
+    def test_htmx_save_returns_assumptions_fragment(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An HTMX save responds with the refreshed assumptions panel.
+
+        Stored fraction 0.0350 renders back through to_percent as
+        3.50 -> "%.1f" -> value="3.5" in the SWR row's input.
+        """
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"safe_withdrawal_rate": "3.5"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="assumptions-panel"' in html
+        assert 'value="3.5"' in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # 3.5 / 100 = 0.035 (schema percent-to-fraction pre_load).
+        assert settings.safe_withdrawal_rate == Decimal("0.0350")
+
+    def test_422_renders_assumptions_fragment_with_echo(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A validation failure is the assumptions fragment at 422.
+
+        -5% converts to -0.05 and fails Range(min=0); the fragment echoes
+        the submitted raw value and marks the field invalid -- the same
+        form-error semantics the retired settings-page re-render carried.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "-5",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert 'id="assumptions-panel"' in html
+        assert 'value="-5"' in html
+        assert "is-invalid" in html
+        assert "invalid-feedback" in html
+
+    def test_non_htmx_success_redirects_to_retirement(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The non-HTMX fallback lands on /retirement, not /settings.
+
+        Gate A ruling 6: Settings > Retirement retired, so the redirect
+        target is the retirement page that now owns these fields.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "4",
+        })
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers["Location"]
+        assert "/settings" not in resp.headers["Location"]
+
+    def test_assumed_return_has_no_save_path(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Return-rate-shaped fields are dropped, never persisted.
+
+        There is deliberately no schema field for an assumed annual
+        return (its save semantics are an open developer question), so
+        BaseSchema's unknown=EXCLUDE drops these keys and the POST is a
+        no-op success: every stored assumption is byte-identical after.
+        """
+        before = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        snapshot = (
+            before.safe_withdrawal_rate,
+            before.planned_retirement_date,
+            before.estimated_retirement_tax_rate,
+            before.merit_raise_horizon_years,
+        )
+        resp = auth_client.post("/retirement/settings", data={
+            "assumed_annual_return": "9",
+            "return_rate": "9",
+        })
+        assert resp.status_code == 302
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert (
+            after.safe_withdrawal_rate,
+            after.planned_retirement_date,
+            after.estimated_retirement_tax_rate,
+            after.merit_raise_horizon_years,
+        ) == snapshot
+
+
+class TestReadinessFragment:
+    """Tests for the /retirement/readiness HTMX what-if fragment (P3a)."""
+
+    def test_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET /retirement/readiness without HX-Request redirects."""
+        resp = auth_client.get("/retirement/readiness")
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers["Location"]
+
+    def test_requires_auth(self, client, db):
+        """Unauthenticated -> redirect to login."""
+        resp = client.get(
+            "/retirement/readiness", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_baseline_fragment_has_verdict_and_no_deltas(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """No overrides: the verdict renders, the deltas block does not."""
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-readiness="verdict"' in html
+        assert "% funded" in html
+        assert 'data-readiness="countdown"' in html
+        assert 'data-readiness="deltas"' not in html
+        assert 'data-lever=' not in html
+
+    def test_swr_override_renders_deltas(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A what-if SWR renders the baseline-vs-override delta line.
+
+        swr=2 (vs the stored 4%) doubles the required target (required =
+        gap * 12 / swr), so the funded ratio drops and the delta block
+        must render with the "Was ...% funded" baseline and the
+        points/dollars changes.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?swr=2", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-readiness="deltas"' in html
+        assert "Was " in html
+        assert "points" in html
+
+    def test_lever_override_includes_lever_lines(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """months=24 additionally renders the lever outcome lines."""
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-lever="retire-later"' in html
+        assert "+24 months" in html
+
+    def test_garbage_params_are_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Out-of-bounds what-if params return 422 with field errors."""
+        for query in (
+            "swr=-5",                       # negative percent
+            "merit_raise_horizon_years=51",  # above the 0-50 CHECK mirror
+            "months=181",                   # above the +180 solver cap
+            "contribution=-1",              # negative money
+        ):
+            resp = auth_client.get(
+                f"/retirement/readiness?{query}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 422, (
+                f"{query}: expected 422, got {resp.status_code}"
+            )
+            assert "errors" in resp.get_json()
+
+
+class TestDashboardReadinessContext:
+    """P3a: the dashboard passes the direction-D baselines to the template."""
+
+    def test_dashboard_context_carries_readiness_and_levers(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The render context gains readiness + levers; the page still 200s.
+
+        The current dashboard.html ignores both keys (zero template edits
+        in P3a), so the assertion captures the render context via the
+        template_rendered signal instead of scraping HTML.
+        """
+        from flask import template_rendered
+
+        captured = []
+
+        def record(sender, template, context, **extra):
+            if template.name == "retirement/dashboard.html":
+                captured.append(context)
+
+        template_rendered.connect(record, app)
+        try:
+            resp = auth_client.get("/retirement")
+            assert resp.status_code == 200
+        finally:
+            template_rendered.disconnect(record, app)
+
+        assert captured, "retirement/dashboard.html was not rendered"
+        context = captured[-1]
+        assert "readiness" in context
+        assert "levers" in context
+        # Shape spot-checks: the producers' signature keys are present.
+        assert "funded_ratio" in context["readiness"]
+        assert "no_horizon" in context["levers"]

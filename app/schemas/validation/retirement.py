@@ -124,6 +124,17 @@ class RetirementSettingsSchema(BaseSchema):
     ``user_settings`` DB CHECKs (``[0, 1]`` on both columns).  The
     ``@pre_load`` converts the form's user-facing percent (e.g.
     ``"4"`` for 4% SWR) to its fraction equivalent (``"0.04"``).
+
+    Every field is optional, so the assumptions panel's per-field saves
+    (P3a: one field per POST) and a multi-field submit validate through
+    the same schema.  ``merit_raise_horizon_years`` is a plain year
+    count (no percent conversion) whose 0-50 ``Range`` mirrors the DB
+    CHECK ``ck_user_settings_valid_merit_horizon``; it is NOT
+    ``allow_none`` -- the column is NOT NULL, so an empty submit means
+    "not provided" (the key is dropped), never a NULL write.  There is
+    deliberately NO field for an assumed annual return: its save
+    semantics are an open developer question, so the panel's return row
+    stays what-if-only.
     """
 
     _PERCENT_FIELDS = (
@@ -144,6 +155,9 @@ class RetirementSettingsSchema(BaseSchema):
     estimated_retirement_tax_rate = fields.Decimal(
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
+    )
+    merit_raise_horizon_years = fields.Integer(
+        validate=validate.Range(min=0, max=50),
     )
 
 
@@ -187,6 +201,37 @@ class RetirementGapQuerySchema(BaseSchema):
         places=5, as_string=True, allow_none=True,
         validate=validate.Range(
             min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
+        ),
+    )
+
+
+class RetirementReadinessQuerySchema(RetirementGapQuerySchema):
+    """Validates the /retirement/readiness HTMX what-if query string (P3a).
+
+    Inherits ``swr`` / ``return_rate`` (and the percent-to-fraction
+    ``@pre_load``) from :class:`RetirementGapQuerySchema` so the
+    assumption what-ifs share one definition with the legacy gap
+    fragment, and adds the remaining panel overrides:
+    ``merit_raise_horizon_years`` (0-50, mirroring the DB CHECK and the
+    settings schema), plus the two lever stepper values with the same
+    bounds as :class:`RetirementLeverQuerySchema` (``months`` capped at
+    the P2b +180 search bound; ``contribution`` a money amount, so it is
+    deliberately NOT in ``_PERCENT_FIELDS``).  All optional: an absent
+    parameter means "stored value" (no what-if on that row).
+    """
+
+    merit_raise_horizon_years = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=0, max=50),
+    )
+    months = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=0, max=180),
+    )
+    contribution = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000"),
         ),
     )
 

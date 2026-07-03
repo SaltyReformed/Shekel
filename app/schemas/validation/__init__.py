@@ -119,6 +119,7 @@ from app.schemas.validation.retirement import (
     PensionProfileUpdateSchema,
     RetirementGapQuerySchema,
     RetirementLeverQuerySchema,
+    RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
 )
 from app.schemas.validation.salary import (
@@ -209,6 +210,7 @@ __all__ = [
     "RegisterSchema",
     "RetirementGapQuerySchema",
     "RetirementLeverQuerySchema",
+    "RetirementReadinessQuerySchema",
     "RetirementSettingsSchema",
     "SalaryProfileCreateSchema",
     "SalaryProfileUpdateSchema",
