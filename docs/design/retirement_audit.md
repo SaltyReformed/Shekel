@@ -535,6 +535,37 @@ when the pension covers everything.
   (investment + loan dashboards consume it; verified 2026-07-03).
 - Popovers become on-surface captions. Both themes, desktop + mobile, CSP-clean.
 
+### Pre-PR review cycle (2026-07-03) -- COMPLETE
+
+A full-branch code review (dev...HEAD) ran after P3c; all findings fixed same day (five commits
+through `1d9eed7c`; suite 6947 passed, pylint 10.00/10):
+
+- **H1 (high, fixed):** a recurring cola raise scheduled to START in a future year beyond the merit
+  cutoff was pulled backward to the cutoff and applied early, inflating the whole salary path (~21%
+  by year 6 in the reproduction) and every downstream figure. Re-anchor now floors at the raise's
+  own effective year; pinned hand-computed.
+- **M1 (fixed):** a past planned retirement date saved via the assumptions panel produced a hero
+  shortfall beside an "already funded" lever line. Settings date now validates must-be-future
+  (mirroring the pension schema) AND the solver gained an honest `past_horizon` state as the
+  backstop for pension-sourced past dates.
+- **M2 (fixed):** the P2c `/retirement/levers` endpoint was dead (steppers ride the readiness
+  fragment); route + schema + tests deleted, unique coverage consolidated.
+- **L1 (fixed):** an explicitly saved 0% tax rate no longer renders "Not set" -- resolver uses
+  `is None`; closes the LOW-05 carry-open's display half (the bracket-fallback product question
+  stays open).
+- **L5b (fixed):** lever outcome lines now carry the shortfall dollars per the locked anatomy.
+- **L2/L4 (documented):** needed-path interior frame mix (endpoints exact) and the mixed
+  flat+percentage cola split artifact, each with docstring notes and a pinning test.
+- **L3 (recorded, deferred):** extends finding D8 -- with two pensions of different dates in unlucky
+  order, the retained salary series may not match the resolved (max) retirement date. Latent until a
+  second pension exists; belongs to the same future multi-profile pass as D8.
+
+**Parked for the P4 acceptance drive (developer rulings):** (a) L5a -- per-row Reset control + delta
+chips on the assumptions rail vs the as-built delta line in the hero with clear-to-reset; (b) L5c --
+lever answers currently solve at STORED settings and ignore an active what-if (the hero and lever
+lines can then disagree under a what-if); (c) confirm that a ONE-TIME cola-type raise dated after
+the merit cutoff is intentionally dropped (as planned: only recurring colas extrapolate).
+
 ### P4 -- live verification + acceptance
 
 Branch into the main checkout (coordinated), drive on dev data: SSOT cross-checks (funded ratio
