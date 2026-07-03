@@ -51,11 +51,15 @@ create (``account_service.create_account``), the anchor true-up
 ``posting_service`` sync tails (:func:`self_heal_anchor_corrections`), the
 ``create_baseline`` recovery path, and the account-type boundary changes
 (the crud/type routes re-sync an allowed crossing; the validation guards
-refuse one on a posted account).  C7 adds the historical backfill.
+refuse one on a posted account).  C7 adds the deploy-wide historical
+backfill (:func:`backfill_all_account_anchor_postings`), reusing the
+identical go-forward sync so a backfilled correction is identical to a
+go-forward one.
 """
 
 from ._anchors import reconcile_account_anchor_corrections
 from ._sync import (
+    backfill_all_account_anchor_postings,
     resync_user_account_anchor_postings,
     self_heal_anchor_corrections,
     sync_account_anchor_postings,
@@ -70,6 +74,7 @@ from ._walk import (
 __all__ = [
     "AccountAnchorCorrection",
     "AccountAnchorFact",
+    "backfill_all_account_anchor_postings",
     "reconcile_account_anchor_corrections",
     "resync_user_account_anchor_postings",
     "self_heal_anchor_corrections",

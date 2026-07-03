@@ -6,6 +6,7 @@ test file.  Import functions from here in test modules that need them.
 """
 
 import importlib.util
+import os
 import pathlib
 import re
 import sys
@@ -734,6 +735,45 @@ def ledger_accounts_for_account(db_session, account_id):
     )
 
 
+def ledger_account_of_kind(db_session, account_id, kind_enum):
+    """Return an account's ledger row of a given kind (linked / anchor_equity), or None.
+
+    The shared kind-scoped lookup behind :func:`linked_ledger_account` and the
+    account-anchor suites' anchor-equity lookups.  Since Step 5's
+    ``(account_id, kind_id)`` re-key an account can carry TWO rows sharing its
+    ``account_id`` (the ``linked`` row plus its ``anchor_equity`` equity twin),
+    so any "the account's ledger account" lookup must say WHICH kind -- a bare
+    ``[0]`` on :func:`ledger_accounts_for_account` is insertion-order-dependent.
+    Holding the ``(account_id, kind_id)`` query in one place keeps the several
+    kind-scoped lookups the posting suites use from drifting (a duplicate-code
+    finding otherwise).
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id.
+        kind_enum: The :class:`~app.enums.LedgerAccountKindEnum` member to
+            resolve (e.g. ``LINKED`` or ``ANCHOR_EQUITY``).
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount` of that kind for
+        the account, or ``None`` when the account has no such row yet.
+    """
+    # pylint: disable=import-outside-toplevel  -- same collection-time-safety
+    # convention every helper in this module follows (no app symbols at module
+    # load).
+    from app import ref_cache
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(
+            account_id=account_id,
+            kind_id=ref_cache.ledger_account_kind_id(kind_enum),
+        )
+        .one_or_none()
+    )
+
+
 def linked_ledger_account(db_session, account_id):
     """Return the account's LINKED ledger row, never its anchor-equity twin.
 
@@ -743,7 +783,8 @@ def linked_ledger_account(db_session, account_id):
     helper that grabs "the account's ledger account" must say WHICH kind --
     a bare ``[0]`` on :func:`ledger_accounts_for_account` is
     insertion-order-dependent.  This is the shared linked-kind lookup the
-    posting suites key their cash-leg assertions off.
+    posting suites key their cash-leg assertions off (the ``LINKED`` case of
+    :func:`ledger_account_of_kind`).
 
     Args:
         db_session: The test ``db.session``.
@@ -753,22 +794,12 @@ def linked_ledger_account(db_session, account_id):
         The LINKED :class:`~app.models.ledger_account.LedgerAccount`, or
         ``None`` when the account has no pairing yet.
     """
-    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # pylint: disable=import-outside-toplevel  -- same collection-time-safety
     # convention as the helpers above (no app symbols at module load).
-    # pylint: disable=import-outside-toplevel
-    from app import ref_cache
     from app.enums import LedgerAccountKindEnum
-    from app.models.ledger_account import LedgerAccount
 
-    return (
-        db_session.query(LedgerAccount)
-        .filter_by(
-            account_id=account_id,
-            kind_id=ref_cache.ledger_account_kind_id(
-                LedgerAccountKindEnum.LINKED,
-            ),
-        )
-        .one_or_none()
+    return ledger_account_of_kind(
+        db_session, account_id, LedgerAccountKindEnum.LINKED,
     )
 
 
@@ -1012,6 +1043,42 @@ def load_migration_module(filename):
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_init_database_module():
+    """Load ``scripts/init_database.py`` by path (it is not a package member).
+
+    ``scripts`` has no ``__init__``, so the deploy host is loaded by absolute
+    path -- the same importlib idiom :func:`load_migration_module` uses -- so a
+    test can call its post-migration backfill hooks directly.  The script
+    mutates ``DATABASE_URL_APP`` to ``""`` at import time (its deploy-host
+    owner-role override, which must run BEFORE the ``app`` import), a
+    process-global side effect this restores around the load so it never leaks
+    into the test session.  Shared by the loan and account backfill suites so
+    the importlib + env-restore boilerplate lives in one place (a duplicate-code
+    finding otherwise).
+
+    Returns:
+        The loaded ``init_database`` module object, exposing the deploy hooks
+        (``backfill_loan_payment_postings_after_migration`` /
+        ``backfill_all_account_anchor_postings_after_migration``).
+    """
+    script_path = (
+        pathlib.Path(__file__).resolve().parents[1] / "scripts" / "init_database.py"
+    )
+    saved = os.environ.get("DATABASE_URL_APP")
+    spec = importlib.util.spec_from_file_location(
+        script_path.stem, str(script_path),
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if saved is None:
+            os.environ.pop("DATABASE_URL_APP", None)
+        else:
+            os.environ["DATABASE_URL_APP"] = saved
     return module
 
 

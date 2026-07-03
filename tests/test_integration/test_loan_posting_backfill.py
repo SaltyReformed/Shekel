@@ -40,8 +40,6 @@ invisible to it).
 """
 from __future__ import annotations
 
-import importlib.util
-import os
 import pathlib
 from datetime import date
 from decimal import Decimal
@@ -68,6 +66,7 @@ from tests._test_helpers import (
     freeze_today,
     ledger_accounts_for_account,
     ledger_net,
+    load_init_database_module,
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
@@ -94,33 +93,7 @@ _GENESIS_MIGRATION_FILENAME = "f3d6b1a8c2e4_loan_genesis_postings_data_boundary.
 _GENESIS_MIGRATION = load_migration_module(_GENESIS_MIGRATION_FILENAME)
 
 
-def _load_init_database_module():
-    """Load ``scripts/init_database.py`` by path (it is not a package member).
-
-    ``scripts`` has no ``__init__``, so the deploy host is loaded by absolute
-    path -- the same importlib idiom :func:`load_migration_module` uses -- so a
-    test can call its post-migration backfill hook directly.  The script mutates
-    ``DATABASE_URL_APP`` to "" at import time (its deploy-host owner-role
-    override, which must run BEFORE the ``app`` import), a process-global side
-    effect this restores around the load so it never leaks into the test session.
-    """
-    script_path = (
-        pathlib.Path(__file__).resolve().parents[2] / "scripts" / "init_database.py"
-    )
-    saved = os.environ.get("DATABASE_URL_APP")
-    spec = importlib.util.spec_from_file_location(script_path.stem, str(script_path))
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if saved is None:
-            os.environ.pop("DATABASE_URL_APP", None)
-        else:
-            os.environ["DATABASE_URL_APP"] = saved
-    return module
-
-
-_INIT_DB = _load_init_database_module()
+_INIT_DB = load_init_database_module()
 
 
 # ---------------------------------------------------------------------------

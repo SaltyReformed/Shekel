@@ -119,7 +119,54 @@ in throughout. Developer approval: 2026-07-03.
   settled-transfer attribution seam, M1 scenario-creation sync, the C1
   timeliness note, the L1 transitional downgrade hazard) are scheduled as
   follow-up commits F1-F3 at the foot of Section 6; L1 closes inside C7.
-- C7 (backfill + boundary migration) -- pending
+- C7 (backfill + boundary migration) -- DONE (`c9f2e6a4b1d8` migration +
+  service + deploy hook + suite): `account_posting_service.backfill_all_account_anchor_postings`
+  sweeps every non-loan account across all owners
+  (`_all_non_loan_account_ids`) through the SAME go-forward
+  `sync_account_anchor_postings_all_scenarios` (backfill == go-forward by
+  construction), so a backfilled correction is identical to a go-forward one.
+  DRY-refactored to mirror the loan package: a `_non_loan_accounts_id_query`
+  base builder feeds both the all-owners enumerator and the existing per-user
+  one, and a shared `_reconcile_account_ids` loop backs both the backfill and
+  `resync_user_account_anchor_postings` (the per-user resync now delegates,
+  behavior-preserving); exported from `__init__`.  Deploy hook
+  `scripts/init_database.backfill_all_account_anchor_postings_after_migration`
+  (self-contained rollback + `ref_cache.init` + backfill + commit, mirroring
+  the loan hook) wired into `__main__` after the loan backfill.  The data
+  boundary migration `c9f2e6a4b1d8` (down_revision `b7d9f3a1c5e8`, the new
+  head; mirror of `f3d6b1a8c2e4`): upgrade is a documented no-op; downgrade
+  deletes `account_opening`/`account_trueup` entries (legs cascade) then
+  `anchor_equity` ledger accounts by kind, resolving ref ids by name with
+  fail-loud guards.  This CLOSES the C6-to-C7 transitional downgrade hazard
+  (L1): because the chain is C7 above C3 (`b7d9f3a1c5e8`) above C2
+  (`a4c8e2f6b1d3`), a downgrade first removes the corrections + `anchor_equity`
+  twins, so C3's twin guard passes and C2's RESTRICT deletes of the ref rows do
+  not jam -- verified EXECUTABLE up/down/up on a prod-schema clone carrying a
+  real seeded `anchor_equity` row (C7 cleared it -> C3 guard saw 0 twins -> C2
+  ref delete clean).  It also makes true the promise
+  `test_loan_posting_backfill.py`'s kind sweep relies on (the account-correction
+  sources downgrade first in the linear chain).  New oracle-adjacent suite
+  `test_posting_ledger_account_backfill.py` (14): posts a cleared opening;
+  restores the opening leaving the settled cash entry intact; opening + true-up
+  on a multi-anchor account (the `account_trueup` path); a $0-anchor books
+  nothing (no entry, no twin, stays hard-deletable); idempotent / no-double-post
+  x2; coverage (all accounts across owners with a loan structurally excluded,
+  every account, every scenario); the deploy-hook commit observed from a
+  separate connection; the revision pair; downgrade removes the corrections +
+  twins while keeping the Step-2 cash entry AND the disjoint loan genesis; the
+  downgrade-source guard.  `load_init_database_module` and a kind-scoped
+  `ledger_account_of_kind` were promoted to `tests/_test_helpers.py` (the loan
+  suite re-pointed; `linked_ledger_account` now delegates).  Per the commit's
+  adversarial review (clean -- no CRITICAL/HIGH/MEDIUM; migration reversibility
+  re-verified independently by the reviewer): the two LOW test-only items were
+  folded in (the `ledger_account_of_kind` dedup + the true-up / $0 coverage);
+  the remaining like-shaped `_ledger_of_kind` / `_correction_entries` locals in
+  `test_account_posting_service.py` (C5) can later delegate to the same shared
+  helpers (out of C7 scope).  Targeted 14 + loan backfill 17 + 325 across the
+  `linked_ledger_account` users (both reconciliation oracles included) green;
+  `pylint app/ scripts/` 10.00 on the touched files (the migration carries only
+  the standard Alembic-idiom findings, identical to the shipped loan boundary
+  migration and outside the `pylint app/` gate); single head `c9f2e6a4b1d8`.
 - F1 (settled-transfer attribution seam) / F3 (timeliness display-tz) --
   follow-up commits after C13; F2 (scenario-creation sync) pinned to R8.
   See Section 6, "Follow-up commits".

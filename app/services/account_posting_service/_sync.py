@@ -17,6 +17,10 @@ scenario):
   CASCade disposed the user's correction entries with the wiped periods, and
   the ``create_baseline`` recovery path, so openings are not silently
   stranded for a user who lacked a baseline at account-create time).
+* :func:`backfill_all_account_anchor_postings` -- the one-time, deploy-wide
+  historical sweep over every non-loan account across all owners (C7),
+  reusing the identical go-forward sync so backfill == go-forward by
+  construction.
 * :func:`self_heal_anchor_corrections` -- the effect-time self-heal the
   tails of ``posting_service.sync_transfer_postings`` /
   ``sync_transaction_postings`` invoke after emitting source delta entries:
@@ -268,18 +272,56 @@ def self_heal_anchor_corrections(
             sync_account_anchor_postings(account_id, scenario_id)
 
 
+def _non_loan_accounts_id_query():
+    """Return the base query for non-loan account ids, ascending.
+
+    The one query definition the all-owners sweep and the per-user resync
+    both build on: every account whose type is not amortizing
+    (``has_amortization IS FALSE`` -- exactly the column ``classify_account``
+    maps to ``AMORTIZING``, so this SQL filter and the per-account guard can
+    never disagree).  Deliberately NOT filtered by ``is_active``: an archived
+    account's posted corrections must keep reconciling (archiving disables new
+    activity, it does not erase posted facts).  The two enumerators differ only
+    in whether they add a ``user_id`` scope, so keeping the join / filter /
+    order in one builder is what keeps them from drifting.
+
+    Returns:
+        A SQLAlchemy ``Query`` yielding ``(account_id,)`` rows for every
+        non-loan account, ascending by id -- NOT executed; callers add a
+        ``user_id`` filter (or none) and call ``.all()``.
+    """
+    return (
+        db.session.query(Account.id)
+        .join(AccountType, Account.account_type_id == AccountType.id)
+        .filter(AccountType.has_amortization.is_(False))
+        .order_by(Account.id)
+    )
+
+
+def _all_non_loan_account_ids() -> list[int]:
+    """Return every non-loan account id, ascending (all owners).
+
+    The all-owners enumerator behind the deploy-wide backfill
+    (:func:`backfill_all_account_anchor_postings`), the cash analogue of
+    ``loan_loaders.load_all_loan_account_ids``.  Deliberately NOT user-scoped:
+    it is a system / deploy-time sweep over every owner's non-loan accounts
+    (like the Step-2 / Step-3 settled-row backfills), and each posted
+    correction still carries its own owner (the account's history row and
+    scenario), so no row is mis-attributed.
+
+    Returns:
+        The non-loan account ids, ascending (already distinct -- ``Account.id``
+        is the primary key); empty on an account-free database.
+    """
+    return [account_id for (account_id,) in _non_loan_accounts_id_query().all()]
+
+
 def _non_loan_account_ids_for_user(user_id: int) -> list[int]:
     """Return every non-loan account id one user owns, ascending.
 
-    The per-user enumerator for :func:`resync_user_account_anchor_postings`:
-    all of the user's accounts whose type is not amortizing
-    (``has_amortization IS FALSE`` -- exactly the column
-    ``classify_account`` maps to ``AMORTIZING``, so the SQL filter and the
-    per-account guard can never disagree).  Deliberately NOT filtered by
-    ``is_active``: an archived account's posted corrections must keep
-    reconciling (archiving disables new activity, it does not erase posted
-    facts).  The loan mirror is
-    ``loan_loaders.load_loan_account_ids_for_user``.
+    The per-user counterpart to :func:`_all_non_loan_account_ids`, scoping the
+    shared base query (:func:`_non_loan_accounts_id_query`) to *user_id*.  The
+    loan mirror is ``loan_loaders.load_loan_account_ids_for_user``.
 
     Args:
         user_id: The owning user whose non-loan accounts to enumerate.
@@ -287,17 +329,73 @@ def _non_loan_account_ids_for_user(user_id: int) -> list[int]:
     Returns:
         The account ids, ascending.
     """
-    rows = (
-        db.session.query(Account.id)
-        .join(AccountType, Account.account_type_id == AccountType.id)
-        .filter(
-            Account.user_id == user_id,
-            AccountType.has_amortization.is_(False),
-        )
-        .order_by(Account.id)
+    return [
+        account_id
+        for (account_id,) in _non_loan_accounts_id_query()
+        .filter(Account.user_id == user_id)
         .all()
-    )
-    return [row[0] for row in rows]
+    ]
+
+
+def _reconcile_account_ids(account_ids: list[int]) -> list[int]:
+    """Reconcile the given non-loan accounts across all their scenarios; return them.
+
+    The shared body of the deploy-wide backfill
+    (:func:`backfill_all_account_anchor_postings`) and the per-user resync
+    (:func:`resync_user_account_anchor_postings`), mirroring
+    ``loan_posting_service._reconcile_loan_account_ids``: each id is reconciled
+    through :func:`sync_account_anchor_postings_all_scenarios`, the identical
+    go-forward sync (so a reconciled correction is identical to a go-forward one
+    by construction -- there is no second implementation that could drift).  The
+    two public functions differ ONLY in their enumerator (all accounts vs one
+    user's), which stays with each of them; this holds the loop itself in one
+    place.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary.
+
+    Args:
+        account_ids: The non-loan account ids to reconcile.
+
+    Returns:
+        ``account_ids`` unchanged, for the callers' return contract.
+    """
+    for account_id in account_ids:
+        sync_account_anchor_postings_all_scenarios(account_id)
+    return account_ids
+
+
+def backfill_all_account_anchor_postings() -> list[int]:
+    """Reconcile every non-loan account's anchor corrections (deploy backfill).
+
+    The one-time, production-wide historical backfill (Build-Order Step 5, C7):
+    for every non-loan account across all owners
+    (:func:`_all_non_loan_account_ids`), reconcile its opening / true-up anchor
+    corrections via :func:`sync_account_anchor_postings_all_scenarios`.  This
+    posts the corrections for any account / anchor asserted BEFORE the C6
+    go-forward wiring shipped (which therefore carries none), so every non-loan
+    linked ledger sums to an ABSOLUTE balance on real historical data and the
+    trial balance closes app-wide.
+
+    Reuses the SAME per-account sync the go-forward chokepoints call
+    (:func:`_reconcile_account_ids`), so a backfilled correction is identical
+    to the go-forward one by construction -- there is no second implementation
+    that could drift.  Idempotent and self-healing via reconcile-to-target: an
+    account already carrying its go-forward corrections is already at target, so
+    nothing is re-posted -- the backfill never double-posts, and a re-run at the
+    same state writes nothing.  A $0-anchor account books nothing (no entry, no
+    ``anchor_equity`` row), staying hard-deletable.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary: the
+    deploy hook
+    (``scripts.init_database.backfill_all_account_anchor_postings_after_migration``,
+    which initialises ``ref_cache`` first because the migration host does not),
+    the backfill suite, or the reconciliation oracle.
+
+    Returns:
+        The non-loan account ids reconciled, ascending -- for the deploy log and
+        test introspection (empty on an account-free database).
+    """
+    return _reconcile_account_ids(_all_non_loan_account_ids())
 
 
 def resync_user_account_anchor_postings(user_id: int) -> list[int]:
@@ -305,11 +403,10 @@ def resync_user_account_anchor_postings(user_id: int) -> list[int]:
 
     The per-user chokepoint, mirroring
     ``loan_posting_service.resync_user_loan_postings``: iterates the user's
-    non-loan accounts (:func:`_non_loan_account_ids_for_user`) and
-    reconciles each through
-    :func:`sync_account_anchor_postings_all_scenarios` -- the identical
-    go-forward sync, so a re-synced correction is identical to a go-forward
-    one by construction.
+    non-loan accounts (:func:`_non_loan_account_ids_for_user`) and reconciles
+    each through :func:`_reconcile_account_ids` -- the identical go-forward
+    sync the deploy backfill uses, so a re-synced correction is identical to a
+    go-forward one by construction.
 
     Two callers need it: ``pay_period_admin.reset_pay_periods`` (the wipe
     CASCADE-disposed the user's correction entries with their periods and
@@ -329,7 +426,4 @@ def resync_user_account_anchor_postings(user_id: int) -> list[int]:
         The non-loan account ids reconciled, ascending (empty when the user
         has none).
     """
-    account_ids = _non_loan_account_ids_for_user(user_id)
-    for account_id in account_ids:
-        sync_account_anchor_postings_all_scenarios(account_id)
-    return account_ids
+    return _reconcile_account_ids(_non_loan_account_ids_for_user(user_id))
