@@ -38,10 +38,9 @@ re-evaluation with no anchoring on past decisions.
 > checker (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
 > further module split is warranted, tracked in R10 -- now DONE, see below). M3's reader-contract
 > half (Step-5 reporting rules), R8, and R9 remain open; R10 housekeeping is IN PROGRESS
-> (transfer_service split, L1, L8, L2, L10, and the `shekel_checkers` package split all DONE
-> 2026-07-03, with the L9 / C11 decisions recorded; L6 -- and an optional `tools/pylint/` enforced
-> floor now that the checker package is clean at 10.00 -- remain, per-sub-item commits in the R10
-> note under the Section 6 table).
+> (transfer_service split, L1, L8, L2, L10, the `shekel_checkers` package split, and its
+> `tools/pylint/` 10.00 enforced floor all DONE 2026-07-03, with the L9 / C11 decisions recorded;
+> L6 remains, per-sub-item commits in the R10 note under the Section 6 table).
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -812,22 +811,29 @@ Each major decision re-examined from scratch against the alternatives it beat.
 >   (`--fail-on=E,F,shekel-*`) both exit 0. The four references the split made
 >   stale (CLAUDE.md, the ci.yml gate comment, two test docstrings) were
 >   updated in the same commit. The audit's "consider giving `tools/pylint/`
->   its own enforced floor once clean" is now actionable (the package is clean
->   at 10.00) and RECOMMENDED -- symmetric with the `app/` and `scripts/`
->   floors, and the checker code is load-bearing (it was silently at 9.54) --
->   but left as an operator decision because wiring a new CI step + pre-commit
->   hook touches the gate surface (see the note under Remaining).
+>   its own enforced floor once clean" is now addressed -- see the next bullet.
+> - **`tools/pylint/` enforced floor -- DONE** (`d356160`): the custom checkers
+>   ARE the enforcement machinery, so they now hold the same 10.00/10 floor they
+>   impose on `app/` and `scripts/` -- the gate that would have caught the R3
+>   status-fence extension silently dropping the plugin to 9.54. Added a `Lint
+>   checker package with pylint` step in `ci.yml` (5a2) and a `pylint-checkers`
+>   pre-commit hook, both
+>   `pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-*`.
+>   Scoped to the `shekel_checkers/` package, NOT all of `tools/pylint/`: the
+>   `tests/` subtree is 9.84 and stays out of general pylint scope (ratified
+>   decision #1), covered by the `shekel-checker-tests` pytest hook. The
+>   canonical `--fail-on` list is spelled identically, so the existing L1
+>   gate-consistency test now validates the two new occurrences for drift with
+>   no test change; its location docstring is updated (five -> seven executable
+>   locations). Proven non-vacuous: the gate exits 0 on the package and exits 24
+>   on the 9.84 `tests/` dir.
 > - **Decisions resolved 2026-07-03 (developer):** L9 tax-year attribution ->
 >   DISPLAY-timezone civil date (recorded under the L9 finding; implementation
 >   is a separate follow-up, not this batch), and both C11 forks RATIFIED
 >   (Section 5).
 > - **Remaining implementation:** L6 (cross-page reader de-dup / wire one to a
->   route value); the decided-but-unimplemented L9 display-tz attribution; and
->   the optional `tools/pylint/` enforced floor recommended above (a new
->   `pylint tools/pylint/shekel_checkers/ --fail-under=10` step in CI +
->   pre-commit, mirroring the `app/` and `scripts/` gates -- the checker
->   package, not its tests, which stay out of general pylint scope per ratified
->   decision #1). The L2 note that the genesis-reader allowlist still grants
+>   route value); and the decided-but-unimplemented L9 display-tz attribution.
+>   The L2 note that the genesis-reader allowlist still grants
 >   all of `loan_payment_service` (intent: `confirmed_loan_view` only) is left
 >   as-is: function-granularity W9906 is a larger checker change, and the R5
 >   follow-up already fences that module at function granularity for the
