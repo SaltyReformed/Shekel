@@ -89,7 +89,13 @@ class TestPropertyDetailPage:
     """The detail page renders the equity figures and the rate form."""
 
     def test_detail_renders_equity(self, app, auth_client, db, seed_user, seed_periods_today):
-        """GET the property page shows market value, equity, and LTV."""
+        """GET the property page shows market value, equity, and LTV.
+
+        Label strings match the Fable 5 band rebuild
+        (docs/design/account_detail_audit.md, Surface 5 verdict +
+        decisions 6-7): the hero label is "Equity" and the supporting
+        chips are "Market value" / "Secured debt" / "Loan-to-value".
+        """
         with app.app_context():
             acct = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
@@ -99,9 +105,11 @@ class TestPropertyDetailPage:
         resp = auth_client.get(f"/accounts/{acct_id}/property")
         assert resp.status_code == 200
         body = resp.data
-        assert b"Home Equity" in body
-        assert b"Market Value" in body
-        assert b"Loan-to-Value" in body
+        assert b"Equity" in body
+        assert b"Market value" in body
+        assert b"Secured debt" in body
+        assert b"Loan-to-value" in body
+        assert b"Secured by" in body
         # Market value renders (entered as 400000.00).
         assert b"400,000" in body
 

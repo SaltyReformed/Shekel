@@ -1,5 +1,7 @@
 /* Shekel accounts screen -- the "Net Worth Cockpit" rebuild
-   (docs/design/accounts_audit.md, "Chosen direction: Net Worth Cockpit").
+   (docs/design/accounts_audit.md, "Chosen direction: Net Worth Cockpit")
+   plus the account DETAIL pages that share its band vocabulary
+   (docs/design/account_detail_audit.md, rebuild decisions 6-7).
    Anatomy: net-worth hero band (headline + chips + forward trend chart),
    the auto-fit account grid grouped by category with a per-group subtotal,
    the Property home-equity cards, the savings section, and the debt
@@ -16,6 +18,9 @@
    from dashboard.css; adds only the cockpit-specific hero figure (the
    dashboard's .pulse-hero__num is a click-to-edit control with a pointer
    cursor, which this read-only headline must not imply).
+   The nw-sky / nw-hero* / nw-statrow band is ALSO the account detail
+   pages' band (accounts/cash_detail.html): same read-only hero, same
+   chip row -- one vocabulary, per the audit's decision 6.
    ============================================= */
 .nw-sky {
   display: flex;
@@ -432,6 +437,54 @@
 }
 
 /* =============================================
+   ACCOUNT DETAIL (accounts/cash_detail.html)
+   Shares the band vocabulary above (.pulse-canvas / .nw-sky / .nw-hero*
+   / .pulse-chip* / .pulse-chart); the acctd-* classes below add only
+   what is new on the detail pages: the header type tag, the
+   horizon-delta chip line, the checking variant's Open Grid slot, the
+   no-chart empty note, and the below-band Parameters card
+   (docs/design/account_detail_audit.md, rebuild decisions 6-7).
+   ============================================= */
+.acctd-type-tag {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 99px;
+  padding: 0.125rem 0.5rem;
+}
+
+/* Horizon delta vs the current balance: gain in the done token, loss in
+   danger; the +/- sign the template renders carries the meaning for
+   color-blind users (color is never the only signal). */
+.acctd-chip__delta {
+  font-size: 0.71875rem;
+  color: var(--shekel-done);
+}
+
+.acctd-chip__delta--neg {
+  color: var(--shekel-danger);
+}
+
+.acctd-open-grid {
+  margin-left: auto;
+  align-self: center;
+  white-space: nowrap;
+}
+
+.acctd-empty {
+  padding: 0.75rem 1.375rem 1.125rem;
+  font-size: 0.875rem;
+  color: var(--shekel-text-muted);
+}
+
+.acctd-params {
+  max-width: 26.25rem;
+}
+
+/* =============================================
    RESPONSIVE
    ============================================= */
 @media (max-width: 767.98px) {
@@ -442,5 +495,13 @@
 
   .nw-statrow {
     margin: 0.25rem 0 0;
+  }
+
+  .acctd-open-grid {
+    margin-left: 0;
+  }
+
+  .acctd-params {
+    max-width: none;
   }
 }

@@ -109,7 +109,12 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/accounts/99999/anchor-form"),
     # accounts.anchor_display
     ("GET", "/accounts/99999/anchor-display"),
-    ("GET", "/accounts/99999/interest"),  # accounts.interest_detail
+    # accounts.cash_detail -- the merged cash-account detail page
+    ("GET", "/accounts/99999/details"),
+    # accounts.checking_detail -- redirect stub to cash_detail
+    ("GET", "/accounts/99999/checking"),
+    # accounts.interest_detail -- redirect stub to cash_detail
+    ("GET", "/accounts/99999/interest"),
     # accounts.update_interest_params
     ("POST", "/accounts/99999/interest/params"),
 

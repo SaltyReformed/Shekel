@@ -184,7 +184,7 @@ def _setup_redirect_url(account, kind):
         str: The ``url_for`` target to redirect to.
     """
     if kind is AccountProjectionKind.INTEREST:
-        return url_for("accounts.interest_detail", account_id=account.id, setup=1)
+        return url_for("accounts.cash_detail", account_id=account.id, setup=1)
     if kind is AccountProjectionKind.AMORTIZING:
         return url_for("loan.dashboard", account_id=account.id, setup=1)
     if kind is AccountProjectionKind.INVESTMENT:

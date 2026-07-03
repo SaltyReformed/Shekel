@@ -91,7 +91,13 @@ def _create_other_hysa(second_user, db_session):
 
 
 class TestHysaDetailView:
-    """GET /accounts/<id>/interest."""
+    """GET /accounts/<id>/details (the merged cash detail page).
+
+    The Fable 5 overhaul merged the interest detail page into
+    ``accounts.cash_detail``; an interest-bearing HYSA now renders its
+    APY / parameters card there.  The legacy ``/interest`` URL survives
+    only as a redirect stub (see ``TestCashDetailRedirectStubs``).
+    """
 
     def test_hysa_detail_view(self, auth_client, seed_user, db, seed_periods_today):
         """Returns 200 with interest data.
@@ -107,7 +113,7 @@ class TestHysaDetailView:
             seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
         )
 
-        resp = auth_client.get(f"/accounts/{account.id}/interest")
+        resp = auth_client.get(f"/accounts/{account.id}/details")
         assert resp.status_code == 200
         assert b"HYSA" in resp.data
         assert b"APY" in resp.data
@@ -117,7 +123,7 @@ class TestHysaDetailView:
         and does not leak victim data."""
         other_acct, _ = _create_other_hysa(second_user, db.session)
 
-        resp = auth_client.get(f"/accounts/{other_acct.id}/interest")
+        resp = auth_client.get(f"/accounts/{other_acct.id}/details")
         assert resp.status_code == 404
         assert b"Other HYSA" not in resp.data, (
             "IDOR response leaked victim's account name"
@@ -125,24 +131,38 @@ class TestHysaDetailView:
 
     def test_hysa_detail_nonexistent(self, auth_client, seed_user, db):
         """Bad account ID returns 404 (security: 404 for not-found and not-yours)."""
-        resp = auth_client.get("/accounts/99999/interest")
+        resp = auth_client.get("/accounts/99999/details")
         assert resp.status_code == 404
 
-    def test_hysa_detail_wrong_type(self, auth_client, seed_user, db):
-        """Non-HYSA account → redirect to the cockpit with a warning.
+    def test_cash_detail_wrong_type(self, auth_client, seed_user, db):
+        """A loan (has_amortization) account is NOT served by the cash page.
 
-        The wrong-type guard's redirect target moved from the retired
-        /accounts table to savings.dashboard in Loop B P4.
+        The merged cash detail page serves cash accounts only; loans,
+        physical assets, and retirement / investment accounts 404 out
+        (they keep their own screens).  A Mortgage (has_amortization) is
+        the loan representative here.
         """
-        # seed_user already has a checking account.
-        account = seed_user["account"]
-        resp = auth_client.get(f"/accounts/{account.id}/interest")
-        assert resp.status_code == 302
-        assert "/savings" in resp.headers.get("Location", "")
+        mortgage_type = db.session.query(AccountType).filter_by(
+            name="Mortgage",
+        ).one()
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Home Mortgage",
+                anchor_balance=Decimal("250000.00"),
+                anchor_period_id=seed_user["bootstrap_period"].id,
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/details")
+        assert resp.status_code == 404
 
     def test_hysa_detail_login_required(self, client, db):
         """Unauthenticated → redirect to login."""
-        resp = client.get("/accounts/1/interest")
+        resp = client.get("/accounts/1/details")
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
@@ -350,13 +370,44 @@ class TestCreateHysaAccount:
         )
 
 
+def _cash_detail_current_balance(app, auth_client, account_id):
+    """Return the ``current_balance`` the cash-detail route hands the template.
+
+    Reads the render context via Flask's ``template_rendered`` signal (the
+    established chart / net-worth route-test pattern) so the assertion is on
+    the route's balance figure directly, not a format-fragile HTML
+    substring.  The merged page dropped the per-period table, so the hero's
+    current-period balance -- not a late table row -- is the figure that
+    reflects a shadow-transfer deposit.
+    """
+    # Pylint: import-outside-toplevel -- deferred import is the file-wide
+    # test convention.
+    from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+    recorded = []
+
+    def _record(sender, template, context, **extra):
+        recorded.append(context)
+
+    template_rendered.connect(_record, app)
+    try:
+        resp = auth_client.get(f"/accounts/{account_id}/details")
+    finally:
+        template_rendered.disconnect(_record, app)
+    assert resp.status_code == 200, (
+        f"GET /accounts/{account_id}/details returned {resp.status_code}"
+    )
+    assert recorded, "cash_detail did not render a template"
+    return recorded[0]["current_balance"]
+
+
 class TestHysaDetailShadowTransactions:
     """Verify that the HYSA detail page includes shadow transactions
     from transfers in its balance calculation and projection.
     """
 
     def test_hysa_detail_includes_transfer_deposit(
-        self, auth_client, seed_user, db, seed_periods_today
+        self, app, auth_client, seed_user, db, seed_periods_today
     ):
         """Verify that the HYSA detail page includes shadow income
         transactions from transfers in the balance projection.  Without
@@ -371,18 +422,12 @@ class TestHysaDetailShadowTransactions:
         # Re-pinned (rule 2 exception; CRIT-01 / F-001 / Commit 4):
         # pass ``anchor_period_id`` through the canonical factory so the
         # origination ``AccountAnchorHistory`` row points at
-        # ``seed_periods_today[0]``.  Pre-Commit-7 the legacy
-        # cache-only mutation drove ``interest_detail``'s read; post-
-        # Commit-7 the resolver reads the dated SoT (latest history
-        # row), so the cache mutation no longer takes effect.  Without
-        # this change the anchor would be the bootstrap-resolved
-        # period (today's current period, i.e. ``seed_periods_today[4]``),
-        # which is post-anchor to the transfer in
-        # ``seed_periods_today[0]`` and silently omits it from the
-        # projection (the symptom #1 / F-009 silent-degrade shape).
-        # Hand arithmetic: anchor 10000 + 500 transfer + interest at
-        # 4.5% APY daily compounding over 10 biweekly periods
-        # ~= $10,6XX.  The ``"10,6"`` substring assertion is unchanged.
+        # ``seed_periods_today[0]``.  Post-Commit-7 the resolver reads the
+        # dated SoT (latest history row); without this the anchor would be
+        # today's current period (``seed_periods_today[4]``), which is
+        # post-anchor to the transfer in ``seed_periods_today[0]`` and
+        # silently omits it from the projection (the F-009 silent-degrade
+        # shape).
         account, _ = _create_hysa_account(
             seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
         )
@@ -415,18 +460,22 @@ class TestHysaDetailShadowTransactions:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{account.id}/interest")
-        assert resp.status_code == 200
-
-        html = resp.data.decode()
-        # Anchor $10,000 + $500 deposit + interest at 4.5% APY daily
-        # compounding = ~$10,601.  Without the fix, the balance would
-        # be ~$10,096 (interest on anchor only, deposit missing).
-        # Check for "10,6" to confirm the deposit is reflected.
-        assert "10,6" in html
+        # The hero shows the CURRENT-period balance (the per-period table
+        # was dropped in the Fable 5 merge).  Anchor $10,000 + the $500
+        # deposit (in the anchor period) + a few periods of 4.5% APY daily
+        # interest => strictly above $10,500.  WITHOUT the fix the deposit
+        # is omitted and the balance is only interest on $10,000
+        # (~$10,067), which is BELOW $10,500 -- so the bound is falsifiable.
+        current_balance = _cash_detail_current_balance(
+            app, auth_client, account.id,
+        )
+        assert Decimal("10500.00") < current_balance < Decimal("10700.00"), (
+            f"HYSA current balance {current_balance!r} does not reflect the "
+            "$500 transfer deposit (expected anchor + deposit + interest)"
+        )
 
     def test_hysa_detail_no_transfers_regression(
-        self, auth_client, seed_user, db, seed_periods_today
+        self, app, auth_client, seed_user, db, seed_periods_today
     ):
         """Verify that the HYSA detail page still works correctly when
         there are no transfers.  The account_id query must return an
@@ -441,9 +490,15 @@ class TestHysaDetailShadowTransactions:
             seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
         )
 
-        resp = auth_client.get(f"/accounts/{account.id}/interest")
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # Anchor is $10,000.  With only interest, balance should be
-        # just above $10,000.  Check for "10,0" to confirm.
-        assert "10,0" in html
+        # Anchor $10,000 with only interest (no deposit): the current-period
+        # hero balance is just above $10,000 (a few periods of 4.5% APY daily
+        # interest, ~$10,067) and well below the +$500 deposit case -- proving
+        # the empty-transfer path projects cleanly, not that it stalls at the
+        # anchor or double-counts.
+        current_balance = _cash_detail_current_balance(
+            app, auth_client, account.id,
+        )
+        assert Decimal("10000.00") < current_balance < Decimal("10200.00"), (
+            f"HYSA current balance {current_balance!r} is not the expected "
+            "anchor-plus-interest (no deposit) figure"
+        )

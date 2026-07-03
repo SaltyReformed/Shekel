@@ -1,29 +1,47 @@
 """
 Shekel Budget App -- Per-Account Detail Pages
 
-Detail / projection pages for interest-bearing and checking
-accounts.  Split out of the historical monolithic
-``app/routes/accounts.py`` in Commit 21 of the financial-calculation
-audit follow-up (F-1); behaviour preserved verbatim from the
-pre-split file.
+Detail / projection pages for cash and physical-asset accounts.  Split
+out of the historical monolithic ``app/routes/accounts.py`` in Commit 21
+of the financial-calculation audit follow-up (F-1); rebuilt for the
+Fable 5 UI/UX overhaul (``docs/design/account_detail_audit.md``, "Rebuild
+decisions").
 
-Both detail pages route balance computation through the balance-at
-seam (Level-1 Commit 8): ``checking_detail`` via the cash-flow entry
-``balance_at.cash_balance_map`` and ``interest_detail`` via the
-kind-correct ``balance_at.balance_map`` plus the kernel's
-``interest_by_period_for_account`` accessor.  Both seam entries
-delegate to the canonical entries-aware producers, so the
-silent-degrade seam fixed by CRIT-01 / F-009 cannot reappear here.
-The F-6 static guard in :mod:`tests.test_routes.test_accounts` pins
-this contract by asserting that the seam (``balance_at.``) is used and
-the bare entries-blind producer ``calculate_balances`` (in
-``balance_calculator``) is not.  When the split in Commit 21 moved
-``checking_detail`` into this module, the F-6 guard's file-path
-reference was updated to point here.
+The overhaul merged the former ``checking_detail`` and ``interest_detail``
+pages into ONE :func:`cash_detail` page that serves EVERY cash account
+kind: Checking, the ``has_interest`` types (HYSA / Money Market / CD /
+HSA), and the previously page-less plain types (Savings, Credit Card, and
+plain custom types).  Loans (``has_amortization``), physical assets
+(``has_appreciation``), and retirement / investment accounts are NOT
+served here -- they keep their own screens
+(:func:`loan.dashboard`, :func:`property_detail`,
+:func:`investment.dashboard`).  ``checking_detail`` and
+``interest_detail`` survive only as thin redirect stubs to
+:func:`cash_detail` so external bookmarks and the not-yet-updated cockpit
+``detail_endpoint`` macro still resolve.
+
+Balance production is unchanged from the two pre-merge routes (the audit's
+finding is a PRESENTATION rebuild, not a data change).  :func:`cash_detail`
+routes every balance through the balance-at seam (Level-1 Commit 8):
+
+* interest-bearing accounts via the kind-correct ``balance_at.balance_map``
+  (interest-accrued balance) plus the kernel's
+  ``interest_by_period_for_account`` accessor for the earned-interest
+  figure, and
+* plain cash accounts via the cash-flow entry
+  ``balance_at.cash_balance_map``.
+
+Both seam entries delegate to the canonical entries-aware producers, so
+the silent-degrade seam fixed by CRIT-01 / F-009 cannot reappear here.
+The F-6 static guard in :mod:`tests.test_routes.test_accounts` pins this
+contract by asserting that the seam (``balance_at.``) is used and the bare
+entries-blind producer ``calculate_balances`` (in ``balance_calculator``)
+is not; that guard reads this file directly.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 from decimal import Decimal
@@ -33,7 +51,7 @@ from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
+from app.enums import AcctCategoryEnum, CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
@@ -63,6 +81,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The number of biweekly pay periods that make up one year -- the window
+# width for the "Interest, next 12 months" health chip.  Matches the
+# ``("1 year", 26)`` horizon offset in
+# :mod:`app.utils.period_projections` (26 biweekly periods per year); an
+# int (not the ``Decimal`` ``PAY_PERIODS_PER_YEAR``) because it indexes
+# ``period_index`` arithmetic, not a money calculation.
+_ONE_YEAR_PERIODS = 26
+
+# Chart.js x-axis label format for the balance-projection trend: month
+# abbreviation plus un-padded day (e.g. "Jun 5").  The SAME convention as
+# the savings cockpit's ``_serialize_net_worth_chart`` so the two trend
+# charts read identically.
+_CHART_LABEL_FORMAT = "%b %-d"
+
 
 # ── Shared detail-page helpers ────────────────────────────────────
 
@@ -74,8 +106,8 @@ def _current_period_balance(
 ) -> Decimal | None:
     """Return the current-period projected balance, else the anchor balance.
 
-    Shared by both detail pages: the projected balance at the current
-    period when one exists, otherwise the resolved anchor balance (E-19),
+    The page hero figure: the projected balance at the current period
+    when one exists, otherwise the resolved anchor balance (E-19),
     otherwise ``None``.
     """
     current_bal = balances.get(current_period.id) if current_period else None
@@ -84,62 +116,25 @@ def _current_period_balance(
     return current_bal
 
 
-def _build_period_data(
-    all_periods: list[PayPeriod],
-    balances: dict[int, Decimal],
-    interest_by_period: dict[int, Decimal] | None = None,
-) -> list[dict]:
-    """Build the per-period projection rows the detail templates render.
+def _ensure_interest_params(account: Account) -> InterestParams:
+    """Return the account's :class:`InterestParams`, auto-creating if missing.
 
-    One row per period that has a projected balance, in ``all_periods``
-    order.  When ``interest_by_period`` is supplied (the interest detail
-    page) each row also carries that period's interest, defaulting to
-    ``0.00`` for a period that has a balance but no recorded interest;
-    the checking page omits the interest field.
+    Mirrors the pre-merge ``interest_detail`` safety fallback: an
+    interest-bearing account should always carry a params row (the create
+    flow seeds it), but if one was lost this defensively recreates it with
+    an explicit ``apy=0`` sentinel and the DAILY compounding ref id.
+
+    The explicit zero (E-12 / HIGH-06) is deliberate: relying on a column
+    ``server_default`` would silently project 4.5% interest the user never
+    configured.  ``compounding_frequency_id`` is a ref FK now (#38, no
+    server_default), so the DAILY id is supplied explicitly.
     """
-    rows = []
-    for period in all_periods:
-        if period.id in balances:
-            row = {"period": period, "balance": balances[period.id]}
-            if interest_by_period is not None:
-                row["interest"] = interest_by_period.get(
-                    period.id, Decimal("0.00"),
-                )
-            rows.append(row)
-    return rows
-
-
-# ── Interest Detail & Params ──────────────────────────────────────
-
-
-@accounts_bp.route("/accounts/<int:account_id>/interest")
-@login_required
-@require_owner
-def interest_detail(account_id):
-    """Interest-bearing account detail page with interest projections."""
-    account = get_or_404(Account, account_id)
-    if account is None:
-        abort(404)
-
-    # Verify this is an interest-bearing account type.
-    if not account.account_type or not account.account_type.has_interest:
-        flash("This account type does not support interest parameters.", "warning")
-        return redirect(url_for("savings.dashboard"))
-
     params = (
         db.session.query(InterestParams)
         .filter_by(account_id=account.id)
         .first()
     )
     if not params:
-        # Auto-create params if missing (shouldn't happen normally).
-        # Same E-12 / HIGH-06 zero-sentinel rationale as the create
-        # path in :func:`create_account`: explicit ``apy=0`` instead
-        # of relying on a column ``server_default`` that would
-        # otherwise silently project 4.5% interest the user never
-        # configured.
-        # #38: compounding frequency is a ref FK now (no server_default),
-        # so the auto-create supplies the DAILY id explicitly.
         params = InterestParams(
             account_id=account.id, apy=Decimal("0"),
             compounding_frequency_id=ref_cache.compounding_frequency_id(
@@ -148,86 +143,327 @@ def interest_detail(account_id):
         )
         db.session.add(params)
         db.session.commit()
+    return params
 
-    user_id = current_user.id
-    all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
 
-    scenario = get_baseline_scenario(user_id)
+def _build_horizons(
+    current_balance: Decimal | None,
+    current_period: PayPeriod | None,
+    all_periods: list[PayPeriod],
+    balances: dict[int, Decimal],
+) -> list[dict]:
+    """Build the 3 / 6 / 12-month horizon chip rows for the template.
 
-    # Resolve the anchor via the canonical date-anchored source of truth
-    # (E-19, Commit 4): the latest ``AccountAnchorHistory`` row wins
-    # over the ``Account.current_anchor_*`` cache so a future cache
-    # divergence cannot show a stale projection.  Post-Commit-3 the
-    # anchor columns are NOT NULL and the resolver never returns
-    # ``None``, so the legacy fallback that substituted the current
-    # period (which papered over the NULL-anchor producer drift in
-    # CRIT-01) is dead code and is deleted here rather than left
-    # unreachable (CLAUDE.md rule 1: do it right, no shortcuts).
-    anchor = balance_resolver.resolve_anchor(account, scenario.id) if scenario else None
-
-    balances = {}
-    interest_by_period = {}
-    if anchor is not None:
-        # Balances and per-period interest route through the balance-at
-        # seam and the engine-cluster interest accessor (Level-1 Commit 8),
-        # so this route calls no balance producer directly.  The
-        # KIND-CORRECT ``balance_map`` is the right entry here: the route is
-        # gated to interest-bearing account types, so it dispatches to the
-        # interest-accrual path -- the same
-        # ``calculate_balances_with_interest`` walk the route ran inline
-        # before (entries-aware via the closed CRIT-01 / F-009 seam).
-        # Interest EARNED is rich projection detail, not a balance-at-T
-        # figure, so it comes from ``interest_by_period_for_account`` (the
-        # fenced kernel accessor that shares that same interest walk), not a
-        # second producer call.
-        #
-        # Anchor source: the seam's interest path seeds from the Account
-        # ``current_anchor_*`` cache columns (the kernel's contract),
-        # whereas ``anchor`` here is the dated ``AccountAnchorHistory`` SoT
-        # (``resolve_anchor``).  In the normal case the two agree.  In the
-        # detected-and-logged cache-divergence state (``resolve_anchor``
-        # reconciles the cache to the history SoT and logs
-        # ``EVT_ANCHOR_CACHE_RECONCILED``) the projection now matches the
-        # year-end interest section and the savings cockpit (both also
-        # cache-seeded) instead of the SoT -- the consistent trade for
-        # routing every interest balance through the one seam.
-        balances = balance_at.balance_map(account, scenario, all_periods) or {}
-        interest_by_period = net_worth_kernel.interest_by_period_for_account(
-            account, scenario, all_periods, params,
-        )
-
-    current_bal = _current_period_balance(balances, current_period, anchor)
-
-    # Build period projection data for the template.
-    period_data = _build_period_data(all_periods, balances, interest_by_period)
-
-    # 3/6/12 month horizon projections.
+    One row per horizon that has a projected balance, in the shared
+    :data:`~app.utils.period_projections.HORIZON_OFFSETS` order.  Each row
+    carries the horizon ``label`` ("3 months" / "6 months" / "1 year"),
+    its projected ``value``, and the ``delta`` from the current balance
+    (``value - current_balance``), all ``Decimal``.  Returns an empty list
+    when there is no current balance to project or delta from.
+    """
+    if current_balance is None:
+        return []
     projected = project_balance_horizons(current_period, all_periods, balances)
+    return [
+        {"label": label, "value": value, "delta": value - current_balance}
+        for label, value in projected.items()
+    ]
+
+
+def _interest_next_year(
+    interest_by_period: dict[int, Decimal],
+    current_period: PayPeriod,
+    all_periods: list[PayPeriod],
+) -> Decimal:
+    """Sum the interest earned over the next year (26 biweekly periods).
+
+    The health-chip figure: the ``Decimal`` sum of ``interest_by_period``
+    for every period whose ``period_index`` falls in
+    ``[current + 1, current + 26]`` (the next full year of biweekly
+    periods after the current one).  ``Decimal("0.00")`` is a legitimate
+    result (a zero-APY account, or a horizon with no projected interest),
+    NOT a "missing" sentinel; the caller only invokes this for an
+    interest-bearing account with a current period.
+    """
+    lo = current_period.period_index + 1
+    hi = current_period.period_index + _ONE_YEAR_PERIODS
+    total = Decimal("0.00")
+    for period in all_periods:
+        if lo <= period.period_index <= hi:
+            total += interest_by_period.get(period.id, Decimal("0.00"))
+    return total
+
+
+def _build_chart(
+    all_periods: list[PayPeriod],
+    balances: dict[int, Decimal],
+    current_period: PayPeriod | None,
+) -> tuple[str, bool]:
+    """Serialize the balance-projection trend to a Chart.js JSON string.
+
+    The single Chart.js serialization boundary for this page (coding
+    standards: ``float`` lives only here, never in a calculation).  The
+    series is every period that HAS a projected balance, in
+    ``period_index`` order; ``labels`` uses the same ``%b %-d`` convention
+    as the cockpit's ``_serialize_net_worth_chart``, ``balance`` is the
+    parallel ``float`` array, and ``current_index`` is the position of the
+    current period within the series (the solid/dashed "today" boundary,
+    an int in ``[0, len(series)]``, mirroring the cockpit serializer).
+    Defaults ``current_index`` to ``0`` when the current period is not in
+    the series (no current period, or it precedes the anchor).
+
+    Returns:
+        ``(chart_json, has_chart)`` -- the JSON string and whether the
+        series is non-empty.
+    """
+    ordered = sorted(all_periods, key=lambda p: p.period_index)
+    series = [p for p in ordered if p.id in balances]
+
+    current_index = 0
+    if current_period is not None:
+        for i, period in enumerate(series):
+            if period.id == current_period.id:
+                current_index = i
+                break
+
+    chart_json = json.dumps({
+        "labels": [p.end_date.strftime(_CHART_LABEL_FORMAT) for p in series],
+        "balance": [float(balances[p.id]) for p in series],
+        "current_index": current_index,
+    })
+    return chart_json, bool(series)
+
+
+def _cash_projection(
+    account: Account,
+    is_interest: bool,
+    scenario,
+    all_periods: list[PayPeriod],
+    params: InterestParams | None,
+) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
+    """Produce the per-period balances (and interest) for a cash account.
+
+    The single balance-production site, preserving the two pre-merge
+    routes' producer paths verbatim (Level-1 Commit 8):
+
+    * interest-bearing accounts read the KIND-CORRECT
+      ``balance_at.balance_map`` (interest-accrued balances) plus the
+      kernel's ``interest_by_period_for_account`` accessor for the
+      per-period earned interest, and
+    * plain cash accounts read the cash-flow ``balance_at.cash_balance_map``
+      (pure transaction running-balance).
+
+    The anchor is resolved via the dated ``AccountAnchorHistory`` SoT for
+    the hero caption and the current-period fallback.  Returns empty maps
+    and a ``None`` anchor in the legitimate empty states (no baseline
+    scenario, or -- for a plain account -- no pay periods), so the template
+    renders cleanly.
+
+    Returns:
+        ``(balances, interest_by_period, anchor)``.  ``interest_by_period``
+        is always empty for a plain account.
+    """
+    balances: dict[int, Decimal] = {}
+    interest_by_period: dict[int, Decimal] = {}
+    anchor: AnchorPoint | None = None
+    if is_interest:
+        if scenario is not None:
+            anchor = balance_resolver.resolve_anchor(account, scenario.id)
+            balances = balance_at.balance_map(account, scenario, all_periods) or {}
+            interest_by_period = net_worth_kernel.interest_by_period_for_account(
+                account, scenario, all_periods, params,
+            )
+    elif scenario is not None and all_periods:
+        result = balance_at.cash_balance_map(account, scenario, all_periods)
+        balances = result.balances
+        anchor = balance_resolver.resolve_anchor(account, scenario.id)
+    return balances, interest_by_period, anchor
+
+
+def _cash_detail_wrong_type(account: Account) -> bool:
+    """Return True when *account* is a kind the cash detail page does NOT serve.
+
+    The merged cash detail page serves Checking, the ``has_interest`` types
+    (HYSA / Money Market / CD / HSA), and plain cash types (Savings, Credit
+    Card, plain custom).  It does NOT serve loans (``has_amortization``),
+    physical assets (``has_appreciation``), or retirement / investment
+    accounts (category RETIREMENT or INVESTMENT) -- those keep their own
+    screens.  Resolves by boolean type flag and integer category id only,
+    never a ref-table ``name`` string (the IDs-for-logic invariant).  An
+    account with no ``account_type`` (degenerate / partially loaded) is
+    served as a plain cash account, matching ``classify_account``'s
+    None-is-PLAIN convention.
+    """
+    acct_type = account.account_type
+    if acct_type is None:
+        return False
+    return bool(
+        acct_type.has_amortization
+        or acct_type.has_appreciation
+        or acct_type.category_id in (
+            ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
+            ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT),
+        )
+    )
+
+
+# ── Cash Detail (checking + interest + plain cash) ────────────────
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details")
+@login_required
+@require_owner
+def cash_detail(account_id):
+    """Unified cash-account detail page (checking / interest / plain cash).
+
+    Shows the account's balance hero with an honest anchored caption, the
+    3 / 6 / 12-month horizon chips, and a trend chart; interest-bearing
+    accounts additionally get an APY / compounding parameters card, a
+    "next 12 months" projected-interest chip, and their interest-accrued
+    balances.  Serves every cash account kind (see
+    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
+    assets, and retirement / investment accounts 404 out.
+
+    Balance production is preserved verbatim from the two pre-merge routes:
+    interest accounts read the kind-correct ``balance_at.balance_map`` plus
+    the kernel's ``interest_by_period_for_account`` accessor; plain cash
+    accounts read the cash-flow ``balance_at.cash_balance_map``.  Both seam
+    entries delegate to the canonical entries-aware producers (Level-1
+    Commit 8), so this route calls no balance producer directly.  The
+    anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
+    Commit 4) for the hero caption and the current-period fallback; the
+    ``scenario is None`` / ``no pay periods`` empty-state guards are kept
+    (a fixture without a baseline scenario, a freshly-registered user with
+    no generated periods) and the template renders cleanly when
+    ``balances`` is empty.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+
+    if _cash_detail_wrong_type(account):
+        abort(404)
+
+    is_interest = bool(
+        account.account_type and account.account_type.has_interest
+    )
+
+    all_periods = pay_period_service.get_all_periods(current_user.id)
+    current_period = pay_period_service.get_current_period(current_user.id)
+    scenario = get_baseline_scenario(current_user.id)
+
+    # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
+    # auto-created before any projection so the parameters card always
+    # renders for an interest-bearing account.  Plain accounts carry no
+    # params / compounding list.
+    params = _ensure_interest_params(account) if is_interest else None
+    compounding_frequencies = (
+        CompoundingFrequency.query.order_by(CompoundingFrequency.id).all()
+        if is_interest else []
+    )
+
+    balances, interest_by_period, anchor = _cash_projection(
+        account, is_interest, scenario, all_periods, params,
+    )
+
+    current_balance = _current_period_balance(balances, current_period, anchor)
+    chart_json, has_chart = _build_chart(all_periods, balances, current_period)
 
     return render_template(
-        "accounts/interest_detail.html",
+        "accounts/cash_detail.html",
         account=account,
-        params=params,
-        current_balance=current_bal,
-        projected=projected,
-        period_data=period_data,
-        # #38: the compounding-frequency <select> renders one option per
-        # ref row (value = id) so the template never string-compares the
-        # frequency name.
-        compounding_frequencies=(
-            CompoundingFrequency.query
-            .order_by(CompoundingFrequency.id)
-            .all()
+        is_interest=is_interest,
+        current_balance=current_balance,
+        current_period=current_period,
+        # ``anchor_as_of`` is the anchor EVENT date (``AnchorPoint.as_of_date``,
+        # the dated ``AccountAnchorHistory`` row), NOT the anchor period's
+        # start date -- fixing the audit's finding #2 (a mid-period true-up
+        # used to show the period start instead of the true-up date).
+        anchor_as_of=anchor.as_of_date if anchor is not None else None,
+        horizons=_build_horizons(
+            current_balance, current_period, all_periods, balances,
         ),
+        # The next-year interest chip is interest-only; a plain account
+        # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
+        # is a legitimate value for a zero-APY interest account.
+        interest_next_year=(
+            _interest_next_year(interest_by_period, current_period, all_periods)
+            if is_interest and current_period is not None else None
+        ),
+        params=params,
+        compounding_frequencies=compounding_frequencies,
+        chart_json=chart_json,
+        has_chart=has_chart,
     )
+
+
+def _redirect_to_cash_detail(account_id):
+    """Redirect a legacy detail URL to :func:`cash_detail`, preserving setup=1.
+
+    The shared body of the ``checking_detail`` / ``interest_detail``
+    redirect stubs.  Resolves per-resource ownership FIRST via the
+    established ``get_or_404`` + ``abort(404)`` pattern the sibling routes
+    (:func:`cash_detail`, :func:`update_interest_params`) use, then
+    redirects.  ``@require_owner`` only gates the owner-vs-companion ROLE,
+    not per-account ownership; without this check a cross-user "not yours"
+    probe would leak resource existence as a 302 redirect instead of the
+    security response rule's 404 (a 404 for both "not found" and "not
+    yours").  Forwards the ``setup=1`` onboarding query arg when present so
+    a post-create redirect still lands on the wizard banner.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+
+    if request.args.get("setup") == "1":
+        return redirect(
+            url_for("accounts.cash_detail", account_id=account_id, setup=1),
+        )
+    return redirect(url_for("accounts.cash_detail", account_id=account_id))
+
+
+@accounts_bp.route("/accounts/<int:account_id>/checking")
+@login_required
+@require_owner
+def checking_detail(account_id):
+    """Deprecated alias: redirect to the unified :func:`cash_detail` page.
+
+    The Fable 5 overhaul merged the checking detail page into
+    :func:`cash_detail`.  Kept as a redirect (not deleted) so external
+    bookmarks and the not-yet-updated cockpit ``detail_endpoint`` macro
+    still resolve.
+    """
+    return _redirect_to_cash_detail(account_id)
+
+
+# ── Interest Params ──────────────────────────────────────────────
+
+
+@accounts_bp.route("/accounts/<int:account_id>/interest")
+@login_required
+@require_owner
+def interest_detail(account_id):
+    """Deprecated alias: redirect to the unified :func:`cash_detail` page.
+
+    The Fable 5 overhaul merged the interest detail page into
+    :func:`cash_detail`.  Kept as a redirect (not deleted) so external
+    bookmarks and the not-yet-updated cockpit ``detail_endpoint`` macro
+    still resolve; ``setup=1`` is preserved for the post-create wizard.
+    """
+    return _redirect_to_cash_detail(account_id)
 
 
 @accounts_bp.route("/accounts/<int:account_id>/interest/params", methods=["POST"])
 @login_required
 @require_owner
 def update_interest_params(account_id):
-    """Update interest parameters (APY, compounding frequency)."""
+    """Update interest parameters (APY, compounding frequency).
+
+    URL and behaviour are unchanged from before the cash-detail merge; only
+    the success / validation redirect target moved to
+    :func:`cash_detail` (the merged page that now hosts the parameters
+    card).
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
@@ -239,7 +475,7 @@ def update_interest_params(account_id):
     errors = _interest_params_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("accounts.interest_detail", account_id=account_id))
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
 
     data = _interest_params_schema.load(request.form)
 
@@ -269,7 +505,7 @@ def update_interest_params(account_id):
                 "danger",
             )
             return redirect(
-                url_for("accounts.interest_detail", account_id=account_id),
+                url_for("accounts.cash_detail", account_id=account_id),
             )
         # #38: recreate with the DAILY ref id so the NOT NULL FK is
         # satisfied even when the update payload omits the frequency.
@@ -294,7 +530,7 @@ def update_interest_params(account_id):
     db.session.commit()
     logger.info("Updated interest params for account %d", account.id)
     flash("Interest parameters updated.", "success")
-    return redirect(url_for("accounts.interest_detail", account_id=account_id))
+    return redirect(url_for("accounts.cash_detail", account_id=account_id))
 
 
 # ── Property (physical-asset) Detail & Params ─────────────────────
@@ -329,8 +565,9 @@ def property_detail(account_id):
     )
     if params is None:
         # Defensive auto-create with a zero-rate sentinel (E-12), mirroring
-        # ``interest_detail``: the create flow already seeds this row, so
-        # this branch only fires if it was lost (manual delete / data loss).
+        # ``_ensure_interest_params``: the create flow already seeds this
+        # row, so this branch only fires if it was lost (manual delete /
+        # data loss).
         params = AssetAppreciationParams(
             account_id=account.id, annual_appreciation_rate=Decimal("0"),
         )
@@ -390,90 +627,3 @@ def update_appreciation_params(account_id):
     logger.info("Updated appreciation params for account %d", account.id)
     flash("Appreciation rate updated.", "success")
     return redirect(url_for("accounts.property_detail", account_id=account_id))
-
-
-# ── Checking Detail ──────────────────────────────────────────────
-
-
-@accounts_bp.route("/accounts/<int:account_id>/checking")
-@login_required
-@require_owner
-def checking_detail(account_id):
-    """Checking account detail page with balance projections.
-
-    Shows the current anchor balance and projected balances at
-    3, 6, and 12-month intervals.  Balances flow through the
-    balance-at seam's cash-flow entry ``balance_at.cash_balance_map``
-    (Level-1 Commit 8), which delegates to the canonical entries-aware
-    producer ``balance_resolver.balances_for`` (E-25 / Commit 5): it
-    owns the transaction query (always ``selectinload``s entries so the
-    entry-aware reduction in ``_entry_aware_amount`` applies
-    unconditionally) and the anchor resolution (dated
-    ``AccountAnchorHistory`` source of truth, never NULL
-    post-Commit-3).  Routing through this single producer is the
-    structural fix for CRIT-01 / symptom #5: pre-
-    fix the same tuple yielded $160.00 on the grid (entries
-    eager-loaded) and $114.29 here (entries unloaded -> silent
-    degrade to ``effective_amount`` -- $45.71 of already-cleared
-    debits double-subtracted off the anchor).  No interest
-    calculations: APY on checking is negligible.
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Not found", 404
-
-    # Verify this is a checking account.
-    if (not account.account_type
-            or account.account_type_id != ref_cache.acct_type_id(AcctTypeEnum.CHECKING)):
-        return "Not found", 404
-
-    user_id = current_user.id
-    all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
-
-    scenario = get_baseline_scenario(user_id)
-
-    # Route balance projection through the balance-at seam's cash-flow
-    # entry (Level-1 Commit 8), which delegates to the canonical
-    # entries-aware producer (E-25, Commit 5).  Checking is a PLAIN (cash)
-    # account, so ``cash_balance_map`` is the pure transaction
-    # running-balance -- identical to the prior direct producer call.  The
-    # anchor is still resolved via the dated ``AccountAnchorHistory`` SoT
-    # (E-19, Commit 4) for the header and the current-period fallback; the
-    # legacy NULL-anchor fallback (which substituted the current period
-    # when the anchor column was unset) is dead code post-Commit-3 and was
-    # deleted rather than left unreachable (CLAUDE.md rule 1).  The
-    # ``scenario is None`` and ``no pay periods`` guards are kept -- both
-    # are legitimately empty-state inputs (a fixture without a baseline
-    # scenario, a freshly-registered user with no generated periods) and
-    # the template renders cleanly when ``balances`` is empty.
-    balances = {}
-    anchor = None
-    if scenario is not None and all_periods:
-        result = balance_at.cash_balance_map(account, scenario, all_periods)
-        balances = result.balances
-        anchor = balance_resolver.resolve_anchor(account, scenario.id)
-
-    current_bal = _current_period_balance(balances, current_period, anchor)
-
-    # Build period projection data for the template.
-    period_data = _build_period_data(all_periods, balances)
-
-    # 3/6/12 month horizon projections (same offsets as HYSA detail; the
-    # shared producer also backs interest_detail and the savings dashboard).
-    projected = project_balance_horizons(current_period, all_periods, balances)
-
-    # The anchor period for the template header.  ``resolve_anchor``
-    # returns the relationship-loaded ``PayPeriod`` directly, so no
-    # additional lookup is needed; ``None`` when the user has no
-    # baseline scenario (the template guards with ``{% if anchor_period %}``).
-    anchor_period = anchor.period if anchor is not None else None
-
-    return render_template(
-        "accounts/checking_detail.html",
-        account=account,
-        current_balance=current_bal,
-        projected=projected,
-        period_data=period_data,
-        anchor_period=anchor_period,
-    )
