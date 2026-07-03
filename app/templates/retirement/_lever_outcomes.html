@@ -1,19 +1,27 @@
 {% from "_money_macros.html" import money %}
-{# HTMX fragment: the two "close the gap" lever outcome lines (P2c).
-   Deliberately minimal markup -- P3's levers card restyles this partial;
-   the data contract is retirement_levers.compute_lever_data.  The
-   ``state`` strings compared below are producer-computed domain states
-   (solved / already_funded / not_within_cap), not reference-table
-   ``.name`` columns, so literal comparison is the sanctioned pattern
-   (see _money_macros.html's pace_pill note). #}
-<div id="lever-outcomes">
+{# HTMX fragment: the two "close the gap" lever outcome lines (P2c data
+   contract, P3b styling).  The data contract is
+   retirement_levers.compute_lever_data.  The ``state`` strings compared
+   below are producer-computed domain states (solved / already_funded /
+   not_within_cap), not reference-table ``.name`` columns, so literal
+   comparison is the sanctioned pattern (see _money_macros.html's
+   pace_pill note).
+
+   The root's ``retire-lever-lines`` grid mirrors dashboard.html's
+   ``retire-lever-pair`` so each line sits under its lever's stepper.
+   When re-sent inside a readiness fragment response, ``lever_oob``
+   makes this an innerHTML out-of-band update of the persistent
+   #lever-outcomes shell, so the stepper GET refreshes these lines in
+   the same round trip. #}
+<div id="lever-outcomes" class="retire-lever-lines"
+     {% if lever_oob|default(false) %}hx-swap-oob="innerHTML"{% endif %}>
   {% if levers.no_horizon %}
   <p class="text-muted mb-0" data-lever="none">
     Set a planned retirement date to explore these levers.
   </p>
   {% else %}
   {% set c = levers.contribution %}
-  <p class="mb-1" data-lever="contribution">
+  <p class="retire-lever-line" data-lever="contribution">
     {% if c.no_savings_needed %}
     Your pension covers the whole projected income gap -- no savings needed.
     {% elif c.state == 'already_funded' %}
@@ -21,29 +29,29 @@
     {% else %}
     +{{ money(c.amount) }}/paycheck from now to
     {{ levers.baseline.retirement_date.isoformat() }} reaches
-    {{ "%.1f"|format(c.funded_ratio|to_percent) }}% funded.
+    <b>{{ "%.1f"|format(c.funded_ratio|to_percent) }}% funded</b>.
     {% endif %}
     {% if c.exceeds_headroom %}
-    <span class="text-warning" data-lever-flag="headroom">
+    <span class="retire-flag" data-lever-flag="headroom">
       Exceeds the {{ money(c.headroom_per_period) }}/paycheck of
       contribution-limit headroom across your accounts.
     </span>
     {% endif %}
   </p>
   {% set r = levers.retire_later %}
-  <p class="mb-0" data-lever="retire-later">
+  <p class="retire-lever-line" data-lever="retire-later">
     {% if r.state == 'already_funded' %}
     Already fully funded at your planned date -- no delay needed.
     {% elif r.months is none %}
     Retiring later alone cannot close the gap within 180 months
-    ({{ "%.1f"|format(r.funded_ratio|to_percent) }}% funded even at +180).
+    (<b>{{ "%.1f"|format(r.funded_ratio|to_percent) }}% funded</b> even at +180).
     {% elif r.no_savings_needed %}
     +{{ r.months }} months (retiring {{ r.retirement_date.isoformat() }}):
     your pension covers the whole income gap at that date.
     {% else %}
     +{{ r.months }} months (retiring {{ r.retirement_date.isoformat() }})
-    reaches {{ "%.1f"|format(r.funded_ratio|to_percent) }}% funded with no
-    new contributions.
+    reaches <b>{{ "%.1f"|format(r.funded_ratio|to_percent) }}% funded</b>
+    with no new contributions.
     {% endif %}
   </p>
   {% endif %}
