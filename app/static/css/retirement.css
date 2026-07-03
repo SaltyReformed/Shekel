@@ -1,0 +1,412 @@
+/* Shekel retirement screen -- the direction-D rebuild
+   (docs/design/retirement_audit.md, "Loop A outcome: direction D locked").
+   Anatomy: readiness hero card (hero figure + caption + flight-path
+   chart), assumptions rail, the two "close the gap" levers, the
+   income-in-retirement meter, the accounts table, and the per-pension
+   derivation footer.
+
+   Load-order contract (see base.html): after theme-steel-ink.css and
+   base.css, before utilities.css (which must stay last).  Tokens only,
+   no !important; the ONLY raw hex here is the validated coverage ramp
+   below (dataviz six-checks, 2026-07-03) -- do not substitute. */
+
+/* =============================================
+   COVERAGE RAMP (validated per theme; the two
+   income-meter segments and their legend swatches)
+   ============================================= */
+[data-bs-theme="dark"] {
+  --retire-cov-1: #2878A8;
+  --retire-cov-2: #4A9ECC;
+}
+
+[data-bs-theme="light"] {
+  --retire-cov-1: #0A5A96;
+  --retire-cov-2: #3E92C2;
+}
+
+/* =============================================
+   PAGE HEADER + CARD SECTION TITLES
+   ============================================= */
+.retire-countdown {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-muted);
+}
+
+.retire-card-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+  margin-bottom: 0.75rem;
+}
+
+/* =============================================
+   READINESS HERO (exactly one hero on the page;
+   proportional figures, not tabular)
+   ============================================= */
+.retire-hero-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem 2rem;
+  flex-wrap: wrap;
+}
+
+.retire-hero-num {
+  font-size: clamp(3rem, 4vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.05;
+  color: var(--shekel-text-primary);
+  white-space: nowrap;
+}
+
+.retire-hero-unit {
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: var(--shekel-text-secondary);
+}
+
+.retire-hero-cap {
+  flex: 1 1 20rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  color: var(--shekel-text-secondary);
+  margin: 0;
+}
+
+.retire-hero-cap strong {
+  color: var(--shekel-text-primary);
+  font-weight: 600;
+}
+
+/* Money-state wording: the color always rides the word itself
+   ("shortfall" / "surplus"), never color alone. */
+.retire-neg {
+  color: var(--shekel-danger);
+}
+
+.retire-pos {
+  color: var(--shekel-done);
+}
+
+/* Amber caution flags (missing tax estimate, contribution headroom,
+   unlinked contributions); always paired with explanatory text. */
+.retire-flag {
+  color: var(--shekel-credit);
+  font-weight: 600;
+}
+
+.retire-frame-note {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
+/* Flight-path chart: responsive height (fixes audit V1 -- the old
+   aspectRatio:8 canvas collapsed to ~49px on phones). */
+.retire-chart {
+  position: relative;
+  height: 300px;
+  margin-top: 0.75rem;
+}
+
+/* What-if delta line ("Was X% funded ...") under the hero. */
+.retire-delta {
+  display: inline-block;
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  background: color-mix(in srgb, var(--shekel-accent) 8%, transparent);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* =============================================
+   ASSUMPTIONS RAIL
+   ============================================= */
+.retire-assump-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  font-size: 0.8125rem;
+}
+
+.retire-assump-row--last {
+  border-bottom: 0;
+}
+
+.retire-assump-row .form-label,
+.retire-assump-label {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--shekel-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.retire-assump-value {
+  font-weight: 600;
+  color: var(--shekel-text-primary);
+}
+
+/* Compact inline inputs sized to their content (fixes audit V4 --
+   the old input-rem-7 truncated "10.5" on phones). */
+.retire-assump-input {
+  width: 6.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.retire-assump-input--date {
+  width: 10.5rem;
+  text-align: left;
+}
+
+.retire-assump-caption {
+  font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
+}
+
+/* =============================================
+   CLOSE-THE-GAP LEVERS (two equal-rank options)
+   ============================================= */
+.retire-lever-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1.125rem;
+}
+
+.retire-lever-opt + .retire-lever-opt {
+  border-left: 1px solid var(--shekel-border-subtle);
+  padding-left: 1.125rem;
+}
+
+.retire-lever-num {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--shekel-text-primary);
+}
+
+.retire-lever-unit {
+  font-size: 0.9375rem;
+  font-weight: 400;
+  color: var(--shekel-text-secondary);
+}
+
+.retire-lever-sub {
+  font-size: 0.78125rem;
+  color: var(--shekel-text-secondary);
+  margin: 0.125rem 0 0.625rem;
+}
+
+/* Stepper: real buttons flanking a number input (keyboard accessible;
+   the buttons dispatch an input event so HTMX sees the change). */
+.retire-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--shekel-border-strong);
+  border-radius: 0.4375rem;
+  overflow: hidden;
+}
+
+.retire-stepper button {
+  width: 2.25rem;
+  border: 0;
+  background: var(--shekel-surface-raised);
+  color: var(--shekel-text-primary);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.retire-stepper button:hover,
+.retire-stepper button:focus-visible {
+  background: var(--shekel-row-hover);
+}
+
+.retire-stepper input {
+  width: 5.5rem;
+  height: 2.125rem;
+  border: 0;
+  background: var(--shekel-surface);
+  color: var(--shekel-text-primary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The +/- buttons are the stepper affordance; the native number
+   spinners inside would duplicate them. */
+.retire-stepper input::-webkit-outer-spin-button,
+.retire-stepper input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.retire-stepper input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* The two outcome lines mirror the lever-pair grid so each line sits
+   under its lever. */
+.retire-lever-lines {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1.125rem;
+  margin-top: 0.75rem;
+}
+
+.retire-lever-line {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  margin: 0;
+}
+
+.retire-lever-line b {
+  color: var(--shekel-text-primary);
+}
+
+/* =============================================
+   INCOME-IN-RETIREMENT METER
+   Two sequential ramp segments over a pale track (a lighter step of
+   the same ramp); 2px surface gaps between fills, per the dataviz
+   mark specs.  Widths applied by progress_bar.js from
+   data-progress-pct.
+   ============================================= */
+.retire-meter {
+  display: flex;
+  height: 18px;
+  border-radius: 0.3125rem;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--retire-cov-1) 14%, var(--shekel-surface));
+}
+
+.retire-meter__seg {
+  height: 100%;
+}
+
+.retire-meter__seg--pension {
+  background: var(--retire-cov-1);
+}
+
+.retire-meter__seg--withdrawals {
+  background: var(--retire-cov-2);
+}
+
+.retire-meter__seg + .retire-meter__seg {
+  border-left: 2px solid var(--shekel-surface);
+}
+
+.retire-meter__seg:last-of-type {
+  border-right: 2px solid var(--shekel-surface);
+}
+
+.retire-swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 0.1875rem;
+  margin-right: 0.375rem;
+  vertical-align: -1px;
+}
+
+.retire-swatch--pension {
+  background: var(--retire-cov-1);
+}
+
+.retire-swatch--withdrawals {
+  background: var(--retire-cov-2);
+}
+
+.retire-income-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  font-size: 0.8125rem;
+}
+
+.retire-income-row:last-child {
+  border-bottom: 0;
+}
+
+/* =============================================
+   ACCOUNTS TABLE (token-based header treatment;
+   fixes audit V3's table-light dark-mode band)
+   ============================================= */
+.retire-table thead th {
+  color: var(--shekel-text-muted);
+  font-weight: 600;
+  font-size: 0.71875rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--shekel-border-strong);
+}
+
+.retire-chip {
+  display: inline-block;
+  font-size: 0.65625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--shekel-border-strong);
+  border-radius: 99px;
+  color: var(--shekel-text-secondary);
+  padding: 0.0625rem 0.5rem;
+  white-space: nowrap;
+}
+
+/* The per-period "you $X / employer $Y" contribution fact. */
+.retire-contrib {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* =============================================
+   PENSION FOOTER + PAGE FOOTER NOTE
+   ============================================= */
+.retire-pension-line {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  margin: 0;
+}
+
+.retire-pension-line + .retire-pension-line {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.retire-pension-line b {
+  color: var(--shekel-text-primary);
+}
+
+.retire-footer-note {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
+/* =============================================
+   RESPONSIVE
+   ============================================= */
+@media (max-width: 767.98px) {
+  .retire-chart {
+    height: 220px;
+  }
+
+  .retire-lever-pair,
+  .retire-lever-lines {
+    grid-template-columns: 1fr;
+  }
+
+  .retire-lever-opt + .retire-lever-opt {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--shekel-border-subtle);
+    padding-top: 0.75rem;
+    margin-top: 0.75rem;
+  }
+}
