@@ -24,7 +24,7 @@
   <p class="retire-lever-line" data-lever="contribution">
     {% if c.no_savings_needed %}
     Your pension covers the whole projected income gap -- no savings needed.
-    {% elif c.state == 'already_funded' %}
+    {% elif c.state == 'already_funded' and (c.amount is none or c.amount == 0) %}
     Already fully funded by your planned date -- no extra contribution needed.
     {% elif c.state == 'past_horizon' %}
     Your planned retirement date has passed -- no paychecks remain before
@@ -47,7 +47,7 @@
   </p>
   {% set r = levers.retire_later %}
   <p class="retire-lever-line" data-lever="retire-later">
-    {% if r.state == 'already_funded' %}
+    {% if r.state == 'already_funded' and (r.months is none or r.months == 0) %}
     Already fully funded at your planned date -- no delay needed.
     {% elif r.months is none %}
     Retiring later alone cannot close the gap within 180 months

@@ -122,6 +122,43 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     return account, params
 
 
+def _seed_overfunded(seed_user, db_session):
+    """Salary + settings retirement date + a $5M 401(k), no pension.
+
+    Deterministically ALREADY FUNDED: $5,000,000 at 7% projects to well
+    over $30M by +240 months against an ~$1.4M requirement (net biweekly
+    ~ $2,200 * 26 / 0.04), so both levers report already_funded at their
+    baselines.  Shared by the acceptance-fix-3 override-rendering tests.
+    """
+    from app.utils.dates import add_months
+
+    _create_salary_profile(seed_user, db_session)
+    settings = (
+        db_session.query(UserSettings)
+        .filter_by(user_id=seed_user["user"].id)
+        .one()
+    )
+    settings.planned_retirement_date = add_months(date.today(), 240)
+    acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name="Big 401k",
+            anchor_balance=Decimal("5000000.00"),
+        ),
+    )
+    db_session.flush()
+    db_session.add(InvestmentParams(
+        account_id=account.id,
+        assumed_annual_return=Decimal("0.07000"),
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum.NONE,
+        ),
+    ))
+    db_session.commit()
+
+
 class TestRetirementDashboard:
     """Tests for the retirement dashboard page."""
 
@@ -2082,6 +2119,49 @@ class TestReadinessFragment:
         assert "100.0% funded" in html
         assert 'data-lever-flag="headroom"' in html
         assert "$903.85" in html
+
+    def test_funded_baseline_with_months_override_renders_its_outcome(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A typed months override renders ITS outcome when already funded.
+
+        Acceptance fix 3: pre-fix the already_funded branch swallowed the
+        override and re-rendered "no delay needed".  With the $5M
+        overfunded scenario and months=24, the line must show the
+        override's own picture ("+24 months (retiring <date>) reaches
+        X% funded (surplus)") -- funded stays >= 100%, so the surplus
+        wording is deterministic -- and the baseline copy must be gone.
+        """
+        _seed_overfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+24 months" in html
+        assert "surplus" in html
+        assert "no delay needed" not in html
+
+    def test_funded_baseline_with_contribution_override_renders_its_outcome(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A typed contribution override renders ITS outcome when funded.
+
+        The contribution twin of acceptance fix 3: contribution=100.00
+        on the overfunded baseline renders "+$100.00/paycheck ... reaches
+        X% funded (surplus)" instead of the swallowed "no extra
+        contribution needed" copy.
+        """
+        _seed_overfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?contribution=100.00",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+$100.00/paycheck" in html
+        assert "no extra contribution needed" not in html
 
     def test_garbage_params_are_422(
         self, auth_client, seed_user, db, seed_periods_today,
