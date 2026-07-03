@@ -22,13 +22,13 @@ from app.services.retirement_gap_calculator import RetirementGapAnalysis
 from app.services.retirement_readiness import (
     _build_countdown,
     _downsample_indices,
-    _funded_ratio,
+    funded_ratio_state,
 )
 from app.utils.money import round_money
 
 
 def _gap_analysis(*, required, after_tax_projected):
-    """Build a minimal net-frame gap analysis for the _funded_ratio unit tests."""
+    """Build a minimal net-frame gap analysis for the funded_ratio_state unit tests."""
     return RetirementGapAnalysis(
         pre_retirement_net_monthly=Decimal("5000.00"),
         monthly_pension_income=Decimal("2000.00"),
@@ -51,7 +51,7 @@ class TestFundedRatio:
 
         100,000 / 200,000 = 0.5000 exactly.
         """
-        ratio, no_needed = _funded_ratio(
+        ratio, no_needed = funded_ratio_state(
             _gap_analysis(
                 required=Decimal("200000.00"),
                 after_tax_projected=Decimal("100000.00"),
@@ -66,7 +66,7 @@ class TestFundedRatio:
         required == 0 (pension fully covers the gap) -> funded_ratio None,
         no_savings_needed True (never a divide-by-zero).
         """
-        ratio, no_needed = _funded_ratio(
+        ratio, no_needed = funded_ratio_state(
             _gap_analysis(
                 required=Decimal("0"),
                 after_tax_projected=Decimal("100000.00"),

@@ -198,7 +198,7 @@ def load_gap_inputs(user_id):
     )
 
 
-def _resolve_swr_fraction(settings):
+def resolve_swr_fraction(settings):
     """Resolve the active safe-withdrawal rate as a fractional Decimal.
 
     A single definition shared by :func:`compute_gap_data` and
@@ -311,20 +311,20 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     )
 
     # CRIT-04 / E-12: route both SWR call sites (here and the slider in
-    # ``compute_slider_defaults``) through ``_resolve_swr_fraction`` so an
+    # ``compute_slider_defaults``) through ``resolve_swr_fraction`` so an
     # explicit stored zero is honoured everywhere -- no truthiness
     # fallback to the default for a real zero.
     swr = (
         swr_override
         if swr_override is not None
-        else _resolve_swr_fraction(settings)
+        else resolve_swr_fraction(settings)
     )
     gap_result = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=gap_net_biweekly,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,
-        estimated_tax_rate=_resolve_estimated_tax_rate(settings),
+        estimated_tax_rate=resolve_estimated_tax_rate(settings),
     )
     chart_data = _build_chart_data(gap_result, pension.monthly_income, swr)
 
@@ -340,13 +340,13 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         # retirement date, and stored estimated tax rate the gap used --
         # exposed so ``retirement_readiness.compute_readiness_data`` can
         # re-run the net-frame gap (F1) and build the chart / countdown
-        # without re-deriving them.  ``_resolve_estimated_tax_rate`` is a
+        # without re-deriving them.  ``resolve_estimated_tax_rate`` is a
         # cheap pure resolver, called inline here rather than stored, to
         # keep this orchestrator within its local-variable budget.
         "gap_net_biweekly": gap_net_biweekly,
         "swr": swr,
         "planned_retirement_date": planned_retirement_date,
-        "estimated_tax_rate": _resolve_estimated_tax_rate(settings),
+        "estimated_tax_rate": resolve_estimated_tax_rate(settings),
     }
 
 
@@ -403,7 +403,7 @@ def compute_slider_defaults(data):
     # truthiness ``or "0.04"`` -- two definitions of "missing SWR"
     # that disagreed on explicit zero (slider 0.00%, projection 4%).
     current_swr = (
-        _resolve_swr_fraction(settings) * _PCT_SCALE
+        resolve_swr_fraction(settings) * _PCT_SCALE
     ).quantize(_PCT_QUANTUM)
 
     projections = data.get("retirement_account_projections", [])
@@ -641,7 +641,7 @@ def compute_gap_net_biweekly(
     return round_money(final_gross_biweekly * effective_take_home_rate)
 
 
-def _resolve_estimated_tax_rate(
+def resolve_estimated_tax_rate(
     settings: UserSettings | None,
 ) -> Decimal | None:
     """Resolve the estimated retirement tax rate from user settings.

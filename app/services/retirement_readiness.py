@@ -85,7 +85,7 @@ def compute_readiness_data(user_id):
     data = compute_gap_data(user_id)
     projections = data["retirement_account_projections"]
     net, tax_rate_missing, effective_tax_rate = _net_frame(data)
-    funded_ratio, no_savings_needed = _funded_ratio(net)
+    funded_ratio, no_savings_needed = funded_ratio_state(net)
     synthetic_periods = _synthetic_periods(data["planned_retirement_date"])
 
     return {
@@ -151,7 +151,7 @@ def _net_frame(data):
     return net, tax_rate_missing, effective_tax_rate
 
 
-def _funded_ratio(net):
+def funded_ratio_state(net):
     """Compute the after-tax funded ratio, guarding a zero requirement.
 
     Args:

@@ -668,7 +668,7 @@ class TestRetirementAnchorInPastModeledHeadlineCashSeed:
 # dropped any zero-return account from the balance-weighted average
 # (two $100k accounts at 0% and 7% reported 7.00% instead of the true
 # blended 3.50%).  Commit 20 routes both sites through one
-# ``_resolve_swr_fraction`` helper and replaces the weighted-return
+# ``resolve_swr_fraction`` helper and replaces the weighted-return
 # truthiness with explicit ``is not None`` so zero stays zero.
 # See: CRIT-04, F-042, PA-04, PA-05; coding-standard E-12 ("0 vs None").
 
@@ -729,7 +729,7 @@ class TestSwrResolverConsistency:
     None``); an explicit ``Decimal("0.0000")`` stored SWR therefore
     displayed 0.00% on the slider but drove the projection at 4%.
     These tests pin the corrected behaviour: both surfaces read the
-    SWR through the single ``_resolve_swr_fraction`` helper, and an
+    SWR through the single ``resolve_swr_fraction`` helper, and an
     explicit zero is a real zero on both surfaces.
     """
 
