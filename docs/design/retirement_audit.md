@@ -393,3 +393,40 @@ Gate A ruled by the developer 2026-07-02 (question numbers match "Open questions
    persistent home for SWR, planned retirement date, and estimated retirement tax rate; the settings
    section retires (route/template cleanup in scope).
 7. **Sliders rework APPROVED: assumptions panel with explicit deltas + save affordance.**
+
+### Loop A outcome: direction D locked (2026-07-03)
+
+Three rounds (A "verdict ledger" / B "flight path" / C "mission control" in round 1; the A+B merge
+as direction D in round 2; hero-row refinement in round 3). The developer locked D. Scratch mockups
+stayed out of the repo per the anti-anchoring rule; this anatomy is the record.
+
+Anatomy, top to bottom:
+
+- **Page header:** title + "Planned date 2046-06-01 / 19.9 years / 519 paychecks away" caption; a
+  single quiet "Pensions" button (no primary-button styling).
+- **Readiness card (the hero):** "63% funded"-style hero figure with the one-sentence plain-dollars
+  caption BESIDE it (round-3 refinement: stacking them squeezed the chart), then the savings
+  flight-path chart -- "your path" (accent, 10% wash) vs "needed to retire" (gray), 2px lines, 8px
+  end dots with surface rings, direct end labels, hairline gridlines. The caption states projected
+  vs needed vs shortfall and the frame ("2046 dollars, net of estimated tax"). Shortfall wording
+  carries the danger color.
+- **Assumptions rail** (beside the readiness card): one row per assumption -- retirement date, SWR,
+  assumed return, merit horizon, COLA note, est. retirement tax, dollars frame -- each with its
+  value, provenance or edit affordance; a changed row highlights with a delta chip ("was 10.5% /
+  funded 52% (-11)") and Save / Reset buttons. This panel is the persistent home that replaces
+  Settings > Retirement (ruling 6) and absorbs the old sliders (ruling 7).
+- **"Close the gap" card, two levers at equal rank:** contribution stepper ("+$305/paycheck from now
+  to 2046") and retire-later stepper ("+14 months, no new contributions"), each with its funded /
+  shortfall outcome line.
+- **Income-in-retirement card:** slim sequential meter (two validated accent-ramp steps over a pale
+  track; NOT categorical hues) + four rows: net pension, SWR withdrawals, uncovered (danger), income
+  to replace -- all labeled net-of-tax, 2046 dollars.
+- **Accounts table:** account (link), type chip, today's balance, **contributions/period** ("you
+  $X / employer $Y"; "none linked" in credit-amber), return, at-retirement; footer note states the
+  $0-contribution assumption with a link-a-deduction CTA (finding D2's design half).
+- **Pension footer:** the whole derivation as one auditable line (years x multiplier x high-4
+  average = gross/mo -> net/mo).
+
+Chart/meter palette committed (validated with the dataviz six-checks script): dark `#2878A8` /
+`#4A9ECC` on `#14161A` (dE 14.0); light `#0A5A96` / `#3E92C2` on `#FBFAF7` (dE 21.5). Red stays
+reserved for verdict / uncovered states; identity always paired with labels, never color-alone.
