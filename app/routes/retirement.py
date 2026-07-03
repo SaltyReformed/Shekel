@@ -101,6 +101,45 @@ def dashboard():
     )
 
 
+def _pension_date_errors(eff_hire, eff_earliest, eff_planned):
+    """Cross-field pension date rules, shared by both pension-date writers.
+
+    Extracted from ``update_pension`` (acceptance r2 item 2) so the
+    assumptions rail's date row -- which now writes through to the
+    owning pension -- enforces the SAME rules as the pension form
+    instead of duplicating them: planned/earliest must fall after the
+    hire date, the planned date must be in the future, and the planned
+    date cannot precede the earliest retirement date when one is set.
+
+    Args:
+        eff_hire: The effective hire date (submitted or stored).
+        eff_earliest: The effective earliest retirement date, or ``None``.
+        eff_planned: The effective planned retirement date, or ``None``.
+
+    Returns:
+        dict mapping field name to a list of error messages; empty when
+        every rule passes.
+    """
+    date_errors = {}
+    if eff_earliest and eff_hire and eff_earliest <= eff_hire:
+        date_errors.setdefault("earliest_retirement_date", []).append(
+            "Must be after hire date."
+        )
+    if eff_planned and eff_hire and eff_planned <= eff_hire:
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be after hire date."
+        )
+    if eff_planned and eff_planned <= date.today():
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be in the future."
+        )
+    if eff_planned and eff_earliest and eff_planned < eff_earliest:
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be on or after earliest retirement date."
+        )
+    return date_errors
+
+
 # ── Pension CRUD ─────────────────────────────────────────────────
 
 
@@ -284,23 +323,7 @@ def update_pension(pension_id):
     eff_earliest = data.get("earliest_retirement_date", pension.earliest_retirement_date)
     eff_planned = data.get("planned_retirement_date", pension.planned_retirement_date)
 
-    date_errors = {}
-    if eff_earliest and eff_hire and eff_earliest <= eff_hire:
-        date_errors.setdefault("earliest_retirement_date", []).append(
-            "Must be after hire date."
-        )
-    if eff_planned and eff_hire and eff_planned <= eff_hire:
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be after hire date."
-        )
-    if eff_planned and eff_planned <= date.today():
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be in the future."
-        )
-    if eff_planned and eff_earliest and eff_planned < eff_earliest:
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be on or after earliest retirement date."
-        )
+    date_errors = _pension_date_errors(eff_hire, eff_earliest, eff_planned)
     if date_errors:
         return render_template(
             "retirement/pension_form.html",
@@ -419,9 +442,16 @@ def update_settings():
     ``_assumptions.html`` stub with field errors and the echoed input at
     422 (fragment-friendly for both HTMX and plain posts); success
     renders the refreshed panel for an HTMX request and falls back to a
-    flash + redirect to the retirement page otherwise.  The old
-    settings-dashboard re-render is gone -- Settings > Retirement retired
-    into this page (Gate A ruling 6).
+    flash + redirect to the retirement page otherwise.
+
+    Date write-through (acceptance r2 item 2, developer ruling): the date
+    row is always editable and Save writes to the RESOLVED owner.  When a
+    pension owns the resolved date, a submitted
+    ``planned_retirement_date`` updates that owning (max-date) pension --
+    enforcing the pension form's own cross-field rules via the shared
+    :func:`_pension_date_errors` -- and never the settings column;
+    otherwise the settings save applies unchanged.  Writes go through the
+    ORM so the audited-table triggers capture them.
     """
     # Preserve original user input for form re-display on error.
     raw_form_data = dict(request.form)
@@ -431,15 +461,28 @@ def update_settings():
         .filter_by(user_id=current_user.id)
         .first()
     )
-    # Acceptance-drive fix 1: the re-rendered rail needs the date row's
-    # provenance (pension-owned dates render read-only, so the fragment
-    # must know who owns the resolved date).  Resolved per render below
-    # -- the success branch must see the POST-save settings state.
+    # The date row's provenance decides the write-through target AND how
+    # the re-rendered rail captions the row.  Resolved per render below
+    # -- the success branch must see the POST-save state.
     pensions = (
         db.session.query(PensionProfile)
         .filter_by(user_id=current_user.id, is_active=True)
         .all()
     )
+
+    def rail_response(rail_errors, form_data, status=None):
+        """Render the assumptions fragment with freshly resolved provenance."""
+        body = render_template(
+            "retirement/_assumptions.html",
+            settings=settings,
+            form_data=form_data,
+            errors=rail_errors,
+            date_provenance=(
+                retirement_dashboard_service
+                .resolve_retirement_date_provenance(pensions, settings)
+            ),
+        )
+        return (body, status) if status is not None else body
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -447,22 +490,37 @@ def update_settings():
     # fractions directly.
     errors = _settings_schema.validate(request.form)
     if errors:
-        return render_template(
-            "retirement/_assumptions.html",
-            settings=settings,
-            form_data=raw_form_data,
-            errors=errors,
-            date_provenance=(
-                retirement_dashboard_service
-                .resolve_retirement_date_provenance(pensions, settings)
-            ),
-        ), 422
+        return rail_response(errors, raw_form_data, status=422)
 
     if settings is None:
         flash("Settings not found.", "danger")
         return redirect(url_for("retirement.dashboard"))
 
     data = _settings_schema.load(request.form)
+
+    provenance = (
+        retirement_dashboard_service.resolve_retirement_date_provenance(
+            pensions, settings,
+        )
+    )
+    if ("planned_retirement_date" in data
+            and provenance["source"] == "pension"):
+        # Write through to the owning pension.  The schema already
+        # enforced must-be-future (M1); the shared pension rules add
+        # after-hire and earliest-date constraints against the OWNER's
+        # stored fields, exactly as the pension form would.
+        owner = next(
+            p for p in pensions if p.id == provenance["pension_id"]
+        )
+        pension_errors = _pension_date_errors(
+            owner.hire_date,
+            owner.earliest_retirement_date,
+            data["planned_retirement_date"],
+        )
+        if pension_errors:
+            return rail_response(pension_errors, raw_form_data, status=422)
+        owner.planned_retirement_date = data.pop("planned_retirement_date")
+
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
             setattr(settings, field_name, value)
@@ -471,15 +529,6 @@ def update_settings():
     logger.info("user_id=%d updated retirement settings", current_user.id)
 
     if request.headers.get("HX-Request"):
-        return render_template(
-            "retirement/_assumptions.html",
-            settings=settings,
-            form_data=None,
-            errors=None,
-            date_provenance=(
-                retirement_dashboard_service
-                .resolve_retirement_date_provenance(pensions, settings)
-            ),
-        )
+        return rail_response(None, None)
     flash("Retirement settings updated.", "success")
     return redirect(url_for("retirement.dashboard"))

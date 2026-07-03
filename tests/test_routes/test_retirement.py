@@ -263,31 +263,29 @@ class TestRetirementDashboard:
         assert 'value="7"' in html
         assert 'data-assumption-flag="tax-missing"' in html
 
-    def test_pension_owned_date_row_is_read_only_with_provenance(
+    def test_pension_owned_date_row_is_editable_with_provenance(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A pension-owned date renders provenance, not a losing input.
+        """The pension-owned date row is editable and names its target.
 
-        Acceptance-drive fix 1: with a pension carrying a planned date,
-        the resolver ignores the settings date, so the date row must show
-        the RESOLVED date read-only, name the owning pension with a link
-        to its edit page, and point at the retire-later lever -- no date
-        input, no Save that silently loses.
+        Acceptance r2 item 2 (developer ruling, superseding round 1's
+        read-only row): the date row stays editable -- Save writes
+        through to the owning pension -- with the input echoing the
+        RESOLVED (pension) date and the caption naming the pension it
+        updates, linked to its edit page.
         """
         profile = _create_salary_profile(seed_user, db.session)
         pension = _create_pension(seed_user, db.session, salary_profile=profile)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The resolved (pension) date renders read-only with provenance.
+        assert 'id="assump-retirement-date"' in html
+        # The input echoes the RESOLVED (pension) date.
+        assert 'value="2048-07-01"' in html  # _create_pension's date
         assert 'data-assumption-source="pension"' in html
-        assert "2048-07-01" in html  # _create_pension's planned date
+        assert "updates" in html
         assert "State Pension" in html
         assert f"/retirement/pension/{pension.id}/edit" in html
-        assert "retire-later lever" in html
-        # No editable date control anywhere on the page.
-        assert 'id="assump-retirement-date"' not in html
-        assert 'name="planned_retirement_date"' not in html
 
     def test_settings_owned_date_row_keeps_the_editable_input(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1915,10 +1913,11 @@ class TestAssumptionSaves:
     def test_fragment_renders_pension_owned_date_row(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """The per-field save fragment also renders the provenance row.
+        """The per-field save fragment renders the write-through date row.
 
-        Acceptance-drive fix 1: after any rail save, the re-rendered
-        fragment must keep the pension-owned date read-only (the
+        Acceptance r2 item 2: after any rail save, the re-rendered
+        fragment keeps the editable date input (echoing the resolved
+        pension date) with the "updates <pension>" caption (the
         update_settings path resolves provenance itself -- it does not
         ride the dashboard context).
         """
@@ -1932,7 +1931,134 @@ class TestAssumptionSaves:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert 'data-assumption-source="pension"' in html
-        assert 'id="assump-retirement-date"' not in html
+        assert 'id="assump-retirement-date"' in html
+        assert 'value="2048-07-01"' in html
+
+    def test_pension_owned_date_save_writes_through_to_the_pension(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Saving the date row updates the OWNING pension, not settings.
+
+        Acceptance r2 item 2 (developer ruling): the pension owns the
+        resolved date, so Save persists to
+        PensionProfile.planned_retirement_date via the ORM (the audited
+        pension_profiles trigger must capture the UPDATE), leaves the
+        settings column untouched, and the reloaded page projects from
+        the new resolved date (recomputed countdown header).
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date(2040, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2050-06-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        db.session.expire_all()
+        # The OWNING pension carries the new date...
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2050, 6, 1)
+        # ...and the settings column is untouched.
+        after_settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after_settings.planned_retirement_date == date(2040, 1, 1)
+
+        # The audited-table trigger captured the ORM update.
+        audit_rows = db.session.execute(db.text(
+            "SELECT 1 FROM system.audit_log "
+            "WHERE table_name = 'pension_profiles' AND operation = 'UPDATE'"
+        )).fetchall()
+        assert audit_rows, "pension_profiles UPDATE missing from audit_log"
+
+        # The page recomputes from the new resolved date.
+        page = auth_client.get("/retirement").data.decode()
+        assert "Planned date 2050-06-01" in page
+        assert 'value="2050-06-01"' in page
+
+    def test_pension_owned_date_save_enforces_after_hire_rule(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The write-through enforces the pension form's after-hire rule.
+
+        A pension hired in the FUTURE (2049-01-01) makes the rule
+        genuinely reachable for a future candidate date: 2048-12-01 is
+        in the future (passing the schema's M1 check) but on/before the
+        hire date, so the shared pension validator rejects it at 422
+        and nothing persists.
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = PensionProfile(
+            user_id=seed_user["user"].id,
+            salary_profile_id=profile.id,
+            name="Future Hire Pension",
+            benefit_multiplier=Decimal("0.01850"),
+            consecutive_high_years=4,
+            hire_date=date(2049, 1, 1),
+            planned_retirement_date=date(2060, 1, 1),
+        )
+        db.session.add(pension)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2048-12-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "Must be after hire date." in html
+        assert "is-invalid" in html
+        db.session.expire_all()
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2060, 1, 1)
+
+    def test_pension_owned_date_save_enforces_earliest_date_rule(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The write-through enforces the earliest-retirement-date rule.
+
+        earliest 2045-01-01: a candidate 2040-01-01 is future and after
+        the 2018 hire, but precedes the earliest date -- the shared
+        pension validator rejects it at 422 and nothing persists.
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = PensionProfile(
+            user_id=seed_user["user"].id,
+            salary_profile_id=profile.id,
+            name="Earliest Bound Pension",
+            benefit_multiplier=Decimal("0.01850"),
+            consecutive_high_years=4,
+            hire_date=date(2018, 7, 1),
+            earliest_retirement_date=date(2045, 1, 1),
+            planned_retirement_date=date(2048, 7, 1),
+        )
+        db.session.add(pension)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2040-01-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "Must be on or after earliest retirement date." in html
+        db.session.expire_all()
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2048, 7, 1)
 
     def test_saved_zero_tax_rate_echoes_and_clears_the_flag(
         self, auth_client, seed_user, db, seed_periods_today,
