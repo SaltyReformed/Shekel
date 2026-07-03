@@ -189,3 +189,34 @@ class RetirementGapQuerySchema(BaseSchema):
             min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
         ),
     )
+
+
+class RetirementLeverQuerySchema(BaseSchema):
+    """Validates the /retirement/levers HTMX stepper query string (P2c).
+
+    Both parameters are optional stepper values -- an absent parameter
+    displays the solver's own default.  ``contribution`` is a money
+    amount (dollars per pay period, NOT a percent, so no ``@pre_load``
+    percent conversion applies): two decimal places, bounded to
+    ``[0, 100000]`` so a URL-edited negative or absurd amount is a 422
+    rather than a silently nonsensical outcome line.  ``months`` is the
+    retire-later offset in whole months, bounded to ``[0, 180]`` --
+    the same +180 cap the P2b binary search honors
+    (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`).
+    """
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Normalize empty inputs (no percent fields on this schema)."""
+        return _normalize_empty_inputs(self, data)
+
+    contribution = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000"),
+        ),
+    )
+    months = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=0, max=180),
+    )

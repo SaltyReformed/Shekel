@@ -1755,3 +1755,129 @@ class TestIsPretaxDispatch:
         with app.app_context():
             data = compute_gap_data(seed_user["user"].id)
             assert data["retirement_account_projections"] == []
+
+
+class TestLeverFragment:
+    """Tests for the /retirement/levers HTMX fragment (P2c)."""
+
+    @staticmethod
+    def _seed_underfunded(seed_user, db_session):
+        """Salary + settings retirement date + capped 401(k), no pension.
+
+        Deterministically underfunded on both levers: the ~$80k salary
+        drives a required target well over $1M (net biweekly ~ $2,200 ->
+        required = net * 26 / 0.04 ~ $1.4M) while the $10k account at 7%
+        with zero contributions projects to only ~$40k by +240 months --
+        the contribution lever solves (and its solution, roughly
+        shortfall / AF ~ $1.3M / ~1100 ~ $1,200+/period, exceeds the
+        23500 / 26 = $903.85 per-period limit headroom), and retiring
+        later alone cannot close the gap even at +180 months
+        ($10k * 1.07^35 < $110k).
+        """
+        from app.utils.dates import add_months
+
+        _create_salary_profile(seed_user, db_session)
+        settings = (
+            db_session.query(UserSettings)
+            .filter_by(user_id=seed_user["user"].id)
+            .one()
+        )
+        settings.planned_retirement_date = add_months(date.today(), 240)
+        _create_retirement_account(seed_user, db_session)
+        db_session.commit()
+
+    def test_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET /retirement/levers without HX-Request redirects to the page."""
+        resp = auth_client.get("/retirement/levers")
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers["Location"]
+
+    def test_requires_auth(self, client, db):
+        """Unauthenticated -> redirect to login."""
+        resp = client.get(
+            "/retirement/levers", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_no_horizon_state_rendered(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """No pension date and no settings date -> the empty-state line."""
+        resp = auth_client.get(
+            "/retirement/levers", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Set a planned retirement date" in html
+        assert 'data-lever="none"' in html
+
+    def test_solved_outcome_lines_rendered(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Both outcome lines render with the solver's defaults.
+
+        The underfunded scenario (see _seed_underfunded): the contribution
+        line shows the solved +$X/paycheck reaching 100.0% funded (the
+        closed form's outcome at its own solution rounds to exactly
+        1.0000 -- the half-cent amount rounding is ~1e-5 of the
+        requirement), plus the honest over-headroom warning (solution
+        ~$1,200+/period > $903.85 headroom); the retire-later line shows
+        the not-within-180-months degenerate state.
+        """
+        self._seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/levers", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-lever="contribution"' in html
+        assert "/paycheck" in html
+        assert "100.0% funded" in html
+        # Honest headroom flag: 23500 / 26 = 903.846... -> $903.85.
+        assert 'data-lever-flag="headroom"' in html
+        assert "$903.85" in html
+        assert 'data-lever="retire-later"' in html
+        assert "cannot close the gap within 180 months" in html
+
+    def test_stepper_overrides_rendered(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Override params drive the displayed outcome lines.
+
+        months=24 renders the "+24 months (retiring <date>)" branch even
+        though the solver itself reports not_within_cap; contribution=100
+        renders the money macro's $100.00 as the displayed amount.
+        """
+        self._seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/levers?contribution=100.00&months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+$100.00/paycheck" in html
+        assert "+24 months" in html
+
+    def test_garbage_params_are_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Out-of-bounds or non-numeric stepper params return 422."""
+        for query in (
+            "contribution=-5",       # negative money
+            "contribution=abc",      # non-numeric money
+            "contribution=100001",   # above the 100000 bound
+            "months=-1",             # negative offset
+            "months=181",            # above the +180 cap
+            "months=abc",            # non-numeric offset
+        ):
+            resp = auth_client.get(
+                f"/retirement/levers?{query}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 422, (
+                f"{query}: expected 422, got {resp.status_code}"
+            )
+            assert "errors" in resp.get_json()

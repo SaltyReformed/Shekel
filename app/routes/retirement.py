@@ -24,9 +24,10 @@ from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
     RetirementGapQuerySchema,
+    RetirementLeverQuerySchema,
     RetirementSettingsSchema,
 )
-from app.services import retirement_dashboard_service
+from app.services import retirement_dashboard_service, retirement_levers
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
 _gap_query_schema = RetirementGapQuerySchema()
+_lever_query_schema = RetirementLeverQuerySchema()
 
 
 @retirement_bp.route("/retirement")
@@ -364,6 +366,41 @@ def gap_analysis():
         chart_data=data["chart_data"],
         retirement_account_projections=data["retirement_account_projections"],
         htmx_response=True,
+    )
+
+
+# ── Lever Outcomes Fragment (P2c) ────────────────────────────────
+
+
+@retirement_bp.route("/retirement/levers")
+@login_required
+@require_owner
+def lever_outcomes():
+    """HTMX fragment: recompute both lever outcome lines from stepper values.
+
+    Optional ``contribution`` (extra dollars per pay period) and
+    ``months`` (retire-later offset) query parameters override the
+    solvers' defaults; both are validated through
+    :class:`RetirementLeverQuerySchema` (bounds -> 422 on garbage).  The
+    fragment renders ``_lever_outcomes.html`` -- the minimal outcome-line
+    partial P3's levers card restyles.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("retirement.dashboard"))
+
+    try:
+        query_data = _lever_query_schema.load(request.args)
+    except ValidationError as exc:
+        return jsonify(errors=exc.messages), 422
+
+    levers = retirement_levers.compute_lever_data(
+        current_user.id,
+        contribution_override=query_data.get("contribution"),
+        months_override=query_data.get("months"),
+    )
+    return render_template(
+        "retirement/_lever_outcomes.html",
+        levers=levers,
     )
 
 
