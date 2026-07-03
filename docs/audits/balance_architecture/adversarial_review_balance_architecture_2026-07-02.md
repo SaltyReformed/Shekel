@@ -17,9 +17,14 @@ re-evaluation with no anchoring on past decisions.
 > the every-start re-assert in `init_db_role.sql`; cascades verified live on dev first). M5 and
 > M4(a) are fixed (R5: the +$10 walk injection, the tamper proofs driven through the real sweep
 > helpers under `pytest.raises`, the resolver-stack ledger-free fence, and the non-empty sweep
-> asserts are all now executable in CI, across the three reconciliation oracles). Full
-> suite 6861 passed; pylint 10.00 with every `--fail-on` checker. M3's reader-contract half
-> (Step-5 reporting rules), M4(b) (the shared-kernel coverage, owed by R6), and R6-R10 remain open.
+> asserts are all now executable in CI, across the three reconciliation oracles). M2 is fixed
+> (R7, `654c991`: `reset_pay_periods` re-syncs the reset user's loan genesis postings after the
+> wipe, in the same transaction, via a new PER-USER `resync_user_loan_postings` scoped by
+> `load_loan_account_ids_for_user` -- not the deploy-wide backfill -- so a configured-loan user's
+> loan reads no longer degrade to the replay fallback after a reset; the overclaiming "no posted
+> period is ever wiped" comment is corrected). Full suite 6861 passed at R5; the R7 batch is green
+> and pylint holds 10.00 with every `--fail-on` checker. M3's reader-contract half (Step-5
+> reporting rules), M4(b) (the shared-kernel coverage, owed by R6), and R6 / R8-R10 remain open.
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -298,6 +303,23 @@ shekel_app` would make append-only real at the DB tier for the running app, whil
 Recommendation: R4.
 
 ### M2 (MEDIUM, reachable): pay-period reset wipes loan genesis entries despite its zero-settled gate
+
+> **FIXED 2026-07-02** (`654c991`, R7): `reset_pay_periods` now re-posts the wiped genesis
+> corrections onto the rebuilt schedule in the SAME transaction, after the repopulate step, via
+> `loan_posting_service.resync_user_loan_postings(user_id)`.  It is scoped to the reset user (a
+> new `resync_user_loan_postings` over a new `loan_loaders.load_loan_account_ids_for_user`, the
+> per-user twins of the deploy-wide `backfill_all_loan_postings` / `load_all_loan_account_ids`
+> pair) rather than the global sweep the recommendation named, because a reset is a single-user
+> operation and must not reconcile other owners' loans inside its transaction.  The re-sync reuses
+> the identical go-forward per-loan sync, so a re-posted correction is identical by construction;
+> the loan's source facts (`LoanParams`, its `user_trueup` `LoanAnchorEvent` rows) carry no
+> `pay_period_id` and survive the wipe, so the corrections re-derive and re-attribute to the new
+> earliest period.  The overclaiming comment is corrected.  Regression locks:
+> `test_pay_period_reset.py::TestResetResyncsLoanGenesis` (genesis nets -(anchor) before AND after
+> the reset, re-attributed to the new period; proven to fail without the re-sync) plus the scoping
+> pair `test_loan_posting_service.py::TestUserScopedResync` (the enumerator and the resync return
+> only the given user's loans; a second owner's loan is never touched).  The walkthrough below
+> describes the pre-fix code.
 
 The reset gate counts settled transactions only (`pay_period_admin.py:474-476, 665-692`). Loan
 opening/true-up entries exist independently of any settled transaction (a payment-less configured
@@ -629,7 +651,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R4 | **DONE 2026-07-02** | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). As-built: cascades verified live first (rolled back); shared role-guarded SQL in `posting_infrastructure`; migration `e3c23fadb21d` (downgrade re-grants; round-trip verified on dev) + `init_database.py` + `build_test_template.py` + the every-start re-assert in `init_db_role.sql` (which would otherwise re-open the hole at each boot via its blanket GRANT); `TestLedgerAppendOnlyPrivileges` locks posture, tamper rejection, and owner-executed CASCADE/SET-NULL disposal. |
 | R5 | **DONE 2026-07-02** | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. As-built (all in the three reconciliation oracles): `test_walk_interest_injection_fails_the_value_checks_not_the_sweep` injects $10 into `_walk.accrue_monthly_interest` only (the resolver's `rate_period_engine` binding stays honest), proving the parallel-run VALUE checks fail by exactly $10 while the structural sweep -- an accounting identity -- survives; the three `*_catches_a_tampered_*` proofs now also drive the real `_assert_full_reconciliation` / `_assert_loan_reconciles` under `pytest.raises`, so a regression in the sweep helper itself is caught; `TestResolverIsLedgerFree` fences the resolver stack three ways -- a source-AST import fence over `loan_loaders` + the dynamically-enumerated `loan_resolver` package (catching both `from pkg import ledger_mod` and `from pkg.ledger_mod import x` shapes), a runtime read fence monkeypatching every ledger reader to raise around `_resolver_balance`, and a negative control proving the AST fence bites; and the linked-account sweeps (Steps 2/3) and the loan completeness walk now `assert` their enumerations non-empty so an empty query cannot pass vacuously. Full suite green. This closes M5 and M4(a); M4(b) (the shared amortization kernel moving both producers in lockstep) is coverage, still owed by R6. |
 | R6 | SOON (partly done) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. The settled-row revert-and-move oracle case landed with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
-| R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). (The TRUNCATE variant -- wiping a current-period true-up correction -- is already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so its re-sync is still owed.) |
+| R7 | **DONE 2026-07-02** (`654c991`) | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). As-built: a PER-USER re-sync (`loan_posting_service.resync_user_loan_postings` over `loan_loaders.load_loan_account_ids_for_user`, the scoped twins of the deploy-wide `backfill_all_loan_postings` / `load_all_loan_account_ids`) rather than the global sweep, since a reset is single-user and must not reconcile other owners' loans in its transaction; it reuses the identical go-forward sync (a re-posted correction is identical by construction), runs after the repopulate step in the same transaction, and re-attributes the surviving source facts' corrections onto the new schedule. Regression: `TestResetResyncsLoanGenesis` (fails without the re-sync) + the `TestUserScopedResync` scoping pair. (The TRUNCATE variant -- wiping a current-period true-up correction -- was already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so this re-sync closed its half.) |
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
 | R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
 | R10 | HOUSEKEEPING | Doc-drift batch (L8): the two stale import rationales, the stale impossibility argument in the two model docstrings, the reset comment. Single-source the `--fail-on` list (L1). Trim `growth_engine` from the W9906 allowlist (L2). De-duplicate the cross-page grid/checking readers or wire one to a route value (L6). Decide the L9 timezone policy for tax attribution and the L10 over-credit guard. Ratify the two C11 forks (Section 5). Split `tools/pylint/shekel_checkers.py` into a package (added 2026-07-02: the R3 extension pushed the plugin past pylint's default module size -- ungated C0302, 1145/1000 lines -- and the file also carries pre-existing E0011/W0012 meta-noise from its own prose comments about directives plus one `too-many-locals`; the split is a gate-infrastructure change, so verify `.pylintrc` `load-plugins`, the per-edit hook, pre-commit, and CI all still load the plugin, and consider giving `tools/pylint/` its own enforced floor once clean). |
