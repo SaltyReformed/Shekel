@@ -127,6 +127,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import os
 import pkgutil
 from datetime import date
 from decimal import Decimal
@@ -1263,7 +1264,11 @@ class TestOracleIsNotVacuous:
             # Drive the REAL production-wide sweep helper (not just the inline
             # re-derivation above) so a regression that broke the helper itself --
             # e.g. one that stopped comparing the income cash -- would fail here.
-            with pytest.raises(AssertionError):
+            # ``match`` pins the SUPERSEDING invariant's message specifically, so a
+            # future edit that weakened THAT comparison but left some other assertion
+            # (a non-empty guard, the trial balance) firing under tamper no longer
+            # keeps this test green -- the tooth cannot be lost undetected (L-1).
+            with pytest.raises(AssertionError, match="non-principal corrections"):
                 _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_trial_balance_catches_an_injected_leg(
@@ -1391,26 +1396,67 @@ class TestOracleIsNotVacuous:
 # was convention-only -- a future refactor letting a resolver input loader consult
 # the ledger would silently collapse the parallel run to a tautology and nothing
 # would fail.  These guards make it mechanical.
+#
+# The fence covers the WHOLE resolver reference path, at the granularity each
+# module allows.  ``loan_loaders`` and the ``loan_resolver`` package are pure
+# resolver-support modules with no legitimate ledger read, so they are fenced at
+# FILE granularity.  ``loan_payment_service`` is different: :func:`_resolver_balance`
+# runs through its ``load_loan_context`` loader, but the module ALSO holds the read-
+# switch functions that read the ledger by design (``confirmed_loan_view`` /
+# ``resolve_loan_seeded`` / ``resolve_account_loan``).  A file-granularity fence
+# would flag those legitimate reads, so that mixed module is fenced at FUNCTION
+# granularity instead -- every function except the read-switch allowlist must stay
+# ledger-free (2026-07-02 follow-up review M-1: without this, wiring the ledger into
+# ``load_loan_context`` or its sibling loaders would taint the reference uncaught).
 
+# The names that appear inside a posted-ledger import path.  A resolver-stack
+# import whose dotted path contains any of these reads the posted ledger.  This is
+# a denylist, so it must stay COMPLETE: the coverage guard
+# ``test_ledger_import_tokens_cover_every_ledger_reader`` fails if any real
+# ledger-reading module is not matched here, so a newly added reader cannot evade
+# the fence silently (2026-07-02 follow-up review M-2).
 _LEDGER_IMPORT_TOKENS = (
     "journal_entry",
     "ledger_account",
     "posting_service",
     "posting_reads",
-    "posting_infrastructure",
     "loan_posting_service",
     "ledger_account_service",
     "balance_at",
+    "pay_period_admin",
 )
+
+# The posted-ledger MODEL modules -- the concrete data classes (Posting,
+# JournalEntry, LedgerAccount) every ledger query ultimately goes through.  The
+# coverage guard treats importing one of these as the objective definition of
+# "reads the posted ledger".
+_LEDGER_MODEL_MODULES = ("app.models.journal_entry", "app.models.ledger_account")
+# Their leaf names -- for the ``from app.models import journal_entry`` import shape.
+_LEDGER_MODEL_NAMES = tuple(name.rsplit(".", 1)[-1] for name in _LEDGER_MODEL_MODULES)
+
+# The ``loan_payment_service`` functions permitted to read the posted ledger: the
+# read-switch seam (the sole call sites of the confirmed-ledger readers).  Every
+# OTHER function in that module is on, or feeds, the resolver reference and must
+# stay ledger-free -- so the function-granularity fence holds these out and scans
+# the rest.  A newly added function defaults into the SCANNED set (the safe
+# polarity): a ledger read wired into a resolver-feeding loader fails the fence.
+_LEDGER_READ_SWITCH_FUNCTIONS = frozenset({
+    "confirmed_loan_view",
+    "resolve_loan_seeded",
+    "resolve_account_loan",
+})
 
 
 def _resolver_stack_modules() -> list:
-    """Return every module the un-seeded resolver reference is built from.
+    """Return every FILE-fenced module the un-seeded resolver reference is built from.
 
     ``loan_loaders`` (the input loaders) and the whole ``loan_resolver`` package,
     its submodules discovered dynamically so a newly added one is fenced
-    automatically.  These are the modules :func:`_resolver_balance` runs through;
-    the whole parallel run rests on none of them reading the posted ledger.
+    automatically.  These are the pure resolver-support modules
+    :func:`_resolver_balance` runs through; none has any legitimate reason to read
+    the posted ledger, so each is scanned whole.  The mixed ``loan_payment_service``
+    is fenced separately, at function granularity, by
+    :func:`_loan_payment_service_resolver_feeding_source`.
     """
     modules = [loan_loaders, loan_resolver]
     for info in pkgutil.iter_modules(loan_resolver.__path__):
@@ -1418,6 +1464,86 @@ def _resolver_stack_modules() -> list:
             importlib.import_module(f"app.services.loan_resolver.{info.name}")
         )
     return modules
+
+
+def _loan_payment_service_resolver_feeding_source() -> str:
+    """Return ``loan_payment_service`` source MINUS its read-switch functions.
+
+    :func:`_resolver_balance` builds the resolver reference through
+    ``loan_payment_service.load_loan_context``, so that module is on the resolver's
+    path -- but it is MIXED: its read-switch functions
+    (:data:`_LEDGER_READ_SWITCH_FUNCTIONS`) read the posted ledger by design, so the
+    file-granularity fence cannot cover the whole module without flagging those.
+    Excise exactly those functions' source (so their legitimate lazy ledger imports
+    are not scanned) and return the remainder -- the module's top-level imports plus
+    ``load_loan_context`` and its sibling loaders (``get_payment_history`` /
+    ``compute_contractual_pi`` / ``prepare_payments_for_engine`` and their local
+    helpers) -- so the AST import fence can prove THEY stay ledger-free (review M-1).
+    Excising by source-segment (not by name-scan) keeps top-level imports in scope,
+    so a ledger import added at module top is caught too, not only an in-function one.
+    """
+    module_source = inspect.getsource(loan_payment_service)
+    tree = ast.parse(module_source)
+    scanned = module_source
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in _LEDGER_READ_SWITCH_FUNCTIONS:
+            continue
+        segment = ast.get_source_segment(module_source, node)
+        if segment:
+            scanned = scanned.replace(segment, "")
+    return scanned
+
+
+def _imports_a_ledger_model(source: str) -> bool:
+    """Return whether *source* imports a posted-ledger MODEL module.
+
+    Catches every import shape that reaches ``Posting`` / ``JournalEntry`` /
+    ``LedgerAccount``: ``from app.models.journal_entry import ...``,
+    ``from app.models import journal_entry``, and plain
+    ``import app.models.ledger_account``.  The objective test for "this module
+    reads the posted ledger" the coverage guard is built on.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            if node.module in _LEDGER_MODEL_MODULES:
+                return True
+            if node.module == "app.models" and any(
+                alias.name in _LEDGER_MODEL_NAMES for alias in node.names
+            ):
+                return True
+        elif isinstance(node, ast.Import):
+            if any(alias.name in _LEDGER_MODEL_MODULES for alias in node.names):
+                return True
+    return False
+
+
+def _ledger_model_importer_names() -> set:
+    """Return the import-name of every ``app.services`` module reading the ledger.
+
+    Walks the ``app/services`` source tree on disk (no imports, so no side effects)
+    and, for each module whose source imports a posted-ledger model
+    (:func:`_imports_a_ledger_model`), records the name a by-name import would carry
+    -- the top-level module/package under ``app/services`` (e.g.
+    ``loan_posting_service`` for its ``_reader`` submodule).  The coverage guard
+    asserts :data:`_LEDGER_IMPORT_TOKENS` matches every one, so a NEW ledger reader
+    cannot silently evade the resolver fence (review M-2).
+    """
+    services_dir = os.path.dirname(loan_payment_service.__file__)
+    names: set = set()
+    for root, _dirs, files in os.walk(services_dir):
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            with open(os.path.join(root, fname), encoding="utf-8") as handle:
+                source = handle.read()
+            if not _imports_a_ledger_model(source):
+                continue
+            relative = os.path.relpath(os.path.join(root, fname), services_dir)
+            top = relative.split(os.sep, maxsplit=1)[0]
+            names.add(top[:-3] if top.endswith(".py") else top)
+    return names
 
 
 def _ledger_imports_in_source(source: str) -> list[str]:
@@ -1450,29 +1576,107 @@ def _ledger_imports_in_source(source: str) -> list[str]:
 class TestResolverIsLedgerFree:
     """The resolver reference reads NONE of the posted ledger -- mechanically.
 
-    Two guards close review finding M4's convention-only independence: a static
-    import fence (no resolver-stack module may import a posted-ledger module) and
-    a runtime read fence (``_resolver_balance`` produces its value with every
-    ledger reader monkeypatched to raise).  Together they make it impossible for a
-    future refactor to wire the ledger into the resolver without a red test.  A
-    third test proves the static fence itself has teeth.
+    The static import fence covers the WHOLE resolver reference path:
+    ``loan_loaders`` + the ``loan_resolver`` package at FILE granularity, and the
+    resolver-feeding functions of the mixed ``loan_payment_service`` at FUNCTION
+    granularity (its read-switch functions read the ledger by design and are held
+    out) -- closing the blind spot the file-only fence had on ``load_loan_context``
+    (2026-07-02 follow-up review M-1).  A runtime read fence additionally proves
+    ``_resolver_balance`` produces its value with the module-qualified ledger
+    readers monkeypatched to raise -- a defense-in-depth regression backstop, not
+    the primary guarantee (see its docstring for what it does and does not catch).
+    Two negative controls give the static fence teeth (it bites the import shapes
+    it must catch, and it genuinely scopes around ``loan_payment_service``'s real
+    ledger read), and a coverage guard keeps the token denylist complete so a new
+    ledger reader cannot evade the fence unnoticed (review M-2).  Together they make
+    it impossible for a future refactor to wire the ledger into the resolver
+    reference without a red test.
     """
 
     def test_resolver_stack_imports_no_ledger_module(self):
-        """No module in the resolver stack imports a posted-ledger module.
+        """No code the resolver reference runs through imports a posted-ledger module.
 
-        Runs :func:`_ledger_imports_in_source` over each stack module's source;
-        any hit is a resolver-stack module reaching for the ledger, which would
-        make the parallel run a tautology.
+        Runs :func:`_ledger_imports_in_source` over each FILE-fenced resolver-support
+        module (``loan_loaders`` + the ``loan_resolver`` package) AND over
+        ``loan_payment_service``'s resolver-feeding source (``load_loan_context`` and
+        its sibling loaders; the read-switch functions that legitimately read the
+        ledger are held out -- review M-1).  Any hit is a resolver-reference code
+        unit reaching for the ledger, which would make the parallel run a tautology.
         """
         offenders = {}
         for module in _resolver_stack_modules():
             hits = _ledger_imports_in_source(inspect.getsource(module))
             if hits:
                 offenders[module.__name__] = hits
+        feeding_hits = _ledger_imports_in_source(
+            _loan_payment_service_resolver_feeding_source()
+        )
+        if feeding_hits:
+            offenders["app.services.loan_payment_service (resolver-feeding)"] = (
+                feeding_hits
+            )
         assert not offenders, (
-            f"the resolver stack imported posted-ledger modules {offenders} -- "
-            f"the parallel-run oracle would become a tautology (review M4)"
+            f"the resolver reference imported posted-ledger modules {offenders} -- "
+            f"the parallel-run oracle would become a tautology (review M4 / M-1)"
+        )
+
+    def test_loan_payment_service_function_fence_is_scoped_and_bites(self):
+        """The ``loan_payment_service`` function fence scans loaders, spares the reads.
+
+        Non-vacuity for the M-1 extension.  The mixed module is fenced at function
+        granularity, so this proves the scoping is correct AND that the fence has a
+        genuine target (it is not passing because the module is trivially
+        ledger-free or because the source extraction returned nothing):
+
+        * the resolver-feeding loaders ARE in scope (``load_loan_context`` and its
+          siblings appear in the scanned source);
+        * the read-switch functions -- which read the ledger by design -- are held
+          OUT (their source is excised);
+        * scanning the WHOLE module (read-switch functions included) DOES surface a
+          ledger import, while the resolver-feeding remainder surfaces none -- so the
+          fence passes because the loaders are genuinely ledger-free, exactly around
+          a real ledger read.
+        """
+        feeding = _loan_payment_service_resolver_feeding_source()
+        # The resolver-feeding loaders are in scope.
+        assert "def load_loan_context" in feeding
+        assert "def get_payment_history" in feeding
+        assert "def prepare_payments_for_engine" in feeding
+        # The read-switch functions (permitted to read the ledger) are held out.
+        assert "def confirmed_loan_view" not in feeding
+        assert "def resolve_loan_seeded" not in feeding
+        assert "def resolve_account_loan" not in feeding
+        # The module really does read the ledger somewhere, so the fence has a
+        # genuine target: the whole module trips it; the feeding remainder does not.
+        assert _ledger_imports_in_source(
+            inspect.getsource(loan_payment_service)
+        ), "expected loan_payment_service's read-switch functions to import the ledger"
+        assert not _ledger_imports_in_source(feeding)
+
+    def test_ledger_import_tokens_cover_every_ledger_reader(self):
+        """The token denylist catches every real posted-ledger reader module.
+
+        The fence keys off :data:`_LEDGER_IMPORT_TOKENS`, a denylist -- so a NEW
+        ledger reader with a novel name would evade it, and a resolver import of it
+        would slip through (review M-2).  This discovers every ``app.services``
+        module that imports a posted-ledger MODEL -- the objective, complete
+        criterion for "reads the posted ledger" -- and asserts each name is matched
+        by a token, so an uncovered reader fails HERE (loud), not silently in the
+        resolver fence.
+        """
+        readers = _ledger_model_importer_names()
+        assert readers, (
+            "no posted-ledger reader modules discovered -- the coverage guard is "
+            "vacuous (expected at least posting_reads / loan_posting_service)"
+        )
+        uncovered = sorted(
+            name for name in readers
+            if not any(token in name for token in _LEDGER_IMPORT_TOKENS)
+        )
+        assert not uncovered, (
+            f"posted-ledger reader modules {uncovered} are not matched by any "
+            f"_LEDGER_IMPORT_TOKENS substring -- a resolver import of one would "
+            f"evade the fence; add a covering token (review M-2)"
         )
 
     def test_import_fence_flags_a_ledger_import(self):
@@ -1499,22 +1703,34 @@ class TestResolverIsLedgerFree:
         # fence missed by inspecting only the module of the import.
         assert "posting_service" in flagged
         # Ledger-free source produces no hits (no false positives).
-        assert _ledger_imports_in_source(
+        assert not _ledger_imports_in_source(
             "from app.models.loan_params import LoanParams\n"
             "from app.services.rate_period_engine import monthly_due_date\n"
             "from app.utils.balance_predicates import settled_status_ids\n"
-        ) == []
+        )
 
     def test_resolver_balance_reads_no_ledger_at_runtime(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """``_resolver_balance`` produces its value with every ledger reader forbidden.
+        """``_resolver_balance`` produces its value with the ledger readers forbidden.
 
-        Captures the resolver balance with the readers intact, then monkeypatches
-        every posted-ledger reader a refactor might reach for to raise, and asserts
-        ``_resolver_balance`` returns the SAME value -- proving it never touched the
-        ledger.  If a future change wires the ledger into the resolver, one of the
-        fenced readers fires and this test errors loudly.
+        A defense-in-depth regression backstop that complements the static import
+        fence -- NOT the primary guarantee.  Captures the resolver balance with the
+        readers intact, monkeypatches the posted-ledger readers on the service
+        module objects the code calls them through to raise, and asserts
+        ``_resolver_balance`` returns the SAME value.
+
+        Scope, stated honestly (2026-07-02 follow-up review M-3): because the
+        resolver is ledger-free TODAY it never calls these readers, so passing gives
+        no signal on the CURRENT code -- the static fence is what proves that.  As a
+        regression guard this catches only a MODULE-QUALIFIED call
+        (``posting_service.account_posting_total(...)``) to one of the listed
+        symbols through the patched module object; a name-import binding
+        (``from ... import account_posting_total``) or a reader not in the list would
+        NOT fire here.  Those shapes are the STATIC fence's job
+        (:meth:`test_resolver_stack_imports_no_ledger_module`, now path-complete over
+        the resolver reference including ``loan_payment_service``), which is why this
+        runtime check is a backstop rather than the load-bearing guard.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id

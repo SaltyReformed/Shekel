@@ -1481,8 +1481,11 @@ class TestOracleIsNotVacuous:
             # Drive the REAL production-wide sweep helper (not just the inline
             # re-derivation above) so a regression that broke the helper itself --
             # e.g. one that stopped comparing the linked ledger to its source --
-            # would fail here.
-            with pytest.raises(AssertionError):
+            # would fail here.  ``match`` pins the linked-account reconciliation
+            # message specifically, so a future edit that weakened THAT comparison
+            # but left the non-empty guard or trial balance firing under tamper no
+            # longer keeps this test green -- the tooth cannot be lost undetected.
+            with pytest.raises(AssertionError, match="combined source effect"):
                 _assert_full_reconciliation(scenario_id)
 
     def test_trial_balance_catches_an_injected_leg(self, app, db, seed_user):
