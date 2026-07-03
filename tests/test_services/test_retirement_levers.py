@@ -453,3 +453,52 @@ class TestComputeLeverData:
             # The contribution lever still solves (money always closes it).
             assert data["contribution"]["state"] == "solved"
             assert data["contribution"]["solved_amount"] > Decimal("0")
+
+
+class TestPastHorizon:
+    """M1: a positive shortfall with zero remaining periods is honest."""
+
+    def test_past_date_reports_past_horizon_not_funded(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A stored past planned date yields the past_horizon state.
+
+        The hero's picture stays a shortfall (funded < 1: the $10k
+        account cannot cover an ~$80k-salary income target), so the
+        pre-fix "already_funded" collapse was a direct contradiction.
+        With zero periods no per-period solution exists: solved_amount
+        and amount are None, the outcome facts are the baseline picture
+        ($0 extra applied), and no headroom flag can fire on a None
+        amount.
+        """
+        from datetime import timedelta
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _seed_scenario(
+                db, seed_user,
+                balance=Decimal("10000.00"),
+                annual_return=Decimal("0.07000"),
+            )
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=user_id,
+            ).one()
+            settings.planned_retirement_date = (
+                date.today() - timedelta(days=30)
+            )
+            db.session.commit()
+
+            data = retirement_levers.compute_lever_data(user_id)
+            assert data["no_horizon"] is False
+            # The hero side: still a shortfall.
+            assert data["baseline"]["funded_ratio"] < Decimal("1")
+
+            contribution = data["contribution"]
+            assert contribution["state"] == "past_horizon"
+            assert contribution["solved_amount"] is None
+            assert contribution["amount"] is None
+            assert contribution["exceeds_headroom"] is False
+            # $0 extra over zero periods leaves the baseline funded ratio.
+            assert contribution["funded_ratio"] == (
+                data["baseline"]["funded_ratio"]
+            )

@@ -167,6 +167,34 @@ class TestRetirementDashboard:
         assert "1.85%" in html
         assert "Pension Benefit Details" not in html
 
+    def test_past_planned_date_renders_honest_lever_state(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A stored past date cannot make the lever claim "already funded".
+
+        M1: the settings schema now rejects NEW past dates, but stored
+        data ages (and a pension-sourced date bypasses that schema), so
+        the page must stay honest: with a shortfall and zero remaining
+        paychecks the contribution lever renders the past_horizon line,
+        never the funded one, and the stepper input survives the None
+        solved amount.
+        """
+        from datetime import timedelta
+
+        _create_salary_profile(seed_user, db.session)
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date.today() - timedelta(days=30)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Your planned retirement date has passed" in html
+        assert "Already fully funded" not in html
+
     def test_dashboard_no_stale_settings_migration_message(
         self, auth_client, seed_user, db, seed_periods_today
     ):
@@ -1772,6 +1800,37 @@ class TestAssumptionSaves:
         ) == snapshot
 
 
+    def test_past_retirement_date_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A past planned retirement date is rejected with a field error.
+
+        M1: mirrors the pension schemas' must-be-future rule.  The
+        assumptions fragment renders the error; nothing persists.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": "2020-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "must be in the future" in html
+        assert "is-invalid" in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.planned_retirement_date is None
+
+    def test_today_retirement_date_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Today's date is rejected too (<= today, per the pension rule)."""
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": date.today().isoformat(),
+        })
+        assert resp.status_code == 422
+        assert "must be in the future" in resp.data.decode()
+
+
 class TestReadinessFragment:
     """Tests for the /retirement/readiness HTMX what-if fragment (P3a)."""
 
@@ -1848,6 +1907,10 @@ class TestReadinessFragment:
         html = resp.data.decode()
         assert 'data-lever="retire-later"' in html
         assert "+24 months" in html
+        # L5b (locked anatomy): the outcome line carries the shortfall
+        # dollars -- deterministic sign for _seed_underfunded, whose
+        # funded ratio stays far below 1 at +24 months.
+        assert "shortfall" in html
 
     def test_contribution_override_renders_full_lever_content(
         self, auth_client, seed_user, db, seed_periods_today,

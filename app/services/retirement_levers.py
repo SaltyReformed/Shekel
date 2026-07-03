@@ -421,7 +421,11 @@ def _contribution_lever(inputs, baseline, contribution_override):
     shortfall is ``required - after-tax projected`` (fork F2: Roth-basis
     money closes an after-tax gap) and AF is the annuity factor of the
     remaining synthetic periods at the blended return.  A non-positive
-    shortfall is the ``already_funded`` state (solved amount 0.00).  The
+    shortfall is the ``already_funded`` state (solved amount 0.00); a
+    POSITIVE shortfall with a zero annuity factor -- the planned date is
+    today or past, so no paycheck remains for new money to land in -- is
+    the honest ``past_horizon`` state (M1: collapsing it into
+    already_funded contradicted the hero's shortfall verdict).  The
     headroom facts are attached honestly: ``exceeds_headroom`` compares
     the DISPLAYED amount against the aggregate per-period limit headroom
     and never caps the number.
@@ -433,10 +437,13 @@ def _contribution_lever(inputs, baseline, contribution_override):
             the solved default.
 
     Returns:
-        dict with ``state`` (``solved`` / ``already_funded``),
-        ``solved_amount``, ``amount`` (the displayed stepper value), the
-        outcome facts at that amount, ``headroom_per_period`` (``None`` =
-        unbounded), and ``exceeds_headroom``.
+        dict with ``state`` (``solved`` / ``already_funded`` /
+        ``past_horizon``), ``solved_amount`` (``None`` for
+        ``past_horizon`` -- no per-period solution exists), ``amount``
+        (the displayed stepper value; ``None`` only in the unsolvable
+        no-override case), the outcome facts at that amount,
+        ``headroom_per_period`` (``None`` = unbounded), and
+        ``exceeds_headroom``.
     """
     annuity_factor = _annuity_factor(
         growth_engine.generate_projection_periods(
@@ -445,9 +452,16 @@ def _contribution_lever(inputs, baseline, contribution_override):
         _blended_return(inputs.gap.settings, baseline.projections),
     )
     shortfall = baseline.required - baseline.after_tax_projected
-    if shortfall <= ZERO or annuity_factor == ZERO:
+    if shortfall <= ZERO:
         state = "already_funded"
         solved_amount = Decimal("0.00")
+    elif annuity_factor == ZERO:
+        # M1: there IS a shortfall but zero periods remain -- typically a
+        # pension-sourced planned date that has aged into the past (the
+        # settings schema rejects new past dates, but stored data ages).
+        # No per-period amount can exist; report the state, never a lie.
+        state = "past_horizon"
+        solved_amount = None
     else:
         state = "solved"
         solved_amount = round_money(shortfall / annuity_factor)
@@ -462,9 +476,19 @@ def _contribution_lever(inputs, baseline, contribution_override):
         "state": state,
         "solved_amount": solved_amount,
         "amount": amount,
-        **_contribution_outcome(baseline, annuity_factor, amount),
+        # A None amount (past_horizon, no override) evaluates the outcome
+        # at $0 extra: with no periods the annuity factor is zero anyway,
+        # so the facts are the baseline picture.
+        **_contribution_outcome(
+            baseline, annuity_factor,
+            amount if amount is not None else Decimal("0"),
+        ),
         "headroom_per_period": headroom,
-        "exceeds_headroom": headroom is not None and amount > headroom,
+        "exceeds_headroom": (
+            amount is not None
+            and headroom is not None
+            and amount > headroom
+        ),
     }
 
 

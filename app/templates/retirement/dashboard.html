@@ -140,7 +140,7 @@
                       aria-label="Decrease extra contribution by 25 dollars">-</button>
               <input type="number" id="lever-contribution" name="contribution"
                      class="lever-param js-lever-input" step="0.01" min="0" max="100000"
-                     value="{{ "%.2f"|format(c.amount) }}"
+                     value="{{ "%.2f"|format(c.amount) if c.amount is not none else "" }}"
                      aria-label="Extra contribution per paycheck (dollars)">
               <button type="button" data-step="25" data-step-target="lever-contribution"
                       aria-label="Increase extra contribution by 25 dollars">+</button>

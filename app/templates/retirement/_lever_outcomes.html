@@ -26,10 +26,17 @@
     Your pension covers the whole projected income gap -- no savings needed.
     {% elif c.state == 'already_funded' %}
     Already fully funded by your planned date -- no extra contribution needed.
+    {% elif c.state == 'past_horizon' %}
+    Your planned retirement date has passed -- no paychecks remain before
+    it, so contributions cannot close the gap; update the date in the
+    assumptions panel.
     {% else %}
     +{{ money(c.amount) }}/paycheck from now to
     {{ levers.baseline.retirement_date.isoformat() }} reaches
-    <b>{{ "%.1f"|format(c.funded_ratio|to_percent) }}% funded</b>.
+    <b>{{ "%.1f"|format(c.funded_ratio|to_percent) }}% funded</b>
+    ({% if c.surplus_or_shortfall < 0 %}{{ money(-c.surplus_or_shortfall) }}
+    shortfall{% else %}{{ money(c.surplus_or_shortfall) }}
+    surplus{% endif %}).
     {% endif %}
     {% if c.exceeds_headroom %}
     <span class="retire-flag" data-lever-flag="headroom">
@@ -51,7 +58,10 @@
     {% else %}
     +{{ r.months }} months (retiring {{ r.retirement_date.isoformat() }})
     reaches <b>{{ "%.1f"|format(r.funded_ratio|to_percent) }}% funded</b>
-    with no new contributions.
+    with no new contributions
+    ({% if r.surplus_or_shortfall < 0 %}{{ money(-r.surplus_or_shortfall) }}
+    shortfall{% else %}{{ money(r.surplus_or_shortfall) }}
+    surplus{% endif %}).
     {% endif %}
   </p>
   {% endif %}

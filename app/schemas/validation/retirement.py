@@ -160,6 +160,23 @@ class RetirementSettingsSchema(BaseSchema):
         validate=validate.Range(min=0, max=50),
     )
 
+    @validates_schema
+    def validate_future_retirement_date(self, data, **kwargs):
+        """Reject a planned retirement date that is not in the future.
+
+        Mirrors the pension schemas' rule (M1): a past or today date
+        collapses the projection horizon to zero periods, producing a
+        contradictory page (a shortfall verdict beside a lever with no
+        periods to solve over).  ``None`` (clearing the date) stays
+        valid -- only a present-or-past DATE is rejected.
+        """
+        planned = data.get("planned_retirement_date")
+        if planned and planned <= date.today():
+            raise ValidationError(
+                "Planned retirement date must be in the future.",
+                field_name="planned_retirement_date",
+            )
+
 
 class RetirementReadinessQuerySchema(BaseSchema):
     """Validates the /retirement/readiness HTMX what-if query string (P3a).
