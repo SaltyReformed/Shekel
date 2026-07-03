@@ -1,0 +1,1336 @@
+"""The account-anchor reconciliation oracle (Build-Order Step 5, Commit 8).
+
+The correctness gate for the WRITE side of Step 5: every NON-loan account
+(checking, savings, investment, property, interest-bearing, non-loan liability)
+posts an OPENING equity correction for its earliest ``AccountAnchorHistory`` row
+and a TRUE-UP correction per later row, mirroring the shipped loan genesis
+pattern.  After this the trial balance closes app-wide and every linked ledger
+sums to an ABSOLUTE balance.  This oracle validates the POSTED ledger against an
+independent second opinion re-derived from the SOURCE tables
+(``budget.transactions`` + ``budget.account_anchor_history``), never against a
+displayed balance and never against the walk / reconcile that produced it.
+
+The absolute invariant, per non-loan account A in scenario S::
+
+    linked_ledger(A, S) == latest_anchor(A)
+                           + SUM(net of A's settled sources in S whose
+                                 attribution instant is STRICTLY AFTER the
+                                 latest assertion instant)
+
+An anchor is a moment-of-assertion FACT: the engine excludes settled items from
+every period's sum because the anchor already reflects all settled activity
+known at the moment it was asserted (``apply_anchor_true_up``: "the user is
+declaring 'my real checking is now $X' -- every past-dated debit purchase is
+already in that number").  So sources attributed AT OR BEFORE the latest
+assertion instant are ABSORBED into the opening / true-up deltas (they are
+already inside the asserted balance) and sources attributed AFTER it RIDE ON
+TOP.  The attribution instant is the source's CURRENT ``paid_at`` (a transfer's
+by its income shadow, equal to the expense shadow's by Transfer Invariant 3),
+falling back to its pay period ``start_date`` at midnight UTC when ``paid_at``
+is NULL -- exactly the walk's partition rule, restated independently here from
+the transaction table.  A period-granular reading would mis-state the balance
+sheet by every pre-true-up settle in the anchor period (the plan review's
+CRITICAL-1); the ``TestAbsoluteInvariantPerAccount`` fixture pins that exact
+regression.
+
+**Non-tautological by construction**, the same three independent ways the Step-3
+cash oracle is (``test_posting_ledger_cash_reconciliation.py``):
+
+  * **hand-computed literals** -- the expected ledger totals and correction
+    deltas are the test author's arithmetic over the seeded anchors and
+    amounts (e.g. anchor 500, spend 200 pre-true-up, true-up to 350, spend 100
+    post-true-up => linked ledger 250.00), owing nothing to any producer;
+  * **independent cross-table queries** -- the ledger side
+    (``_independent_linked_ledger_sum`` / ``_linked_ledger_sum_as_of``) reads
+    ``account_postings`` and the source side
+    (``_independent_post_assertion_source_effect``) reads ``transactions`` with
+    independently-written Python / SQL, so asserting the two reconcile checks
+    what the producers WROTE against the transaction source of truth;
+  * **the production service helpers** -- ``account_posting_total`` and
+    ``settled_transfer_effect`` / ``settled_transaction_effect`` must match the
+    hand-computed literals too.
+
+Every account and every settle is produced through the REAL go-forward
+primitives -- ``create_account`` (fires the C6 opening sync),
+``create_settled_cash_transaction`` / ``create_settled_transfer`` (the status
+seam + posting builder), ``apply_anchor_true_up`` (the true-up chokepoint) --
+so every reconciled row was produced exactly as production produces it.  The one
+non-production affordance is pinning an anchor row's ``created_at`` (via
+:func:`_assert_balance_at`) so the moment partition under test is deterministic
+regardless of the test clock or timezone -- the same technique the C5 unit suite
+uses.  Assertion instants are always built RELATIVE to the factory origination
+row's stored ``created_at`` (the one instant the test cannot choose).
+
+Two adversarial cases prove the oracle is not vacuous: tampering the latest
+anchor balance makes the per-account reconciliation FAIL under the real sweep
+helper, and injecting one extra leg makes the trial balance go non-zero.  All
+money is ``Decimal`` from strings, with the arithmetic shown per the testing
+standard.
+"""
+from __future__ import annotations
+
+from datetime import datetime, time, timedelta, timezone
+from decimal import Decimal
+
+import pytest
+
+from app import ref_cache
+from app.enums import (
+    LedgerAccountKindEnum,
+    PostingKindEnum,
+    PostingSourceEnum,
+)
+from app.extensions import db as _db
+from app.models.account import Account, AccountAnchorHistory
+from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
+from app.models.ref import AccountType
+from app.models.scenario import Scenario
+from app.models.transaction import Transaction
+from app.services import account_posting_service, posting_service
+from app.utils.balance_predicates import settled_status_ids
+from tests._test_helpers import (
+    create_account_of_type,
+    create_settled_cash_transaction,
+    create_settled_transfer,
+    ledger_account_of_kind,
+    ledger_net,
+    linked_ledger_account,
+    load_migration_module,
+)
+
+
+# The Step-5 data-boundary migration, loaded once so its idempotent raw-SQL
+# teardown ``_remove_account_anchor_postings`` can reproduce the pre-C6
+# historical state (an account whose anchor was asserted before the go-forward
+# wiring, carrying no correction) for the backfill == go-forward test -- the
+# same pattern the C7 backfill suite uses.
+_BOUNDARY_MIGRATION = load_migration_module(
+    "c9f2e6a4b1d8_account_anchor_postings_data_boundary.py"
+)
+
+
+# ---------------------------------------------------------------------------
+# Independent reconciliation queries (test-authored, NOT the service helpers)
+# ---------------------------------------------------------------------------
+#
+# These deliberately re-derive each side from scratch so the oracle is a genuine
+# second opinion: a bug shared by the walk and the reconcile cannot hide,
+# because the ledger side reads ``account_postings`` and the source side reads
+# ``transactions`` / ``account_anchor_history`` with independently-written
+# code, and both are also pinned to hand-computed literals.  Some mirror the
+# Step-2 / Step-3 oracles (``_trial_balance``, ``_entries_violating_balance``);
+# the duplication is DELIBERATE -- each oracle keeps its OWN independent queries
+# so it remains a self-contained second opinion.
+
+
+def _as_utc(instant: datetime) -> datetime:
+    """Return *instant* as an aware-UTC datetime (independent of the walk).
+
+    The oracle's own copy of the walk's instant convention (an aware value
+    converts to UTC, a naive value is assumed UTC -- every ``timestamptz`` in
+    this app is stored UTC), written here rather than imported from the SUT so
+    the ``<=`` / ``>`` partition comparisons are an independent restatement,
+    not a reuse of the code under test.
+    """
+    if instant.tzinfo is None:
+        return instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc)
+
+
+def _period_start_instant(start_date) -> datetime:
+    """Return a pay period start ``date`` as its midnight-UTC instant.
+
+    The attribution fallback for a source with no ``paid_at`` -- the earliest
+    instant of the storage-timezone civil day, the instant analogue of the
+    ``COALESCE(paid_at, start_date)`` entry-date rule.
+    """
+    return datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+
+
+def _independent_linked_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
+    """Sum a non-loan account's LINKED ledger legs in a scenario (independent).
+
+    Joins ``account_postings`` -> ``journal_entries`` (for the scenario) ->
+    ``ledger_accounts`` (for the real ``account_id``), summing the signed
+    ``amount`` over the LINKED kind only.  Keyed off the REAL account via
+    ``ledger_accounts.account_id`` -- a different join shape than
+    ``posting_service.account_posting_total`` (which resolves the ledger row
+    first), so the two cannot share a lookup bug.
+
+    Filtered to the LINKED kind because an anchor correction lands ``+delta``
+    on the linked row and ``-delta`` on the ``anchor_equity`` twin, which shares
+    the ``account_id`` column: a bare-``account_id`` sum would cancel the
+    correction pairwise and silently reproduce the pre-Step-5 changes-only
+    figure, making the absolute assertions vacuous.
+    """
+    return (
+        _db.session.query(
+            _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+        )
+        .select_from(Posting)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
+        .filter(
+            LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .scalar()
+    )
+
+
+def _linked_ledger_sum_as_of(
+    account_id: int, scenario_id: int, civil_date,
+) -> Decimal:
+    """Sum a LINKED ledger's legs on entries dated at or before *civil_date*.
+
+    The "ledger through an assertion instant" reader: every linked-ledger entry
+    -- a source OR an anchor correction -- carries ``entry_date`` equal to the
+    UTC civil date of its attribution instant (``posting_service._entry_date`` /
+    ``_transaction_entry_date`` date sources off ``paid_at``; corrections off
+    the anchor's ``created_at``), so summing legs with ``entry_date <=
+    civil_date`` reconstructs the ledger as of the END of that civil day.  When
+    a fixture places every event on a DISTINCT, increasing civil day, "as of the
+    end of day D" equals "as of the assertion instant on day D" -- the
+    ``TestLedgerThroughEachAssertionInstant`` invariant.
+    """
+    return (
+        _db.session.query(
+            _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+        )
+        .select_from(Posting)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
+        .filter(
+            LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.entry_date <= civil_date,
+        )
+        .scalar()
+    )
+
+
+def _latest_assertion(account_id: int) -> tuple[datetime, Decimal]:
+    """Return an account's latest ``(assertion instant, anchor balance)``.
+
+    Reads ``account_anchor_history`` directly -- the row with the max
+    ``(created_at, id)``, exactly the row ``balance_resolver.resolve_anchor``
+    picks -- so the "latest anchor" the invariant references is taken from the
+    source of truth, not the ``current_anchor_balance`` cache the writer also
+    maintains (which a bug could desync).  The instant is normalized to aware
+    UTC via the oracle's own :func:`_as_utc`.
+    """
+    row = (
+        _db.session.query(AccountAnchorHistory)
+        .filter_by(account_id=account_id)
+        .order_by(
+            AccountAnchorHistory.created_at.desc(),
+            AccountAnchorHistory.id.desc(),
+        )
+        .first()
+    )
+    assert row is not None, (
+        f"account {account_id} has no anchor history -- every real account "
+        f"carries its origination row, so this is a broken fixture"
+    )
+    return _as_utc(row.created_at), Decimal(str(row.anchor_balance))
+
+
+def _source_attribution_instant(txn) -> datetime:
+    """Return a settled source's attribution instant (aware UTC), independently.
+
+    The source's CURRENT ``paid_at`` (aware UTC), falling back to its pay
+    period ``start_date`` at midnight UTC when ``paid_at`` is NULL.  For a
+    transfer shadow the walk attributes by the INCOME shadow's ``paid_at``; both
+    shadows carry the same ``paid_at`` (Transfer Invariant 3 mirrors it), so
+    reading each shadow's own ``paid_at`` here is the same instant computed
+    independently of the "income shadow" concept.
+    """
+    if txn.paid_at is not None:
+        return _as_utc(txn.paid_at)
+    return _period_start_instant(txn.pay_period.start_date)
+
+
+def _independent_source_effect(txn) -> Decimal:
+    """Return a settled source's signed, debit-positive effect on its account.
+
+    The per-source truth the linked ledger must reflect: a transfer shadow
+    contributes ``+effective`` when it is the income shadow (money in) and
+    ``-effective`` when it is the expense shadow (money out); an ordinary cash
+    transaction contributes ``effective - Sigma(credit entries)`` signed ``+``
+    for income / ``-`` for an expense.  ``effective`` is the model property
+    (``actual`` over ``estimated``).  Independent of the posting builder (it
+    never imports ``_signed_cash_leg``); the linked leg for *txn* equals this.
+    """
+    if txn.transfer_id is not None:
+        return txn.effective_amount if txn.is_income else -txn.effective_amount
+    credit_sum = sum(
+        (entry.amount for entry in txn.entries if entry.is_credit),
+        Decimal("0"),
+    )
+    effect = txn.effective_amount - credit_sum
+    return effect if txn.is_income else -effect
+
+
+def _independent_post_assertion_source_effect(
+    account_id: int, scenario_id: int, latest_asserted_at: datetime,
+) -> Decimal:
+    """Sum an account's settled source effect attributed AFTER the latest anchor.
+
+    Over the account's settled (``status.is_settled``), non-deleted
+    transactions AND transfer shadows in *scenario_id*, add each source's signed
+    effect (:func:`_independent_source_effect`) iff its attribution instant is
+    STRICTLY AFTER *latest_asserted_at* -- the sources that ride on top of the
+    asserted balance.  Sources attributed at or before the assertion are already
+    inside the anchor and are absorbed by the opening / true-up deltas, so they
+    are excluded here.  Read from ``transactions`` (a different table than the
+    ledger side), so asserting the equality reconciles what the producers wrote
+    against the transaction source of truth.
+    """
+    txns = (
+        _db.session.query(Transaction)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.is_deleted.is_(False),
+            Transaction.status_id.in_(settled_status_ids()),
+        )
+        .all()
+    )
+    return sum(
+        (
+            _independent_source_effect(txn)
+            for txn in txns
+            if _source_attribution_instant(txn) > latest_asserted_at
+        ),
+        Decimal("0"),
+    )
+
+
+def _trial_balance() -> Decimal:
+    """Return ``SUM(account_postings.amount)`` over the whole ledger."""
+    return (
+        _db.session.query(
+            _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+        )
+        .scalar()
+    )
+
+
+def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
+    """Return ``(entry_id, leg_sum, leg_count)`` for every malformed entry.
+
+    A well-formed double-entry has ``leg_sum == 0`` and ``leg_count >= 2``.  Any
+    row returned here is a violation -- the per-entry invariant the deferred
+    trigger also enforces, re-checked from the ORM side.
+    """
+    rows = (
+        _db.session.query(
+            Posting.journal_entry_id,
+            _db.func.sum(Posting.amount),
+            _db.func.count(Posting.id),
+        )
+        .group_by(Posting.journal_entry_id)
+        .all()
+    )
+    return [
+        (entry_id, leg_sum, leg_count)
+        for entry_id, leg_sum, leg_count in rows
+        if leg_sum != 0 or leg_count < 2
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Sweep assertions (production-wide, run after each scenario's mutations)
+# ---------------------------------------------------------------------------
+
+
+def _assert_account_anchors_reconcile(scenario_id: int) -> None:
+    """Assert every non-loan LINKED ledger reconciles ABSOLUTELY in *scenario_id*.
+
+    For each of the scenario owner's non-loan real accounts, the independent
+    linked-ledger sum equals the latest anchor balance plus the independent
+    post-assertion source effect -- the Step-5 absolute invariant, holding over
+    EVERY such account, not only the ones a given test hand-computes.  Amortizing
+    loans are excluded: their absolute invariant couples on the amortization
+    split and is the loan oracle's job.  The per-entry balance and trial balance
+    are global self-checks (always true for a balanced ledger, asserted cheaply
+    on every sweep).
+    """
+    scenario_owner_id = (
+        _db.session.query(Scenario.user_id)
+        .filter(Scenario.id == scenario_id)
+        .scalar()
+    )
+    linked = (
+        _db.session.query(LedgerAccount)
+        .join(Account, LedgerAccount.account_id == Account.id)
+        .join(AccountType, Account.account_type_id == AccountType.id)
+        .filter(
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            AccountType.has_amortization.is_(False),
+            Account.user_id == scenario_owner_id,
+        )
+        .all()
+    )
+    # Every owner carries at least the seeded Checking's linked ledger, so an
+    # empty result means the query silently found nothing (a minting or filter
+    # regression) and the loop below would pass vacuously -- assert non-empty so
+    # the sweep cannot be a no-op.
+    assert linked, (
+        "no non-loan linked ledger accounts to reconcile -- the sweep would "
+        "be vacuous (expected at least the Checking account's linked ledger)"
+    )
+    for ledger_account in linked:
+        account_id = ledger_account.account_id
+        latest_asserted_at, latest_anchor = _latest_assertion(account_id)
+        ledger = _independent_linked_ledger_sum(account_id, scenario_id)
+        effect = _independent_post_assertion_source_effect(
+            account_id, scenario_id, latest_asserted_at,
+        )
+        assert ledger == latest_anchor + effect, (
+            f"account {account_id}: linked ledger {ledger} != latest anchor "
+            f"{latest_anchor} + post-assertion source effect {effect} in "
+            f"scenario {scenario_id}"
+        )
+    assert _entries_violating_balance() == []
+    assert _trial_balance() == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Local fixture helpers (controlled assertion instants)
+# ---------------------------------------------------------------------------
+
+
+def _origin_instant(account) -> datetime:
+    """Return the factory origination row's stored assertion instant (UTC).
+
+    The one instant a test cannot choose (the origination row's ``created_at``
+    is the INSERT transaction's server ``now()``); every other instant in a
+    fixture is built relative to it so the pre / post / tie partitions are
+    deterministic regardless of clock or timezone.
+    """
+    row = (
+        _db.session.query(AccountAnchorHistory)
+        .filter_by(account_id=account.id)
+        .order_by(AccountAnchorHistory.created_at, AccountAnchorHistory.id)
+        .first()
+    )
+    return _as_utc(row.created_at)
+
+
+def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
+    """Append a true-up ``AccountAnchorHistory`` row at a controlled instant.
+
+    Mirrors ``anchor_service.stage_anchor_true_up`` (the history row plus the
+    ``current_anchor_balance`` cache write) but pins ``created_at`` explicitly
+    so the moment partition under test is exact -- the one non-production
+    affordance, the same the C5 unit suite uses.  Anchors against the account's
+    current anchor period; flushes.  The caller drives the reconcile
+    (``sync_account_anchor_postings_all_scenarios``) afterward, exactly as the
+    true-up chokepoint does.
+    """
+    row = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=account.current_anchor_period_id,
+        anchor_balance=Decimal(str(balance)),
+        created_at=created_at,
+    )
+    account.current_anchor_balance = Decimal(str(balance))
+    _db.session.add(row)
+    _db.session.flush()
+    return row
+
+
+def _true_up_at(account, balance, created_at) -> None:
+    """Assert a controlled true-up and reconcile it (the chokepoint's two steps).
+
+    The deterministic stand-in for ``anchor_service.apply_anchor_true_up``: it
+    stages the history row + cache (:func:`_assert_balance_at`) at a PINNED
+    ``created_at`` and then drives the SAME all-scenarios reconcile the true-up
+    chokepoint calls.  Pinning the instant is what makes the moment partition
+    exact -- ``apply_anchor_true_up`` stamps ``created_at = now()``, which cannot
+    be placed between two synthetic settles; the C5 unit suite uses the same
+    affordance for the same reason.  The chokepoint itself is covered end to end
+    by ``test_account_posting_service.py``; this oracle validates the resulting
+    ledger against an independent second opinion.
+    """
+    _assert_balance_at(account, balance, created_at)
+    account_posting_service.sync_account_anchor_postings_all_scenarios(
+        account.id,
+    )
+
+
+def _settle_expense(seed_user, account, amount, paid_at):
+    """Settle an expense on *account* at a pinned ``paid_at``; return it.
+
+    ``paid_at`` may be an instant or ``None`` (the period-start fallback under
+    test), pinned so the posted entry and the walk's attribution agree, as in
+    production.  Placed in the seed bootstrap period; the walk attributes by
+    instant, so the period placement is immaterial except for the NULL fallback.
+    """
+    return create_settled_cash_transaction(
+        seed_user, _db.session, seed_user["bootstrap_period"],
+        Decimal(str(amount)), account=account, paid_at=paid_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1. The absolute invariant: moment partition (CRITICAL-1)
+# ---------------------------------------------------------------------------
+
+
+class TestAbsoluteInvariantPerAccount:
+    """A multi-anchor account reconciles to latest anchor + post-assertion sources."""
+
+    def test_critical1_absorb_and_ride_reconciles_three_ways(
+        self, app, db, seed_user,
+    ):
+        """Anchor 500, spend 200 pre-true-up, true-up 350, spend 100 post: 250.00.
+
+        The CRITICAL-1 fixture on a Savings anchored $500.00 (origination
+        instant T):
+
+          - $200.00 expense paid T+1h  -- BEFORE the true-up (absorbed)
+          - true-up asserting $350.00 at T+2h
+          - $100.00 expense paid T+3h  -- AFTER the true-up (rides on top)
+
+        The engine's pre-true-up answer was 500 - 200 = 300, so the true-up
+        delta is 350 - 300 = +50.00; the post-true-up spend is the only source
+        attributed after the latest assertion.  So:
+
+          linked ledger = 500 (opening) + 50 (true-up) - 200 - 100 = 250.00
+                        = latest anchor 350 + post-assertion effect (-100.00)
+
+        A period-granular reading would have absorbed BOTH settles (all three
+        events share one period) and mis-stated the true-up.  All three
+        independent computations agree, and the production-wide sweep ties.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Critical1 Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            origin = _origin_instant(savings)
+
+            _settle_expense(
+                seed_user, savings, "200.00", origin + timedelta(hours=1),
+            )
+            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _settle_expense(
+                seed_user, savings, "100.00", origin + timedelta(hours=3),
+            )
+            db.session.commit()
+
+            latest_asserted_at, latest_anchor = _latest_assertion(savings.id)
+            assert latest_anchor == Decimal("350.00")
+
+            # (a) hand-computed literal == independent ledger-table query.
+            assert _independent_linked_ledger_sum(
+                savings.id, scenario_id,
+            ) == Decimal("250.00")
+            # (b) independent source query == the hand-computed post-assertion
+            #     effect (only the T+3h spend rides on top).
+            assert _independent_post_assertion_source_effect(
+                savings.id, scenario_id, latest_asserted_at,
+            ) == Decimal("-100.00")
+            # (c) the production service helpers agree too.
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("250.00")
+            assert posting_service.settled_transaction_effect(
+                savings.id, scenario_id,
+            ) == Decimal("-300.00")  # both spends, the ledger-native cash effect
+
+            # The equity twin nets -(opening 500 + true-up 50) = -550.00.
+            equity = ledger_account_of_kind(
+                db.session, savings.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
+            )
+            assert ledger_net(
+                db.session, equity.id, scenario_id,
+            ) == Decimal("-550.00")
+
+            _assert_account_anchors_reconcile(scenario_id)
+
+    def test_source_at_exact_assertion_instant_is_absorbed(
+        self, app, db, seed_user,
+    ):
+        """A source whose paid_at EQUALS the assertion instant is absorbed (<= tie).
+
+        The exact boundary the walk's inclusive ``<=`` partition and the
+        oracle's strict ``>`` post-assertion filter meet: Savings anchored
+        $500.00; a $75.00 expense whose ``paid_at`` EQUALS the true-up's
+        ``created_at`` (T2); the true-up asserts $425.00.  The spend is absorbed
+        into the anchor (its instant is not strictly after T2): ledger_before =
+        500 - 75 = 425, so the true-up delta is 0 and books NOTHING, and the
+        spend does not ride on top.
+
+          linked = 500 (opening) - 75 = 425.00 = latest anchor 425 + post (0)
+
+        A strict-``<`` walk would leave the spend outside the anchor, book a
+        spurious -75.00 true-up, and mis-state the ledger at 350 -- so this pins
+        the exact absorb/ride boundary the module advertises, which no other
+        fixture (all sources strictly before or after their assertions) touches.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Tie Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            instant = _origin_instant(savings) + timedelta(hours=2)
+
+            _settle_expense(seed_user, savings, "75.00", instant)
+            _true_up_at(savings, "425.00", instant)
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("425.00")
+            # The tie source is NOT strictly after the assertion, so nothing
+            # rides on top (a strict-< walk would report -75.00 here).
+            latest_asserted_at, latest_anchor = _latest_assertion(savings.id)
+            assert latest_anchor == Decimal("425.00")
+            assert _independent_post_assertion_source_effect(
+                savings.id, scenario_id, latest_asserted_at,
+            ) == Decimal("0.00")
+            # The true-up delta was zero (the tie was absorbed): no true-up entry
+            # -- a strict-< walk would have booked one.
+            linked = linked_ledger_account(db.session, savings.id)
+            trueup_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert (
+                db.session.query(JournalEntry.id)
+                .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == trueup_source,
+                )
+                .distinct()
+                .count()
+            ) == 0
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 1b. A transfer source rides on top and reconciles on both endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestTransferSourceRidesOnTop:
+    """A settled transfer reconciles on both linked ledgers by its shadow effect."""
+
+    def test_transfer_into_savings_reconciles_both_accounts(
+        self, app, db, seed_user,
+    ):
+        """A $150 Checking -> Savings transfer rides on both post-assertion anchors.
+
+        The seeded Checking ($1000.00 opening) transfers $150.00 into a Savings
+        anchored $200.00, settled at server-now (after both origination
+        assertions, so it rides on top of each).  The transfer's income shadow
+        lands +150.00 on Savings and its expense shadow -150.00 on Checking:
+
+          Savings  = 200 (opening) + 150 = 350.00 = anchor 200 + post (+150.00)
+          Checking = 1000 (opening) - 150 = 850.00 = anchor 1000 + post (-150.00)
+
+        This exercises the transfer branch of the oracle's independent
+        source-effect helper on BOTH shadow polarities, so the sweep's
+        second-opinion computation is validated for transfers, not only cash.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Transfer Savings",
+                anchor_balance=Decimal("200.00"),
+            )
+            db.session.commit()
+
+            create_settled_transfer(
+                seed_user, db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("150.00"),
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("350.00")
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("850.00")
+
+            # The independent transfer-branch effect signs each shadow correctly.
+            savings_asserted_at, _sa = _latest_assertion(savings.id)
+            checking_asserted_at, _ca = _latest_assertion(checking.id)
+            assert _independent_post_assertion_source_effect(
+                savings.id, scenario_id, savings_asserted_at,
+            ) == Decimal("150.00")
+            assert _independent_post_assertion_source_effect(
+                checking.id, scenario_id, checking_asserted_at,
+            ) == Decimal("-150.00")
+            assert posting_service.settled_transfer_effect(
+                checking.id, scenario_id,
+            ) == Decimal("-150.00")
+
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 2. Ledger through each assertion instant == the asserted balance
+# ---------------------------------------------------------------------------
+
+
+class TestLedgerThroughEachAssertionInstant:
+    """At every historical assertion instant the ledger equalled that anchor."""
+
+    def test_as_of_each_assertion_lands_on_the_asserted_balance(
+        self, app, db, seed_user,
+    ):
+        """Distinct-day fixture: the as-of ledger lands on each anchor exactly.
+
+        Every event on its OWN increasing civil day (whole-day offsets from the
+        origination instant T), so "ledger as of the end of day D" equals
+        "ledger as of the assertion instant on day D".  Savings anchored
+        $500.00 (opening on day D0):
+
+          - $200.00 expense paid T+5d   (day D0+5)
+          - true-up asserting $350.00   at T+10d (day D0+10)
+          - $100.00 expense paid T+15d  (day D0+15)
+
+        Walking the as-of ledger forward:
+
+          as of D0    : 500.00                      == opening anchor
+          as of D0+5  : 500 - 200 = 300.00          (spend rode the engine value)
+          as of D0+10 : 500 - 200 + 50 = 350.00     == true-up anchor
+          as of D0+15 : 350 - 100 = 250.00          == latest anchor + post
+
+        The two anchor days (D0, D0+10) land exactly on the asserted balances --
+        the ledger-through-each-assertion invariant.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "AsOf Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            origin = _origin_instant(savings)
+            day0 = origin.date()
+
+            _settle_expense(
+                seed_user, savings, "200.00", origin + timedelta(days=5),
+            )
+            _assert_balance_at(savings, "350.00", origin + timedelta(days=10))
+            account_posting_service.sync_account_anchor_postings_all_scenarios(
+                savings.id,
+            )
+            _settle_expense(
+                seed_user, savings, "100.00", origin + timedelta(days=15),
+            )
+            db.session.commit()
+
+            # Each as-of civil day reconstructs the ledger through that instant.
+            assert _linked_ledger_sum_as_of(
+                savings.id, scenario_id, day0,
+            ) == Decimal("500.00")                      # opening anchor
+            assert _linked_ledger_sum_as_of(
+                savings.id, scenario_id, day0 + timedelta(days=5),
+            ) == Decimal("300.00")                      # pre-true-up engine value
+            assert _linked_ledger_sum_as_of(
+                savings.id, scenario_id, day0 + timedelta(days=10),
+            ) == Decimal("350.00")                      # true-up anchor
+            assert _linked_ledger_sum_as_of(
+                savings.id, scenario_id, day0 + timedelta(days=15),
+            ) == Decimal("250.00")                      # latest anchor + post
+
+            # The final ABSOLUTE total matches, and the sweep ties.
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("250.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 3. Revert after a true-up self-heals to the engine's answer
+# ---------------------------------------------------------------------------
+
+
+class TestRevertAfterTrueupSelfHeals:
+    """Reverting a pre-true-up settle re-bases the true-up and stays reconciled."""
+
+    def test_revert_pre_trueup_settle_reconciles(self, app, db, seed_user):
+        """The CRITICAL-1 fixture, then revert the pre-true-up spend; sweep ties.
+
+        Continuing from anchor 500 / spend 200 (T+1h) / true-up 350 (T+2h) /
+        spend 100 (T+3h) -- linked ledger 250.00 -- the $200.00 pre-true-up
+        expense is reverted through the real ``sync_transaction_postings``
+        (``settled=False``) path.  The true-up's walked ``ledger_before`` moves
+        300 -> 500, so its delta moves +50 -> -150; the effect-time self-heal
+        appends the balancing -200.00 delta on the same key.  The reverted
+        source drops from the transaction truth too:
+
+          linked = 500 (opening) - 150 (healed true-up) - 100 = 250.00
+                 = latest anchor 350 + post-assertion (-100.00)
+
+        The account total never left the anchor + post-assertion balance.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Revert Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            origin = _origin_instant(savings)
+
+            spend = _settle_expense(
+                seed_user, savings, "200.00", origin + timedelta(hours=1),
+            )
+            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _settle_expense(
+                seed_user, savings, "100.00", origin + timedelta(hours=3),
+            )
+            db.session.commit()
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # Revert the pre-true-up spend via the real posting primitive; the
+            # tail self-heal re-bases the true-up in the same transaction.
+            posting_service.sync_transaction_postings(spend, settled=False)
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("250.00")
+            # The self-heal re-based the true-up: its walked ledger_before moved
+            # 300 -> 500 (the $200 no longer absorbed), so the true-up key's
+            # linked legs now net -150.00 -- the original +50.00 plus the
+            # appended -200.00 balancing delta.  A stale correction left at +50
+            # would read the account at 450.00; this pins the re-derivation
+            # itself, not merely the total it happens to reach.
+            linked = linked_ledger_account(db.session, savings.id)
+            trueup_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            trueup_linked_net = (
+                db.session.query(
+                    _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+                )
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == trueup_source,
+                )
+                .scalar()
+            )
+            assert trueup_linked_net == Decimal("-150.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 4. Pre-anchor absorption (a settle before the opening is inside it)
+# ---------------------------------------------------------------------------
+
+
+class TestPreAnchorAbsorption:
+    """A settle attributed before the opening is absorbed into the opening delta."""
+
+    def test_null_paid_at_settle_absorbed_into_opening(
+        self, app, db, seed_user,
+    ):
+        """A NULL-paid_at spend (2024 period start) is inside the 2026 opening.
+
+        A $200.00 expense with ``paid_at`` NULL sits in the 2024 bootstrap
+        period, so its attribution instant is that period's start (2024-01-05
+        midnight UTC) -- BEFORE the account's origination assertion (server-now,
+        2026).  The C6 self-heal at the settle re-derives the opening: its delta
+        becomes 500 - (-200) = +700.00, so the linked ledger stays exactly on the
+        500.00 anchor and NO source rides on top.
+
+          linked = 700 (opening) - 200 = 500.00 = latest anchor 500 + 0
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "PreAnchor Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+
+            _settle_expense(seed_user, savings, "200.00", None)
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("500.00")
+            # The opening delta absorbed the spend (linked leg net +700.00).
+            linked = linked_ledger_account(db.session, savings.id)
+            opening_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_OPENING,
+            )
+            opening_net = (
+                db.session.query(
+                    _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+                )
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == opening_source,
+                )
+                .scalar()
+            )
+            assert opening_net == Decimal("700.00")
+            # Nothing rides on top: the spend is pre-assertion.
+            latest_asserted_at, _latest = _latest_assertion(savings.id)
+            assert _independent_post_assertion_source_effect(
+                savings.id, scenario_id, latest_asserted_at,
+            ) == Decimal("0.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 5. Same-day true-ups merge to one correction landing on the later value
+# ---------------------------------------------------------------------------
+
+
+class TestSameDayAnchorMerge:
+    """Two same-UTC-day true-ups merge to one entry on the later value."""
+
+    def test_two_same_day_trueups_reconcile(self, app, db, seed_user):
+        """$600 then $550 on one future UTC day merge to a single +50.00 entry.
+
+        Both assertions sit on one future UTC day (06:00 and 07:00, no midnight
+        crossing) on a $500.00-anchored Savings, with no settled sources.  Their
+        deltas +100.00 and -50.00 share the (true-up, day) reconcile key and
+        merge to ONE +50.00 entry; the ledger lands on the LATER value 550.00
+        (== the latest anchor, no post-assertion sources).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Merge Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            day = (_origin_instant(savings) + timedelta(days=30)).replace(
+                hour=6, minute=0, second=0, microsecond=0,
+            )
+
+            _assert_balance_at(savings, "600.00", day)
+            _assert_balance_at(savings, "550.00", day + timedelta(hours=1))
+            account_posting_service.sync_account_anchor_postings_all_scenarios(
+                savings.id,
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("550.00")
+            # Exactly ONE true-up entry survives the same-day merge.
+            linked = linked_ledger_account(db.session, savings.id)
+            trueup_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            trueup_entries = (
+                db.session.query(JournalEntry.id)
+                .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == trueup_source,
+                )
+                .distinct()
+                .all()
+            )
+            assert len(trueup_entries) == 1
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 6. A negatively-anchored (owed-as-negative) non-loan liability
+# ---------------------------------------------------------------------------
+
+
+class TestNegativelyAnchoredLiability:
+    """A non-loan liability anchor posts ledger-native, with no sign branch."""
+
+    def test_credit_card_negative_anchor_reconciles(self, app, db, seed_user):
+        """A Credit Card anchored -500.00, then a $120 charge, reconciles absolutely.
+
+        The owed-as-negative convention: the opening books linked -500.00 /
+        equity +500.00 (no ``-abs`` normalization, exactly like the engine).  A
+        $120.00 expense charged to the card (post-assertion) rides on top:
+
+          linked = -500 (opening) - 120 = -620.00
+                 = latest anchor -500 + post-assertion (-120.00)
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            origin = _origin_instant(card)
+
+            _settle_expense(
+                seed_user, card, "120.00", origin + timedelta(hours=1),
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                card.id, scenario_id,
+            ) == Decimal("-620.00")
+            equity = ledger_account_of_kind(
+                db.session, card.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
+            )
+            assert ledger_net(
+                db.session, equity.id, scenario_id,
+            ) == Decimal("500.00")  # ledger-native: +500 against the -500 anchor
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 7. A $0-anchor account books nothing and stays out of the ledger
+# ---------------------------------------------------------------------------
+
+
+class TestZeroDeltaBooksNothing:
+    """A $0-anchor account mints no correction and no equity twin, yet reconciles."""
+
+    def test_zero_anchor_books_nothing_and_reconciles(
+        self, app, db, seed_user,
+    ):
+        """A fresh $0.00 Savings posts no entry, no twin, and the sweep still ties.
+
+        The opening delta is $0, so the reconcile books nothing: no correction
+        entry and no ``anchor_equity`` ledger row (the account stays
+        hard-deletable, Guard 5 never engaging).  The absolute invariant is
+        0.00 == latest anchor 0.00 + 0, so the production-wide sweep reconciles
+        it alongside the seeded Checking.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            zero = create_account_of_type(
+                seed_user, db.session, "Savings", "Zero Savings",
+                anchor_balance=Decimal("0.00"),
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                zero.id, scenario_id,
+            ) == Decimal("0.00")
+            assert ledger_account_of_kind(
+                db.session, zero.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
+            ) is None
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 8. Scenario and owner isolation
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioAndOwnerIsolation:
+    """Corrections and sources never bleed across scenarios or owners."""
+
+    def test_scenarios_reconcile_independently(self, app, db, seed_user):
+        """Checking's opening + sources reconcile per scenario, never bleeding.
+
+        The seeded Checking's $1000.00 opening lives in the baseline.  A $40.00
+        baseline expense and a $70.00 what-if expense (both settled at
+        server-now, the same UTC day as the account's origination, so the
+        effect-time self-heal posts Checking's opening into the what-if too) land
+        on it.  Scoped to the baseline the Checking ledger is 1000 - 40 = 960.00;
+        scoped to the what-if it is 1000 - 70 = 930.00 -- never the
+        cross-scenario 890.  Each scenario carries its OWN copy of the opening
+        and its OWN sources, and reconciles independently.
+
+        Same accepted same-UTC-day caveat as the sibling cash oracle: the
+        what-if opening posts only because the settle's civil day is at or before
+        Checking's origination assertion, so the effect-time self-heal fires --
+        not a general multi-scenario guarantee (R8 owns that policy).
+        """
+        with app.app_context():
+            baseline = seed_user["scenario"]
+            checking = seed_user["account"]
+            whatif = Scenario(
+                user_id=seed_user["user"].id, name="What-if", is_baseline=False,
+            )
+            db.session.add(whatif)
+            db.session.commit()
+
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("40.00"), account=checking, scenario=baseline,
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("70.00"), account=checking, scenario=whatif,
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                checking.id, baseline.id,
+            ) == Decimal("960.00")
+            assert posting_service.account_posting_total(
+                checking.id, whatif.id,
+            ) == Decimal("930.00")
+            assert _independent_linked_ledger_sum(
+                checking.id, baseline.id,
+            ) == Decimal("960.00")
+            assert _independent_linked_ledger_sum(
+                checking.id, whatif.id,
+            ) == Decimal("930.00")
+
+            _assert_account_anchors_reconcile(baseline.id)
+            _assert_account_anchors_reconcile(whatif.id)
+
+    def test_owners_reconcile_independently(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """Two owners settle on their own savings; neither sweep sees the other.
+
+        Owner 1 settles a $60.00 expense on a $400.00 Savings (ledger 340.00);
+        owner 2 settles an $80.00 expense on a $900.00 Savings (ledger 820.00).
+        Each owner's sweep reconciles only their own accounts, and a ``Posting``
+        carries no ``user_id`` (ownership is reachable only through its journal
+        entry).
+        """
+        with app.app_context():
+            scenario1 = seed_user["scenario"].id
+            scenario2 = seed_second_user["scenario"].id
+            savings1 = create_account_of_type(
+                seed_user, db.session, "Savings", "Owner1 Savings",
+                anchor_balance=Decimal("400.00"),
+            )
+            savings2 = create_account_of_type(
+                seed_second_user, db.session, "Savings", "Owner2 Savings",
+                anchor_balance=Decimal("900.00"),
+            )
+            db.session.commit()
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("60.00"), account=savings1,
+            )
+            create_settled_cash_transaction(
+                seed_second_user, db.session,
+                seed_second_user["bootstrap_period"],
+                Decimal("80.00"), account=savings2,
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings1.id, scenario1,
+            ) == Decimal("340.00")
+            assert posting_service.account_posting_total(
+                savings2.id, scenario2,
+            ) == Decimal("820.00")
+            # A Posting has no user_id; ownership is normalized onto the entry.
+            assert not hasattr(Posting, "user_id")
+            owner1_id = seed_user["user"].id
+            owner2_id = seed_second_user["user"].id
+            for posting in _db.session.query(Posting).all():
+                entry_owner = posting.journal_entry.user_id
+                assert entry_owner in (owner1_id, owner2_id)
+                assert posting.ledger_account.user_id == entry_owner
+
+            _assert_account_anchors_reconcile(scenario1)
+            _assert_account_anchors_reconcile(scenario2)
+
+
+# ---------------------------------------------------------------------------
+# 9. Backfill == go-forward (the historical sweep reproduces the wiring)
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillEqualsGoForward:
+    """Clearing then backfilling reproduces the go-forward ledger exactly."""
+
+    def test_backfill_restores_the_absolute_ledger(self, app, db, seed_user):
+        """A multi-anchor account's ledger is identical after clear + backfill.
+
+        A Savings anchored $500.00 with a pre-true-up spend ($200 at T+1h), a
+        true-up to $350.00 (T+2h), and a post-true-up spend ($100 at T+3h) posts
+        its opening + true-up go-forward, reaching linked ledger 250.00.  The
+        boundary migration's raw-SQL teardown clears every account correction +
+        equity twin (the pre-C6 historical state), leaving the ledger short by
+        the corrections; the deploy backfill re-derives them through the SAME
+        go-forward sync, restoring the exact 250.00 and re-minting the equity
+        twin.  The whole-DB sweep ties before AND after -- backfill ==
+        go-forward by construction.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Backfill Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            origin = _origin_instant(savings)
+            _settle_expense(
+                seed_user, savings, "200.00", origin + timedelta(hours=1),
+            )
+            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _settle_expense(
+                seed_user, savings, "100.00", origin + timedelta(hours=3),
+            )
+            db.session.commit()
+            forward_total = posting_service.account_posting_total(
+                savings.id, scenario_id,
+            )
+            assert forward_total == Decimal("250.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # Reproduce the pre-C6 historical state: corrections + twins gone.
+            _BOUNDARY_MIGRATION._remove_account_anchor_postings(db.session)
+            db.session.commit()
+            assert ledger_account_of_kind(
+                db.session, savings.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
+            ) is None
+            # The ledger is now the bare source legs (no opening / true-up).
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) != forward_total
+
+            # The deploy backfill re-derives the corrections identically.
+            account_posting_service.backfill_all_account_anchor_postings()
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == forward_total
+            assert ledger_account_of_kind(
+                db.session, savings.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
+            ) is not None
+            _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 10. Adversarial: the oracle is not vacuous (it fails on real breakage)
+# ---------------------------------------------------------------------------
+
+
+class TestOracleIsNotVacuous:
+    """Prove the reconciliation and trial-balance checks catch real breakage."""
+
+    def test_tampered_latest_anchor_makes_the_sweep_fail(
+        self, app, db, seed_user,
+    ):
+        """Forcing the latest anchor balance off its posted value breaks the sweep.
+
+        A reconciled $500.00 Savings has linked ledger 500.00 and latest anchor
+        500.00.  Forcing the anchor-history row's balance to 999 via raw SQL
+        leaves the posted ledger at 500.00 but pushes the invariant's RHS to
+        999 + 0 -- so the per-account reconciliation the oracle relies on now
+        FAILS.  Driven through the REAL sweep helper under ``pytest.raises`` (so
+        a regression in the helper itself is caught, not only an inline
+        re-derivation), with ``match`` pinning the anchor comparison message
+        specifically -- the tooth cannot be lost undetected.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Tamper Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            # Reconciled before tampering.
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # Tamper the latest anchor balance (history carries no balance
+            # trigger, so this commits); the posted ledger is unchanged.
+            row_id = (
+                _db.session.query(AccountAnchorHistory.id)
+                .filter_by(account_id=savings.id)
+                .order_by(
+                    AccountAnchorHistory.created_at.desc(),
+                    AccountAnchorHistory.id.desc(),
+                )
+                .scalar()
+            )
+            db.session.execute(_db.text(
+                "UPDATE budget.account_anchor_history "
+                "SET anchor_balance = 999 WHERE id = :i"
+            ), {"i": row_id})
+            db.session.commit()
+
+            # Ledger unchanged (500), but the anchor truth drifted (999) -- the
+            # absolute invariant no longer holds, so the real sweep raises.
+            assert _independent_linked_ledger_sum(
+                savings.id, scenario_id,
+            ) == Decimal("500.00")
+            _, latest_anchor = _latest_assertion(savings.id)
+            assert latest_anchor == Decimal("999.00")
+            with pytest.raises(AssertionError, match="latest anchor"):
+                _assert_account_anchors_reconcile(scenario_id)
+
+    def test_trial_balance_catches_an_injected_leg(self, app, db, seed_user):
+        """Injecting one extra leg pushes the trial balance off zero.
+
+        A balanced book has trial balance 0.00.  A $500.00 Savings opening posts
+        a balanced +500 / -500 pair; inserting one unmatched +50 leg onto its
+        opening entry (raw SQL, flushed but never committed, so the DEFERRED
+        per-entry trigger never fires) makes the whole-ledger sum 0 + 50 =
+        50.00 -- so the trial-balance ``= 0`` assertion is a real check, not one
+        the per-entry trigger makes vacuously true.  Rolled back so the leg
+        never lands.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Inject Savings",
+                anchor_balance=Decimal("500.00"),
+            )
+            db.session.commit()
+            assert _trial_balance() == Decimal("0.00")
+
+            # Inject one extra, unmatched leg onto the opening entry (picked by
+            # its correction source).  Flush (not commit) makes it visible; the
+            # DEFERRED balanced trigger validates only at COMMIT, never reached.
+            linked = linked_ledger_account(_db.session, savings.id)
+            opening_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_OPENING,
+            )
+            entry_id = (
+                _db.session.query(JournalEntry.id)
+                .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == opening_source,
+                )
+                .scalar()
+            )
+            _db.session.execute(_db.text(
+                "INSERT INTO budget.account_postings "
+                "  (journal_entry_id, ledger_account_id, amount, "
+                "   posting_kind_id) "
+                "VALUES (:e, :l, :a, :k)"
+            ), {
+                "e": entry_id,
+                "l": linked.id,
+                "a": Decimal("50.00"),
+                "k": ref_cache.posting_kind_id(PostingKindEnum.OPENING),
+            })
+            _db.session.flush()
+
+            assert _trial_balance() == Decimal("50.00")  # 0.00 + 50.00
+            assert _trial_balance() != Decimal("0.00")
+
+            # Discard the injected leg; the deferred trigger never fires.
+            _db.session.rollback()

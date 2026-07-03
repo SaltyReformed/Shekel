@@ -170,7 +170,44 @@ in throughout. Developer approval: 2026-07-03.
 - F1 (settled-transfer attribution seam) / F3 (timeliness display-tz) --
   follow-up commits after C13; F2 (scenario-creation sync) pinned to R8.
   See Section 6, "Follow-up commits".
-- C8 (write-side oracle) -- pending
+- C8 (write-side oracle) -- DONE:
+  `tests/test_integration/test_posting_ledger_account_anchor_reconciliation.py`
+  (14 tests, 1336 lines).  The ABSOLUTE invariant per non-loan account
+  (`linked ledger == latest anchor + SUM(current net of settled sources
+  attributed STRICTLY AFTER the latest assertion instant)`), enforced by a
+  production-wide sweep `_assert_account_anchors_reconcile` that is a genuine
+  THREE-TABLE second opinion: the ledger side reads `account_postings`
+  (LINKED-kind-filtered so the `anchor_equity` twin cannot cancel the correction
+  pairwise), the source side reads `transactions`
+  (`_independent_post_assertion_source_effect`, cash + transfer-shadow effect,
+  the `> latest` instant filter restated independently), the anchor side reads
+  `account_anchor_history` (`_latest_assertion`, max `(created_at, id)`) -- none
+  reuses the walk / reconcile.  Cases: CRITICAL-1 pre-absorb / post-ride
+  (moment partition, three-way agreement); the exact-tie boundary (a source at
+  the SAME instant as the assertion is absorbed -- pins the walk's inclusive
+  `<=` that a strict `<` mutant otherwise survives); ledger-through-each-
+  assertion-instant (distinct-civil-day as-of ladder, since every linked entry's
+  `entry_date` is the civil date of its attribution instant); transfer source
+  on both shadow polarities; revert-after-true-up self-heal (asserts the
+  true-up net re-based to -150, not merely the total); pre-anchor NULL-`paid_at`
+  absorption (opening delta grows to 700); same-day true-up merge; a
+  NEGATIVELY-anchored Credit Card (ledger-native sign, no `-abs`); zero-delta
+  books nothing; scenario + owner isolation; backfill == go-forward (clear via
+  the boundary migration teardown, re-derive, sweep ties); two non-vacuity
+  injections (tamper the latest anchor -> the real sweep raises on the "latest
+  anchor" message; inject one leg -> trial balance != 0).  Trueups are staged at
+  PINNED `created_at` (`_assert_balance_at` + the all-scenarios sync, the C5
+  affordance) so the moment partition is deterministic -- `apply_anchor_true_up`
+  stamps `now()`, which cannot be placed between two synthetic settles; the
+  chokepoint itself is covered by `test_account_posting_service.py`.  Per the
+  commit's adversarial `code-reviewer` pass (MUTATION-tested: perturbing every
+  opening/true-up delta by +0.01 fails 12/13, mis-attributing cash sources by
+  period-start fails 7/13): its one CONFIRMED gap (the untested `<=`/`<` tie)
+  and two LOWs (a weak revert sub-assertion, the same-UTC-day self-heal caveat)
+  are folded in; the fix was independently mutation-verified to fail under `<`
+  and pass under `<=`.  14 targeted green; monetary-precision checker clean;
+  tests are out of the `pylint app/` gate (unchanged, still 10.00) -- no `app/`
+  code touched.
 - C9 (reporting service) -- pending
 - C10 (routes + templates) -- pending
 - C11 (CSV export) -- pending
