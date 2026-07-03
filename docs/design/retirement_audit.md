@@ -295,6 +295,15 @@ See Surface 4: details card shows the last qualifying pension; the gap row sums 
 analysis (a retire-earlier what-if is an obvious use). The chart's `data-gap` attribute is written
 but never read by the JS.
 
+### D8 (latent, recorded 2026-07-03 during Loop B P1): mixed-profile gap income
+
+`_compute_gap_net_biweekly` reuses the PENSION-linked salary profile's salary-by-year series for a
+net-biweekly figure that is otherwise derived from `salary_profiles[0]`. With one salary profile
+(the live data) they are the same profile and the figure is correct; if the pension were ever linked
+to a different profile than the primary, the two halves of the computation would silently diverge.
+Pre-existing; untouched by P1 (only the merit horizon was threaded through). Fix belongs to a future
+multi-profile pass, not this rebuild.
+
 ## Live render verification (2026-07-02)
 
 The page was rendered against the dev app (prod-clone data) in both themes and both viewports after
@@ -440,7 +449,15 @@ have both merged -- the rebuild's figures depend on the corrected engine. Servic
 worktree; P4 live verification needs the branch in the main checkout (the dev app bind-mounts it),
 coordinated with any session holding that tree.
 
-### P1 -- model foundations (Opus)
+### P1 -- model foundations (Opus) -- COMPLETE 2026-07-03
+
+Shipped on `feat/retirement-rebuild` (pushed, HEAD `61ac7a85`); full suite 6912 passed, pylint
+10.00/10, migration `f7a1c2d3e4b5` tested both directions, current /retirement page untouched. Two
+disclosed deviations, both accepted: the producer lives in new modules `retirement_readiness.py` +
+`retirement_projection.py` (the dashboard service was at 979/1000 lines; split mirrors the
+`year_end_summary_service` package precedent), and the chart's "your path" series shipped pre-tax --
+converting both series to the after-tax frame (so chart endpoints always equal the hero caption, per
+principle 2 + ruling 2) carries into P2. Found en route: finding D8 above.
 
 - **P1a merit horizon (ruling 3).** New `RaiseTypeEnum` + ref-cache accessor (IDs, never name
   strings). `UserSettings.merit_raise_horizon_years`: Integer, NOT NULL, server_default 5, CHECK
