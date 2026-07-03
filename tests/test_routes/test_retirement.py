@@ -1800,6 +1800,30 @@ class TestAssumptionSaves:
         ) == snapshot
 
 
+    def test_saved_zero_tax_rate_echoes_and_clears_the_flag(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Saving 0% persists Decimal("0.0000") and the panel shows it set.
+
+        L1: 0 / 100 = 0.0000 through the percent pre_load; the refreshed
+        panel echoes value="0.0" (0.0000 -> to_percent 0.0 -> "%.1f") and
+        the "Not set" flag -- keyed on ``is none`` -- must NOT render.
+        """
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"estimated_retirement_tax_rate": "0"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'value="0.0"' in html
+        assert 'data-assumption-flag="tax-missing"' not in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # 0 / 100 = 0.0000 (schema percent-to-fraction pre_load).
+        assert settings.estimated_retirement_tax_rate == Decimal("0.0000")
+
     def test_past_retirement_date_is_422(
         self, auth_client, seed_user, db, seed_periods_today,
     ):

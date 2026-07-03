@@ -330,6 +330,36 @@ class TestComputeReadinessData:
             )
 
 
+class TestExplicitZeroTaxRate:
+    """L1: a saved 0% rate is a real estimate, never "missing"."""
+
+    def test_stored_zero_is_set_not_missing(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An explicit Decimal("0.0000") rate clears the F1 missing flag.
+
+        Zero is a value (E-12): tax_rate_missing is True ONLY for NULL.
+        The arithmetic is the F1 identity -- at a real 0% rate the net
+        pension equals the gross (x * (1 - 0) = x) and after-tax
+        projected equals pre-tax -- but the FLAG must read "set".
+        Pre-fix, resolve_estimated_tax_rate's truthiness collapsed the
+        stored zero into None, rendering "Not set -- 0% assumed" forever.
+        """
+        with app.app_context():
+            _build_scenario(db, seed_user, tax_rate=Decimal("0.0000"))
+            data = retirement_readiness.compute_readiness_data(
+                seed_user["user"].id
+            )
+            assert data["tax_rate_missing"] is False
+            assert data["estimated_tax_rate"] == Decimal("0.0000")
+            # x * (1 - 0) = x on both after-tax figures.
+            assert data["pension_net_monthly"] == data["pension_gross_monthly"]
+            assert (
+                data["projected_savings_after_tax"]
+                == data["projected_savings_pretax"]
+            )
+
+
 class TestComputeReadinessWhatif:
     """The P3a what-if wrapper: baseline, override state, and deltas."""
 

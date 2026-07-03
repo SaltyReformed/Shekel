@@ -672,19 +672,25 @@ def resolve_estimated_tax_rate(
 ) -> Decimal | None:
     """Resolve the estimated retirement tax rate from user settings.
 
+    Zero is a real value (E-12): an explicitly saved 0% rate returns
+    ``Decimal("0")`` -- the user has SET their estimate -- and only NULL
+    (settings absent or the column unset) returns ``None``, which is what
+    drives the F1 ``tax_rate_missing`` flag.  This closes the display
+    half of the LOW-05 / CRIT-04 carry-open (L1): pre-fix the truthiness
+    here made a saved 0% render "Not set -- 0% assumed" forever in the
+    three places F1 surfaced the flag.  Whether a bracket-based fallback
+    should ever be built for the unset case remains the carried product
+    question and is unaffected.
+
     Args:
         settings: The user's :class:`UserSettings`, or ``None``.
 
     Returns:
-        The stored estimated retirement tax rate as a Decimal, or
-        ``None`` when settings are absent or the rate is unset.
+        The stored estimated retirement tax rate as a Decimal (an
+        explicit zero preserved), or ``None`` only when settings are
+        absent or the column is NULL.
     """
-    # F-12 sibling: ``settings`` is a SQLAlchemy row -> explicit
-    # ``is not None`` (post-CRIT-04 convention).  The
-    # ``settings.estimated_retirement_tax_rate`` truthiness on the second
-    # conjunct is the LOW-05 / CRIT-04 carry-open (build vs do not build a
-    # bracket-based fallback for a stored zero tax rate) and is
-    # intentionally NOT changed here.
-    if settings is not None and settings.estimated_retirement_tax_rate:
+    if (settings is not None
+            and settings.estimated_retirement_tax_rate is not None):
         return Decimal(str(settings.estimated_retirement_tax_rate))
     return None
