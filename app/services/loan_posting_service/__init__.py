@@ -27,8 +27,6 @@ keep working unchanged:
 
 * :mod:`._walk` -- the shared foundation: the single chronological walk that
   produces every correction, plus the split / correction dataclasses.
-* :mod:`._common` -- the shared reconcile primitive (``delta_legs``) and the
-  loan owner loader.
 * :mod:`._payments` -- the per-payment split reconcile + payment-only sync.
 * :mod:`._anchors` -- the opening + true-up correction reconcile + anchor-only sync.
 * :mod:`._sync` -- the UNIFIED per-scenario sync (``sync_loan_postings``: one walk,
@@ -49,7 +47,12 @@ keep working unchanged:
 Books through :mod:`app.services.posting_service`'s shared balanced-write path
 (``_emit_balanced_entry``), leg DTO (``_PostingLeg``), and linked-ledger resolver
 (``_ledger_account_for``), so an unbalanced entry can never be written and every
-source shares one leg convention.  Reuses the resolver's OWN pure primitives
+source shares one leg convention.  The reconcile primitives shared with the
+Step-5 account anchor package (``delta_legs`` / ``summed_posting_legs`` /
+``posted_correction_legs`` / ``emit_anchor_correction_entry`` / the owner
+resolver) live in :mod:`app.services._posting_reconcile`, so the two
+correction packages can never drift on the delta math or the
+correction-entry shape.  Reuses the resolver's OWN pure primitives
 (``resolve_periods`` / ``monthly_due_date``), so the posted ledger and the
 resolver can never drift on the rate path or the anchor boundary.  Flask-isolated:
 plain data in, plain values out; flushes but never commits (the caller owns the

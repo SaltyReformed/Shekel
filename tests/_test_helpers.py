@@ -649,7 +649,9 @@ def create_hysa_account(
 _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 
-def create_account_of_type(seed_user, db_session, type_name, name):
+def create_account_of_type(
+    seed_user, db_session, type_name, name, anchor_balance=None,
+):
     """Create an account of any built-in type via the canonical factory.
 
     The shared "build an account of type X" helper for the ledger-account
@@ -657,10 +659,12 @@ def create_account_of_type(seed_user, db_session, type_name, name):
     ``AccountSpec`` + ``create_account`` block is not copied per file (a
     duplicate-code finding).  ``create_account`` fires the Step-2
     ledger-account sync hook, so the returned account already carries its
-    paired ``budget.ledger_accounts`` row.  The opening anchor balance is a
-    fixed sentinel (the suites assert on ledger pairing, never on balance)
-    and the anchor period is resolved by the factory from the user's pay
-    periods.
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance
+    defaults to a fixed sentinel (the ledger-pairing suites assert on
+    pairing, never on balance); the Step-5 account-anchor suites pass an
+    explicit ``anchor_balance`` because the opening correction posts exactly
+    that value.  The anchor period is resolved by the factory from the
+    user's pay periods.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -668,6 +672,8 @@ def create_account_of_type(seed_user, db_session, type_name, name):
         type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
             ``"Mortgage"``, ``"401(k)"``).
         name: The account name.
+        anchor_balance: Optional opening anchor balance (``Decimal``);
+            ``None`` uses the ledger-suite sentinel.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -688,7 +694,10 @@ def create_account_of_type(seed_user, db_session, type_name, name):
             user_id=seed_user["user"].id,
             account_type_id=acct_type.id,
             name=name,
-            anchor_balance=_LEDGER_SUITE_ANCHOR_BALANCE,
+            anchor_balance=(
+                _LEDGER_SUITE_ANCHOR_BALANCE if anchor_balance is None
+                else anchor_balance
+            ),
         ),
     )
 

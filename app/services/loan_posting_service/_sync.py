@@ -29,11 +29,11 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import loan_loaders
+from app.services._posting_reconcile import account_owner_id
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 
 from ._anchors import reconcile_loan_anchor_corrections
-from ._common import loan_owner_id
 from ._payments import reconcile_loan_payment_splits
 from ._walk import walk_loan_ledger
 
@@ -138,7 +138,7 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     """
     as_of = date.today()
     scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
-    owner_id = loan_owner_id(loan_account_id)
+    owner_id = account_owner_id(loan_account_id)
     if owner_id is not None:
         baseline = get_baseline_scenario(owner_id)
         if baseline is not None:

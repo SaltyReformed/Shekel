@@ -33,13 +33,41 @@ in throughout. Developer approval: 2026-07-03.
   `ledger_account_service.create_ledger_account_for_account`); nine-kind model taxonomy +
   display-rule caveat + CASCADE paragraph updated; `TestPartialUnique` re-keyed with a
   twin-coexists/second-twin-rejected case. Targeted 120 + the three oracles 56, all green.
-- C4 (anchor-equity chart resolver) -- IN THIS COMMIT:
+- C4 (anchor-equity chart resolver) -- DONE (`cfb1ed10`):
   `ledger_account_service.get_or_create_anchor_equity_account` + `_load_non_loan_account` (the
   inverse of the loan loader: rejects AMORTIZING targets so a loan's linked ledger never gains a
   twin -- the C6-checklist guarantee); Equity class, name snapshot, idempotent under the re-keyed
   unique; 8 new tests incl. the C3-hardening coexistence proof (hook + `_ledger_account_for` keep
   resolving the LINKED row beside a live twin).
-- C5 (walk + reconcile, pure) -- pending
+- C5 (walk + reconcile, pure) -- IN THIS COMMIT: `app/services/_posting_reconcile.py` (the loan
+  package's `_common` graduated to a services-level shared module and grew the pieces both anchor
+  reconciles must agree on: `delta_legs` / `summed_posting_legs` / `account_owner_id` +
+  `posted_correction_legs` / `merge_target_legs` / `emit_anchor_correction_entry`, so the two
+  correction families share ONE definition of the correction-entry shape and the cross-file
+  `duplicate-code` gate stays structurally quiet; loan package re-pointed, `_common` deleted).
+  New `account_posting_service/{_walk,_anchors,_sync}.py`: the MOMENT-granular walk (anchor facts
+  by `(created_at, id)`, first row = OPENING; source facts read back from the linked ledger in
+  three partitions -- transaction-linked by CURRENT `paid_at`, transfer-linked by the income
+  shadow's, residue by entry-period start, each falling back to period-start-midnight-UTC;
+  inclusive `<=` tie; nonzero-net linkage misses fail loud); the reconcile keyed
+  `(source_kind_id, entry_date)` with the history row's OWN period (no period-resolution failure
+  mode; posted-only stale keys take the period of what they reverse -- R2); sync entry points
+  (per-scenario, all-scenarios = baseline UNION posted-scenario set with a loud baseline-less
+  skip, per-user resync excluding loans structurally via `has_amortization IS FALSE`); the walk
+  REFUSES amortizing accounts (ValueError) and every sync treats them as a documented no-op.
+  23 new unit tests (CRITICAL-1 moment partition, inclusive same-instant tie, pre/post-assertion
+  and NULL-`paid_at` attribution, transfer shadow attribution, revert drop-out + self-heal,
+  same-day merge landing on the later value, zero-delta books nothing / mints no twin,
+  liability ledger-native sign, loan no-op everywhere, baseline-less loud-skip + recovery,
+  empty-target key reversal, posted-only stale-key reversal R2-attributed);
+  `_LEDGER_IMPORT_TOKENS` gains `_posting_reconcile` (the M-2 coverage guard caught the new
+  reader exactly as designed).  Per the commit's adversarial review (no CRITICAL/HIGH; extraction
+  verified byte-identical incl. description strings): the transaction source partition gained
+  `transfer_id IS NULL` so the three loaders provably PARTITION the linked ledger (a hypothetical
+  dual-linked entry would have double-counted), the transfer loader fails loud on a duplicate
+  active income shadow (was last-row-wins), and the two defensive reconcile paths the review
+  flagged as untested are pinned by the two reversal tests above.  278 targeted green;
+  `pylint app/` 10.00.
 - C6 (lifecycle wiring + oracle supersession) -- pending
 - C7 (backfill + boundary migration) -- pending
 - C8 (write-side oracle) -- pending

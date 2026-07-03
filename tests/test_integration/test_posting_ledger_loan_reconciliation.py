@@ -1492,6 +1492,12 @@ _LEDGER_IMPORT_TOKENS = (
     "ledger_account",
     "posting_service",
     "posting_reads",
+    # The Step-5 shared reconcile primitives (delta legs, posted-correction
+    # reader, correction-entry emitter) -- a ledger reader/writer helper the
+    # resolver stack has no business importing.  Its consumers
+    # (loan_posting_service, account_posting_service) are covered by the
+    # "posting_service" substring.
+    "_posting_reconcile",
     "loan_posting_service",
     "ledger_account_service",
     "balance_at",
