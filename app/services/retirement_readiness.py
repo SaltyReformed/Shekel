@@ -103,12 +103,35 @@ def compute_readiness_data(
         per-pension derivation lines under ``pension_lines``
         (:func:`_build_pension_lines`).
     """
-    data = compute_gap_data(
-        user_id,
-        swr_override=swr_override,
+    return readiness_from_gap_data(
+        compute_gap_data(
+            user_id,
+            swr_override=swr_override,
+            return_rate_override=return_rate_override,
+            merit_horizon_override=merit_horizon_override,
+        ),
         return_rate_override=return_rate_override,
-        merit_horizon_override=merit_horizon_override,
     )
+
+
+def readiness_from_gap_data(data, return_rate_override=None):
+    """Shape the readiness dict from an already-computed gap-data dict.
+
+    The compute-free half of :func:`compute_readiness_data`, split out so
+    the dashboard route -- which needs BOTH the gap data (projections,
+    salary profiles, blended return) and the readiness picture -- runs
+    :func:`~app.services.retirement_dashboard_service.compute_gap_data`
+    exactly once (the P3a-noted double-compute retired in P3c).
+
+    Args:
+        data: The dict returned by ``compute_gap_data``.
+        return_rate_override: The fractional annual-return what-if that
+            produced *data*, when one did -- threaded to the chart so the
+            needed path reverses under the same return frame.
+
+    Returns:
+        The readiness dict (see :func:`compute_readiness_data`).
+    """
     projections = data["retirement_account_projections"]
     net, tax_rate_missing, effective_tax_rate = _net_frame(data)
     funded_ratio, no_savings_needed = funded_ratio_state(net)
@@ -272,14 +295,14 @@ def _build_income_meter(net, swr):
     Everything is derived from the net-frame gap the verdict already
     computed, so the meter can never disagree with the hero beside it:
     the monthly SWR withdrawal income is the after-tax projected savings
-    at the SWR (the same formula the legacy chart's
-    ``_build_chart_data`` used, restated in the after-tax frame per Gate
-    A ruling 2), the uncovered remainder is what neither the net pension
-    nor those withdrawals reach, and the two segment percentages are the
-    covered shares of the net income target (clamped so the pair never
-    exceeds 100 even in an over-covered plan).  Percent widths are
-    computed HERE because templates never compute money; the template
-    only echoes them into ``data-progress-pct``.
+    at the SWR (projected * SWR / 12 -- the retired gap chart's formula,
+    restated in the after-tax frame per Gate A ruling 2), the uncovered
+    remainder is what neither the net pension nor those withdrawals
+    reach, and the two segment percentages are the covered shares of the
+    net income target (clamped so the pair never exceeds 100 even in an
+    over-covered plan).  Percent widths are computed HERE because
+    templates never compute money; the template only echoes them into
+    ``data-progress-pct``.
 
     Args:
         net: The net-frame :class:`RetirementGapAnalysis`.

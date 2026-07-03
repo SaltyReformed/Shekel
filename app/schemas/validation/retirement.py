@@ -161,28 +161,23 @@ class RetirementSettingsSchema(BaseSchema):
     )
 
 
-class RetirementGapQuerySchema(BaseSchema):
-    """Validates the /retirement/gap HTMX slider override query string.
+class RetirementReadinessQuerySchema(BaseSchema):
+    """Validates the /retirement/readiness HTMX what-if query string (P3a).
 
-    F-13: the slider's URL-editable ``swr`` parameter must reject
-    negative values rather than letting the calculator silently
-    collapse ``required_retirement_savings`` to zero.  Matches the
-    Commit 24 / HIGH-06 convention: the schema owns the percent-to-
-    fraction conversion via ``@pre_load`` so the route does no money
-    math.  ``Range(min=0, max=1)`` on the stored fraction mirrors
-    ``user_settings.safe_withdrawal_rate``'s CHECK constraint, so a
-    URL-edited ``swr=-5`` is rejected at the schema with a 422 instead
-    of silently zeroing the analysis.
-
-    F-17 (Commit 12 of the follow-up plan): the ``return_rate``
-    slider override is now routed through the same schema with the
-    same percent-to-fraction conversion -- this collapses the last
-    inline ``Decimal("100")`` division in the retirement route to
-    complete the "schemas own percent conversion" convention.  The
-    range mirrors ``investment_params.assumed_annual_return``'s
-    ``(-1, 1]`` storage bound (returns may be negative in a loss
-    scenario, but a -100% return is degenerate -- the growth engine's
-    per-period rate would be -1; DH-#28 follow-up).
+    The assumption what-ifs: ``swr`` rejects values outside ``[0, 1]``
+    (F-13: a URL-edited negative rate must 422, never silently zero the
+    required-savings figure -- the bound the retired gap fragment's
+    RetirementGapQuerySchema carried, folded in here when that fragment
+    retired in P3c); ``return_rate`` mirrors
+    ``investment_params.assumed_annual_return``'s ``(-1, 1]`` storage
+    bound (F-17: the schema owns the percent-to-fraction conversion via
+    ``@pre_load``, so the route does no money math);
+    ``merit_raise_horizon_years`` is 0-50, mirroring the DB CHECK and the
+    settings schema.  The two lever stepper values carry the same bounds
+    as :class:`RetirementLeverQuerySchema` (``months`` capped at the P2b
+    +180 search bound; ``contribution`` a money amount, so it is
+    deliberately NOT in ``_PERCENT_FIELDS``).  All optional: an absent
+    parameter means "stored value" (no what-if on that row).
     """
 
     _PERCENT_FIELDS = ("swr", "return_rate")
@@ -203,23 +198,6 @@ class RetirementGapQuerySchema(BaseSchema):
             min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
         ),
     )
-
-
-class RetirementReadinessQuerySchema(RetirementGapQuerySchema):
-    """Validates the /retirement/readiness HTMX what-if query string (P3a).
-
-    Inherits ``swr`` / ``return_rate`` (and the percent-to-fraction
-    ``@pre_load``) from :class:`RetirementGapQuerySchema` so the
-    assumption what-ifs share one definition with the legacy gap
-    fragment, and adds the remaining panel overrides:
-    ``merit_raise_horizon_years`` (0-50, mirroring the DB CHECK and the
-    settings schema), plus the two lever stepper values with the same
-    bounds as :class:`RetirementLeverQuerySchema` (``months`` capped at
-    the P2b +180 search bound; ``contribution`` a money amount, so it is
-    deliberately NOT in ``_PERCENT_FIELDS``).  All optional: an absent
-    parameter means "stored value" (no what-if on that row).
-    """
-
     merit_raise_horizon_years = fields.Integer(
         allow_none=True,
         validate=validate.Range(min=0, max=50),

@@ -88,17 +88,15 @@ class PensionSummary:
     """Aggregated pension-benefit outputs for the gap analysis.
 
     Returned by :func:`compute_pension_summary` so the orchestrator
-    carries the three pension-derived values it forwards downstream as
-    one immutable result rather than three parallel locals: the most
-    recent per-pension benefit (for the template), the summed monthly
-    pension income (the gap calculator's pension input), and the
+    carries the pension-derived values it forwards downstream as one
+    immutable result rather than parallel locals: the summed monthly
+    pension income (the gap calculator's pension input), the
     raise-projected salary-by-year series (reused by the gap-comparison
-    salary projection so it is not recomputed).
+    salary projection so it is not recomputed), and the per-pension
+    derivation entries (the P3c page's footer; the pre-P3b "last benefit
+    only" field this superseded is gone -- audit finding D6).
 
     Attributes:
-        benefit: The last computed :class:`PensionBenefit` across the
-            user's active pensions, or ``None`` when no pension has both
-            a planned retirement date and a linked salary profile.
         monthly_income: The summed monthly benefit across all qualifying
             pensions (``Decimal("0")`` when none qualify).
         salary_by_year: The ``(year, salary)`` projection produced for
@@ -107,13 +105,12 @@ class PensionSummary:
         per_pension: One dict per qualifying pension (``name``,
             ``benefit_multiplier``, ``consecutive_high_years``,
             ``benefit``), in iteration order.  Retains the benefits the
-            loop already computed so the rebuilt page can render the
-            derivation line PER PENSION (audit finding D6: the old
-            "last benefit only" card silently disagreed with the summed
-            gap row the moment a second pension existed).
+            loop already computed so the page renders the derivation line
+            PER PENSION (audit finding D6: the old "last benefit only"
+            card silently disagreed with the summed gap row the moment a
+            second pension existed).
     """
 
-    benefit: pension_calculator.PensionBenefit | None
     monthly_income: Decimal
     salary_by_year: list[tuple[int, Decimal]] | None
     per_pension: list = field(default_factory=list)
@@ -285,11 +282,10 @@ def compute_gap_data(
             stored value.
 
     Returns:
-        dict with keys: gap_analysis, chart_data, pension_benefit,
-                        pension_benefits, retirement_account_projections,
-                        settings, salary_profiles, pensions,
-                        gap_net_biweekly, swr, planned_retirement_date,
-                        estimated_tax_rate.
+        dict with keys: gap_analysis, pension_benefits,
+                        retirement_account_projections, settings,
+                        salary_profiles, pensions, gap_net_biweekly, swr,
+                        planned_retirement_date, estimated_tax_rate.
     """
     inputs = load_gap_inputs(user_id)
     salary_profiles = inputs.salary_profiles
@@ -346,12 +342,8 @@ def compute_gap_data(
         safe_withdrawal_rate=swr,
         estimated_tax_rate=resolve_estimated_tax_rate(inputs.settings),
     )
-    chart_data = _build_chart_data(gap_result, pension.monthly_income, swr)
-
     return {
         "gap_analysis": gap_result,
-        "chart_data": chart_data,
-        "pension_benefit": pension.benefit,
         # Per-pension derivation entries (D6): the readiness producer
         # shapes these into the rebuilt page's one-line-per-pension
         # footer, so the derivation card can never show a different
@@ -499,12 +491,11 @@ def compute_pension_summary(
             identity.
 
     Returns:
-        A :class:`PensionSummary` bundling the most recent benefit, the
-        summed monthly pension income, the last salary-by-year series
-        (the latter two default to ``Decimal("0")`` / ``None`` when no
-        pension qualifies), and the per-pension derivation entries.
+        A :class:`PensionSummary` bundling the summed monthly pension
+        income, the last salary-by-year series (``Decimal("0")`` /
+        ``None`` when no pension qualifies), and the per-pension
+        derivation entries.
     """
-    benefit = None
     monthly_income = Decimal("0")
     salary_by_year = None
     per_pension = []
@@ -537,7 +528,7 @@ def compute_pension_summary(
                 "consecutive_high_years": pension.consecutive_high_years,
                 "benefit": benefit,
             })
-    return PensionSummary(benefit, monthly_income, salary_by_year, per_pension)
+    return PensionSummary(monthly_income, salary_by_year, per_pension)
 
 
 def _compute_current_pay(
@@ -697,51 +688,3 @@ def resolve_estimated_tax_rate(
     if settings is not None and settings.estimated_retirement_tax_rate:
         return Decimal(str(settings.estimated_retirement_tax_rate))
     return None
-
-
-def _build_chart_data(
-    gap_result: retirement_gap_calculator.RetirementGapAnalysis,
-    monthly_pension_income: Decimal,
-    swr: Decimal,
-) -> dict[str, str]:
-    """Build the retirement-gap chart's string-encoded data series.
-
-    Computes the SWR-derived monthly investment income and the residual
-    "gap" bar (income remaining after both pension and investment income
-    are covered), then encodes every series as a string Decimal for the
-    template's ``data-*`` attributes.
-
-    Args:
-        gap_result: The :class:`RetirementGapAnalysis` from
-            ``retirement_gap_calculator.calculate_gap``.
-        monthly_pension_income: The summed monthly pension income.
-        swr: The active fractional safe-withdrawal rate.
-
-    Returns:
-        dict of string-encoded Decimals keyed ``pension``,
-        ``investment_income``, ``gap``, ``pre_retirement``,
-        ``chart_remaining``.
-    """
-    investment_income_decimal = (
-        round_money(gap_result.projected_total_savings * swr / 12)
-        if gap_result.projected_total_savings > 0
-        else Decimal("0.00")
-    )
-    # MED-04 / E-17: the chart's "Gap" bar is the residual income
-    # remaining after BOTH pension and SWR investment income have been
-    # covered -- a different concept from ``gap_result.monthly_income_gap``
-    # (post-pension only, before investments).  Computed server-side so
-    # the data attribute is the value to render, not the inputs to add
-    # together client-side (previously done in ``retirement_gap_chart.js``).
-    covered = monthly_pension_income + investment_income_decimal
-    chart_remaining = max(
-        Decimal("0.00"),
-        gap_result.pre_retirement_net_monthly - covered,
-    )
-    return {
-        "pension": str(monthly_pension_income),
-        "investment_income": str(investment_income_decimal),
-        "gap": str(gap_result.monthly_income_gap),
-        "pre_retirement": str(gap_result.pre_retirement_net_monthly),
-        "chart_remaining": str(chart_remaining),
-    }

@@ -23,7 +23,6 @@ from app.models.user import UserSettings
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
-    RetirementGapQuerySchema,
     RetirementLeverQuerySchema,
     RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
@@ -60,7 +59,6 @@ retirement_bp = Blueprint("retirement", __name__)
 _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
-_gap_query_schema = RetirementGapQuerySchema()
 _lever_query_schema = RetirementLeverQuerySchema()
 _readiness_query_schema = RetirementReadinessQuerySchema()
 
@@ -69,23 +67,32 @@ _readiness_query_schema = RetirementReadinessQuerySchema()
 @login_required
 @require_owner
 def dashboard():
-    """Retirement planning dashboard with gap analysis."""
-    data = retirement_dashboard_service.compute_gap_data(current_user.id)
-    slider = retirement_dashboard_service.compute_slider_defaults(data)
+    """The direction-D retirement readiness page.
 
+    Computes the gap data ONCE and shapes the readiness picture from it
+    (:func:`~app.services.retirement_readiness.readiness_from_gap_data`),
+    closing the P3a double-compute; the levers run their own probe loads.
+    The context carries exactly what the rebuilt template consumes: the
+    readiness dict, the lever baselines, the per-account projections +
+    salary profiles for the accounts table, and the blended return for
+    the what-if-only assumed-return row.  The legacy gap-table context
+    (gap analysis, chart data, SWR slider default) retired with the old
+    page (P3c).
+    """
+    data = retirement_dashboard_service.compute_gap_data(current_user.id)
     return render_template(
         "retirement/dashboard.html",
-        current_swr=slider["current_swr"],
-        current_return=slider["current_return"],
-        # P3a: the direction-D readiness + lever baselines ride alongside
-        # the legacy context so P3b's template rebuild finds them already
-        # wired; the CURRENT template ignores both keys (zero edits to
-        # dashboard.html in this phase).
-        readiness=retirement_readiness.compute_readiness_data(
-            current_user.id,
+        current_return=(
+            retirement_dashboard_service.compute_slider_defaults(
+                data,
+            )["current_return"]
         ),
+        readiness=retirement_readiness.readiness_from_gap_data(data),
         levers=retirement_levers.compute_lever_data(current_user.id),
-        **data,
+        retirement_account_projections=(
+            data["retirement_account_projections"]
+        ),
+        salary_profiles=data["salary_profiles"],
     )
 
 
@@ -341,46 +348,6 @@ def delete_pension(pension_id):
     logger.info("user_id=%d deactivated pension profile %d", current_user.id, pension_id)
     flash(f"Pension profile '{pension.name}' deactivated.", "info")
     return redirect(url_for("retirement.dashboard"))
-
-
-# ── Gap Analysis Fragment ────────────────────────────────────────
-
-
-@retirement_bp.route("/retirement/gap")
-@login_required
-@require_owner
-def gap_analysis():
-    """HTMX fragment: recalculate gap analysis with slider overrides."""
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("retirement.dashboard"))
-
-    # F-13: validate the URL-editable ``swr`` slider override through
-    # the schema, which owns the percent-to-fraction conversion and
-    # rejects values outside ``[0, 1]`` with a 422.  The calculator
-    # itself still treats non-positive SWR as zero (defense in depth),
-    # but the schema surfaces the user error rather than letting the
-    # analysis silently collapse to zero.
-    try:
-        query_data = _gap_query_schema.load(request.args)
-    except ValidationError as exc:
-        return jsonify(errors=exc.messages), 422
-
-    swr_override = query_data.get("swr")
-    return_rate_override = query_data.get("return_rate")
-
-    data = retirement_dashboard_service.compute_gap_data(
-        current_user.id,
-        swr_override=swr_override,
-        return_rate_override=return_rate_override,
-    )
-
-    return render_template(
-        "retirement/_gap_analysis.html",
-        gap_analysis=data["gap_analysis"],
-        chart_data=data["chart_data"],
-        retirement_account_projections=data["retirement_account_projections"],
-        htmx_response=True,
-    )
 
 
 # ── Lever Outcomes Fragment (P2c) ────────────────────────────────

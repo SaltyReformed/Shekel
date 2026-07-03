@@ -45,61 +45,24 @@ class TestComputeGapData:
 
         P1c added the four readiness-input keys (``gap_net_biweekly``,
         ``swr``, ``planned_retirement_date``, ``estimated_tax_rate``) that
-        ``retirement_readiness.compute_readiness_data`` reads back so it can
-        re-run the net-frame gap and build the chart / countdown without
-        re-deriving them; the current-page template ignores the extra keys.
+        ``retirement_readiness`` reads back so it can re-run the net-frame
+        gap and build the chart / countdown without re-deriving them.
+        P3b/P3c: ``pension_benefits`` (the sanctioned D6 per-pension
+        addition) replaced the last-pension-only ``pension_benefit``, and
+        ``chart_data`` retired with the old gap chart.
         """
         with app.app_context():
             result = retirement_dashboard_service.compute_gap_data(
                 seed_user["user"].id
             )
             expected_keys = {
-                "gap_analysis", "chart_data", "pension_benefit",
+                "gap_analysis", "pension_benefits",
                 "retirement_account_projections", "settings",
                 "salary_profiles", "pensions",
                 "gap_net_biweekly", "swr", "planned_retirement_date",
                 "estimated_tax_rate",
             }
             assert set(result.keys()) == expected_keys
-
-    def test_c31_jn01_jn02_chart_remaining_server_computed(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C31 (JN-01/JN-02) -- chart_remaining is server-computed.
-
-        The retirement-gap chart's "Gap" bar previously computed
-        ``max(0, preRetirement - (pension + investment))`` in JS
-        (``retirement_gap_chart.js``).  After Commit 31 the server
-        ships ``chart_remaining`` as a string Decimal so the client
-        only renders.  The other three legs (pension, investment,
-        pre_retirement) are still emitted alongside it; the lock
-        verifies all four are present and the relationship holds.
-        """
-        with app.app_context():
-            result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            chart = result["chart_data"]
-            for key in (
-                "pension", "investment_income", "gap",
-                "pre_retirement", "chart_remaining",
-            ):
-                assert key in chart
-                # Each value is a string-encoded Decimal so the
-                # template can drop it verbatim into a data-* attr.
-                assert isinstance(chart[key], str)
-            # Relationship: chart_remaining = max(0, pre_retirement -
-            # (pension + investment_income)) reconstructed from the
-            # other emitted values.  This guards the JN-02 audit note
-            # that this is intentionally a different concept from
-            # ``gap`` (post-pension, before investments).
-            pre_retirement = Decimal(chart["pre_retirement"])
-            pension = Decimal(chart["pension"])
-            investment = Decimal(chart["investment_income"])
-            expected_remaining = max(
-                Decimal("0.00"), pre_retirement - pension - investment,
-            )
-            assert Decimal(chart["chart_remaining"]) == expected_remaining
 
     def test_user_with_no_accounts_returns_safe_defaults(
         self, app, db, seed_user, seed_periods
@@ -110,7 +73,8 @@ class TestComputeGapData:
                 seed_user["user"].id
             )
             assert result["retirement_account_projections"] == []
-            assert result["pension_benefit"] is None
+            # No qualifying pension -> no per-pension derivation entries.
+            assert result["pension_benefits"] == []
 
     def test_user_with_no_salary_profile(self, app, db, seed_user, seed_periods):
         """User with no salary profile still returns valid structure."""
@@ -155,7 +119,10 @@ class TestComputeGapData:
                 seed_user["user"].id
             )
             assert len(result["pensions"]) == 1
-            assert result["pension_benefit"] is not None
+            # One qualifying pension -> one per-pension derivation entry
+            # carrying its computed benefit (D6 contract).
+            assert len(result["pension_benefits"]) == 1
+            assert result["pension_benefits"][0]["benefit"] is not None
 
 
 class TestComputeGapNetBiweekly:
@@ -752,17 +719,18 @@ class TestSwrResolverConsistency:
 
           gap_result.projected_total_savings = 1,200,000.00
           swr (resolver) = Decimal("0") (was Decimal("0.04") pre-fix)
-          chart investment_income
-              = (1,200,000 * 0 / 12).quantize(0.01)
+          meter withdrawals (P3c: the income meter superseded the
+          retired gap chart as the SWR-income surface)
+              = round(1,200,000 * 0 / 12)
               = 0.00
           slider current_swr
               = (Decimal("0") * 100).quantize(0.01)
               = 0.00
 
-        Pre-fix the slider rendered 0.00% but the chart rendered
-        ``str((1,200,000 * 0.04 / 12).quantize(0.01)) = "4000.00"``
-        -- the phantom $4,000/mo the audit cited.  All three numbers
-        (resolver swr, chart income, slider %) MUST agree on zero.
+        Pre-fix the slider rendered 0.00% but the income surface rendered
+        (1,200,000 * 0.04 / 12).quantize(0.01) = 4,000.00 -- the phantom
+        $4,000/mo the audit cited.  All three numbers (resolver swr,
+        withdrawal income, slider %) MUST agree on zero.
         """
         with app.app_context():
             user = seed_user["user"]
@@ -792,7 +760,12 @@ class TestSwrResolverConsistency:
                 "1200000.00"
             )
             # 1,200,000 * 0 / 12 = 0.00, not the pre-fix 4,000.00.
-            assert data["chart_data"]["investment_income"] == "0.00", (
+            from app.services import retirement_readiness
+
+            meter = retirement_readiness.readiness_from_gap_data(
+                data,
+            )["income_meter"]
+            assert meter["withdrawals_net_monthly"] == Decimal("0.00"), (
                 "Phantom retirement income from truthiness fallback "
                 "(CRIT-04 / F-042)."
             )

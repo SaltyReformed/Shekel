@@ -778,133 +778,6 @@ class TestRetirementProjections:
         assert f"${target:,.2f}" in html
 
 
-class TestGapAnalysisFragment:
-    """Tests for the retirement gap analysis HTMX fragment (U3)."""
-
-    def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods_today):
-        """GET /retirement/gap without HX-Request redirects to retirement dashboard."""
-        resp = auth_client.get("/retirement/gap")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-
-    def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods_today):
-        """GET /retirement/gap with HX-Request returns gap analysis fragment."""
-        resp = auth_client.get(
-            "/retirement/gap",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # Gap analysis always renders the table with income gap row.
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods_today):
-        """SWR slider parameter is accepted and used."""
-        profile = _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        settings.safe_withdrawal_rate = Decimal("0.04")
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=3.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # The fragment should show the 3.0% rate in the "Required Savings" line.
-        assert b"3.0% rule" in resp.data
-
-    def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods_today):
-        """Return rate slider parameter is accepted."""
-        profile = _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        db.session.commit()
-
-        _create_retirement_account(seed_user, db.session, type_name="401(k)")
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # Gap analysis table always contains income gap row.
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_rejects_negative_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: negative ``swr`` slider override is rejected at the schema.
-
-        Pre-F-13 the route divided the raw float by 100 and handed the
-        resulting negative fraction to the calculator, which silently
-        zeroed ``required_retirement_savings``.  Post-F-13 the
-        ``RetirementGapQuerySchema`` rejects the value with a 422 so the
-        user surfaces an actionable error instead of a falsely-balanced
-        analysis.
-        """
-        resp = auth_client.get(
-            "/retirement/gap?swr=-5",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 422
-        body = resp.get_json()
-        assert "errors" in body
-        assert "swr" in body["errors"]
-
-    def test_gap_accepts_zero_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: ``swr=0`` (the inclusive lower bound) is accepted.
-
-        The calculator's ``> 0`` guard collapses
-        ``required_retirement_savings`` to ZERO, which is the existing
-        zero-rate behaviour preserved at the calculator (defense in
-        depth).  The route surfaces a normal 200 rather than 422.
-        """
-        _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_accepts_default_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: ``swr=4`` (the default 4% slider value) routes happy-path.
-
-        Percent input ``"4"`` -> fraction ``Decimal("0.04")``, well
-        inside the schema's ``Range(0, 1)``; the fragment renders the
-        standard gap analysis.
-        """
-        _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        settings.safe_withdrawal_rate = Decimal("0.04")
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=4",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # The fragment renders the SWR-driven Required Savings row.
-        assert b"4.0% rule" in resp.data
-
-
 class TestRetirementNegativePaths:
     """Negative-path and boundary tests for retirement routes."""
 
@@ -1263,12 +1136,6 @@ class TestRetirementNegativePaths:
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
-    def test_gap_analysis_login_required(self, client, db):
-        """Unauthenticated GET to gap analysis redirects to login."""
-        resp = client.get("/retirement/gap")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
 
 class TestRetirementValidationUX:
     """Tests for render-on-error validation UX with field highlights and data preservation."""
@@ -1596,48 +1463,6 @@ class TestReturnRateClarity:
         assert ">7.0%<" in html
         assert ">9.5%<" in html
 
-    def test_htmx_gap_response_includes_account_rows_oob(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """HTMX gap analysis response includes OOB swap for account table rows."""
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # OOB swap div must be present.
-        assert 'id="retirement-accounts-content"' in html
-        assert 'hx-swap-oob="innerHTML"' in html
-
-    def test_htmx_gap_oob_uses_slider_rate(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """When slider overrides return rate, OOB account rows show the override rate."""
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # The OOB rows should show 10.0% (slider override), not 7.0% (account default).
-        assert ">10.0%<" in html
-        assert ">7.0%<" not in html
-
     def test_initial_dashboard_renders_no_oob(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
@@ -1677,38 +1502,6 @@ class TestReturnRateClarity:
         assert 'id="assump-return-rate"' in html
         assert 'id="return_slider"' not in html
         assert 'id="swr_slider"' not in html
-
-    def test_htmx_gap_still_returns_gap_analysis(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """HTMX gap endpoint with return_rate still returns the gap analysis table (regression)."""
-        profile = _create_salary_profile(seed_user, db.session)
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=8.0&swr=3.5",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # Core gap analysis content must still be present.
-        assert "Monthly Income Gap" in html
-        assert "Projected Retirement Savings" in html
-        assert "3.5% rule" in html
-
-
-# ── is_pretax Metadata Dispatch ──────────────────────────────────
-
-
-class TestIsPretaxDispatch:
-    """Verify that the is_pretax metadata flag on AccountType drives the
-    pre-tax / post-tax distinction in retirement gap analysis, replacing
-    the hardcoded TRADITIONAL_TYPE_ENUMS frozenset."""
 
     def test_gap_analysis_user_created_pretax_type(
         self, app, auth_client, seed_user, db, seed_periods_today,
