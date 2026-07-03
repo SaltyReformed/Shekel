@@ -1642,106 +1642,6 @@ def _seed_underfunded(seed_user, db_session):
     db_session.commit()
 
 
-class TestLeverFragment:
-    """Tests for the /retirement/levers HTMX fragment (P2c)."""
-
-    def test_redirects_without_htmx(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """GET /retirement/levers without HX-Request redirects to the page."""
-        resp = auth_client.get("/retirement/levers")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers["Location"]
-
-    def test_requires_auth(self, client, db):
-        """Unauthenticated -> redirect to login."""
-        resp = client.get(
-            "/retirement/levers", headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
-    def test_no_horizon_state_rendered(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """No pension date and no settings date -> the empty-state line."""
-        resp = auth_client.get(
-            "/retirement/levers", headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "Set a planned retirement date" in html
-        assert 'data-lever="none"' in html
-
-    def test_solved_outcome_lines_rendered(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """Both outcome lines render with the solver's defaults.
-
-        The underfunded scenario (see _seed_underfunded): the contribution
-        line shows the solved +$X/paycheck reaching 100.0% funded (the
-        closed form's outcome at its own solution rounds to exactly
-        1.0000 -- the half-cent amount rounding is ~1e-5 of the
-        requirement), plus the honest over-headroom warning (solution
-        ~$1,200+/period > $903.85 headroom); the retire-later line shows
-        the not-within-180-months degenerate state.
-        """
-        _seed_underfunded(seed_user, db.session)
-        resp = auth_client.get(
-            "/retirement/levers", headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        assert 'data-lever="contribution"' in html
-        assert "/paycheck" in html
-        assert "100.0% funded" in html
-        # Honest headroom flag: 23500 / 26 = 903.846... -> $903.85.
-        assert 'data-lever-flag="headroom"' in html
-        assert "$903.85" in html
-        assert 'data-lever="retire-later"' in html
-        assert "cannot close the gap within 180 months" in html
-
-    def test_stepper_overrides_rendered(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """Override params drive the displayed outcome lines.
-
-        months=24 renders the "+24 months (retiring <date>)" branch even
-        though the solver itself reports not_within_cap; contribution=100
-        renders the money macro's $100.00 as the displayed amount.
-        """
-        _seed_underfunded(seed_user, db.session)
-        resp = auth_client.get(
-            "/retirement/levers?contribution=100.00&months=24",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "+$100.00/paycheck" in html
-        assert "+24 months" in html
-
-    def test_garbage_params_are_422(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """Out-of-bounds or non-numeric stepper params return 422."""
-        for query in (
-            "contribution=-5",       # negative money
-            "contribution=abc",      # non-numeric money
-            "contribution=100001",   # above the 100000 bound
-            "months=-1",             # negative offset
-            "months=181",            # above the +180 cap
-            "months=abc",            # non-numeric offset
-        ):
-            resp = auth_client.get(
-                f"/retirement/levers?{query}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 422, (
-                f"{query}: expected 422, got {resp.status_code}"
-            )
-            assert "errors" in resp.get_json()
-
-
 class TestAssumptionSaves:
     """P3a per-field assumption saves through retirement.update_settings."""
 
@@ -1949,6 +1849,56 @@ class TestReadinessFragment:
         assert 'data-lever="retire-later"' in html
         assert "+24 months" in html
 
+    def test_contribution_override_renders_full_lever_content(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A contribution stepper value renders both lever lines in full.
+
+        Consolidated from the retired /retirement/levers fragment tests
+        (M2): the readiness fragment is now the ONE rendering path for
+        _lever_outcomes.html.  contribution=100.00 renders the displayed
+        amount via the money macro WITHOUT the over-headroom flag ($100 is
+        under the 23500 / 26 = $903.85 per-period limit headroom -- the
+        flag applies to the DISPLAYED amount, the documented P2 contract);
+        with no months override the retire-later line reports the
+        not-within-180-months degenerate state (a $10k account at 7%
+        cannot reach a ~$1.4M target).
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?contribution=100.00",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+$100.00/paycheck" in html
+        assert 'data-lever-flag="headroom"' not in html
+        assert "cannot close the gap within 180 months" in html
+
+    def test_solved_contribution_line_renders_headroom_flag(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """With no contribution override the SOLVED amount is flagged.
+
+        Consolidated from the retired /retirement/levers fragment tests
+        (M2): a months-only request computes the levers with the
+        contribution stepper at its solved default (~$1,200+/period for
+        _seed_underfunded's ~$1.3M shortfall over an AF of ~1,100), which
+        exceeds the 23500 / 26 = $903.85 per-period limit headroom -- the
+        honest over-headroom flag renders with the headroom figure, and
+        the solved line reports 100.0% funded.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "100.0% funded" in html
+        assert 'data-lever-flag="headroom"' in html
+        assert "$903.85" in html
+
     def test_garbage_params_are_422(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
@@ -1957,7 +1907,10 @@ class TestReadinessFragment:
             "swr=-5",                       # negative percent
             "merit_raise_horizon_years=51",  # above the 0-50 CHECK mirror
             "months=181",                   # above the +180 solver cap
+            "months=abc",                   # non-numeric offset
             "contribution=-1",              # negative money
+            "contribution=100001",          # above the 100000 bound
+            "contribution=abc",             # non-numeric money
         ):
             resp = auth_client.get(
                 f"/retirement/readiness?{query}",

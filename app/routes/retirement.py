@@ -23,7 +23,6 @@ from app.models.user import UserSettings
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
-    RetirementLeverQuerySchema,
     RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
 )
@@ -59,7 +58,6 @@ retirement_bp = Blueprint("retirement", __name__)
 _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
-_lever_query_schema = RetirementLeverQuerySchema()
 _readiness_query_schema = RetirementReadinessQuerySchema()
 
 
@@ -348,41 +346,6 @@ def delete_pension(pension_id):
     logger.info("user_id=%d deactivated pension profile %d", current_user.id, pension_id)
     flash(f"Pension profile '{pension.name}' deactivated.", "info")
     return redirect(url_for("retirement.dashboard"))
-
-
-# ── Lever Outcomes Fragment (P2c) ────────────────────────────────
-
-
-@retirement_bp.route("/retirement/levers")
-@login_required
-@require_owner
-def lever_outcomes():
-    """HTMX fragment: recompute both lever outcome lines from stepper values.
-
-    Optional ``contribution`` (extra dollars per pay period) and
-    ``months`` (retire-later offset) query parameters override the
-    solvers' defaults; both are validated through
-    :class:`RetirementLeverQuerySchema` (bounds -> 422 on garbage).  The
-    fragment renders ``_lever_outcomes.html`` -- the minimal outcome-line
-    partial P3's levers card restyles.
-    """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("retirement.dashboard"))
-
-    try:
-        query_data = _lever_query_schema.load(request.args)
-    except ValidationError as exc:
-        return jsonify(errors=exc.messages), 422
-
-    levers = retirement_levers.compute_lever_data(
-        current_user.id,
-        contribution_override=query_data.get("contribution"),
-        months_override=query_data.get("months"),
-    )
-    return render_template(
-        "retirement/_lever_outcomes.html",
-        levers=levers,
-    )
 
 
 # ── Readiness Fragment (P3a) ─────────────────────────────────────

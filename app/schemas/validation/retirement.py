@@ -173,11 +173,16 @@ class RetirementReadinessQuerySchema(BaseSchema):
     bound (F-17: the schema owns the percent-to-fraction conversion via
     ``@pre_load``, so the route does no money math);
     ``merit_raise_horizon_years`` is 0-50, mirroring the DB CHECK and the
-    settings schema.  The two lever stepper values carry the same bounds
-    as :class:`RetirementLeverQuerySchema` (``months`` capped at the P2b
-    +180 search bound; ``contribution`` a money amount, so it is
-    deliberately NOT in ``_PERCENT_FIELDS``).  All optional: an absent
-    parameter means "stored value" (no what-if on that row).
+    settings schema.  The two lever stepper values: ``months`` capped at
+    the P2b +180 search bound
+    (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`) and
+    ``contribution`` a money amount bounded to ``[0, 100000]`` (so it is
+    deliberately NOT in ``_PERCENT_FIELDS``; a URL-edited negative or
+    absurd amount is a 422).  All optional: an absent parameter means
+    "stored value" (no what-if on that row).  This is the ONE schema for
+    every lever/what-if refresh -- the P2c-era RetirementLeverQuerySchema
+    retired with its /retirement/levers route (M2: the page's steppers
+    all refresh through /retirement/readiness).
     """
 
     _PERCENT_FIELDS = ("swr", "return_rate")
@@ -211,35 +216,4 @@ class RetirementReadinessQuerySchema(BaseSchema):
         validate=validate.Range(
             min=Decimal("0"), max=Decimal("100000"),
         ),
-    )
-
-
-class RetirementLeverQuerySchema(BaseSchema):
-    """Validates the /retirement/levers HTMX stepper query string (P2c).
-
-    Both parameters are optional stepper values -- an absent parameter
-    displays the solver's own default.  ``contribution`` is a money
-    amount (dollars per pay period, NOT a percent, so no ``@pre_load``
-    percent conversion applies): two decimal places, bounded to
-    ``[0, 100000]`` so a URL-edited negative or absurd amount is a 422
-    rather than a silently nonsensical outcome line.  ``months`` is the
-    retire-later offset in whole months, bounded to ``[0, 180]`` --
-    the same +180 cap the P2b binary search honors
-    (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`).
-    """
-
-    @pre_load
-    def normalize_inputs(self, data, **kwargs):
-        """Normalize empty inputs (no percent fields on this schema)."""
-        return _normalize_empty_inputs(self, data)
-
-    contribution = fields.Decimal(
-        places=2, as_string=True, allow_none=True,
-        validate=validate.Range(
-            min=Decimal("0"), max=Decimal("100000"),
-        ),
-    )
-    months = fields.Integer(
-        allow_none=True,
-        validate=validate.Range(min=0, max=180),
     )
