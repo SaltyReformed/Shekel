@@ -1016,6 +1016,64 @@ class TestTransactionAllCreditNoop:
             assert _entries_for_transaction(txn.id) == []
 
 
+class TestEnvelopeCreditDominatesKeepsExpenseSign:
+    """L10: a credit-dominated expense envelope stays an OUTFLOW -- no sign flip.
+
+    The confirmed cash effect is ``effective - Sigma(credit entries)``.  Were
+    the credit entries able to exceed ``effective`` the effect would flip sign,
+    posting an expense as a net cash INFLOW.  Two structural invariants forbid
+    it: ``TransactionEntry.amount`` is ``CHECK (amount > 0)`` and a settled
+    envelope's ``actual_amount`` is ``compute_actual_from_entries`` = the sum of
+    ALL entries, so ``effective - Sigma(credit) = Sigma(debit) >= 0`` always
+    (zero only for an all-credit envelope, covered by
+    :class:`TestTransactionAllCreditNoop`).  This pins that even when the credit
+    portion dwarfs the debit, the tiny debit still books as a proper outflow and
+    never as income -- a regression that let ``actual_amount`` drift below the
+    credit sum, or relaxed the positive-amount CHECK, would fail here.
+    """
+
+    def test_credit_dominated_expense_still_posts_a_debit_outflow(
+        self, app, db, seed_user
+    ):
+        """debit $1 / credit $99, actual $100 -> cash leg -1.00, never positive.
+
+        Arithmetic: ``actual`` = sum of ALL entries = 100, so ``effective`` =
+        100 and ``effect = effective(100) - credit_sum(99) = 1`` of debit
+        spending.  The expense sign makes the cash leg -1.00 (a $1 checking
+        outflow) and the Groceries leg +1.00; the sign follows the transaction
+        type, so a credit-heavy split never turns the expense into an inflow.
+        """
+        with app.app_context():
+            period = seed_user["bootstrap_period"]
+            txn = create_envelope_txn(
+                seed_user, _db.session, period, "Credit-Heavy Env",
+                Decimal("200.00"),
+            )
+            _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
+            _add_txn_entry(seed_user, txn, "99.00", is_credit=True)
+            # Simulate settle_from_entries: actual = sum(all entries), Paid.
+            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            txn.actual_amount = Decimal("100.00")
+            _db.session.commit()
+            cash_ledger = _ledger_id(seed_user["account"])
+            groceries_ledger = _resolve_category_ledger(
+                seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
+            ).id
+
+            [entry] = posting_service.sync_transaction_postings(
+                txn, settled=True,
+            )
+            _db.session.commit()
+
+            legs = _legs_by_ledger(entry.id)
+            # The $1 debit books as a proper outflow -- NOT a positive (inflow)
+            # leg, which a credits-exceed-effective sign flip would produce.
+            assert legs[cash_ledger] == Decimal("-1.00")
+            assert legs[cash_ledger] < Decimal("0.00")
+            assert legs[groceries_ledger] == Decimal("1.00")
+            assert sum(legs.values()) == Decimal("0.00")
+
+
 class TestTransactionIdempotency:
     """A repeat sync at the same target writes nothing."""
 
