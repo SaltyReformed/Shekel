@@ -20,7 +20,7 @@ rendering surface MUST return the identical Decimal:
                                 ``balance_resolver.balances_for``.
   2. /savings                 -- ``savings_dashboard_service`` +
                                 ``GET /savings``.
-  3. /accounts checking detail -- ``GET /accounts/<id>/checking``.
+  3. /accounts cash detail    -- ``GET /accounts/<id>/details``.
   4. Dashboard               -- ``dashboard_service.compute_balance_section``
                                 (the pulse hero) + ``GET /dashboard``.
   5. Year-end net-worth      -- ``year_end_summary_service.compute_year_end_summary``
@@ -238,12 +238,13 @@ def _savings_value(ctx):
 
 
 def _accounts_checking_value(ctx):
-    """Read the /accounts checking-detail surface's current balance.
+    """Read the /accounts cash-detail surface's current balance.
 
     Mirrors the route's local ``current_bal = result.balances.get(current_period.id)``
     where ``result`` now comes from the seam's cash-flow entry
     ``balance_at.cash_balance_map`` (Level-1 Commit 8) -- the same seam call
-    the checking-detail route makes.  The fixture pins ``today`` inside the
+    the merged cash-detail route makes for a plain checking account.  The
+    fixture pins ``today`` inside the
     anchor period, so ``current_period.id == anchor_period.id`` and the value
     displayed equals ``balances[anchor_period.id]``.
     """
@@ -430,9 +431,9 @@ class TestCrossPageBalanceEquality:
             assert resp.status_code == 200, (
                 f"/savings returned {resp.status_code} for case {case['id']!r}"
             )
-            resp = auth_client.get(f"/accounts/{ctx['account_id']}/checking")
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/details")
             assert resp.status_code == 200, (
-                f"/accounts/<id>/checking returned {resp.status_code} "
+                f"/accounts/<id>/details returned {resp.status_code} "
                 f"for case {case['id']!r}"
             )
             resp = auth_client.get("/dashboard")

@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import dti_badge, money %}
+{% from "_acct_macros.html" import acct_glyph, detail_endpoint %}
 {# Net Worth Cockpit region -- the balanceChanged refresh target.
 
    Swap target of #cockpit-section (hx-trigger="balanceChanged from:body");
@@ -14,31 +15,12 @@
    the route-serialized net_worth_chart_json): net_worth, grouped_accounts,
    group_subtotals, property_equity, debt_summary, net_worth_chart_json. #}
 
-{# ── Per-card presentation helpers ───────────────────────────────────
-   Both resolve by integer ID / boolean type flag, never a ref-table
-   ``name`` string (the project's "IDs for logic" invariant). Defined
-   once so the icon glyph and the detail-page target cannot drift apart
-   across the card grid. #}
-{% macro acct_glyph(account) -%}
-{%- if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING -%}bi-bank
-{%- elif account.account_type and account.account_type.has_interest -%}bi-piggy-bank
-{%- elif account.account_type and account.account_type.has_amortization -%}bi-credit-card-2-back
-{%- elif account.account_type and account.account_type.has_appreciation -%}bi-house-door
-{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_RETIREMENT -%}bi-briefcase
-{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_INVESTMENT -%}bi-graph-up-arrow
-{%- elif account.account_type and account.account_type_id == ACCT_TYPE_SAVINGS -%}bi-piggy-bank
-{%- else -%}bi-wallet2
-{%- endif -%}
-{%- endmacro %}
-
-{% macro detail_endpoint(account) -%}
-{%- if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING -%}accounts.checking_detail
-{%- elif account.account_type and account.account_type.has_interest -%}accounts.interest_detail
-{%- elif account.account_type and account.account_type.has_amortization -%}loan.dashboard
-{%- elif account.account_type and account.account_type.has_appreciation -%}accounts.property_detail
-{%- elif account.account_type and account.account_type.category_id in (ACCT_CAT_RETIREMENT, ACCT_CAT_INVESTMENT) -%}investment.dashboard
-{%- endif -%}
-{%- endmacro %}
+{# The per-card presentation helpers (acct_glyph / detail_endpoint) live in
+   _acct_macros.html, shared with the account detail pages so the icon
+   glyph and the detail-page target cannot drift apart across screens.
+   detail_endpoint now resolves EVERY cash type (checking, interest, plain
+   Savings / Credit Card / custom) to accounts.cash_detail, so every card
+   has a Details destination (account_detail_audit.md, decision 2). #}
 
 {# ── Net-worth hero band: headline + chips + forward trend ──────────── #}
 <div class="pulse-canvas mb-4">

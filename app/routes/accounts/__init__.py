@@ -29,10 +29,14 @@ Module map:
   :func:`app.services.anchor_service.apply_anchor_true_up`.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
-* :mod:`app.routes.accounts.detail` -- Per-account detail pages
-  (``interest_detail``, ``update_interest_params``,
-  ``checking_detail``); routed through ``balance_resolver`` per the
-  E-25 / Commit-7 canonical-producer contract.
+* :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
+  Fable 5 overhaul merged the former checking / interest pages into one
+  ``cash_detail`` page serving every cash account kind (checking,
+  ``has_interest`` types, and plain Savings / Credit Card / custom);
+  ``checking_detail`` / ``interest_detail`` remain as redirect stubs.
+  Also hosts ``update_interest_params`` and the ``property_detail`` /
+  ``update_appreciation_params`` pair.  Balances route through the
+  balance-at seam per the E-25 / Commit-8 canonical-producer contract.
 
 Shared validation helpers and Marshmallow schema singletons live in
 :mod:`app.utils.account_validation` so every sub-module imports the

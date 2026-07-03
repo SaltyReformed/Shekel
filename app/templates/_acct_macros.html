@@ -1,0 +1,37 @@
+{# Shared per-account presentation macros.
+
+   Usage:
+     {% from "_acct_macros.html" import acct_glyph, detail_endpoint %}
+
+   Both resolve by integer ID / boolean type flag, never a ref-table
+   ``name`` string (the project's "IDs for logic" invariant).  Extracted
+   from savings/_cockpit.html for the account-detail rebuild so the
+   cockpit card grid and the detail pages share ONE glyph and ONE
+   detail-endpoint mapping and cannot drift apart
+   (docs/design/account_detail_audit.md, rebuild decisions 1-2).
+
+   ``detail_endpoint`` emits the endpoint NAME for url_for; every cash
+   account (checking, interest-bearing, and plain Savings / Credit Card /
+   custom types) now resolves to ``accounts.cash_detail`` -- the audit's
+   Surface 6 coverage gap is closed, so there is no empty fall-through
+   branch left. #}
+
+{%- macro acct_glyph(account) -%}
+{%- if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING -%}bi-bank
+{%- elif account.account_type and account.account_type.has_interest -%}bi-piggy-bank
+{%- elif account.account_type and account.account_type.has_amortization -%}bi-credit-card-2-back
+{%- elif account.account_type and account.account_type.has_appreciation -%}bi-house-door
+{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_RETIREMENT -%}bi-briefcase
+{%- elif account.account_type and account.account_type.category_id == ACCT_CAT_INVESTMENT -%}bi-graph-up-arrow
+{%- elif account.account_type and account.account_type_id == ACCT_TYPE_SAVINGS -%}bi-piggy-bank
+{%- else -%}bi-wallet2
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro detail_endpoint(account) -%}
+{%- if account.account_type and account.account_type.has_amortization -%}loan.dashboard
+{%- elif account.account_type and account.account_type.has_appreciation -%}accounts.property_detail
+{%- elif account.account_type and account.account_type.category_id in (ACCT_CAT_RETIREMENT, ACCT_CAT_INVESTMENT) -%}investment.dashboard
+{%- elif account.account_type -%}accounts.cash_detail
+{%- endif -%}
+{%- endmacro -%}
