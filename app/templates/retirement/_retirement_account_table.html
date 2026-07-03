@@ -8,11 +8,11 @@
    "none linked" cell links to that account's page, where the
    contribution-transfer form lives).  ``salary_profiles`` may be an
    empty list (no profile yet), so the deduction CTA falls back to the
-   profile-list page. #}
+   salary cockpit. #}
 {% if salary_profiles %}
 {% set deduction_url = url_for('salary.edit_profile', profile_id=salary_profiles[0].id) %}
 {% else %}
-{% set deduction_url = url_for('salary.list_profiles') %}
+{% set deduction_url = url_for('salary.cockpit') %}
 {% endif %}
 <div class="d-none d-md-block">
   <div class="table-responsive">

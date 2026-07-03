@@ -55,36 +55,6 @@ from app.routes.salary._helpers import (
 logger = logging.getLogger(__name__)
 
 
-@salary_bp.route("/salary")
-@login_required
-@require_owner
-def list_profiles():
-    """List all salary profiles."""
-    profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=current_user.id)
-        .order_by(SalaryProfile.sort_order, SalaryProfile.name)
-        .all()
-    )
-
-    # Calculate estimated net pay for each profile
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
-    profile_data = []
-    for profile in profiles:
-        net_pay = None
-        if current_period and profile.is_active:
-            tax_configs = load_tax_configs(current_user.id, profile)
-            pay_breakdown = paycheck_calculator.calculate_paycheck(
-                profile, current_period, periods, tax_configs,
-                calibration=profile.calibration,
-            )
-            net_pay = pay_breakdown.earnings.net_pay
-        profile_data.append({"profile": profile, "net_pay": net_pay})
-
-    return render_template("salary/list.html", profile_data=profile_data)
-
-
 @salary_bp.route("/salary/new")
 @login_required
 @require_owner
@@ -122,7 +92,7 @@ def create_profile():
             '<a href="/register" class="alert-link">register a new account</a> '
             "to set up your budget."
         ), "danger")
-        return redirect(url_for("salary.list_profiles"))
+        return redirect(url_for("salary.cockpit"))
 
     # Find or create Income: Salary category
     salary_category = (
@@ -155,7 +125,7 @@ def create_profile():
             '<a href="' + url_for("accounts.new_account") + '" class="alert-link">'
             'Create an account</a>.'
         ), "danger")
-        return redirect(url_for("salary.list_profiles"))
+        return redirect(url_for("salary.cockpit"))
 
     # Capture the requester id before the DB work below: the failure path
     # builds its DbErrorContext after a failed flush, where re-reading the
@@ -261,6 +231,16 @@ def edit_profile(profile_id):
     calc_methods = db.session.query(CalcMethod).all()
     investment_accounts = _get_investment_accounts(current_user.id)
 
+    # The danger zone (restyled in P3) lists the user's deactivated
+    # profiles with a Reactivate action.  Passed now so the producer
+    # contract is complete; the current form template ignores it.
+    inactive_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=current_user.id, is_active=False)
+        .order_by(SalaryProfile.sort_order, SalaryProfile.name)
+        .all()
+    )
+
     return render_template(
         "salary/form.html",
         profile=profile,
@@ -269,6 +249,7 @@ def edit_profile(profile_id):
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
+        inactive_profiles=inactive_profiles,
         now_year=date.today().year,
     )
 
@@ -387,10 +368,67 @@ def delete_profile(profile_id):
             "This salary profile was changed by another action.  "
             "Please reload and try again."
         ),
-        redirect=RedirectTarget("salary.list_profiles"),
+        redirect=RedirectTarget("salary.cockpit"),
     ))
     if conflict is not None:
         return conflict
     logger.info("user_id=%d deactivated salary profile %d", current_user.id, profile_id)
     flash(f"Salary profile '{profile.name}' deactivated.", "info")
-    return redirect(url_for("salary.list_profiles"))
+    return redirect(url_for("salary.cockpit"))
+
+
+@salary_bp.route("/salary/<int:profile_id>/reactivate", methods=["POST"])
+@login_required
+@require_owner
+def reactivate_profile(profile_id):
+    """Reactivate a soft-deleted salary profile (inverse of delete_profile).
+
+    Restores ``is_active`` on the profile and its linked template, then
+    regenerates the salary transactions so the grid picks the income back
+    up.  An already-active profile is a no-op with an info flash rather
+    than a 404 (it is owned and simply needs no action).
+
+    Optimistic locking (commit C-18 / F-010): the reactivation flushes
+    (regeneration) then commits under the canonical
+    :func:`regenerate_commit_or_report` guard, so a concurrent edit's
+    ``StaleDataError`` converts to a flash + redirect like the sibling
+    mutation routes.
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
+
+    if profile.is_active:
+        flash(f"Salary profile '{profile.name}' is already active.", "info")
+        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
+
+    profile.is_active = True
+    if profile.template:
+        profile.template.is_active = True
+
+    response = regenerate_commit_or_report(
+        lambda: _regenerate_salary_transactions(profile),
+        stale_ctx=StaleConflictContext(
+            logger=logger,
+            log_label="reactivate_profile",
+            log_id=profile_id,
+            flash_message=(
+                "This salary profile was changed by another action.  "
+                "Please reload and try again."
+            ),
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ),
+        error_ctx=DbErrorContext(
+            logger=logger,
+            log_message="user_id=%d failed to reactivate salary profile %d",
+            log_args=(current_user.id, profile_id),
+            flash_message="Failed to reactivate salary profile. Please try again.",
+            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+        ),
+    )
+    if response is not None:
+        return response
+
+    logger.info("user_id=%d reactivated salary profile %d", current_user.id, profile_id)
+    flash(f"Salary profile '{profile.name}' reactivated.", "success")
+    return redirect(url_for("salary.edit_profile", profile_id=profile_id))

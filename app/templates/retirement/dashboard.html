@@ -92,7 +92,7 @@
           <span class="retire-assump-value">
             {%- if readiness.retirement_date %}continue to {{ readiness.retirement_date.year }}{% else %}--{% endif -%}
           </span>
-          <span class="retire-assump-caption"><a href="{{ url_for('salary.list_profiles') }}">from salary</a></span>
+          <span class="retire-assump-caption"><a href="{{ url_for('salary.cockpit') }}">from salary</a></span>
         </div>
         <div class="retire-assump-row retire-assump-row--last" data-assumption="dollars_frame">
           <span class="retire-assump-label">Dollars shown</span>
@@ -118,7 +118,7 @@
         {% elif blocker == 'salary' %}
         <p class="text-muted mb-0">
           No projectable take-home pay yet --
-          <a href="{{ url_for('salary.list_profiles') }}">set up a salary profile</a>
+          <a href="{{ url_for('salary.cockpit') }}">set up a salary profile</a>
           to explore these levers.
         </p>
         {% else %}

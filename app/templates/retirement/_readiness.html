@@ -24,7 +24,7 @@
   {% elif readiness.income_target_net_monthly <= 0 %}
   <p class="text-muted mb-0" data-readiness="no-salary">
     No projectable take-home pay yet --
-    <a href="{{ url_for('salary.list_profiles') }}">set up a salary profile</a>
+    <a href="{{ url_for('salary.cockpit') }}">set up a salary profile</a>
     to see your readiness.
   </p>
   {% else %}

@@ -129,7 +129,7 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/settings"),  # settings.update
 
     # -- salary blueprint --
-    ("GET", "/salary"),  # salary.list_profiles
+    ("GET", "/salary"),  # salary.cockpit
     ("GET", "/salary/new"),  # salary.new_profile
     ("POST", "/salary"),  # salary.create_profile
     # salary.edit_profile
@@ -137,6 +137,10 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/salary/99999"),  # salary.update_profile
     # salary.delete_profile
     ("POST", "/salary/99999/delete"),
+    # salary.reactivate_profile
+    ("POST", "/salary/99999/reactivate"),
+    # salary.anatomy
+    ("GET", "/salary/99999/anatomy/99999"),
     # salary.add_raise
     ("POST", "/salary/99999/raises"),
     # salary.delete_raise
