@@ -23,10 +23,14 @@ from app.models.user import UserSettings
 from app.schemas.validation import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
-    RetirementGapQuerySchema,
+    RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
 )
-from app.services import retirement_dashboard_service
+from app.services import (
+    retirement_dashboard_service,
+    retirement_levers,
+    retirement_readiness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ _PENSION_FIELDS = {
 }
 _SETTINGS_FIELDS = {
     "safe_withdrawal_rate", "planned_retirement_date",
-    "estimated_retirement_tax_rate",
+    "estimated_retirement_tax_rate", "merit_raise_horizon_years",
 }
 
 # Name of the composite unique constraint that backstops the
@@ -54,23 +58,86 @@ retirement_bp = Blueprint("retirement", __name__)
 _pension_create_schema = PensionProfileCreateSchema()
 _pension_update_schema = PensionProfileUpdateSchema()
 _settings_schema = RetirementSettingsSchema()
-_gap_query_schema = RetirementGapQuerySchema()
+_readiness_query_schema = RetirementReadinessQuerySchema()
 
 
 @retirement_bp.route("/retirement")
 @login_required
 @require_owner
 def dashboard():
-    """Retirement planning dashboard with gap analysis."""
-    data = retirement_dashboard_service.compute_gap_data(current_user.id)
-    slider = retirement_dashboard_service.compute_slider_defaults(data)
+    """The direction-D retirement readiness page.
 
+    Computes the gap data ONCE and shapes the readiness picture from it
+    (:func:`~app.services.retirement_readiness.readiness_from_gap_data`),
+    closing the P3a double-compute; the levers run their own probe loads.
+    The context carries exactly what the rebuilt template consumes: the
+    readiness dict, the lever baselines, the per-account projections +
+    salary profiles for the accounts table, the blended return for the
+    what-if-only assumed-return row, and the settings row the included
+    assumptions rail echoes its stored values from (P4 live-verify
+    defect: the P3c slim dropped ``settings``, so every rail input
+    rendered its empty/fallback state -- the stored SWR invisible, the
+    merit horizon showing the template literal 5).  The legacy gap-table
+    context (gap analysis, chart data, SWR slider default) retired with
+    the old page (P3c).
+    """
+    data = retirement_dashboard_service.compute_gap_data(current_user.id)
+    readiness = retirement_readiness.readiness_from_gap_data(data)
     return render_template(
         "retirement/dashboard.html",
-        current_swr=slider["current_swr"],
-        current_return=slider["current_return"],
-        **data,
+        current_return=(
+            retirement_dashboard_service.compute_slider_defaults(
+                data,
+            )["current_return"]
+        ),
+        readiness=readiness,
+        levers=retirement_levers.compute_lever_data(current_user.id),
+        retirement_account_projections=(
+            data["retirement_account_projections"]
+        ),
+        salary_profiles=data["salary_profiles"],
+        settings=data["settings"],
+        date_provenance=readiness["date_provenance"],
     )
+
+
+def _pension_date_errors(eff_hire, eff_earliest, eff_planned):
+    """Cross-field pension date rules, shared by both pension-date writers.
+
+    Extracted from ``update_pension`` (acceptance r2 item 2) so the
+    assumptions rail's date row -- which now writes through to the
+    owning pension -- enforces the SAME rules as the pension form
+    instead of duplicating them: planned/earliest must fall after the
+    hire date, the planned date must be in the future, and the planned
+    date cannot precede the earliest retirement date when one is set.
+
+    Args:
+        eff_hire: The effective hire date (submitted or stored).
+        eff_earliest: The effective earliest retirement date, or ``None``.
+        eff_planned: The effective planned retirement date, or ``None``.
+
+    Returns:
+        dict mapping field name to a list of error messages; empty when
+        every rule passes.
+    """
+    date_errors = {}
+    if eff_earliest and eff_hire and eff_earliest <= eff_hire:
+        date_errors.setdefault("earliest_retirement_date", []).append(
+            "Must be after hire date."
+        )
+    if eff_planned and eff_hire and eff_planned <= eff_hire:
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be after hire date."
+        )
+    if eff_planned and eff_planned <= date.today():
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be in the future."
+        )
+    if eff_planned and eff_earliest and eff_planned < eff_earliest:
+        date_errors.setdefault("planned_retirement_date", []).append(
+            "Must be on or after earliest retirement date."
+        )
+    return date_errors
 
 
 # ── Pension CRUD ─────────────────────────────────────────────────
@@ -256,23 +323,7 @@ def update_pension(pension_id):
     eff_earliest = data.get("earliest_retirement_date", pension.earliest_retirement_date)
     eff_planned = data.get("planned_retirement_date", pension.planned_retirement_date)
 
-    date_errors = {}
-    if eff_earliest and eff_hire and eff_earliest <= eff_hire:
-        date_errors.setdefault("earliest_retirement_date", []).append(
-            "Must be after hire date."
-        )
-    if eff_planned and eff_hire and eff_planned <= eff_hire:
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be after hire date."
-        )
-    if eff_planned and eff_planned <= date.today():
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be in the future."
-        )
-    if eff_planned and eff_earliest and eff_planned < eff_earliest:
-        date_errors.setdefault("planned_retirement_date", []).append(
-            "Must be on or after earliest retirement date."
-        )
+    date_errors = _pension_date_errors(eff_hire, eff_earliest, eff_planned)
     if date_errors:
         return render_template(
             "retirement/pension_form.html",
@@ -327,43 +378,52 @@ def delete_pension(pension_id):
     return redirect(url_for("retirement.dashboard"))
 
 
-# ── Gap Analysis Fragment ────────────────────────────────────────
+# ── Readiness Fragment (P3a) ─────────────────────────────────────
 
 
-@retirement_bp.route("/retirement/gap")
+@retirement_bp.route("/retirement/readiness")
 @login_required
 @require_owner
-def gap_analysis():
-    """HTMX fragment: recalculate gap analysis with slider overrides."""
+def readiness_fragment():
+    """HTMX fragment: readiness verdict with optional what-if overrides.
+
+    Optional ``swr`` / ``return_rate`` / ``merit_raise_horizon_years``
+    query parameters recompute the readiness picture as a what-if against
+    the stored-settings baseline and return the panel's delta facts
+    (funded-ratio delta in points, shortfall delta in dollars); optional
+    ``months`` / ``contribution`` additionally recompute the lever
+    outcome lines.  All validated through
+    :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
+    Renders the minimal ``_readiness.html`` stub P3b restyles.
+    """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
 
-    # F-13: validate the URL-editable ``swr`` slider override through
-    # the schema, which owns the percent-to-fraction conversion and
-    # rejects values outside ``[0, 1]`` with a 422.  The calculator
-    # itself still treats non-positive SWR as zero (defense in depth),
-    # but the schema surfaces the user error rather than letting the
-    # analysis silently collapse to zero.
     try:
-        query_data = _gap_query_schema.load(request.args)
+        query_data = _readiness_query_schema.load(request.args)
     except ValidationError as exc:
         return jsonify(errors=exc.messages), 422
 
-    swr_override = query_data.get("swr")
-    return_rate_override = query_data.get("return_rate")
-
-    data = retirement_dashboard_service.compute_gap_data(
+    whatif = retirement_readiness.compute_readiness_whatif(
         current_user.id,
-        swr_override=swr_override,
-        return_rate_override=return_rate_override,
+        swr_override=query_data.get("swr"),
+        return_rate_override=query_data.get("return_rate"),
+        merit_horizon_override=query_data.get("merit_raise_horizon_years"),
     )
-
+    lever_data = None
+    if (query_data.get("months") is not None
+            or query_data.get("contribution") is not None):
+        lever_data = retirement_levers.compute_lever_data(
+            current_user.id,
+            contribution_override=query_data.get("contribution"),
+            months_override=query_data.get("months"),
+        )
     return render_template(
-        "retirement/_gap_analysis.html",
-        gap_analysis=data["gap_analysis"],
-        chart_data=data["chart_data"],
-        retirement_account_projections=data["retirement_account_projections"],
-        htmx_response=True,
+        "retirement/_readiness.html",
+        readiness=whatif["readiness"],
+        baseline=whatif["baseline"],
+        deltas=whatif["deltas"],
+        levers=lever_data,
     )
 
 
@@ -374,9 +434,55 @@ def gap_analysis():
 @login_required
 @require_owner
 def update_settings():
-    """Update retirement planning settings."""
+    """Save retirement assumptions (per-field capable; P3a).
+
+    The assumptions panel posts ONE field per save; a multi-field submit
+    validates through the same all-optional schema.  Responses are
+    fragment-shaped for the panel: a validation failure renders the
+    ``_assumptions.html`` stub with field errors and the echoed input at
+    422 (fragment-friendly for both HTMX and plain posts); success
+    renders the refreshed panel for an HTMX request and falls back to a
+    flash + redirect to the retirement page otherwise.
+
+    Date write-through (acceptance r2 item 2, developer ruling): the date
+    row is always editable and Save writes to the RESOLVED owner.  When a
+    pension owns the resolved date, a submitted
+    ``planned_retirement_date`` updates that owning (max-date) pension --
+    enforcing the pension form's own cross-field rules via the shared
+    :func:`_pension_date_errors` -- and never the settings column;
+    otherwise the settings save applies unchanged.  Writes go through the
+    ORM so the audited-table triggers capture them.
+    """
     # Preserve original user input for form re-display on error.
     raw_form_data = dict(request.form)
+
+    settings = (
+        db.session.query(UserSettings)
+        .filter_by(user_id=current_user.id)
+        .first()
+    )
+    # The date row's provenance decides the write-through target AND how
+    # the re-rendered rail captions the row.  Resolved per render below
+    # -- the success branch must see the POST-save state.
+    pensions = (
+        db.session.query(PensionProfile)
+        .filter_by(user_id=current_user.id, is_active=True)
+        .all()
+    )
+
+    def rail_response(rail_errors, form_data, status=None):
+        """Render the assumptions fragment with freshly resolved provenance."""
+        body = render_template(
+            "retirement/_assumptions.html",
+            settings=settings,
+            form_data=form_data,
+            errors=rail_errors,
+            date_provenance=(
+                retirement_dashboard_service
+                .resolve_retirement_date_provenance(pensions, settings)
+            ),
+        )
+        return (body, status) if status is not None else body
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -384,34 +490,36 @@ def update_settings():
     # fractions directly.
     errors = _settings_schema.validate(request.form)
     if errors:
-        settings = (
-            db.session.query(UserSettings)
-            .filter_by(user_id=current_user.id)
-            .first()
-        )
-        if not settings:
-            settings = UserSettings(user_id=current_user.id)
-        # The dashboard skeleton includes only the active section's
-        # partial; ``_retirement.html`` reads only settings/form_data/
-        # errors, so the 422 re-render supplies exactly those.
-        return render_template(
-            "settings/dashboard.html",
-            active_section="retirement",
-            settings=settings,
-            form_data=raw_form_data,
-            errors=errors,
-        ), 422
+        return rail_response(errors, raw_form_data, status=422)
+
+    if settings is None:
+        flash("Settings not found.", "danger")
+        return redirect(url_for("retirement.dashboard"))
 
     data = _settings_schema.load(request.form)
 
-    settings = (
-        db.session.query(UserSettings)
-        .filter_by(user_id=current_user.id)
-        .first()
+    provenance = (
+        retirement_dashboard_service.resolve_retirement_date_provenance(
+            pensions, settings,
+        )
     )
-    if not settings:
-        flash("Settings not found.", "danger")
-        return redirect(url_for("settings.show", section="retirement"))
+    if ("planned_retirement_date" in data
+            and provenance["source"] == "pension"):
+        # Write through to the owning pension.  The schema already
+        # enforced must-be-future (M1); the shared pension rules add
+        # after-hire and earliest-date constraints against the OWNER's
+        # stored fields, exactly as the pension form would.
+        owner = next(
+            p for p in pensions if p.id == provenance["pension_id"]
+        )
+        pension_errors = _pension_date_errors(
+            owner.hire_date,
+            owner.earliest_retirement_date,
+            data["planned_retirement_date"],
+        )
+        if pension_errors:
+            return rail_response(pension_errors, raw_form_data, status=422)
+        owner.planned_retirement_date = data.pop("planned_retirement_date")
 
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
@@ -419,5 +527,8 @@ def update_settings():
 
     db.session.commit()
     logger.info("user_id=%d updated retirement settings", current_user.id)
+
+    if request.headers.get("HX-Request"):
+        return rail_response(None, None)
     flash("Retirement settings updated.", "success")
-    return redirect(url_for("settings.show", section="retirement"))
+    return redirect(url_for("retirement.dashboard"))

@@ -1,0 +1,117 @@
+{% from "_money_macros.html" import money %}
+{# HTMX fragment: the direction-D readiness card body (P3b).
+
+   Renders the hero verdict row (figure + plain-dollars caption side by
+   side), the flight-path chart canvas, and the what-if delta line.  The
+   data contract is retirement_readiness.compute_readiness_whatif
+   (readiness / baseline / deltas) plus an optional
+   retirement_levers.compute_lever_data payload under ``levers``.
+
+   Swap contract: dashboard.html wraps this include in the stable
+   #readiness-region div (innerHTML swaps -- an outerHTML target would
+   be detached before htmx:afterSwap and the chart re-init would never
+   fire).  When rendered as a standalone fragment (``embedded`` unset)
+   the income panel -- and the lever outcome lines when ``levers`` is
+   present -- ride along as hx-swap-oob siblings so every figure the
+   request changed updates in one response. #}
+<div id="readiness-panel">
+  {% if readiness.retirement_date is none %}
+  <p class="text-muted mb-0" data-readiness="no-horizon">
+    Set a planned retirement date -- in the assumptions panel or on a
+    <a href="{{ url_for('retirement.pension_list') }}">pension</a> --
+    to see your readiness.
+  </p>
+  {% elif readiness.income_target_net_monthly <= 0 %}
+  <p class="text-muted mb-0" data-readiness="no-salary">
+    No projectable take-home pay yet --
+    <a href="{{ url_for('salary.list_profiles') }}">set up a salary profile</a>
+    to see your readiness.
+  </p>
+  {% else %}
+  <div class="retire-hero-row" data-readiness="verdict">
+    {% if readiness.no_savings_needed %}
+    <div class="retire-hero-num">Covered</div>
+    <p class="retire-hero-cap">
+      Your pension covers the whole projected income gap -- no savings
+      needed.
+      <span class="retire-frame-note">All figures in
+        {{ readiness.retirement_date.year }} dollars (nominal), net of
+        estimated
+        {%- if readiness.tax_rate_missing %}
+        tax <span class="retire-flag" data-readiness-flag="tax-missing">(not
+        set -- 0% assumed)</span>
+        {%- else %}
+        {{ "%.1f"|format(readiness.estimated_tax_rate|to_percent) }}%
+        retirement tax
+        {%- endif %}.</span>
+    </p>
+    {% else %}
+    <div class="retire-hero-num">
+      {{- "%.1f"|format(readiness.funded_ratio|to_percent) -}}
+      <span class="retire-hero-unit">% funded</span>
+    </div>
+    <p class="retire-hero-cap">
+      On your current path you reach
+      <strong>{{ money(readiness.projected_savings_after_tax, cents=false) }}</strong>
+      of the
+      <strong>{{ money(readiness.required_savings, cents=false) }}</strong>
+      your {{ readiness.retirement_date.strftime("%B %Y") }} retirement needs --
+      {% if readiness.surplus_or_shortfall_after_tax < 0 %}
+      a <strong class="retire-neg">{{ money(-readiness.surplus_or_shortfall_after_tax, cents=false) }}
+      shortfall</strong>.
+      {% else %}
+      a <strong class="retire-pos">{{ money(readiness.surplus_or_shortfall_after_tax, cents=false) }}
+      surplus</strong>.
+      {% endif %}
+      <span class="retire-frame-note">All figures in
+        {{ readiness.retirement_date.year }} dollars (nominal), net of
+        estimated
+        {%- if readiness.tax_rate_missing %}
+        tax <span class="retire-flag" data-readiness-flag="tax-missing">(not
+        set -- 0% assumed)</span>
+        {%- else %}
+        {{ "%.1f"|format(readiness.estimated_tax_rate|to_percent) }}%
+        retirement tax
+        {%- endif %}.</span>
+    </p>
+    {% endif %}
+  </div>
+  {% if deltas and (deltas.funded_ratio_points or deltas.shortfall_dollars) %}
+  <p class="retire-delta mb-0" data-readiness="deltas">
+    {% if baseline.no_savings_needed %}
+    Was: no savings needed at your stored assumptions.
+    {% elif baseline.funded_ratio is not none %}
+    Was {{ "%.1f"|format(baseline.funded_ratio|to_percent) }}% funded.
+    {% endif %}
+    {% if deltas.funded_ratio_points is not none %}
+    Funded change: {{ deltas.funded_ratio_points }} points.
+    {% endif %}
+    Position change: {{ money(deltas.shortfall_dollars) }}.
+  </p>
+  {% endif %}
+  {% if readiness.chart.dates %}
+  <div class="retire-chart">
+    <canvas id="retirement-path-canvas" role="img"
+            aria-label="Projected savings path versus the savings needed to retire by {{ readiness.retirement_date.isoformat() }}"
+            data-chart='{{ {"your_path": readiness.chart.your_path,
+                            "needed_path": readiness.chart.needed_path,
+                            "dates": readiness.chart.dates,
+                            "needed_label": "Needed to retire " ~ readiness.retirement_date.strftime("%Y-%m")}|tojson }}'>
+    </canvas>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% if not embedded|default(false) %}
+{# Out-of-band siblings for the standalone fragment response: the
+   income panel always tracks the readiness picture; the lever outcome
+   lines update only when the request carried stepper values. #}
+<div id="income-panel" hx-swap-oob="innerHTML">
+  {% include "retirement/_income.html" %}
+</div>
+{% if levers %}
+{% with lever_oob = true %}
+{% include "retirement/_lever_outcomes.html" %}
+{% endwith %}
+{% endif %}
+{% endif %}

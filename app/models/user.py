@@ -235,6 +235,19 @@ class UserSettings(TimestampMixin, db.Model):
             "anchor_staleness_days > 0",
             name="ck_user_settings_positive_staleness_days",
         ),
+        # Gate A ruling 3 / fork F4: the retirement salary projection's
+        # merit horizon -- merit-type and custom-type raises apply only
+        # through ``current year + N`` and then stop; cola-type recurring
+        # raises still extrapolate to the retirement date.  N defaults to
+        # 5 and is user-facing.  CHECK bounds it to a sane 0-50 year span
+        # (0 = merit stops after the current year; 50 covers any realistic
+        # working horizon) so a raw-SQL write cannot store a negative or
+        # absurd horizon.
+        db.CheckConstraint(
+            "merit_raise_horizon_years >= 0 AND "
+            "merit_raise_horizon_years <= 50",
+            name="ck_user_settings_valid_merit_horizon",
+        ),
         {"schema": "auth"},
     )
 
@@ -280,6 +293,18 @@ class UserSettings(TimestampMixin, db.Model):
         db.Integer,
         db.ForeignKey("budget.accounts.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Gate A ruling 3 / fork F4: number of years from the current year
+    # (inclusive) that merit-type and custom-type raises keep applying in
+    # the retirement salary projection; after the cutoff only cola-type
+    # recurring raises continue to compound.  NOT NULL with a server
+    # default of 5 -- the static default fits every existing row, so the
+    # column is added in one step rather than the nullable-backfill-tighten
+    # dance.  The paired Python-side ``default`` keeps fresh ORM inserts at
+    # 5 without a database round-trip.  Range pinned by
+    # ``ck_user_settings_valid_merit_horizon`` (0-50).
+    merit_raise_horizon_years = db.Column(
+        db.Integer, nullable=False, default=5, server_default="5",
     )
 
     # Back-reference to User

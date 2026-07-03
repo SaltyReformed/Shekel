@@ -1,6 +1,12 @@
 {% from "_money_macros.html" import money %}
-{# Partial: retirement account projection rows for the accounts summary table.
-   Used by both the full dashboard render and the HTMX OOB swap on slider change. #}
+{# Partial: retirement account projection rows (direction D).
+   Columns: account (link), type chip, today's balance, contributions
+   per period ("you $X / employer $Y" from the producer's per-account
+   facts; "none linked" in credit-amber links to the account's page,
+   where the contribution-transfer form lives), return, at retirement.
+   An account with no employee link but a live employer contribution
+   (e.g. a flat-percent 401(k)) still shows the you/employer split so
+   the employer money is never invisible (audit finding D2). #}
 {% for proj in retirement_account_projections %}
 <tr>
   <td>
@@ -9,12 +15,20 @@
     </a>
   </td>
   <td>
-    <span class="badge {{ 'bg-info' if proj.is_traditional else 'bg-success' }}">
-      {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
-    </span>
+    <span class="retire-chip">{{ 'Pre-tax' if proj.is_traditional else 'Roth/Taxable' }}</span>
   </td>
   <td class="text-end font-mono">{{ money(proj.current_balance) }}</td>
-  <td class="text-end font-mono text-muted">{%- if proj.annual_return_rate is not none %}{{ "%.1f"|format(proj.annual_return_rate|to_percent) }}%{%- else %}&mdash;{%- endif %}</td>
+  <td class="text-end">
+    {% if proj.none_linked and proj.employer_per_period <= 0 %}
+    <a class="retire-flag" href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">none linked</a>
+    {% else %}
+    <span class="retire-contrib">you {{ money(proj.employee_per_period) }} /
+      employer {{ money(proj.employer_per_period) }}</span>
+    {% endif %}
+  </td>
+  <td class="text-end font-mono text-muted">
+    {%- if proj.annual_return_rate is not none %}{{ "%.1f"|format(proj.annual_return_rate|to_percent) }}%{%- else %}--{%- endif -%}
+  </td>
   <td class="text-end font-mono fw-bold">{{ money(proj.projected_balance) }}</td>
 </tr>
 {% endfor %}

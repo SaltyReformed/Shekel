@@ -15,7 +15,7 @@ from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import (
     ContributionRecord,
     ProjectedBalance,
-    _period_return_rate,
+    period_return_rate,
     calculate_employer_contribution,
     cap_contribution_at_limit,
     generate_projection_periods,
@@ -128,6 +128,98 @@ class TestEmployerContribution:
 
     def test_none_params_returns_zero(self):
         assert calculate_employer_contribution(None, Decimal("200")) == ZERO
+
+
+class TestEmployerGrossOverride:
+    """P1b / fork F3: the optional per-period gross override."""
+
+    def test_gross_override_replaces_constant_flat_base(self):
+        """An override drives the flat-percentage employer base for the period.
+
+        The params carry a $2500 constant gross; the override supplies
+        $4000, so a 5% flat employer contribution is 5% of the override:
+        4000 * 0.05 = 200.00 (not 2500 * 0.05 = 125.00).
+        """
+        params = {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        assert calculate_employer_contribution(
+            params, Decimal("0"), Decimal("4000"),
+        ) == Decimal("200.00")
+
+    def test_none_override_keeps_constant_base(self):
+        """Omitting the override keeps the byte-identical constant-base value.
+
+        2500 * 0.05 = 125.00, unchanged from the pre-P1b path.
+        """
+        params = {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("2500"),
+        }
+        assert calculate_employer_contribution(
+            params, Decimal("0"),
+        ) == Decimal("125.00")
+
+
+class TestSalaryBasisEmployerBase:
+    """P1b / fork F3: project_balance grows the employer base per period."""
+
+    def _flat_params(self):
+        """A 5%-flat employer-params dict with a $1000 constant base."""
+        return {
+            "type_id": _emp_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            "flat_percentage": Decimal("0.05"),
+            "gross_biweekly": Decimal("1000"),
+        }
+
+    def test_salary_basis_grows_flat_employer_per_period(self):
+        """The per-period salary basis lifts the flat-employer base each year.
+
+        Two single-period years with growth zeroed (to isolate the
+        employer contribution).  The basis returns $1000 gross for 2030 and
+        $2000 for 2031, so the 5% flat employer contribution is 50.00 then
+        100.00 -- the base tracks the projected salary rather than freezing.
+        """
+        periods = [
+            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
+            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
+        ]
+        gross_by_year = {2030: Decimal("1000.00"), 2031: Decimal("2000.00")}
+        result = project_balance(
+            current_balance=Decimal("0"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=self._flat_params(),
+            salary_basis=lambda period: gross_by_year[period.start_date.year],
+        )
+        # 1000 * 0.05 = 50.00; 2000 * 0.05 = 100.00.
+        assert result[0].employer_contribution == Decimal("50.00")
+        assert result[1].employer_contribution == Decimal("100.00")
+
+    def test_no_salary_basis_keeps_constant_employer_base(self):
+        """Without a basis every period uses the constant employer gross.
+
+        Same two years; the constant $1000 base yields 50.00 both periods
+        (1000 * 0.05) -- the behavior every non-retirement consumer keeps.
+        """
+        periods = [
+            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
+            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
+        ]
+        result = project_balance(
+            current_balance=Decimal("0"),
+            assumed_annual_return=Decimal("0"),
+            periods=periods,
+            employer_params=self._flat_params(),
+        )
+        assert result[0].employer_contribution == Decimal("50.00")
+        assert result[1].employer_contribution == Decimal("50.00")
 
 
 # ── Tests: cap_contribution_at_limit (HIGH-07) ──────────────────
@@ -667,7 +759,7 @@ class TestProjectBalance:
     def test_inverted_period_falls_back_to_14_days(self):
         """An inverted period (end < start) uses the 14-day biweekly fallback.
 
-        ``_period_return_rate`` sets period_days = (end - start).days + 1 and
+        ``period_return_rate`` sets period_days = (end - start).days + 1 and
         clamps ``period_days <= 0`` to 14 (a branch shared by both the forward
         and reverse projections).  Only a genuinely inverted period -- end
         strictly before start, so period_days <= 0 -- is degenerate now; it
@@ -1615,7 +1707,7 @@ class TestInclusiveDayCountRegression:
         """A 14-inclusive-day period compounds (1 + r)^(14/365) - 1 exactly.
 
         period runs Jan 1 .. Jan 14 (start + 13) = 14 inclusive calendar
-        days, so _period_return_rate must use 14/365 -- NOT the old 13/365.
+        days, so period_return_rate must use 14/365 -- NOT the old 13/365.
         The rate is a pure (unrounded) Decimal, so this is an exact equality
         with zero tolerance.
         """
@@ -1625,13 +1717,13 @@ class TestInclusiveDayCountRegression:
         assert (period.end_date - period.start_date).days + 1 == 14
 
         expected = (Decimal("1") + r) ** (Decimal("14") / Decimal("365")) - Decimal("1")
-        assert _period_return_rate(r, period) == expected
+        assert period_return_rate(r, period) == expected
 
         # The corrected rate is strictly larger than the old 13/365 rate the
         # exclusive count produced, so a revert cannot pass silently.
         old_buggy = (Decimal("1") + r) ** (Decimal("13") / Decimal("365")) - Decimal("1")
-        assert _period_return_rate(r, period) != old_buggy
-        assert _period_return_rate(r, period) > old_buggy
+        assert period_return_rate(r, period) != old_buggy
+        assert period_return_rate(r, period) > old_buggy
 
     def test_same_day_period_counts_one_day(self):
         """A same-day period (start == end) compounds exactly 1/365.
@@ -1642,7 +1734,7 @@ class TestInclusiveDayCountRegression:
         r = Decimal("0.105")
         same_day = FakePeriod(date(2027, 6, 1), date(2027, 6, 1), 1)
         expected = (Decimal("1") + r) ** (Decimal("1") / Decimal("365")) - Decimal("1")
-        assert _period_return_rate(r, same_day) == expected
+        assert period_return_rate(r, same_day) == expected
 
     def test_consecutive_periods_over_one_year_compound_to_annual_rate(self):
         """Gap-free periods tiling exactly one year compound to (1 + r).
@@ -1684,7 +1776,7 @@ class TestInclusiveDayCountRegression:
 
         product = Decimal("1")
         for period in periods:
-            product *= Decimal("1") + _period_return_rate(r, period)
+            product *= Decimal("1") + period_return_rate(r, period)
 
         quantum = Decimal("1E-12")
         assert product.quantize(quantum) == (Decimal("1") + r).quantize(quantum)

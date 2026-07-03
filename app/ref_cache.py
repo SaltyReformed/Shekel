@@ -45,6 +45,7 @@ from app.enums import (
     LoanAnchorSourceEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    RaiseTypeEnum,
     RecurrencePatternEnum,
     RoleEnum,
     StatusEnum,
@@ -193,6 +194,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(DeductionTimingEnum, ref_models.DeductionTiming),
         _RefSpec(CalcMethodEnum, ref_models.CalcMethod),
         _RefSpec(TaxTypeEnum, ref_models.TaxType),
+        _RefSpec(RaiseTypeEnum, ref_models.RaiseType),
         _RefSpec(GoalModeEnum, ref_models.GoalMode),
         _RefSpec(IncomeUnitEnum, ref_models.IncomeUnit),
         _RefSpec(RoleEnum, ref_models.UserRole),
@@ -479,6 +481,29 @@ def tax_type_id(member):
     """Return the integer primary key for a TaxTypeEnum member."""
     _require_init()
     return _cache.enum_ids[TaxTypeEnum][member]
+
+
+def raise_type_id(member):
+    """Return the integer primary key for a RaiseTypeEnum member.
+
+    Used by the retirement salary projection
+    (:func:`app.services.pension_calculator.project_salaries_by_year`) to
+    branch the merit horizon on ``salary.salary_raises.raise_type_id``
+    without ever reading the string ``name`` (Gate A ruling 3 / fork F4).
+    Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``RaiseTypeEnum`` member (e.g. ``RaiseTypeEnum.COLA``).
+
+    Returns:
+        int -- the ``ref.raise_types.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid RaiseTypeEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[RaiseTypeEnum][member]
 
 
 def goal_mode_id(member):

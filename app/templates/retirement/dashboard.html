@@ -12,155 +12,237 @@
 {% endblock breadcrumbs %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-briefcase"></i> Retirement Planning</h4>
-  <a href="{{ url_for('retirement.pension_list') }}" class="btn btn-primary btn-sm">
-    <i class="bi bi-plus-circle"></i> Manage Pensions
+{# The page's partial-state blocker: no planned retirement date, or no
+   projectable take-home pay.  Each dependent card names the missing
+   input and links to where it is set (the old unreachable empty branch
+   is gone -- audit Surface 7). #}
+{% set blocker = 'date' if readiness.retirement_date is none
+   else ('salary' if readiness.income_target_net_monthly <= 0 else none) %}
+
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h4 class="mb-0"><i class="bi bi-briefcase"></i> Retirement</h4>
+    {% if readiness.retirement_date is not none %}
+    <div class="retire-countdown" data-readiness="countdown">
+      Planned date {{ readiness.retirement_date.isoformat() }} /
+      {{ readiness.years_remaining }} years /
+      {{ readiness.periods_remaining }} paychecks away
+    </div>
+    {% endif %}
+  </div>
+  <a href="{{ url_for('retirement.pension_list') }}" class="btn btn-outline-secondary btn-sm">
+    Pensions
   </a>
 </div>
 
-{# --- Sensitivity Sliders --- #}
-{% if gap_analysis %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-sliders"></i> Sensitivity Analysis</h6>
-  </div>
-  <div class="card-body">
-    <div class="row g-3">
-      <div class="col-md-6">
-        <label for="swr_slider" class="form-label">Safe Withdrawal Rate</label>
-        <div class="d-flex align-items-center gap-2">
-          <input type="range" class="form-range flex-grow-1" id="swr_slider"
-                 min="2.0" max="6.0" step="0.25" value="{{ "%.2f"|format(current_swr) }}"
-                 data-slider-group="gap-swr"
-                 data-slider-target="gap-analysis-container"
-                 data-slider-debounce="300">
-          <div class="input-group input-group-sm input-rem-7">
-            <input type="number" class="form-control gap-param" id="swr_input" name="swr"
-                   step="0.25" min="2.0" max="6.0"
-                   value="{{ "%.2f"|format(current_swr) }}"
-                   data-slider-group="gap-swr">
-            <span class="input-group-text">%</span>
-          </div>
-        </div>
-      </div>
-      <div class="col-md-6">
-        <label for="return_slider" class="form-label">Assumed Annual Return
-          <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Recalculates the gap analysis and account projections below using this rate for all accounts, overriding each account's configured rate as a what-if scenario. The default is the balance-weighted average of each account's configured rate."></i>
-        </label>
-        <div class="d-flex align-items-center gap-2">
-          <input type="range" class="form-range flex-grow-1" id="return_slider"
-                 min="3.0" max="12.0" step="0.5" value="{{ "%.1f"|format(current_return) }}"
-                 data-slider-group="gap-return"
-                 data-slider-target="gap-analysis-container"
-                 data-slider-debounce="300">
-          <div class="input-group input-group-sm input-rem-7">
-            <input type="number" class="form-control gap-param" id="return_input" name="return_rate"
-                   step="0.5" min="3.0" max="12.0"
-                   value="{{ "%.1f"|format(current_return) }}"
-                   data-slider-group="gap-return">
-            <span class="input-group-text">%</span>
-          </div>
+<div class="row g-3">
+  {# ── Readiness card (the hero) ──────────────────────────────── #}
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="retire-card-title">Retirement readiness</h6>
+        {# Hidden refresh triggers: retirement_controls.js dispatches the
+           debounced events on body; each trigger fires ONE readiness GET
+           with its include set (what-ifs alone stay cheap; the lever
+           refresh also recomputes both solvers). #}
+        <div hx-get="{{ url_for('retirement.readiness_fragment') }}"
+             hx-trigger="shekel:readiness-whatif from:body"
+             hx-target="#readiness-region" hx-swap="innerHTML"
+             hx-include=".whatif-param"></div>
+        <div hx-get="{{ url_for('retirement.readiness_fragment') }}"
+             hx-trigger="shekel:lever-refresh from:body"
+             hx-target="#readiness-region" hx-swap="innerHTML"
+             hx-include=".whatif-param, .lever-param"></div>
+        <div id="readiness-region">
+          {% with embedded = true %}
+          {% include "retirement/_readiness.html" %}
+          {% endwith %}
         </div>
       </div>
     </div>
   </div>
-</div>
-{% endif %}
 
-{# --- Income Gap Analysis (HTMX swappable) --- #}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-calculator"></i> Retirement Income Gap Analysis</h6>
-  </div>
-  <div class="card-body"
-       id="gap-analysis-container"
-       hx-get="{{ url_for('retirement.gap_analysis') }}"
-       hx-trigger="slider-changed"
-       hx-swap="innerHTML"
-       hx-include=".gap-param">
-    {% include "retirement/_gap_analysis.html" %}
-  </div>
-</div>
-
-{# --- Pension Details --- #}
-{% if pension_benefit %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-shield-check"></i> Pension Benefit Details</h6>
-  </div>
-  <div class="card-body">
-    <div class="row">
-      <div class="col-md-6">
-        <table class="table table-sm mb-0">
-          <tr>
-            <td class="text-muted">Years of Service
-              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Calculated from your hire date to planned retirement date."></i>
-            </td>
-            <td class="text-end font-mono">{{ pension_benefit.years_of_service }}</td>
-          </tr>
-          <tr>
-            <td class="text-muted">High Salary Average
-              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Average of your highest consecutive salary years, determined by the pension's high-years window."></i>
-            </td>
-            <td class="text-end font-mono">{{ money(pension_benefit.high_salary_average) }}</td>
-          </tr>
-          <tr>
-            <td class="text-muted">Annual Benefit
-              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Benefit multiplier × years of service × high salary average."></i>
-            </td>
-            <td class="text-end font-mono fw-bold">{{ money(pension_benefit.annual_benefit) }}</td>
-          </tr>
-          <tr>
-            <td class="text-muted">Monthly Benefit
-              <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="top" data-bs-content="Annual benefit divided by 12."></i>
-            </td>
-            <td class="text-end font-mono fw-bold text-accent">
-              {{ money(pension_benefit.monthly_benefit) }}
-            </td>
-          </tr>
-        </table>
+  {# ── Assumptions rail ───────────────────────────────────────── #}
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="retire-card-title">Assumptions</h6>
+        <div id="assumptions-region">
+          {% include "retirement/_assumptions.html" %}
+        </div>
+        {# What-if-only return row: no save button by design (per-account
+           rates own persistence); the input stays OUTSIDE the savable
+           fragment so a panel re-render cannot clear an active what-if.
+           It starts empty -- a prefilled blended value would submit a
+           uniform-rate override that silently differs from the stored
+           per-account mix. #}
+        <div class="retire-assump-row" data-assumption="return_rate">
+          <label class="form-label" for="assump-return-rate">Assumed return</label>
+          <span class="retire-assump-value">{{ "%.2f"|format(current_return) }}%</span>
+          <input type="number" step="0.1" min="-99.9" max="100" id="assump-return-rate"
+                 name="return_rate" placeholder="what-if"
+                 class="form-control form-control-sm retire-assump-input whatif-param js-whatif-input"
+                 value=""
+                 aria-label="Assumed annual return what-if (percent)">
+          <span class="retire-assump-caption w-100">from your accounts --
+            per-account rates own this</span>
+        </div>
+        <div class="retire-assump-row" data-assumption="cola_note">
+          <span class="retire-assump-label">COLA raises</span>
+          <span class="retire-assump-value">
+            {%- if readiness.retirement_date %}continue to {{ readiness.retirement_date.year }}{% else %}--{% endif -%}
+          </span>
+          <span class="retire-assump-caption"><a href="{{ url_for('salary.list_profiles') }}">from salary</a></span>
+        </div>
+        <div class="retire-assump-row retire-assump-row--last" data-assumption="dollars_frame">
+          <span class="retire-assump-label">Dollars shown</span>
+          <span class="retire-assump-value">
+            {%- if readiness.retirement_date %}{{ readiness.retirement_date.year }} (nominal){% else %}nominal{% endif -%}
+          </span>
+        </div>
       </div>
-      {% if pension_benefit.high_salary_years %}
-      <div class="col-md-6">
-        <small class="text-muted">Highest Consecutive Salary Years:</small>
-        <table class="table table-sm mb-0 mt-1">
-          {% for year, salary in pension_benefit.high_salary_years %}
-          <tr>
-            <td>{{ year }}</td>
-            <td class="text-end font-mono">{{ money(salary) }}</td>
-          </tr>
-          {% endfor %}
-        </table>
-      </div>
-      {% endif %}
     </div>
   </div>
-</div>
-{% endif %}
 
-{# --- Retirement Accounts Summary --- #}
-{% if retirement_account_projections %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-graph-up"></i> Retirement & Investment Accounts</h6>
+  {# ── Close the gap: two levers at equal rank ────────────────── #}
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="retire-card-title">Close the gap -- two levers</h6>
+        {% if blocker == 'date' or levers.no_horizon %}
+        <p class="text-muted mb-0">
+          Set a planned retirement date -- in the assumptions panel or on a
+          <a href="{{ url_for('retirement.pension_list') }}">pension</a> --
+          to explore these levers.
+        </p>
+        {% elif blocker == 'salary' %}
+        <p class="text-muted mb-0">
+          No projectable take-home pay yet --
+          <a href="{{ url_for('salary.list_profiles') }}">set up a salary profile</a>
+          to explore these levers.
+        </p>
+        {% else %}
+        {% set c = levers.contribution %}
+        {% set r = levers.retire_later %}
+        <div class="retire-lever-pair">
+          <div class="retire-lever-opt">
+            <div class="retire-lever-num">
+              {%- if c.state == 'solved' -%}
+              +{{ money(c.solved_amount, cents=false) }}<span class="retire-lever-unit"> /paycheck</span>
+              {%- else -%}
+              --
+              {%- endif -%}
+            </div>
+            <p class="retire-lever-sub">contributed from now to
+              {{ levers.baseline.retirement_date.isoformat() }} closes the gap</p>
+            <div class="retire-stepper">
+              <button type="button" data-step="-25" data-step-target="lever-contribution"
+                      aria-label="Decrease extra contribution by 25 dollars">-</button>
+              <input type="number" id="lever-contribution" name="contribution"
+                     class="lever-param js-lever-input" step="0.01" min="0" max="100000"
+                     value="{{ "%.2f"|format(c.amount) if c.amount is not none else "" }}"
+                     aria-label="Extra contribution per paycheck (dollars)">
+              <button type="button" data-step="25" data-step-target="lever-contribution"
+                      aria-label="Increase extra contribution by 25 dollars">+</button>
+            </div>
+          </div>
+          <div class="retire-lever-opt">
+            <div class="retire-lever-num">
+              {%- if r.state == 'solved' -%}
+              +{{ r.solved_months }}<span class="retire-lever-unit"> months</span>
+              {%- else -%}
+              --
+              {%- endif -%}
+            </div>
+            <p class="retire-lever-sub">retire later, no new contributions</p>
+            <div class="retire-stepper">
+              <button type="button" data-step="-1" data-step-target="lever-months"
+                      aria-label="Decrease the delay by one month">-</button>
+              <input type="number" id="lever-months" name="months"
+                     class="lever-param js-lever-input" step="1" min="0" max="180"
+                     value="{{ r.months if r.months is not none else 0 }}"
+                     aria-label="Retirement delay (months)">
+              <button type="button" data-step="1" data-step-target="lever-months"
+                      aria-label="Increase the delay by one month">+</button>
+            </div>
+          </div>
+        </div>
+        {% include "retirement/_lever_outcomes.html" %}
+        {% endif %}
+      </div>
+    </div>
   </div>
-  <div class="card-body" id="retirement-accounts-content">
-    {% include "retirement/_retirement_account_table.html" %}
-  </div>
-</div>
-{% endif %}
 
-<div class="alert alert-secondary">
-  <i class="bi bi-info-circle"></i>
-  <small>Projections are estimates based on assumed rates of return and the safe withdrawal rate.
-  Actual results will vary with market performance, inflation, and tax law changes.</small>
+  {# ── Income in retirement ───────────────────────────────────── #}
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <h6 class="retire-card-title">Income in retirement</h6>
+        <div id="income-panel">
+          {% include "retirement/_income.html" %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Accounts ───────────────────────────────────────────────── #}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <h6 class="retire-card-title">Accounts
+          {%- if readiness.retirement_date %} -- projected to {{ readiness.retirement_date.year }}{% endif %}</h6>
+        {% if retirement_account_projections %}
+        {% include "retirement/_retirement_account_table.html" %}
+        {% else %}
+        <p class="text-muted mb-0">
+          No retirement or investment accounts yet --
+          <a href="{{ url_for('accounts.new_account') }}">add an account</a>
+          to project your savings.
+        </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Pension derivation footer (one line PER pension, D6) ───── #}
+  {% if readiness.pension_lines %}
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <h6 class="retire-card-title">
+          {{ 'Pension' if readiness.pension_lines|length == 1 else 'Pensions' }}
+        </h6>
+        {% for line in readiness.pension_lines %}
+        <p class="retire-pension-line">
+          {{ line.name }}: {{ line.years_of_service }} yrs x
+          {{ "%.2f"|format(line.benefit_multiplier|to_percent) }}% x
+          {{ money(line.high_salary_average, cents=false) }}
+          high-{{ line.high_years_count }} average
+          {%- if line.window_start %} (projected {{ line.window_start }}-{{ line.window_end }} salaries){% endif %} =
+          <b class="font-mono">{{ money(line.gross_monthly, cents=false) }}/mo</b> gross ->
+          <b class="font-mono">{{ money(line.net_monthly, cents=false) }}/mo</b> net of
+          {% if readiness.tax_rate_missing %}
+          <span class="retire-flag">0% est. tax (not set)</span>
+          {%- else %}
+          {{ "%.1f"|format(readiness.estimated_tax_rate|to_percent) }}% est. tax
+          {%- endif %}
+        </p>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
+
+<p class="retire-footer-note mt-3 mb-0">
+  Projections are estimates built entirely on the assumptions above --
+  adjust them in the assumptions panel.
+</p>
 {% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
-<script src="{{ url_for('static', filename='js/retirement_gap_chart.js') }}"></script>
-<script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
+<script src="{{ url_for('static', filename='js/retirement_path_chart.js') }}"></script>
+<script src="{{ url_for('static', filename='js/retirement_controls.js') }}"></script>
 {% endblock scripts %}

@@ -240,8 +240,8 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/retirement/pension/99999"),
     # retirement.delete_pension
     ("POST", "/retirement/pension/99999/delete"),
-    # retirement.gap_analysis
-    ("GET", "/retirement/gap"),
+    # retirement.readiness_fragment
+    ("GET", "/retirement/readiness"),
     # retirement.update_settings
     ("POST", "/retirement/settings"),
 

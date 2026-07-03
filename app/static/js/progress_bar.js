@@ -59,15 +59,38 @@
     applyProgressWidths(document);
   }
 
-  // HTMX-replaced fragments.  htmx fires one ``htmx:afterSwap`` per
-  // settled element -- including out-of-band fragments -- but the
-  // event's ``detail.target`` always points at the request's PRIMARY
-  // swap target.  ``event.target`` is the element each dispatch
-  // actually fired on, so it covers the primary target AND every OOB
-  // fragment (e.g. the entries-CRUD cell re-render, whose envelope
-  // progress bar would otherwise never get its width applied).
-  document.body.addEventListener("htmx:afterSwap", function(event) {
+  /**
+   * Re-apply widths inside whichever element(s) an htmx swap replaced.
+   *
+   * ``event.target`` is the node htmx DISPATCHED on -- for
+   * ``htmx:oobAfterSwap`` that is the request's primary element, NOT
+   * the out-of-band fragment (probed live: an OOB income-panel swap
+   * fires with event.target #readiness-region and detail.target
+   * #income-panel).  ``detail.target`` is the actual swap target for
+   * both event kinds, so BOTH subtrees are re-applied; the applier is
+   * idempotent, so the overlap on plain afterSwap is free.
+   *
+   * @param {Event} event  An ``htmx:afterSwap`` or ``htmx:oobAfterSwap``
+   *                       dispatch.
+   */
+  function reapplyAfterSwap(event) {
     var detail = event && event.detail ? event.detail : {};
-    applyProgressWidths(event.target || detail.target || detail.elt || document);
-  });
+    applyProgressWidths(event.target || document);
+    if (detail.target && detail.target !== event.target) {
+      applyProgressWidths(detail.target);
+    }
+  }
+
+  // HTMX-replaced fragments.  htmx 2.x fires ``htmx:afterSwap`` ONLY
+  // for the request's primary swap target; out-of-band fragments get
+  // their own ``htmx:oobAfterSwap`` (carrying the OOB element in
+  // detail.target).  Both must be hooked: the retirement readiness
+  // refresh re-sends the income meter as an hx-swap-oob sibling (and
+  // the entries-CRUD cell re-render OOB-swaps envelope bars the same
+  // way), so listening to afterSwap alone left every OOB progress bar
+  // width un-applied -- the element arrived with a fresh
+  // ``data-progress-pct`` but an empty ``style.width`` (found live
+  // during the retirement acceptance-drive CSP trace).
+  document.body.addEventListener("htmx:afterSwap", reapplyAfterSwap);
+  document.body.addEventListener("htmx:oobAfterSwap", reapplyAfterSwap);
 })();

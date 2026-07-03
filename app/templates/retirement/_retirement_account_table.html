@@ -1,74 +1,87 @@
 {% from "_money_macros.html" import money %}
-{# Partial: full retirement account projection table (thead + rows).
-   Used by both the dashboard card and the HTMX OOB swap on slider change.
-   Desktop renders the table; mobile (< md) gets a card-per-account list.
-   The popover trigger is "click focus" so the info-icons open on tap as
-   well as keyboard focus; the v1 "focus"-only trigger never fired on
-   touch because tapping an inline <i> does not always focus it. #}
+{# Partial: the direction-D retirement accounts table.  Desktop renders
+   the table (token-styled thead -- never table-light, audit V3);
+   mobile (< md) gets a card-per-account list mirroring the same
+   columns.  The footer note states the $0-contribution assumption
+   (audit finding D2's design half) and links the two fixes: a paycheck
+   deduction (salary profile page) and a recurring transfer (each
+   "none linked" cell links to that account's page, where the
+   contribution-transfer form lives).  ``salary_profiles`` may be an
+   empty list (no profile yet), so the deduction CTA falls back to the
+   profile-list page. #}
+{% if salary_profiles %}
+{% set deduction_url = url_for('salary.edit_profile', profile_id=salary_profiles[0].id) %}
+{% else %}
+{% set deduction_url = url_for('salary.list_profiles') %}
+{% endif %}
 <div class="d-none d-md-block">
-<div class="table-responsive">
-<table class="table table-hover table-sm mb-0">
-  <thead class="table-light">
-    <tr>
-      <th>Account</th>
-      <th>Type</th>
-      <th class="text-end">Current Balance
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Current balance from your account records."></i>
-      </th>
-      <th class="text-end">Annual Return
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="The assumed annual growth rate used for this account's projection. Adjustable via the Assumed Annual Return slider above."></i>
-      </th>
-      <th class="text-end">Projected at Retirement
-        <i class="bi bi-info-circle text-muted" role="button" tabindex="0" data-bs-toggle="popover" data-bs-trigger="click focus" data-bs-placement="top" data-bs-content="Balance projected to your retirement date using the account's assumed growth rate, your contributions, and employer match."></i>
-      </th>
-    </tr>
-  </thead>
-  <tbody>
-    {% include "retirement/_retirement_account_rows.html" %}
-  </tbody>
-</table>
-</div>
+  <div class="table-responsive">
+    <table class="table table-hover table-sm retire-table mb-0">
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Type</th>
+          <th class="text-end">Today</th>
+          <th class="text-end">Contributions/period</th>
+          <th class="text-end">Return</th>
+          <th class="text-end">At retirement</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% include "retirement/_retirement_account_rows.html" %}
+      </tbody>
+    </table>
+  </div>
 </div>
 
-{# Mobile card list (< md).  Mirrors the desktop table's columns: account
-   name (linked) + Traditional/Roth badge on the top row; Balance, Annual
-   return, and Projected at retirement as labeled rows below.  Each card
-   uses the same number formatting as the desktop row.  Headers are
-   replaced by labeled rows so the desktop column-header popovers are not
-   needed inside the card (the per-row label is the same affordance). #}
+{# Mobile card list (< md): same figures as the desktop row. #}
 <div class="d-md-none">
   {% for proj in retirement_account_projections %}
   <div class="card mb-2">
     <div class="card-body py-2 px-3">
-      <div class="d-flex justify-content-between align-items-baseline">
+      <div class="d-flex justify-content-between align-items-baseline gap-2">
         <h6 class="card-title mb-0">
           <a href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">
             {{ proj.account.name }}
           </a>
         </h6>
-        <span class="badge {{ 'bg-info' if proj.is_traditional else 'bg-success' }}">
-          {{ 'Traditional' if proj.is_traditional else 'Roth/Taxable' }}
-        </span>
+        <span class="retire-chip">{{ 'Pre-tax' if proj.is_traditional else 'Roth/Taxable' }}</span>
       </div>
       <div class="d-flex justify-content-between mt-2">
-        <small class="text-muted">Current balance</small>
+        <small class="text-muted">Today</small>
         <span class="font-mono">{{ money(proj.current_balance) }}</span>
       </div>
       <div class="d-flex justify-content-between">
-        <small class="text-muted">Annual return</small>
+        <small class="text-muted">Contributions/period</small>
+        {% if proj.none_linked and proj.employer_per_period <= 0 %}
+        <a class="retire-flag" href="{{ url_for('investment.dashboard', account_id=proj.account.id) }}">none linked</a>
+        {% else %}
+        <span class="retire-contrib">you {{ money(proj.employee_per_period) }} /
+          employer {{ money(proj.employer_per_period) }}</span>
+        {% endif %}
+      </div>
+      <div class="d-flex justify-content-between">
+        <small class="text-muted">Return</small>
         <span class="font-mono text-muted">
           {%- if proj.annual_return_rate is not none -%}
             {{ "%.1f"|format(proj.annual_return_rate|to_percent) }}%
           {%- else -%}
-            &mdash;
+            --
           {%- endif %}
         </span>
       </div>
       <div class="d-flex justify-content-between">
-        <small class="text-muted">Projected at retirement</small>
+        <small class="text-muted">At retirement</small>
         <span class="font-mono fw-bold">{{ money(proj.projected_balance) }}</span>
       </div>
     </div>
   </div>
   {% endfor %}
 </div>
+
+<p class="retire-footer-note mt-2 mb-0">
+  Projections assume $0 of your own contributions on accounts with none
+  linked -- add a <a href="{{ deduction_url }}">paycheck deduction</a>,
+  or a recurring transfer from the account's own page (each "none
+  linked" note links there).
+</p>

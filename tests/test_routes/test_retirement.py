@@ -122,26 +122,188 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
     return account, params
 
 
+def _seed_overfunded(seed_user, db_session):
+    """Salary + settings retirement date + a $5M 401(k), no pension.
+
+    Deterministically ALREADY FUNDED: $5,000,000 at 7% projects to well
+    over $30M by +240 months against an ~$1.4M requirement (net biweekly
+    ~ $2,200 * 26 / 0.04), so both levers report already_funded at their
+    baselines.  Shared by the acceptance-fix-3 override-rendering tests.
+    """
+    from app.utils.dates import add_months
+
+    _create_salary_profile(seed_user, db_session)
+    settings = (
+        db_session.query(UserSettings)
+        .filter_by(user_id=seed_user["user"].id)
+        .one()
+    )
+    settings.planned_retirement_date = add_months(date.today(), 240)
+    acct_type = db_session.query(AccountType).filter_by(name="401(k)").one()
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=acct_type.id,
+            name="Big 401k",
+            anchor_balance=Decimal("5000000.00"),
+        ),
+    )
+    db_session.flush()
+    db_session.add(InvestmentParams(
+        account_id=account.id,
+        assumed_annual_return=Decimal("0.07000"),
+        employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum.NONE,
+        ),
+    ))
+    db_session.commit()
+
+
 class TestRetirementDashboard:
     """Tests for the retirement dashboard page."""
 
     def test_dashboard_empty(self, auth_client, seed_user, db, seed_periods_today):
-        """GET returns 200 even with no pensions or accounts."""
+        """GET returns 200 with the direction-D empty states, no pension footer.
+
+        Realigned for the locked direction-D rebuild (P3b): with nothing
+        configured there is no retirement date, so the readiness / levers /
+        income cards each render the "set a planned retirement date" empty
+        state (the old always-rendered gap table -- audit Surface 7's dead
+        else branch -- is retired), and no per-pension derivation line
+        exists.
+        """
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
-        assert b"Retirement Planning" in resp.data
-        assert b"Retirement Income Gap Analysis" in resp.data
-        # No pension data seeded, so pension details should not appear.
-        assert b"Pension Benefit Details" not in resp.data
+        html = resp.data.decode()
+        assert "Retirement readiness" in html
+        assert "Set a planned retirement date" in html
+        # The retired old-page surfaces must not resurface.
+        assert "Retirement Income Gap Analysis" not in html
+        assert "retire-pension-line" not in html
 
     def test_dashboard_with_pension(self, auth_client, seed_user, db, seed_periods_today):
-        """GET returns 200 with pension data displayed."""
+        """The per-pension derivation footer renders the real derivation.
+
+        Realigned for direction D (P3b): the 'Pension Benefit Details'
+        card retired into the one-line-per-pension footer (audit D6).
+        Hand arithmetic for the seeded pension (hire 2018-07-01, planned
+        2048-07-01, multiplier 1.85%):
+          service days = 30 years incl. 8 leap days (2020..2048)
+                       = 30 * 365 + 8 = 10,958
+          years_of_service = (10958 / 365.25).quantize(0.01) = 30.00
+        so the footer line reads "State Pension: 30.00 yrs x" and the
+        multiplier renders as "1.85%".
+        """
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
-        assert b"Retirement Planning" in resp.data
-        assert b"Pension Benefit Details" in resp.data
+        html = resp.data.decode()
+        assert "retire-pension-line" in html
+        assert "State Pension: 30.00 yrs x" in html
+        assert "1.85%" in html
+        assert "Pension Benefit Details" not in html
+
+    def test_past_planned_date_renders_honest_lever_state(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A stored past date cannot make the lever claim "already funded".
+
+        M1: the settings schema now rejects NEW past dates, but stored
+        data ages (and a pension-sourced date bypasses that schema), so
+        the page must stay honest: with a shortfall and zero remaining
+        paychecks the contribution lever renders the past_horizon line,
+        never the funded one, and the stepper input survives the None
+        solved amount.
+        """
+        from datetime import timedelta
+
+        _create_salary_profile(seed_user, db.session)
+        _create_retirement_account(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date.today() - timedelta(days=30)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Your planned retirement date has passed" in html
+        assert "Already fully funded" not in html
+
+    def test_assumptions_rail_echoes_non_default_stored_values(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The full page renders the STORED assumption values, not fallbacks.
+
+        P4 live-verify regression: the P3c-slimmed dashboard context
+        dropped ``settings``, so the rail's inputs silently rendered
+        their empty/fallback states -- undetectable with default data
+        because the merit horizon's template fallback literal (5) equals
+        the column default.  Non-default stored values close that hole:
+          SWR 0.0350 -> to_percent 3.50 -> "%.2f" -> value="3.50"
+          merit_raise_horizon_years 7 -> value="7"
+        Neither can come from a fallback (the SWR renders '' and the
+        horizon renders 5 when settings is missing).  The unset tax rate
+        must also surface its not-set flag -- an Undefined ``settings``
+        suppressed it too.
+        """
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.safe_withdrawal_rate = Decimal("0.0350")
+        settings.merit_raise_horizon_years = 7
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'value="3.50"' in html
+        assert 'value="7"' in html
+        assert 'data-assumption-flag="tax-missing"' in html
+
+    def test_pension_owned_date_row_is_editable_with_provenance(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The pension-owned date row is editable and names its target.
+
+        Acceptance r2 item 2 (developer ruling, superseding round 1's
+        read-only row): the date row stays editable -- Save writes
+        through to the owning pension -- with the input echoing the
+        RESOLVED (pension) date and the caption naming the pension it
+        updates, linked to its edit page.
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="assump-retirement-date"' in html
+        # The input echoes the RESOLVED (pension) date.
+        assert 'value="2048-07-01"' in html  # _create_pension's date
+        assert 'data-assumption-source="pension"' in html
+        assert "updates" in html
+        assert "State Pension" in html
+        assert f"/retirement/pension/{pension.id}/edit" in html
+
+    def test_settings_owned_date_row_keeps_the_editable_input(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Without a pension date the editable input + Save remain."""
+        _create_salary_profile(seed_user, db.session)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date(2046, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.get("/retirement")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="assump-retirement-date"' in html
+        assert 'value="2046-01-01"' in html
+        assert 'data-assumption-source="pension"' not in html
 
     def test_dashboard_no_stale_settings_migration_message(
         self, auth_client, seed_user, db, seed_periods_today
@@ -681,7 +843,14 @@ class TestRetirementProjections:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "After-Tax Monthly Pension" in html
+        # Realigned for direction D (P3b): the old "After-Tax Monthly
+        # Pension" row retired; the stored 20% rate now nets the pension
+        # footer line ("net of 20.0% est. tax" -- 0.2000|to_percent ->
+        # 20.0 via "%.1f") and the income card's row is labeled net.  The
+        # F1 not-set flag must NOT render once a rate is stored.
+        assert "20.0% est. tax" in html
+        assert "Pension (net)" in html
+        assert "(not set" not in html
 
     def test_dashboard_projects_multiple_accounts(
         self, auth_client, seed_user, db, seed_periods_today
@@ -731,135 +900,20 @@ class TestRetirementProjections:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Should show projected pre-retirement income, not current.
-        assert "Projected Pre-Retirement Income" in html
+        # Realigned for direction D (P3b): the old table row label is
+        # retired; the income card's "Income to replace" figure must equal
+        # the raise-aware readiness producer's net monthly target exactly
+        # (page == service, a strictly stronger pin than the old
+        # label-presence check).  The money macro renders "$1,234.56".
+        from app.services import retirement_readiness
 
-
-class TestGapAnalysisFragment:
-    """Tests for the retirement gap analysis HTMX fragment (U3)."""
-
-    def test_gap_redirects_without_htmx(self, auth_client, seed_user, db, seed_periods_today):
-        """GET /retirement/gap without HX-Request redirects to retirement dashboard."""
-        resp = auth_client.get("/retirement/gap")
-        assert resp.status_code == 302
-        assert "/retirement" in resp.headers.get("Location", "")
-
-    def test_gap_returns_fragment(self, auth_client, seed_user, db, seed_periods_today):
-        """GET /retirement/gap with HX-Request returns gap analysis fragment."""
-        resp = auth_client.get(
-            "/retirement/gap",
-            headers={"HX-Request": "true"},
+        readiness = retirement_readiness.compute_readiness_data(
+            seed_user["user"].id
         )
-        assert resp.status_code == 200
-        # Gap analysis always renders the table with income gap row.
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_with_swr_param(self, auth_client, seed_user, db, seed_periods_today):
-        """SWR slider parameter is accepted and used."""
-        profile = _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        settings.safe_withdrawal_rate = Decimal("0.04")
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=3.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # The fragment should show the 3.0% rate in the "Required Savings" line.
-        assert b"3.0% rule" in resp.data
-
-    def test_gap_with_return_rate_param(self, auth_client, seed_user, db, seed_periods_today):
-        """Return rate slider parameter is accepted."""
-        profile = _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        db.session.commit()
-
-        _create_retirement_account(seed_user, db.session, type_name="401(k)")
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # Gap analysis table always contains income gap row.
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_rejects_negative_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: negative ``swr`` slider override is rejected at the schema.
-
-        Pre-F-13 the route divided the raw float by 100 and handed the
-        resulting negative fraction to the calculator, which silently
-        zeroed ``required_retirement_savings``.  Post-F-13 the
-        ``RetirementGapQuerySchema`` rejects the value with a 422 so the
-        user surfaces an actionable error instead of a falsely-balanced
-        analysis.
-        """
-        resp = auth_client.get(
-            "/retirement/gap?swr=-5",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 422
-        body = resp.get_json()
-        assert "errors" in body
-        assert "swr" in body["errors"]
-
-    def test_gap_accepts_zero_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: ``swr=0`` (the inclusive lower bound) is accepted.
-
-        The calculator's ``> 0`` guard collapses
-        ``required_retirement_savings`` to ZERO, which is the existing
-        zero-rate behaviour preserved at the calculator (defense in
-        depth).  The route surfaces a normal 200 rather than 422.
-        """
-        _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        assert b"Monthly Income Gap" in resp.data
-
-    def test_gap_accepts_default_swr(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """F-13: ``swr=4`` (the default 4% slider value) routes happy-path.
-
-        Percent input ``"4"`` -> fraction ``Decimal("0.04")``, well
-        inside the schema's ``Range(0, 1)``; the fragment renders the
-        standard gap analysis.
-        """
-        _create_salary_profile(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2050, 1, 1)
-        settings.safe_withdrawal_rate = Decimal("0.04")
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?swr=4",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        # The fragment renders the SWR-driven Required Savings row.
-        assert b"4.0% rule" in resp.data
+        target = readiness["income_target_net_monthly"]
+        assert target > 0
+        assert "Income to replace" in html
+        assert f"${target:,.2f}" in html
 
 
 class TestRetirementNegativePaths:
@@ -1220,12 +1274,6 @@ class TestRetirementNegativePaths:
         assert resp.status_code == 302
         assert "/login" in resp.headers["Location"]
 
-    def test_gap_analysis_login_required(self, client, db):
-        """Unauthenticated GET to gap analysis redirects to login."""
-        resp = client.get("/retirement/gap")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers["Location"]
-
 
 class TestRetirementValidationUX:
     """Tests for render-on-error validation UX with field highlights and data preservation."""
@@ -1472,16 +1520,24 @@ class TestRetirementValidationUX:
 class TestReturnRateClarity:
     """Tests for return rate slider tooltip and per-account rate display."""
 
-    def test_return_slider_tooltip_present(self, auth_client, seed_user, db, seed_periods_today):
-        """Dashboard shows info-circle tooltip on the Assumed Annual Return label."""
+    def test_return_row_shows_blended_value_and_caption(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The assumed-return row shows the blended rate and its provenance.
+
+        Realigned (P3b): the slider tooltip retired; the assumptions
+        rail's what-if-only return row renders the balance-weighted
+        blended rate with its provenance caption.  With a single account
+        at 7% the weighted average IS 7% -> "%.2f" renders "7.00%".
+        """
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
         _create_retirement_account(seed_user, db.session)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Recalculates the gap analysis and account projections below" in html
-        assert "overriding each account&#" in html or "overriding each account" in html
+        assert "7.00%" in html
+        assert "per-account rates own this" in html
 
     def test_per_account_rate_displayed_on_dashboard(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1497,9 +1553,11 @@ class TestReturnRateClarity:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # params.assumed_annual_return is 0.07 -> displayed as "7.0%" in its own column.
+        # Realigned for direction D (P3b): the column header is now
+        # "Return"; params.assumed_annual_return 0.07000|to_percent -> 7.0
+        # via "%.1f" still renders in the row.
         assert "7.0%" in html
-        assert "Annual Return" in html
+        assert ">Return</th>" in html
 
     def test_per_account_rate_accuracy_multiple_accounts(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1543,52 +1601,17 @@ class TestReturnRateClarity:
         assert ">7.0%<" in html
         assert ">9.5%<" in html
 
-    def test_htmx_gap_response_includes_account_rows_oob(
+    def test_initial_dashboard_renders_no_oob(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """HTMX gap analysis response includes OOB swap for account table rows."""
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
+        """The full page render carries no out-of-band swap attributes.
 
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # OOB swap div must be present.
-        assert 'id="retirement-accounts-content"' in html
-        assert 'hx-swap-oob="innerHTML"' in html
-
-    def test_htmx_gap_oob_uses_slider_rate(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """When slider overrides return rate, OOB account rows show the override rate."""
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=10.0",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # The OOB rows should show 10.0% (slider override), not 7.0% (account default).
-        assert ">10.0%<" in html
-        assert ">7.0%<" not in html
-
-    def test_initial_dashboard_no_oob_in_gap_section(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """Full page load does not render OOB swap inside the gap analysis card."""
+        Realigned (P3b): the gap card's OOB accounts container retired;
+        OOB siblings now ride ONLY standalone readiness fragment
+        responses (the ``embedded`` flag suppresses them in the page
+        include), so a full page load must contain zero hx-swap-oob
+        attributes while still rendering the stable income panel shell.
+        """
         _create_retirement_account(seed_user, db.session)
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id
@@ -1599,51 +1622,24 @@ class TestReturnRateClarity:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The OOB attribute should NOT appear on the full page render.
-        assert 'hx-swap-oob="innerHTML"' not in html
-        # But the wrapper div with the id should exist (for the actual table).
-        assert 'id="retirement-accounts-content"' in html
+        assert "hx-swap-oob" not in html
+        assert 'id="income-panel"' in html
 
-    def test_slider_default_value_present(self, auth_client, seed_user, db, seed_periods_today):
-        """Slider element is present with its default value attribute."""
+    def test_whatif_controls_present(self, auth_client, seed_user, db, seed_periods_today):
+        """The direction-D what-if inputs replace the retired sliders.
+
+        Realigned (P3b): the two sensitivity sliders retired into the
+        assumptions rail's what-if inputs (audit ruling 7) -- the SWR row
+        input, the what-if-only return input, and the lever steppers.
+        """
         _create_retirement_account(seed_user, db.session)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert 'id="return_slider"' in html
-        assert 'id="swr_slider"' in html
-
-    def test_htmx_gap_still_returns_gap_analysis(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """HTMX gap endpoint with return_rate still returns the gap analysis table (regression)."""
-        profile = _create_salary_profile(seed_user, db.session)
-        _create_retirement_account(seed_user, db.session)
-        settings = db.session.query(UserSettings).filter_by(
-            user_id=seed_user["user"].id
-        ).first()
-        settings.planned_retirement_date = date(2046, 1, 1)
-        db.session.commit()
-
-        resp = auth_client.get(
-            "/retirement/gap?return_rate=8.0&swr=3.5",
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        # Core gap analysis content must still be present.
-        assert "Monthly Income Gap" in html
-        assert "Projected Retirement Savings" in html
-        assert "3.5% rule" in html
-
-
-# ── is_pretax Metadata Dispatch ──────────────────────────────────
-
-
-class TestIsPretaxDispatch:
-    """Verify that the is_pretax metadata flag on AccountType drives the
-    pre-tax / post-tax distinction in retirement gap analysis, replacing
-    the hardcoded TRADITIONAL_TYPE_ENUMS frozenset."""
+        assert 'id="assump-swr"' in html
+        assert 'id="assump-return-rate"' in html
+        assert 'id="return_slider"' not in html
+        assert 'id="swr_slider"' not in html
 
     def test_gap_analysis_user_created_pretax_type(
         self, app, auth_client, seed_user, db, seed_periods_today,
@@ -1755,3 +1751,598 @@ class TestIsPretaxDispatch:
         with app.app_context():
             data = compute_gap_data(seed_user["user"].id)
             assert data["retirement_account_projections"] == []
+
+
+def _seed_underfunded(seed_user, db_session):
+    """Salary + settings retirement date + capped 401(k), no pension.
+
+    Deterministically underfunded on both levers: the ~$80k salary
+    drives a required target well over $1M (net biweekly ~ $2,200 ->
+    required = net * 26 / 0.04 ~ $1.4M) while the $10k account at 7%
+    with zero contributions projects to only ~$40k by +240 months --
+    the contribution lever solves (and its solution, roughly
+    shortfall / AF ~ $1.3M / ~1100 ~ $1,200+/period, exceeds the
+    23500 / 26 = $903.85 per-period limit headroom), and retiring
+    later alone cannot close the gap even at +180 months
+    ($10k * 1.07^35 < $110k).  Shared by the lever-fragment (P2c) and
+    readiness-fragment (P3a) route tests.
+    """
+    from app.utils.dates import add_months
+
+    _create_salary_profile(seed_user, db_session)
+    settings = (
+        db_session.query(UserSettings)
+        .filter_by(user_id=seed_user["user"].id)
+        .one()
+    )
+    settings.planned_retirement_date = add_months(date.today(), 240)
+    _create_retirement_account(seed_user, db_session)
+    db_session.commit()
+
+
+class TestAssumptionSaves:
+    """P3a per-field assumption saves through retirement.update_settings."""
+
+    def test_merit_horizon_persists(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A single-field merit-horizon POST persists the new value.
+
+        The column defaults to 5 (P1a migration); posting 10 stores the
+        plain integer (no percent conversion on a year count).
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "merit_raise_horizon_years": "10",
+        })
+        assert resp.status_code == 302
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.merit_raise_horizon_years == 10
+
+    def test_merit_horizon_out_of_bounds_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """51 exceeds the schema Range (0-50, mirroring the DB CHECK).
+
+        The stored value must stay at the column default of 5.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "merit_raise_horizon_years": "51",
+        })
+        assert resp.status_code == 422
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.merit_raise_horizon_years == 5
+
+    def test_htmx_save_returns_assumptions_fragment(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An HTMX save responds with the refreshed assumptions panel.
+
+        Stored fraction 0.0350 renders back through to_percent as
+        3.50 -> "%.2f" (the P3b rail renders SWR at two decimals) ->
+        value="3.50" in the SWR row's input.
+        """
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"safe_withdrawal_rate": "3.5"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="assumptions-panel"' in html
+        assert 'value="3.50"' in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # 3.5 / 100 = 0.035 (schema percent-to-fraction pre_load).
+        assert settings.safe_withdrawal_rate == Decimal("0.0350")
+
+    def test_422_renders_assumptions_fragment_with_echo(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A validation failure is the assumptions fragment at 422.
+
+        -5% converts to -0.05 and fails Range(min=0); the fragment echoes
+        the submitted raw value and marks the field invalid -- the same
+        form-error semantics the retired settings-page re-render carried.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "-5",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert 'id="assumptions-panel"' in html
+        assert 'value="-5"' in html
+        assert "is-invalid" in html
+        assert "invalid-feedback" in html
+
+    def test_non_htmx_success_redirects_to_retirement(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The non-HTMX fallback lands on /retirement, not /settings.
+
+        Gate A ruling 6: Settings > Retirement retired, so the redirect
+        target is the retirement page that now owns these fields.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "safe_withdrawal_rate": "4",
+        })
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers["Location"]
+        assert "/settings" not in resp.headers["Location"]
+
+    def test_assumed_return_has_no_save_path(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Return-rate-shaped fields are dropped, never persisted.
+
+        There is deliberately no schema field for an assumed annual
+        return (its save semantics are an open developer question), so
+        BaseSchema's unknown=EXCLUDE drops these keys and the POST is a
+        no-op success: every stored assumption is byte-identical after.
+        """
+        before = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        snapshot = (
+            before.safe_withdrawal_rate,
+            before.planned_retirement_date,
+            before.estimated_retirement_tax_rate,
+            before.merit_raise_horizon_years,
+        )
+        resp = auth_client.post("/retirement/settings", data={
+            "assumed_annual_return": "9",
+            "return_rate": "9",
+        })
+        assert resp.status_code == 302
+        db.session.expire_all()
+        after = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert (
+            after.safe_withdrawal_rate,
+            after.planned_retirement_date,
+            after.estimated_retirement_tax_rate,
+            after.merit_raise_horizon_years,
+        ) == snapshot
+
+
+    def test_fragment_renders_pension_owned_date_row(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The per-field save fragment renders the write-through date row.
+
+        Acceptance r2 item 2: after any rail save, the re-rendered
+        fragment keeps the editable date input (echoing the resolved
+        pension date) with the "updates <pension>" caption (the
+        update_settings path resolves provenance itself -- it does not
+        ride the dashboard context).
+        """
+        profile = _create_salary_profile(seed_user, db.session)
+        _create_pension(seed_user, db.session, salary_profile=profile)
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"safe_withdrawal_rate": "3.5"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-assumption-source="pension"' in html
+        assert 'id="assump-retirement-date"' in html
+        assert 'value="2048-07-01"' in html
+
+    def test_pension_owned_date_save_writes_through_to_the_pension(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Saving the date row updates the OWNING pension, not settings.
+
+        Acceptance r2 item 2 (developer ruling): the pension owns the
+        resolved date, so Save persists to
+        PensionProfile.planned_retirement_date via the ORM (the audited
+        pension_profiles trigger must capture the UPDATE), leaves the
+        settings column untouched, and the reloaded page projects from
+        the new resolved date (recomputed countdown header).
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = _create_pension(seed_user, db.session, salary_profile=profile)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.planned_retirement_date = date(2040, 1, 1)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2050-06-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        db.session.expire_all()
+        # The OWNING pension carries the new date...
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2050, 6, 1)
+        # ...and the settings column is untouched.
+        after_settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert after_settings.planned_retirement_date == date(2040, 1, 1)
+
+        # The audited-table trigger captured the ORM update.
+        audit_rows = db.session.execute(db.text(
+            "SELECT 1 FROM system.audit_log "
+            "WHERE table_name = 'pension_profiles' AND operation = 'UPDATE'"
+        )).fetchall()
+        assert audit_rows, "pension_profiles UPDATE missing from audit_log"
+
+        # The page recomputes from the new resolved date.
+        page = auth_client.get("/retirement").data.decode()
+        assert "Planned date 2050-06-01" in page
+        assert 'value="2050-06-01"' in page
+
+    def test_pension_owned_date_save_enforces_after_hire_rule(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The write-through enforces the pension form's after-hire rule.
+
+        A pension hired in the FUTURE (2049-01-01) makes the rule
+        genuinely reachable for a future candidate date: 2048-12-01 is
+        in the future (passing the schema's M1 check) but on/before the
+        hire date, so the shared pension validator rejects it at 422
+        and nothing persists.
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = PensionProfile(
+            user_id=seed_user["user"].id,
+            salary_profile_id=profile.id,
+            name="Future Hire Pension",
+            benefit_multiplier=Decimal("0.01850"),
+            consecutive_high_years=4,
+            hire_date=date(2049, 1, 1),
+            planned_retirement_date=date(2060, 1, 1),
+        )
+        db.session.add(pension)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2048-12-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "Must be after hire date." in html
+        assert "is-invalid" in html
+        db.session.expire_all()
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2060, 1, 1)
+
+    def test_pension_owned_date_save_enforces_earliest_date_rule(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The write-through enforces the earliest-retirement-date rule.
+
+        earliest 2045-01-01: a candidate 2040-01-01 is future and after
+        the 2018 hire, but precedes the earliest date -- the shared
+        pension validator rejects it at 422 and nothing persists.
+        """
+        from app.models.pension_profile import PensionProfile
+
+        profile = _create_salary_profile(seed_user, db.session)
+        pension = PensionProfile(
+            user_id=seed_user["user"].id,
+            salary_profile_id=profile.id,
+            name="Earliest Bound Pension",
+            benefit_multiplier=Decimal("0.01850"),
+            consecutive_high_years=4,
+            hire_date=date(2018, 7, 1),
+            earliest_retirement_date=date(2045, 1, 1),
+            planned_retirement_date=date(2048, 7, 1),
+        )
+        db.session.add(pension)
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"planned_retirement_date": "2040-01-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "Must be on or after earliest retirement date." in html
+        db.session.expire_all()
+        stored = db.session.get(PensionProfile, pension.id)
+        assert stored.planned_retirement_date == date(2048, 7, 1)
+
+    def test_saved_zero_tax_rate_echoes_and_clears_the_flag(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Saving 0% persists Decimal("0.0000") and the panel shows it set.
+
+        L1: 0 / 100 = 0.0000 through the percent pre_load; the refreshed
+        panel echoes value="0.0" (0.0000 -> to_percent 0.0 -> "%.1f") and
+        the "Not set" flag -- keyed on ``is none`` -- must NOT render.
+        """
+        resp = auth_client.post(
+            "/retirement/settings",
+            data={"estimated_retirement_tax_rate": "0"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'value="0.0"' in html
+        assert 'data-assumption-flag="tax-missing"' not in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        # 0 / 100 = 0.0000 (schema percent-to-fraction pre_load).
+        assert settings.estimated_retirement_tax_rate == Decimal("0.0000")
+
+    def test_past_retirement_date_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A past planned retirement date is rejected with a field error.
+
+        M1: mirrors the pension schemas' must-be-future rule.  The
+        assumptions fragment renders the error; nothing persists.
+        """
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": "2020-01-01",
+        })
+        assert resp.status_code == 422
+        html = resp.data.decode()
+        assert "must be in the future" in html
+        assert "is-invalid" in html
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        assert settings.planned_retirement_date is None
+
+    def test_today_retirement_date_is_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Today's date is rejected too (<= today, per the pension rule)."""
+        resp = auth_client.post("/retirement/settings", data={
+            "planned_retirement_date": date.today().isoformat(),
+        })
+        assert resp.status_code == 422
+        assert "must be in the future" in resp.data.decode()
+
+
+class TestReadinessFragment:
+    """Tests for the /retirement/readiness HTMX what-if fragment (P3a)."""
+
+    def test_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET /retirement/readiness without HX-Request redirects."""
+        resp = auth_client.get("/retirement/readiness")
+        assert resp.status_code == 302
+        assert "/retirement" in resp.headers["Location"]
+
+    def test_requires_auth(self, client, db):
+        """Unauthenticated -> redirect to login."""
+        resp = client.get(
+            "/retirement/readiness", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_baseline_fragment_has_verdict_and_no_deltas(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """No overrides: the verdict renders with the OOB income panel.
+
+        Realigned (P3b): the countdown moved from the fragment to the
+        page header, and a STANDALONE fragment response now carries the
+        income panel as an hx-swap-oob sibling so the meter always
+        tracks the verdict; no lever lines ride along without stepper
+        params, and no delta line renders without overrides.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-readiness="verdict"' in html
+        assert "% funded" in html
+        assert 'id="income-panel"' in html
+        assert 'hx-swap-oob="innerHTML"' in html
+        assert 'data-readiness="deltas"' not in html
+        assert 'data-lever=' not in html
+
+    def test_swr_override_renders_deltas(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A what-if SWR renders the baseline-vs-override delta line.
+
+        swr=2 (vs the stored 4%) doubles the required target (required =
+        gap * 12 / swr), so the funded ratio drops and the delta block
+        must render with the "Was ...% funded" baseline and the
+        points/dollars changes.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?swr=2", headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-readiness="deltas"' in html
+        assert "Was " in html
+        assert "points" in html
+
+    def test_lever_override_includes_lever_lines(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """months=24 additionally renders the lever outcome lines."""
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'data-lever="retire-later"' in html
+        assert "+24 months" in html
+        # L5b (locked anatomy): the outcome line carries the shortfall
+        # dollars -- deterministic sign for _seed_underfunded, whose
+        # funded ratio stays far below 1 at +24 months.
+        assert "shortfall" in html
+
+    def test_contribution_override_renders_full_lever_content(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A contribution stepper value renders both lever lines in full.
+
+        Consolidated from the retired /retirement/levers fragment tests
+        (M2): the readiness fragment is now the ONE rendering path for
+        _lever_outcomes.html.  contribution=100.00 renders the displayed
+        amount via the money macro WITHOUT the over-headroom flag ($100 is
+        under the 23500 / 26 = $903.85 per-period limit headroom -- the
+        flag applies to the DISPLAYED amount, the documented P2 contract);
+        with no months override the retire-later line reports the
+        not-within-180-months degenerate state (a $10k account at 7%
+        cannot reach a ~$1.4M target).
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?contribution=100.00",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+$100.00/paycheck" in html
+        assert 'data-lever-flag="headroom"' not in html
+        assert "cannot close the gap within 180 months" in html
+
+    def test_solved_contribution_line_renders_headroom_flag(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """With no contribution override the SOLVED amount is flagged.
+
+        Consolidated from the retired /retirement/levers fragment tests
+        (M2): a months-only request computes the levers with the
+        contribution stepper at its solved default (~$1,200+/period for
+        _seed_underfunded's ~$1.3M shortfall over an AF of ~1,100), which
+        exceeds the 23500 / 26 = $903.85 per-period limit headroom -- the
+        honest over-headroom flag renders with the headroom figure, and
+        the solved line reports 100.0% funded.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "100.0% funded" in html
+        assert 'data-lever-flag="headroom"' in html
+        assert "$903.85" in html
+
+    def test_funded_baseline_with_months_override_renders_its_outcome(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A typed months override renders ITS outcome when already funded.
+
+        Acceptance fix 3: pre-fix the already_funded branch swallowed the
+        override and re-rendered "no delay needed".  With the $5M
+        overfunded scenario and months=24, the line must show the
+        override's own picture ("+24 months (retiring <date>) reaches
+        X% funded (surplus)") -- funded stays >= 100%, so the surplus
+        wording is deterministic -- and the baseline copy must be gone.
+        """
+        _seed_overfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?months=24",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+24 months" in html
+        assert "surplus" in html
+        assert "no delay needed" not in html
+
+    def test_funded_baseline_with_contribution_override_renders_its_outcome(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A typed contribution override renders ITS outcome when funded.
+
+        The contribution twin of acceptance fix 3: contribution=100.00
+        on the overfunded baseline renders "+$100.00/paycheck ... reaches
+        X% funded (surplus)" instead of the swallowed "no extra
+        contribution needed" copy.
+        """
+        _seed_overfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?contribution=100.00",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "+$100.00/paycheck" in html
+        assert "no extra contribution needed" not in html
+
+    def test_garbage_params_are_422(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Out-of-bounds what-if params return 422 with field errors."""
+        for query in (
+            "swr=-5",                       # negative percent
+            "merit_raise_horizon_years=51",  # above the 0-50 CHECK mirror
+            "months=181",                   # above the +180 solver cap
+            "months=abc",                   # non-numeric offset
+            "contribution=-1",              # negative money
+            "contribution=100001",          # above the 100000 bound
+            "contribution=abc",             # non-numeric money
+        ):
+            resp = auth_client.get(
+                f"/retirement/readiness?{query}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 422, (
+                f"{query}: expected 422, got {resp.status_code}"
+            )
+            assert "errors" in resp.get_json()
+
+
+class TestDashboardReadinessContext:
+    """P3a: the dashboard passes the direction-D baselines to the template."""
+
+    def test_dashboard_context_carries_readiness_and_levers(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The render context gains readiness + levers; the page still 200s.
+
+        The current dashboard.html ignores both keys (zero template edits
+        in P3a), so the assertion captures the render context via the
+        template_rendered signal instead of scraping HTML.
+        """
+        from flask import template_rendered
+
+        captured = []
+
+        def record(sender, template, context, **extra):
+            if template.name == "retirement/dashboard.html":
+                captured.append(context)
+
+        template_rendered.connect(record, app)
+        try:
+            resp = auth_client.get("/retirement")
+            assert resp.status_code == 200
+        finally:
+            template_rendered.disconnect(record, app)
+
+        assert captured, "retirement/dashboard.html was not rendered"
+        context = captured[-1]
+        assert "readiness" in context
+        assert "levers" in context
+        # Shape spot-checks: the producers' signature keys are present.
+        assert "funded_ratio" in context["readiness"]
+        assert "no_horizon" in context["levers"]
