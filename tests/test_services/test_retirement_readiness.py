@@ -11,11 +11,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import EmployerContributionTypeEnum
+from app.enums import EmployerContributionTypeEnum, RaiseTypeEnum
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
+from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service, retirement_readiness
 from app.services.retirement_gap_calculator import RetirementGapAnalysis
@@ -312,3 +313,99 @@ class TestComputeReadinessData:
                 data["projected_savings_after_tax"]
                 < data["projected_savings_pretax"]
             )
+
+
+class TestComputeReadinessWhatif:
+    """The P3a what-if wrapper: baseline, override state, and deltas."""
+
+    def test_no_overrides_returns_baseline_without_deltas(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No overrides: the displayed state IS the baseline, deltas None."""
+        with app.app_context():
+            _build_scenario(db, seed_user)
+            result = retirement_readiness.compute_readiness_whatif(
+                seed_user["user"].id,
+            )
+            assert result["deltas"] is None
+            assert result["readiness"] is result["baseline"]
+
+    def test_swr_override_deltas(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A 2% SWR what-if (vs the stored 4%) doubles the requirement.
+
+        required = round(monthly_gap * 12 / swr) and the monthly gap does
+        not depend on the SWR, so the override requirement is exactly
+        round(monthly_gap * 12 / 0.02).  Funded drops (same after-tax
+        projection over a larger requirement), so the points delta is
+        negative and equals (override - baseline) * 100 quantized to 0.1;
+        the dollars delta is the surplus difference and is negative (the
+        position worsens by the extra requirement).
+        """
+        with app.app_context():
+            _build_scenario(db, seed_user)
+            result = retirement_readiness.compute_readiness_whatif(
+                seed_user["user"].id, swr_override=Decimal("0.02"),
+            )
+            baseline = result["baseline"]
+            override = result["readiness"]
+            deltas = result["deltas"]
+
+            # The gap itself is SWR-independent...
+            assert override["monthly_gap_net"] == baseline["monthly_gap_net"]
+            # ...so required_override = round(gap * 12 / 0.02) exactly.
+            assert override["required_savings"] == round_money(
+                baseline["monthly_gap_net"] * 12 / Decimal("0.02")
+            )
+            assert deltas["funded_ratio_points"] == (
+                (override["funded_ratio"] - baseline["funded_ratio"])
+                * Decimal("100")
+            ).quantize(Decimal("0.1"))
+            assert deltas["funded_ratio_points"] < 0
+            assert deltas["shortfall_dollars"] == (
+                override["surplus_or_shortfall_after_tax"]
+                - baseline["surplus_or_shortfall_after_tax"]
+            )
+            assert deltas["shortfall_dollars"] < 0
+
+    def test_merit_horizon_override_moves_the_target(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Horizon 0 (vs stored 5) freezes a merit raise sooner.
+
+        With a 5% recurring January MERIT raise, the stored horizon 5
+        compounds it through cutoff = current year + 5 (6 applications:
+        salary x 1.05^6) before freezing; the override horizon 0 freezes
+        it after this year's single application (salary x 1.05^1).  A
+        smaller final-year salary means a smaller net income target, a
+        smaller requirement, and therefore a HIGHER funded ratio -- the
+        delta signs pin the override path end to end.
+        """
+        with app.app_context():
+            _build_scenario(db, seed_user)
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id)
+                .one()
+            )
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.MERIT),
+                effective_month=1,
+                effective_year=date.today().year,
+                percentage=Decimal("0.0500"),
+                is_recurring=True,
+            ))
+            db.session.commit()
+
+            result = retirement_readiness.compute_readiness_whatif(
+                seed_user["user"].id, merit_horizon_override=0,
+            )
+            baseline = result["baseline"]
+            override = result["readiness"]
+            deltas = result["deltas"]
+
+            assert override["required_savings"] < baseline["required_savings"]
+            assert deltas["funded_ratio_points"] > 0
+            assert deltas["shortfall_dollars"] > 0

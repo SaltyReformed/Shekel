@@ -255,7 +255,12 @@ def _resolve_merit_horizon(settings):
     return settings.merit_raise_horizon_years
 
 
-def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
+def compute_gap_data(
+    user_id,
+    swr_override=None,
+    return_rate_override=None,
+    merit_horizon_override=None,
+):
     """Compute gap analysis data for the retirement dashboard or HTMX fragment.
 
     Loads pension profiles, salary data, and retirement/investment
@@ -266,6 +271,10 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         user_id: The user's integer ID.
         swr_override: Optional Decimal safe withdrawal rate from slider.
         return_rate_override: Optional Decimal annual return rate from slider.
+        merit_horizon_override: Optional int merit-raise horizon (years)
+            replacing the stored ``merit_raise_horizon_years`` for a
+            what-if recompute (P3a assumptions panel); ``None`` uses the
+            stored value.
 
     Returns:
         dict with keys: gap_analysis, chart_data, pension_benefit,
@@ -274,14 +283,17 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                         planned_retirement_date, estimated_tax_rate.
     """
     inputs = load_gap_inputs(user_id)
-    settings = inputs.settings
-    pensions = inputs.pensions
     salary_profiles = inputs.salary_profiles
     pay = inputs.pay
+    merit_horizon = (
+        merit_horizon_override
+        if merit_horizon_override is not None
+        else inputs.merit_horizon_years
+    )
 
-    pension = compute_pension_summary(pensions, inputs.merit_horizon_years)
+    pension = compute_pension_summary(inputs.pensions, merit_horizon)
     planned_retirement_date = resolve_planned_retirement_date(
-        pensions, settings,
+        inputs.pensions, inputs.settings,
     )
 
     # P1b (finding D3 / fork F3): grow the employer-contribution base with
@@ -299,15 +311,14 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             planned_retirement_date,
             return_rate_override,
             build_employer_salary_basis(
-                salary_profiles, planned_retirement_date,
-                inputs.merit_horizon_years,
+                salary_profiles, planned_retirement_date, merit_horizon,
             ),
         )
     )
 
     gap_net_biweekly = compute_gap_net_biweekly(
         salary_profiles, planned_retirement_date, pay, pension.salary_by_year,
-        inputs.merit_horizon_years,
+        merit_horizon,
     )
 
     # CRIT-04 / E-12: route both SWR call sites (here and the slider in
@@ -317,14 +328,14 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
     swr = (
         swr_override
         if swr_override is not None
-        else resolve_swr_fraction(settings)
+        else resolve_swr_fraction(inputs.settings)
     )
     gap_result = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=gap_net_biweekly,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,
-        estimated_tax_rate=resolve_estimated_tax_rate(settings),
+        estimated_tax_rate=resolve_estimated_tax_rate(inputs.settings),
     )
     chart_data = _build_chart_data(gap_result, pension.monthly_income, swr)
 
@@ -333,9 +344,9 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         "chart_data": chart_data,
         "pension_benefit": pension.benefit,
         "retirement_account_projections": retirement_account_projections,
-        "settings": settings,
+        "settings": inputs.settings,
         "salary_profiles": salary_profiles,
-        "pensions": pensions,
+        "pensions": inputs.pensions,
         # The projected final-year net biweekly, resolved SWR, planned
         # retirement date, and stored estimated tax rate the gap used --
         # exposed so ``retirement_readiness.compute_readiness_data`` can
@@ -346,7 +357,7 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         "gap_net_biweekly": gap_net_biweekly,
         "swr": swr,
         "planned_retirement_date": planned_retirement_date,
-        "estimated_tax_rate": resolve_estimated_tax_rate(settings),
+        "estimated_tax_rate": resolve_estimated_tax_rate(inputs.settings),
     }
 
 

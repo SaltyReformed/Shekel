@@ -55,7 +55,12 @@ _DAYS_PER_YEAR = Decimal("365.25")
 _MAX_CHART_POINTS = 48
 
 
-def compute_readiness_data(user_id):
+def compute_readiness_data(
+    user_id,
+    swr_override=None,
+    return_rate_override=None,
+    merit_horizon_override=None,
+):
     """Assemble the direction-D readiness data for the retirement page (P1c).
 
     Net frame (Gate A ruling 2).  Everything is stated after the estimated
@@ -74,6 +79,14 @@ def compute_readiness_data(user_id):
 
     Args:
         user_id: The user's integer ID.
+        swr_override: Optional Decimal fractional SWR what-if replacing
+            the stored rate (P3a assumptions panel).
+        return_rate_override: Optional Decimal fractional annual-return
+            what-if applied uniformly to every account (also drives the
+            chart's needed-path blended return, so the two series stay in
+            one return frame).
+        merit_horizon_override: Optional int merit-raise horizon what-if
+            replacing the stored ``merit_raise_horizon_years``.
 
     Returns:
         dict with the net-frame figures, the ``tax_rate_missing`` flag, the
@@ -82,7 +95,12 @@ def compute_readiness_data(user_id):
         ``retirement_date``), and the per-account contribution facts under
         ``account_contributions``.
     """
-    data = compute_gap_data(user_id)
+    data = compute_gap_data(
+        user_id,
+        swr_override=swr_override,
+        return_rate_override=return_rate_override,
+        merit_horizon_override=merit_horizon_override,
+    )
     projections = data["retirement_account_projections"]
     net, tax_rate_missing, effective_tax_rate = _net_frame(data)
     funded_ratio, no_savings_needed = funded_ratio_state(net)
@@ -105,6 +123,7 @@ def compute_readiness_data(user_id):
         "chart": _build_readiness_chart(
             data, projections, synthetic_periods,
             net.required_retirement_savings, effective_tax_rate,
+            return_rate_override,
         ),
         "account_contributions": [
             {
@@ -116,6 +135,90 @@ def compute_readiness_data(user_id):
             for proj in projections
         ],
         **_build_countdown(data["planned_retirement_date"], synthetic_periods),
+    }
+
+
+def compute_readiness_whatif(
+    user_id,
+    *,
+    swr_override=None,
+    return_rate_override=None,
+    merit_horizon_override=None,
+):
+    """Readiness at the stored settings plus the what-if deltas (P3a).
+
+    The assumptions panel's data producer: the STORED-settings picture is
+    always the baseline; when any override is supplied the picture is
+    recomputed with it and the panel's delta facts are derived
+    (:func:`_whatif_deltas` -- funded-ratio delta in percentage points,
+    shortfall delta in dollars).  With no overrides the displayed state IS
+    the baseline and ``deltas`` is ``None`` (no delta chips render).
+
+    Args:
+        user_id: The user's integer ID.
+        swr_override: Optional Decimal fractional SWR what-if.
+        return_rate_override: Optional Decimal fractional return what-if.
+        merit_horizon_override: Optional int merit-horizon what-if.
+
+    Returns:
+        dict with ``readiness`` (the displayed -- possibly what-if --
+        state), ``baseline`` (always the stored-settings state), and
+        ``deltas`` (``None`` when no override is present).
+    """
+    baseline = compute_readiness_data(user_id)
+    overrides_present = any(
+        value is not None
+        for value in (swr_override, return_rate_override,
+                      merit_horizon_override)
+    )
+    if not overrides_present:
+        return {"readiness": baseline, "baseline": baseline, "deltas": None}
+    override = compute_readiness_data(
+        user_id,
+        swr_override=swr_override,
+        return_rate_override=return_rate_override,
+        merit_horizon_override=merit_horizon_override,
+    )
+    return {
+        "readiness": override,
+        "baseline": baseline,
+        "deltas": _whatif_deltas(baseline, override),
+    }
+
+
+def _whatif_deltas(baseline, override):
+    """Derive the panel's baseline-vs-override delta facts.
+
+    ``funded_ratio_points`` is the funded-ratio change in percentage
+    points -- ``(override - baseline) * 100`` quantized to one decimal
+    (the panel chip's "funded 52% (-11.3)") -- and is ``None`` when either
+    side is in the no-savings-needed state (there is no ratio to
+    difference).  ``shortfall_dollars`` is the after-tax
+    surplus-or-shortfall change in dollars (always defined; both sides are
+    money): positive means the what-if IMPROVES the position.
+
+    Args:
+        baseline: The stored-settings readiness dict.
+        override: The what-if readiness dict.
+
+    Returns:
+        dict with ``funded_ratio_points`` (Decimal | None) and
+        ``shortfall_dollars`` (Decimal).
+    """
+    if (baseline["funded_ratio"] is not None
+            and override["funded_ratio"] is not None):
+        funded_ratio_points = (
+            (override["funded_ratio"] - baseline["funded_ratio"])
+            * Decimal("100")
+        ).quantize(Decimal("0.1"))
+    else:
+        funded_ratio_points = None
+    return {
+        "funded_ratio_points": funded_ratio_points,
+        "shortfall_dollars": (
+            override["surplus_or_shortfall_after_tax"]
+            - baseline["surplus_or_shortfall_after_tax"]
+        ),
     }
 
 
@@ -221,8 +324,9 @@ def _build_countdown(planned_retirement_date, synthetic_periods):
     }
 
 
-def _build_readiness_chart(
+def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     data, projections, synthetic_periods, required_target, effective_tax_rate,
+    return_rate_override=None,
 ):
     """Build the two downsampled string-Decimal chart series (after-tax frame).
 
@@ -254,6 +358,17 @@ def _build_readiness_chart(
         effective_tax_rate: The explicit (possibly F1 zero) estimated
             retirement tax rate applied to the traditional portion of
             "your path".
+        return_rate_override: Optional fractional annual-return what-if.
+            A uniform override IS the blended return (every account's
+            weight carries the same rate), so the needed path reverses
+            under it too -- otherwise the two series would mix return
+            frames.  ``None`` keeps the stored blended average.
+
+    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
+    (6/5) -- these six are the chart's independent inputs (the request
+    data, the account projections, the axis, the target, and the two
+    optional what-if knobs); bundling them into an object would be stamp
+    coupling for one internal call site.
 
     Returns:
         dict with ``your_path`` / ``needed_path`` (lists of string
@@ -263,7 +378,11 @@ def _build_readiness_chart(
     if not synthetic_periods:
         return {"your_path": [], "needed_path": [], "dates": []}
 
-    blended_return = compute_slider_defaults(data)["current_return"] / _PCT_SCALE
+    blended_return = (
+        return_rate_override
+        if return_rate_override is not None
+        else compute_slider_defaults(data)["current_return"] / _PCT_SCALE
+    )
     your_path = _build_your_path(
         projections, synthetic_periods, effective_tax_rate,
     )
