@@ -41,6 +41,24 @@ repos:
           - scripts/
           - --fail-under=10
           - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass
+      - id: pylint-checkers
+        name: pylint checker package (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tools/pylint/shekel_checkers/.*\.py$
+        pass_filenames: false
+        # The custom checkers are the enforcement machinery; they hold the same
+        # 10.00/10 floor they impose on app/ and scripts/ (mirrors ci.yml step
+        # 5a2). Without this, a checker edit could silently regress the plugin
+        # -- the R3 status-fence extension left it at 9.54 until the R10 package
+        # split. Scoped to the shekel_checkers/ package; the tests/ subtree
+        # stays out of general pylint scope (ratified decision #1) and runs
+        # under the shekel-checker-tests pytest hook below.
+        args:
+          - tools/pylint/shekel_checkers/
+          - --fail-under=10
+          - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass
       - id: pylint-cross-tree-duplicates
         name: cross-tree duplicate-code (app/ + scripts/)
         entry: pylint

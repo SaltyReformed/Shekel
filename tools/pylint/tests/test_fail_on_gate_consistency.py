@@ -1,9 +1,10 @@
 """Consistency guard for the pylint hard-gate ``--fail-on`` symbol list.
 
 The project's custom financial-correctness checkers are enforced as pylint hard
-failures (``--fail-on=E,F,shekel-...``) in five executable locations: the two
-``pylint`` steps in CI (``.github/workflows/ci.yml``), the ``pylint-app`` and
-``pylint-scripts`` pre-commit hooks (``.pre-commit-config.yaml``), and the
+failures (``--fail-on=E,F,shekel-...``) in seven executable locations: the three
+``pylint`` floor steps in CI (``.github/workflows/ci.yml``: app/, scripts/, and
+the ``shekel_checkers`` package), the ``pylint-app`` / ``pylint-scripts`` /
+``pylint-checkers`` pre-commit hooks (``.pre-commit-config.yaml``), and the
 hard-block tier of the per-edit hook (``scripts/hooks/post-edit-python.sh``,
 which spells the same symbols as ``--enable``).
 
