@@ -43,16 +43,21 @@ whose non-loan guard keeps the loan and account correction families on
 disjoint charts.  Flask-isolated: plain data in, plain values out; flushes
 but never commits (the caller owns the transaction boundary).
 
-**Write status.**  Pure and UNWIRED as of C5: nothing calls these entry
-points yet.  C6 wires the lifecycle chokepoints (account create, the anchor
-true-up, the direct anchor edit, the pay-period reset, the effect-time
-self-heal inside ``posting_service``, and ``create_baseline``); C7 adds the
-historical backfill.
+**Write status.**  WIRED as of C6, at seven lifecycle chokepoints: account
+create (``account_service.create_account``), the anchor true-up
+(``anchor_service.apply_anchor_true_up``), the direct anchor edit
+(``routes.accounts.crud.update_account``), the pay-period reset
+(``pay_period_admin.reset_pay_periods``), the effect-time self-heal at the
+``posting_service`` sync tails (:func:`self_heal_anchor_corrections`), the
+``create_baseline`` recovery path, and the account-type boundary changes
+(the crud/type routes re-sync an allowed crossing; the validation guards
+refuse one on a posted account).  C7 adds the historical backfill.
 """
 
 from ._anchors import reconcile_account_anchor_corrections
 from ._sync import (
     resync_user_account_anchor_postings,
+    self_heal_anchor_corrections,
     sync_account_anchor_postings,
     sync_account_anchor_postings_all_scenarios,
 )
@@ -67,6 +72,7 @@ __all__ = [
     "AccountAnchorFact",
     "reconcile_account_anchor_corrections",
     "resync_user_account_anchor_postings",
+    "self_heal_anchor_corrections",
     "sync_account_anchor_postings",
     "sync_account_anchor_postings_all_scenarios",
     "walk_account_ledger",

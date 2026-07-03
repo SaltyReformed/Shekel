@@ -88,6 +88,16 @@ logger = logging.getLogger(__name__)
 # it.)  The reconcile is idempotent, so listing a field that did not move the
 # effect is a harmless no-op; this set is the cheap pre-filter that avoids a
 # ledger round-trip on a pure metadata edit.
+# NOTE (Step 5, C6 review M2): ``pay_period_id`` and ``paid_at`` are NOT in
+# this set, so a settled transfer's period move or paid_at edit through this
+# service would change the Step-5 walk's attribution WITHOUT a reconcile or
+# an effect-time self-heal.  Every current caller is safe -- the transfer
+# route's finalised lock refuses settled-row period edits, the shadow PATCH
+# drops ``pay_period_id`` and only passes ``paid_at`` with a status change,
+# and carry-forward moves Projected rows only -- but a future service caller
+# that relaxes this must either add the fields here (period moves then
+# reconcile R2-correctly and self-heal) or keep refusing settled-row
+# mutation at its own tier.
 _POSTING_RELEVANT_FIELDS = frozenset({"status_id", "amount", "actual_amount"})
 
 

@@ -36,6 +36,8 @@ its migration jointly guarantee:
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 
@@ -102,8 +104,11 @@ class TestPartialUnique:
         duplicate linked row would.
         """
         with app.app_context():
+            # $0 anchor: the zero-delta rule mints NO opening and NO twin, so
+            # this test constructs the twin manually at the storage tier.
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Twin Checking",
+                anchor_balance=Decimal("0.00"),
             )
             _db.session.add(LedgerAccount(
                 user_id=account.user_id,
@@ -239,7 +244,12 @@ class TestLinkedRowDisplayName:
         the display label is never a stale snapshot.
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Checking", "Original Name")
+            # $0 anchor keeps the chart at the single linked row this
+            # storage-tier test reads with .one().
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Original Name",
+                anchor_balance=Decimal("0.00"),
+            )
             ledger_account = (
                 _db.session.query(LedgerAccount)
                 .filter_by(account_id=account.id)
@@ -276,7 +286,12 @@ class TestForeignKeyActions:
         account a delete can reach (see the model's impossibility argument).
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Savings", "Empty Savings")
+            # $0 anchor: a truly EMPTY account (a non-zero one posts its
+            # Step-5 opening and is archive-only, never hard-deletable).
+            account = create_account_of_type(
+                seed_user, _db.session, "Savings", "Empty Savings",
+                anchor_balance=Decimal("0.00"),
+            )
             account_id = account.id
             ledger_account_id = (
                 _db.session.query(LedgerAccount)
@@ -705,8 +720,11 @@ class TestAccountOrCategoryExclusiveCheck:
         regardless of constraint-evaluation order.
         """
         with app.app_context():
+            # $0 anchor keeps the chart at the single linked row this test
+            # removes below.
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Both Links",
+                anchor_balance=Decimal("0.00"),
             )
             category = seed_user["categories"]["Groceries"]
             # Free the account_id by removing its linked row so a both-set
@@ -772,8 +790,11 @@ class TestFallbackShapeCheck:
         fallback-shape CHECK, not ``uq_ledger_accounts_account_kind``.
         """
         with app.app_context():
+            # $0 anchor keeps the chart at the single linked row this test
+            # removes below.
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Fallback Account",
+                anchor_balance=Decimal("0.00"),
             )
             linked = (
                 _db.session.query(LedgerAccount)
@@ -1041,7 +1062,12 @@ class TestAuditTableRegistration:
                 "   AND operation = 'INSERT'"
             )).scalar()
 
-            create_account_of_type(seed_user, _db.session, "Checking", "Audited Account")
+            # $0 anchor: exactly one ledger_accounts INSERT (a non-zero
+            # anchor would also mint the Step-5 anchor-equity twin).
+            create_account_of_type(
+                seed_user, _db.session, "Checking", "Audited Account",
+                anchor_balance=Decimal("0.00"),
+            )
 
             after = _db.session.execute(_db.text(
                 "SELECT count(*) FROM system.audit_log "

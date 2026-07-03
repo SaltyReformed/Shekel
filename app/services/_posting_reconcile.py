@@ -35,9 +35,9 @@ from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
-from app.services.posting_service import (
+from app.services.posting_reads import PostingError
+from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    PostingError,
     _PostingLeg,
     _emit_balanced_entry,
 )

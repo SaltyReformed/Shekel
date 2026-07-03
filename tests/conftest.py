@@ -950,6 +950,19 @@ def seed_user(app, db):
     db.session.add(bootstrap_period)
     db.session.flush()
 
+    # Baseline scenario BEFORE the account, matching production
+    # registration order (Build-Order Step 5): ``create_account`` posts the
+    # opening anchor correction into every scenario, so the baseline must
+    # exist first -- the seeded Checking then carries its $1000.00 opening
+    # on the posting ledger from t0, exactly like a production account.
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.flush()
+
     # Default Checking account via the canonical factory.  Tests that
     # later true-up the anchor produce additional AccountAnchorHistory
     # rows; the factory's origination row is here from t0 so the
@@ -967,14 +980,6 @@ def seed_user(app, db):
             notes="seed_user fixture origination",
         ),
     )
-
-    scenario = Scenario(
-        user_id=user.id,
-        name="Baseline",
-        is_baseline=True,
-    )
-    db.session.add(scenario)
-    db.session.flush()
 
     # Create default categories.
     categories = []
@@ -1063,6 +1068,17 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         "SET period_index = period_index - 1 "
         "WHERE user_id = :u"
     ), {"u": seed_user["user"].id})
+    # Step 4: re-post the anchor corrections the bootstrap delete disposed
+    # (Build-Order Step 5).  The seeded Checking's $1000 opening entry was
+    # attributed to the bootstrap period (journal_entries.pay_period_id is
+    # ON DELETE CASCADE), so step 2 took it with the period; the history
+    # rows survived via the step-1 repoint, so the per-user resync
+    # re-derives the openings onto the new anchor period -- the same
+    # re-derivation the production pay-period reset performs.
+    from app.services import account_posting_service  # pylint: disable=import-outside-toplevel
+    account_posting_service.resync_user_account_anchor_postings(
+        seed_user["user"].id,
+    )
     db.session.commit()
     # Refresh the in-memory period rows the caller will use.
     db.session.expire_all()
@@ -1998,6 +2014,18 @@ def seed_second_user(app, db):
     db.session.add(bootstrap_period)
     db.session.flush()
 
+    # Baseline scenario BEFORE the account, mirroring ``seed_user`` (and
+    # production registration): ``create_account`` posts the opening anchor
+    # correction into every scenario, so the second Checking carries its
+    # $2000.00 opening from t0.
+    scenario = Scenario(
+        user_id=user.id,
+        name="Baseline",
+        is_baseline=True,
+    )
+    db.session.add(scenario)
+    db.session.flush()
+
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
     )
@@ -2011,14 +2039,6 @@ def seed_second_user(app, db):
             notes="seed_second_user fixture origination",
         ),
     )
-
-    scenario = Scenario(
-        user_id=user.id,
-        name="Baseline",
-        is_baseline=True,
-    )
-    db.session.add(scenario)
-    db.session.flush()
 
     categories = []
     for group, item in [

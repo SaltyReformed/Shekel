@@ -36,6 +36,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
+    account_posting_service,
     account_service,
     anchor_service,
     loan_posting_service,
@@ -464,7 +465,12 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          independently of any settled transaction, so the zero-settled gate
          does NOT keep them; their SOURCE facts (``LoanParams`` and the
          ``user_trueup`` ``LoanAnchorEvent`` rows) survive, so this re-derives
-         and re-posts them attributed to the new periods.
+         and re-posts them attributed to the new periods.  Then the same for
+         the non-loan accounts' anchor corrections (Build-Order Step 5,
+         :func:`account_posting_service.resync_user_account_anchor_postings`):
+         the wipe took their correction entries AND history rows, and step 7
+         staged one fresh origination row per account, so each account's
+         opening re-posts onto the rebuilt schedule at its preserved balance.
       9. Persist the new cadence.  The route's commit then validates the
          deferred FK.
 
@@ -532,6 +538,14 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # CASCADE wiped: their source facts survived, so this re-derives them
     # onto the rebuilt schedule inside this transaction (review M2 / R7).
     loan_posting_service.resync_user_loan_postings(user_id)
+    # Same for the NON-loan accounts' anchor corrections (Build-Order Step
+    # 5): the wipe CASCADEd their opening / true-up entries with the old
+    # periods AND their history rows, and ``_reanchor_accounts`` staged one
+    # fresh origination row per account, so this re-derives each opening
+    # onto the rebuilt schedule.  Post-reset is clean by construction: the
+    # zero-settled gate guarantees no posted source effects survive, so
+    # each account walks to exactly its preserved anchor balance.
+    account_posting_service.resync_user_account_anchor_postings(user_id)
 
     pay_schedule_service.upsert_schedule(user_id, cadence_days)
     return new_periods

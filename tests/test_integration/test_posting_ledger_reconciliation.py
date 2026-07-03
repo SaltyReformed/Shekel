@@ -74,10 +74,18 @@ import pytest
 from sqlalchemy import case
 
 from app import ref_cache
-from app.enums import PostingKindEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    LedgerAccountKindEnum,
+    PostingKindEnum,
+    PostingSourceEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db as _db
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
+from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -87,7 +95,7 @@ from tests._test_helpers import (
     clear_postings_for_transfer,
     create_account_of_type,
     create_settled_transfer,
-    ledger_accounts_for_account,
+    linked_ledger_account,
     load_migration_module,
 )
 
@@ -104,13 +112,20 @@ from tests._test_helpers import (
 
 
 def _independent_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
-    """Sum a real account's posting legs in a scenario (independent query).
+    """Sum a real account's LINKED posting legs in a scenario (independent query).
 
     Joins ``account_postings`` -> ``journal_entries`` (for the scenario) ->
     ``ledger_accounts`` (for the real ``account_id``), summing the signed
     ``amount``.  Keyed off the REAL account via ``ledger_accounts.account_id``,
     a different join shape than ``posting_service.account_posting_total`` (which
     resolves the ledger account first), so the two cannot share a lookup bug.
+
+    Filtered to the LINKED kind (Step 5): an anchor correction lands
+    ``+delta`` on the linked row and ``-delta`` on the ``anchor_equity``
+    twin, which shares the ``account_id`` column -- a bare-``account_id``
+    sum would cancel the correction pairwise and silently reproduce the
+    pre-Step-5 changes-only figure, making the absolute assertions
+    vacuous.
     """
     return (
         _db.session.query(
@@ -121,10 +136,29 @@ def _independent_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
         .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
         .filter(
             LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
             JournalEntry.scenario_id == scenario_id,
         )
         .scalar()
     )
+
+
+def _opening_anchor(account_id: int) -> Decimal:
+    """Return an account's anchor balance -- its posted opening's target.
+
+    The Step-5 opening correction drives the linked ledger to exactly the
+    account's asserted anchor at creation (every account in this suite
+    carries only its origination assertion, and every settle is stamped at
+    server-now, after it), so the absolute reconciliation is
+    ``linked ledger == anchor + settled effect``.
+    """
+    return Decimal(str(
+        _db.session.query(Account.current_anchor_balance)
+        .filter(Account.id == account_id)
+        .scalar()
+    ))
 
 
 def _independent_txn_effect(account_id: int, scenario_id: int) -> Decimal:
@@ -195,16 +229,46 @@ def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
 
 
 def _assert_full_reconciliation(scenario_id: int) -> None:
-    """Assert every linked ledger account reconciles in *scenario_id*.
+    """Assert every non-loan linked ledger reconciles ABSOLUTELY in *scenario_id*.
 
-    The production-wide sweep: for each real account (its linked ledger
-    account), the independent ledger sum equals the independent settled-shadow
-    effect.  Holds over every account that has postings, not only the ones a
-    given test hand-computes.
+    The production-wide sweep in its Step-5 absolute form: for each non-loan
+    real account (its LINKED ledger row), the independent ledger sum equals
+    the account's opening anchor plus the independent settled-shadow effect
+    (every settle in this suite is stamped at server-now, after the
+    origination assertion).  Amortizing loans are excluded -- their absolute
+    invariant couples on the amortization split and is the loan oracle's job
+    (``test_posting_ledger_loan_reconciliation.py``).  Holds over every
+    account that has postings, not only the ones a given test hand-computes.
+
+    Scenario caveat: a NON-baseline scenario carries the openings here only
+    because these fixtures settle on the same UTC day the accounts were
+    created, so the effect-time self-heal fires alongside the scenario's
+    first settle.  That is NOT a general guarantee -- a what-if whose first
+    settle lands on a later day gets its openings only at the next
+    account-global sync; R8 owns the residual multi-scenario policy, and a
+    future scenario-clone path must sync the new scenario explicitly.
     """
+    scenario_owner_id = (
+        _db.session.query(Scenario.user_id)
+        .filter(Scenario.id == scenario_id)
+        .scalar()
+    )
     linked = (
         _db.session.query(LedgerAccount)
-        .filter(LedgerAccount.account_id.isnot(None))
+        .join(Account, LedgerAccount.account_id == Account.id)
+        .join(AccountType, Account.account_type_id == AccountType.id)
+        .filter(
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            AccountType.has_amortization.is_(False),
+            # Scoped to the scenario OWNER's accounts: another owner's
+            # account has neither postings nor an opening in this scenario,
+            # so the absolute form is not a statement about it.  See the
+            # docstring's scenario caveat for why the swept scenarios all
+            # carry their owner's openings HERE.
+            Account.user_id == scenario_owner_id,
+        )
         .all()
     )
     # Every caller settles at least one transfer, which mints both legs' linked
@@ -218,26 +282,38 @@ def _assert_full_reconciliation(scenario_id: int) -> None:
     for ledger_account in linked:
         ledger = _independent_ledger_sum(ledger_account.account_id, scenario_id)
         effect = _independent_txn_effect(ledger_account.account_id, scenario_id)
-        assert ledger == effect, (
+        opening = _opening_anchor(ledger_account.account_id)
+        assert ledger == opening + effect, (
             f"account {ledger_account.account_id}: ledger {ledger} != "
-            f"settled-shadow effect {effect} in scenario {scenario_id}"
+            f"opening {opening} + settled-shadow effect {effect} in "
+            f"scenario {scenario_id}"
         )
 
 
-def _legs_by_account(account_id: int) -> dict[int, Decimal]:
-    """Return ``{journal_entry_id: leg_amount}`` for a real account's legs.
+def _legs_by_account(account_id: int, transfer_id: int) -> dict[int, Decimal]:
+    """Return ``{journal_entry_id: leg_amount}`` for one transfer's legs on an account.
 
     Used to compare a transfer posted go-forward against the same transfer
     posted by the backfill: both must land the same signed amount on the
-    account's ledger.
+    account's LINKED ledger.  Scoped by *transfer_id* AND the LINKED kind:
+    a Step-5 anchor correction also lands legs sharing the ``account_id``
+    (its equity twin carries the negation), so a bare-``account_id`` map
+    would fold correction legs into the transfer comparison.
     """
     return {
         entry_id: amount
         for entry_id, amount in _db.session.query(
             Posting.journal_entry_id, Posting.amount
         )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
         .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
-        .filter(LedgerAccount.account_id == account_id)
+        .filter(
+            LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            JournalEntry.transfer_id == transfer_id,
+        )
         .all()
     }
 
@@ -316,11 +392,16 @@ class TestPerAccountReconciliation:
         """Checking/Savings/Mortgage reconcile by hand, query, and helper.
 
         Arithmetic (baseline scenario): Checking sends $100 to Savings and $250
-        to Mortgage, so its ledger nets -350.00; Savings receives +100.00;
-        Mortgage (a liability paid down) receives +250.00.  The unsettled $40
-        Projected transfer posts nothing.  All three independent computations
-        -- hand-computed literal, independent cross-table query, and the
-        production service helper -- must agree on every account.
+        to Mortgage, so its settled effect is -350.00; Savings receives
+        +100.00; Mortgage (a liability paid down) receives +250.00.  The
+        unsettled $40 Projected transfer posts nothing.  On the LEDGER side
+        each effect rides on the account's Step-5 opening -- Checking
+        1000 - 350 = 650.00, Savings 100 + 100 = 200.00; the Mortgage is
+        amortizing (no account-walk opening; it carries no LoanParams, so no
+        loan genesis either), leaving its ledger at the bare +250.00.  All
+        three independent computations -- hand-computed literal, independent
+        cross-table query, and the production service helper -- must agree
+        on every account.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -328,24 +409,29 @@ class TestPerAccountReconciliation:
             savings, mortgage = _build_asset_and_liability_books(seed_user)
 
             expected = {
-                checking.id: Decimal("-350.00"),
-                savings.id: Decimal("100.00"),
-                mortgage.id: Decimal("250.00"),
+                checking.id: (Decimal("650.00"), Decimal("-350.00")),
+                savings.id: (Decimal("200.00"), Decimal("100.00")),
+                mortgage.id: (Decimal("250.00"), Decimal("250.00")),
             }
-            for account_id, want in expected.items():
+            for account_id, (want_ledger, want_effect) in expected.items():
                 # (a) hand-computed literal == independent ledger-table query.
-                assert _independent_ledger_sum(account_id, scenario_id) == want
-                # (b) independent ledger query == independent txn-table query
-                #     (postings reconcile to the transaction source of truth).
-                assert _independent_txn_effect(account_id, scenario_id) == want
+                assert _independent_ledger_sum(
+                    account_id, scenario_id,
+                ) == want_ledger
+                # (b) independent txn-table query == the hand-computed effect
+                #     (postings reconcile to the transaction source of truth
+                #     through the absolute sweep below).
+                assert _independent_txn_effect(
+                    account_id, scenario_id,
+                ) == want_effect
                 # (c) the production service helpers agree too (the readers
                 #     Steps 4-5 will switch balances onto).
                 assert posting_service.account_posting_total(
                     account_id, scenario_id,
-                ) == want
+                ) == want_ledger
                 assert posting_service.settled_transfer_effect(
                     account_id, scenario_id,
-                ) == want
+                ) == want_effect
 
             # Production-wide sweep: every linked ledger account reconciles.
             _assert_full_reconciliation(scenario_id)
@@ -353,12 +439,13 @@ class TestPerAccountReconciliation:
     def test_reverted_transfer_reconciles_at_zero(self, app, db, seed_user):
         """A settled-then-reverted transfer reconciles to zero on both sides.
 
-        Arithmetic: settle +100 (Savings), then revert.  The ledger nets to
+        Arithmetic: settle +100 (Savings), then revert.  The transfer nets to
         zero (+100 settle, -100 reversal -- append-only), and the reverted
         income shadow is no longer ``is_settled`` so it drops from the
-        settled-shadow effect too.  Both sides read 0.00, and two entries
-        survive (the original is never edited).  This is the append-only
-        correction discipline proven through the oracle.
+        settled-shadow effect too.  Each ledger lands back on its opening
+        (Checking 1000.00, Savings 100.00) with a zero effect, and two
+        transfer entries survive (the original is never edited).  This is
+        the append-only correction discipline proven through the oracle.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -379,10 +466,13 @@ class TestPerAccountReconciliation:
             )
             _db.session.commit()
 
-            for account_id in (checking.id, savings.id):
+            for account_id, opening in (
+                (checking.id, Decimal("1000.00")),
+                (savings.id, Decimal("100.00")),
+            ):
                 assert _independent_ledger_sum(
                     account_id, scenario_id,
-                ) == Decimal("0.00")
+                ) == opening
                 assert _independent_txn_effect(
                     account_id, scenario_id,
                 ) == Decimal("0.00")
@@ -410,10 +500,11 @@ class TestPerAccountReconciliation:
         Arithmetic: a $100 nominal Checking -> Savings transfer settles with an
         actual of $97.50, so the income shadow's effective is
         COALESCE(97.50, 100.00) = 97.50.  The posting MUST be -97.50 / +97.50,
-        NOT -100 / +100, and every reconciliation side must read 97.50.  A
-        producer that posted the $100 estimate would leave the ledger at +100
-        while the settled-shadow effect is +97.50 -- a divergence this case
-        catches and the others cannot.
+        NOT -100 / +100 -- on the ledger side riding each opening (Savings
+        100 + 97.50 = 197.50, Checking 1000 - 97.50 = 902.50).  A producer
+        that posted the $100 estimate would leave Savings' ledger at +200
+        while its opening + settled-shadow effect is +197.50 -- a divergence
+        this case catches and the others cannot.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -430,20 +521,25 @@ class TestPerAccountReconciliation:
             _db.session.commit()
 
             # effective = COALESCE(97.50, 100.00) = 97.50 (actual over estimate),
-            # NOT the $100 nominal amount.
+            # NOT the $100 nominal amount; the ledger carries it on each
+            # account's opening.
             expected = {
-                savings.id: Decimal("97.50"),
-                checking.id: Decimal("-97.50"),
+                savings.id: (Decimal("197.50"), Decimal("97.50")),
+                checking.id: (Decimal("902.50"), Decimal("-97.50")),
             }
-            for account_id, want in expected.items():
-                assert _independent_ledger_sum(account_id, scenario_id) == want
-                assert _independent_txn_effect(account_id, scenario_id) == want
+            for account_id, (want_ledger, want_effect) in expected.items():
+                assert _independent_ledger_sum(
+                    account_id, scenario_id,
+                ) == want_ledger
+                assert _independent_txn_effect(
+                    account_id, scenario_id,
+                ) == want_effect
                 assert posting_service.account_posting_total(
                     account_id, scenario_id,
-                ) == want
+                ) == want_ledger
                 assert posting_service.settled_transfer_effect(
                     account_id, scenario_id,
-                ) == want
+                ) == want_effect
             _assert_full_reconciliation(scenario_id)
 
 
@@ -471,8 +567,9 @@ class TestEverySettledTransferPosts:
 
         Arithmetic: the two simple settles ($100 to Savings, $250 to Mortgage)
         each post exactly one entry, so the 2 settled non-deleted transfers map
-        one-to-one onto 2 journal entries; the Projected $40 transfer is not
-        settled and posts none.
+        one-to-one onto the 2 TRANSFER-sourced journal entries (the Step-5
+        account openings carry their own source kinds and are excluded); the
+        Projected $40 transfer is not settled and posts none.
         """
         with app.app_context():
             _build_asset_and_liability_books(seed_user)
@@ -497,9 +594,18 @@ class TestEverySettledTransferPosts:
                     f"settled transfer {xfer.id} posted no journal entry"
                 )
             # Simple settles post exactly one entry each, so the settled
-            # transfers and the journal entries are in bijection -- no skip
-            # (an entry-less settled transfer) and no stray double-post.
-            assert _db.session.query(JournalEntry).count() == len(settled)
+            # transfers and the TRANSFER-sourced journal entries are in
+            # bijection -- no skip (an entry-less settled transfer) and no
+            # stray double-post.
+            assert (
+                _db.session.query(JournalEntry)
+                .filter(
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER,
+                    ),
+                )
+                .count()
+            ) == len(settled)
 
 
 # ---------------------------------------------------------------------------
@@ -516,15 +622,25 @@ class TestPerEntryAndTrialBalance:
         """Two settled transfers -> two balanced entries; trial balance 0.
 
         Arithmetic: the $100 and $250 settles each post a two-leg entry summing
-        to zero, so no entry violates ``SUM = 0`` / ``COUNT >= 2``, and the
-        whole-ledger total is -350 + 100 + 250 = 0.00.
+        to zero, and the Step-5 openings (Checking +1000/-1000, Savings
+        +100/-100 against their equity twins) are balanced pairs too, so no
+        entry violates ``SUM = 0`` / ``COUNT >= 2`` and the whole-ledger
+        total stays 0.00.
         """
         with app.app_context():
             _build_asset_and_liability_books(seed_user)
 
-            # Exactly the two settled transfers produced entries (the $40
-            # Projected posted none).
-            assert _db.session.query(JournalEntry).count() == 2
+            # Exactly the two settled transfers produced TRANSFER-sourced
+            # entries (the $40 Projected posted none).
+            assert (
+                _db.session.query(JournalEntry)
+                .filter(
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER,
+                    ),
+                )
+                .count()
+            ) == 2
             # No entry violates the per-entry balanced invariant.
             assert _entries_violating_balance() == []
             # Whole-ledger trial balance is zero.
@@ -543,10 +659,13 @@ class TestMultiScenarioIsolation:
         """A $100 baseline and a $70 what-if transfer never bleed together.
 
         Arithmetic: Savings receives $100 in the baseline scenario and $70 in a
-        separate what-if scenario.  Scoped to baseline the Savings ledger is
-        +100.00 (NOT +170); scoped to the what-if it is +70.00.  The
-        ``scenario_id`` denorm on the journal entry keeps the two apart, and
-        each scenario reconciles independently.
+        separate what-if scenario, each riding the $100.00 opening its
+        scenario carries (the opening posts per scenario: in the baseline at
+        create time, in the what-if via the effect-time self-heal when the
+        $70 settle posts there).  Scoped to baseline the Savings ledger is
+        100 + 100 = 200.00 (NOT 270); scoped to the what-if it is
+        100 + 70 = 170.00.  The ``scenario_id`` denorm on the journal entry
+        keeps the two apart, and each scenario reconciles independently.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -575,27 +694,28 @@ class TestMultiScenarioIsolation:
             )
             _db.session.commit()
 
-            # Savings: +100 in baseline, +70 in the what-if -- never +170.
+            # Savings: opening + 100 in baseline, opening + 70 in the
+            # what-if -- never the cross-scenario 270.
             assert _independent_ledger_sum(
                 savings.id, baseline.id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             assert _independent_ledger_sum(
                 savings.id, whatif.id,
-            ) == Decimal("70.00")
-            # Checking mirrors: -100 baseline, -70 what-if.
+            ) == Decimal("170.00")
+            # Checking mirrors on its $1000 opening: 900 baseline, 930 what-if.
             assert _independent_ledger_sum(
                 checking.id, baseline.id,
-            ) == Decimal("-100.00")
+            ) == Decimal("900.00")
             assert _independent_ledger_sum(
                 checking.id, whatif.id,
-            ) == Decimal("-70.00")
+            ) == Decimal("930.00")
             # The service helper agrees, and each scenario reconciles alone.
             assert posting_service.account_posting_total(
                 savings.id, baseline.id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             assert posting_service.account_posting_total(
                 savings.id, whatif.id,
-            ) == Decimal("70.00")
+            ) == Decimal("170.00")
             _assert_full_reconciliation(baseline.id)
             _assert_full_reconciliation(whatif.id)
 
@@ -615,7 +735,8 @@ class TestOwnerIsolationViaJournalEntry:
 
         Arithmetic: owner 1 settles $100 (their Checking -> their Savings);
         owner 2 settles $200 (their Checking -> their Savings).  Owner 1's
-        Savings ledger is +100.00 and owner 2's is +200.00 with no leakage.
+        Savings ledger is 100 (opening) + 100 = 200.00 and owner 2's is
+        100 (opening) + 200 = 300.00 with no leakage.
         Every journal entry's ``user_id`` matches its account owner, the leg's
         owner is reachable only via ``Posting.journal_entry.user_id`` (a
         ``Posting`` carries no ``user_id`` column), and each owner's books
@@ -650,10 +771,10 @@ class TestOwnerIsolationViaJournalEntry:
             # No leakage: each owner's Savings ledger holds only their own.
             assert _independent_ledger_sum(
                 savings1.id, scenario1,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             assert _independent_ledger_sum(
                 savings2.id, scenario2,
-            ) == Decimal("200.00")
+            ) == Decimal("300.00")
 
             # A Posting has no user_id of its own (ownership is normalized onto
             # the journal entry); the owner is reached only via the entry.
@@ -708,18 +829,20 @@ class TestBackfillAndGoForwardAgree:
             )
             _db.session.commit()
 
-            # Capture the go-forward legs on each account's ledger.
+            # Capture the go-forward legs on each account's ledger (each
+            # rides its Step-5 opening: Savings 100 + 100, Checking
+            # 1000 - 100).
             forward_savings = _independent_ledger_sum(savings.id, scenario_id)
             forward_checking = _independent_ledger_sum(checking.id, scenario_id)
-            assert forward_savings == Decimal("100.00")
-            assert forward_checking == Decimal("-100.00")
+            assert forward_savings == Decimal("200.00")
+            assert forward_checking == Decimal("900.00")
 
             # Clear to the pre-ledger historical state and re-post via the
             # migration's raw-SQL backfill (the historical producer).
             clear_postings_for_transfer(transfer.id)
             assert _independent_ledger_sum(
                 savings.id, scenario_id,
-            ) == Decimal("0.00")  # cleared
+            ) == Decimal("100.00")  # cleared back to the opening
             posted = _BACKFILL_MIGRATION._backfill_settled_transfers(_db.session)
             _db.session.commit()
             assert posted == [transfer.id]
@@ -739,9 +862,9 @@ class TestBackfillAndGoForwardAgree:
                 .filter_by(transfer_id=transfer.id)
                 .count()
             ) == 1
-            assert list(_legs_by_account(savings.id).values()) == [
-                Decimal("100.00"),
-            ]
+            assert list(
+                _legs_by_account(savings.id, transfer.id).values()
+            ) == [Decimal("100.00")]
             assert _entries_violating_balance() == []
             assert _trial_balance() == Decimal("0.00")
             _assert_full_reconciliation(scenario_id)
@@ -779,10 +902,12 @@ class TestOracleIsNotVacuous:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            # Reconciled before tampering.
+            # Reconciled (absolutely) before tampering.
             assert _independent_ledger_sum(
                 savings.id, scenario_id,
-            ) == _independent_txn_effect(savings.id, scenario_id)
+            ) == _opening_anchor(savings.id) + _independent_txn_effect(
+                savings.id, scenario_id,
+            )
 
             # Tamper the income shadow's estimated amount (transactions carry no
             # balance trigger, so this commits); effective becomes 999.
@@ -798,9 +923,10 @@ class TestOracleIsNotVacuous:
 
             ledger = _independent_ledger_sum(savings.id, scenario_id)
             effect = _independent_txn_effect(savings.id, scenario_id)
-            assert ledger == Decimal("100.00")  # ledger unchanged
+            assert ledger == Decimal("200.00")  # ledger unchanged
             assert effect == Decimal("999.00")  # transaction truth drifted
-            assert ledger != effect  # the oracle would catch this drift
+            # opening (100) + effect (999) != ledger (200): the drift shows.
+            assert ledger != _opening_anchor(savings.id) + effect
             # Drive the REAL production-wide sweep helper (not just the inline
             # re-derivation above) so a regression that broke the helper itself --
             # e.g. one that stopped comparing the ledger to its source -- would
@@ -826,17 +952,23 @@ class TestOracleIsNotVacuous:
                 seed_user, _db.session, "Savings", "TrialBalance Savings",
             )
             _db.session.commit()
-            create_settled_transfer(
+            transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
             assert _trial_balance() == Decimal("0.00")
 
-            # Inject one extra, unmatched leg onto an existing entry.  Flush
-            # (not commit) makes it visible to the query; the DEFERRED balanced
-            # trigger validates only at COMMIT, which we never reach.
-            entry_id = _db.session.query(JournalEntry.id).scalar()
+            # Inject one extra, unmatched leg onto the transfer's entry
+            # (picked by its link -- the Step-5 openings mean several entries
+            # exist).  Flush (not commit) makes it visible to the query; the
+            # DEFERRED balanced trigger validates only at COMMIT, which we
+            # never reach.
+            entry_id = (
+                _db.session.query(JournalEntry.id)
+                .filter_by(transfer_id=transfer.id)
+                .scalar()
+            )
             _db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
                 "  (journal_entry_id, ledger_account_id, amount, "
@@ -844,7 +976,7 @@ class TestOracleIsNotVacuous:
                 "VALUES (:e, :l, :a, :k)"
             ), {
                 "e": entry_id,
-                "l": ledger_accounts_for_account(_db.session, savings.id)[0].id,
+                "l": linked_ledger_account(_db.session, savings.id).id,
                 "a": Decimal("50.00"),
                 "k": ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
             })

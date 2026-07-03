@@ -65,7 +65,22 @@ from app.services import ledger_account_service, posting_reads
 from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
+    linked_ledger_account,
 )
+
+
+def _rows_by_kind(account_id):
+    """Return ``{kind_id: LedgerAccount}`` for an account's ledger rows.
+
+    The kind-aware shape lookup (Step 5): a non-loan account created with the
+    $100 ledger-suite sentinel carries TWO rows -- the ``linked`` pairing and
+    the ``anchor_equity`` twin its opening correction minted -- so a shape
+    assertion must say WHICH kinds it expects instead of counting rows.
+    """
+    return {
+        row.kind_id: row
+        for row in ledger_accounts_for_account(_db.session, account_id)
+    }
 
 
 class TestSyncHookShape:
@@ -87,9 +102,18 @@ class TestSyncHookShape:
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "New Checking",
             )
-            rows = ledger_accounts_for_account(_db.session, account.id)
-            assert len(rows) == 1
-            ledger_account = rows[0]
+            by_kind = _rows_by_kind(account.id)
+            # Exactly the linked pairing plus the Step-5 anchor-equity twin
+            # its $100 sentinel opening minted.
+            assert set(by_kind) == {
+                ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
+                ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                ),
+            }
+            ledger_account = by_kind[
+                ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED)
+            ]
             assert ledger_account.account_id == account.id
             assert ledger_account.name is None
             assert ledger_account.user_id == account.user_id
@@ -121,15 +145,16 @@ class TestSyncHookShape:
         Liability-category types (Mortgage, Auto Loan, Credit Card) ->
         Liability; every other category (Asset, Retirement, Investment) ->
         Asset.  Proves the category-ID branch end to end across all four
-        categories.
+        categories.  The class under test is the LINKED row's; a non-loan
+        type also carries the Step-5 anchor-equity twin (always Equity
+        class), while an amortizing type never does.
         """
         with app.app_context():
             account = create_account_of_type(
                 seed_user, _db.session, type_name, f"Test {type_name}",
             )
-            rows = ledger_accounts_for_account(_db.session, account.id)
-            assert len(rows) == 1
-            assert rows[0].class_id == ref_cache.ledger_account_class_id(
+            linked = linked_ledger_account(_db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
                 expected_class,
             )
 
@@ -150,15 +175,18 @@ class TestSyncHookIdempotency:
             account = create_account_of_type(
                 seed_user, _db.session, "Savings", "Idem Savings",
             )
-            first = ledger_accounts_for_account(_db.session, account.id)
-            assert len(first) == 1
-            first_id = first[0].id
+            first_id = linked_ledger_account(_db.session, account.id).id
 
             again = ledger_account_service.create_ledger_account_for_account(
                 account,
             )
             assert again.id == first_id
-            assert len(ledger_accounts_for_account(_db.session, account.id)) == 1
+            # Still exactly one LINKED row (the anchor-equity twin coexists
+            # beside it and is not the hook's concern).
+            assert linked_ledger_account(_db.session, account.id).id == first_id
+            assert len(ledger_accounts_for_account(
+                _db.session, account.id,
+            )) == 2
 
     def test_hook_recreates_after_deletion(self, app, db, seed_user):
         """Deleting the pairing then re-syncing restores exactly one row.
@@ -1152,6 +1180,13 @@ class TestAnchorEquityResolverValidation:
                 ledger_account_service.get_or_create_anchor_equity_account(
                     user_a, foreign_account.id,
                 )
-            assert len(
-                ledger_accounts_for_account(_db.session, foreign_account.id)
-            ) == 1  # only the owner's linked row
+            # Only the owner's own rows survive (their linked pairing and
+            # the twin their $2000 opening minted) -- none owned by user A.
+            foreign_rows = ledger_accounts_for_account(
+                _db.session, foreign_account.id,
+            )
+            assert len(foreign_rows) == 2
+            assert all(
+                row.user_id == seed_second_user["user"].id
+                for row in foreign_rows
+            )

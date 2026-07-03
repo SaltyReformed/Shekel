@@ -1,4 +1,4 @@
-"""Tests for the account posting service (Build-Order Step 5, C5: pure + unwired).
+"""Tests for the account posting service (Build-Order Step 5, C5 + the C6 wiring).
 
 :mod:`app.services.account_posting_service` posts a NON-loan account's anchor
 assertions into the double-entry ledger: the once-per-account OPENING (its
@@ -7,9 +7,12 @@ balanced correction driving the linked ledger's total to the asserted balance
 at the assertion MOMENT.  The walk partitions source facts by attribution
 INSTANT (``paid_at``, transfers by the income shadow's, period-start fallback)
 against each anchor's ``created_at`` -- never by pay period (the plan review's
-CRITICAL-1).  As of C5 nothing is wired, so these tests drive the walk and the
-sync entry points directly, the way the loan anchor suite drove its inert
-half.
+CRITICAL-1).  These tests drive the walk and the sync entry points directly;
+since C6 the lifecycle chokepoints are ALSO live underneath them --
+``create_account`` posts each opening at fixture time and the effect-time
+self-heal reconciles at every settle / revert -- so the explicit sync calls
+double as idempotency proofs, and the step-count assertions reflect the eager
+per-mutation reconcile (each intermediate state lands exactly on the anchor).
 
 Fixtures are SYNTHETIC with HAND-COMPUTED literals, each docstring showing the
 arithmetic.  Assertion instants are constructed RELATIVE to the factory
@@ -40,8 +43,10 @@ from app.models.user import User
 from app.services import (
     account_posting_service,
     account_service,
+    anchor_service,
     posting_service,
 )
+from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
     create_account_of_type,
@@ -150,20 +155,20 @@ def _entry_legs(entry_id):
 
 
 def _settle_expense(seed_user, account, amount, paid_at):
-    """Settle an expense on *account* and pin its ``paid_at``; return it.
+    """Settle an expense on *account* at a pinned ``paid_at``; return it.
 
     ``paid_at`` may be an instant or None (the period-start fallback under
-    test).  The transaction is placed in the seed bootstrap period; the walk
-    attributes by instant, so the period placement is immaterial except for
-    the NULL-``paid_at`` fallback.
+    test), pinned BEFORE the ledger emission so the posted entry and the
+    walk's attribution agree, as in production (the C6 effect-time
+    self-heal reads the emitted ``entry_date``s).  The transaction is
+    placed in the seed bootstrap period; the walk attributes by instant,
+    so the period placement is immaterial except for the NULL-``paid_at``
+    fallback.
     """
-    txn = create_settled_cash_transaction(
+    return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
-        Decimal(str(amount)), account=account,
+        Decimal(str(amount)), account=account, paid_at=paid_at,
     )
-    txn.paid_at = paid_at
-    _db.session.flush()
-    return txn
 
 
 # ---------------------------------------------------------------------------
@@ -605,12 +610,20 @@ class TestSyncAccountAnchorPostings:
 
         Anchor 500; a $200.00 expense paid T+1h; true-up 350.00 at T+2h
         posts +50.00 (ledger_before 300).  The user then reverts the $200
-        and instead settles $150.00 paid T+1.5h (still pre-true-up), so the
-        walk's true-up ledger_before moves to 500 - 150 = 350 -- delta 0.
-        The zero-delta correction still creates its (trueup, day) KEY with
-        an empty leg map, so the resync REVERSES the stale +50.00 entirely
-        (books nothing new otherwise), attributed to the history row's own
-        period:
+        and instead settles $150.00 paid T+1.5h (still pre-true-up).  The
+        C6 effect-time self-heal reconciles at EACH mutation, landing the
+        ledger exactly on the anchor at every step:
+
+          revert:     ledger_before 500, target -150, posted +50
+                      -> delta -200.00 (linked total 500 - 150 = 350)
+          settle 150: ledger_before 500 - 150 = 350 -- delta 0.  The
+                      zero-delta correction still creates its (trueup,
+                      day) KEY with an empty leg map, so the stale
+                      -150.00 net REVERSES via the empty-target path
+                      -> delta +150.00 (linked total 350 again)
+
+        The final explicit resync books nothing (idempotent).  All three
+        key entries are attributed to the history row's own period, and:
 
           linked: 500 (opening) + 0 (true-up net) - 150 = 350.00 == anchor.
         """
@@ -646,7 +659,7 @@ class TestSyncAccountAnchorPostings:
             trueups = _correction_entries(
                 account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
             )
-            assert len(trueups) == 2
+            assert len(trueups) == 3
             assert all(
                 entry.pay_period_id == trueup_row.pay_period_id
                 for entry in trueups
@@ -896,6 +909,109 @@ class TestSyncEntryPoints:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("500.00")
+
+    def test_wired_create_posts_opening_unprompted(self, app, db, seed_user):
+        """``create_account`` posts the opening with NO manual sync call (C6).
+
+        The factory itself drives the all-scenarios sync after the ledger
+        pairing, so a $750.00 account carries its balanced opening the
+        moment the creating transaction commits -- nothing here invokes the
+        posting package.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "750.00")
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("750.00")
+            assert len(_correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_OPENING,
+            )) == 1
+
+    def test_wired_self_heal_absorbs_pre_assertion_settle(
+        self, app, db, seed_user,
+    ):
+        """A pre-assertion settle re-bases the opening with NO manual sync (C6).
+
+        A NULL-``paid_at`` settle in the 2024 bootstrap period is attributed
+        at the period start -- BEFORE the account's origination assertion --
+        so the effect-time self-heal at the ``sync_transaction_postings``
+        tail re-derives the opening in the same transaction: the opening key
+        moves to +700.00 (500 - (-200)) and the account's total stays
+        exactly on the 500.00 anchor.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "500.00")
+            _settle_expense(seed_user, account, "200.00", None)
+            _db.session.commit()
+
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("500.00")
+            linked = _ledger_of_kind(account.id, LedgerAccountKindEnum.LINKED)
+            openings = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_OPENING,
+            )
+            assert sum(
+                (_entry_legs(entry.id)[linked.id][0] for entry in openings),
+                Decimal("0"),
+            ) == Decimal("700.00")
+
+    def test_wired_trueup_and_revert_self_heal_end_to_end(
+        self, app, db, seed_user,
+    ):
+        """The true-up chokepoint books the delta; a revert re-bases it (C6).
+
+        End to end with NO manual account-sync call anywhere:
+
+          settle -200 at server-now, then assert $350.00 through
+          ``anchor_service.apply_anchor_true_up`` (a later instant, so the
+          settle is absorbed): the wiring books the true-up delta
+          350 - (500 - 200) = +50.00 and the total lands on the anchor.
+
+          revert the settle: the ``posting_service`` tail self-heal alone
+          re-derives the true-up (ledger_before 500, delta -150; heal
+          -200), keeping the total exactly on the 350.00 anchor.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "500.00")
+            txn = _settle_expense(
+                seed_user, account, "200.00", _db.func.now(),
+            )
+            _db.session.commit()
+
+            outcome = anchor_service.apply_anchor_true_up(
+                account=account,
+                new_balance=Decimal("350.00"),
+                anchor_period=seed_user["bootstrap_period"],
+                user_id=seed_user["user"].id,
+            )
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("350.00")
+            linked = _ledger_of_kind(account.id, LedgerAccountKindEnum.LINKED)
+            trueups = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert len(trueups) == 1
+            assert _entry_legs(trueups[0].id)[linked.id][0] == Decimal("50.00")
+
+            posting_service.sync_transaction_postings(txn, settled=False)
+            _db.session.commit()
+
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("350.00")
+            trueups = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert sum(
+                (_entry_legs(entry.id)[linked.id][0] for entry in trueups),
+                Decimal("0"),
+            ) == Decimal("-150.00")
 
     def test_baselineless_owner_skips_loudly_then_recovers(
         self, app, db, seed_user, caplog,

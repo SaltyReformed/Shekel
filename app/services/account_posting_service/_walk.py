@@ -50,7 +50,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.posting_service import PostingError, _ledger_account_for
+from app.services.posting_reads import PostingError, _ledger_account_for
 
 _ZERO_MONEY = Decimal("0.00")
 

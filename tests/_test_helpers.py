@@ -734,6 +734,44 @@ def ledger_accounts_for_account(db_session, account_id):
     )
 
 
+def linked_ledger_account(db_session, account_id):
+    """Return the account's LINKED ledger row, never its anchor-equity twin.
+
+    Since Step 5's ``(account_id, kind_id)`` re-key an account with posted
+    anchor corrections carries TWO ledger rows sharing its ``account_id``
+    (the ``linked`` row plus the ``anchor_equity`` equity twin), so any
+    helper that grabs "the account's ledger account" must say WHICH kind --
+    a bare ``[0]`` on :func:`ledger_accounts_for_account` is
+    insertion-order-dependent.  This is the shared linked-kind lookup the
+    posting suites key their cash-leg assertions off.
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id.
+
+    Returns:
+        The LINKED :class:`~app.models.ledger_account.LedgerAccount`, or
+        ``None`` when the account has no pairing yet.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # convention as the helpers above (no app symbols at module load).
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import LedgerAccountKindEnum
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(
+            account_id=account_id,
+            kind_id=ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+        )
+        .one_or_none()
+    )
+
+
 def make_balanced_entry(
     session, seed_user, *, from_ledger_id, to_ledger_id,
     amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
@@ -1131,6 +1169,7 @@ def create_settled_cash_transaction(
     seed_user, db_session, period, amount,
     *, account=None, scenario=None, is_income=False,
     category=None, actual_amount=None, name="Cash Txn",
+    paid_at=_UNSET_PAID_AT,
 ):
     """Create an ordinary (non-transfer) transaction and settle it go-forward.
 
@@ -1176,6 +1215,14 @@ def create_settled_cash_transaction(
             the estimate, or ``None`` (effective == estimated == amount).
         name: The transaction display name (becomes the journal entry
             description).
+        paid_at: The settle instant.  Defaults to the seam-derived
+            ``db.func.now()`` (the realistic ``mark_done`` value); pass an
+            explicit instant to pin the attribution moment, or ``None`` to
+            settle with a NULL ``paid_at`` (the historical period-start
+            fallback state).  Pinned BEFORE the ledger emission -- mirroring
+            :func:`create_settled_transfer`'s ``paid_at`` -- so the posted
+            ``entry_date`` and the Step-5 walk's attribution instant agree,
+            exactly as production produces them.
 
     Returns:
         The settled (Paid / Received) :class:`~app.models.transaction.Transaction`,
@@ -1213,6 +1260,8 @@ def create_settled_cash_transaction(
     status_seam.apply_status_change(
         txn, ref_cache.status_id(settled_status),
     )
+    if paid_at is not _UNSET_PAID_AT:
+        txn.paid_at = paid_at
     if actual_amount is not None:
         txn.actual_amount = actual_amount
     posting_service.sync_transaction_postings(txn, settled=True)

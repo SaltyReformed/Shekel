@@ -24,10 +24,13 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.routes.accounts._bp import accounts_bp
+from app.services import account_posting_service, ledger_account_service
 from app.utils.account_validation import (
+    _crosses_posting_boundary,
     _owned_account_type,
     _type_create_schema,
     _type_update_schema,
+    _validate_account_type_boundary_edit,
 )
 from app.utils.auth_helpers import require_owner
 
@@ -133,11 +136,45 @@ def update_account_type(type_id):
             flash("An account type with that name already exists.", "warning")
             return redirect(url_for("settings.show", section="account-types"))
 
+    # C6 boundary guard (Build-Order Step 5): an in-place edit of
+    # ``has_amortization`` / ``category_id`` that crosses the amortizing or
+    # Asset/Liability boundary is refused while any of the owner's accounts
+    # of this type carries ledger postings -- the second crossing vector
+    # (C4 adversarial review M2), with no ``account_type_id`` change for
+    # the account-update guard to see.
+    failure = _validate_account_type_boundary_edit(account_type, data)
+    if failure is not None:
+        flash(failure[0], failure[1])
+        return redirect(url_for("settings.show", section="account-types"))
+    boundary_crossed = _crosses_posting_boundary(
+        account_type,
+        data.get("has_amortization", account_type.has_amortization),
+        data.get("category_id", account_type.category_id),
+    )
+
     for field in ("name", "category_id", "has_parameters", "has_amortization",
                   "has_interest", "is_pretax", "is_liquid", "icon_class",
                   "max_term_months"):
         if field in data:
             setattr(account_type, field, data[field])
+
+    # An ALLOWED boundary crossing (every affected ledger is empty, per the
+    # guard above) still leaves each account's pairing stale: re-class the
+    # empty linked rows to the new category's class and re-sync the anchor
+    # corrections so an amortizing crossing swaps correction families
+    # instead of stranding one (the sync structurally no-ops for loans and
+    # for the $0 anchors that made the ledgers empty in the first place).
+    if boundary_crossed:
+        affected_accounts = (
+            db.session.query(Account)
+            .filter_by(account_type_id=type_id, user_id=current_user.id)
+            .all()
+        )
+        for account in affected_accounts:
+            ledger_account_service.sync_linked_ledger_class(account)
+            account_posting_service.sync_account_anchor_postings_all_scenarios(
+                account.id,
+            )
 
     db.session.commit()
 

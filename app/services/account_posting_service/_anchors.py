@@ -51,7 +51,8 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
-from app.services.posting_service import _ledger_account_for, _utc_civil_date
+from app.services._posting_write import _utc_civil_date
+from app.services.posting_reads import _ledger_account_for
 
 from ._walk import AccountAnchorCorrection, AccountAnchorFact
 

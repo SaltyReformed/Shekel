@@ -783,9 +783,10 @@ class TestSyncLoanPaymentPostings:
     ):
         """The loan sync moves only loan ledgers -- Checking is unchanged.
 
-        The Step-2 cash entry already moved Checking (-1000); the loan
-        correction must not move it further, so Checking's posted total is
-        identical before and after the sync.
+        The Step-2 cash entry already moved Checking (its $1000.00 Step-5
+        opening - 1000 = 0.00); the loan correction must not move it
+        further, so Checking's posted total is identical before and after
+        the sync.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -806,7 +807,7 @@ class TestSyncLoanPaymentPostings:
             checking_after = posting_service.account_posting_total(
                 checking.id, scenario_id,
             )
-            assert checking_before == Decimal("-1000.00")
+            assert checking_before == Decimal("0.00")
             assert checking_after == checking_before
 
     def test_correction_is_invisible_to_transfer_id_reader(

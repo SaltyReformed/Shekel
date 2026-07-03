@@ -68,7 +68,54 @@ in throughout. Developer approval: 2026-07-03.
   active income shadow (was last-row-wins), and the two defensive reconcile paths the review
   flagged as untested are pinned by the two reversal tests above.  278 targeted green;
   `pylint app/` 10.00.
-- C6 (lifecycle wiring + oracle supersession) -- pending
+- C6 (lifecycle wiring + oracle supersession) -- DONE: all seven Section-3.3
+  chokepoints live (`create_account` all-scenarios sync after the pairing;
+  `apply_anchor_true_up` inside its outcome-translating try; the
+  `update_account` guarded callable now also re-classes + resyncs on a type
+  change; `reset_pay_periods` per-user resync after the R7 loan resync;
+  the effect-time self-heal at BOTH `posting_service` sync tails;
+  `create_baseline` per-user recovery resync; the type-change guard in
+  `account_validation` + `routes/accounts/types.py` -- extended beyond the
+  plan to also refuse a CLASS-crossing `category_id` edit on a custom type,
+  the same M2 vector, and allowed crossings on empty ledgers re-snapshot the
+  linked row's class via the new
+  `ledger_account_service.sync_linked_ledger_class`).  Registration
+  (`auth_service`) and both seed fixtures reorder baseline-before-account so
+  "production users get a baseline at registration" is true at the moment it
+  matters; `_drop_seed_user_bootstrap` resyncs the openings its period
+  delete cascades.  **Self-heal predicate (deliberate divergence from
+  Section 3.3 point 5):** the resync fires iff the earliest EMITTED delta
+  entry's `entry_date` (midnight UTC) is at-or-before the account's latest
+  assertion instant -- the reversal side inherits the OLD attribution's
+  civil date (R2), so this covers the revert of an early-settled
+  future-period source, which the planned `min(current attribution,
+  period-start)` form provably misses (its current attribution AND period
+  start both sit after the anchor).  Day-granular over-fire is an
+  idempotent no-op walk.  **Structural fallout fixed at the root:** the
+  balanced-write primitives (`_PostingLeg` / `_emit_balanced_entry` /
+  `_utc_civil_date`) moved to a new leaf `app/services/_posting_write.py`
+  (posting_service re-exports; the account package now imports only
+  `posting_reads` + the leaf), breaking the
+  posting_service <-> account_posting_service pylint cycle the `_bp.py`
+  way; the frozen Step-2/Step-3 backfill builders' bare `account_id` joins
+  to `ledger_accounts` gained `name IS NULL` linked-row pins (chain-safe --
+  `kind_id` does not exist at their revisions) because the anchor-equity
+  twin otherwise fans the join out and double/quadruple-posts on any re-run
+  against a current schema (caught by the backfill-parity oracle).
+  Enumerated Section-5 test updates landed: changes-only invariants ->
+  absolute (`ledger == opening anchor + settled effects`), the
+  kind-agnostic oracle helpers gained LINKED filters (plus a shared
+  `tests/_test_helpers.linked_ledger_account`),
+  `create_settled_cash_transaction` gained the pinned-`paid_at`-BEFORE-emission
+  parameter (mirroring the transfer helper, so entry dates and walk
+  attribution agree), lock-reason tests flip to LEDGER_POSTINGS with
+  zero-anchor ACCOUNT_ANCHOR companions, hard-delete tests split into
+  $0-deletable vs Guard-5-archived pairs, and the loan boundary-migration
+  kind sweep excludes the account-correction sources it now legitimately
+  shares kinds with.  New wiring tests: unprompted create/true-up/self-heal
+  end-to-end, reset re-post, create_baseline recovery, and the four
+  type-guard route cases.  Full suite (run alone) 7008 passed;
+  `pylint app/` 10.00 clean.
 - C7 (backfill + boundary migration) -- pending
 - C8 (write-side oracle) -- pending
 - C9 (reporting service) -- pending

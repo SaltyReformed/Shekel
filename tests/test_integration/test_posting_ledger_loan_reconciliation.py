@@ -1498,6 +1498,11 @@ _LEDGER_IMPORT_TOKENS = (
     # (loan_posting_service, account_posting_service) are covered by the
     # "posting_service" substring.
     "_posting_reconcile",
+    # The C6 balanced-write leaf (``_PostingLeg`` / ``_emit_balanced_entry``
+    # / the UTC civil-date rule), split below ``posting_service`` so the
+    # account correction package can share the write path without an import
+    # cycle -- equally off-limits to the resolver stack.
+    "_posting_write",
     "loan_posting_service",
     "ledger_account_service",
     "balance_at",

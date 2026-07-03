@@ -174,10 +174,21 @@ _SETTLED_TRANSFER_BACKFILL_SQL = (
     "  JOIN budget.pay_periods pp ON pp.id = t.pay_period_id "
     "  JOIN budget.accounts af ON af.id = t.from_account_id "
     "  JOIN budget.accounts att ON att.id = t.to_account_id "
+    # ``name IS NULL`` pins each join to the account's LINKED row.  At this
+    # revision's chain position it is a no-op (kind_id does not exist yet and
+    # every account-linked row is the Step-2 pairing, whose name is NULL by
+    # construction) -- but the builder is idempotent and re-runnable, and
+    # Step 5's ``anchor_equity`` twin shares the ``account_id`` column with a
+    # NON-NULL snapshotted name, so a bare account_id join against a current
+    # schema would fan out (2 rows per endpoint = 4 combined) and
+    # quadruple-post.  The linked row is the only account-linked kind with a
+    # NULL name (the COALESCE display rule; see app/models/ledger_account.py).
     "  JOIN budget.ledger_accounts ledger_from "
     "    ON ledger_from.account_id = t.from_account_id "
+    "   AND ledger_from.name IS NULL "
     "  JOIN budget.ledger_accounts ledger_to "
     "    ON ledger_to.account_id = t.to_account_id "
+    "   AND ledger_to.name IS NULL "
     "  JOIN budget.transactions sf "
     "    ON sf.transfer_id = t.id "
     "   AND sf.account_id = t.from_account_id "

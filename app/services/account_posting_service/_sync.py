@@ -17,6 +17,12 @@ scenario):
   CASCade disposed the user's correction entries with the wiped periods, and
   the ``create_baseline`` recovery path, so openings are not silently
   stranded for a user who lacked a baseline at account-create time).
+* :func:`self_heal_anchor_corrections` -- the effect-time self-heal the
+  tails of ``posting_service.sync_transfer_postings`` /
+  ``sync_transaction_postings`` invoke after emitting source delta entries:
+  a source whose posted effect changed at-or-before an account's latest
+  anchor assertion moved that anchor's walked ``ledger_before``, so the
+  stale correction is re-derived in the same transaction.
 
 An amortizing loan is a documented NO-OP at every entry point (never an
 error: the chokepoints legitimately iterate all of a user's accounts): loans
@@ -32,20 +38,22 @@ commits -- the caller owns the transaction boundary.
 """
 
 import logging
+from collections.abc import Iterable
+from datetime import datetime
 
 from app.extensions import db
-from app.models.account import Account
+from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ref import AccountType
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.posting_service import _ledger_account_for
+from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
 
 from ._anchors import reconcile_account_anchor_corrections
-from ._walk import walk_account_ledger
+from ._walk import _as_utc_instant, _period_start_instant, walk_account_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +183,89 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
         return
     for scenario_id in sorted(scenario_ids):
         sync_account_anchor_postings(account_id, scenario_id)
+
+
+def _latest_anchor_instant(account_id: int) -> datetime | None:
+    """Return an account's latest anchor assertion instant (aware UTC), or ``None``.
+
+    The self-heal predicate's right-hand side: ``MAX(created_at)`` over the
+    account's :class:`~app.models.account.AccountAnchorHistory` rows -- the
+    assertion instant of the row ``balance_resolver.resolve_anchor`` resolves
+    -- normalized through the walk's UTC convention
+    (:func:`._walk._as_utc_instant`).  One indexed lookup
+    (``idx_anchor_history_account`` covers ``(account_id, created_at)``).
+
+    Args:
+        account_id: The account whose latest assertion instant to resolve.
+
+    Returns:
+        The aware-UTC instant, or ``None`` for an account with no anchor
+        history (fixture-only) or a missing account.
+    """
+    value = (
+        db.session.query(db.func.max(AccountAnchorHistory.created_at))
+        .filter(AccountAnchorHistory.account_id == account_id)
+        .scalar()
+    )
+    if value is None:
+        return None
+    return _as_utc_instant(value)
+
+
+def self_heal_anchor_corrections(
+    account_ids: Iterable[int],
+    scenario_id: int,
+    delta_entries: list[JournalEntry],
+) -> None:
+    """Resync the accounts whose anchor corrections *delta_entries* may have staled.
+
+    The effect-time self-heal (Build-Order Step 5, C6): the tails of
+    ``posting_service.sync_transfer_postings`` /
+    ``sync_transaction_postings`` (which
+    ``reverse_postings_before_delete`` routes through) call this after
+    emitting source delta entries.  A source change attributed at-or-before
+    an account's latest anchor assertion moves that anchor's walked
+    ``ledger_before``, so its posted correction is stale until re-derived;
+    a change attributed after every assertion rides on top and no
+    correction moves.
+
+    **The predicate reads the emitted entries' ``entry_date``s** -- resync
+    an account iff the earliest emitted date's midnight-UTC instant is
+    at-or-before the account's latest assertion instant.  A settle-side
+    entry is dated at the source's CURRENT attribution civil date, and a
+    reversal entry inherits the latest date it reverses (the R2 rule) --
+    the OLD attribution's civil date -- so both sides of every lifecycle
+    delta are covered, including the revert of an early-settled
+    future-period source whose CURRENT attribution (its period start) sits
+    after the anchor while the reversed effect preceded it.  A
+    day-granular midnight comparison over-fires only for same-UTC-day
+    changes, where the resync is an idempotent no-op walk.
+
+    An account with no anchor history never fires; an amortizing loan
+    passes the instant check (loans carry anchor history rows too) and is
+    then structurally skipped by :func:`sync_account_anchor_postings`.
+    Flushes but does not commit (the caller owns the transaction).
+
+    Args:
+        account_ids: The real accounts the emitted deltas' LINKED legs can
+            touch (the transfer's two endpoints / the transaction's cash
+            account -- both immutable on their source rows).
+        scenario_id: The scenario the deltas were emitted in (postings are
+            scenario-scoped, so only that scenario's corrections can have
+            moved).
+        delta_entries: The just-emitted delta
+            :class:`~app.models.journal_entry.JournalEntry` list (empty ->
+            no-op).
+    """
+    if not delta_entries:
+        return
+    earliest = min(
+        _period_start_instant(entry.entry_date) for entry in delta_entries
+    )
+    for account_id in sorted(set(account_ids)):
+        latest = _latest_anchor_instant(account_id)
+        if latest is not None and earliest <= latest:
+            sync_account_anchor_postings(account_id, scenario_id)
 
 
 def _non_loan_account_ids_for_user(user_id: int) -> list[int]:

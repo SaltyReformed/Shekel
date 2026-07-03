@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import LedgerAccountClassEnum
@@ -158,7 +159,13 @@ class TestBackfill:
         ``account_id``, and a NULL ``name``.
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Checking", "Backfill Asset")
+            # $0 anchor: no Step-5 opening entry, so the raw ledger-row drop
+            # below leaves no posting-less journal entry behind (the deferred
+            # balanced trigger raises on one at COMMIT) and no equity twin.
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Backfill Asset",
+                anchor_balance=Decimal("0.00"),
+            )
             _drop_ledger_account_for(account.id)
             assert ledger_accounts_for_account(_db.session, account.id) == []
 
@@ -179,7 +186,10 @@ class TestBackfill:
         category (which maps to Asset).
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Mortgage", "Backfill Loan")
+            account = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Backfill Loan",
+                anchor_balance=Decimal("0.00"),
+            )
             _drop_ledger_account_for(account.id)
 
             _run_backfill()
@@ -197,7 +207,11 @@ class TestBackfill:
         two runs in a row must leave exactly one linked row.
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "HYSA", "Idem Backfill")
+            # $0 anchor -- same rationale as test_backfill_pairs_asset_account.
+            account = create_account_of_type(
+                seed_user, _db.session, "HYSA", "Idem Backfill",
+                anchor_balance=Decimal("0.00"),
+            )
             _drop_ledger_account_for(account.id)
 
             _run_backfill()
@@ -216,11 +230,14 @@ class TestBackfill:
         guard, proving the backfill is additive, not a wipe-and-replace.
         """
         with app.app_context():
+            # $0 anchors -- same rationale as test_backfill_pairs_asset_account.
             asset_acct = create_account_of_type(
                 seed_user, _db.session, "Savings", "Cover Asset",
+                anchor_balance=Decimal("0.00"),
             )
             liab_acct = create_account_of_type(
                 seed_user, _db.session, "Auto Loan", "Cover Liability",
+                anchor_balance=Decimal("0.00"),
             )
             _drop_ledger_account_for(asset_acct.id)
             _drop_ledger_account_for(liab_acct.id)
@@ -237,8 +254,11 @@ class TestBackfill:
             assert liab_rows[0].class_id == ref_cache.ledger_account_class_id(
                 LedgerAccountClassEnum.LIABILITY,
             )
-            # The seed_user Checking keeps its single (never-dropped) row.
-            assert len(ledger_accounts_for_account(_db.session, seed_user["account"].id)) == 1
+            # The seed_user Checking keeps its never-dropped rows (the linked
+            # pairing plus the anchor-equity twin its $1000 opening minted).
+            assert len(ledger_accounts_for_account(
+                _db.session, seed_user["account"].id,
+            )) == 2
 
 
 # ---------------------------------------------------------------------------
