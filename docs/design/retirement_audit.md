@@ -589,6 +589,20 @@ f7a1c2d3e4b5 auto-ran. Verified with real data on the corrected model:
   stored values and was proven to fail pre-fix. Suite 6948, pylint 10.00/10.
 - Both themes (real toggle path), both viewports verified; mobile chart usable (V1 dead).
 
+**Acceptance-drive round 1 (2026-07-03, fixed same day through `e4d6f902`; suite 6953):** developer
+reported "adjusting parameters like retirement date changes nothing." Live probes proved the what-if
+path works end to end (verdict + chart data + drawn Chart.js instance all move); the real trap was
+the DATE row -- pension precedence made its Save silently lose. Fixed: a
+`resolve_retirement_date_provenance` producer (single owner of the precedence rule) and honest row
+states (pension-owned = resolved date read-only + "from <pension>" link + lever pointer;
+settings-owned/unset = editable input). Also fixed en route: htmx 2.x fires `htmx:oobAfterSwap` for
+OOB fragments, which `progress_bar.js` never handled -- every OOB-refreshed meter collapsed to
+0-width (the income meter on each what-if; the grid's OOB envelope cells latently). Handler now
+hooks both events. The recurring CSP console error was traced with evidence to vendored htmx's
+`cloneAttributes` settle (style attribute clone; `style-src-attr`); harmless, vendor and CSP
+untouched, documented. Lever lines now render typed override outcomes on an already-funded baseline
+instead of repeating the baseline copy.
+
 REMAINING: the developer acceptance drive (mutation paths: per-field saves, what-ifs, both lever
 steppers, pension CRUD, settings redirect) + the three parked rulings (Reset/delta-chip treatment;
 levers vs active what-ifs; one-time-cola-after-cutoff confirmation), then the PR to `dev`.
