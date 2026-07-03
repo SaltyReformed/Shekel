@@ -38,6 +38,7 @@ from app.models.transfer import Transfer
 from app.services import (
     account_service,
     anchor_service,
+    loan_posting_service,
     pay_period_service,
     pay_schedule_service,
 )
@@ -456,7 +457,15 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          preserved, fresh origination history row); re-point the captured
          rules to the new first period; repopulate the new periods from
          the active templates.
-      8. Persist the new cadence.  The route's commit then validates the
+      8. Re-sync each of the user's loans' genesis postings onto the
+         rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
+         A loan's opening / true-up ledger entries carry a ``pay_period_id``
+         and so CASCADE-delete with the wiped periods, but they exist
+         independently of any settled transaction, so the zero-settled gate
+         does NOT keep them; their SOURCE facts (``LoanParams`` and the
+         ``user_trueup`` ``LoanAnchorEvent`` rows) survive, so this re-derives
+         and re-posts them attributed to the new periods.
+      9. Persist the new cadence.  The route's commit then validates the
          deferred FK.
 
     Args:
@@ -477,14 +486,22 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
             invalid start date or cadence).
     """
     # Reset is gated on zero settled transactions.  Build-Order Step 3 note:
-    # this same gate keeps the double-entry posting ledger consistent across a
+    # this same gate keeps the CASH double-entry postings consistent across a
     # reset -- the wipe below deletes the user's pay periods, and
     # journal_entries.pay_period_id is ON DELETE CASCADE, so a period holding
-    # settled (posted) transactions would dispose its journal entries + legs at
-    # the DB tier (outside the ORM, where the balanced-journal trigger never
+    # settled (posted) transactions would dispose its cash journal entries + legs
+    # at the DB tier (outside the ORM, where the balanced-journal trigger never
     # fires on DELETE).  Because any settled row blocks the reset entirely, no
-    # posted period is ever wiped.  Whoever relaxes this gate MUST first reverse
-    # those transactions' postings (posting_service.reverse_postings_before_delete).
+    # SETTLED-transaction posting is ever wiped.  Whoever relaxes this gate MUST
+    # first reverse those transactions' postings
+    # (posting_service.reverse_postings_before_delete).
+    #
+    # The gate does NOT protect a LOAN's genesis postings: a loan's opening /
+    # true-up entries exist without any settled transaction (a payment-less
+    # configured loan posts its opening at params-create), so the wipe DOES
+    # CASCADE-delete them.  That is safe because their source facts (LoanParams,
+    # user_trueup LoanAnchorEvent) survive the wipe, and step 8 below re-posts
+    # them onto the rebuilt schedule in this same transaction (review M2 / R7).
     settled = _settled_transaction_count(user_id)
     if settled > 0:
         raise PayPeriodResetBlocked(settled)
@@ -511,6 +528,10 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     _reanchor_accounts(user_id, preserved_balances)
     _repoint_recurrence_rules(anchored_rule_ids, new_periods[0])
     populate_periods_from_active_templates(user_id, new_periods)
+    # Re-post the loan genesis (opening / true-up) corrections the period
+    # CASCADE wiped: their source facts survived, so this re-derives them
+    # onto the rebuilt schedule inside this transaction (review M2 / R7).
+    loan_posting_service.resync_user_loan_postings(user_id)
 
     pay_schedule_service.upsert_schedule(user_id, cadence_days)
     return new_periods

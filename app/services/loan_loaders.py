@@ -31,6 +31,7 @@ from sqlalchemy.orm import joinedload
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum, TxnTypeEnum
 from app.extensions import db
+from app.models.account import Account
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
@@ -280,6 +281,40 @@ def load_all_loan_account_ids() -> list[int]:
     """
     rows = (
         db.session.query(LoanParams.account_id)
+        .order_by(LoanParams.account_id)
+        .all()
+    )
+    return [account_id for (account_id,) in rows]
+
+
+def load_loan_account_ids_for_user(user_id: int) -> list[int]:
+    """Return the given user's configured loan account ids, ascending.
+
+    The per-OWNER counterpart to :func:`load_all_loan_account_ids`: every
+    :class:`LoanParams` row whose account belongs to *user_id*, joined through
+    :class:`~app.models.account.Account`.  Where the all-owners sweep backs the
+    system / deploy-time backfill
+    (:func:`app.services.loan_posting_service.backfill_all_loan_postings`), this
+    scoped set backs a PER-USER re-sync: ``pay_period_admin.reset_pay_periods``
+    calls it (via
+    :func:`app.services.loan_posting_service.resync_user_loan_postings`) to
+    rebuild only the reset user's loan genesis postings after the wipe -- the
+    period CASCADE (``journal_entries.pay_period_id ON DELETE CASCADE``) disposes
+    THIS user's loan opening / true-up entries along with the periods, so the
+    reset stays inside its own single-user transaction rather than reconciling
+    every owner's loans.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The user's loan account ids, ascending (already distinct -- ``account_id``
+        is unique per :class:`LoanParams`); empty when the user has no loan.
+    """
+    rows = (
+        db.session.query(LoanParams.account_id)
+        .join(Account, Account.id == LoanParams.account_id)
+        .filter(Account.user_id == user_id)
         .order_by(LoanParams.account_id)
         .all()
     )

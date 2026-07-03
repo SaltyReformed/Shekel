@@ -93,18 +93,22 @@ def _make_loan(
     anchor_date=_ANCHOR_DATE,
     rate=_RATE,
     escrow_annual=None,
+    name="Split Loan",
 ):
     """Create an amortizing loan with a controlled user-trueup anchor.
 
     Delegates to the shared ``create_loan_with_trueup`` factory, pinning this
     suite's fixed origination principal / date (distinct from the anchor, so a
-    correct interest figure proves the walk seeds from the trueup anchor).
+    correct interest figure proves the walk seeds from the trueup anchor).  A
+    distinct *name* lets one owner carry more than one loan (the account name is
+    unique per user).
     """
     return create_loan_with_trueup(
         seed_user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
         origination_date=_ORIGINATION_DATE, escrow_annual=escrow_annual,
+        name=name,
     )
 
 
@@ -148,6 +152,20 @@ def _find_loan_ledger(loan_id, kind):
 def _ledger_net(ledger_id, scenario_id):
     """Return the net of a ledger account's posting legs (shared query helper)."""
     return ledger_net(_db.session, ledger_id, scenario_id)
+
+
+def _genesis_entry_count(user_id):
+    """Count a user's loan opening + true-up (genesis) journal entries."""
+    opening = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
+    trueup = ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP)
+    return (
+        _db.session.query(JournalEntry)
+        .filter(
+            JournalEntry.user_id == user_id,
+            JournalEntry.source_kind_id.in_([opening, trueup]),
+        )
+        .count()
+    )
 
 
 def _transfer_filtered_loan_net(transfer_id, ledger_id):
@@ -2735,3 +2753,74 @@ class TestConfirmedLoanHistoryRows:
                 loan_posting_service.confirmed_loan_history_rows(
                     loan.id, scenario_id, date(2027, 6, 1),
                 )
+
+
+class TestUserScopedResync:
+    """``resync_user_loan_postings`` + its enumerator reconcile ONE owner's loans.
+
+    The per-user counterpart to the deploy-wide ``backfill_all_loan_postings``,
+    called by ``pay_period_admin.reset_pay_periods`` to re-post a reset user's
+    loan genesis entries the period wipe cascades -- scoped to that one user so a
+    single-user reset never reconciles another owner's loans inside its
+    transaction (review M2 / R7).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _freeze(self, monkeypatch):
+        """Pin today after both anchor dates so the genesis walk is eligible."""
+        freeze_today(monkeypatch, date(2026, 6, 15))
+
+    def test_enumerator_returns_only_the_users_loans(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """load_loan_account_ids_for_user filters LoanParams by owner, ascending.
+
+        Two loans on the first user and one on the second: each owner's scoped
+        enumeration returns exactly its own loan ids, and the all-owners sweep
+        returns their union -- proving the join is owner-scoped, not global.
+        """
+        with app.app_context():
+            loan_a = _make_loan(seed_user, name="Loan A")
+            loan_b = _make_loan(seed_user, name="Loan B")
+            loan_c = _make_loan(seed_second_user, name="Loan C")
+            db.session.commit()
+
+            assert loan_loaders.load_loan_account_ids_for_user(
+                seed_user["user"].id,
+            ) == sorted([loan_a.id, loan_b.id])
+            assert loan_loaders.load_loan_account_ids_for_user(
+                seed_second_user["user"].id,
+            ) == [loan_c.id]
+            # The scoped sets partition the global sweep.
+            assert loan_loaders.load_all_loan_account_ids() == sorted(
+                [loan_a.id, loan_b.id, loan_c.id],
+            )
+
+    def test_resync_posts_only_the_users_genesis(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Re-syncing user 1 posts its genesis and leaves user 2's loan untouched.
+
+        Both users own a configured loan (genesis net -100000 = opening -250000 +
+        true-up +150000).  Re-syncing only the first user returns just its loan
+        id, posts its opening + true-up (the loan-linked ledger nets -100000), and
+        posts NOTHING for the second user (zero genesis entries) -- the scoping
+        that keeps a single-user reset from reconciling another owner's loans.
+        """
+        with app.app_context():
+            loan1 = _make_loan(seed_user)
+            loan2 = _make_loan(seed_second_user)
+            db.session.commit()
+            u1 = seed_user["user"].id
+            u2 = seed_second_user["user"].id
+
+            posted = loan_posting_service.resync_user_loan_postings(u1)
+            db.session.commit()
+
+            assert posted == [loan1.id]
+            assert posting_service.account_posting_total(
+                loan1.id, seed_user["scenario"].id,
+            ) == Decimal("-100000.00")
+            # User 2's loan was never visited: no genesis entries posted.
+            assert _genesis_entry_count(u2) == 0
+            assert loan2.id not in posted

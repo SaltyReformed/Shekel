@@ -228,3 +228,42 @@ def backfill_all_loan_postings() -> list[int]:
     for loan_account_id in loan_account_ids:
         sync_loan_postings_all_scenarios(loan_account_id)
     return loan_account_ids
+
+
+def resync_user_loan_postings(user_id: int) -> list[int]:
+    """Reconcile every loan a SINGLE user owns across all its scenarios.
+
+    The per-user counterpart to :func:`backfill_all_loan_postings`: iterates only
+    *user_id*'s configured loans
+    (:func:`app.services.loan_loaders.load_loan_account_ids_for_user`) and
+    reconciles each through :func:`sync_loan_postings_all_scenarios`, reusing the
+    identical go-forward sync so a re-synced correction is identical to a
+    go-forward one by construction -- there is no second implementation that could
+    drift.
+
+    The caller is ``pay_period_admin.reset_pay_periods``: a full reset wipes the
+    user's pay periods, and ``journal_entries.pay_period_id`` is ON DELETE
+    CASCADE, so the wipe disposes this user's loan opening / true-up genesis
+    entries (which exist independently of any settled transaction, so the reset's
+    zero-settled gate does NOT keep them safe).  The loan's SOURCE facts survive
+    the wipe -- :class:`~app.models.loan_params.LoanParams` and its true-up
+    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` rows carry no
+    ``pay_period_id`` -- so this re-derives and re-posts the genesis corrections
+    onto the rebuilt schedule, attributed to the new periods.  Scoped to the one
+    user because a reset is a single-user operation: unlike the deploy backfill it
+    must not reconcile other owners' loans inside the reset transaction.
+
+    Idempotent and self-healing via reconcile-to-target.  Flushes but does NOT
+    commit -- the caller owns the transaction boundary (the reset's route commit).
+
+    Args:
+        user_id: The owning user whose loans to reconcile.
+
+    Returns:
+        The loan account ids reconciled, ascending (empty when the user has no
+        loan).
+    """
+    loan_account_ids = loan_loaders.load_loan_account_ids_for_user(user_id)
+    for loan_account_id in loan_account_ids:
+        sync_loan_postings_all_scenarios(loan_account_id)
+    return loan_account_ids
