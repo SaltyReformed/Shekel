@@ -555,6 +555,13 @@ Recommendation: R6.
   clicked ~8pm ET on Dec 31 books Jan 1 UTC, shifting tax-year attribution (mortgage interest
   now; the whole income statement under Step 5). Decide once: accept (document in the tax
   surface) or attribute tax-year figures by display-timezone civil date.
+  **DECIDED 2026-07-03 (developer): attribute tax-year figures by the DISPLAY-timezone
+  (America/New_York) civil date.** Storage stays UTC; the conversion is a presentation-boundary
+  concern at the tax-reporting readers only (the same `app/utils/dates` / `local_datetime`
+  discipline the app already uses for display). Implementation is a separate follow-up item (not
+  in the R10 housekeeping batch): the mortgage-interest Schedule-A reader now, and every Step-5
+  income-statement/tax figure when Step 5 lands. Until then this is a recorded policy, not yet
+  code.
 - **L10:** an envelope whose credit entries exceed its effective amount would flip the sign of
   `effective - credit_sum` (an expense becoming net cash inflow). Nothing rejects or pins the
   shape; add a guard or a pinned test.
@@ -696,13 +703,14 @@ Each major decision re-examined from scratch against the alternatives it beat.
   mechanized: R3 made it a W9907 machine rule -- see the header note and the H3 annotation.)*
 - **Keeping the presentation gates after Level 1** (fitness doc refinement 2) -- right;
   presentation windows are not balance semantics.
-- **The C11 forks decided by the agent under standing directive, awaiting ratification:**
+- **The C11 forks decided by the agent under standing directive -- RATIFIED 2026-07-03 (developer):**
   (a) retire the ORIGINATION anchor write but KEEP `user_trueup` rows as the operator's source
   document -- on review this is not a compromise but the correct reading of fact-versus-
   derivation: the true-up is a dated operator assertion (a fact) from which the correction
   posting is derived and self-heals; retiring it would have re-invented the same store under a
-  new name. RECOMMEND RATIFY. (b) The six-commit C11 decomposition -- mechanically sound,
-  independently green, reviewed per commit. RECOMMEND RATIFY.
+  new name. RATIFIED. (b) The six-commit C11 decomposition -- mechanically sound,
+  independently green, reviewed per commit. RATIFIED. Both were already live in prod (PR #52);
+  ratification confirms them as the standing design, no code change.
 
 **What should have been done differently** (two things, both recoverable now):
 1. When the first reversal entry shipped (Step 2, Commit 4), the ledger needed a stated rule for
@@ -778,10 +786,13 @@ Each major decision re-examined from scratch against the alternatives it beat.
 >   positive-amount CHECK is relaxed. A pinned test, not a runtime guard, is the
 >   right fix: the invariant already holds by construction and a guard would be
 >   dead code (rule 13).
-> - **Remaining:** the `shekel_checkers.py` package split and L6 (cross-page
->   reader de-dup / wire one to a route value); plus the two DECISIONS owed to
->   the developer -- L9 (timezone tax attribution) and the C11 ratifications
->   (Section 5). The L2 note that the genesis-reader
+> - **Decisions resolved 2026-07-03 (developer):** L9 tax-year attribution ->
+>   DISPLAY-timezone civil date (recorded under the L9 finding; implementation
+>   is a separate follow-up, not this batch), and both C11 forks RATIFIED
+>   (Section 5).
+> - **Remaining implementation:** the `shekel_checkers.py` package split and L6
+>   (cross-page reader de-dup / wire one to a route value); plus the decided-but-
+>   unimplemented L9 display-tz attribution. The L2 note that the genesis-reader
 >   allowlist still grants all of `loan_payment_service` (intent:
 >   `confirmed_loan_view` only) is left as-is: function-granularity W9906 is a
 >   larger checker change, and the R5 follow-up already fences that module at
