@@ -506,16 +506,18 @@ Actual-trajectory overlay from anchor history (revisit after daily use); consumi
 `earliest_retirement_date` in analysis (the retire-later lever supersedes it; field stays
 display-only); today's-dollars toggle (ruling 5); per-account contribution targeting in the solver.
 
-### Forks to ratify at the P1 gate
+### Forks: RATIFIED as recommended (developer, 2026-07-03)
 
-- **F1 -- unset estimated tax rate:** treat as an explicit 0% with an "assumption missing -- set
-  your estimate" state on the assumptions row (recommended), vs blocking the verdict behind a
-  first-run prompt.
-- **F2 -- contribution solver frame:** blended-return, Roth-basis approximation with an honest
-  caption (recommended), vs per-account targeting with limit enforcement (more precise, much more
-  machinery).
-- **F3 -- employer-base mechanism:** engine accepts an optional per-period salary basis defaulting
-  to the current constant (recommended; other consumers unchanged), vs migrating every consumer to
-  salary series at once.
-- **F4 -- horizon column shape:** `merit_raise_horizon_years` NOT NULL default 5 (recommended; the
-  horizon always has a value), vs nullable-means-extrapolate-forever.
+All four forks were ratified with the recommended option; the alternatives are recorded for
+provenance only.
+
+- **F1 -- unset estimated tax rate: RATIFIED** -- treat as an explicit 0% with an "assumption
+  missing -- set your estimate" state on the assumptions row. (Alternative not taken: blocking the
+  verdict behind a first-run prompt.)
+- **F2 -- contribution solver frame: RATIFIED** -- blended-return, Roth-basis approximation with an
+  honest caption. (Alternative not taken: per-account targeting with limit enforcement.)
+- **F3 -- employer-base mechanism: RATIFIED** -- the engine accepts an optional per-period salary
+  basis defaulting to the current constant; other consumers unchanged in this pass. (Alternative not
+  taken: migrating every consumer to salary series at once.)
+- **F4 -- horizon column shape: RATIFIED** -- `merit_raise_horizon_years` NOT NULL default 5.
+  (Alternative not taken: nullable-means-extrapolate-forever.)
