@@ -27,10 +27,15 @@ re-evaluation with no anchoring on past decisions.
 > the shared-`rate_period_engine` teeth that a lockstep bug cannot hide from -- and the
 > biweekly-collision case pins the reader/resolver attribution split; a transfer OUT of a loan is
 > now FORBIDDEN at the `create_transfer` chokepoint, so the income-only-shadows invariant the
-> oracle relied on is enforced, not assumed). Full suite 6873 passed at HEAD (R5's own figure was
-> 6865, not the 6861 first recorded here; R6, R7, and the 2026-07-02 follow-up review's
-> M-1/M-2/M-3/L-1 fixes are green); pylint holds 10.00 with every `--fail-on` checker
-> (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
+> oracle relied on is enforced, not assumed). The independent adversarial review of the R6 commits
+> raised four items, all now addressed: G-1 (the biweekly test pinned only display dates, not the
+> LEDGER per-period buckets) is closed by `8d4fcb7`; T-1 (the new guard 500ed on the
+> recurring-template route path) by `703af6a`; D-3 (biweekly wording) by the accurate M7/R6
+> annotations; E-1 (the escrow-not-a-lockstep claim was unverified) by the code trace now cited in
+> the M4 annotation. Full suite 6874 passed at HEAD (R5's own figure was
+> 6865, not the 6861 first recorded here; R6 and its G-1/T-1 follow-ups, R7, and the earlier
+> follow-up review's M-1/M-2/M-3/L-1 fixes are green); pylint holds 10.00 with every `--fail-on`
+> checker (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
 > further module split is warranted, tracked in R10). M3's reader-contract half (Step-5 reporting
 > rules) and R8-R10 remain open.
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
@@ -396,11 +401,15 @@ fix and also dissolves H1's precondition. Recommendation: R2.
 > post-step ledger balance against a hand-computed literal (99,495.00) rather than
 > a value read back from either producer, so a shared `rate_period_engine` bug
 > that moved both fails the literal. (An escrow effective-date change is NOT a
-> lockstep case: the resolver's balance replay ignores escrow entirely -- only the
-> count/dates of payments drive it -- so an effective-dating bug moves the WALK
-> only, and the walk's escrow values are already pinned by
-> `test_escrow_and_refund_reconcile_full_sweep`'s hand-computed literals.) M4 is
-> now fully resolved.
+> lockstep case -- VERIFIED by trace, closing the independent review's E-1: the
+> resolver's balance replay ignores escrow entirely. `replay_schedule` iterates
+> `confirmed_payment_dates` (dates only, never amounts) and `_replay_payment_row`
+> computes `interest = accrue(balance, rate)`, `principal = period_pi - interest`,
+> `new_balance = balance - principal` with no escrow term -- so the escrow-adjusted
+> payment amounts in `ctx.payments` never touch the balance. An effective-dating
+> bug therefore moves the WALK only, and the walk's escrow values are already
+> pinned by `test_escrow_and_refund_reconcile_full_sweep`'s hand-computed literals,
+> so M7's escrow bullet needs no parallel-run case.) M4 is now fully resolved.
 
 The oracle correctly uses the un-seeded `resolve_loan` as its independent reference
 (`test_posting_ledger_loan_reconciliation.py:461-493`), and the resolver package performs zero DB
@@ -463,22 +472,30 @@ design, not discovered after it ships. Recommendation: R8.
 >   `rate_period_engine` bug cannot hide from, which closes M4(b)'s rate-kernel
 >   lockstep. (The bullet's "escrow effective-date" alternative is not a lockstep
 >   case; see the M4 annotation.)
-> - **Biweekly collision** (`5c64107`):
+> - **Biweekly collision** (`5c64107`, strengthened by `8d4fcb7`):
 >   `test_biweekly_due_month_collision_reconciles_but_attribution_differs` settles
 >   two on-schedule payments both due 2026-02-01 and pins that the BALANCE
 >   reconciles three ways (ledger == resolver == reader -- the redistribution is
 >   display-only when no rate change spans the shifted month) while the
->   ATTRIBUTION legitimately differs: the reader dates both rows 02-01, the
->   resolver replay redistributes the second to 03-01. The one place reader and
->   resolver attribution can legitimately disagree, now pinned.
-> - **Transfer OUT of a loan** (`814b407`): FORBIDDEN at creation (developer-
->   confirmed fork -- forbid, not bless): `_reject_transfer_out_of_loan` rejects an
->   amortizing loan as `from_account` at `create_transfer`, the sole creation
->   chokepoint (`from_account` is immutable after creation, and route / template /
->   recurrence all funnel through it). The income-only-shadows assumption
->   `_assert_loan_reconciles` relied on is now ENFORCED; the reader's transfer-out
->   KEEP arm is re-annotated as defense for a pre-guard legacy row. Test: a
->   loan-as-source `create_transfer` raises and writes no transfer/shadow.
+>   ATTRIBUTION legitimately differs in TWO places. First (5c64107) the DISPLAY
+>   rows: the reader dates both rows 02-01, the resolver replay redistributes the
+>   second to 03-01. Then (`8d4fcb7`, closing the independent review's G-1) the
+>   LEDGER per-period buckets -- the branch's own theme: each paydown lands in its
+>   TRUE pay period, so the reader's per-period map reflects BOTH paydowns by
+>   period 2 while the resolver's per-period view (payment 2 redistributed to
+>   March) still shows only payment 1 at period 2's start. The distinct-month map
+>   test cannot see that divergence; the collision is exactly where it surfaces.
+> - **Transfer OUT of a loan** (`814b407`, `703af6a`): FORBIDDEN at creation
+>   (developer-confirmed fork -- forbid, not bless): `_reject_transfer_out_of_loan`
+>   rejects an amortizing loan as `from_account` at `create_transfer`, the sole
+>   creation chokepoint (`from_account` is immutable after creation, and route /
+>   template / recurrence all funnel through it). The income-only-shadows
+>   assumption `_assert_loan_reconciles` relied on is now ENFORCED; the reader's
+>   transfer-out KEEP arm is re-annotated as defense for a pre-guard legacy row.
+>   Tests: a loan-as-source `create_transfer` raises and writes no transfer/shadow;
+>   and (`703af6a`, closing the review's T-1) the recurring-template route path
+>   now catches the guard's rejection and flashes gracefully rather than 500ing,
+>   matching the one-time path -- the one defect the guard newly made reachable.
 > The settled-row revert-and-move oracle case landed earlier with R2.
 
 Never exercised at the reconciliation level (all verified absent by sweep):
@@ -703,7 +720,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R3 | **DONE 2026-07-02** (`ad24d84`) | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. As-built: all three extensions plus the import fence landed. Ctor kwargs are allowed only for recognizably born-Projected values (`ref_cache.status_id(StatusEnum.PROJECTED)` / a `projected_id` name or attribute -- the only shapes in-tree); everything else fails closed. Bulk writes flag on the key/keyword regardless of value (they bypass paid_at and verify_transition even for Projected). No new message IDs, so the five-place `--fail-on` list (L1) is untouched. 108 checker tests; probe-verified through `.pylintrc`; app/ and scripts/ hold 10.00. |
 | R4 | **DONE 2026-07-02** | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). As-built: cascades verified live first (rolled back); shared role-guarded SQL in `posting_infrastructure`; migration `e3c23fadb21d` (downgrade re-grants; round-trip verified on dev) + `init_database.py` + `build_test_template.py` + the every-start re-assert in `init_db_role.sql` (which would otherwise re-open the hole at each boot via its blanket GRANT); `TestLedgerAppendOnlyPrivileges` locks posture, tamper rejection, and owner-executed CASCADE/SET-NULL disposal. |
 | R5 | **DONE 2026-07-02** | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. As-built (all in the three reconciliation oracles): `test_walk_interest_injection_fails_the_value_checks_not_the_sweep` injects $10 into `_walk.accrue_monthly_interest` only (the resolver's `rate_period_engine` binding stays honest), proving the parallel-run VALUE checks fail by exactly $10 while the structural sweep -- an accounting identity -- survives; the three `*_catches_a_tampered_*` proofs now also drive the real `_assert_full_reconciliation` / `_assert_loan_reconciles` under `pytest.raises`, so a regression in the sweep helper itself is caught; `TestResolverIsLedgerFree` fences the resolver stack three ways -- a source-AST import fence over `loan_loaders` + the dynamically-enumerated `loan_resolver` package (catching both `from pkg import ledger_mod` and `from pkg.ledger_mod import x` shapes), a runtime read fence monkeypatching every ledger reader to raise around `_resolver_balance`, and a negative control proving the AST fence bites; and the linked-account sweeps (Steps 2/3) and the loan completeness walk now `assert` their enumerations non-empty so an empty query cannot pass vacuously. Full suite green. This closes M5 and M4(a); M4(b) (the shared amortization kernel moving both producers in lockstep) is coverage, still owed by R6. **Follow-up hardening (same-day review of `bb567e9`):** M4(a)'s file-only fence had a blind spot -- `_resolver_balance` also runs through `loan_payment_service.load_loan_context`, an unfenceable mixed module (its read-switch functions read the ledger by design) -- now closed by fencing that module at FUNCTION granularity (all functions except the read-switch allowlist, top-level imports included); a coverage guard keeps the token denylist complete against a novel-named reader; the runtime read fence is relabeled a defense-in-depth backstop with its module-qualified-only scope stated honestly; and the tamper proofs gained `match=` so they pin the intended invariant. |
-| R6 | **DONE 2026-07-02** (`5c64107`, `814b407`) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. As-built: `test_arm_rate_step_matches_a_hand_computed_post_step_balance` (a HAND-COMPUTED post-step ledger literal 99,495.00, the shared-`rate_period_engine` teeth that also closes M4(b)) and `test_biweekly_due_month_collision_reconciles_but_attribution_differs` (balance reconciles three ways; the reader/resolver attribution difference -- reader keeps both rows 02-01, resolver redistributes the second to 03-01 -- pinned) landed as test-only oracle cases. The transfer-OUT fork was decided FORBID (developer-confirmed): `_reject_transfer_out_of_loan` rejects an amortizing loan as `from_account` at the `create_transfer` chokepoint, so the income-only-shadows invariant is enforced not assumed; the reader KEEP arm is re-annotated as legacy-only defense; a rejection test writes no transfer/shadow. The settled-row revert-and-move oracle case landed earlier with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
+| R6 | **DONE 2026-07-02** (`5c64107`, `814b407`, `8d4fcb7`, `703af6a`) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. As-built: `test_arm_rate_step_matches_a_hand_computed_post_step_balance` (a HAND-COMPUTED post-step ledger literal 99,495.00, the shared-`rate_period_engine` teeth that also closes M4(b)) and `test_biweekly_due_month_collision_reconciles_but_attribution_differs` (balance reconciles three ways; the reader/resolver attribution difference pinned in TWO places -- the display rows AND, since `8d4fcb7` closing the review's G-1, the LEDGER per-period buckets, the branch's own theme) landed as test-only oracle cases. The transfer-OUT fork was decided FORBID (developer-confirmed): `_reject_transfer_out_of_loan` rejects an amortizing loan as `from_account` at the `create_transfer` chokepoint, so the income-only-shadows invariant is enforced not assumed; the reader KEEP arm is re-annotated as legacy-only defense; a rejection test writes no transfer/shadow. A follow-up (`703af6a`, review T-1) fixed the one defect the guard newly made reachable -- the recurring-template route path now catches the rejection and flashes gracefully instead of 500ing, matching the one-time path. The settled-row revert-and-move oracle case landed earlier with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). All four independent-review findings on the R6 commits (G-1, T-1, D-3, E-1) are addressed: G-1/T-1 by code, D-3 by the accurate biweekly wording above, E-1 by the verified escrow trace in the M4 annotation. |
 | R7 | **DONE 2026-07-02** (`654c991`) | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). As-built: a PER-USER re-sync (`loan_posting_service.resync_user_loan_postings` over `loan_loaders.load_loan_account_ids_for_user`, the scoped twins of the deploy-wide `backfill_all_loan_postings` / `load_all_loan_account_ids`) rather than the global sweep, since a reset is single-user and must not reconcile other owners' loans in its transaction; it reuses the identical go-forward sync (a re-posted correction is identical by construction), runs after the repopulate step in the same transaction, and re-attributes the surviving source facts' corrections onto the new schedule. Regression: `TestResetResyncsLoanGenesis` (fails without the re-sync) + the `TestUserScopedResync` scoping pair. (The TRUNCATE variant -- wiping a current-period true-up correction -- was already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so this re-sync closed its half.) |
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
 | R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
