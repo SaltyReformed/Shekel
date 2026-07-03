@@ -12,9 +12,11 @@ re-evaluation with no anchoring on past decisions.
 > `LEDGER_POSTINGS` truncate/regenerate gate refuses periods whose entries do not net to zero per
 > ledger account, proven non-vacuous by mutation). H3 is fixed (`ad24d84`, R3: W9907 now fences
 > all four statically visible `status_id` write forms with a born-Projected constructor rule, and
-> W9906 gained the import-level fence closing the aliased-import evasion). Full suite 6857 passed;
-> pylint 10.00 with every `--fail-on` checker. M3's reader-contract half (Step-5 reporting rules)
-> and R4-R10 remain open.
+> W9906 gained the import-level fence closing the aliased-import evasion). M1 is fixed (R4: the
+> ledger tables are append-only at the DB tier for `shekel_app` -- migration `e3c23fadb21d` plus
+> the every-start re-assert in `init_db_role.sql`; cascades verified live on dev first). Full
+> suite 6861 passed; pylint 10.00 with every `--fail-on` checker. M3's reader-contract half
+> (Step-5 reporting rules) and R5-R10 remain open.
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -253,6 +255,28 @@ the existing checker style at zero migration cost. Recommendation: R3.
 
 ### M1 (MEDIUM, demonstrated; raw-SQL surface): the ledger's append-only property does not bind at the database tier
 
+> **FIXED 2026-07-02** (R4): `REVOKE UPDATE, DELETE ON budget.journal_entries,
+> budget.account_postings FROM shekel_app` -- append-only now binds at the database tier for the
+> runtime role (SELECT/INSERT untouched; corrections stay appended reversals).  Cascade behavior
+> was verified on the dev stack FIRST, as this finding required (all probes rolled back): with the
+> revoke in force and acting as `shekel_app`, all four tamper forms fail with `permission denied
+> for table`, a pay-period delete still cascades its 18 entries + 37 postings, and a transaction
+> delete still SET-NULLs the entry back-link -- PostgreSQL executes referential actions as the
+> table owner, empirically confirmed.  As-built, the posture has FOUR enforcement points because
+> `entrypoint.sh` re-runs `init_db_role.sql`'s blanket `GRANT ... ON ALL TABLES` on every
+> container start (a migration-only revoke would be silently undone at the next boot): the shared
+> SQL lives in `posting_infrastructure.apply_ledger_append_only_privileges` (role-guarded, the
+> `a5be2a99ea14` pattern), applied by migration `e3c23fadb21d` (existing DBs; downgrade re-grants,
+> round-trip verified on dev), by `init_database.py` (the fresh-DB path stamps past the migration),
+> by `build_test_template.py`, and re-asserted in psql form by `init_db_role.sql` itself
+> (table-guarded, since it runs before migrations on a fresh boot).  Regression locks:
+> `TestLedgerAppendOnlyPrivileges` (posture including a targeted-not-blanket control on
+> `budget.accounts`; all four tamper rejections; CASCADE and SET-NULL disposal as the revoked
+> role), with the `shekel_app_role` fixture now provisioning the exact runtime posture.  The
+> raw-SQL reparent hole in the trigger's UPDATE arm is closed by the same revoke for the app role;
+> the OWNER role can still tamper by construction (migrations need it) -- operator-SQL discipline
+> remains the guard there.
+
 The balanced trigger deliberately has no DELETE arm (`posting_infrastructure.py:111-118`, so
 CASCADE disposal does not abort), and the ORM immutability listeners
 (`journal_entry.py:370-423`) do not fire for raw SQL. Demonstrated: a psql single-leg DELETE
@@ -482,7 +506,8 @@ exactly where H1, H2, and M3 live, and no layer enforces it. *(Since fixed: the 
 adopted the per-period reconcile and attribution rule and added the `LEDGER_POSTINGS` lock, so
 attribution now has a storage-level rule plus a classifier gate enforcing it -- see the header
 note and the per-finding annotations.)* For raw-SQL operator error: one
-demonstrated gap (M1) with a cheap DB-tier hardening available. Concurrency: version_id
+demonstrated gap (M1) with a cheap DB-tier hardening available. *(Since fixed: R4 applied that
+hardening -- see the M1 annotation.)* Concurrency: version_id
 optimistic locks on the transfer/transaction paths; the loan-global paths rely on
 single-transaction reconcile-to-target (documented as acceptable for a solo user).
 
@@ -572,7 +597,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R1 | **DONE 2026-07-02** (`8ad3a81`) | Fix H2: make the split walk include settled payments regardless of period-begun (write-side gate = settled only, matching the cash leg). Add the "early settle, then time passes" oracle case that would have caught it. As-built: `_settled_income_shadows` (write side, unbounded) split from `_confirmed_shadows_through` (display side, kept); tax-hybrid partition fix added (`load_settled_payment_due_months`); oracle + unit + tax regression locks, all mutation-proven; live-verified on the real Mortgage. |
 | R2 | **DONE 2026-07-02** (`2ffefa0`) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. As-built: per-(account, period) reconcile in `posting_service` (`_posted_by_period`/`_reconcile_periods`; syncs return entry lists) and the loan payment reconcile; `PeriodLockReason.LEDGER_POSTINGS` gate (blocks non-netting periods, allows self-cancelling pairs), mutation-proven; `posting_service` size-split into `posting_reads.py`. M3's reader-contract half for Step-5 readers is NOT covered here and stays open. |
 | R3 | **DONE 2026-07-02** (`ad24d84`) | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. As-built: all three extensions plus the import fence landed. Ctor kwargs are allowed only for recognizably born-Projected values (`ref_cache.status_id(StatusEnum.PROJECTED)` / a `projected_id` name or attribute -- the only shapes in-tree); everything else fails closed. Bulk writes flag on the key/keyword regardless of value (they bypass paid_at and verify_transition even for Projected). No new message IDs, so the five-place `--fail-on` list (L1) is untouched. 108 checker tests; probe-verified through `.pylintrc`; app/ and scripts/ hold 10.00. |
-| R4 | SOON | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). |
+| R4 | **DONE 2026-07-02** | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). As-built: cascades verified live first (rolled back); shared role-guarded SQL in `posting_infrastructure`; migration `e3c23fadb21d` (downgrade re-grants; round-trip verified on dev) + `init_database.py` + `build_test_template.py` + the every-start re-assert in `init_db_role.sql` (which would otherwise re-open the hole at each boot via its blanket GRANT); `TestLedgerAppendOnlyPrivileges` locks posture, tamper rejection, and owner-executed CASCADE/SET-NULL disposal. |
 | R5 | SOON | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. |
 | R6 | SOON (partly done) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. The settled-row revert-and-move oracle case landed with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
 | R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). (The TRUNCATE variant -- wiping a current-period true-up correction -- is already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so its re-sync is still owed.) |
