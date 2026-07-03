@@ -20,8 +20,11 @@ from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service, retirement_readiness
 from app.services.retirement_gap_calculator import RetirementGapAnalysis
+from app.services.pension_calculator import PensionBenefit
 from app.services.retirement_readiness import (
     _build_countdown,
+    _build_income_meter,
+    _build_pension_lines,
     _downsample_indices,
     funded_ratio_state,
 )
@@ -132,12 +135,14 @@ class TestBuildCountdown:
         assert result["years_remaining"] == expected_years
 
 
-def _build_scenario(db, seed_user, *, tax_rate=None):
+def _build_scenario(db, seed_user, *, tax_rate=None, with_pension=True):
     """Seed a salary profile, a pension with a horizon, and a 401(k).
 
     Returns the created account.  ``account_service.create_account`` anchors
     against the current pay period (the ``seed_periods_today`` fixture makes
-    one exist), so the projection has a live current period.
+    one exist), so the projection has a live current period.  With
+    ``with_pension=False`` the horizon comes from the settings row instead
+    (the meter-reconciliation test wants a zero-pension income mix).
     """
     user = seed_user["user"]
     scenario = seed_user["scenario"]
@@ -156,16 +161,26 @@ def _build_scenario(db, seed_user, *, tax_rate=None):
     db.session.add(profile)
     db.session.flush()
 
-    db.session.add(PensionProfile(
-        user_id=user.id,
-        salary_profile_id=profile.id,
-        name="State Pension",
-        benefit_multiplier=Decimal("0.01850"),
-        consecutive_high_years=4,
-        hire_date=date(2010, 1, 1),
-        planned_retirement_date=date(date.today().year + 20, 6, 1),
-        is_active=True,
-    ))
+    if with_pension:
+        db.session.add(PensionProfile(
+            user_id=user.id,
+            salary_profile_id=profile.id,
+            name="State Pension",
+            benefit_multiplier=Decimal("0.01850"),
+            consecutive_high_years=4,
+            hire_date=date(2010, 1, 1),
+            planned_retirement_date=date(date.today().year + 20, 6, 1),
+            is_active=True,
+        ))
+    else:
+        settings = (
+            db.session.query(UserSettings)
+            .filter_by(user_id=user.id)
+            .one()
+        )
+        settings.planned_retirement_date = date(
+            date.today().year + 20, 6, 1,
+        )
 
     inv_type = db.session.query(AccountType).filter_by(name="401(k)").one()
     acct = account_service.create_account(
@@ -409,3 +424,223 @@ class TestComputeReadinessWhatif:
             assert override["required_savings"] < baseline["required_savings"]
             assert deltas["funded_ratio_points"] > 0
             assert deltas["shortfall_dollars"] > 0
+
+
+def _net_for_meter(*, target, pension_net, after_tax_projected):
+    """Build a net-frame gap analysis carrying only the meter's inputs."""
+    return RetirementGapAnalysis(
+        pre_retirement_net_monthly=target,
+        monthly_pension_income=pension_net,
+        after_tax_monthly_pension=pension_net,
+        monthly_income_gap=max(target - pension_net, Decimal("0")),
+        required_retirement_savings=Decimal("0"),
+        projected_total_savings=after_tax_projected,
+        savings_surplus_or_shortfall=Decimal("0"),
+        safe_withdrawal_rate=Decimal("0.0400"),
+        after_tax_projected_savings=after_tax_projected,
+        after_tax_surplus_or_shortfall=Decimal("0"),
+    )
+
+
+class TestBuildIncomeMeter:
+    """P3c review pins for the P3b income-meter producer.
+
+    The meter must reconcile with the gap calculator's own figures:
+    net pension + withdrawals + uncovered == income target (exact -- the
+    uncovered remainder is DEFINED as that residual, floored at zero),
+    and the two segment percentages can never sum past 100.
+    """
+
+    def test_reconciliation_identity_and_withdrawal_formula(self):
+        """Under-covered case: the four figures reconcile exactly.
+
+        target 5,000.00; net pension 2,000.00; after-tax projected
+        600,000.00 at 4% SWR:
+          withdrawals = round(600000 * 0.04 / 12) = round(2000) = 2000.00
+          uncovered   = 5000 - 2000 - 2000 = 1000.00
+          identity: 2000 + 2000 + 1000 == 5000 (exact, no rounding slack)
+          pension_pct = 2000/5000*100 = 40.0; withdrawals_pct = 40.0.
+        """
+        net = _net_for_meter(
+            target=Decimal("5000.00"),
+            pension_net=Decimal("2000.00"),
+            after_tax_projected=Decimal("600000.00"),
+        )
+        meter = _build_income_meter(net, Decimal("0.0400"))
+        assert meter["withdrawals_net_monthly"] == Decimal("2000.00")
+        assert meter["uncovered_monthly"] == Decimal("1000.00")
+        assert (
+            net.after_tax_monthly_pension
+            + meter["withdrawals_net_monthly"]
+            + meter["uncovered_monthly"]
+        ) == net.pre_retirement_net_monthly
+        assert meter["pension_pct"] == Decimal("40.0")
+        assert meter["withdrawals_pct"] == Decimal("40.0")
+
+    def test_over_covered_segments_clamp_to_100(self):
+        """Over-covered case: uncovered floors at 0, segments cap at 100.
+
+        target 3,000.00; net pension 2,500.00; withdrawals 2,000.00
+        (600,000 * 0.04 / 12):
+          pension_pct    = min(100, 2500/3000*100 = 83.333...) -> 83.3
+          withdrawals_pct = min(100 - 83.3 = 16.7, 66.666...) -> 16.7
+          sum = 100.0 exactly; uncovered = max(0, 3000-2500-2000) = 0.00.
+        """
+        net = _net_for_meter(
+            target=Decimal("3000.00"),
+            pension_net=Decimal("2500.00"),
+            after_tax_projected=Decimal("600000.00"),
+        )
+        meter = _build_income_meter(net, Decimal("0.0400"))
+        assert meter["uncovered_monthly"] == Decimal("0.00")
+        assert meter["pension_pct"] == Decimal("83.3")
+        assert meter["withdrawals_pct"] == Decimal("16.7")
+        assert meter["pension_pct"] + meter["withdrawals_pct"] == Decimal(
+            "100.0"
+        )
+
+    def test_zero_target_zeroes_the_meter(self):
+        """No income target: both segment widths are zero, no division."""
+        net = _net_for_meter(
+            target=Decimal("0.00"),
+            pension_net=Decimal("1000.00"),
+            after_tax_projected=Decimal("100000.00"),
+        )
+        meter = _build_income_meter(net, Decimal("0.0400"))
+        assert meter["pension_pct"] == Decimal("0.0")
+        assert meter["withdrawals_pct"] == Decimal("0.0")
+        assert meter["uncovered_monthly"] == Decimal("0.00")
+
+    def test_seeded_meter_reconciles_with_the_verdict_frame(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Against real engine output the identity still holds exactly.
+
+        A no-pension scenario guarantees an uncovered remainder (net
+        pension 0.00; a $50k account cannot cover an ~$80k-salary income
+        target), so pension_net + withdrawals + uncovered == target with
+        zero rounding slack, and the withdrawal figure re-derives from
+        the producer's own after-tax projection at its own SWR.
+        """
+        with app.app_context():
+            _build_scenario(db, seed_user, with_pension=False)
+            data = retirement_readiness.compute_readiness_data(
+                seed_user["user"].id
+            )
+            meter = data["income_meter"]
+            assert data["pension_net_monthly"] == Decimal("0.00")
+            assert meter["uncovered_monthly"] > Decimal("0")
+            # Identity: pension_net + withdrawals + uncovered == target.
+            assert (
+                data["pension_net_monthly"]
+                + meter["withdrawals_net_monthly"]
+                + meter["uncovered_monthly"]
+            ) == data["income_target_net_monthly"]
+            # Withdrawals = round(after-tax projected * SWR / 12), from
+            # the producer's own figures.
+            assert meter["withdrawals_net_monthly"] == round_money(
+                data["projected_savings_after_tax"]
+                * data["safe_withdrawal_rate"] / 12
+            )
+            assert (
+                meter["pension_pct"] + meter["withdrawals_pct"]
+            ) <= Decimal("100")
+
+
+class TestBuildPensionLines:
+    """P3c review pins for the P3b per-pension derivation lines (D6)."""
+
+    @staticmethod
+    def _entry(name, monthly, window_years):
+        """One per_pension entry with a hand-built benefit."""
+        return {
+            "name": name,
+            "benefit_multiplier": Decimal("0.01850"),
+            "consecutive_high_years": 4,
+            "benefit": PensionBenefit(
+                years_of_service=Decimal("30.00"),
+                high_salary_average=Decimal("100000.00"),
+                annual_benefit=monthly * 12,
+                monthly_benefit=monthly,
+                high_salary_years=[
+                    (year, Decimal("100000.00")) for year in window_years
+                ],
+            ),
+        }
+
+    def test_line_facts_and_net_keep_fraction(self):
+        """One line per pension; net/mo = round(gross * (1 - rate)).
+
+        gross 4,625.00/mo at a 20% estimated tax:
+          net = round(4625.00 * 0.80) = 3,700.00
+        window years [2043..2046] -> window_start 2043, window_end 2046.
+        """
+        lines = _build_pension_lines(
+            [self._entry("State", Decimal("4625.00"), [2043, 2044, 2045, 2046])],
+            Decimal("0.2000"),
+        )
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["gross_monthly"] == Decimal("4625.00")
+        assert line["net_monthly"] == Decimal("3700.00")
+        assert line["window_start"] == 2043
+        assert line["window_end"] == 2046
+        assert line["years_of_service"] == Decimal("30.00")
+        assert line["high_salary_average"] == Decimal("100000.00")
+
+    def test_two_pensions_two_lines_gross_sums_to_gap_row(self):
+        """D6: every pension gets a line; grosses sum to the summed row.
+
+        Two benefits 4,625.00 and 1,000.00 -> two named lines whose gross
+        total (5,625.00) equals what the gap row sums -- the old card's
+        last-pension-only rendering could never satisfy this.
+        """
+        lines = _build_pension_lines(
+            [
+                self._entry("State", Decimal("4625.00"), [2043]),
+                self._entry("County", Decimal("1000.00"), [2046]),
+            ],
+            Decimal("0"),
+        )
+        assert [line["name"] for line in lines] == ["State", "County"]
+        assert sum(
+            (line["gross_monthly"] for line in lines), Decimal("0")
+        ) == Decimal("5625.00")
+        # 0% keep-fraction identity: net == gross at the F1 explicit zero.
+        assert all(
+            line["net_monthly"] == line["gross_monthly"] for line in lines
+        )
+
+    def test_seeded_two_pension_lines_match_summed_income(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Seeded D6 case: two real pensions -> two lines, exact gross sum."""
+        with app.app_context():
+            _build_scenario(db, seed_user)
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id)
+                .one()
+            )
+            db.session.add(PensionProfile(
+                user_id=seed_user["user"].id,
+                salary_profile_id=profile.id,
+                name="County Pension",
+                benefit_multiplier=Decimal("0.01000"),
+                consecutive_high_years=4,
+                hire_date=date(2015, 1, 1),
+                planned_retirement_date=date(date.today().year + 20, 6, 1),
+                is_active=True,
+            ))
+            db.session.commit()
+
+            data = retirement_readiness.compute_readiness_data(
+                seed_user["user"].id
+            )
+            lines = data["pension_lines"]
+            assert len(lines) == 2
+            # The per-line grosses sum EXACTLY to the summed pension row
+            # (both are the same monthly_benefit Decimals).
+            assert sum(
+                (line["gross_monthly"] for line in lines), Decimal("0")
+            ) == data["pension_gross_monthly"]
