@@ -38,9 +38,10 @@ re-evaluation with no anchoring on past decisions.
 > checker (`transfer_service.py` is now at exactly its 1000-line cap after the R6 guard wiring -- a
 > further module split is warranted, tracked in R10 -- now DONE, see below). M3's reader-contract
 > half (Step-5 reporting rules), R8, and R9 remain open; R10 housekeeping is IN PROGRESS
-> (transfer_service split, L1, L8, L2, L10 all DONE 2026-07-03; the shekel_checkers split and L6
-> remain, plus the L9 / C11 decisions owed to the developer -- per-sub-item commits in the R10 note
-> under the Section 6 table).
+> (transfer_service split, L1, L8, L2, L10, and the `shekel_checkers` package split all DONE
+> 2026-07-03, with the L9 / C11 decisions recorded; L6 -- and an optional `tools/pylint/` enforced
+> floor now that the checker package is clean at 10.00 -- remain, per-sub-item commits in the R10
+> note under the Section 6 table).
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -786,17 +787,51 @@ Each major decision re-examined from scratch against the alternatives it beat.
 >   positive-amount CHECK is relaxed. A pinned test, not a runtime guard, is the
 >   right fix: the invariant already holds by construction and a guard would be
 >   dead code (rule 13).
+> - **`shekel_checkers.py` package split -- DONE** (`6a06d4c`): the R3
+>   status-fence extension had pushed the single module to 1145/1000 lines
+>   (ungated C0302). Split one-checker-per-module (`money` / `refname` /
+>   `disable_rationale` / `loan_balance` / `balance_seam` / `status_bypass`)
+>   over a shared `_common` leaf holding the three cross-checker AST primitives
+>   (`_is_string_const`, `_called_name_in`, `_module_in_allowlist`); the package
+>   `__init__` re-exports the six checker classes, the five module/producer
+>   sets, and `register()`, so the plugin's import surface and entry point are
+>   byte-identical to the pre-split module -- `.pylintrc` (`load-plugins`),
+>   both checker test files (`from shekel_checkers import ...`;
+>   `inspect.getmembers`), and pylint itself are unchanged (a pure internal
+>   refactor, not an interface change). The same pass cleared the two other
+>   latent findings the file carried: the E0011/W0012 meta-noise (the
+>   `_RATIONALE_MARKER` / `_DISABLE_RE` prose comments spelled the literal
+>   lowercase pylint-colon token, which pylint's own inline-option parser
+>   misread as directives -- reworded to avoid it; the regex string keeps the
+>   `disable=` literal, being a string not a comment token) and the R0914
+>   too-many-locals in `process_module` (extracted `_read_source` /
+>   `_scan_comments`). Package now 10.00/10 (was 9.54). Verified the plugin
+>   still loads AND enforces: 110 checker unit tests + the gate-consistency
+>   test green, a `shekel-decimal-from-float` probe fires end-to-end, and the
+>   exact CI gate `pylint app/` and `pylint scripts/`
+>   (`--fail-on=E,F,shekel-*`) both exit 0. The four references the split made
+>   stale (CLAUDE.md, the ci.yml gate comment, two test docstrings) were
+>   updated in the same commit. The audit's "consider giving `tools/pylint/`
+>   its own enforced floor once clean" is now actionable (the package is clean
+>   at 10.00) and RECOMMENDED -- symmetric with the `app/` and `scripts/`
+>   floors, and the checker code is load-bearing (it was silently at 9.54) --
+>   but left as an operator decision because wiring a new CI step + pre-commit
+>   hook touches the gate surface (see the note under Remaining).
 > - **Decisions resolved 2026-07-03 (developer):** L9 tax-year attribution ->
 >   DISPLAY-timezone civil date (recorded under the L9 finding; implementation
 >   is a separate follow-up, not this batch), and both C11 forks RATIFIED
 >   (Section 5).
-> - **Remaining implementation:** the `shekel_checkers.py` package split and L6
->   (cross-page reader de-dup / wire one to a route value); plus the decided-but-
->   unimplemented L9 display-tz attribution. The L2 note that the genesis-reader
->   allowlist still grants all of `loan_payment_service` (intent:
->   `confirmed_loan_view` only) is left as-is: function-granularity W9906 is a
->   larger checker change, and the R5 follow-up already fences that module at
->   function granularity for the resolver-free property.
+> - **Remaining implementation:** L6 (cross-page reader de-dup / wire one to a
+>   route value); the decided-but-unimplemented L9 display-tz attribution; and
+>   the optional `tools/pylint/` enforced floor recommended above (a new
+>   `pylint tools/pylint/shekel_checkers/ --fail-under=10` step in CI +
+>   pre-commit, mirroring the `app/` and `scripts/` gates -- the checker
+>   package, not its tests, which stay out of general pylint scope per ratified
+>   decision #1). The L2 note that the genesis-reader allowlist still grants
+>   all of `loan_payment_service` (intent: `confirmed_loan_view` only) is left
+>   as-is: function-granularity W9906 is a larger checker change, and the R5
+>   follow-up already fences that module at function granularity for the
+>   resolver-free property.
 
 ---
 
