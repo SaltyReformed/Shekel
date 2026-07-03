@@ -12,7 +12,7 @@ interest helpers (full-year interest, pre-anchor interest reverse-derive,
 the settled-net walk) that the savings-progress section consumes.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.models.account import Account
@@ -248,12 +248,18 @@ def _compute_pre_anchor_interest(
 
     total_interest = ZERO
     for period in reversed(pre_anchor):
+        # period_end is the INCLUSIVE last day of the pay period, but
+        # calculate_interest treats period_end as the EXCLUSIVE boundary of a
+        # half-open [start, end) window.  Pass end_date + 1 day (the next
+        # period's start) so the pre-anchor accrual counts all 14 calendar
+        # days, matching the forward path (``_layer_interest``) and the
+        # inclusive day-count convention the pay periods use.
         total_interest += calculate_interest(
             balance=balance,
             apy=interest_params.apy,
             compounding_frequency_id=interest_params.compounding_frequency_id,
             period_start=period.start_date,
-            period_end=period.end_date,
+            period_end=period.end_date + timedelta(days=1),
         )
         # Step back to the prior period's end balance.
         balance -= net_by_period.get(period.id, ZERO)

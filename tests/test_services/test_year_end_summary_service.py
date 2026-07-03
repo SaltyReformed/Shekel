@@ -6,7 +6,7 @@ payment timeliness integration.  Each test seeds its own data via
 conftest fixtures and helper functions.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -2574,6 +2574,10 @@ class TestSavingsProgressPreAnchor:
             periods[3].id: Decimal("15000.00"),
             periods[4].id: Decimal("20000.00"),
         }
+        # period_end is passed as end_date + 1 day to mirror
+        # _compute_pre_anchor_interest: pay periods carry an INCLUSIVE
+        # end_date, and calculate_interest treats period_end as the EXCLUSIVE
+        # boundary, so each period accrues over all 14 inclusive days.
         expected = sum(
             (
                 calculate_interest(
@@ -2581,7 +2585,7 @@ class TestSavingsProgressPreAnchor:
                     apy=apy,
                     compounding_frequency_id=freq_id,
                     period_start=p.start_date,
-                    period_end=p.end_date,
+                    period_end=p.end_date + timedelta(days=1),
                 )
                 for p in periods[0:5]
             ),
@@ -2599,7 +2603,7 @@ class TestSavingsProgressPreAnchor:
                     apy=apy,
                     compounding_frequency_id=freq_id,
                     period_start=p.start_date,
-                    period_end=p.end_date,
+                    period_end=p.end_date + timedelta(days=1),
                 )
                 for p in periods[0:5]
             ),
