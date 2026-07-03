@@ -196,6 +196,31 @@ def sync_all_scenarios_or_duplicate(
         return False
 
 
+def _reconcile_loan_account_ids(loan_account_ids: list[int]) -> list[int]:
+    """Reconcile the given loan accounts across all their scenarios; return them.
+
+    The shared body of the deploy-wide backfill
+    (:func:`backfill_all_loan_postings`) and the per-user reset re-sync
+    (:func:`resync_user_loan_postings`): each id is reconciled through
+    :func:`sync_loan_postings_all_scenarios`, the identical go-forward sync (so a
+    reconciled correction is identical to a go-forward one by construction --
+    there is no second implementation that could drift).  The two public
+    functions differ ONLY in their enumerator (all loans vs one user's), which
+    stays with each of them; this holds the loop itself in one place.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary.
+
+    Args:
+        loan_account_ids: The loan account ids to reconcile.
+
+    Returns:
+        ``loan_account_ids`` unchanged, for the callers' return contract.
+    """
+    for loan_account_id in loan_account_ids:
+        sync_loan_postings_all_scenarios(loan_account_id)
+    return loan_account_ids
+
+
 def backfill_all_loan_postings() -> list[int]:
     """Reconcile every loan's full genesis ledger across all scenarios (backfill).
 
@@ -224,10 +249,7 @@ def backfill_all_loan_postings() -> list[int]:
         The loan account ids reconciled, ascending -- for the deploy log and
         test introspection (empty on a loan-free database).
     """
-    loan_account_ids = loan_loaders.load_all_loan_account_ids()
-    for loan_account_id in loan_account_ids:
-        sync_loan_postings_all_scenarios(loan_account_id)
-    return loan_account_ids
+    return _reconcile_loan_account_ids(loan_loaders.load_all_loan_account_ids())
 
 
 def resync_user_loan_postings(user_id: int) -> list[int]:
@@ -263,7 +285,6 @@ def resync_user_loan_postings(user_id: int) -> list[int]:
         The loan account ids reconciled, ascending (empty when the user has no
         loan).
     """
-    loan_account_ids = loan_loaders.load_loan_account_ids_for_user(user_id)
-    for loan_account_id in loan_account_ids:
-        sync_loan_postings_all_scenarios(loan_account_id)
-    return loan_account_ids
+    return _reconcile_loan_account_ids(
+        loan_loaders.load_loan_account_ids_for_user(user_id)
+    )
