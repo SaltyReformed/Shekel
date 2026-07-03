@@ -50,12 +50,22 @@ ShadowTxn = namedtuple("ShadowTxn", [
 
 
 def _make_periods(count=4):
-    """Create a list of 14-day periods starting 2026-01-02."""
+    """Create a list of 14-day periods starting 2026-01-02.
+
+    Pay periods carry an INCLUSIVE end_date, so a 14-calendar-day period
+    runs start .. start + 13 (matching ``pay_period_service.
+    generate_pay_periods``: ``end_date = start_date + (cadence_days - 1)``).
+    ``_layer_interest`` therefore passes ``end_date + 1 day`` -- the true
+    exclusive right boundary, i.e. the next period's start -- into
+    ``calculate_interest``, so each period accrues over all 14 days it is
+    held.  The independent oracles below mirror that with
+    ``(end - start).days + 1``.
+    """
     base = date(2026, 1, 2)
     periods = []
     for i in range(count):
         start = base + timedelta(days=i * 14)
-        end = base + timedelta(days=(i + 1) * 14)
+        end = start + timedelta(days=13)
         periods.append(Period(
             id=i + 1, period_index=i,
             start_date=start, end_date=end,
@@ -408,8 +418,10 @@ class TestHysaBalanceWithInterest:
             # running = base + prior cumulative interest
             running = base_bal + interest_cumulative
             # daily compounding: balance * ((1+r)^days - 1)
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             interest = (
                 running * ((1 + daily_rate) ** days - 1)
@@ -494,8 +506,10 @@ class TestHysaBalanceWithInterest:
         interest_cumulative = Decimal("0.00")
 
         for period in periods:
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             # days_in_month from period_start.month
             dim = Decimal(str(calendar.monthrange(
@@ -582,8 +596,10 @@ class TestHysaBalanceWithInterest:
         interest_cumulative = Decimal("0.00")
 
         for period in periods:
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             running = base_bal + interest_cumulative
             # Actual quarter length from the period start date.
@@ -707,8 +723,10 @@ class TestHysaBalanceWithInterest:
         interest_cumulative = Decimal("0.00")
 
         for period in periods:
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             running = base_bal + interest_cumulative
             # daily: balance * ((1 + apy/365)^days - 1)
@@ -800,8 +818,10 @@ class TestHysaBalanceWithInterest:
         interest_cumulative = Decimal("0.00")
 
         for period in periods:
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             running = base_bals[period.id] + interest_cumulative
             # Guard: balance <= 0 -> zero interest
@@ -911,8 +931,10 @@ class TestHysaBalanceWithInterest:
         interest_cumulative = Decimal("0.00")
 
         for period in periods:
+            # Inclusive day count: the pay period spans (end - start).days + 1
+            # calendar days, matching _layer_interest's period_end + 1 day.
             days = Decimal(str(
-                (period.end_date - period.start_date).days
+                (period.end_date - period.start_date).days + 1
             ))
             running = base_bals[period.id] + interest_cumulative
             # daily: balance * ((1 + apy/365)^days - 1)

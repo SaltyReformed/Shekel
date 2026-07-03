@@ -23,6 +23,7 @@ This eliminates the double-counting risk described in design doc section 16.1.
 
 import logging
 from collections import OrderedDict
+from datetime import timedelta
 from decimal import Decimal
 
 from app.services.interest_projection import calculate_interest
@@ -210,13 +211,22 @@ def _layer_interest(base_balances, periods, interest_params):
         # Add cumulative interest from prior periods.
         running_balance = base_bal + interest_cumulative
 
-        # Calculate interest for this period.
+        # Calculate interest for this period.  Pay periods carry an
+        # INCLUSIVE end_date (a 14-calendar-day period runs
+        # start .. start + 13), but calculate_interest treats period_end as
+        # the EXCLUSIVE right boundary of a half-open [start, end) window
+        # (its (period_end - period_start).days convention, verified by its
+        # unit tests).  Pass end_date + 1 day -- the true exclusive boundary,
+        # equal to the next period's start_date -- so the money accrues over
+        # all 14 calendar days it is held, not 13.  Counting only 13 days
+        # understated a HYSA's yield by ~1 day in 14 (~7%), the interest-path
+        # twin of the growth_engine day-count defect.
         interest = calculate_interest(
             balance=running_balance,
             apy=apy,
             compounding_frequency_id=compounding_id,
             period_start=period.start_date,
-            period_end=period.end_date,
+            period_end=period.end_date + timedelta(days=1),
         )
         interest_cumulative += interest
         running_balance += interest

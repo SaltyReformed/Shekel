@@ -5,7 +5,7 @@ Tests the growth projection service including compound growth,
 contribution limits, employer contributions, and year boundary resets.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -15,6 +15,7 @@ from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import (
     ContributionRecord,
     ProjectedBalance,
+    _period_return_rate,
     calculate_employer_contribution,
     cap_contribution_at_limit,
     generate_projection_periods,
@@ -339,9 +340,11 @@ class TestProjectBalance:
     def test_basic_growth_no_contributions(self, biweekly_periods):
         """Balance grows at assumed rate with no contributions.
 
-        period_return = (1.07)^(13/365) - 1
-        growth = (10000 * period_return).quantize(0.01) = 24.13
-        end_balance = 10000 + 24.13 = 10024.13
+        biweekly_periods span 14 inclusive calendar days
+        (start .. start + 13), so period_days = (end - start).days + 1 = 14.
+        period_return = (1.07)^(14/365) - 1
+        growth = (10000 * period_return).quantize(0.01) = 25.98
+        end_balance = 10000 + 25.98 = 10025.98
         """
         result = project_balance(
             current_balance=Decimal("10000"),
@@ -351,12 +354,12 @@ class TestProjectBalance:
         assert len(result) == 1
         assert result[0].contribution == ZERO
         assert result[0].employer_contribution == ZERO
-        # (1.07)^(13/365) - 1 ≈ 0.002413; 10000 * 0.002413 = 24.13
-        assert result[0].growth == Decimal("24.13"), (
-            f"Period 0 growth: expected 24.13, got {result[0].growth}"
+        # (1.07)^(14/365) - 1 ~= 0.0025984; 10000 * 0.0025984 = 25.98
+        assert result[0].growth == Decimal("25.98"), (
+            f"Period 0 growth: expected 25.98, got {result[0].growth}"
         )
-        assert result[0].end_balance == Decimal("10024.13"), (
-            f"Period 0 end_balance: expected 10024.13, "
+        assert result[0].end_balance == Decimal("10025.98"), (
+            f"Period 0 end_balance: expected 10025.98, "
             f"got {result[0].end_balance}"
         )
 
@@ -375,11 +378,12 @@ class TestProjectBalance:
     def test_with_periodic_contributions(self, biweekly_periods):
         """Contributions added each period.
 
-        Each period has 13 days. Growth compounds on starting balance,
-        then $500 contribution is added.
-        P0: 10000 + 24.13 + 500 = 10524.13
-        P1: 10524.13 + 25.39 + 500 = 11049.52
-        P2: 11049.52 + 26.66 + 500 = 11576.18
+        Each period spans 14 inclusive days, so period_return =
+        (1.07)^(14/365) - 1 ~= 0.0025984.  Growth compounds on the starting
+        balance, then the $500 contribution is added.
+        P0: 10000 + round(10000*0.0025984)=25.98 + 500 = 10525.98
+        P1: 10525.98 + round(10525.98*0.0025984)=27.35 + 500 = 11053.33
+        P2: 11053.33 + round(11053.33*0.0025984)=28.72 + 500 = 11582.05
         """
         result = project_balance(
             current_balance=Decimal("10000"),
@@ -392,25 +396,25 @@ class TestProjectBalance:
                 f"Expected contribution 500, got {pb.contribution}"
             )
         # Period 0: growth on 10000
-        assert result[0].growth == Decimal("24.13"), (
-            f"P0 growth: expected 24.13, got {result[0].growth}"
+        assert result[0].growth == Decimal("25.98"), (
+            f"P0 growth: expected 25.98, got {result[0].growth}"
         )
-        assert result[0].end_balance == Decimal("10524.13"), (
-            f"P0 end: expected 10524.13, got {result[0].end_balance}"
+        assert result[0].end_balance == Decimal("10525.98"), (
+            f"P0 end: expected 10525.98, got {result[0].end_balance}"
         )
-        # Period 1: growth on 10524.13
-        assert result[1].growth == Decimal("25.39"), (
-            f"P1 growth: expected 25.39, got {result[1].growth}"
+        # Period 1: growth on 10525.98
+        assert result[1].growth == Decimal("27.35"), (
+            f"P1 growth: expected 27.35, got {result[1].growth}"
         )
-        assert result[1].end_balance == Decimal("11049.52"), (
-            f"P1 end: expected 11049.52, got {result[1].end_balance}"
+        assert result[1].end_balance == Decimal("11053.33"), (
+            f"P1 end: expected 11053.33, got {result[1].end_balance}"
         )
-        # Period 2: growth on 11049.52
-        assert result[2].growth == Decimal("26.66"), (
-            f"P2 growth: expected 26.66, got {result[2].growth}"
+        # Period 2: growth on 11053.33
+        assert result[2].growth == Decimal("28.72"), (
+            f"P2 growth: expected 28.72, got {result[2].growth}"
         )
-        assert result[2].end_balance == Decimal("11576.18"), (
-            f"P2 end: expected 11576.18, got {result[2].end_balance}"
+        assert result[2].end_balance == Decimal("11582.05"), (
+            f"P2 end: expected 11582.05, got {result[2].end_balance}"
         )
 
     def test_contribution_limit_caps_contributions(self, biweekly_periods):
@@ -522,21 +526,21 @@ class TestProjectBalance:
     def test_negative_return_rate(self, biweekly_periods):
         """Balance decreases with negative return.
 
-        period_return = (0.90)^(13/365) - 1
-        growth = (10000 * period_return).quantize(0.01) = -37.46
-        end_balance = 10000 - 37.46 = 9962.54
+        14 inclusive days: period_return = (0.90)^(14/365) - 1
+        growth = (10000 * period_return).quantize(0.01) = -40.33
+        end_balance = 10000 - 40.33 = 9959.67
         """
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("-0.10"),
             periods=biweekly_periods[:1],
         )
-        # (0.90)^(13/365) - 1 ≈ -0.003746; 10000 * -0.003746 = -37.46
-        assert result[0].growth == Decimal("-37.46"), (
-            f"Expected growth -37.46, got {result[0].growth}"
+        # (0.90)^(14/365) - 1 ~= -0.0040331; 10000 * -0.0040331 = -40.33
+        assert result[0].growth == Decimal("-40.33"), (
+            f"Expected growth -40.33, got {result[0].growth}"
         )
-        assert result[0].end_balance == Decimal("9962.54"), (
-            f"Expected end_balance 9962.54, got {result[0].end_balance}"
+        assert result[0].end_balance == Decimal("9959.67"), (
+            f"Expected end_balance 9959.67, got {result[0].end_balance}"
         )
 
     def test_employer_does_not_count_against_limit(self, biweekly_periods):
@@ -602,13 +606,14 @@ class TestProjectBalance:
     def test_period_days_affect_growth(self):
         """Longer periods produce more growth.
 
-        Hand calculation (Commit 32 / MED-07 pinning of directional check):
-          short: (1/8 - 1/2) = 6 days
-            return = (1.07)^(6/365) - 1; growth = 10000 * return
-            quantized HALF_UP -> 11.13
-          long:  (1/29 - 1/2) = 27 days
-            return = (1.07)^(27/365) - 1; growth = 10000 * return
-            quantized HALF_UP -> 50.17
+        Hand calculation (Commit 32 / MED-07 pinning of directional check),
+        counting the end date INCLUSIVELY (period_days = (end-start).days + 1):
+          short: Jan 2 - Jan 8 inclusive = 7 days
+            return = (1.07)^(7/365) - 1; growth = 10000 * return
+            quantized HALF_UP -> 12.98
+          long:  Jan 2 - Jan 29 inclusive = 28 days
+            return = (1.07)^(28/365) - 1; growth = 10000 * return
+            quantized HALF_UP -> 52.04
         """
         short = [FakePeriod(date(2026, 1, 2), date(2026, 1, 8), 1)]
         long = [FakePeriod(date(2026, 1, 2), date(2026, 1, 29), 1)]
@@ -619,40 +624,76 @@ class TestProjectBalance:
         long_result = project_balance(
             Decimal("10000"), Decimal("0.07"), long,
         )
-        assert short_result[0].growth == Decimal("11.13"), (
-            f"Expected 11.13, got {short_result[0].growth}"
+        assert short_result[0].growth == Decimal("12.98"), (
+            f"Expected 12.98, got {short_result[0].growth}"
         )
-        assert long_result[0].growth == Decimal("50.17"), (
-            f"Expected 50.17, got {long_result[0].growth}"
+        assert long_result[0].growth == Decimal("52.04"), (
+            f"Expected 52.04, got {long_result[0].growth}"
         )
 
-    def test_degenerate_period_falls_back_to_14_days(self):
-        """A zero-length period uses the 14-day biweekly fallback.
+    def test_same_day_period_is_one_day_of_growth(self):
+        """A same-day period (start == end) is exactly ONE day of growth.
 
-        ``_period_return_rate`` clamps ``period_days <= 0`` to 14 (a branch
-        now shared by both the forward and reverse projections), so a
-        degenerate period whose start_date == end_date must grow exactly
-        as a real 14-day period would.
+        With inclusive day-counting, period_days = (end - start).days + 1,
+        so start == end gives (0).days + 1 = 1.  A same-day period therefore
+        credits a single day of growth -- it does NOT fall back to the 14-day
+        cadence (the fallback now fires only for inverted periods; see
+        ``test_inverted_period_falls_back_to_14_days``).
+
+        Hand calculation for balance 10000 at 7%, 1 day:
+          return = (1.07)^(1/365) - 1 ~= 0.00018538; growth = 10000 * return
+          quantized HALF_UP -> 1.85
+        """
+        same_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 2), 1)]
+        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1)]
+
+        same_day_growth = project_balance(
+            Decimal("10000"), Decimal("0.07"), same_day,
+        )[0].growth
+        # A real biweekly period runs start .. start + 13 (14 inclusive days).
+        real_growth = project_balance(
+            Decimal("10000"), Decimal("0.07"), real_14_day,
+        )[0].growth
+
+        assert same_day_growth == Decimal("1.85"), (
+            f"Expected 1.85, got {same_day_growth}"
+        )
+        assert real_growth == Decimal("25.98"), (
+            f"Expected 25.98, got {real_growth}"
+        )
+        # One day of growth is strictly less than a full 14-day period.
+        assert same_day_growth < real_growth
+
+    def test_inverted_period_falls_back_to_14_days(self):
+        """An inverted period (end < start) uses the 14-day biweekly fallback.
+
+        ``_period_return_rate`` sets period_days = (end - start).days + 1 and
+        clamps ``period_days <= 0`` to 14 (a branch shared by both the forward
+        and reverse projections).  Only a genuinely inverted period -- end
+        strictly before start, so period_days <= 0 -- is degenerate now; it
+        must grow exactly as a real 14-day period would.
 
         Hand calculation for balance 10000 at 7%, 14 days:
           return = (1.07)^(14/365) - 1; growth = 10000 * return
           quantized HALF_UP -> 25.98
         """
-        degenerate = [FakePeriod(date(2026, 1, 2), date(2026, 1, 2), 1)]
-        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 16), 1)]
+        # end is the day BEFORE start: (end - start).days = -1, so
+        # period_days = -1 + 1 = 0 <= 0 -> fallback to 14.
+        inverted = [FakePeriod(date(2026, 1, 16), date(2026, 1, 15), 1)]
+        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1)]
 
-        degenerate_growth = project_balance(
-            Decimal("10000"), Decimal("0.07"), degenerate,
+        inverted_growth = project_balance(
+            Decimal("10000"), Decimal("0.07"), inverted,
         )[0].growth
         real_growth = project_balance(
             Decimal("10000"), Decimal("0.07"), real_14_day,
         )[0].growth
 
-        assert degenerate_growth == Decimal("25.98"), (
-            f"Expected 25.98, got {degenerate_growth}"
+        assert inverted_growth == Decimal("25.98"), (
+            f"Expected 25.98, got {inverted_growth}"
         )
-        # The fallback maps a 0-day period onto the 14-day cadence.
-        assert degenerate_growth == real_growth
+        # The fallback maps an inverted period onto the 14-day cadence.
+        assert inverted_growth == real_growth
 
 
 class TestGenerateProjectionPeriods:
@@ -704,7 +745,8 @@ class TestGenerateProjectionPeriods:
         """Synthetic periods integrate with project_balance.
 
         Independent computation replicates the growth engine formula:
-        For each period (14-day cadence → 13 actual days per period):
+        For each period (14-day cadence -> 14 INCLUSIVE days per period,
+        period_days = (end - start).days + 1):
           period_return = (1 + 0.07)^(period_days / 365) - 1
           growth = round_money(balance * period_return)
           balance = balance + growth + 500
@@ -719,10 +761,12 @@ class TestGenerateProjectionPeriods:
         )
         assert len(result) == len(periods)
 
-        # Independent loop computing the expected final balance.
+        # Independent loop computing the expected final balance.  Mirrors the
+        # engine's inclusive day-count: a 14-day period spans (end-start).days
+        # + 1 = 14 calendar days.
         expected_balance = Decimal("10000")
         for period in periods:
-            period_days = (period.end_date - period.start_date).days
+            period_days = (period.end_date - period.start_date).days + 1
             period_return_rate = (
                 (1 + Decimal("0.07"))
                 ** (Decimal(str(period_days)) / Decimal("365"))
@@ -1549,3 +1593,129 @@ class TestReverseProjectBalance:
         )
         assert reversed_proj[0].start_balance == start_balance
         assert reversed_proj[5].contribution == ZERO
+
+
+# ── Inclusive day-count regression (D1, developer-approved 2026-07-02) ──
+
+
+class TestInclusiveDayCountRegression:
+    """Pin the corrected inclusive-end day-count convention directly.
+
+    Pay periods carry an INCLUSIVE end_date, so a standard 14-calendar-day
+    period runs ``start`` .. ``start + 13`` and the span is
+    ``(end - start).days + 1`` (14), not ``(end - start).days`` (13).  The
+    prior exclusive count dropped one calendar day per period; because
+    consecutive periods tile the calendar with no gaps, that lost 1 day in
+    14 (~26 days a year) of compounding -- a configured 10.5% return behaved
+    as only ~9.69% effective.  These tests lock the fix so a revert to the
+    exclusive count re-breaks them.
+    """
+
+    def test_fourteen_day_period_counts_days_inclusively(self):
+        """A 14-inclusive-day period compounds (1 + r)^(14/365) - 1 exactly.
+
+        period runs Jan 1 .. Jan 14 (start + 13) = 14 inclusive calendar
+        days, so _period_return_rate must use 14/365 -- NOT the old 13/365.
+        The rate is a pure (unrounded) Decimal, so this is an exact equality
+        with zero tolerance.
+        """
+        r = Decimal("0.105")
+        period = FakePeriod(date(2027, 1, 1), date(2027, 1, 14), 1)
+        # 14 inclusive days: (Jan 14 - Jan 1).days + 1 == 13 + 1 == 14.
+        assert (period.end_date - period.start_date).days + 1 == 14
+
+        expected = (Decimal("1") + r) ** (Decimal("14") / Decimal("365")) - Decimal("1")
+        assert _period_return_rate(r, period) == expected
+
+        # The corrected rate is strictly larger than the old 13/365 rate the
+        # exclusive count produced, so a revert cannot pass silently.
+        old_buggy = (Decimal("1") + r) ** (Decimal("13") / Decimal("365")) - Decimal("1")
+        assert _period_return_rate(r, period) != old_buggy
+        assert _period_return_rate(r, period) > old_buggy
+
+    def test_same_day_period_counts_one_day(self):
+        """A same-day period (start == end) compounds exactly 1/365.
+
+        (end - start).days + 1 == 0 + 1 == 1, so a same-day period is one
+        day of growth (it does not fall back to the 14-day cadence).
+        """
+        r = Decimal("0.105")
+        same_day = FakePeriod(date(2027, 6, 1), date(2027, 6, 1), 1)
+        expected = (Decimal("1") + r) ** (Decimal("1") / Decimal("365")) - Decimal("1")
+        assert _period_return_rate(r, same_day) == expected
+
+    def test_consecutive_periods_over_one_year_compound_to_annual_rate(self):
+        """Gap-free periods tiling exactly one year compound to (1 + r).
+
+        Twenty-six 14-inclusive-day periods (364 days) plus a final one-day
+        period tile 2027 (a non-leap year, 365 days) with no gap or overlap.
+        The inclusive spans therefore sum to exactly 365, so the product of
+        the per-period factors (1 + r)^(d_i / 365) is
+        (1 + r)^(sum d_i / 365) = (1 + r)^(365/365) = (1 + r).
+
+        Under the old exclusive count the spans would have summed to only
+        365 - 27 = 338 (one day lost per period), compounding to
+        (1 + r)^(338/365) < (1 + r).  The product carries a sub-1e-26 Decimal
+        rounding residual, so the equality is asserted after quantizing well
+        above that residual (not a loosened financial assertion -- the
+        identity is exact in real arithmetic).
+        """
+        r = Decimal("0.105")
+        year_start = date(2027, 1, 1)
+        year_end = date(2027, 12, 31)  # 2027 is not a leap year: 365 days.
+
+        periods = []
+        cur = year_start
+        idx = 1
+        while cur <= year_end:
+            end = min(cur + timedelta(days=13), year_end)
+            periods.append(FakePeriod(cur, end, idx))
+            cur = end + timedelta(days=1)
+            idx += 1
+
+        # Inclusive spans tile the year with no gap: they sum to 365, and
+        # each period starts the day after the previous one ends.
+        total_days = sum(
+            (p.end_date - p.start_date).days + 1 for p in periods
+        )
+        assert total_days == 365
+        for prev, nxt in zip(periods, periods[1:]):
+            assert nxt.start_date == prev.end_date + timedelta(days=1)
+
+        product = Decimal("1")
+        for period in periods:
+            product *= Decimal("1") + _period_return_rate(r, period)
+
+        quantum = Decimal("1E-12")
+        assert product.quantize(quantum) == (Decimal("1") + r).quantize(quantum)
+
+    def test_canonical_520_period_reproduction_corrected(self):
+        """The documented 520-period reproduction ends at the corrected value.
+
+        generate_projection_periods(2026-07-02, 2046-06-01) yields 520 biweekly
+        periods.  Projecting 27332.33 at 10.5% with no contributions:
+
+          corrected: end = 200237.80
+            200237.80 / 27332.33 = 7.3260 = (1.105)^(520*14/365)
+              (14 inclusive days per period)
+          old (buggy): end = 173688.32
+            173688.32 / 27332.33 = 6.3547 = (1.105)^(520*13/365)
+              (13 exclusive days per period)
+
+        The engine quantizes growth to cents each period, so 200237.80 sits 6
+        cents under the single-shot theoretical 27332.33*(1.105)^(520*14/365)
+        = 200237.86 (accumulated per-period rounding over 520 periods).
+        """
+        periods = generate_projection_periods(date(2026, 7, 2), date(2046, 6, 1))
+        assert len(periods) == 520
+
+        result = project_balance(
+            current_balance=Decimal("27332.33"),
+            assumed_annual_return=Decimal("0.105"),
+            periods=periods,
+            periodic_contribution=Decimal("0"),
+        )
+        assert result[-1].end_balance == Decimal("200237.80")
+
+        # The corrected endpoint is well above the old exclusive-count value.
+        assert result[-1].end_balance > Decimal("173688.32")

@@ -236,23 +236,39 @@ def _build_contribution_lookup(contributions):
 def _period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
     """Compound return rate for a single pay period from the annual rate.
 
-    Scales the annual return to the period's actual day count
-    (``end_date - start_date``), falling back to a 14-day biweekly
-    cadence for degenerate (zero- or negative-length) periods.  Shared by
-    both the forward (:func:`project_balance`) and reverse
-    (:func:`reverse_project_balance`) projections so the two cannot
+    Scales the annual return to the period's actual calendar-day span,
+    counted INCLUSIVELY.  Pay periods carry an inclusive ``end_date``: a
+    standard 14-calendar-day period runs ``start`` .. ``start + 13`` and
+    the next period starts the following day
+    (:func:`generate_projection_periods` and
+    :func:`app.services.pay_period_service.generate_pay_periods` both build
+    ``end_date = start_date + (cadence_days - 1)``).  The span is therefore
+    ``(end_date - start_date).days + 1`` -- 14 for a standard biweekly
+    period, not 13.  Counting exclusively (the old ``end - start`` without
+    the ``+ 1``) dropped one calendar day per period; because consecutive
+    periods tile the calendar with no gaps, that lost 1 day in 14 (~26 days
+    a year, ~7.1%) of compounding, so a configured 10.5% annual return
+    behaved as only ~9.69% effective.
+
+    A same-day period (``start == end``) is one day of growth
+    (``(0).days + 1 == 1``).  A degenerate inverted period (``end <
+    start``, giving a non-positive span) falls back to the 14-day biweekly
+    cadence.  Shared by both the forward (:func:`project_balance`) and
+    reverse (:func:`reverse_project_balance`) projections so the two cannot
     diverge on the growth formula.
 
     Args:
         assumed_annual_return: Decimal annual return rate (e.g. 0.07 for 7%).
-        period: A period object with ``.start_date`` and ``.end_date``.
+        period: A period object with ``.start_date`` and ``.end_date`` (the
+            latter the period's inclusive last day).
 
     Returns:
-        Decimal per-period compound rate ``(1 + annual) ** (days / 365) - 1``.
+        Decimal per-period compound rate ``(1 + annual) ** (days / 365) - 1``
+        where ``days`` is the inclusive calendar-day span.
     """
-    period_days = (period.end_date - period.start_date).days
+    period_days = (period.end_date - period.start_date).days + 1
     if period_days <= 0:
-        period_days = 14  # fallback for degenerate periods
+        period_days = 14  # fallback for degenerate (inverted) periods
     return (
         (1 + assumed_annual_return)
         ** (Decimal(str(period_days)) / Decimal("365"))
