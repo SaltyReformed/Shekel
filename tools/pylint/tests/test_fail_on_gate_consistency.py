@@ -1,16 +1,17 @@
 """Consistency guard for the pylint hard-gate ``--fail-on`` symbol list.
 
 The project's custom financial-correctness checkers are enforced as pylint hard
-failures (``--fail-on=E,F,shekel-...``) in five executable locations: the two
-``pylint`` steps in CI (``.github/workflows/ci.yml``), the ``pylint-app`` and
-``pylint-scripts`` pre-commit hooks (``.pre-commit-config.yaml``), and the
+failures (``--fail-on=E,F,shekel-...``) in seven executable locations: the three
+``pylint`` floor steps in CI (``.github/workflows/ci.yml``: app/, scripts/, and
+the ``shekel_checkers`` package), the ``pylint-app`` / ``pylint-scripts`` /
+``pylint-checkers`` pre-commit hooks (``.pre-commit-config.yaml``), and the
 hard-block tier of the per-edit hook (``scripts/hooks/post-edit-python.sh``,
 which spells the same symbols as ``--enable``).
 
 Two drift classes make a hard gate silently stop firing, and pylint reports
 NEITHER as an error -- an unknown ``--fail-on`` symbol is ignored, not rejected:
 
-1. A checker symbol is renamed in ``shekel_checkers.py`` but a gate list keeps
+1. A checker symbol is renamed in the ``shekel_checkers`` package but a gate list keeps
    the old (now-unknown) name -- that checker no longer fails the build, and
    nothing complains.
 2. One of the copies drifts out of step with the others.

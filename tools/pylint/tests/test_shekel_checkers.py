@@ -985,7 +985,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         kill).  A consumer reaching it directly is now flagged; the sanctioned
         seed read is the seam entry (see the next test).  This is also covered
         by ``test_flags_every_guarded_producer_from_a_consumer``; kept explicit
-        because the prose comment in ``shekel_checkers.py`` names it.
+        because the prose comment in ``shekel_checkers/balance_seam.py`` names it.
         """
         node = self._producer_call(
             "net_worth_kernel.investment_base_balance_map(account, scenario, periods)",

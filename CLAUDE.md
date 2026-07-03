@@ -80,7 +80,7 @@ root; never silence it with a bare disable.
   and `requirements.txt` have their own guards.
 - **Stop hook** runs full `pylint app/` -- the only place cross-file `duplicate-code` is caught --
   and hard-blocks once `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists (the 10.00/10 lock-in).
-- **Custom checkers:** `tools/pylint/shekel_checkers.py` (+ tests), loaded via `.pylintrc`. Add one
+- **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one
   when a rule is an AST pattern rather than hoping a reviewer remembers it.
 - **CI + pre-commit** run `pylint app/` (checkers as hard `--fail-on`) and the full suite per PR;
   `useless-suppression` is on, so a disable that suppresses nothing is itself a finding.

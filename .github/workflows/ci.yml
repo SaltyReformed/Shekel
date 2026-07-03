@@ -128,7 +128,7 @@ jobs:
       # Layered pylint gate:
       #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass:
       #     always fail on errors (E), fatals (F), and the project's custom
-      #     checkers (tools/pylint/shekel_checkers.py, loaded via .pylintrc) --
+      #     checkers (tools/pylint/shekel_checkers/, loaded via .pylintrc) --
       #     the financial-correctness rules (decimal-from-float, refname-compare,
       #     bare-money-quantize, original-principal-as-balance), disable-rationale
       #     (every `# pylint: disable=` must carry a standard `Pylint:`
@@ -157,6 +157,17 @@ jobs:
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
         run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass --output-format=colorized
+
+      # ── 5a2. Lint the pylint checker package ─────────────────────
+      # The custom checkers ARE the enforcement machinery, so they hold the
+      # same 10.00/10 floor they impose on app/ and scripts/.  This gate is
+      # what stops a checker edit from silently regressing the plugin: the R3
+      # status-fence extension had left it at 9.54 until the R10 package split
+      # (docs/audits/balance_architecture/).  Scoped to the shekel_checkers/
+      # package only -- the tests/ subtree is out of general pylint scope
+      # (ratified decision #1) and is covered by the pytest run in step 5b.
+      - name: Lint checker package with pylint
+        run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a

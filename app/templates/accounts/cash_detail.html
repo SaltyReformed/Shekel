@@ -46,7 +46,8 @@
   <div class="nw-sky">
     <div class="nw-hero">
       <div class="pulse-hero__label">Balance</div>
-      <div class="nw-hero__num font-mono{% if current_balance is not none and current_balance < 0 %} nw-hero__num--neg{% endif %}">
+      <div class="nw-hero__num font-mono{% if current_balance is not none and current_balance < 0 %} nw-hero__num--neg{% endif %}"
+        {%- if current_balance is not none %} data-current-balance="{{ current_balance }}"{% endif %}>
         {% if current_balance is not none %}{{ money(current_balance) }}{% else %}--{% endif %}
       </div>
       <div class="nw-hero__cap">
