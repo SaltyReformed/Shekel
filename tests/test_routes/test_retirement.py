@@ -126,22 +126,46 @@ class TestRetirementDashboard:
     """Tests for the retirement dashboard page."""
 
     def test_dashboard_empty(self, auth_client, seed_user, db, seed_periods_today):
-        """GET returns 200 even with no pensions or accounts."""
+        """GET returns 200 with the direction-D empty states, no pension footer.
+
+        Realigned for the locked direction-D rebuild (P3b): with nothing
+        configured there is no retirement date, so the readiness / levers /
+        income cards each render the "set a planned retirement date" empty
+        state (the old always-rendered gap table -- audit Surface 7's dead
+        else branch -- is retired), and no per-pension derivation line
+        exists.
+        """
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
-        assert b"Retirement Planning" in resp.data
-        assert b"Retirement Income Gap Analysis" in resp.data
-        # No pension data seeded, so pension details should not appear.
-        assert b"Pension Benefit Details" not in resp.data
+        html = resp.data.decode()
+        assert "Retirement readiness" in html
+        assert "Set a planned retirement date" in html
+        # The retired old-page surfaces must not resurface.
+        assert "Retirement Income Gap Analysis" not in html
+        assert "retire-pension-line" not in html
 
     def test_dashboard_with_pension(self, auth_client, seed_user, db, seed_periods_today):
-        """GET returns 200 with pension data displayed."""
+        """The per-pension derivation footer renders the real derivation.
+
+        Realigned for direction D (P3b): the 'Pension Benefit Details'
+        card retired into the one-line-per-pension footer (audit D6).
+        Hand arithmetic for the seeded pension (hire 2018-07-01, planned
+        2048-07-01, multiplier 1.85%):
+          service days = 30 years incl. 8 leap days (2020..2048)
+                       = 30 * 365 + 8 = 10,958
+          years_of_service = (10958 / 365.25).quantize(0.01) = 30.00
+        so the footer line reads "State Pension: 30.00 yrs x" and the
+        multiplier renders as "1.85%".
+        """
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
-        assert b"Retirement Planning" in resp.data
-        assert b"Pension Benefit Details" in resp.data
+        html = resp.data.decode()
+        assert "retire-pension-line" in html
+        assert "State Pension: 30.00 yrs x" in html
+        assert "1.85%" in html
+        assert "Pension Benefit Details" not in html
 
     def test_dashboard_no_stale_settings_migration_message(
         self, auth_client, seed_user, db, seed_periods_today
@@ -681,7 +705,14 @@ class TestRetirementProjections:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "After-Tax Monthly Pension" in html
+        # Realigned for direction D (P3b): the old "After-Tax Monthly
+        # Pension" row retired; the stored 20% rate now nets the pension
+        # footer line ("net of 20.0% est. tax" -- 0.2000|to_percent ->
+        # 20.0 via "%.1f") and the income card's row is labeled net.  The
+        # F1 not-set flag must NOT render once a rate is stored.
+        assert "20.0% est. tax" in html
+        assert "Pension (net)" in html
+        assert "(not set" not in html
 
     def test_dashboard_projects_multiple_accounts(
         self, auth_client, seed_user, db, seed_periods_today
@@ -731,8 +762,20 @@ class TestRetirementProjections:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Should show projected pre-retirement income, not current.
-        assert "Projected Pre-Retirement Income" in html
+        # Realigned for direction D (P3b): the old table row label is
+        # retired; the income card's "Income to replace" figure must equal
+        # the raise-aware readiness producer's net monthly target exactly
+        # (page == service, a strictly stronger pin than the old
+        # label-presence check).  The money macro renders "$1,234.56".
+        from app.services import retirement_readiness
+
+        readiness = retirement_readiness.compute_readiness_data(
+            seed_user["user"].id
+        )
+        target = readiness["income_target_net_monthly"]
+        assert target > 0
+        assert "Income to replace" in html
+        assert f"${target:,.2f}" in html
 
 
 class TestGapAnalysisFragment:
@@ -1472,16 +1515,24 @@ class TestRetirementValidationUX:
 class TestReturnRateClarity:
     """Tests for return rate slider tooltip and per-account rate display."""
 
-    def test_return_slider_tooltip_present(self, auth_client, seed_user, db, seed_periods_today):
-        """Dashboard shows info-circle tooltip on the Assumed Annual Return label."""
+    def test_return_row_shows_blended_value_and_caption(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The assumed-return row shows the blended rate and its provenance.
+
+        Realigned (P3b): the slider tooltip retired; the assumptions
+        rail's what-if-only return row renders the balance-weighted
+        blended rate with its provenance caption.  With a single account
+        at 7% the weighted average IS 7% -> "%.2f" renders "7.00%".
+        """
         profile = _create_salary_profile(seed_user, db.session)
         _create_pension(seed_user, db.session, salary_profile=profile)
         _create_retirement_account(seed_user, db.session)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Recalculates the gap analysis and account projections below" in html
-        assert "overriding each account&#" in html or "overriding each account" in html
+        assert "7.00%" in html
+        assert "per-account rates own this" in html
 
     def test_per_account_rate_displayed_on_dashboard(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1497,9 +1548,11 @@ class TestReturnRateClarity:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # params.assumed_annual_return is 0.07 -> displayed as "7.0%" in its own column.
+        # Realigned for direction D (P3b): the column header is now
+        # "Return"; params.assumed_annual_return 0.07000|to_percent -> 7.0
+        # via "%.1f" still renders in the row.
         assert "7.0%" in html
-        assert "Annual Return" in html
+        assert ">Return</th>" in html
 
     def test_per_account_rate_accuracy_multiple_accounts(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1585,10 +1638,17 @@ class TestReturnRateClarity:
         assert ">10.0%<" in html
         assert ">7.0%<" not in html
 
-    def test_initial_dashboard_no_oob_in_gap_section(
+    def test_initial_dashboard_renders_no_oob(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Full page load does not render OOB swap inside the gap analysis card."""
+        """The full page render carries no out-of-band swap attributes.
+
+        Realigned (P3b): the gap card's OOB accounts container retired;
+        OOB siblings now ride ONLY standalone readiness fragment
+        responses (the ``embedded`` flag suppresses them in the page
+        include), so a full page load must contain zero hx-swap-oob
+        attributes while still rendering the stable income panel shell.
+        """
         _create_retirement_account(seed_user, db.session)
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id
@@ -1599,19 +1659,24 @@ class TestReturnRateClarity:
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The OOB attribute should NOT appear on the full page render.
-        assert 'hx-swap-oob="innerHTML"' not in html
-        # But the wrapper div with the id should exist (for the actual table).
-        assert 'id="retirement-accounts-content"' in html
+        assert "hx-swap-oob" not in html
+        assert 'id="income-panel"' in html
 
-    def test_slider_default_value_present(self, auth_client, seed_user, db, seed_periods_today):
-        """Slider element is present with its default value attribute."""
+    def test_whatif_controls_present(self, auth_client, seed_user, db, seed_periods_today):
+        """The direction-D what-if inputs replace the retired sliders.
+
+        Realigned (P3b): the two sensitivity sliders retired into the
+        assumptions rail's what-if inputs (audit ruling 7) -- the SWR row
+        input, the what-if-only return input, and the lever steppers.
+        """
         _create_retirement_account(seed_user, db.session)
         resp = auth_client.get("/retirement")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert 'id="return_slider"' in html
-        assert 'id="swr_slider"' in html
+        assert 'id="assump-swr"' in html
+        assert 'id="assump-return-rate"' in html
+        assert 'id="return_slider"' not in html
+        assert 'id="swr_slider"' not in html
 
     def test_htmx_gap_still_returns_gap_analysis(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1926,7 +1991,8 @@ class TestAssumptionSaves:
         """An HTMX save responds with the refreshed assumptions panel.
 
         Stored fraction 0.0350 renders back through to_percent as
-        3.50 -> "%.1f" -> value="3.5" in the SWR row's input.
+        3.50 -> "%.2f" (the P3b rail renders SWR at two decimals) ->
+        value="3.50" in the SWR row's input.
         """
         resp = auth_client.post(
             "/retirement/settings",
@@ -1936,7 +2002,7 @@ class TestAssumptionSaves:
         assert resp.status_code == 200
         html = resp.data.decode()
         assert 'id="assumptions-panel"' in html
-        assert 'value="3.5"' in html
+        assert 'value="3.50"' in html
         settings = db.session.query(UserSettings).filter_by(
             user_id=seed_user["user"].id,
         ).one()
@@ -2035,7 +2101,14 @@ class TestReadinessFragment:
     def test_baseline_fragment_has_verdict_and_no_deltas(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """No overrides: the verdict renders, the deltas block does not."""
+        """No overrides: the verdict renders with the OOB income panel.
+
+        Realigned (P3b): the countdown moved from the fragment to the
+        page header, and a STANDALONE fragment response now carries the
+        income panel as an hx-swap-oob sibling so the meter always
+        tracks the verdict; no lever lines ride along without stepper
+        params, and no delta line renders without overrides.
+        """
         _seed_underfunded(seed_user, db.session)
         resp = auth_client.get(
             "/retirement/readiness", headers={"HX-Request": "true"},
@@ -2044,7 +2117,8 @@ class TestReadinessFragment:
         html = resp.data.decode()
         assert 'data-readiness="verdict"' in html
         assert "% funded" in html
-        assert 'data-readiness="countdown"' in html
+        assert 'id="income-panel"' in html
+        assert 'hx-swap-oob="innerHTML"' in html
         assert 'data-readiness="deltas"' not in html
         assert 'data-lever=' not in html
 
