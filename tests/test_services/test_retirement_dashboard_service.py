@@ -161,7 +161,7 @@ class TestComputeGapData:
 class TestComputeGapNetBiweekly:
     """Pin the gap-comparison net-biweekly scaling (quality-pass B7).
 
-    ``_compute_gap_net_biweekly`` scales the projected final-year gross
+    ``compute_gap_net_biweekly`` scales the projected final-year gross
     biweekly by the current effective take-home rate (net / gross) so the
     gap calculator compares retirement income against a raise-adjusted
     pre-retirement take-home figure rather than today's pay.  The cleanup
@@ -211,7 +211,7 @@ class TestComputeGapNetBiweekly:
         # merit_horizon_years is inert here: salary_by_year is supplied,
         # so the helper never recomputes it (the horizon only affects the
         # internal project_salaries_by_year call on the None branch).
-        result = retirement_dashboard_service._compute_gap_net_biweekly(
+        result = retirement_dashboard_service.compute_gap_net_biweekly(
             [profile], date(2055, 1, 1), pay, salary_by_year, 5,
         )
         assert result == Decimal("4030.77")
@@ -231,7 +231,7 @@ class TestComputeGapNetBiweekly:
             net_biweekly=Decimal("1800.00"),
             current_breakdown=None,
         )
-        result = retirement_dashboard_service._compute_gap_net_biweekly(
+        result = retirement_dashboard_service.compute_gap_net_biweekly(
             [profile], None, pay, [(2026, Decimal("120000.00"))], 5,
         )
         assert result == Decimal("1800.00")
@@ -252,7 +252,7 @@ class TestComputeGapNetBiweekly:
             net_biweekly=Decimal("1500.00"),
             current_breakdown=None,
         )
-        result = retirement_dashboard_service._compute_gap_net_biweekly(
+        result = retirement_dashboard_service.compute_gap_net_biweekly(
             [profile], date(2055, 1, 1), pay, [(2055, Decimal("131000.00"))], 5,
         )
         assert result == Decimal("1500.00")

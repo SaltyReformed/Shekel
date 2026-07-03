@@ -35,6 +35,7 @@ from app.services.retirement_projection import (
     project_retirement_accounts,
 )
 from app.services.tax_config_service import load_tax_configs
+from app.utils.dates import add_months
 from app.utils.money import round_money
 
 
@@ -83,10 +84,10 @@ _DEFAULT_MERIT_HORIZON_YEARS = 5
 
 
 @dataclass(frozen=True)
-class _PensionSummary:
+class PensionSummary:
     """Aggregated pension-benefit outputs for the gap analysis.
 
-    Returned by :func:`_compute_pension_benefit` so the orchestrator
+    Returned by :func:`compute_pension_summary` so the orchestrator
     carries the three pension-derived values it forwards downstream as
     one immutable result rather than three parallel locals: the most
     recent per-pension benefit (for the template), the summed monthly
@@ -102,7 +103,7 @@ class _PensionSummary:
             pensions (``Decimal("0")`` when none qualify).
         salary_by_year: The ``(year, salary)`` projection produced for
             the last qualifying pension, or ``None`` when none qualified;
-            reused by :func:`_compute_gap_net_biweekly`.
+            reused by :func:`compute_gap_net_biweekly`.
     """
 
     benefit: pension_calculator.PensionBenefit | None
@@ -136,6 +137,65 @@ class _CurrentPay:
     current_period: PayPeriod | None
     net_biweekly: Decimal
     current_breakdown: paycheck_calculator.PaycheckBreakdown | None
+
+
+@dataclass(frozen=True)
+class GapInputs:
+    """The once-per-request loaded inputs the gap analysis reads.
+
+    Returned by :func:`load_gap_inputs` so :func:`compute_gap_data` and the
+    lever solvers (:mod:`app.services.retirement_levers`, P2b) share one
+    loader for the date-independent inputs -- the retire-later solver's
+    binary-search probes load these ONCE and re-derive only the
+    date-dependent parts (salary path, pension benefit, growth horizon)
+    per probe.
+
+    Attributes:
+        settings: The user's :class:`UserSettings`, or ``None``.
+        pensions: The user's active :class:`PensionProfile` rows.
+        salary_profiles: The user's active :class:`SalaryProfile` rows.
+        pay: The current-period pay snapshot (:class:`_CurrentPay`).
+        merit_horizon_years: The resolved merit-raise horizon.
+    """
+
+    settings: UserSettings | None
+    pensions: list[PensionProfile]
+    salary_profiles: list[SalaryProfile]
+    pay: _CurrentPay
+    merit_horizon_years: int
+
+
+def load_gap_inputs(user_id):
+    """Load the gap analysis's per-request inputs in one place.
+
+    Args:
+        user_id: The user's integer ID.
+
+    Returns:
+        A :class:`GapInputs` bundle (settings, active pensions, active
+        salary profiles, the current-pay snapshot, and the resolved merit
+        horizon).
+    """
+    settings = (
+        db.session.query(UserSettings).filter_by(user_id=user_id).first()
+    )
+    pensions = (
+        db.session.query(PensionProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    salary_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    return GapInputs(
+        settings=settings,
+        pensions=pensions,
+        salary_profiles=salary_profiles,
+        pay=_compute_current_pay(user_id, salary_profiles),
+        merit_horizon_years=_resolve_merit_horizon(settings),
+    )
 
 
 def _resolve_swr_fraction(settings):
@@ -213,25 +273,14 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
                         salary_profiles, pensions, gap_net_biweekly, swr,
                         planned_retirement_date, estimated_tax_rate.
     """
-    settings = (
-        db.session.query(UserSettings).filter_by(user_id=user_id).first()
-    )
-    pensions = (
-        db.session.query(PensionProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
-    salary_profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
+    inputs = load_gap_inputs(user_id)
+    settings = inputs.settings
+    pensions = inputs.pensions
+    salary_profiles = inputs.salary_profiles
+    pay = inputs.pay
 
-    merit_horizon_years = _resolve_merit_horizon(settings)
-
-    pension = _compute_pension_benefit(pensions, merit_horizon_years)
-    pay = _compute_current_pay(user_id, salary_profiles)
-    planned_retirement_date = _resolve_planned_retirement_date(
+    pension = compute_pension_summary(pensions, inputs.merit_horizon_years)
+    planned_retirement_date = resolve_planned_retirement_date(
         pensions, settings,
     )
 
@@ -250,14 +299,15 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
             planned_retirement_date,
             return_rate_override,
             build_employer_salary_basis(
-                salary_profiles, planned_retirement_date, merit_horizon_years,
+                salary_profiles, planned_retirement_date,
+                inputs.merit_horizon_years,
             ),
         )
     )
 
-    gap_net_biweekly = _compute_gap_net_biweekly(
+    gap_net_biweekly = compute_gap_net_biweekly(
         salary_profiles, planned_retirement_date, pay, pension.salary_by_year,
-        merit_horizon_years,
+        inputs.merit_horizon_years,
     )
 
     # CRIT-04 / E-12: route both SWR call sites (here and the slider in
@@ -397,9 +447,11 @@ def compute_slider_defaults(data):
 # ── Private helpers: gap-data orchestration ──────────────────────
 
 
-def _compute_pension_benefit(
-    pensions: list[PensionProfile], merit_horizon_years: int,
-) -> _PensionSummary:
+def compute_pension_summary(
+    pensions: list[PensionProfile],
+    merit_horizon_years: int,
+    month_offset: int = 0,
+) -> PensionSummary:
     """Aggregate the pension benefit across the user's active pensions.
 
     Iterates the active pensions, projecting each one that carries both a
@@ -413,9 +465,16 @@ def _compute_pension_benefit(
         merit_horizon_years: The merit-raise horizon (years) forwarded to
             :func:`~app.services.pension_calculator.project_salaries_by_year`
             so merit/custom raises stop applying after the cutoff.
+        month_offset: Whole months added to EACH qualifying pension's
+            planned retirement date before projecting (the P2b retire-later
+            probes: a later retirement extends the salary path, the years
+            of service, and the high-salary window together).  ``0`` (the
+            default) evaluates the stored plan unchanged --
+            :func:`app.utils.dates.add_months` with 0 months is the
+            identity.
 
     Returns:
-        A :class:`_PensionSummary` bundling the most recent benefit, the
+        A :class:`PensionSummary` bundling the most recent benefit, the
         summed monthly pension income, and the last salary-by-year
         series (the latter two default to ``Decimal("0")`` / ``None``
         when no pension qualifies).
@@ -426,22 +485,24 @@ def _compute_pension_benefit(
     for pension in pensions:
         if pension.planned_retirement_date and pension.salary_profile:
             profile = pension.salary_profile
-            salary_by_year = pension_calculator.project_salaries_by_year(
-                Decimal(str(profile.annual_salary)),
-                profile.raises,
+            planned = add_months(
+                pension.planned_retirement_date, month_offset,
+            )
+            salary_by_year = pension_calculator.project_profile_salaries(
+                profile,
                 date.today().year,
-                pension.planned_retirement_date.year,
+                planned.year,
                 merit_horizon_years,
             )
             benefit = pension_calculator.calculate_benefit(
                 benefit_multiplier=pension.benefit_multiplier,
                 consecutive_high_years=pension.consecutive_high_years,
                 hire_date=pension.hire_date,
-                planned_retirement_date=pension.planned_retirement_date,
+                planned_retirement_date=planned,
                 salary_by_year=salary_by_year,
             )
             monthly_income += benefit.monthly_benefit
-    return _PensionSummary(benefit, monthly_income, salary_by_year)
+    return PensionSummary(benefit, monthly_income, salary_by_year)
 
 
 def _compute_current_pay(
@@ -484,7 +545,7 @@ def _compute_current_pay(
     )
 
 
-def _resolve_planned_retirement_date(
+def resolve_planned_retirement_date(
     pensions: list[PensionProfile], settings: UserSettings | None,
 ) -> date | None:
     """Derive the planned retirement date from pensions, else settings.
@@ -511,7 +572,7 @@ def _resolve_planned_retirement_date(
 
 
 
-def _compute_gap_net_biweekly(
+def compute_gap_net_biweekly(
     salary_profiles: list[SalaryProfile],
     planned_retirement_date: date | None,
     pay: _CurrentPay,

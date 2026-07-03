@@ -248,7 +248,7 @@ def _build_contribution_lookup(contributions):
     return lookup
 
 
-def _period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
+def period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
     """Compound return rate for a single pay period from the annual rate.
 
     Scales the annual return to the period's actual calendar-day span,
@@ -268,9 +268,12 @@ def _period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
     A same-day period (``start == end``) is one day of growth
     (``(0).days + 1 == 1``).  A degenerate inverted period (``end <
     start``, giving a non-positive span) falls back to the 14-day biweekly
-    cadence.  Shared by both the forward (:func:`project_balance`) and
-    reverse (:func:`reverse_project_balance`) projections so the two cannot
-    diverge on the growth formula.
+    cadence.  Shared by the forward (:func:`project_balance`) and reverse
+    (:func:`reverse_project_balance`) projections and by the retirement
+    contribution solver's annuity factor
+    (:mod:`app.services.retirement_levers`, P2a) -- public so every
+    consumer reads the one growth formula and none can drift on the
+    inclusive day count.
 
     Args:
         assumed_annual_return: Decimal annual return rate (e.g. 0.07 for 7%).
@@ -385,7 +388,7 @@ def _project_one_period(
 
     # Step 1: Growth on the existing balance, before this period's contribution.
     growth = round_money(
-        start_balance * _period_return_rate(inputs.assumed_annual_return, period)
+        start_balance * period_return_rate(inputs.assumed_annual_return, period)
     )
 
     # Determine this period's contribution and confirmed status.  A dated
@@ -642,7 +645,7 @@ def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-posi
         start_balance = round_money(
             (end_balance - forward_row.contribution
              - forward_row.employer_contribution)
-            / (1 + _period_return_rate(assumed_annual_return, period))
+            / (1 + period_return_rate(assumed_annual_return, period))
         )
         start_balance = max(start_balance, ZERO)
 

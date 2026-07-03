@@ -107,19 +107,24 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
 class _ProjectionBatch:
     """Per-request data loaded once and reused across every account.
 
-    Built by :func:`_load_projection_batch` before the per-account loop
-    so the shared deduction / contribution / salary / balance queries run
-    a single time rather than once per account.
+    Built by :func:`load_projection_batch` before the per-account loop
+    so the shared deduction / contribution / params / salary / balance
+    queries run a single time rather than once per account.  Every field
+    is DATE-INDEPENDENT -- the projection's period axis is a separate
+    argument to :func:`project_accounts_with_batch` -- so the P2b
+    retire-later probes load ONE batch and re-project it against many
+    candidate horizons without repeating any query.
 
     Attributes:
         deductions_by_account: Active paycheck deductions keyed by
             account ID.
         contributions: Shadow-income contribution transactions across all
             projected accounts (filtered per account in the loop).
+        params_by_account: :class:`InvestmentParams` keyed by account ID
+            (accounts with no params row are absent) -- one ``IN`` query
+            replacing the pre-P2 per-account ``first()`` lookups.
         salary_gross_biweekly: The raise-aware engine gross-biweekly used
             as the employer-match cap basis.
-        synthetic_periods: Projection periods from today to the planned
-            retirement date (empty when no horizon is set).
         balance_map: The model-from-anchor END-of-current-period balance
             keyed by account ID -- the DISPLAYED current balance (and the
             weight in ``compute_slider_defaults``' return-rate average),
@@ -139,8 +144,8 @@ class _ProjectionBatch:
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
     contributions: list[Transaction]
+    params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
-    synthetic_periods: list[growth_engine.SyntheticPeriod]
     balance_map: dict[int, Decimal]
     seed_map: dict[int, Decimal]
 
@@ -305,8 +310,9 @@ def project_retirement_accounts(
     """Project each retirement / investment account forward to retirement.
 
     Loads the shared per-request projection inputs once
-    (:func:`_load_projection_batch`), then projects each account via
-    :func:`_project_one_account`.
+    (:func:`load_projection_batch`), resolves the period axis from the
+    context's horizon, then projects each account via
+    :func:`project_accounts_with_batch`.
 
     Args:
         ctx: The read-only projection context (accounts + period/horizon
@@ -316,19 +322,78 @@ def project_retirement_accounts(
         A list of per-account projection dicts (see
         :func:`_project_one_account` for the keys).
     """
-    batch = _load_projection_batch(ctx)
-    return [_project_one_account(acct, ctx, batch) for acct in ctx.accounts]
+    batch = load_projection_batch(ctx)
+    return project_accounts_with_batch(
+        ctx, batch, _resolve_projection_axis(ctx),
+    )
 
 
-def _load_projection_batch(
+def project_accounts_with_batch(
+    ctx: _RetirementProjectionContext,
+    batch: _ProjectionBatch,
+    projection_periods: list,
+) -> list[dict]:
+    """Project every account over an explicit period axis.
+
+    The probe-friendly core of :func:`project_retirement_accounts`: the
+    P2b retire-later solver calls this directly with one batch and a
+    different *projection_periods* axis (plus a horizon-shifted context)
+    per probe, so no query re-runs between probes.
+
+    Args:
+        ctx: The read-only projection context.
+        batch: The date-independent per-request inputs from
+            :func:`load_projection_batch`.
+        projection_periods: The ordered period axis to project over (an
+            empty list leaves every account non-projecting).
+
+    Returns:
+        A list of per-account projection dicts (see
+        :func:`_project_one_account` for the keys).
+    """
+    return [
+        _project_one_account(acct, ctx, batch, projection_periods)
+        for acct in ctx.accounts
+    ]
+
+
+def _resolve_projection_axis(ctx: _RetirementProjectionContext) -> list:
+    """Resolve the default period axis for the context's horizon.
+
+    Synthetic biweekly periods from today to the planned retirement date
+    when a horizon is set; otherwise the remaining REAL periods from the
+    current period onward (the pre-P2 fallback), and an empty list when
+    there is neither.
+
+    Args:
+        ctx: The read-only projection context.
+
+    Returns:
+        The ordered list of periods to project over (possibly empty).
+    """
+    if ctx.planned_retirement_date:
+        return growth_engine.generate_projection_periods(
+            start_date=date.today(),
+            end_date=ctx.planned_retirement_date,
+        )
+    if ctx.current_period:
+        return [
+            p for p in ctx.all_periods
+            if p.period_index >= ctx.current_period.period_index
+        ]
+    return []
+
+
+def load_projection_batch(
     ctx: _RetirementProjectionContext,
 ) -> _ProjectionBatch:
     """Load the per-request data shared across all account projections.
 
-    Runs the deduction, shadow-income, salary-gross, synthetic-period,
+    Runs the deduction, shadow-income, investment-params, salary-gross,
     and entries-aware balance queries a single time (F-22 / Commit 18 for
     the shared batch loaders) so the per-account loop does no repeated
-    I/O.
+    I/O.  Everything loaded here is date-independent, so the P2b probes
+    reuse one batch across every candidate retirement date.
 
     Args:
         ctx: The read-only projection context.
@@ -349,20 +414,24 @@ def _load_projection_batch(
         account_ids, period_ids,
     )
 
+    # One IN query for the params rows (P2: replaces the per-account
+    # ``first()`` inside the loop so probes never re-query).  Guarded so an
+    # account-less user issues no ``IN ()`` against PostgreSQL.
+    params_by_account: dict[int, InvestmentParams] = {}
+    if account_ids:
+        for params in (
+            db.session.query(InvestmentParams)
+            .filter(InvestmentParams.account_id.in_(account_ids))
+            .all()
+        ):
+            params_by_account[params.account_id] = params
+
     # F-20 / MED-06 / F-032: raise-aware engine gross-biweekly (not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
     # dropped any applicable SalaryRaise); feeds the employer-match cap.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
         ctx.user_id,
     )
-
-    # Synthetic projection periods to the retirement date.
-    synthetic_periods = []
-    if ctx.planned_retirement_date:
-        synthetic_periods = growth_engine.generate_projection_periods(
-            start_date=date.today(),
-            end_date=ctx.planned_retirement_date,
-        )
 
     # The displayed per-account balance is the model-from-anchor value (so
     # it agrees with /savings and the /investment dashboard); the forward
@@ -373,8 +442,8 @@ def _load_projection_batch(
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
+        params_by_account=params_by_account,
         salary_gross_biweekly=salary_gross_biweekly,
-        synthetic_periods=synthetic_periods,
         balance_map=balance_map,
         seed_map=seed_map,
     )
@@ -461,32 +530,6 @@ def _pick_current_period_balances(
         else:
             result[acct.id] = anchor
     return result
-
-
-def _projection_periods(
-    ctx: _RetirementProjectionContext, batch: _ProjectionBatch,
-) -> list:
-    """Resolve the period axis an account projects over.
-
-    The synthetic periods to the retirement date when a horizon is set;
-    otherwise the remaining real periods from the current period onward
-    (and an empty list when there is neither).
-
-    Args:
-        ctx: The read-only projection context.
-        batch: The shared per-request projection inputs.
-
-    Returns:
-        The ordered list of periods to project over (possibly empty).
-    """
-    if batch.synthetic_periods:
-        return batch.synthetic_periods
-    if ctx.current_period:
-        return [
-            p for p in ctx.all_periods
-            if p.period_index >= ctx.current_period.period_index
-        ]
-    return []
 
 
 def _run_account_projection(
@@ -576,8 +619,9 @@ def _project_one_account(
     acct: Account,
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
+    projection_periods: list,
 ) -> dict:
-    """Project a single account forward to the retirement horizon.
+    """Project a single account forward over the given period axis.
 
     Delegates the projecting branch to :func:`_run_account_projection`; an
     account with no :class:`InvestmentParams` or no projectable periods
@@ -591,19 +635,20 @@ def _project_one_account(
         acct: The account to project.
         ctx: The read-only projection context.
         batch: The shared per-request projection inputs.
+        projection_periods: The ordered period axis to project over (an
+            empty list leaves the account non-projecting).
 
     Returns:
         A projection dict with keys ``account``, ``current_balance``,
         ``projected_balance``, ``is_traditional``, ``annual_return_rate``,
         ``projection_rows`` (the per-period rows, empty for a non-projecting
         account), ``employee_per_period`` / ``employer_per_period`` (the
-        contribution facts for the accounts table), and ``none_linked``.
+        contribution facts for the accounts table), ``none_linked``, and
+        ``annual_contribution_limit`` (the account's stored annual cap, or
+        ``None`` for no-params / uncapped accounts -- the P2a headroom
+        input).
     """
-    params = (
-        db.session.query(InvestmentParams)
-        .filter_by(account_id=acct.id)
-        .first()
-    )
+    params = batch.params_by_account.get(acct.id)
     balance = batch.balance_map.get(acct.id, acct.current_anchor_balance)
     acct_deductions = batch.deductions_by_account.get(acct.id, [])
     acct_contributions = [
@@ -611,7 +656,6 @@ def _project_one_account(
     ]
     none_linked = not acct_deductions and not acct_contributions
 
-    projection_periods = _projection_periods(ctx, batch)
     if params is not None and projection_periods:
         result = _run_account_projection(
             acct, ctx, batch, params, projection_periods,
@@ -637,4 +681,9 @@ def _project_one_account(
         "employee_per_period": result.employee_per_period,
         "employer_per_period": result.employer_per_period,
         "none_linked": none_linked,
+        # P2a headroom input: the stored annual cap (None = no params row
+        # or an uncapped account -- either way no finite limit is known).
+        "annual_contribution_limit": (
+            params.annual_contribution_limit if params is not None else None
+        ),
     }
