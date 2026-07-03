@@ -41,7 +41,14 @@ class TestComputeGapData:
     """Tests for the top-level compute_gap_data orchestrator."""
 
     def test_returns_expected_keys(self, app, db, seed_user, seed_periods):
-        """Return dict contains all template context keys."""
+        """Return dict contains all template context keys.
+
+        P1c added the four readiness-input keys (``gap_net_biweekly``,
+        ``swr``, ``planned_retirement_date``, ``estimated_tax_rate``) that
+        ``retirement_readiness.compute_readiness_data`` reads back so it can
+        re-run the net-frame gap and build the chart / countdown without
+        re-deriving them; the current-page template ignores the extra keys.
+        """
         with app.app_context():
             result = retirement_dashboard_service.compute_gap_data(
                 seed_user["user"].id
@@ -50,6 +57,8 @@ class TestComputeGapData:
                 "gap_analysis", "chart_data", "pension_benefit",
                 "retirement_account_projections", "settings",
                 "salary_profiles", "pensions",
+                "gap_net_biweekly", "swr", "planned_retirement_date",
+                "estimated_tax_rate",
             }
             assert set(result.keys()) == expected_keys
 
@@ -199,8 +208,11 @@ class TestComputeGapNetBiweekly:
             (2026, Decimal("120000.00")),
             (2055, Decimal("131000.00")),
         ]
+        # merit_horizon_years is inert here: salary_by_year is supplied,
+        # so the helper never recomputes it (the horizon only affects the
+        # internal project_salaries_by_year call on the None branch).
         result = retirement_dashboard_service._compute_gap_net_biweekly(
-            [profile], date(2055, 1, 1), pay, salary_by_year,
+            [profile], date(2055, 1, 1), pay, salary_by_year, 5,
         )
         assert result == Decimal("4030.77")
 
@@ -220,7 +232,7 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service._compute_gap_net_biweekly(
-            [profile], None, pay, [(2026, Decimal("120000.00"))],
+            [profile], None, pay, [(2026, Decimal("120000.00"))], 5,
         )
         assert result == Decimal("1800.00")
 
@@ -241,7 +253,7 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service._compute_gap_net_biweekly(
-            [profile], date(2055, 1, 1), pay, [(2055, Decimal("131000.00"))],
+            [profile], date(2055, 1, 1), pay, [(2055, Decimal("131000.00"))], 5,
         )
         assert result == Decimal("1500.00")
 

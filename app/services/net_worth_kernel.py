@@ -562,7 +562,7 @@ def investment_base_balance_map(
     which re-projects each calendar year from this cash basis), and the
     investment / retirement dashboard forward projections
     (``investment_dashboard_service._resolve_seed_balance`` and
-    ``retirement_dashboard_service._resolve_balance_maps``, whose growth
+    ``retirement_projection._resolve_balance_maps``, whose growth
     chart seeds from this cash basis while the DISPLAYED headline reads the
     modeled :func:`balance_map`).  Each must seed from THIS pre-growth map,
     not the growth-modeled :func:`balance_map` the ``balance_at`` seam

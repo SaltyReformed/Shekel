@@ -15,7 +15,7 @@ Pre-fix, six call sites read the off-engine quantity:
 - ``savings_dashboard_service._data._load_account_params``
 - ``year_end_summary_service._load_salary_gross_biweekly``
 - ``retirement_dashboard_service.compute_gap_data`` (projected-salary path)
-- ``retirement_dashboard_service._project_retirement_accounts``
+- ``retirement_projection._load_projection_batch``
 - ``investment_dashboard_service._salary_gross_biweekly``
 
 For users with applicable raises, those quantities drifted from the
