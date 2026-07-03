@@ -217,29 +217,37 @@ def _reanchor_recurring_cola(raises, anchor_year):
     """Re-anchor recurring cola-type raises to a new effective year.
 
     Returns a lightweight :class:`_HorizonRaise` for every recurring
-    cola-type raise, with ``effective_year`` reset to *anchor_year* so
+    cola-type raise, with ``effective_year`` reset to
+    ``max(own effective_year, anchor_year)`` so
     :func:`app.services.paycheck_calculator.apply_raises` compounds each
-    one only from *anchor_year* forward.  Merit-type raises, custom-type
-    raises, and one-time raises are dropped: after the merit horizon only
-    recurring cola raises keep applying.  Cola-type discrimination is by
-    ``raise_type_id`` via the ref cache (never the display ``name``
-    string).
+    one only from *anchor_year* forward -- and never EARLIER than the
+    raise's own start (H1: a plain ``anchor_year`` reset pulled a
+    future-scheduled COLA backward, applying it in years before it
+    exists; a 2031-effective COLA under a 2028 cutoff must first apply
+    in 2031, not 2029).  A pre-cutoff COLA's history is already in the
+    cutoff base, so the anchor floor is exactly right for it.
+    Merit-type raises, custom-type raises, and one-time raises are
+    dropped: after the merit horizon only recurring cola raises keep
+    applying.  Cola-type discrimination is by ``raise_type_id`` via the
+    ref cache (never the display ``name`` string).
 
     Args:
         raises:      iterable of raise objects exposing ``.is_recurring``,
-                     ``.raise_type_id``, ``.effective_month``,
-                     ``.percentage``, and ``.flat_amount``.
-        anchor_year: int effective year to re-anchor every retained cola
-                     raise to (the first post-cutoff year).
+                     ``.raise_type_id``, ``.effective_year``,
+                     ``.effective_month``, ``.percentage``, and
+                     ``.flat_amount``.
+        anchor_year: int earliest effective year for the re-anchored
+                     raises (the first post-cutoff year).
 
     Returns:
         list[_HorizonRaise]: the recurring cola raises re-anchored to
-        *anchor_year*; empty when the user has no recurring cola raise.
+        ``max(effective_year, anchor_year)``; empty when the user has no
+        recurring cola raise.
     """
     cola_id = ref_cache.raise_type_id(RaiseTypeEnum.COLA)
     return [
         _HorizonRaise(
-            effective_year=anchor_year,
+            effective_year=max(r.effective_year, anchor_year),
             effective_month=r.effective_month,
             is_recurring=True,
             percentage=r.percentage,

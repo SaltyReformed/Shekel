@@ -365,6 +365,33 @@ class TestMeritHorizon:
         assert result[2029] == Decimal("133100.00")   # frozen at cutoff
         assert result[2030] == Decimal("133100.00")   # frozen at cutoff
 
+    def test_future_scheduled_cola_is_not_pulled_before_its_start(self):
+        """A COLA that starts after the cutoff first applies in ITS year (H1).
+
+        base 100,000; a 10% recurring COLA effective 2031; start 2026,
+        end 2032, N=2 -> cutoff 2028, re-anchor year 2029.  The re-anchor
+        must floor at the raise's OWN effective year
+        (max(2031, 2029) = 2031), never pull it backward:
+          2026-2030: 100,000.00  (the COLA does not exist yet)
+          2031: 100,000 * 1.10   = 110,000.00  (first application)
+          2032: 100,000 * 1.10^2 = 121,000.00
+        The pre-fix bug re-anchored it to 2029, yielding 110,000.00 in
+        2029 and 146,410.00 (1.10^4) in 2032.
+        """
+        raises = [
+            FakeRaise(percentage="0.10", effective_month=7,
+                      effective_year=2031, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2032, 2,
+        ))
+        assert result[2028] == Decimal("100000.00")  # cutoff, COLA not live
+        assert result[2029] == Decimal("100000.00")  # NOT 110,000 (H1 bug)
+        assert result[2030] == Decimal("100000.00")
+        assert result[2031] == Decimal("110000.00")  # 100000 * 1.10
+        assert result[2032] == Decimal("121000.00")  # 100000 * 1.10^2
+
     def test_real_shaped_cola_and_merit(self):
         """Real-shaped 3% July cola + 2.5% January merit, N=5.
 
