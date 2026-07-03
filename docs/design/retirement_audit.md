@@ -479,7 +479,17 @@ principle 2 + ruling 2) carries into P2. Found en route: finding D8 above.
   remaining, years, date); per-account contribution facts (employee $/period, employer $/period,
   none-linked flag). Unset tax rate handling is fork F1.
 
-### P2 -- the two levers (Opus)
+### P2 -- the two levers (Opus) -- COMPLETE 2026-07-03
+
+Shipped on `feat/retirement-rebuild` (pushed, HEAD `ff88e705`); full suite 6932 passed, pylint
+10.00/10, existing page untouched. Includes the after-tax chart-frame fix (your-path points now
+equal the funded numerator exactly). Real-shaped solution: $334.91/paycheck reaches 100.0% funded on
+the audit-shaped figures. Solver facts: headroom flag is aggregate per-period headroom across
+limited accounts (unbounded if any account is uncapped); retire-later binary search caps at +180
+months with minimality pinned in tests; `/retirement/levers` fragment ships with a plain stub
+partial for P3 to restyle. Carried open (pre-existing LOW-05): an explicitly stored 0% tax rate is
+still treated as unset by `resolve_estimated_tax_rate`; all retirement surfaces read the same
+resolver so they agree.
 
 - **P2a contribution solver.** Additional per-period contribution closing the shortfall: closed-form
   (shortfall at retirement / annuity factor of the remaining synthetic periods at the blended
