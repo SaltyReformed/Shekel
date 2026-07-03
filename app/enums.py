@@ -113,6 +113,26 @@ class TaxTypeEnum(enum.Enum):
     BRACKET = "bracket"
 
 
+class RaiseTypeEnum(enum.Enum):
+    """Salary-raise type values.
+
+    Selects how a scheduled salary raise is treated by the retirement
+    salary projection's merit horizon (Gate A ruling 3 / fork F4): a
+    ``cola`` recurring raise extrapolates all the way to the retirement
+    date (nominal-frame consistency), while ``merit`` and ``custom``
+    raises apply only through the merit-horizon cutoff and then stop
+    (their earned effect persists in the base).  The 2-year paycheck
+    pipeline never consults this discrimination -- it applies every raise
+    uniformly via ``paycheck_calculator.apply_raises``.  Values match
+    ``ref.raise_types.name``; resolved to IDs via
+    ``ref_cache.raise_type_id`` and compared by ID, never by name.
+    """
+
+    MERIT = "merit"
+    COLA = "cola"
+    CUSTOM = "custom"
+
+
 class RecurrencePatternEnum(enum.Enum):
     """Recurrence pattern values.
 
