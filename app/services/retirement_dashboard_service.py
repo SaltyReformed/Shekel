@@ -13,7 +13,7 @@ All functions accept plain data (user_id, optional overrides) and
 return plain dicts.  No Flask imports.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -104,11 +104,19 @@ class PensionSummary:
         salary_by_year: The ``(year, salary)`` projection produced for
             the last qualifying pension, or ``None`` when none qualified;
             reused by :func:`compute_gap_net_biweekly`.
+        per_pension: One dict per qualifying pension (``name``,
+            ``benefit_multiplier``, ``consecutive_high_years``,
+            ``benefit``), in iteration order.  Retains the benefits the
+            loop already computed so the rebuilt page can render the
+            derivation line PER PENSION (audit finding D6: the old
+            "last benefit only" card silently disagreed with the summed
+            gap row the moment a second pension existed).
     """
 
     benefit: pension_calculator.PensionBenefit | None
     monthly_income: Decimal
     salary_by_year: list[tuple[int, Decimal]] | None
+    per_pension: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -278,9 +286,10 @@ def compute_gap_data(
 
     Returns:
         dict with keys: gap_analysis, chart_data, pension_benefit,
-                        retirement_account_projections, settings,
-                        salary_profiles, pensions, gap_net_biweekly, swr,
-                        planned_retirement_date, estimated_tax_rate.
+                        pension_benefits, retirement_account_projections,
+                        settings, salary_profiles, pensions,
+                        gap_net_biweekly, swr, planned_retirement_date,
+                        estimated_tax_rate.
     """
     inputs = load_gap_inputs(user_id)
     salary_profiles = inputs.salary_profiles
@@ -343,6 +352,11 @@ def compute_gap_data(
         "gap_analysis": gap_result,
         "chart_data": chart_data,
         "pension_benefit": pension.benefit,
+        # Per-pension derivation entries (D6): the readiness producer
+        # shapes these into the rebuilt page's one-line-per-pension
+        # footer, so the derivation card can never show a different
+        # pension than the summed gap row.
+        "pension_benefits": pension.per_pension,
         "retirement_account_projections": retirement_account_projections,
         "settings": inputs.settings,
         "salary_profiles": salary_profiles,
@@ -486,13 +500,14 @@ def compute_pension_summary(
 
     Returns:
         A :class:`PensionSummary` bundling the most recent benefit, the
-        summed monthly pension income, and the last salary-by-year
-        series (the latter two default to ``Decimal("0")`` / ``None``
-        when no pension qualifies).
+        summed monthly pension income, the last salary-by-year series
+        (the latter two default to ``Decimal("0")`` / ``None`` when no
+        pension qualifies), and the per-pension derivation entries.
     """
     benefit = None
     monthly_income = Decimal("0")
     salary_by_year = None
+    per_pension = []
     for pension in pensions:
         if pension.planned_retirement_date and pension.salary_profile:
             profile = pension.salary_profile
@@ -513,7 +528,16 @@ def compute_pension_summary(
                 salary_by_year=salary_by_year,
             )
             monthly_income += benefit.monthly_benefit
-    return PensionSummary(benefit, monthly_income, salary_by_year)
+            # Retain every pension's derivation inputs (D6): the loop
+            # already computed the benefit; keeping only the last one is
+            # what made the old details card lie for multi-pension users.
+            per_pension.append({
+                "name": pension.name,
+                "benefit_multiplier": pension.benefit_multiplier,
+                "consecutive_high_years": pension.consecutive_high_years,
+                "benefit": benefit,
+            })
+    return PensionSummary(benefit, monthly_income, salary_by_year, per_pension)
 
 
 def _compute_current_pay(
