@@ -50,6 +50,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_settled_transfer,
     ledger_accounts_for_account,
+    make_balanced_entry,
 )
 
 
@@ -63,50 +64,10 @@ def _ledger_id(session, account):
     return ledger_accounts_for_account(session, account.id)[0].id
 
 
-def _make_balanced_entry(
-    session, seed_user, *, from_ledger_id, to_ledger_id,
-    amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
-    source_kind=PostingSourceEnum.TRANSFER,
-    posting_kind=PostingKindEnum.TRANSFER, period_id=None,
-):
-    """Create and commit one balanced entry (two legs summing to zero).
-
-    The from leg is ``-amount`` (credit), the to leg is ``+amount`` (debit),
-    so the deferred balanced trigger passes at commit.  Returns the committed
-    :class:`JournalEntry`.
-
-    ``source_kind`` / ``transfer_id`` / ``transaction_id`` / ``posting_kind``
-    default to the transfer shape (Step 2); a Step-3 transaction-sourced
-    entry passes ``source_kind=PostingSourceEnum.TRANSACTION``,
-    ``transaction_id=<id>``, and ``posting_kind=PostingKindEnum.EXPENSE`` (or
-    ``INCOME``).  Both concrete FKs default to ``None`` so a caller sets
-    exactly the one its source kind implies.
-    """
-    if period_id is None:
-        period_id = seed_user["bootstrap_period"].id
-    entry = JournalEntry(
-        user_id=seed_user["user"].id,
-        scenario_id=seed_user["scenario"].id,
-        pay_period_id=period_id,
-        entry_date=date(2026, 1, 15),
-        source_kind_id=ref_cache.posting_source_id(source_kind),
-        transfer_id=transfer_id,
-        transaction_id=transaction_id,
-        description="Test entry",
-    )
-    session.add(entry)
-    session.flush()
-    kind_id = ref_cache.posting_kind_id(posting_kind)
-    session.add(Posting(
-        journal_entry_id=entry.id, ledger_account_id=from_ledger_id,
-        amount=-amount, posting_kind_id=kind_id,
-    ))
-    session.add(Posting(
-        journal_entry_id=entry.id, ledger_account_id=to_ledger_id,
-        amount=amount, posting_kind_id=kind_id,
-    ))
-    session.commit()
-    return entry
+# The balanced-entry builder now lives in ``tests._test_helpers``
+# (``make_balanced_entry``): the R4 ledger role-privilege suite needs the
+# identical shape, so the module-local helper was promoted rather than
+# duplicated.
 
 
 @pytest.fixture()
@@ -145,7 +106,7 @@ class TestAppendOnlyEnforcement:
         """Editing a flushed JournalEntry raises before the UPDATE fires."""
         from_ledger, to_ledger = two_ledgers
         with app.app_context():
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
@@ -161,7 +122,7 @@ class TestAppendOnlyEnforcement:
         """Deleting a JournalEntry via the ORM is rejected."""
         from_ledger, to_ledger = two_ledgers
         with app.app_context():
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
@@ -176,7 +137,7 @@ class TestAppendOnlyEnforcement:
         """Editing a flushed Posting raises before the UPDATE fires."""
         from_ledger, to_ledger = two_ledgers
         with app.app_context():
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
@@ -198,7 +159,7 @@ class TestAppendOnlyEnforcement:
         """Deleting a Posting via the ORM is rejected."""
         from_ledger, to_ledger = two_ledgers
         with app.app_context():
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
@@ -312,7 +273,7 @@ class TestForeignKeyActions:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
                 transfer_id=transfer.id,
@@ -362,7 +323,7 @@ class TestForeignKeyActions:
             )
             _db.session.commit()
             txn_id = txn.id
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
                 source_kind=PostingSourceEnum.TRANSACTION,
@@ -415,7 +376,7 @@ class TestForeignKeyActions:
             _db.session.add(fresh_period)
             _db.session.flush()
             period_id = fresh_period.id
-            entry = _make_balanced_entry(
+            entry = make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
                 period_id=period_id,
@@ -471,7 +432,7 @@ class TestForeignKeyActions:
         """
         from_ledger, to_ledger = two_ledgers
         with app.app_context():
-            _make_balanced_entry(
+            make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
@@ -541,7 +502,7 @@ class TestAuditTableRegistration:
             je_before = _count("journal_entries")
             ap_before = _count("account_postings")
 
-            _make_balanced_entry(
+            make_balanced_entry(
                 _db.session, seed_user,
                 from_ledger_id=from_ledger, to_ledger_id=to_ledger,
             )
