@@ -566,7 +566,32 @@ lever answers currently solve at STORED settings and ignore an active what-if (t
 lines can then disagree under a what-if); (c) confirm that a ONE-TIME cola-type raise dated after
 the merit cutoff is intentionally dropped (as planned: only recurring colas extrapolate).
 
-### P4 -- live verification + acceptance
+### P4 -- live verification + acceptance -- verification pass COMPLETE 2026-07-03
+
+Main checkout switched to the branch (other session moved to its own worktree; their two modified
+files stashed as "pre-retirement-P4", untracked files untouched); dev app restarted; migration
+f7a1c2d3e4b5 auto-ran. Verified with real data on the corrected model:
+
+- **The verdict flipped: 117.2% funded, $135,536 surplus** (was
+  -$552,164 shortfall on the old page). Required dropped to $787,209 (merit horizon shrinks the
+  income target to $11,165.74/mo, pension net $8,541.71 covers 76% of it); your-path rose to
+  $922,745 (day-count fix + cola-grown employer base). All figures hand-reconciled: gap $2,624.03 x
+  12 / 0.04 = 787,209 exactly; account projections sum to the caption.
+- **SSOT to the cent**: all three account balances equal /savings ($31,370.87 / $27,437.20 /
+  $11,720.28).
+- **V2 RECLASSIFIED -- harness artifact, not a product defect**: shoot.py flips the theme attribute
+  after chart init, which no real user path does. Driving the actual navbar toggle renders the
+  light-mode legend perfectly; the original V2 finding on the old page most likely had the same
+  cause.
+- **One real defect found and fixed** (ea31e542): the P3c-slimmed dashboard context dropped
+  `settings`, blanking the rail's SWR echo and silently substituting the merit-horizon template
+  fallback (masked because the stored value equals the default). Regression test uses non-default
+  stored values and was proven to fail pre-fix. Suite 6948, pylint 10.00/10.
+- Both themes (real toggle path), both viewports verified; mobile chart usable (V1 dead).
+
+REMAINING: the developer acceptance drive (mutation paths: per-field saves, what-ifs, both lever
+steppers, pension CRUD, settings redirect) + the three parked rulings (Reset/delta-chip treatment;
+levers vs active what-ifs; one-time-cola-after-cutoff confirmation), then the PR to `dev`.
 
 Branch into the main checkout (coordinated), drive on dev data: SSOT cross-checks (funded ratio
 recomputed by hand; per-account balances equal /savings to the cent), mutation paths (assumption
