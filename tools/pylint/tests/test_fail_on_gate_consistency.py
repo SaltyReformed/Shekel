@@ -10,7 +10,7 @@ which spells the same symbols as ``--enable``).
 Two drift classes make a hard gate silently stop firing, and pylint reports
 NEITHER as an error -- an unknown ``--fail-on`` symbol is ignored, not rejected:
 
-1. A checker symbol is renamed in ``shekel_checkers.py`` but a gate list keeps
+1. A checker symbol is renamed in the ``shekel_checkers`` package but a gate list keeps
    the old (now-unknown) name -- that checker no longer fails the build, and
    nothing complains.
 2. One of the copies drifts out of step with the others.

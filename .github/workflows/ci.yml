@@ -128,7 +128,7 @@ jobs:
       # Layered pylint gate:
       #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass:
       #     always fail on errors (E), fatals (F), and the project's custom
-      #     checkers (tools/pylint/shekel_checkers.py, loaded via .pylintrc) --
+      #     checkers (tools/pylint/shekel_checkers/, loaded via .pylintrc) --
       #     the financial-correctness rules (decimal-from-float, refname-compare,
       #     bare-money-quantize, original-principal-as-balance), disable-rationale
       #     (every `# pylint: disable=` must carry a standard `Pylint:`
