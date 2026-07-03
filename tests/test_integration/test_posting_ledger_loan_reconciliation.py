@@ -63,11 +63,16 @@ against a displayed balance.  The invariants below are plan Section 8.
      reader bug a literal happened to share is still caught (the ``+$10`` injection
      below fails these too).
 
-Two adversarial cases prove the oracle is not vacuous: tampering a settled
-payment's ``actual_amount`` makes the loan-aware invariant FAIL (a real ledger
-drift would be caught), and injecting one extra leg makes the trial balance go
-non-zero (the ``= 0`` assertion is a real check, not one the per-entry trigger
-makes unconditionally true).
+Three adversarial cases prove the oracle is not vacuous: tampering a settled
+payment's ``actual_amount`` makes the loan-aware invariant FAIL and the real
+sweep helper raise (a real ledger drift would be caught), injecting one extra leg
+makes the trial balance go non-zero (the ``= 0`` assertion is a real check, not
+one the per-entry trigger makes unconditionally true), and injecting $10 of
+phantom interest into the walk fails the parallel-run VALUE checks while the
+structural sweep -- an accounting identity -- correctly survives (the executable
+form of the "+$10 injection failed 9 of 11 tests" evidence).  A companion guard
+(``TestResolverIsLedgerFree``) proves the resolver reference reads none of the
+posted ledger, so the parallel run cannot silently become a tautology.
 
 **Non-tautological by construction**, three independent ways -- the same discipline
 as the Step-2 / Step-3 oracles.  The SPLIT VALUES are pinned by the first and third
@@ -119,6 +124,10 @@ from strings, with the arithmetic shown per the testing standard.
 """
 from __future__ import annotations
 
+import ast
+import importlib
+import inspect
+import pkgutil
 from datetime import date
 from decimal import Decimal
 
@@ -148,6 +157,7 @@ from app.services import (
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.money import accrue_monthly_interest
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
@@ -545,6 +555,14 @@ def _assert_completeness(
     """
     splits = loan_posting_service.compute_loan_payment_splits(
         loan_account_id, scenario_id, as_of,
+    )
+    # Every caller settles at least one payment before reconciling, so an empty
+    # split walk means the loader silently found nothing (a scenario-scope or
+    # settled-filter regression) and the completeness loop below would pass
+    # vacuously -- assert the enumeration is non-empty so it cannot.
+    assert splits, (
+        f"loan {loan_account_id} scenario {scenario_id}: the split walk found no "
+        f"settled payments to check completeness over -- the sweep would be vacuous"
     )
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
@@ -1242,6 +1260,11 @@ class TestOracleIsNotVacuous:
             ) == linked  # ledger unchanged
             # The invariant the sweep checks now fails -- the drift is caught.
             assert linked != tampered_income - non_principal
+            # Drive the REAL production-wide sweep helper (not just the inline
+            # re-derivation above) so a regression that broke the helper itself --
+            # e.g. one that stopped comparing the income cash -- would fail here.
+            with pytest.raises(AssertionError):
+                _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_trial_balance_catches_an_injected_leg(
         self, app, db, seed_user, seed_periods,
@@ -1288,6 +1311,239 @@ class TestOracleIsNotVacuous:
 
             # Discard the injected leg; the deferred trigger never fires.
             db.session.rollback()
+
+    def test_walk_interest_injection_fails_the_value_checks_not_the_sweep(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A +$10 interest bug in the walk fails the parallel run, survives the sweep.
+
+        The executable form of the review's "+$10 interest injection failed 9 of
+        11 tests" evidence (previously only prose in commit messages and
+        docstrings, so a later edit that weakened a value assertion lost the
+        oracle's teeth undetected).  Injecting $10 of phantom interest into the
+        WALK's accrual -- and ONLY the walk; the resolver accrues through
+        ``rate_period_engine``'s separate import, so it stays the honest reference
+        -- makes every split book $10 too much interest and therefore $10 too
+        little principal, so both ledger producers over-state the debt by exactly
+        $10.  This proves two things at once, mirroring the manual experiment:
+
+        * the parallel-run VALUE assertions (``ledger == resolver`` and
+          ``reader == resolver``) -- the ones that actually PIN the split -- now
+          FAIL, so they have teeth and are not passing unconditionally; but
+        * the STRUCTURAL sweep ``_assert_loan_reconciles`` STILL PASSES, because
+          it is an accounting identity -- the correction's loan leg and the
+          per-loan leg both shift by the same $10, so ``linked == income -
+          per_loan`` holds no matter what interest the split booked.  This is
+          exactly why the injection failed the value tests but not the
+          invariant-only ones -- now a CI-run negative control, not a claim.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            # The honest scheduled P&I, read BEFORE injecting: paying exactly it
+            # is on-schedule, so absent the bug ledger == resolver to the penny.
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            # Inject $10 of phantom interest into the WALK's accrual only.  The
+            # module binding ``_walk.accrue_monthly_interest`` is patched; the
+            # resolver's ``rate_period_engine.accrue_monthly_interest`` is a
+            # DISTINCT import and stays honest, so the two diverge by exactly $10.
+            monkeypatch.setattr(
+                "app.services.loan_posting_service._walk"
+                ".accrue_monthly_interest",
+                lambda balance, rate: (
+                    accrue_monthly_interest(balance, rate) + Decimal("10.00")
+                ),
+            )
+
+            # Settle on-schedule WITH the bug active: the split posts $10 too much
+            # interest -> $10 too little principal -> the ledger over-states debt.
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            db.session.commit()
+
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            ledger = _ledger_balance(loan.id, scenario_id)
+            reader = _reader_balance(loan.id, scenario_id)
+            # Both ledger producers over-state the debt by exactly the phantom $10.
+            assert ledger == resolver + Decimal("10.00")
+            assert reader == resolver + Decimal("10.00")
+
+            # The value checks that PIN the split now fail -- proving their teeth.
+            with pytest.raises(AssertionError):
+                assert ledger == resolver
+            with pytest.raises(AssertionError):
+                assert reader == resolver
+
+            # ...yet the structural sweep is (by design) blind to the split value
+            # and STILL reconciles: per_loan and the loan leg both shifted by $10.
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+
+# ---------------------------------------------------------------------------
+# 6b. The resolver stays ledger-free -- the parallel run is not a tautology
+# ---------------------------------------------------------------------------
+#
+# The parallel run (Sections 1 / 7) is honest ONLY because the un-seeded resolver
+# derives its balance from the schedule and the transaction source, never from the
+# posted ledger it is meant to cross-check.  Review finding M4: that independence
+# was convention-only -- a future refactor letting a resolver input loader consult
+# the ledger would silently collapse the parallel run to a tautology and nothing
+# would fail.  These guards make it mechanical.
+
+_LEDGER_IMPORT_TOKENS = (
+    "journal_entry",
+    "ledger_account",
+    "posting_service",
+    "posting_reads",
+    "posting_infrastructure",
+    "loan_posting_service",
+    "ledger_account_service",
+    "balance_at",
+)
+
+
+def _resolver_stack_modules() -> list:
+    """Return every module the un-seeded resolver reference is built from.
+
+    ``loan_loaders`` (the input loaders) and the whole ``loan_resolver`` package,
+    its submodules discovered dynamically so a newly added one is fenced
+    automatically.  These are the modules :func:`_resolver_balance` runs through;
+    the whole parallel run rests on none of them reading the posted ledger.
+    """
+    modules = [loan_loaders, loan_resolver]
+    for info in pkgutil.iter_modules(loan_resolver.__path__):
+        modules.append(
+            importlib.import_module(f"app.services.loan_resolver.{info.name}")
+        )
+    return modules
+
+
+def _ledger_imports_in_source(source: str) -> list[str]:
+    """Return every posted-ledger import in *source* (empty == ledger-free).
+
+    Walks the AST (``ast.walk`` visits nested nodes, so a lazy in-function import
+    is seen as well as a top-level one) and collects any dotted path that contains
+    a posted-ledger token.  For a ``from X import a, b`` node BOTH the module ``X``
+    AND each imported name are inspected, so the common
+    ``from app.services import posting_service`` shape is caught, not only the
+    ``from app.services.posting_service import ...`` submodule shape.  Docstring
+    ``:func:`` cross-references are string literals, not import nodes, so they
+    never appear here -- only a real import does.
+    """
+    hits: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            candidates = [node.module or ""]
+            candidates += [alias.name for alias in node.names]
+        elif isinstance(node, ast.Import):
+            candidates = [alias.name for alias in node.names]
+        else:
+            continue
+        for candidate in candidates:
+            if any(token in candidate for token in _LEDGER_IMPORT_TOKENS):
+                hits.append(candidate)
+    return hits
+
+
+class TestResolverIsLedgerFree:
+    """The resolver reference reads NONE of the posted ledger -- mechanically.
+
+    Two guards close review finding M4's convention-only independence: a static
+    import fence (no resolver-stack module may import a posted-ledger module) and
+    a runtime read fence (``_resolver_balance`` produces its value with every
+    ledger reader monkeypatched to raise).  Together they make it impossible for a
+    future refactor to wire the ledger into the resolver without a red test.  A
+    third test proves the static fence itself has teeth.
+    """
+
+    def test_resolver_stack_imports_no_ledger_module(self):
+        """No module in the resolver stack imports a posted-ledger module.
+
+        Runs :func:`_ledger_imports_in_source` over each stack module's source;
+        any hit is a resolver-stack module reaching for the ledger, which would
+        make the parallel run a tautology.
+        """
+        offenders = {}
+        for module in _resolver_stack_modules():
+            hits = _ledger_imports_in_source(inspect.getsource(module))
+            if hits:
+                offenders[module.__name__] = hits
+        assert not offenders, (
+            f"the resolver stack imported posted-ledger modules {offenders} -- "
+            f"the parallel-run oracle would become a tautology (review M4)"
+        )
+
+    def test_import_fence_flags_a_ledger_import(self):
+        """Negative control: the fence detects the import shapes it must catch.
+
+        Without this, a fence bug that silently returned ``[]`` for everything
+        would leave :meth:`test_resolver_stack_imports_no_ledger_module` passing
+        vacuously.  Feeds the detector synthetic source using every risky shape --
+        the submodule ``from`` (``from app.services.posting_service import ...``),
+        the name ``from`` (``from app.services import posting_service``), a ledger
+        model, and a plain ``import`` -- and asserts each is flagged, while
+        genuinely ledger-free source produces no hits.
+        """
+        flagged = _ledger_imports_in_source(
+            "from app.services.posting_service import account_posting_total\n"
+            "from app.services import posting_service\n"
+            "from app.models.journal_entry import JournalEntry\n"
+            "import app.services.loan_posting_service\n"
+        )
+        assert any("posting_service" in hit for hit in flagged)
+        assert any("journal_entry" in hit for hit in flagged)
+        assert any("loan_posting_service" in hit for hit in flagged)
+        # The name-``from`` shape specifically -- the one an earlier draft of the
+        # fence missed by inspecting only the module of the import.
+        assert "posting_service" in flagged
+        # Ledger-free source produces no hits (no false positives).
+        assert _ledger_imports_in_source(
+            "from app.models.loan_params import LoanParams\n"
+            "from app.services.rate_period_engine import monthly_due_date\n"
+            "from app.utils.balance_predicates import settled_status_ids\n"
+        ) == []
+
+    def test_resolver_balance_reads_no_ledger_at_runtime(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """``_resolver_balance`` produces its value with every ledger reader forbidden.
+
+        Captures the resolver balance with the readers intact, then monkeypatches
+        every posted-ledger reader a refactor might reach for to raise, and asserts
+        ``_resolver_balance`` returns the SAME value -- proving it never touched the
+        ledger.  If a future change wires the ledger into the resolver, one of the
+        fenced readers fires and this test errors loudly.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle(seed_user, loan, seed_periods[_P1], amount=Decimal("1000.00"))
+            db.session.commit()
+
+            # The honest resolver balance, read with the ledger readers intact.
+            expected = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            assert expected is not None
+
+            def _forbid_ledger_read(*_args, **_kwargs):
+                raise AssertionError(
+                    "the resolver read the posted ledger -- the parallel run "
+                    "would be a tautology (review M4)"
+                )
+
+            for target in (
+                "app.services.posting_service.account_posting_total",
+                "app.services.posting_service.settled_transfer_effect",
+                "app.services.posting_service.settled_transaction_effect",
+                "app.services.loan_posting_service.confirmed_loan_balance_at",
+                "app.services.loan_posting_service.confirmed_loan_balance_map",
+            ):
+                monkeypatch.setattr(target, _forbid_ledger_read)
+
+            # The same value, now with every ledger reader fenced off -> the
+            # resolver derived it without reading the ledger.
+            assert _resolver_balance(loan.id, scenario_id, _AS_OF) == expected
 
 
 # ---------------------------------------------------------------------------

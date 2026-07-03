@@ -54,10 +54,12 @@ independent ways that must all agree:
     onto) must match the hand-computed literals too.
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
-shadow makes the per-account reconciliation FAIL (so a real ledger drift would
-be caught), and injecting one extra leg makes the trial balance go non-zero
-(so the ``= 0`` assertion is a real check, not one the per-entry trigger makes
-unconditionally true).
+shadow makes the per-account reconciliation FAIL -- driven through the real
+``_assert_full_reconciliation`` sweep helper under ``pytest.raises``, so a
+regression in the helper itself is caught, not only in an inline re-derivation
+(so a real ledger drift would be caught) -- and injecting one extra leg makes the
+trial balance go non-zero (so the ``= 0`` assertion is a real check, not one the
+per-entry trigger makes unconditionally true).
 
 All money is ``Decimal`` from strings, with the arithmetic shown per the
 testing standard.  Transfers are built through ``transfer_service`` (the sole
@@ -68,6 +70,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import case
 
 from app import ref_cache
@@ -203,6 +206,14 @@ def _assert_full_reconciliation(scenario_id: int) -> None:
         _db.session.query(LedgerAccount)
         .filter(LedgerAccount.account_id.isnot(None))
         .all()
+    )
+    # Every caller settles at least one transfer, which mints both legs' linked
+    # ledger accounts, so an empty result means the query silently found nothing
+    # (a minting or filter regression) and the loop below would pass vacuously --
+    # assert non-empty so the sweep cannot be a no-op.
+    assert linked, (
+        "no linked ledger accounts to reconcile -- the sweep would be vacuous "
+        "(expected at least the transfer's two linked ledgers)"
     )
     for ledger_account in linked:
         ledger = _independent_ledger_sum(ledger_account.account_id, scenario_id)
@@ -790,6 +801,12 @@ class TestOracleIsNotVacuous:
             assert ledger == Decimal("100.00")  # ledger unchanged
             assert effect == Decimal("999.00")  # transaction truth drifted
             assert ledger != effect  # the oracle would catch this drift
+            # Drive the REAL production-wide sweep helper (not just the inline
+            # re-derivation above) so a regression that broke the helper itself --
+            # e.g. one that stopped comparing the ledger to its source -- would
+            # fail here.
+            with pytest.raises(AssertionError):
+                _assert_full_reconciliation(scenario_id)
 
     def test_trial_balance_catches_an_injected_leg(self, app, db, seed_user):
         """Injecting one extra leg pushes the trial balance off zero.
