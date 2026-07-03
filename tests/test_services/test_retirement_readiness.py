@@ -244,7 +244,14 @@ class TestComputeReadinessData:
             assert 2 <= count <= 48
             for encoded in chart["your_path"] + chart["needed_path"]:
                 Decimal(encoded)  # must parse (string-Decimal encoding)
-            # "your path" ends at the summed pre-tax projection.
+            # "your path" is AFTER-TAX (ruling 2): it ends at the after-tax
+            # projected total -- the funded ratio's numerator -- so the
+            # chart endpoint and the hero verdict agree.  With the F1
+            # explicit-0% rate, after-tax == pre-tax (x * (1 - 0) = x), so
+            # both equalities hold on untaxed data.
+            assert Decimal(chart["your_path"][-1]) == (
+                data["projected_savings_after_tax"]
+            )
             assert Decimal(chart["your_path"][-1]) == (
                 data["projected_savings_pretax"]
             )
@@ -268,7 +275,11 @@ class TestComputeReadinessData:
         """A stored 20% rate nets the pension and taxes the traditional 401(k).
 
         pension_net == round(pension_gross * (1 - 0.20)); the traditional
-        401(k)'s after-tax projection is strictly below its pre-tax value.
+        401(k)'s after-tax projection is strictly below its pre-tax value;
+        and the chart's "your path" endpoint equals the AFTER-TAX projected
+        total (ruling 2: the chart plots the same frame as the verdict).
+        The scenario's only account is a traditional 401(k), so the
+        endpoint also equals round(pretax * (1 - 0.20)) exactly.
         """
         with app.app_context():
             _build_scenario(db, seed_user, tax_rate=Decimal("0.2000"))
@@ -282,6 +293,20 @@ class TestComputeReadinessData:
             assert data["pension_net_monthly"] == round_money(
                 data["pension_gross_monthly"] * Decimal("0.80")
             )
+            # Chart endpoint == after-tax projected == funded numerator.
+            chart = data["chart"]
+            assert Decimal(chart["your_path"][-1]) == (
+                data["projected_savings_after_tax"]
+            )
+            # All-traditional portfolio: after-tax = round(pretax * 0.80).
+            assert data["projected_savings_after_tax"] == round_money(
+                data["projected_savings_pretax"] * Decimal("0.80")
+            )
+            # And the endpoint therefore matches the funded ratio numerator:
+            # funded = after_tax / required (quantized 0.0001).
+            assert data["funded_ratio"] == (
+                Decimal(chart["your_path"][-1]) / data["required_savings"]
+            ).quantize(Decimal("0.0001"))
             # The 401(k) is pre-tax, so after-tax projected < pre-tax.
             assert (
                 data["projected_savings_after_tax"]

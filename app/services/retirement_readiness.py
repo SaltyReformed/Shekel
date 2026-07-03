@@ -3,8 +3,10 @@ Shekel Budget App -- Retirement Readiness Producer (P1c)
 
 Template-ready plain data for the Fable 5 retirement rebuild's direction-D
 page: the readiness hero (net-frame funded verdict), the savings
-flight-path chart ("your path" vs "needed to retire"), the countdown
-facts, and the per-account contribution facts.
+flight-path chart ("your path" vs "needed to retire", BOTH stated in the
+after-tax frame so the chart never disagrees with the after-tax verdict
+beside it -- Gate A ruling 2), the countdown facts, and the per-account
+contribution facts.
 
 Split out of :mod:`app.services.retirement_dashboard_service` (which owns
 ``compute_gap_data`` / ``compute_slider_defaults`` and stayed at the
@@ -30,6 +32,7 @@ from app.services.retirement_dashboard_service import (
     compute_gap_data,
     compute_slider_defaults,
 )
+from app.utils.money import round_money
 
 # Percentage scaler: ``compute_slider_defaults`` returns the blended
 # return as a percent (10.50); the reverse projection wants the fraction.
@@ -101,7 +104,7 @@ def compute_readiness_data(user_id):
         "safe_withdrawal_rate": data["swr"],
         "chart": _build_readiness_chart(
             data, projections, synthetic_periods,
-            net.required_retirement_savings,
+            net.required_retirement_savings, effective_tax_rate,
         ),
         "account_contributions": [
             {
@@ -218,28 +221,39 @@ def _build_countdown(planned_retirement_date, synthetic_periods):
     }
 
 
-def _build_readiness_chart(data, projections, synthetic_periods, required_target):
-    """Build the two downsampled string-Decimal chart series.
+def _build_readiness_chart(
+    data, projections, synthetic_periods, required_target, effective_tax_rate,
+):
+    """Build the two downsampled string-Decimal chart series (after-tax frame).
 
-    "your path" is the sum of each account's projected balance at each
-    synthetic period; "needed path" is
+    BOTH series are stated in the after-tax frame so the chart agrees with
+    the after-tax funded verdict beside it (Gate A ruling 2: net-primary; a
+    figure and its caption never disagree).  "your path" is the summed
+    per-account projected balance at each synthetic period with the
+    estimated retirement tax applied to the traditional portion
+    (:func:`_build_your_path`); "needed path" is
     :func:`~app.services.growth_engine.reverse_project_balance` from the
-    required target back to today under the blended return (reused from
-    ``compute_slider_defaults`` so it matches the accounts table's return)
-    and the aggregate current contribution schedule.  Both series are
-    downsampled with the SAME index set (:func:`_downsample_indices`, first
-    and last always kept) so they plot on one axis, and each value is
-    encoded as a string Decimal for the template's ``data-*`` attributes.
+    net-frame required target back to today under the blended return
+    (reused from ``compute_slider_defaults`` so it matches the accounts
+    table's return) and the aggregate current contribution schedule.  Both
+    series are downsampled with the SAME index set
+    (:func:`_downsample_indices`, first and last always kept) so they plot
+    on one axis, and each value is encoded as a string Decimal for the
+    template's ``data-*`` attributes.
 
     Args:
         data: The dict returned by ``compute_gap_data`` (for the blended
             return via ``compute_slider_defaults``).
         projections: The per-account projection dicts (each carrying
-            ``projection_rows`` and the contribution facts).
+            ``projection_rows``, ``is_traditional``, and the contribution
+            facts).
         synthetic_periods: The biweekly periods from today to retirement
             (empty when there is no horizon).
         required_target: The net-frame required savings figure the needed
             path reverse-projects from.
+        effective_tax_rate: The explicit (possibly F1 zero) estimated
+            retirement tax rate applied to the traditional portion of
+            "your path".
 
     Returns:
         dict with ``your_path`` / ``needed_path`` (lists of string
@@ -250,7 +264,9 @@ def _build_readiness_chart(data, projections, synthetic_periods, required_target
         return {"your_path": [], "needed_path": [], "dates": []}
 
     blended_return = compute_slider_defaults(data)["current_return"] / _PCT_SCALE
-    your_path = _build_your_path(projections, synthetic_periods)
+    your_path = _build_your_path(
+        projections, synthetic_periods, effective_tax_rate,
+    )
     needed_path = _build_needed_path(
         required_target, projections, synthetic_periods, blended_return,
     )
@@ -262,8 +278,16 @@ def _build_readiness_chart(data, projections, synthetic_periods, required_target
     }
 
 
-def _build_your_path(projections, synthetic_periods):
-    """Sum each account's per-period projected balance across the horizon.
+def _build_your_path(projections, synthetic_periods, effective_tax_rate):
+    """Sum the after-tax per-period projected balances across the horizon.
+
+    At each point ``after_tax(t) = traditional_sum(t) * (1 - rate) +
+    roth_sum(t)`` -- the same traditional/Roth split and operation order as
+    :func:`app.services.retirement_gap_calculator._after_tax_projected_savings`
+    (one ``round_money`` after combining), so the series endpoint equals
+    the after-tax projected total byte-for-byte and therefore matches the
+    funded ratio's numerator.  With the F1 explicit-zero rate the after-tax
+    value equals the pre-tax sum, so untaxed data plots unchanged.
 
     A projecting account contributes its per-period end balance from
     ``projection_rows`` (aligned 1:1 with *synthetic_periods*); a
@@ -271,25 +295,34 @@ def _build_your_path(projections, synthetic_periods):
     current balance at every period.
 
     Args:
-        projections: The per-account projection dicts.
+        projections: The per-account projection dicts (``is_traditional``
+            selects the taxed bucket).
         synthetic_periods: The biweekly periods from today to retirement.
+        effective_tax_rate: The explicit (possibly zero) fractional tax
+            rate applied to the traditional bucket.
 
     Returns:
-        list[Decimal]: the summed portfolio balance at each period.
+        list[Decimal]: the after-tax portfolio balance at each period.
     """
     count = len(synthetic_periods)
-    series = [Decimal("0")] * count
+    traditional = [Decimal("0")] * count
+    roth = [Decimal("0")] * count
     for proj in projections:
+        bucket = traditional if proj["is_traditional"] else roth
         rows = proj["projection_rows"]
         if len(rows) == count:
             for i in range(count):
-                series[i] += rows[i].end_balance
+                bucket[i] += rows[i].end_balance
         else:
             # Non-projecting account: flat current balance across the axis.
             current = proj["current_balance"]
             for i in range(count):
-                series[i] += current
-    return series
+                bucket[i] += current
+    keep_fraction = 1 - effective_tax_rate
+    return [
+        round_money(traditional[i] * keep_fraction + roth[i])
+        for i in range(count)
+    ]
 
 
 def _build_needed_path(
