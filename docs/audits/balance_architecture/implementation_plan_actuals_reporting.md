@@ -208,8 +208,47 @@ in throughout. Developer approval: 2026-07-03.
   and pass under `<=`.  14 targeted green; monetary-precision checker clean;
   tests are out of the `pylint app/` gate (unchanged, still 10.00) -- no `app/`
   code touched.
-- C9 (reporting service) -- pending
+- C9 (reporting service) -- DONE: new package
+  `app/services/ledger_report_service/` (`_types.py` frozen shapes
+  `StatementWindow` / `StatementLine` / `StatementSection` / `TrialBalanceTieOut`
+  / `IncomeStatementReport` / `BalanceSheetReport`; `_attribution.py` the shared
+  read core -- `dated_account_nets` over the three-bucket partition
+  (transaction-linked `transaction_id IS NOT NULL AND transfer_id IS NULL`,
+  transfer-linked by income shadow, sourceless-correction positive allowlist;
+  residue dropped whole), plus `load_chart` / `ledger_account_label` (kind-
+  branched, orphan-safe) / `statement_class_ids` / `present_natural` /
+  `section_lines` / `build_section`; `_income_statement.py`
+  `compute_income_statement` -- pay-period path (direct `pay_period_id` group)
+  and calendar path (display-tz attribution filtered by date); `_balance_sheet.py`
+  `compute_balance_sheet` -- fold `<= as_of`, sections by class, derived retained
+  earnings (C-5), two-part tie-out (presented `assets == liabilities + equity`
+  AND mechanical `ledger_net == 0`, `in_balance` requires both)).  Baseline-only;
+  `None` scenario -> empty report / green tie-out.  17 hand-computed service
+  tests (`tests/test_services/test_ledger_report_service.py`): month/year/pay-
+  period windows, the L9 8:05pm-ET Dec-31 boundary, validation + empty report,
+  transfers-absent-from-income + present-on-balance-sheet, seed opening tie-out,
+  income/expense -> retained earnings, a negatively-anchored liability signing
+  POSITIVE (no `-abs`), the as-of fold boundary, live-rename vs orphaned-category
+  labels, and the residue-drop (asserted on the account VALUE, not the tie-out,
+  which would pass vacuously).  Fixtures respect moment-of-assertion absorption
+  (a settle dated before origination is absorbed into the opening; ride-on-top
+  settles use `_RIDES_ON_TOP` / full-position sheets use a far-future `as_of`).
+  `pylint app/` 10.00 (two one-sided `duplicate-code` disables with rationale on
+  the new-code side: `StatementWindow` vs `VarianceWindow`, and the income-shadow
+  query mirroring the write walk -- shipped write-side code untouched).  Adversarial
+  `code-reviewer` pass CLEAN (no financial-correctness defect; verified the
+  partition covers every live entry once, whole-source dating keeps the tie-out
+  an identity, the sign/RE algebra, the loan_payment path reaching the income
+  statement via the transaction bucket).  Review follow-throughs carried to C10:
+  the route MUST IDOR-check `period_id` via `_validate_owned_or_abort` (the
+  service reads the period for its LABEL only, un-scoped, exactly like
+  `budget_variance_service`; the money queries are user-scoped so a foreign
+  period yields an empty report, but the label would leak that period's dates
+  without the route guard).  The loan interest/escrow + articulation coverage
+  stays deferred to C13's `test_posting_ledger_statements.py` per the commit
+  sequence.
 - C10 (routes + templates) -- pending
+
 - C11 (CSV export) -- pending
 - C12 (enforcement: W9908 + F-1) -- pending
 - C13 (statements oracle + docs close-out + full suite) -- pending
