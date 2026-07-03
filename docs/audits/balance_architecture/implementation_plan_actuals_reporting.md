@@ -17,7 +17,7 @@ in throughout. Developer approval: 2026-07-03.
 
 - C1 (L9 helper + Schedule-A switch) -- DONE (`e7c8b2e0`); counterfactual-verified boundary tests
   at the helper, the loan reader, and the year-end hybrid; review-clean.
-- C2 (ref rows) -- IN THIS COMMIT: `account_opening`/`account_trueup` sources + `anchor_equity`
+- C2 (ref rows) -- DONE (`08900504`): `account_opening`/`account_trueup` sources + `anchor_equity`
   kind (migration `a4c8e2f6b1d3`, round-tripped up/down/up on a template clone); dual-seeded;
   enum-driven parity tests pass unchanged. Also: `TEST_TEMPLATE_DATABASE` override wired through
   `tests/conftest.py` + `scripts/test.sh` + a `.env` fallback in `scripts/build_test_template.py`
@@ -26,7 +26,13 @@ in throughout. Developer approval: 2026-07-03.
   a parallel checkout with a different migration head builds and clones its OWN test template.
   This branch uses `shekel_test_template_step5` via the untracked `.env`, leaving the shared
   template untouched for the concurrently-active salary-rebuild session.
-- C3 (index re-key + lookup hardening) -- pending
+- C3 (index re-key + lookup hardening) -- IN THIS COMMIT: `uq_ledger_accounts_account` ->
+  `uq_ledger_accounts_account_kind (account_id, kind_id)` (migration `b7d9f3a1c5e8`, `Review:`
+  line, fail-loud twin guard on downgrade; round-tripped up/down/up on a template clone); the two
+  LINKED-kind lookup filters (`posting_reads._ledger_account_for`,
+  `ledger_account_service.create_ledger_account_for_account`); nine-kind model taxonomy +
+  display-rule caveat + CASCADE paragraph updated; `TestPartialUnique` re-keyed with a
+  twin-coexists/second-twin-rejected case. Targeted 120 + the three oracles 56, all green.
 - C4 (anchor-equity chart resolver) -- pending
 - C5 (walk + reconcile, pure) -- pending
 - C6 (lifecycle wiring + oracle supersession) -- pending
@@ -386,7 +392,16 @@ tests pin an 8:05pm-ET Dec-31 settle to the earlier year.
   `_drop_seed_user_bootstrap` resyncs; pay-period lock-reason tests flip `ACCOUNT_ANCHOR` ->
   `LEDGER_POSTINGS` (`test_pay_period_admin.py:134-143`, `test_pay_period_truncate.py:340,:380`);
   reset tests gain one opening entry per account; hard-delete route tests on non-zero-anchor
-  accounts now hit Guard 5.
+  accounts now hit Guard 5.  **Kind-agnostic oracle HELPERS that silently self-cancel once twins
+  exist** (from C3's adversarial review; each needs a LINKED-kind filter or a deliberate per-kind
+  split with a comment): `test_posting_ledger_reconciliation.py` `_independent_ledger_sum` (:123)
+  and `_legs_by_account` (:240) -- an anchor correction lands linked `+X` / twin `-X` on the same
+  `account_id`, so a bare-account_id sum cancels the anchor legs and vacuously reproduces the
+  changes-only figure; `test_posting_ledger_cash_reconciliation.py` :165 (same shape) and :1255
+  (a `.scalar()` on bare account_id -- raises loudly instead);
+  `tests/_test_helpers.ledger_accounts_for_account`'s "at most one" docstring.  The loan oracle's
+  bare-account_id helper (:360) stays correct only because the account walk is non-loan-only --
+  C4's resolver guard must enforce that so the assumption holds by construction.
 
 ---
 

@@ -150,11 +150,14 @@ def create_ledger_account_for_account(account: Account) -> LedgerAccount:
 
     Idempotent: when a linked ledger account already exists for this
     account it is returned unchanged (the partial unique index
-    ``uq_ledger_accounts_account`` permits only one per ``account_id``, so
-    a second insert would raise); otherwise a new linked row is created
-    with the derived class, the ``linked`` kind, ``name`` left NULL (the
-    display label derives from ``account.name``), and the owning ``user_id``
-    copied from the account.
+    ``uq_ledger_accounts_account_kind`` permits only one per
+    ``(account_id, kind_id)``, so a second insert would raise); otherwise a
+    new linked row is created with the derived class, the ``linked`` kind,
+    ``name`` left NULL (the display label derives from ``account.name``),
+    and the owning ``user_id`` copied from the account.  The lookup filters
+    on the ``linked`` kind because Step 5's ``anchor_equity`` twin shares
+    the ``account_id`` column -- an unfiltered ``first()`` could return the
+    twin and skip creating the linked row.
 
     Flushes so the new row's ``id`` is assigned, but does NOT commit --
     the caller (``account_service.create_account``) owns the transaction
@@ -169,9 +172,12 @@ def create_ledger_account_for_account(account: Account) -> LedgerAccount:
         The linked :class:`~app.models.ledger_account.LedgerAccount`
         (existing or newly created and flushed).
     """
+    linked_kind_id = ref_cache.ledger_account_kind_id(
+        LedgerAccountKindEnum.LINKED,
+    )
     existing = (
         db.session.query(LedgerAccount)
-        .filter_by(account_id=account.id)
+        .filter_by(account_id=account.id, kind_id=linked_kind_id)
         .first()
     )
     if existing is not None:
@@ -180,7 +186,7 @@ def create_ledger_account_for_account(account: Account) -> LedgerAccount:
     ledger_account = LedgerAccount(
         user_id=account.user_id,
         class_id=_ledger_class_id_for_account(account),
-        kind_id=ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
+        kind_id=linked_kind_id,
         account_id=account.id,
         name=None,
     )

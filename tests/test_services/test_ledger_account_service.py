@@ -31,7 +31,7 @@ Both are idempotent (a repeat call is a no-op).  The Step-2 tests pin:
     Investment) maps to the Asset ledger class.  The derivation branches
     on the account-type category INTEGER ID, never the string name.
   * **Idempotency** -- a second sync returns the existing row, never a
-    duplicate (the partial unique ``uq_ledger_accounts_account`` would
+    duplicate (the partial unique ``uq_ledger_accounts_account_kind`` would
     otherwise raise).
 
 The Step-3 tests pin the resolver's behaviour (the storage-tier
