@@ -14,9 +14,12 @@ re-evaluation with no anchoring on past decisions.
 > all four statically visible `status_id` write forms with a born-Projected constructor rule, and
 > W9906 gained the import-level fence closing the aliased-import evasion). M1 is fixed (R4: the
 > ledger tables are append-only at the DB tier for `shekel_app` -- migration `e3c23fadb21d` plus
-> the every-start re-assert in `init_db_role.sql`; cascades verified live on dev first). Full
+> the every-start re-assert in `init_db_role.sql`; cascades verified live on dev first). M5 and
+> M4(a) are fixed (R5: the +$10 walk injection, the tamper proofs driven through the real sweep
+> helpers under `pytest.raises`, the resolver-stack ledger-free fence, and the non-empty sweep
+> asserts are all now executable in CI, across the three reconciliation oracles). Full
 > suite 6861 passed; pylint 10.00 with every `--fail-on` checker. M3's reader-contract half
-> (Step-5 reporting rules) and R5-R10 remain open.
+> (Step-5 reporting rules), M4(b) (the shared-kernel coverage, owed by R6), and R6-R10 remain open.
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -339,6 +342,21 @@ fix and also dissolves H1's precondition. Recommendation: R2.
 
 ### M4 (MEDIUM): the loan parallel-run oracle's independence is convention-only after the read switch
 
+> **PARTIALLY RESOLVED 2026-07-02** (R5): part (a) -- the convention-only
+> independence -- is now mechanical. `TestResolverIsLedgerFree` fences the resolver
+> stack (`loan_loaders` + the dynamically-enumerated `loan_resolver` package) with a
+> source-AST import fence (no stack module may import a posted-ledger module; both
+> `from pkg import ledger_mod` and `from pkg.ledger_mod import x` shapes are caught,
+> and `ast.walk` reaches lazy in-function imports), a runtime read fence (every
+> ledger reader monkeypatched to raise around `_resolver_balance`, which still
+> returns the same value), and a negative control proving the AST fence bites -- so
+> a future refactor that let the resolver consult the ledger fails a test instead of
+> silently collapsing the parallel run to a tautology. STILL OPEN: part (b), the
+> shared amortization kernel -- the walk and the replay both call
+> `accrue_monthly_interest` / `rate_period_engine`, so a kernel bug moves both
+> producers in lockstep and only hand-computed literals catch it. That is a coverage
+> matter (ARM step, biweekly collision), owed by R6.
+
 The oracle correctly uses the un-seeded `resolve_loan` as its independent reference
 (`test_posting_ledger_loan_reconciliation.py:461-493`), and the resolver package performs zero DB
 access. But (a) production never runs un-seeded for an opened loan, so the reference is a
@@ -352,6 +370,17 @@ literals catch it, and at the oracle level those exist only for fixed-rate, sing
 flat-escrow fixtures. Recommendation: R5, R6.
 
 ### M5 (MEDIUM): the celebrated +$10 injection non-vacuity proof is manual, not executable
+
+> **RESOLVED 2026-07-02** (R5): all three sub-items are now executable in CI. The
+> +$10 walk injection is `test_walk_interest_injection_fails_the_value_checks_not_the_sweep`
+> (patches `_walk.accrue_monthly_interest` only, so the resolver stays honest; asserts
+> the parallel-run VALUE checks fail by exactly $10 and the structural sweep survives,
+> the executable form of "9 of 11 failed"); the three `*_catches_a_tampered_*` proofs
+> now drive the real `_assert_full_reconciliation` / `_assert_loan_reconciles` under
+> `pytest.raises`, so a regression in the sweep helper itself is caught, not only in
+> the inline re-derivation; and the linked-account sweeps (Steps 2/3) plus the loan
+> completeness walk `assert` their enumerations non-empty, so an empty query cannot
+> pass the sweep vacuously.
 
 The "+$10 interest injection failed 9 of 11 tests" evidence lives in commit messages and
 docstrings. It does not run in CI, so a later edit that weakens a value assertion loses the
@@ -598,7 +627,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R2 | **DONE 2026-07-02** (`2ffefa0`) | Adopt the correction-attribution rule: reversal/delta entries carry the pay period (and, where meaningful, the date) of the postings they reverse, read back from the ledger. This dissolves H1's precondition and the M3 class. Defense-in-depth for H1: the truncate/regenerate classifier also refuses (or first re-attributes) any to-delete period whose journal entries do not net to zero per ledger account. As-built: per-(account, period) reconcile in `posting_service` (`_posted_by_period`/`_reconcile_periods`; syncs return entry lists) and the loan payment reconcile; `PeriodLockReason.LEDGER_POSTINGS` gate (blocks non-netting periods, allows self-cancelling pairs), mutation-proven; `posting_service` size-split into `posting_reads.py`. M3's reader-contract half for Step-5 readers is NOT covered here and stays open. |
 | R3 | **DONE 2026-07-02** (`ad24d84`) | Mechanize the status fence's blind spots (H3): W9907 extensions for `Transaction(`/`Transfer(` ctor `status_id=` kwargs, `setattr(x, "status_id", ...)`, and `"status_id"` keys in `.update()`/`.values()` dicts -- all zero-violation today. Optionally add the import-level fence (flag `ImportFrom`/aliasing of fenced producers) to close the alias class. As-built: all three extensions plus the import fence landed. Ctor kwargs are allowed only for recognizably born-Projected values (`ref_cache.status_id(StatusEnum.PROJECTED)` / a `projected_id` name or attribute -- the only shapes in-tree); everything else fails closed. Bulk writes flag on the key/keyword regardless of value (they bypass paid_at and verify_transition even for Projected). No new message IDs, so the five-place `--fail-on` list (L1) is untouched. 108 checker tests; probe-verified through `.pylintrc`; app/ and scripts/ hold 10.00. |
 | R4 | **DONE 2026-07-02** | DB-tier append-only (M1): `REVOKE UPDATE, DELETE` on `budget.journal_entries` + `budget.account_postings` from `shekel_app` (verify FK cascades on the dev stack first; grants live in `scripts/init_db_role.sql`). As-built: cascades verified live first (rolled back); shared role-guarded SQL in `posting_infrastructure`; migration `e3c23fadb21d` (downgrade re-grants; round-trip verified on dev) + `init_database.py` + `build_test_template.py` + the every-start re-assert in `init_db_role.sql` (which would otherwise re-open the hole at each boot via its blanket GRANT); `TestLedgerAppendOnlyPrivileges` locks posture, tamper rejection, and owner-executed CASCADE/SET-NULL disposal. |
-| R5 | SOON | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. |
+| R5 | **DONE 2026-07-02** | Make the oracle teeth executable (M4/M5): automate the +$10 walk injection as a negative-control test; drive the tamper proofs through the real sweep helpers with `pytest.raises`; add a mechanical guard that `loan_resolver`/`loan_loaders` stay ledger-free (import check or raising monkeypatch in `_resolver_balance`); assert sweep enumerations non-empty. As-built (all in the three reconciliation oracles): `test_walk_interest_injection_fails_the_value_checks_not_the_sweep` injects $10 into `_walk.accrue_monthly_interest` only (the resolver's `rate_period_engine` binding stays honest), proving the parallel-run VALUE checks fail by exactly $10 while the structural sweep -- an accounting identity -- survives; the three `*_catches_a_tampered_*` proofs now also drive the real `_assert_full_reconciliation` / `_assert_loan_reconciles` under `pytest.raises`, so a regression in the sweep helper itself is caught; `TestResolverIsLedgerFree` fences the resolver stack three ways -- a source-AST import fence over `loan_loaders` + the dynamically-enumerated `loan_resolver` package (catching both `from pkg import ledger_mod` and `from pkg.ledger_mod import x` shapes), a runtime read fence monkeypatching every ledger reader to raise around `_resolver_balance`, and a negative control proving the AST fence bites; and the linked-account sweeps (Steps 2/3) and the loan completeness walk now `assert` their enumerations non-empty so an empty query cannot pass vacuously. Full suite green. This closes M5 and M4(a); M4(b) (the shared amortization kernel moving both producers in lockstep) is coverage, still owed by R6. |
 | R6 | SOON (partly done) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. The settled-row revert-and-move oracle case landed with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). |
 | R7 | SOON | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). (The TRUNCATE variant -- wiping a current-period true-up correction -- is already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so its re-sync is still owed.) |
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
