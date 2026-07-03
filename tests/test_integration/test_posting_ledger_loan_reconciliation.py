@@ -2282,18 +2282,27 @@ class TestReaderParallelRunAgainstResolver:
         resolver-only fix); the genesis reader keeps every payment at its true
         due date.  This is the one place the reader and the resolver attribution
         legitimately disagree (review M7 / Step-4 note M2), never pinned until
-        now.  It pins that the disagreement is DISPLAY-ONLY -- the two producers
-        book the SAME running balance, so the balance reconciles three ways --
-        while the row DATING differs by exactly the redistribution.
+        now.  It pins that the disagreement is DISPLAY-ONLY for the scalar balance
+        -- the two producers book the SAME running balance, so the balance
+        reconciles three ways -- while the ATTRIBUTION differs, in TWO places: the
+        display row dates AND the LEDGER's per-period bucketing (the branch's
+        namesake).
 
         ``seed_periods[1]`` (starts 2026-01-16) and ``seed_periods[2]`` (starts
         2026-01-30) both have monthly due date 2026-02-01 (payment_day=1) -- a
         February collision.  Both are paid on-schedule (cash == the scheduled
         P&I), and no rate change spans the shifted month, so the resolver's
         scheduled-principal walk and the reader's real-principal walk stay locked
-        step-for-step and the balances agree to the penny.  The reader then dates
-        BOTH rows 2026-02-01 (the true due date), where the resolver, having
-        shifted the second payment, dates its rows 2026-02-01 and 2026-03-01.
+        step-for-step and the scalar balances agree to the penny.  The reader then
+        dates BOTH rows 2026-02-01 (the true due date), where the resolver, having
+        shifted the second payment, dates its rows 2026-02-01 and 2026-03-01.  And
+        the LEDGER buckets each paydown into its TRUE pay period: the reader's
+        per-period map reflects BOTH paydowns by period 2 (payment 2's postings
+        carry ``pay_period_id = seed_periods[2]``), where the resolver's per-period
+        view -- payment 2 redistributed to March -- still shows only payment 1 at
+        period 2's start.  The distinct-month map test
+        (``test_period_map_matches_resolver_across_the_window``) cannot see this
+        divergence; the collision is exactly where it surfaces.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2322,14 +2331,15 @@ class TestReaderParallelRunAgainstResolver:
             assert ledger == resolver == reader
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
-            # Attribution: the reader keeps BOTH rows at the true February due
-            # date; the resolver replay redistributes the second to March.
-            reader_rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert [row.payment_date for row in reader_rows] == [
-                date(2026, 2, 1), date(2026, 2, 1),
-            ]
+            # Attribution, DISPLAY rows: the reader keeps BOTH rows at the true
+            # February due date; the resolver replay redistributes the second to
+            # March (inlined -- the row-date lists ARE the assertion, not locals).
+            assert [
+                row.payment_date
+                for row in loan_posting_service.confirmed_loan_history_rows(
+                    loan.id, scenario_id, _AS_OF,
+                )
+            ] == [date(2026, 2, 1), date(2026, 2, 1)]
             ctx = loan_payment_service.load_loan_context(
                 loan.id, scenario_id, params,
             )
@@ -2340,11 +2350,23 @@ class TestReaderParallelRunAgainstResolver:
                 ),
                 _AS_OF,
             )
-            replay_dates = [
+            assert [
                 row.payment_date
                 for row in replay_state.schedule if row.is_confirmed
-            ]
-            assert replay_dates == [date(2026, 2, 1), date(2026, 3, 1)]
+            ] == [date(2026, 2, 1), date(2026, 3, 1)]
+
+            # Attribution, LEDGER per-period buckets (the branch's namesake): the
+            # reader's per-period map reflects BOTH paydowns by period 2, so it
+            # equals the final balance and steps strictly below period 1; the
+            # resolver's per-period view at period 2's start still shows only
+            # payment 1 (payment 2 redistributed to March), so it reads HIGHER --
+            # the per-period divergence the distinct-month map test cannot see.
+            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            assert balance_map[seed_periods[2].id] == reader
+            assert balance_map[seed_periods[2].id] < balance_map[seed_periods[1].id]
+            assert balance_map[seed_periods[2].id] < _resolver_balance(
+                loan.id, scenario_id, seed_periods[2].start_date,
+            )
 
 
 class TestReadSwitchProductionPath:
