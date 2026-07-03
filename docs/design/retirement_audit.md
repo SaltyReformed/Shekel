@@ -430,3 +430,92 @@ Anatomy, top to bottom:
 Chart/meter palette committed (validated with the dataviz six-checks script): dark `#2878A8` /
 `#4A9ECC` on `#14161A` (dE 14.0); light `#0A5A96` / `#3E92C2` on `#FBFAF7` (dE 21.5). Red stays
 reserved for verdict / uncovered states; identity always paired with labels, never color-alone.
+
+## Loop B plan (drafted 2026-07-03)
+
+Gated phases; full suite green at each gate. Model discipline: P1/P2 are Opus 4.8 scope (services,
+routes, migrations, test assertions); P3 is Fable scope (templates/CSS/JS). Work branch:
+`feat/retirement-rebuild` off `dev` AFTER PR #53 (growth day-count) and PR #54 (balance remediation)
+have both merged -- the rebuild's figures depend on the corrected engine. Service work runs in a
+worktree; P4 live verification needs the branch in the main checkout (the dev app bind-mounts it),
+coordinated with any session holding that tree.
+
+### P1 -- model foundations (Opus)
+
+- **P1a merit horizon (ruling 3).** New `RaiseTypeEnum` + ref-cache accessor (IDs, never name
+  strings). `UserSettings.merit_raise_horizon_years`: Integer, NOT NULL, server_default 5, CHECK
+  0-50, migration tested both directions. `project_salaries_by_year` gains the horizon behavior:
+  through the cutoff year (current year + N) all raises apply; after it only cola-type recurring
+  raises continue to compound from the cutoff salary -- merit and custom stop applying but their
+  earned effect persists. Verified 2026-07-03: the only consumers are the two call sites in
+  `retirement_dashboard_service`; the 2-year paycheck pipeline uses `apply_raises` directly and is
+  untouched. Re-verify with the rule-7 grep before building.
+- **P1b employer-base fix (finding D3).** The growth engine's employer-contribution base becomes
+  time-varying for the retirement projection: retirement passes the cola-grown projected salary
+  series; every other engine consumer (savings, year-end, investment) keeps today's constant-base
+  behavior in this pass. Mechanism fork F3 below.
+- **P1c readiness producer.** A producer for direction D's data: net-frame gap per ruling 2 (net
+  income target vs after-tax pension; after-tax projected savings vs required); funded ratio =
+  after-tax projected / required; the chart's two series ("your path" = summed per-account
+  projections downsampled to <= 48 points; "needed path" = `reverse_project_balance` from the
+  required target back to today under the same returns/contributions); countdown facts (periods
+  remaining, years, date); per-account contribution facts (employee $/period, employer $/period,
+  none-linked flag). Unset tax rate handling is fork F1.
+
+### P2 -- the two levers (Opus)
+
+- **P2a contribution solver.** Additional per-period contribution closing the shortfall: closed-form
+  (shortfall at retirement / annuity factor of the remaining synthetic periods at the blended
+  return) -- no iteration; solved in the after-tax frame treating new contributions as Roth-basis
+  money, and the caption says so (fork F2). If the solution exceeds remaining contribution-limit
+  headroom, the producer reports that honestly rather than silently capping.
+- **P2b retire-later solver.** Smallest month offset (binary search, cap +180) where the full
+  recomputation -- salary path, pension years/high-average, growth horizon, required target --
+  reaches funded >= 100%. Degenerate states surfaced: "already funded", "not within 15 years".
+- **P2c lever fragment endpoint.** One HTMX GET recomputing both lever outcome lines from stepper
+  values, schema-validated like the existing `RetirementGapQuerySchema` pattern.
+
+### P3 -- page rebuild to direction D (Fable)
+
+- Rewrite `retirement/dashboard.html` + new partials (readiness, assumptions rail, levers, income
+  composition, accounts, pension footer); per-screen `retirement.css`; new
+  `retirement_path_chart.js` through the ShekelChart factory. Kills V1 (no fixed aspect-ratio), V2
+  (factory-themed legend), V3 (tokens replace `table-light` / `bg-info` / `text-warning` / raw state
+  classes), V4 (no truncating inputs).
+- Assumptions panel: per-field HTMX save/reset posting through an evolved
+  `retirement.update_settings`; server-computed deltas; Settings > Retirement section retires
+  (ruling 6) with the settings page pointing here.
+- Empty/partial states replace the dead `{% else %}` branch: each missing input (salary profile,
+  retirement date, accounts, tax rate) named and linked.
+- Accounts table gains the contributions column + none-linked CTA wired to the existing deduction
+  form and `investment.create_contribution_transfer`; finding D6 fixed by rendering the pension
+  footer per pension; `data-gap` cruft and `retirement_gap_chart.js` retire. `chart_slider.js` STAYS
+  (investment + loan dashboards consume it; verified 2026-07-03).
+- Popovers become on-surface captions. Both themes, desktop + mobile, CSP-clean.
+
+### P4 -- live verification + acceptance
+
+Branch into the main checkout (coordinated), drive on dev data: SSOT cross-checks (funded ratio
+recomputed by hand; per-account balances equal /savings to the cent), mutation paths (assumption
+save + reset persistence, both levers, pension CRUD, settings redirect), both themes and viewports.
+Developer acceptance drive, then the PR to `dev`.
+
+### Out of scope (recorded)
+
+Actual-trajectory overlay from anchor history (revisit after daily use); consuming
+`earliest_retirement_date` in analysis (the retire-later lever supersedes it; field stays
+display-only); today's-dollars toggle (ruling 5); per-account contribution targeting in the solver.
+
+### Forks to ratify at the P1 gate
+
+- **F1 -- unset estimated tax rate:** treat as an explicit 0% with an "assumption missing -- set
+  your estimate" state on the assumptions row (recommended), vs blocking the verdict behind a
+  first-run prompt.
+- **F2 -- contribution solver frame:** blended-return, Roth-basis approximation with an honest
+  caption (recommended), vs per-account targeting with limit enforcement (more precise, much more
+  machinery).
+- **F3 -- employer-base mechanism:** engine accepts an optional per-period salary basis defaulting
+  to the current constant (recommended; other consumers unchanged), vs migrating every consumer to
+  salary series at once.
+- **F4 -- horizon column shape:** `merit_raise_horizon_years` NOT NULL default 5 (recommended; the
+  horizon always has a value), vs nullable-means-extrapolate-forever.
