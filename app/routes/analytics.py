@@ -241,7 +241,7 @@ def variance_tab():
     # joins ``account_id`` -- a user-owned account -- with
     # ``pay_period_id``, so a victim's period yields no rows).  The
     # leak is in the metadata path: ``_build_window_label`` and
-    # ``_variance_csv_filename`` both read ``PayPeriod.start_date``
+    # ``_window_csv_filename`` both read ``PayPeriod.start_date``
     # without re-checking ownership, exposing the victim's pay-
     # period start date in the response and CSV filename.  Validate
     # before ``_resolve_window_params`` runs because that helper
@@ -259,7 +259,9 @@ def variance_tab():
     report = budget_variance_service.compute_variance(current_user.id, window)
 
     if request.args.get("format") == "csv":
-        fname = _variance_csv_filename(window_type, period_id, month, year)
+        fname = _window_csv_filename(
+            "variance", window_type, period_id, month, year,
+        )
         csv_str = csv_export_service.export_variance_csv(report)
         return _csv_response(csv_str, fname)
 
@@ -323,7 +325,7 @@ def trends_tab():
 @login_required
 @require_owner
 def income_statement_tab():
-    """HTMX partial: confirmed-ledger income statement.
+    """HTMX partial or CSV: confirmed-ledger income statement.
 
     Reads the append-only posting ledger's Income and Expense accounts
     into a revenue / cost statement over one window
@@ -336,8 +338,10 @@ def income_statement_tab():
         period_id: Pay period ID (for the pay_period window).
         month: Month number 1-12 (for the month window).
         year: Calendar year (for the month/year windows).
+        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page.
+    Non-HTMX requests redirect to the main analytics page unless
+    format=csv (CSV downloads are regular browser navigations).
     """
     today = date.today()
 
@@ -358,6 +362,13 @@ def income_statement_tab():
     report = ledger_report_service.compute_income_statement(
         current_user.id, window,
     )
+
+    if request.args.get("format") == "csv":
+        fname = _window_csv_filename(
+            "income_statement", window_type, period_id, month, year,
+        )
+        csv_str = csv_export_service.export_income_statement_csv(report)
+        return _csv_response(csv_str, fname)
 
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
@@ -380,7 +391,7 @@ def income_statement_tab():
 @login_required
 @require_owner
 def balance_sheet_tab():
-    """HTMX partial: confirmed-ledger balance sheet as of a date.
+    """HTMX partial or CSV: confirmed-ledger balance sheet as of a date.
 
     Reads the posted ledger's position as of ``as_of``
     (:func:`app.services.ledger_report_service.compute_balance_sheet`):
@@ -391,14 +402,22 @@ def balance_sheet_tab():
     Query parameters:
         as_of: ISO date (YYYY-MM-DD); defaults to today and is clamped to
             [2000-01-01, today].
+        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page.
+    Non-HTMX requests redirect to the main analytics page unless
+    format=csv (CSV downloads are regular browser navigations).
     """
     today = date.today()
     as_of = _resolve_as_of_param(request.args.get("as_of"), today)
     report = ledger_report_service.compute_balance_sheet(
         current_user.id, as_of,
     )
+
+    if request.args.get("format") == "csv":
+        csv_str = csv_export_service.export_balance_sheet_csv(report)
+        return _csv_response(
+            csv_str, f"balance_sheet_{as_of.isoformat()}.csv",
+        )
 
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
@@ -622,28 +641,38 @@ def _resolve_window_params(today):
     return window_type, period_id, month, year
 
 
-def _variance_csv_filename(window_type, period_id, month, year):
-    """Build a descriptive CSV filename for variance export.
+def _window_csv_filename(prefix, window_type, period_id, month, year):
+    """Build a descriptive CSV filename for a windowed-report export.
+
+    Shared by the Budget Variance and Income Statement tabs, which export
+    over the same ``pay_period`` / ``month`` / ``year`` window shape;
+    *prefix* names the report (``"variance"`` / ``"income_statement"``).
+    A ``pay_period`` window reads the period's ``start_date`` (the same
+    read the F-098 route guard protects -- every caller IDOR-validates
+    ``period_id`` before reaching here); a ``month`` / ``year`` window
+    uses the calendar fields.
 
     Args:
+        prefix: The report-name filename prefix (e.g. ``"variance"``).
         window_type: 'pay_period', 'month', or 'year'.
         period_id: Pay period ID (if pay_period window).
         month: Month number (if month window).
         year: Year (if month or year window).
 
     Returns:
-        Filename string like 'variance_2026_01.csv'.
+        Filename string like 'variance_2026_01.csv' or
+        'income_statement_period_2026-01-02.csv'.
     """
     if window_type == "pay_period" and period_id is not None:
         period = db.session.get(PayPeriod, period_id)
         if period:
-            return f"variance_period_{period.start_date.isoformat()}.csv"
-        return "variance_period.csv"
+            return f"{prefix}_period_{period.start_date.isoformat()}.csv"
+        return f"{prefix}_period.csv"
     if window_type == "month" and month and year:
-        return f"variance_{year}_{month:02d}.csv"
+        return f"{prefix}_{year}_{month:02d}.csv"
     if window_type == "year" and year:
-        return f"variance_{year}.csv"
-    return "variance.csv"
+        return f"{prefix}_{year}.csv"
+    return f"{prefix}.csv"
 
 
 def _build_variance_chart_data(report):

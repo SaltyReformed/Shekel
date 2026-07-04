@@ -2143,6 +2143,137 @@ class TestCsvExport:
             html = resp.data.decode()
             assert "format=csv" in html
 
+    # ── Statement CSV (Build-Order Step 5, C11) ──────────────────
+
+    def test_income_statement_csv_export(self, app, auth_client, seed_user,
+                                         seed_periods):
+        """C11-1: Income statement CSV returns 200 with text/csv."""
+        with app.app_context():
+            resp = auth_client.get(
+                f"/analytics/income-statement?format=csv&window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+            )
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_income_statement_csv_content(self, app, auth_client, seed_user,
+                                          seed_periods, db):
+        """C11-2: Income statement CSV carries settled posted content.
+
+        A $2000 income and a $300 expense settle through the real posting
+        path (a directly-inserted row never posts), so the confirmed ledger
+        the export reads carries both sections and a $1700 net income.  The
+        amounts render plain (no ``$`` / thousands comma) per the CSV rules.
+        """
+        with app.app_context():
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("2000.00"),
+                is_income=True, name="Paycheck",
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("300.00"),
+                is_income=False, name="Groceries",
+            )
+            db.session.commit()
+            resp = auth_client.get(
+                f"/analytics/income-statement?format=csv&window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "[Income]" in body
+            assert "[Expenses]" in body
+            assert "2000.00" in body
+            assert "300.00" in body
+            assert "Net Income,1700.00" in body
+
+    def test_income_statement_csv_filename(self, app, auth_client, seed_user,
+                                           seed_periods):
+        """C11-3: Income statement CSV filename reflects the pay-period window."""
+        with app.app_context():
+            resp = auth_client.get(
+                f"/analytics/income-statement?format=csv&window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+            )
+            cd = resp.headers.get("Content-Disposition", "")
+            assert "attachment" in cd
+            assert "income_statement_period_" in cd
+            assert ".csv" in cd
+
+    def test_income_statement_has_export_button(self, app, auth_client,
+                                                seed_user, seed_periods):
+        """C11-4: Income Statement tab contains a CSV export link."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+            assert "bi-download" in html
+
+    def test_balance_sheet_csv_export(self, app, auth_client, seed_user):
+        """C11-5: Balance sheet CSV returns 200 with text/csv (no HTMX)."""
+        with app.app_context():
+            resp = auth_client.get("/analytics/balance-sheet?format=csv")
+            assert resp.status_code == 200
+            assert "text/csv" in resp.headers["Content-Type"]
+
+    def test_balance_sheet_csv_content_and_tie_out(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """C11-6: Balance sheet CSV carries posted lines and a green tie-out.
+
+        A $500 income settled with a ``paid_at`` inside the frozen range
+        (2026-02-15) folds into the default as-of (2026-03-20): Checking
+        +500 (Asset) and Retained Earnings +500 (Income closed into
+        equity).  The seed opening's entry is excluded whole (its date is
+        after the frozen today), so the tie-out still closes -> In Balance
+        is Yes.
+        """
+        with app.app_context():
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("500.00"),
+                is_income=True, name="Paycheck",
+                paid_at=datetime(2026, 2, 15, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            resp = auth_client.get("/analytics/balance-sheet?format=csv")
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "[Assets]" in body
+            assert "[Liabilities]" in body
+            assert "[Equity]" in body
+            assert "[Trial Balance]" in body
+            # Pin BOTH placements exactly (not a bare "500.00", which also
+            # matches Retained Earnings): the settled income lands +500 on the
+            # Checking asset line and closes +500 into Retained Earnings, and
+            # the seed opening is excluded whole so Checking is exactly 500.
+            assert "Checking,500.00" in body
+            assert "Retained Earnings,500.00" in body
+            assert "In Balance,Yes" in body
+
+    def test_balance_sheet_csv_filename(self, app, auth_client, seed_user):
+        """C11-7: Balance sheet CSV filename carries the as-of date."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet?format=csv&as_of=2026-02-10",
+            )
+            cd = resp.headers.get("Content-Disposition", "")
+            assert "attachment" in cd
+            assert "balance_sheet_2026-02-10.csv" in cd
+
+    def test_balance_sheet_has_export_button(self, app, auth_client, seed_user):
+        """C11-8: Balance Sheet tab contains a CSV export link."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet",
+                headers={"HX-Request": "true"},
+            )
+            html = resp.data.decode()
+            assert "format=csv" in html
+            assert "bi-download" in html
+
 
 # ── Nav Bar Tests ─────────────────────────────────────────────────
 

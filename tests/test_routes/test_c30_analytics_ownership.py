@@ -28,7 +28,7 @@ plausible response bodies.
   * F-098 (variance): the budget-variance txn filter joins
     ``account_id`` (user-owned) with ``pay_period_id`` and so
     returns no rows on a cross-user period_id, BUT
-    ``_build_window_label`` and ``_variance_csv_filename`` both
+    ``_build_window_label`` and ``_window_csv_filename`` both
     read ``PayPeriod.start_date`` without an ownership re-check.
     The victim's start_date leaks through the variance label
     visible in the HTML response and the CSV download filename.
@@ -263,7 +263,7 @@ class TestVarianceTabPeriodIdOwnership:
     The variance txn filter joins ``account_id`` (user-owned) with
     ``pay_period_id``, so a cross-user ``period_id`` returns no
     rows -- but the metadata path (``_build_window_label`` and
-    ``_variance_csv_filename``) reads ``PayPeriod.start_date``
+    ``_window_csv_filename``) reads ``PayPeriod.start_date``
     without an ownership re-check.  The route-boundary 404 closes
     the metadata leak and aligns with the security response rule.
     """
@@ -332,7 +332,7 @@ class TestVarianceTabPeriodIdOwnership:
     ):
         """A's CSV variance download with B's ``period_id`` returns 404.
 
-        F-098 specific: ``_variance_csv_filename`` builds a name
+        F-098 specific: ``_window_csv_filename`` builds a name
         like ``variance_period_2026-01-02.csv`` from the period's
         ``start_date``.  Without the guard the filename would leak
         the victim's date into the Content-Disposition header.
@@ -750,3 +750,26 @@ class TestIncomeStatementTabPeriodIdOwnership:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
+
+    def test_cross_user_period_id_csv_returns_404(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+        seed_second_periods,
+    ):
+        """A CSV income-statement download with B's ``period_id`` 404s.
+
+        C11's CSV branch sits after the boundary IDOR guard and builds the
+        download filename from the period's ``start_date``
+        (``_window_csv_filename``), so without the guard the victim's date
+        would leak into the ``Content-Disposition`` header.  The guard fires
+        first, so the download 404s and emits no filename at all -- asserted
+        on the absence of the header so a regression that 404s but still
+        builds the disposition is caught.
+        """
+        with app.app_context():
+            attacker_target = seed_second_periods[0].id
+            resp = auth_client.get(
+                f"/analytics/income-statement?format=csv&window=pay_period"
+                f"&period_id={attacker_target}",
+            )
+            assert resp.status_code == 404
+            assert "Content-Disposition" not in resp.headers

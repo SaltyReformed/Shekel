@@ -295,7 +295,42 @@ in throughout. Developer approval: 2026-07-03.
     year dropdown, proves the year clamp).  168 targeted green;
     `pylint app/` 10.00.
 
-- C11 (CSV export) -- pending
+- C11 (CSV export) -- DONE: `csv_export_service.export_income_statement_csv` /
+  `export_balance_sheet_csv` + a shared `_add_statement_section` writer (both
+  statements present a `StatementSection` identically, so one helper serves the
+  income statement's Income/Expense and the balance sheet's
+  Assets/Liabilities/Equity; mirrors the bracketed multi-section layout of
+  `export_year_end_csv`).  Income statement = title (window label) + Income +
+  Expense sections + Net Income; balance sheet = title (as-of ISO date) +
+  Assets/Liabilities/Equity (the Equity section carrying the report's derived
+  Retained Earnings line) + a Trial Balance section (Assets, Liabilities +
+  Equity, Ledger Net, In Balance) so an out-of-balance ledger is visible in the
+  download, not hidden.  Line labels (user category/account names) route through
+  `_safe` (CSV-injection CWE-1236); amounts through `_dec` (Decimal-only, no
+  `-abs`, faithful to the reader-contract C-4 natural sign the readers already
+  applied).  Routes: a `format=csv` branch on both tabs AFTER the report build
+  and (income statement) AFTER the boundary `_validate_owned_or_abort(period_id)`
+  guard, so a cross-user period CSV 404s before the victim's `start_date` reaches
+  the filename; `_variance_csv_filename` generalized to
+  `_window_csv_filename(prefix, ...)` shared by variance + income statement
+  (byte-identical output for the variance caller; the F-098 route comment + the
+  three `test_c30_analytics_ownership` docstrings re-pointed).  Balance-sheet
+  filename `balance_sheet_<as_of>.csv` (as_of parsed from the caller's own query
+  arg -- no DB read, no IDOR vector).  Templates gained CSV links mirroring
+  `_variance.html` (`download`, current window / as-of preserved; `url_for`
+  omits the None calendar fields on a pay-period window, the proven variance
+  pattern).  Tests: service-level Fake-driven exports (sections/totals/net,
+  empty report, negative net, out-of-balance tie-out, natural-signed liability,
+  formula-injection) + real report->CSV route tests (export, content pinned to
+  EXACT rows `Checking,500.00` / `Retained Earnings,500.00` / `Net Income,1700.00`,
+  filename, has-button) + a CSV-path cross-user 404 asserting no
+  `Content-Disposition`.  Per the commit's adversarial `code-reviewer` pass: no
+  CRITICAL/HIGH/MEDIUM and no money- or security-wrong defect (injection posture,
+  IDOR ordering, `_date`-on-`date` ISO, byte-identical variance filename, and the
+  no-`-abs` sign faithfulness each independently verified); its one tightness
+  note (a bare `"500.00"` balance-sheet assertion that Retained Earnings also
+  matched) folded in as the exact-row pins above.  88 targeted green (service +
+  `TestCsvExport` + the ownership file); `pylint app/` 10.00.
 - C12 (enforcement: W9908 + F-1) -- pending
 - C13 (statements oracle + docs close-out + full suite) -- pending
 

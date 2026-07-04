@@ -38,6 +38,10 @@
 <div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
   <h5 class="mb-0 me-3">Balance Sheet</h5>
   <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.balance_sheet_tab', as_of=as_of.isoformat(), format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
     <label for="balance-sheet-as-of" class="form-label mb-0 small text-muted">As of</label>
     <input type="date" id="balance-sheet-as-of"
            class="form-control form-control-sm w-auto"
