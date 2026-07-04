@@ -3,8 +3,9 @@
 Per-surface diagnosis of `/analytics` for the Fable 5 overhaul, per the shekel-design skill Step 1.
 Status: diagnosis complete 2026-07-04. **Gate A LOCKED 2026-07-04** (all six rulings recorded in
 "Rebuild decisions" below). **Loop A COMPLETE for all four pills 2026-07-04** (records below; locked
-anatomy in "Locked anatomy"). Next: Loop B, calendar slice P1 (Opus scope). Line references are as
-of `dev` @ `0d9c3fe8` (2026-07-04); re-verify before acting on them.
+anatomy in "Locked anatomy"). Calendar slice: P1 (data) AND P2 (presentation) COMPLETE 2026-07-04;
+as-built records below. Next: calendar slice P3 (developer acceptance on real data), then slice 2
+(Taxes). Line references are as of `dev` @ `0d9c3fe8` (2026-07-04); re-verify before acting on them.
 
 ## Developer context (2026-07-04 session)
 
@@ -521,7 +522,7 @@ Data layer shipped; presentation (P2) not started. What landed:
   template; per-day `daily_balance` added to the grid; display-tz `today` used for the today marker
   and the split. Month CSV gained an "End-of-Day Balance ($)" column.
 
-Decisions / boundaries recorded for P2/P3:
+Decisions / boundaries recorded for P2/P3 (P1 hand-off notes; P2's own record follows below):
 
 1. **Measured vs modeled basis (NOT a bug -- audit's core finding).** The balance line + day-cell
    EOD hero are the PROJECTED basis (projected-only, entry-aware, override-aware) and reconcile with
@@ -543,3 +544,63 @@ Decisions / boundaries recorded for P2/P3:
    wants the calendar to show the grid's stale-anchor badge, add it from `cash_balance_map` at P2/P3
    (not in the locked anatomy, so deferred).
 5. **Year view** unchanged (`daily=None`; no per-day balance read), per Calendar decision 10.
+
+### Loop B P2 as-built (COMPLETE 2026-07-04, on dev)
+
+Presentation layer shipped per the locked anatomy. What landed:
+
+- **Template** (`_calendar_month.html`, rebuilt): summary strip (Balance today / So far / Remaining
+  / Month end / Month trough, reusing the shared `.pulse-chip` vocabulary per the accounts-cockpit
+  precedent; So far hides on a wholly future month, Remaining on a wholly past one); flow strip
+  canvas; day cells with head markers (day number, PAY tag, infrequent glyph), up to three named
+  flow lines (visible cap DERIVED from the service overflow count, no constant copy in the
+  template), the "+N more" residual line, and the end-of-day balance hero (right-aligned mono;
+  modeled days = leading tilde + secondary ink; below-threshold and trough days = danger). Nav, CSV
+  button, 3rd-paycheck badge, and the click day-detail templates kept; the detail table's amount
+  colors moved from Bootstrap `text-success`/`text-danger` to the token classes.
+- **Route** (`analytics.py`): `_serialize_flow_strip` (the calendar's single Chart.js float
+  boundary, mirroring the dashboard's `_serialize_chart`): labels, values, `current_index` (count of
+  measured days; 0 wholly-future, day-count wholly-past -- net-worth cockpit semantics), `threshold`
+  (the low-balance setting), `payday_indices`, `trough_index`, `week_tick_indices` (the 1st +
+  Sundays). `_build_calendar_weeks` gained `is_modeled` (date split at display-tz today, decision
+  7). `month_end_balance` = the RUNNING last-day balance (P1 decision 2), direct dict index so a
+  producer-contract violation fails loud.
+- **JS** (`calendar_flow_strip.js`, new; wired into `analytics.html`): ShekelChart factory chart.
+  Measured and projected spans are TWO datasets sharing the boundary point -- the locked anatomy
+  requires a fill-strength split (stronger through today, lighter after), which single-dataset
+  `splitSegment` styling cannot do; dashed projection via `borderDash`. Threshold line = the
+  dashboard pulse chart's flat dashed credit dataset idiom, tooltip-filtered. Shared
+  `todayMarkerPlugin` for the Today marker; a small inline plugin draws the trough amount label and
+  the "low balance $N" threshold caption. Payday dots (done green) and the trough dot (danger) via
+  scriptable point options with boundary dedupe; tooltips append " projected" on days after today; x
+  ticks/gridlines render only at the weekly indices. Re-inits on `htmx:afterSwap` when the swapped
+  content holds the canvas; theme toggles re-resolve colors through the factory.
+- **CSS** (`analytics.css` calendar section rewritten): flex-column day-cell anatomy, flow-line and
+  hero styles, pay tag, chip caption/pair classes, strip heights. Grid tracks are `minmax(0, 1fr)`
+  (bare `1fr` floors at min-content and clipped the Saturday column on mobile); the balance hero
+  carries a nowrap/ellipsis guard. Mobile (<= 767.98px): named flow lines collapse to a
+  flow-presence dot (suppressed on payday cells -- the PAY tag fills the head), hero kept at
+  0.625rem.
+- **Tests:** one pin updated under the approved Gate A change
+  (`test_calendar_month_totals_displayed` -> `test_calendar_month_summary_strip_displayed`; the old
+  Income/Expenses/Net totals row no longer exists) and five new hand-computed pins (payload shape
+  incl. paydays/Sunday ticks/threshold, trough + danger-cell rendering, future-month modeled
+  treatment via display-tz today, the 3-line cap + "+2 more" residual, the PAY tag).
+- **Verification:** pylint app/ 10.00/10 with the full --fail-on set; biome clean (JS + CSS); 156
+  analytics route tests + 91 ownership/calendar-service/daily-series tests green; live verification
+  on a self-seeded throwaway instance (scratch DB cloned from the test template; July-2026 story
+  with a 3-paycheck month, payday flow cluster, one settled row, and a below-threshold trough)
+  screenshotted in BOTH themes and BOTH viewports -- every rendered figure matched the hand-computed
+  expectations (balance today 4207.00, month end 4532.00, trough 452.00 on Jul 10, So far expenses
+  1840.35, overflow "+2 more -$78").
+
+P3 notes / residuals:
+
+1. Mobile day cells ellipsize a balance wider than the cell (5+ digit figures at 390px); the exact
+   value stays one tap away in the day detail. Revisit at P3 if real data hits it.
+2. The infrequent glyph has no route-test pin (it needs a template + recurrence-rule seed); verified
+   visually only. Add a pin if it regresses.
+3. Deferred unchanged: stale-anchor badge (P1 note 4), year view (decision 10), account-scope label
+   and measured/modeled chips page-wide (slice 4).
+4. The full-suite gate could not be run in isolation this session (shared test DB busy with parallel
+   harness work); it must be green before the P2 commit ships.

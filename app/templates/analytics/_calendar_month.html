@@ -1,5 +1,24 @@
 {% from "_money_macros.html" import money %}
-{# Month detail calendar -- 7-column Sun-Sat grid with inline totals. #}
+{# Month detail calendar -- the slice-1 flagship rebuild (analytics_audit.md,
+   "Calendar rebuild decisions"): summary strip, month-wide flow strip, and
+   ledger day cells whose hero is the projected end-of-day running balance.
+
+   Context contract (analytics._render_month_view): data (MonthSummary with
+   .daily), weeks (day dicts incl. is_modeled / daily_balance / overflow),
+   year, month, month_name, prev/next nav fields, low_balance_threshold,
+   today (display-tz date), month_end_balance (RUNNING last-day balance, not
+   the period-flat scalar), flow_strip_json (Chart.js data-chart payload).
+
+   Basis honesty (P1 as-built decision 1): the balance figures (chips
+   "Balance today" / "Month end" / "Month trough", the strip line, and the
+   day-cell balance hero) are the PROJECTED running basis that reconciles
+   with the grid; the So far / Remaining in-out pairs are the nominal flow
+   fold shown on the day cells. Captions mark the projected figures, and
+   days after today render the tilde + secondary-ink modeled treatment. #}
+
+{% set is_current_month = today.year == year and today.month == month %}
+{% set is_past_month = (today.year, today.month) > (year, month) %}
+{% set trough_day = data.daily.trough_day if data.daily else none %}
 
 {# Navigation #}
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -32,6 +51,85 @@
   </div>
 </div>
 
+{% if data.daily %}
+{# Summary strip -- locked composition: Balance today / So far / Remaining /
+   Month end / Month trough. So far hides on a wholly future month and
+   Remaining on a wholly past one (their side of the split is empty). #}
+<div class="calendar-summary mb-3">
+  {% if data.daily.balance_today is not none %}
+  <div class="pulse-chip">
+    <div class="pulse-chip__label">Balance today</div>
+    <div class="pulse-chip__value font-mono">{{ money(data.daily.balance_today) }}</div>
+    <div class="calendar-chip-cap">projected end of {{ today.strftime('%b %-d') }}</div>
+  </div>
+  {% endif %}
+  {% if is_current_month or is_past_month %}
+  <div class="pulse-chip">
+    <div class="pulse-chip__label">So far</div>
+    <div class="calendar-chip-pair font-mono">
+      <div class="calendar-chip-pair-row">
+        <span class="calendar-chip-pair-label">Income</span>
+        <span class="calendar-day-income">{{ money(data.daily.elapsed_income) }}</span>
+      </div>
+      <div class="calendar-chip-pair-row">
+        <span class="calendar-chip-pair-label">Expenses</span>
+        <span class="calendar-day-expense">{{ money(data.daily.elapsed_expense) }}</span>
+      </div>
+    </div>
+    <div class="calendar-chip-cap">
+      {%- if is_current_month %}through {{ today.strftime('%b %-d') }}{% else %}full month{% endif -%}
+    </div>
+  </div>
+  {% endif %}
+  {% if not is_past_month %}
+  <div class="pulse-chip">
+    <div class="pulse-chip__label">Remaining</div>
+    <div class="calendar-chip-pair font-mono">
+      <div class="calendar-chip-pair-row">
+        <span class="calendar-chip-pair-label">Income</span>
+        <span class="calendar-day-income">{{ money(data.daily.remaining_income) }}</span>
+      </div>
+      <div class="calendar-chip-pair-row">
+        <span class="calendar-chip-pair-label">Expenses</span>
+        <span class="calendar-day-expense">{{ money(data.daily.remaining_expense) }}</span>
+      </div>
+    </div>
+    <div class="calendar-chip-cap">
+      {%- if is_current_month %}projected after {{ today.strftime('%b %-d') }}{% else %}projected, full month{% endif -%}
+    </div>
+  </div>
+  {% endif %}
+  {% if month_end_balance is not none %}
+  <div class="pulse-chip">
+    <div class="pulse-chip__label">Month end</div>
+    <div class="pulse-chip__value font-mono">{{ money(month_end_balance) }}</div>
+    <div class="calendar-chip-cap">projected, last day</div>
+  </div>
+  {% endif %}
+  {% if data.daily.trough_balance is not none %}
+  <div class="pulse-chip{% if data.daily.trough_balance < low_balance_threshold %} pulse-chip--danger{% endif %}">
+    <div class="pulse-chip__label">Month trough</div>
+    <div class="pulse-chip__value font-mono">{{ money(data.daily.trough_balance) }}</div>
+    <div class="calendar-chip-cap">{{ month_name }} {{ trough_day }} &middot; lowest projected day</div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if flow_strip_json %}
+{# Month flow strip -- end-of-day balance line: solid through today, dashed
+   after, threshold line from the user's low-balance setting, payday dots,
+   labeled trough dot, Today marker, Sunday gridlines
+   (calendar_flow_strip.js reads data-chart). #}
+<div class="pulse-canvas mb-3">
+  <div class="calendar-flow-strip">
+    <canvas id="calendar-flow-canvas" data-chart='{{ flow_strip_json }}'
+            role="img"
+            aria-label="End-of-day balance by day for {{ month_name }} {{ year }}; solid through today, projected after"></canvas>
+  </div>
+</div>
+{% endif %}
+
 {# Calendar grid #}
 <div class="calendar-grid mb-3">
   {# Day-of-week headers #}
@@ -39,23 +137,54 @@
   <div class="calendar-header text-center text-muted small fw-bold py-1">{{ dow }}</div>
   {% endfor %}
 
-  {# Day cells #}
+  {# Day cells: head markers, up to three named flows (+N more residual),
+     end-of-day balance hero. The visible-flow cap is the service's
+     (MAX_VISIBLE_DAY_FLOWS): derived here from the overflow count so the
+     template holds no copy of the constant. #}
   {% for week in weeks %}
   {% for day in week %}
   {% if day.number == 0 %}
   <div class="calendar-day calendar-day--empty"></div>
   {% else %}
+  {% set visible_flows = (day.entries | length) - (day.overflow.count if day.overflow else 0) %}
   <div class="calendar-day{% if day.is_today %} calendar-day--today{% endif %}{% if day.is_paycheck %} calendar-paycheck{% endif %}"
        {% if day.entries %}data-day="{{ day.number }}" role="button" tabindex="0" data-keyboard-activate{% endif %}>
-    <div class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</div>
+    <div class="calendar-day-head">
+      <span class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</span>
+      {% if day.is_paycheck %}<span class="calendar-pay-tag">PAY</span>{% endif %}
+      {% if day.entries | selectattr("is_infrequent") | list %}
+      <i class="bi bi-asterisk calendar-infreq" title="Includes an infrequent item (quarterly or less often)"></i>
+      {% endif %}
+    </div>
     {% if day.entries %}
-    <div class="calendar-day-totals">
-      {% if day.income_total %}
-      <div class="calendar-day-income font-mono">{{ money(day.income_total, cents=false) }}</div>
+    <div class="calendar-day-flows">
+      {% for entry in day.entries[:visible_flows] %}
+      <div class="calendar-day-flow">
+        <span class="calendar-flow-name">
+          {%- if entry.is_paid %}<i class="bi bi-check2" title="Paid"></i> {% endif -%}
+          {{ entry.name }}
+        </span>
+        <span class="calendar-flow-amt font-mono {{ 'calendar-day-income' if entry.is_income else 'calendar-day-expense' }}">
+          {{- money(entry.amount, cents=false) -}}
+        </span>
+      </div>
+      {% endfor %}
+      {% if day.overflow %}
+      <div class="calendar-day-more">
+        <span>+{{ day.overflow.count }} more</span>
+        <span class="font-mono">{{ money(day.overflow.net, cents=false) }}</span>
+      </div>
       {% endif %}
-      {% if day.expense_total %}
-      <div class="calendar-day-expense font-mono">{{ money(day.expense_total, cents=false) }}</div>
-      {% endif %}
+    </div>
+    {% endif %}
+    {% if day.daily_balance is not none %}
+    {# Hero: projected end-of-day balance. Danger when below the user's
+       low-balance threshold or on the month-trough day (rebuild decision
+       4); modeled (after today) renders secondary ink + leading tilde. #}
+    <div class="calendar-day-balance font-mono
+      {%- if day.daily_balance < low_balance_threshold or day.number == trough_day %} calendar-day-balance--danger
+      {%- elif day.is_modeled %} calendar-day-balance--modeled{% endif %}">
+      {%- if day.is_modeled %}~{% endif %}{{ money(day.daily_balance, cents=false) -}}
     </div>
     {% endif %}
   </div>
@@ -92,7 +221,7 @@
         <tr>
           <td>{{ entry.name }}</td>
           <td class="text-muted">{{ entry.category_group|default("--", true) }}</td>
-          <td class="text-end font-mono {{ 'text-success' if entry.is_income else 'text-danger' }}">
+          <td class="text-end font-mono {{ 'calendar-day-income' if entry.is_income else 'calendar-day-expense' }}">
             {{ money(entry.amount) }}
           </td>
           <td><span class="badge {{ 'bg-success' if entry.is_paid else 'bg-secondary' }}">
@@ -107,25 +236,3 @@
 {% endif %}
 {% endfor %}
 {% endfor %}
-
-{# Monthly summary #}
-<div class="row g-2 text-center">
-  <div class="col-6 col-md-3">
-    <small class="text-muted d-block">Income</small>
-    <span class="font-mono text-success">{{ money(data.total_income) }}</span>
-  </div>
-  <div class="col-6 col-md-3">
-    <small class="text-muted d-block">Expenses</small>
-    <span class="font-mono text-danger">{{ money(data.total_expenses) }}</span>
-  </div>
-  <div class="col-6 col-md-3">
-    <small class="text-muted d-block">Net</small>
-    <span class="font-mono fw-bold {% if data.net >= 0 %}text-success{% else %}text-danger{% endif %}">
-      {{ money(data.net) }}
-    </span>
-  </div>
-  <div class="col-6 col-md-3">
-    <small class="text-muted d-block">End Balance</small>
-    <span class="font-mono">{{ money(data.projected_end_balance) }}</span>
-  </div>
-</div>

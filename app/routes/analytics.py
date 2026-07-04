@@ -10,6 +10,7 @@ ledger via ``ledger_report_service``.
 """
 
 import calendar as cal_mod
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -454,6 +455,12 @@ def _render_month_view(data, year, month, low_balance, today):
     flow strip line and the below-threshold cell coloring.  The caller
     resolves ``data`` via :func:`calendar_service.get_month_detail` (with
     ``today``) so the fetch and its 404 handling stay in the route.
+
+    ``month_end_balance`` is the RUNNING end-of-day balance on the month's
+    last calendar day (``daily.daily_balances``), not the period-flat
+    ``MonthSummary.projected_end_balance`` scalar -- the P1 as-built ruling:
+    the month-end tile must agree with the flow strip's right end (the two
+    differ when the month ends mid-period).
     """
     # Build calendar grid (Sunday-start weeks).
     weeks = _build_calendar_weeks(year, month, data, today)
@@ -471,6 +478,16 @@ def _render_month_view(data, year, month, low_balance, today):
 
     month_name = cal_mod.month_name[month]
 
+    # Direct indexing, not .get(): the daily-series producer guarantees a
+    # key for every day of the range, so a missing last day is a producer
+    # defect that must fail loud (KeyError), not silently hide the chip --
+    # the same contract the flow-strip serializer relies on.
+    days_in_month = cal_mod.monthrange(year, month)[1]
+    month_end_balance = (
+        data.daily.daily_balances[days_in_month]
+        if data.daily is not None else None
+    )
+
     return render_template(
         "analytics/_calendar_month.html",
         data=data,
@@ -483,7 +500,87 @@ def _render_month_view(data, year, month, low_balance, today):
         next_month=next_month,
         next_year=next_year,
         low_balance_threshold=low_balance,
+        today=today,
+        month_end_balance=month_end_balance,
+        flow_strip_json=_serialize_flow_strip(
+            data, low_balance, today, year, month,
+        ),
     )
+
+
+def _serialize_flow_strip(data, low_balance, today, year, month):
+    """Serialize the month flow strip series to a JSON string.
+
+    The calendar's single Chart.js serialization boundary (coding-standards:
+    floats live only here, never in a calculation), mirroring the dashboard's
+    ``_serialize_chart``.  Emits one point per calendar day of the month from
+    the daily running-balance view the service computed
+    (:class:`~app.services.calendar_service.DailyView`), plus the display
+    indices the strip needs:
+
+    - ``current_index``: the count of measured days (points ``[0,
+      current_index)`` render solid, the rest dashed) -- ``today.day``
+      inside the month, ``0`` for a wholly future month (all dashed), the
+      day count for a wholly past month (all solid).  Matches the
+      net-worth cockpit's ``current_index`` semantics so the shared
+      ``splitSegment`` / ``todayMarkerPlugin`` helpers apply unchanged.
+    - ``threshold``: the user's low-balance-threshold setting (the same
+      source the grid and dashboard read -- Calendar rebuild decision 4).
+    - ``payday_indices`` / ``trough_index``: 0-based day indices for the
+      payday dots and the labeled trough dot.
+    - ``week_tick_indices``: the 1st of the month plus every Sunday
+      (0-based), the strip's weekly gridline/tick positions -- Sundays
+      match the calendar grid's week start.
+
+    Args:
+        data: The month's :class:`MonthSummary` (``daily`` must be present;
+            returns ``None`` when it is not, and the template skips the
+            strip).
+        low_balance: The user's low-balance threshold (whole dollars).
+        today: The current date in the display timezone.
+        year: Target calendar year.
+        month: Target calendar month (1-12).
+
+    Returns:
+        A JSON string for the canvas ``data-chart`` attribute, or ``None``
+        when no daily view was computed.
+    """
+    if data.daily is None:
+        return None
+    days_in_month = cal_mod.monthrange(year, month)[1]
+    first_day = date(year, month, 1)
+    last_day = date(year, month, days_in_month)
+
+    if today < first_day:
+        current_index = 0
+    elif today > last_day:
+        current_index = days_in_month
+    else:
+        current_index = today.day
+
+    week_ticks = sorted({0} | {
+        day - 1 for day in range(1, days_in_month + 1)
+        if date(year, month, day).weekday() == cal_mod.SUNDAY
+    })
+
+    balances = data.daily.daily_balances
+    return json.dumps({
+        "labels": [
+            date(year, month, day).strftime("%b %-d")
+            for day in range(1, days_in_month + 1)
+        ],
+        "values": [
+            float(balances[day]) for day in range(1, days_in_month + 1)
+        ],
+        "current_index": current_index,
+        "threshold": float(low_balance),
+        "payday_indices": [day - 1 for day in data.paycheck_days],
+        "trough_index": (
+            data.daily.trough_day - 1
+            if data.daily.trough_day is not None else None
+        ),
+        "week_tick_indices": week_ticks,
+    })
 
 
 def _render_year_view(year, account_id, threshold):
@@ -515,10 +612,14 @@ def _build_calendar_weeks(year, month, data, today):
     """Build a list of week rows for the calendar grid.
 
     Each week is a list of 7 day dicts with keys: number, entries,
-    is_paycheck, is_today, income_total, expense_total, daily_balance,
-    overflow.  ``daily_balance`` is the day's projected end-of-day running
-    balance (``None`` before the pay-period horizon or when no daily view was
-    computed); ``overflow`` is the day's "+N more" residual or ``None``.
+    is_paycheck, is_today, is_modeled, income_total, expense_total,
+    daily_balance, overflow.  ``daily_balance`` is the day's projected
+    end-of-day running balance (``None`` before the pay-period horizon or
+    when no daily view was computed); ``overflow`` is the day's "+N more"
+    residual or ``None``.  ``is_modeled`` marks days AFTER today in the
+    display timezone -- the measured/modeled treatment is a date split, not
+    a status split (Calendar rebuild decision 7): the cell's balance hero
+    renders in secondary ink with a leading tilde on modeled days.
     Empty cells have number=0.  Uses Sunday as the first day of the week.
     """
     # Sunday-start calendar (firstweekday=6 in Python's calendar).
@@ -538,6 +639,7 @@ def _build_calendar_weeks(year, month, data, today):
                     "entries": [],
                     "is_paycheck": False,
                     "is_today": False,
+                    "is_modeled": False,
                     "income_total": Decimal("0"),
                     "expense_total": Decimal("0"),
                     "daily_balance": None,
@@ -561,6 +663,10 @@ def _build_calendar_weeks(year, month, data, today):
                     "entries": entries,
                     "is_paycheck": day_num in paycheck_set,
                     "is_today": is_today,
+                    "is_modeled": (
+                        (year, month, day_num)
+                        > (today.year, today.month, today.day)
+                    ),
                     "income_total": totals[0],
                     "expense_total": totals[1],
                     "daily_balance": daily_balances.get(day_num),
