@@ -1055,6 +1055,27 @@ class TestVarianceTab:
             assert resp.status_code == 200
             assert b"2026" in resp.data
 
+    def test_variance_out_of_range_month_clamped(self, app, auth_client,
+                                                 seed_user, seed_periods):
+        """A hand-crafted out-of-range month/year clamps instead of 500ing.
+
+        The shared ``_resolve_window_params`` clamps month to [1,12] and
+        year to [2000,2100] (the ``calendar_tab`` / ``year_end_tab``
+        convention) so a crafted ``?window=month&month=13&year=99999`` URL
+        cannot reach ``date()`` / ``calendar.monthrange()`` in the variance
+        service and raise.  The 200 proves the month clamp (``monthrange``
+        would raise on month=13); the ``2100`` label (not offered by the
+        bounded year dropdown, which tops out at the current year) proves
+        the year clamp.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/variance?window=month&month=13&year=99999",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"2100" in resp.data
+
     def test_variance_requires_auth(self, app, client):
         """C15-extra1: Unauthenticated request redirects to login."""
         with app.app_context():

@@ -352,15 +352,6 @@ def income_statement_tab():
     )
 
     window_type, period_id, month, year = _resolve_window_params(today)
-    # Clamp the calendar fields the same way ``calendar_tab`` and
-    # ``year_end_tab`` do, so a hand-crafted out-of-range month / year
-    # cannot reach ``date()`` / ``monthrange()`` in the reporting service
-    # and raise.  A ``pay_period`` window leaves both None (untouched).
-    if month is not None:
-        month = max(1, min(12, month))
-    if year is not None:
-        year = max(2000, min(2100, year))
-
     window = ledger_report_service.StatementWindow(
         window_type=window_type, period_id=period_id, month=month, year=year,
     )
@@ -579,14 +570,19 @@ def _resolve_window_params(today):
     a bare ``pay_period`` window resolves the user's current period (falling
     back to their most recent, then to a month window when the user has no
     periods at all); a bare ``month`` / ``year`` window fills *today*'s
-    fields.  Callers that construct a calendar date from ``month`` / ``year``
-    must range-clamp them (this helper preserves user values verbatim).
+    fields.  A calendar ``month`` / ``year`` is range-clamped here (month to
+    1-12, year to 2000-2100, the ``calendar_tab`` / ``year_end_tab``
+    convention) so a hand-crafted out-of-range value cannot reach ``date()``
+    / ``calendar.monthrange()`` in either tab's service and raise; the clamp
+    is a no-op for the in-range defaults and for the ``pay_period`` window
+    (whose ``month`` / ``year`` stay ``None``).
 
     Args:
         today: The current date.
 
     Returns:
-        Tuple of (window_type, period_id, month, year).
+        Tuple of (window_type, period_id, month, year); ``month`` and
+        ``year`` are either ``None`` or in the clamped ranges above.
     """
     window_type = request.args.get("window", "pay_period")
     if window_type not in ("pay_period", "month", "year"):
@@ -614,6 +610,14 @@ def _resolve_window_params(today):
             year = today.year
     if window_type == "year" and year is None:
         year = today.year
+
+    # Range-clamp the calendar fields (a no-op for defaults and for a
+    # pay_period window's None fields) so neither tab's service constructs
+    # an out-of-range date from a hand-crafted query string.
+    if month is not None:
+        month = max(1, min(12, month))
+    if year is not None:
+        year = max(2000, min(2100, year))
 
     return window_type, period_id, month, year
 

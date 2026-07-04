@@ -280,6 +280,20 @@ in throughout. Developer approval: 2026-07-03.
   query-string path); its four LOW/nits folded in (stale test docstring, the
   explicit `rejectattr` idiom, the shared-helper section header, the
   strftime-format leak assertion).  167 targeted green; `pylint app/` 10.00.
+  - C10 follow-up (post-commit, developer-requested): the calendar-field
+    clamp was lifted from `income_statement_tab` into the shared
+    `_resolve_window_params` so BOTH window tabs get it from ONE place
+    (DRY; the inline income-statement clamp was removed).  This ALSO closed
+    a pre-existing `variance_tab` out-of-range 500 that the C10 review
+    surfaced: `?window=month&month=13&year=99999` reached
+    `calendar.monthrange()` unclamped and raised (`calendar_tab` /
+    `year_end_tab` already clamped -- `variance_tab` was the lone outlier).
+    The clamp is a no-op for in-range defaults and for `pay_period` windows
+    (month/year stay None), so variance is behavior-preserving on every
+    real input.  `test_variance_out_of_range_month_clamped` guards it (the
+    200 proves the month clamp; the `2100` label, absent from the bounded
+    year dropdown, proves the year clamp).  168 targeted green;
+    `pylint app/` 10.00.
 
 - C11 (CSV export) -- pending
 - C12 (enforcement: W9908 + F-1) -- pending
