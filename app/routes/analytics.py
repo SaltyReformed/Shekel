@@ -1,10 +1,12 @@
 """
 Shekel Budget App -- Analytics Routes
 
-Analytics dashboard with four HTMX lazy-loaded tabs:
-Calendar, Year-End Summary, Budget Variance, and Spending Trends.
-Each tab endpoint returns an HTML partial loaded into the main page
-via nav-pills navigation.
+Analytics dashboard with six HTMX lazy-loaded tabs: Calendar,
+Year-End Summary, Budget Variance, Spending Trends, Income Statement,
+and Balance Sheet.  Each tab endpoint returns an HTML partial loaded
+into the main page via nav-pills navigation.  The Income Statement and
+Balance Sheet tabs (Build-Order Step 5) present the confirmed posting
+ledger via ``ledger_report_service``.
 """
 
 import calendar as cal_mod
@@ -27,6 +29,7 @@ from app.services import (
     budget_variance_service,
     calendar_service,
     csv_export_service,
+    ledger_report_service,
     pay_period_service,
     spending_trend_service,
     year_end_summary_service,
@@ -96,11 +99,12 @@ def _validate_owned_or_abort(model, pk):
 @login_required
 @require_owner
 def page():
-    """Render the main analytics page with four lazy-loaded tab pills.
+    """Render the main analytics page with six lazy-loaded tab pills.
 
     The page contains a nav-pills bar with Calendar, Year-End,
-    Variance, and Trends tabs.  The Calendar tab auto-loads on page
-    visit via HTMX.  Other tabs load on click.
+    Variance, Trends, Income Statement, and Balance Sheet tabs.  The
+    Calendar tab auto-loads on page visit via HTMX.  Other tabs load
+    on click.
     """
     return render_template("analytics/analytics.html")
 
@@ -240,14 +244,14 @@ def variance_tab():
     # ``_variance_csv_filename`` both read ``PayPeriod.start_date``
     # without re-checking ownership, exposing the victim's pay-
     # period start date in the response and CSV filename.  Validate
-    # before ``_resolve_variance_params`` runs because that helper
+    # before ``_resolve_window_params`` runs because that helper
     # also reads ``period_id`` from query args, and we want the 404
     # to fire before any system-default fallback masks the probe.
     _validate_owned_or_abort(
         PayPeriod, request.args.get("period_id", type=int),
     )
 
-    window_type, period_id, month, year = _resolve_variance_params(today)
+    window_type, period_id, month, year = _resolve_window_params(today)
     window = budget_variance_service.VarianceWindow(
         window_type=window_type, period_id=period_id, month=month, year=year,
     )
@@ -312,6 +316,107 @@ def trends_tab():
     return render_template(
         "analytics/_trends.html",
         report=report,
+    )
+
+
+@analytics_bp.route("/analytics/income-statement")
+@login_required
+@require_owner
+def income_statement_tab():
+    """HTMX partial: confirmed-ledger income statement.
+
+    Reads the append-only posting ledger's Income and Expense accounts
+    into a revenue / cost statement over one window
+    (:func:`app.services.ledger_report_service.compute_income_statement`),
+    for the baseline scenario only (the deferred multi-scenario policy is
+    R8's).
+
+    Query parameters:
+        window: 'pay_period' (default), 'month', or 'year'.
+        period_id: Pay period ID (for the pay_period window).
+        month: Month number 1-12 (for the month window).
+        year: Calendar year (for the month/year windows).
+
+    Non-HTMX requests redirect to the main analytics page.
+    """
+    today = date.today()
+
+    # IDOR (mirrors ``variance_tab``): validate a user-supplied
+    # ``period_id`` at the boundary before ``_resolve_window_params``
+    # reads it.  The statement's money queries are user-scoped (a foreign
+    # period yields an empty report), but the service reads the period for
+    # its window LABEL un-scoped, so a foreign ``period_id`` would
+    # otherwise leak the victim's period dates into the response.
+    _validate_owned_or_abort(
+        PayPeriod, request.args.get("period_id", type=int),
+    )
+
+    window_type, period_id, month, year = _resolve_window_params(today)
+    # Clamp the calendar fields the same way ``calendar_tab`` and
+    # ``year_end_tab`` do, so a hand-crafted out-of-range month / year
+    # cannot reach ``date()`` / ``monthrange()`` in the reporting service
+    # and raise.  A ``pay_period`` window leaves both None (untouched).
+    if month is not None:
+        month = max(1, min(12, month))
+    if year is not None:
+        year = max(2000, min(2100, year))
+
+    window = ledger_report_service.StatementWindow(
+        window_type=window_type, period_id=period_id, month=month, year=year,
+    )
+    report = ledger_report_service.compute_income_statement(
+        current_user.id, window,
+    )
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
+
+    periods = pay_period_service.get_all_periods(current_user.id)
+    available_years = _get_available_years(current_user.id, today.year)
+    return render_template(
+        "analytics/_income_statement.html",
+        report=report,
+        window_type=window_type,
+        period_id=period_id,
+        month=month,
+        year=year,
+        periods=periods,
+        available_years=available_years,
+    )
+
+
+@analytics_bp.route("/analytics/balance-sheet")
+@login_required
+@require_owner
+def balance_sheet_tab():
+    """HTMX partial: confirmed-ledger balance sheet as of a date.
+
+    Reads the posted ledger's position as of ``as_of``
+    (:func:`app.services.ledger_report_service.compute_balance_sheet`):
+    Assets, Liabilities, and Equity sections with a derived
+    retained-earnings line and a two-part trial-balance tie-out, for the
+    baseline scenario only.
+
+    Query parameters:
+        as_of: ISO date (YYYY-MM-DD); defaults to today and is clamped to
+            [2000-01-01, today].
+
+    Non-HTMX requests redirect to the main analytics page.
+    """
+    today = date.today()
+    as_of = _resolve_as_of_param(request.args.get("as_of"), today)
+    report = ledger_report_service.compute_balance_sheet(
+        current_user.id, as_of,
+    )
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
+
+    return render_template(
+        "analytics/_balance_sheet.html",
+        report=report,
+        as_of=as_of,
+        today=today,
     )
 
 
@@ -459,11 +564,23 @@ def _csv_response(csv_content: str, filename: str):
     return response
 
 
-# ── Variance helpers ───────────────────────────────────────────────
+# ── Window / variance helpers ──────────────────────────────────────
+# ``_resolve_window_params`` is shared by the Variance and Income Statement
+# tabs; the remaining helpers below it are variance-specific.
 
 
-def _resolve_variance_params(today):
-    """Parse and apply defaults for variance tab query parameters.
+def _resolve_window_params(today):
+    """Parse and apply defaults for the shared window query parameters.
+
+    The ``window`` / ``period_id`` / ``month`` / ``year`` parsing shared by
+    the Budget Variance and Income Statement tabs (both discriminate a
+    pay-period / month / year window the same way, though each builds its own
+    window value object over the result).  Applies the same defaults for both:
+    a bare ``pay_period`` window resolves the user's current period (falling
+    back to their most recent, then to a month window when the user has no
+    periods at all); a bare ``month`` / ``year`` window fills *today*'s
+    fields.  Callers that construct a calendar date from ``month`` / ``year``
+    must range-clamp them (this helper preserves user values verbatim).
 
     Args:
         today: The current date.
@@ -575,3 +692,31 @@ def _get_available_years(user_id, current_year):
         else current_year
     )
     return list(range(current_year, start_year - 1, -1))
+
+
+# ── Balance sheet helpers ──────────────────────────────────────────
+
+
+def _resolve_as_of_param(raw, today):
+    """Parse the balance sheet ``as_of`` query arg to a clamped date.
+
+    Args:
+        raw: The raw ``as_of`` query value (an ISO ``YYYY-MM-DD`` string),
+            or ``None`` when the argument was absent.
+        today: The current date -- both the default and the upper clamp
+            bound.
+
+    Returns:
+        The parsed date clamped to ``[2000-01-01, today]``; ``today`` when
+        *raw* is absent or is not a valid ISO date (a future or pre-2000
+        as-of is meaningless for the posted ledger, and a garbage value
+        must degrade to today rather than raise).
+    """
+    floor = date(2000, 1, 1)
+    if not raw:
+        return today
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return today
+    return max(floor, min(today, parsed))

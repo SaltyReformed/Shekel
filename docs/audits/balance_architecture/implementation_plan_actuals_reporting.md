@@ -247,7 +247,39 @@ in throughout. Developer approval: 2026-07-03.
   without the route guard).  The loan interest/escrow + articulation coverage
   stays deferred to C13's `test_posting_ledger_statements.py` per the commit
   sequence.
-- C10 (routes + templates) -- pending
+- C10 (routes + templates + tabs) -- DONE: two new `/analytics` pills
+  (Income Statement, Balance Sheet) plus their HTMX handlers.
+  `income_statement_tab` mirrors `variance_tab` exactly -- IDOR-validates
+  `period_id` at the boundary BEFORE the shared parser reads it (the
+  `_window_label` un-scoped period read is the same F-098 label-leak vector),
+  then range-clamps month/year (the `calendar_tab`/`year_end_tab` convention)
+  so a crafted out-of-range window cannot reach `date()`/`monthrange()` in the
+  service and 500.  `_resolve_variance_params` was generalized to
+  `_resolve_window_params` (shared parse, each tab builds its own window value
+  object; behavior-preserving for variance -- verified no other callers).
+  `balance_sheet_tab` parses `as_of` via `_resolve_as_of_param` (ISO parse,
+  garbage/absent -> today, clamped to [2000-01-01, today]; no DB read, no IDOR
+  vector).  Templates `_income_statement.html` (Income/Expense sections +
+  Net Income, window toggle + selectors cloned from `_variance.html`) and
+  `_balance_sheet.html` (Assets/Liabilities/Equity section-card macro, the
+  two-part tie-out footer with success/danger badge, and a `has_content`
+  predicate that `rejectattr('ledger_account_id', 'none')`-drops the derived
+  Retained Earnings line so a no-baseline user renders the empty state).  No
+  new JS (CSP holds).  CSV is DEFERRED to C11 (no `format` branch, no export
+  button yet) per the commit sequence.  Route tests: `TestIncomeStatementTab`
+  (auth, HTMX render, empty state, no-periods fallback, pay-period posted
+  content via `create_settled_cash_transaction`, month/year labels, the
+  out-of-range clamp) + `TestBalanceSheetTab` (auth, render, posted content +
+  green tie-out with the real-clock opening excluded whole, before-opening
+  empty, future/garbage as-of clamp) + `TestIncomeStatementTabPeriodIdOwnership`
+  (own 200, cross-user 404, strftime-label no-leak, nonexistent 404, month-
+  window defense-in-depth); the page/auth tab lists updated four -> six.
+  Per the commit's adversarial `code-reviewer` pass: no CRITICAL/HIGH/MEDIUM
+  (the `has_content` predicate proven correct in both directions off the
+  double-entry identity; IDOR ordering and the clamps traced against every
+  query-string path); its four LOW/nits folded in (stale test docstring, the
+  explicit `rejectattr` idiom, the shared-helper section header, the
+  strftime-format leak assertion).  167 targeted green; `pylint app/` 10.00.
 
 - C11 (CSV export) -- pending
 - C12 (enforcement: W9908 + F-1) -- pending

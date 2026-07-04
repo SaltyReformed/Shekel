@@ -637,3 +637,116 @@ class TestCrossUserAuditEvent:
                 getattr(ev, "owner_id", None)
                 == seed_second_user["user"].id
             )
+
+
+# ── analytics.income_statement_tab -- Step 5 (same period_id vector) ──
+
+
+class TestIncomeStatementTabPeriodIdOwnership:
+    """``analytics.income_statement_tab`` rejects a cross-user ``period_id``.
+
+    Build-Order Step 5's income statement shares the F-098 vector: the
+    statement's money queries are user-scoped (a foreign period yields an
+    empty report), but ``compute_income_statement`` reads the period for
+    its window LABEL without an ownership re-check, so a cross-user
+    ``period_id`` would leak the victim's period dates into the HTML
+    response.  The route validates ``period_id`` at the boundary before
+    ``_resolve_window_params`` runs, exactly like ``variance_tab``.
+    """
+
+    def test_own_period_id_html_succeeds(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """A legitimate same-user ``period_id`` renders successfully."""
+        with app.app_context():
+            resp = auth_client.get(
+                f"/analytics/income-statement?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+
+    def test_cross_user_period_id_html_returns_404(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+        seed_second_periods,
+    ):
+        """A cross-user ``period_id`` returns 404 before the label is built."""
+        with app.app_context():
+            attacker_target = seed_second_periods[0].id
+            assert attacker_target != seed_periods[0].id, (
+                "fixture sanity: the two seeded users must have "
+                "distinct period ids for the probe"
+            )
+            resp = auth_client.get(
+                f"/analytics/income-statement?window=pay_period"
+                f"&period_id={attacker_target}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_cross_user_period_id_does_not_leak_start_date(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+        seed_second_periods,
+    ):
+        """A 404 response must not embed the victim's period ``start_date``.
+
+        The leak vector is the window label
+        (``compute_income_statement`` -> ``_window_label``), built from
+        the period's ``start_date`` / ``end_date`` and rendered as
+        ``"<start %b %d> - <end %b %d>, <year>"``.  After the boundary 404
+        the label helper never runs, so the victim's date -- in that
+        rendered form, the shape a real leak would take -- must appear
+        nowhere in the response body.
+        """
+        with app.app_context():
+            victim_period = db.session.get(
+                PayPeriod, seed_second_periods[0].id,
+            )
+            # The actual leak token is the label's strftime form, not ISO:
+            # asserting on the rendered shape makes this genuinely
+            # load-bearing rather than checking a format the label never
+            # emits.
+            victim_start = victim_period.start_date.strftime("%b %d")
+
+            resp = auth_client.get(
+                f"/analytics/income-statement?window=pay_period"
+                f"&period_id={victim_period.id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+            body = resp.data.decode(errors="replace")
+            assert victim_start not in body, (
+                f"Response body leaked victim's start_date {victim_start!r}"
+            )
+
+    def test_nonexistent_period_id_returns_404(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """A non-existent ``period_id`` returns 404 (same as 'not yours')."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=pay_period"
+                "&period_id=9999999",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+    def test_cross_user_period_id_with_month_window_returns_404(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+        seed_second_periods,
+    ):
+        """A cross-user ``period_id`` still 404s under a ``month`` window.
+
+        The month window ignores ``period_id`` downstream, but the
+        always-validate boundary posture must not depend on whether the
+        value is consumed (mirrors the variance defense-in-depth class).
+        """
+        with app.app_context():
+            attacker_target = seed_second_periods[0].id
+            resp = auth_client.get(
+                f"/analytics/income-statement?window=month&month=1&year=2026"
+                f"&period_id={attacker_target}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404

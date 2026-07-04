@@ -21,7 +21,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.services import account_service
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import create_settled_cash_transaction, freeze_today
 
 
 @pytest.fixture(autouse=True)
@@ -300,12 +300,14 @@ class TestAnalyticsAuth:
             assert "/login" in resp.headers["Location"]
 
     def test_all_tabs_require_auth(self, app, client):
-        """All four tab endpoints redirect unauthenticated users to login."""
+        """All six tab endpoints redirect unauthenticated users to login."""
         tab_urls = [
             "/analytics/calendar",
             "/analytics/year-end",
             "/analytics/variance",
             "/analytics/trends",
+            "/analytics/income-statement",
+            "/analytics/balance-sheet",
         ]
         with app.app_context():
             for url in tab_urls:
@@ -331,8 +333,12 @@ class TestAnalyticsPage:
             assert resp.status_code == 200
             assert b"Analytics" in resp.data
 
-    def test_analytics_page_has_four_pills(self, app, auth_client, seed_user):
-        """GET /analytics includes all four nav-pill button labels."""
+    def test_analytics_page_has_six_pills(self, app, auth_client, seed_user):
+        """GET /analytics includes all six nav-pill button labels.
+
+        Build-Order Step 5 added the Income Statement and Balance Sheet
+        tabs (the confirmed-ledger statements) alongside the original four.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics")
             assert resp.status_code == 200
@@ -341,6 +347,8 @@ class TestAnalyticsPage:
             assert b"Year-End" in html
             assert b"Variance" in html
             assert b"Trends" in html
+            assert b"Income Statement" in html
+            assert b"Balance Sheet" in html
 
     def test_analytics_page_has_tab_content_div(self, app, auth_client, seed_user):
         """GET /analytics contains the #tab-content target div for HTMX swaps."""
@@ -357,7 +365,7 @@ class TestAnalyticsPage:
             assert 'hx-trigger="click, load"' in html
 
     def test_other_tabs_no_auto_load(self, app, auth_client, seed_user):
-        """Year-End, Variance, and Trends pills do not auto-load on page visit."""
+        """Only the Calendar pill auto-loads; the other five load on click."""
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
@@ -1636,6 +1644,274 @@ class TestTrendsTab:
                 headers={"HX-Request": "true"},
             )
             assert b"trend-payment-late" in resp.data
+
+
+# ── Income Statement Tab Tests ────────────────────────────────────
+
+
+class TestIncomeStatementTab:
+    """Tests for GET /analytics/income-statement HTMX partial endpoint.
+
+    Build-Order Step 5: the confirmed-ledger income statement.  The
+    money queries read the double-entry posting ledger, so content
+    tests settle through ``create_settled_cash_transaction`` (the real
+    go-forward posting path) -- a directly-inserted transaction never
+    posts and would not appear.
+    """
+
+    def test_income_statement_requires_auth(self, app, client):
+        """Unauthenticated request redirects to login."""
+        with app.app_context():
+            resp = client.get("/analytics/income-statement")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
+    def test_income_statement_no_htmx_redirects(self, app, auth_client,
+                                                seed_user):
+        """Non-HTMX request redirects to /analytics."""
+        with app.app_context():
+            resp = auth_client.get("/analytics/income-statement")
+            assert resp.status_code == 302
+            assert "/analytics" in resp.headers["Location"]
+
+    def test_income_statement_htmx_renders(self, app, auth_client, seed_user,
+                                           seed_periods):
+        """HTMX request renders the statement with its heading and toggle."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Income Statement" in html
+            # Window toggle cloned from the variance tab.
+            assert "Pay Period" in html
+            assert "Month" in html
+            assert "Year" in html
+
+    def test_income_statement_empty_state(self, app, auth_client, seed_user,
+                                          seed_periods):
+        """A window with no posted income or expense shows the empty state.
+
+        The seed Checking's $1000 opening is an Equity correction, so it
+        never reaches the Income/Expense filter -- the current period is
+        genuinely empty on the income statement.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=pay_period"
+                f"&period_id={seed_periods[3].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"No income or expenses in this window" in resp.data
+
+    def test_income_statement_no_periods_falls_back(self, app, auth_client,
+                                                    seed_user):
+        """With no pay periods, the default window degrades to a month window."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=pay_period",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"No income or expenses in this window" in resp.data
+
+    def test_income_statement_pay_period_content(self, app, auth_client,
+                                                 seed_user, seed_periods, db):
+        """A settled income + expense in a period section and net out.
+
+        Income 2000, expense 300 -> net income 1700.  Both settle through
+        the real posting path so they land on the confirmed ledger the
+        statement reads.
+        """
+        with app.app_context():
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("2000.00"),
+                is_income=True, name="Paycheck",
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("300.00"),
+                is_income=False, name="Groceries",
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/income-statement?window=pay_period"
+                f"&period_id={seed_periods[0].id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Income" in html
+            assert "Expenses" in html
+            assert "$2,000.00" in html
+            assert "$300.00" in html
+            assert "Net Income" in html
+            assert "$1,700.00" in html
+
+    def test_income_statement_monthly_window(self, app, auth_client, seed_user,
+                                             seed_periods):
+        """Monthly window label contains the month name and year."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=month&month=1&year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"January" in resp.data
+            assert b"2026" in resp.data
+
+    def test_income_statement_annual_window(self, app, auth_client, seed_user,
+                                            seed_periods):
+        """Annual window label contains the year."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=year&year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"2026" in resp.data
+
+    def test_income_statement_out_of_range_month_clamped(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A hand-crafted out-of-range month/year clamps instead of 500ing.
+
+        ``calendar_tab`` and ``year_end_tab`` clamp their calendar fields;
+        the income statement does the same so a crafted URL cannot reach
+        ``monthrange()`` / ``date()`` in the service and raise.  month=13
+        clamps to 12 (December), year=99999 clamps to 2100.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement?window=month&month=13&year=99999",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"December" in resp.data
+            assert b"2100" in resp.data
+
+
+# ── Balance Sheet Tab Tests ───────────────────────────────────────
+
+
+class TestBalanceSheetTab:
+    """Tests for GET /analytics/balance-sheet HTMX partial endpoint.
+
+    Build-Order Step 5: the confirmed-ledger balance sheet.  The seed
+    Checking's $1000 opening is dated by its origination ``created_at``
+    (the real DB clock), which the module's frozen 2026-03-20 ``today``
+    predates, so the default as-of does NOT fold it.  Content is therefore
+    exercised with a settled transaction whose ``paid_at`` is pinned inside
+    the frozen range; the opening is excluded but as a WHOLE entry, so the
+    tie-out still closes.  A far-future ``today`` refreeze is avoided
+    deliberately: Flask-Login would treat the real-clock session as
+    idle-expired and redirect the request to login.
+    """
+
+    def test_balance_sheet_requires_auth(self, app, client):
+        """Unauthenticated request redirects to login."""
+        with app.app_context():
+            resp = client.get("/analytics/balance-sheet")
+            assert resp.status_code == 302
+            assert "/login" in resp.headers["Location"]
+
+    def test_balance_sheet_no_htmx_redirects(self, app, auth_client, seed_user):
+        """Non-HTMX request redirects to /analytics."""
+        with app.app_context():
+            resp = auth_client.get("/analytics/balance-sheet")
+            assert resp.status_code == 302
+            assert "/analytics" in resp.headers["Location"]
+
+    def test_balance_sheet_htmx_renders(self, app, auth_client, seed_user):
+        """HTMX request renders the balance sheet heading and as-of input."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Balance Sheet" in html
+            assert 'type="date"' in html
+            assert 'name="as_of"' in html
+
+    def test_balance_sheet_shows_posted_content_and_ties_out(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """A settled income posts to the sheet and the tie-out stays green.
+
+        A $500 income settled with a ``paid_at`` inside the frozen range
+        (2026-02-15) folds into the default as-of (2026-03-20): Checking
+        +500 (Asset) and Retained Earnings +500 (Income closed into
+        equity).  The seed opening's entry_date is the real-clock
+        origination ``created_at`` (after the frozen today), so it is
+        excluded -- but as a WHOLE entry (both its Asset and Equity legs),
+        so the tie-out still closes.  A far-future refreeze is avoided
+        deliberately: it would make Flask-Login treat the real-clock
+        session as idle-expired.
+        """
+        with app.app_context():
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("500.00"),
+                is_income=True, name="Paycheck",
+                paid_at=datetime(2026, 2, 15, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/balance-sheet",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Assets" in html
+            assert "Liabilities" in html
+            assert "Equity" in html
+            assert "Checking" in html
+            assert "Retained Earnings" in html
+            assert "$500.00" in html
+            assert "In balance" in html
+
+    def test_balance_sheet_before_opening_is_empty(self, app, auth_client,
+                                                   seed_user):
+        """An as-of before any posted source shows the empty state.
+
+        The seed opening is dated no earlier than the account's
+        origination, so an as-of of 2001-01-01 folds nothing.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet?as_of=2001-01-01",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert b"No posted balances" in resp.data
+
+    def test_balance_sheet_future_as_of_clamped(self, app, auth_client,
+                                                seed_user):
+        """A future as-of clamps to today (the date input shows today)."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet?as_of=2099-12-31",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            # Frozen today is 2026-03-20; the future as-of clamps to it.
+            assert 'value="2026-03-20"' in resp.data.decode()
+
+    def test_balance_sheet_garbage_as_of_defaults_today(self, app, auth_client,
+                                                        seed_user):
+        """A non-ISO as-of degrades to today rather than raising."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/balance-sheet?as_of=not-a-date",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert 'value="2026-03-20"' in resp.data.decode()
 
 
 # ── CSV Export Tests ──────────────────────────────────────────────
