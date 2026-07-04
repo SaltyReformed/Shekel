@@ -42,6 +42,25 @@ re-evaluation with no anchoring on past decisions.
 > `tools/pylint/` 10.00 floor, and L6's cross-page route-render lock all DONE 2026-07-03, with the
 > L9 / C11 decisions recorded; only the L9 display-tz attribution follow-up remains, per-sub-item
 > commits in the R10 note under the Section 6 table).
+>
+> **Step-5 build (2026-07-03, branch `feat/actuals-reporting`, actuals reporting):** the open items
+> this review left for Step 5 are now closed on that branch (implementation plan
+> `implementation_plan_actuals_reporting.md`, C1-C13). **M3's reader-contract half is DONE** --
+> the ledger-wide attribution rule is recorded as the normative reader contract (that plan's
+> Section 2: whole-source inclusion; pay-period windows by `pay_period_id`; calendar / as-of windows
+> attribute each source's net to its CURRENT paid date in the DISPLAY timezone, sourceless
+> corrections by `entry_date`, hard-delete residue dropped whole; natural-balance presentation;
+> derived retained earnings) and IMPLEMENTED once in `app.services.ledger_report_service._attribution`
+> so both statements articulate. **R9 is DONE** -- every non-loan account now posts anchor-equity
+> opening / true-up corrections (write side, C2-C8 + the C7 deploy-hook backfill), so the trial
+> balance closes app-wide, and an income statement + balance sheet with a two-part tie-out read that
+> closed ledger (C9-C11); the L9 Schedule-A switch (C1) and the W9908 ledger-model import fence (C12)
+> landed with it. Reads for the app's balance screens INTENTIONALLY stay on the `balance_at` seam (no
+> cash read switch -- the Step-5 non-goal). The reader contract is oracle-pinned by the fourth
+> reconciliation oracle, `test_posting_ledger_statements.py` (C13), which cross-checks both
+> statements against an independent by-class re-derivation and asserts `A = L + E`, articulation, and
+> period-vs-calendar agreement, mutation-proven non-vacuous. R8 (multi-scenario) remains the only
+> open item from this review (reports read the baseline scenario only, by design).
 **Scope:** everything in `docs/audits/balance_architecture/` (all 11 documents read in full) and
 the code that implements it: the Level-1 `balance_at` seam, the posting ledger (Steps 2-4), the
 temporal-escrow prerequisite, the loan read switch (PR #52, at prod HEAD `2d81705`), the fence
@@ -352,14 +371,20 @@ same transaction; correct the comment. Recommendation: R7.
 
 ### M3 (MEDIUM, systemic): correction entries carry the period and date of the correction, not of what they correct -- and Step 5 will inherit this
 
-> **PARTIALLY RESOLVED 2026-07-02** (`2ffefa0`): the storage-level rule -- option (a) below -- is
-> adopted for all three sources: a reversal entry carries the pay period of the postings it
-> reverses and inherits the latest `entry_date` it reverses, so a plain revert now nets in place
-> for date-grouped reporting (facts 1 and 2 below are fixed; a plain revert's entry_date is now
-> the original settle date, not the period-start fallback).  STILL OPEN: recording the
-> reader-contract half as a stated rule for Step-5 reporting readers (the C10 group-by-source
-> pattern remains the right shape for paid-date-attributed figures), and the residual edge where
-> multiple posted dates inside one period collapse to the latest.
+> **RESOLVED 2026-07-03** (`feat/actuals-reporting`, C1-C13). The storage-level rule -- option (a)
+> below -- was adopted for all three sources on 2026-07-02 (`2ffefa0`): a reversal entry carries the
+> pay period of the postings it reverses and inherits the latest `entry_date` it reverses, so a
+> plain revert nets in place for date-grouped reporting (facts 1 and 2 below fixed; a plain revert's
+> entry_date is the original settle date, not the period-start fallback). The reader-contract HALF
+> that was still open is now DONE: the ledger-wide attribution rule is recorded as the normative
+> reader contract (`implementation_plan_actuals_reporting.md` Section 2 -- both the group-by-source /
+> current-paid-date shape option (b) named below AND the option-(a) storage rule, used together) and
+> implemented once in `ledger_report_service._attribution`, so every Step-5 reader dates a source by
+> its CURRENT paid date (display-timezone, the L9 rule) and a correction by its `entry_date`, with
+> hard-delete residue dropped whole. The statements oracle (`test_posting_ledger_statements.py`, C13)
+> pins the residual-edge case this note flagged: a CROSS-YEAR hard-delete residue (original and
+> reversal in different years, each netting to zero) is dropped from every window so no reader sees a
+> half-entry, and the trial balance stays closed.
 
 Three facts compound:
 1. A reversal entry's `pay_period_id` is the source row's CURRENT period
@@ -563,6 +588,12 @@ Recommendation: R6.
   in the R10 housekeeping batch): the mortgage-interest Schedule-A reader now, and every Step-5
   income-statement/tax figure when Step 5 lands. Until then this is a recorded policy, not yet
   code.
+  **IMPLEMENTED (Schedule-A half) 2026-07-03, Step-5 C1** (`feat/actuals-reporting`): the new
+  `app/utils/dates.to_display_civil_date` helper (composes `to_display_date`; period-start
+  fallback mirrors the entry dating) now drives `confirmed_loan_interest_in_year`; storage stays
+  UTC. Boundary tests pin an 8:05pm-ET Dec-31 settle to the earlier year at the helper, the loan
+  reader, AND the year-end hybrid wiring. The income-statement half lands with the Step-5
+  reporting readers (`implementation_plan_actuals_reporting.md`, reader contract C-3).
 - **L10:** an envelope whose credit entries exceed its effective amount would flip the sign of
   `effective - credit_sum` (an expense becoming net cash inflow). Nothing rejects or pins the
   shape; add a guard or a pinned test.
@@ -735,7 +766,7 @@ Each major decision re-examined from scratch against the alternatives it beat.
 | R6 | **DONE 2026-07-02** (`5c64107`, `814b407`, `8d4fcb7`, `703af6a`) | Close the lockstep coverage gaps (M7): one ARM-step and one biweekly-collision parallel-run oracle case; either forbid transfers OUT of a loan or test the reader's rule-3 branch. As-built: `test_arm_rate_step_matches_a_hand_computed_post_step_balance` (a HAND-COMPUTED post-step ledger literal 99,495.00, the shared-`rate_period_engine` teeth that also closes M4(b)) and `test_biweekly_due_month_collision_reconciles_but_attribution_differs` (balance reconciles three ways; the reader/resolver attribution difference pinned in TWO places -- the display rows AND, since `8d4fcb7` closing the review's G-1, the LEDGER per-period buckets, the branch's own theme) landed as test-only oracle cases. The transfer-OUT fork was decided FORBID (developer-confirmed): `_reject_transfer_out_of_loan` rejects an amortizing loan as `from_account` at the `create_transfer` chokepoint, so the income-only-shadows invariant is enforced not assumed; the reader KEEP arm is re-annotated as legacy-only defense; a rejection test writes no transfer/shadow. A follow-up (`703af6a`, review T-1) fixed the one defect the guard newly made reachable -- the recurring-template route path now catches the rejection and flashes gracefully instead of 500ing, matching the one-time path. The settled-row revert-and-move oracle case landed earlier with R2 (`TestRevertAndMoveReconciles` + the loan/transfer/transaction unit locks). All four independent-review findings on the R6 commits (G-1, T-1, D-3, E-1) are addressed: G-1/T-1 by code, D-3 by the accurate biweekly wording above, E-1 by the verified escrow trace in the M4 annotation. |
 | R7 | **DONE 2026-07-02** (`654c991`) | Pay-period reset: re-run the loan backfill inside `reset_pay_periods`' transaction and fix the overclaiming comment (M2). As-built: a PER-USER re-sync (`loan_posting_service.resync_user_loan_postings` over `loan_loaders.load_loan_account_ids_for_user`, the scoped twins of the deploy-wide `backfill_all_loan_postings` / `load_all_loan_account_ids`) rather than the global sweep, since a reset is single-user and must not reconcile other owners' loans in its transaction; it reuses the identical go-forward sync (a re-posted correction is identical by construction), runs after the repopulate step in the same transaction, and re-attributes the surviving source facts' corrections onto the new schedule. Regression: `TestResetResyncsLoanGenesis` (fails without the re-sync) + the `TestUserScopedResync` scoping pair. (The TRUNCATE variant -- wiping a current-period true-up correction -- was already closed by R2's `LEDGER_POSTINGS` gate; reset does not use the classifier, so this re-sync closed its half.) |
 | R8 | BEFORE scenario clone | Resolve both multi-scenario gaps (M6): enumeration by ledger postings, and the what-if None-fallback policy. |
-| R9 | NEXT ARC | Decide Step 5 explicitly: cash opening-equity postings + actuals reporting (which closes the trial balance and consumes the equity accounts), using the deploy-hook backfill pattern and the R2 dating rule. If Step 5 is deferred long-term, record that as a decision so the loan-absolute/cash-delta asymmetry is a documented steady state. |
+| R9 | **DONE 2026-07-03** (`feat/actuals-reporting`, C1-C13) | Step 5 built explicitly: every non-loan account posts anchor-equity opening / true-up corrections (write side, `account_posting_service`, via the deploy-hook backfill pattern and the R2 dating rule), so the trial balance closes app-wide and the equity accounts are consumed; an income statement + balance sheet with a two-part tie-out read that closed ledger (`ledger_report_service` + two `/analytics` tabs + CSV). Reads for the app's balance screens INTENTIONALLY stay on the `balance_at` seam (the Step-5 non-goal: no cash read switch), so the loan-absolute / cash-projection asymmetry on the DISPLAYED balance is a documented steady state -- the ledger now records the confirmed cash position, but the seam remains the projection authority. Oracle-pinned by `test_posting_ledger_statements.py` (C13). |
 | R10 | HOUSEKEEPING | Doc-drift batch (L8): the two stale import rationales, the stale impossibility argument in the two model docstrings, the reset comment. Single-source the `--fail-on` list (L1). Trim `growth_engine` from the W9906 allowlist (L2). De-duplicate the cross-page grid/checking readers or wire one to a route value (L6). Decide the L9 timezone policy for tax attribution and the L10 over-credit guard. Ratify the two C11 forks (Section 5). Split `tools/pylint/shekel_checkers.py` into a package (added 2026-07-02: the R3 extension pushed the plugin past pylint's default module size -- ungated C0302, 1145/1000 lines -- and the file also carries pre-existing E0011/W0012 meta-noise from its own prose comments about directives plus one `too-many-locals`; the split is a gate-infrastructure change, so verify `.pylintrc` `load-plugins`, the per-edit hook, pre-commit, and CI all still load the plugin, and consider giving `tools/pylint/` its own enforced floor once clean). Also split `app/services/transfer_service.py` (added 2026-07-02: the R6 transfer-out guard wiring left it at exactly 1000/1000 lines, its `too-many-lines` cap -- the guard body itself went into the already-extracted `_transfer_loan_posting.py` to stay under, but the next single-line addition will trip C0302; a further extraction, e.g. the mutation/validation helpers, restores headroom). |
 
 > **R10 in progress (2026-07-03).** Housekeeping is being worked sub-item by

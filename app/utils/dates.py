@@ -72,6 +72,40 @@ def to_display_date(value: datetime | None) -> date | None:
     return to_display_tz(value).date()
 
 
+def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
+    """Return the display-timezone civil date of a settle instant, or ``fallback``.
+
+    The display-timezone counterpart of
+    ``app.services.posting_service._civil_settle_date`` (which stays UTC
+    because it feeds the STORED ``journal_entries.entry_date``).  Readers
+    that attribute money to a tax year or calendar window use THIS helper
+    instead, per the L9 decision (2026-07-03): tax-year figures follow the
+    user's wall-clock day, so a settle clicked 8:05pm Eastern on Dec 31
+    attributes to Dec 31, not to the Jan 1 it becomes in UTC.  Storage is
+    unchanged -- the conversion happens only at the reading boundary.
+
+    Mirrors ``_civil_settle_date``'s NULL handling: a source whose
+    ``paid_at`` was never recorded (a historical settle predating the
+    ``paid_at`` sync) or was cleared by a revert falls back to the given
+    date -- callers pass the source's pay period ``start_date``, the same
+    fallback the entry dating used.
+
+    Args:
+        paid_at: The settle instant read back from the source row, or
+            ``None``.  Naive values are assumed UTC (the storage
+            convention), matching :func:`to_display_tz`.
+        fallback: The civil date to return when ``paid_at`` is ``None``
+            (the source's pay period ``start_date``).
+
+    Returns:
+        The display-timezone calendar date of ``paid_at``, or ``fallback``.
+    """
+    display_date = to_display_date(paid_at)
+    if display_date is None:
+        return fallback
+    return display_date
+
+
 def add_months(start: date, months: int) -> date:
     """Add ``months`` calendar months to ``start``, day-clamped.
 

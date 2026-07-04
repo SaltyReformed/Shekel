@@ -37,6 +37,7 @@ from app.models.transfer import Transfer
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
+from app.services import account_posting_service
 from app.services import posting_service
 from app.services._transfer_loan_posting import (
     _reject_transfer_out_of_loan,
@@ -71,24 +72,28 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 # The ``update_transfer`` kwargs whose change can alter a transfer's posted
-# double-entry ledger effect, so a change to any of them triggers a posting
-# reconcile (Build-Order Step 2; see ``posting_service.sync_transfer_postings``).
-# ``status_id`` flips the settled/unsettled target; ``amount`` (the estimated
-# amount) and ``actual_amount`` together determine the settled shadow's
-# ``effective_amount`` (``COALESCE(actual_amount, estimated_amount)``) -- the
-# magnitude posted.  This set guards the posted MAGNITUDE and SETTLED-SENSE
-# only.  The other kwargs (``pay_period_id`` / ``category_id`` / ``name`` /
-# ``notes`` / ``due_date`` / ``is_override`` / ``paid_at``) move neither, so
-# they raise no reconcile -- and a settled transfer's period / settle-date
-# (which the journal entry denormalises) cannot move anyway: the
-# finalised-edit lock blocks editing a settled transfer's period / due-date,
-# and carry-forward and recurrence touch only Projected transfers.  (An
-# amount-based reconcile could not re-stamp a stale period/date regardless --
-# a future settled-period move would have to re-stamp the entry, not reconcile
-# it.)  The reconcile is idempotent, so listing a field that did not move the
-# effect is a harmless no-op; this set is the cheap pre-filter that avoids a
-# ledger round-trip on a pure metadata edit.
-_POSTING_RELEVANT_FIELDS = frozenset({"status_id", "amount", "actual_amount"})
+# double-entry ledger effect or its attribution, so a change to any of them
+# triggers a posting reconcile (Build-Order Step 2; see
+# ``posting_service.sync_transfer_postings``).  ``status_id`` flips the
+# settled/unsettled target; ``amount`` (the estimated amount) and
+# ``actual_amount`` together determine the settled shadow's ``effective_amount``
+# (``COALESCE(actual_amount, estimated_amount)``) -- the magnitude posted;
+# ``pay_period_id`` moves the entry's period, so a settled period move
+# reconciles R2-correctly (the per-(account, period) reconcile reverses the old
+# period and posts the new) AND fires the effect-time self-heal for the Step-5
+# account-anchor corrections (F1).  The remaining kwargs (``category_id`` /
+# ``name`` / ``notes`` / ``due_date`` / ``is_override``) move none of these, so
+# they raise no reconcile.  ``paid_at`` is deliberately NOT here: it moves the
+# Step-5 walk's attribution INSTANT without changing any leg, so a
+# reconcile-to-target would write nothing and its self-heal would never fire; a
+# settled ``paid_at`` edit instead resyncs the two endpoint accounts' anchor
+# corrections directly (see ``update_transfer``, F1).  The reconcile is
+# idempotent, so listing a field that did not move the effect is a harmless
+# no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
+# pure metadata edit.
+_POSTING_RELEVANT_FIELDS = frozenset(
+    {"status_id", "amount", "actual_amount", "pay_period_id"}
+)
 
 
 # ── Private helpers ────────────────────────────────────────────────
@@ -387,6 +392,68 @@ def _apply_actual_amount(
     income_shadow.actual_amount = actual
 
 
+def _reconcile_postings_after_update(xfer: Transfer, kwargs: dict) -> None:
+    """Bring the posting ledger back in step after an ``update_transfer`` edit.
+
+    Extracted from :func:`update_transfer` (which was at its branch/statement
+    budget) so the reconcile tail is one cohesive step.  Runs after every kwarg
+    is applied and the session is flushed:
+
+    * **Step-2 cash reconcile** when a magnitude / settled-sense / period field
+      changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
+      ``_apply_status_change`` -- because ``actual_amount`` is applied AFTER
+      ``status_id`` and the grid shadow-edit path can settle and set an actual
+      in one call; the reconcile reads the income shadow's ``effective_amount``,
+      so it must run once everything is in place or it would post the pre-edit
+      estimate.  ``xfer.status_id`` is the post-update status, so its
+      ``is_settled`` is the correct target sense.  Idempotent
+      reconcile-to-target: a settle posts the effect, a revert / cancel reverses
+      to zero, an unchanged effect writes nothing.
+    * **Loan-payment genesis reconcile** last (a no-op for a non-loan transfer):
+      a settle / revert / amount / actual / period edit of a loan payment
+      re-reconciles that loan's confirmed-payment splits (coupled on the running
+      balance) and its opening / true-up anchor corrections.
+    * **Step-5 account-anchor resync on a settled ``paid_at`` edit (F1)**: a
+      ``paid_at`` change moves the walk's attribution INSTANT without changing
+      any leg, so the reconcile-to-target above writes nothing and its
+      effect-time self-heal never fires.  Resync the two endpoint accounts'
+      anchor corrections directly so a settled ``paid_at`` move cannot strand a
+      stale correction.  Only for a SETTLED transfer (a projected one posts
+      nothing); a no-op for a loan endpoint (the account walk skips amortizing
+      accounts).  ``pay_period_id`` needs no such branch -- it is in
+      ``_POSTING_RELEVANT_FIELDS``, so a period move reconciles R2-correctly and
+      self-heals via the cash reconcile above.  Fires on ANY settled ``paid_at``
+      edit, not only a pure one: on the common settle path (status + ``paid_at``
+      together) the reconcile's tail self-heal already covers both endpoints, so
+      these two idempotent walks are redundant there -- an accepted, safe cost.
+      It is deliberately NOT narrowed to ``not needs_reconcile``, because a
+      future COMBINED edit (e.g. ``amount`` + ``paid_at``) could move the
+      attribution in a way the delta-keyed self-heal does not cover; an
+      always-correct resync is the point of this seam.
+
+    Args:
+        xfer: The updated, flushed :class:`Transfer`.
+        kwargs: The ``update_transfer`` kwargs that were applied.
+    """
+    needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & kwargs.keys())
+    paid_at_edited = "paid_at" in kwargs
+    if not (needs_reconcile or paid_at_edited):
+        return
+    current_status = db.session.get(Status, xfer.status_id)
+    if needs_reconcile:
+        posting_service.sync_transfer_postings(
+            xfer, settled=current_status.is_settled,
+        )
+        _sync_loan_postings_if_loan(xfer)
+    if paid_at_edited and current_status.is_settled:
+        account_posting_service.sync_account_anchor_postings(
+            xfer.from_account_id, xfer.scenario_id,
+        )
+        account_posting_service.sync_account_anchor_postings(
+            xfer.to_account_id, xfer.scenario_id,
+        )
+
+
 def update_transfer(transfer_id, user_id, **kwargs):
     """Update a transfer and propagate changes to shadow transactions.
 
@@ -505,30 +572,7 @@ def update_transfer(transfer_id, user_id, **kwargs):
 
     db.session.flush()
 
-    # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
-    # After every kwarg is applied, bring the double-entry posting ledger
-    # back in step with the transfer's now-current settled effect.  Placed
-    # here -- NOT inside ``_apply_status_change`` -- because ``actual_amount``
-    # is applied AFTER ``status_id`` above, and the grid shadow-edit path can
-    # settle and set an actual amount in one call; the reconcile reads the
-    # income shadow's ``effective_amount``, so it must run once everything is
-    # in place or it would post the pre-edit estimate.  ``xfer.status_id`` is
-    # the post-update status (``_apply_status_change`` already wrote it, or it
-    # is unchanged), so its ``is_settled`` is the correct target sense.
-    # Idempotent reconcile-to-target: a settle posts the effect, a revert /
-    # cancel reverses to zero, and an unchanged effect writes nothing.
-    if _POSTING_RELEVANT_FIELDS & kwargs.keys():
-        current_status = db.session.get(Status, xfer.status_id)
-        posting_service.sync_transfer_postings(
-            xfer, settled=current_status.is_settled,
-        )
-        # Posting ledger: a settle / revert / amount / actual edit of a loan
-        # payment re-reconciles that loan's full genesis ledger -- its
-        # confirmed-payment splits (which couple on the running balance) and its
-        # opening / true-up anchor corrections (a pre-true-up payment edit moves
-        # a true-up's owed_before).  Runs LAST -- after the Step-2 cash entry is
-        # in step -- and is a no-op for a non-loan transfer.
-        _sync_loan_postings_if_loan(xfer)
+    _reconcile_postings_after_update(xfer, kwargs)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,

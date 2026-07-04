@@ -39,7 +39,11 @@ from app.exceptions import ValidationError
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
-from app.services import ledger_account_service, pay_period_service
+from app.services import (
+    account_posting_service,
+    ledger_account_service,
+    pay_period_service,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -222,6 +226,17 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     # unchanged.  Historical accounts were paired by the Commit-2 backfill
     # migration; this call is the go-forward half.
     ledger_account_service.create_ledger_account_for_account(account)
+
+    # Post the account's OPENING anchor correction (Build-Order Step 5): a
+    # non-zero anchor books a balanced opening onto the fresh pairing, so
+    # the linked ledger's ABSOLUTE total equals the asserted balance from
+    # t0 (a $0 anchor books nothing and stays hard-deletable; an amortizing
+    # loan is a structural no-op -- its opening posts from LoanParams at
+    # params-create).  A baseline-less owner is skipped with a loud log and
+    # recovered by ``create_baseline``'s per-user resync.
+    account_posting_service.sync_account_anchor_postings_all_scenarios(
+        account.id,
+    )
 
     logger.info(
         "Created account %s (id=%d, user_id=%d) anchored to period %d at $%s",

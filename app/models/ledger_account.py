@@ -3,8 +3,9 @@ Shekel Budget App -- Ledger Account Model (budget schema)
 
 The chart of accounts for the double-entry posting ledger (Build-Order
 Step 2; extended with the per-category cash chart in Step 3, the per-loan
-interest / escrow / refund accounts in Step 4, and the per-loan opening-equity
-account in the loan read switch).  Every posting leg
+interest / escrow / refund accounts in Step 4, the per-loan opening-equity
+account in the loan read switch, and the per-account anchor-equity account
+in Step 5).  Every posting leg
 (``budget.account_postings``) lands in exactly one ledger account, and every
 ledger account carries a ``class_id`` fixing how a reader later interprets
 that account's accumulated debit-positive posting balance (Asset/Expense are
@@ -19,7 +20,7 @@ on which of ``account_id`` / ``category_id`` / ``is_fallback`` /
 discriminator; it is stamped by the sole writer (``ledger_account_service``)
 on exactly the same trust contract ``class_id`` carries (see "Storage-tier
 shape enforcement" below for what the constraints do and do not police).
-Eight kinds coexist in one table:
+Nine kinds coexist in one table:
 
 * **linked** (``account_id`` set, ``category_id`` NULL, ``is_fallback``
   False, ``loan_account_id`` NULL) -- one per real ``budget.accounts`` row,
@@ -68,6 +69,20 @@ Eight kinds coexist in one table:
   unique with the three correction accounts above, differing only in class
   (Equity) and in what books it (the opening entry, not the payment
   correction).  ``name`` snapshots a per-loan "<loan> -- Opening" label.
+* **anchor_equity** (``account_id`` set, ``category_id`` NULL,
+  ``is_fallback`` False, ``loan_account_id`` NULL) -- a NON-loan account's
+  opening/true-up Equity account (Build-Order Step 5): the counter-leg of
+  the balanced ``account_opening`` / ``account_trueup`` corrections that
+  book the account's anchor assertions, making every non-loan linked ledger
+  sum to an ABSOLUTE balance.  It shares the account-linked column *shape*
+  with **linked** (the shape CHECKs cannot tell them apart; ``kind_id``
+  does, on the sole-writer trust contract), coexisting with the linked row
+  under the ``(account_id, kind_id)`` key of
+  ``uq_ledger_accounts_account_kind``.  Unlike a linked row it ALWAYS
+  carries a ``name`` snapshot ("<account> -- Opening"): the COALESCE
+  display rule below is the LINKED-row rule, so a reader rendering an
+  anchor-equity row branches on ``kind_id`` and uses the snapshot, never
+  ``account.name``.
 
 **Why ``is_fallback`` exists.**  A fallback and an orphan are BOTH
 ``(account_id NULL, category_id NULL)`` -- nothing in those two columns
@@ -90,13 +105,14 @@ forbids ``is_fallback`` on anything but the NULL/NULL shape;
 ``ck_ledger_accounts_loan_shape`` forbids a ``loan_account_id`` row from also
 carrying an ``account_id`` / ``category_id`` / ``is_fallback`` (so a per-loan
 row can never also be a linked / category / fallback row); and each
-*constrained* kind has its own partial unique index -- one linked row per
-account (``uq_ledger_accounts_account``), one category row per
-``(user, category, class)`` (``uq_ledger_accounts_category``), one fallback
-per ``(user, class)`` (``uq_ledger_accounts_uncategorized``, keyed
-``WHERE is_fallback``), and one per ``(user, loan, kind)``
-(``uq_ledger_accounts_loan``, keyed ``WHERE loan_account_id IS NOT NULL``).
-Orphans carry no uniqueness by design.
+*constrained* kind has its own partial unique index -- one account-linked
+row per ``(account, kind)`` (``uq_ledger_accounts_account_kind``: exactly
+one ``linked`` and at most one ``anchor_equity`` row per real account), one
+category row per ``(user, category, class)``
+(``uq_ledger_accounts_category``), one fallback per ``(user, class)``
+(``uq_ledger_accounts_uncategorized``, keyed ``WHERE is_fallback``), and one
+per ``(user, loan, kind)`` (``uq_ledger_accounts_loan``, keyed ``WHERE
+loan_account_id IS NOT NULL``).  Orphans carry no uniqueness by design.
 
 **Why ``ck_ledger_accounts_loan_shape`` does not pin ``kind_id`` to the loan
 kinds.**  A CHECK constraint cannot contain a subquery, so "this row's
@@ -124,10 +140,15 @@ The ``name`` column is display-only and is never used for logic
 (IDs-for-logic invariant).  The display rule is
 ``COALESCE(account.name, ledger_account.name)``: a linked row reads the
 live account name, a category / fallback / orphan / per-loan row reads its
-own snapshot.  The ``ck_ledger_accounts_name_present`` CHECK guarantees at
-least one of the two is present so the display rule can never resolve to
-NULL -- and because a non-linked row has ``account_id`` NULL, that CHECK
-forces it to carry a ``name``.
+own snapshot.  **The COALESCE rule is the LINKED-row rule only**: an
+``anchor_equity`` row also carries ``account_id`` (so the COALESCE would
+wrongly resolve to the bare account name), so readers rendering chart
+entries branch on ``kind_id`` and use the ``name`` snapshot for
+anchor-equity rows -- the sole writer always stamps one.  The
+``ck_ledger_accounts_name_present`` CHECK guarantees at least one of the
+two is present so the display rule can never resolve to NULL -- and because
+a non-account-linked row has ``account_id`` NULL, that CHECK forces it to
+carry a ``name``.
 
 **Write-once, not append-only.**  Rows are created by the sync hook /
 backfill and never edited afterwards: ``class_id``, ``kind_id``,
@@ -140,11 +161,16 @@ that is disposed of -- never corrected -- when its real account is deleted.
 
 **FK-action rationale (the cascade-imbalance impossibility argument).**
 ``account_id`` is ``ON DELETE CASCADE`` so a freshly-created *empty*
-account deletes cleanly, taking its (postings-free) ledger account with
-it.  An account whose linked ledger *has* postings is instead kept off the
+account deletes cleanly, taking its (postings-free) ledger account -- and,
+since Step 5, its (equally postings-free) anchor-equity twin -- with it.
+An account whose ledger rows *have* postings is instead kept off the
 hard-delete path by route **Guard 5** (``archive_helpers.account_has_ledger_postings``
-in ``routes/accounts/crud.py``), which archives (``is_active=False``) any such
-account rather than deleting it.  That guard -- not the shadow-transaction
+in ``routes/accounts/crud.py``), which joins by ``account_id`` across ALL
+kinds -- so it covers the linked row and the anchor-equity twin alike --
+and archives (``is_active=False``) any such account rather than deleting
+it.  (The twin's legs only ever land pairwise with correction legs on the
+linked row, so the twin can never be the lone posting-bearing row; the
+kind-agnostic guard covers both directions anyway.)  That guard -- not the shadow-transaction
 RESTRICT FKs -- is what makes the impossibility hold, because a settled
 transfer's postings OUTLIVE the transfer: a transfer hard-delete SET-NULLs
 ``journal_entries.transfer_id`` but keeps the immutable legs, so once the
@@ -215,7 +241,7 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     interest / escrow / refund / opening row to the loan it books against, and
     an optional display ``name`` (set on the non-linked category / fallback /
     orphan / per-loan rows; a linked row derives its label from
-    ``account.name``).  See the module docstring for the eight-kind taxonomy,
+    ``account.name``).  See the module docstring for the nine-kind taxonomy,
     why the loan shape CHECK does not pin ``kind_id``, why ``is_fallback``
     exists, the display rule, and the FK-action rationale (the CASCADE
     impossibility argument for ``account_id``, the RESTRICT for ``class_id`` /
@@ -225,16 +251,21 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
 
     __tablename__ = "ledger_accounts"
     __table_args__ = (
-        # Exactly one *linked* ledger account per real account.  Partial
-        # (``WHERE account_id IS NOT NULL``) so it constrains only linked
-        # rows; the non-linked category/fallback/orphan rows all carry NULL
+        # Exactly one ledger account per real account PER KIND.  Two kinds
+        # share the account-linked column shape -- ``linked`` (Step 2) and
+        # ``anchor_equity`` (Step 5) -- so the key is ``(account_id,
+        # kind_id)``: at most one linked row and one anchor-equity row per
+        # account, never two of either.  Partial (``WHERE account_id IS NOT
+        # NULL``) so it constrains only account-linked rows; the
+        # category/fallback/orphan/per-loan rows all carry NULL
         # ``account_id`` and fall outside this index (they have their own
-        # uniques below).  The ``postgresql_where`` text matches the
-        # migration's index DDL byte-for-byte so autogenerate produces no
-        # spurious diff.
+        # uniques below).  Re-keyed from the original single-column
+        # ``uq_ledger_accounts_account`` by the Step-5 chart migration.  The
+        # ``postgresql_where`` text matches the migration's index DDL
+        # byte-for-byte so autogenerate produces no spurious diff.
         db.Index(
-            "uq_ledger_accounts_account",
-            "account_id",
+            "uq_ledger_accounts_account_kind",
+            "account_id", "kind_id",
             unique=True,
             postgresql_where=db.text("account_id IS NOT NULL"),
         ),
@@ -360,7 +391,8 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         nullable=False,
     )
     # The explicit row-kind discriminator (linked / category / fallback /
-    # orphan / loan_interest / loan_escrow / loan_refund / equity_opening).
+    # orphan / loan_interest / loan_escrow / loan_refund / equity_opening /
+    # anchor_equity).
     # NOT NULL -- every row names its kind positively; readers branch on this
     # integer ID, never on which other FKs are NULL.  Stamped by the sole writer
     # (``ledger_account_service``) on the same trust contract as ``class_id``.
@@ -376,11 +408,14 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
-    # The linked real account, or NULL for an unlinked
-    # Income/Expense/Equity row (Steps 3-5).  CASCADE: see the module
-    # docstring's impossibility argument -- a CASCADE here can only ever
-    # fire for an empty (postings-free) account.  Explicit convention
-    # name for the same reason as ``class_id``.
+    # The real account a ``linked`` row pairs with -- and, since Step 5, the
+    # account an ``anchor_equity`` row books equity corrections for (the two
+    # kinds share this column; ``uq_ledger_accounts_account_kind`` permits
+    # one row of each).  NULL on the category / fallback / orphan / per-loan
+    # kinds.  CASCADE: see the module docstring's impossibility argument --
+    # a CASCADE here can only ever fire for an empty (postings-free)
+    # account, removing the linked row and the twin together.  Explicit
+    # convention name for the same reason as ``class_id``.
     account_id = db.Column(
         db.Integer,
         db.ForeignKey(

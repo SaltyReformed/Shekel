@@ -59,7 +59,8 @@ from app.services.posting_service import (
     _ledger_account_for,
 )
 
-from ._common import delta_legs, summed_posting_legs
+from app.services._posting_reconcile import delta_legs, summed_posting_legs
+
 from ._walk import LoanPaymentSplit, compute_loan_payment_splits
 
 logger = logging.getLogger(__name__)
@@ -256,7 +257,8 @@ def _reconcile_loan_payment(
     keyed by the income shadow's ``transaction_id`` (NOT ``transfer_id`` -- that
     keeps the correction invisible to the Step-2 cash path; plan Section 5).
     Emits one balanced delta journal entry PER PAY PERIOD whose posted legs
-    differ from the target (via :func:`._common.delta_legs`), or ``[]`` when
+    differ from the target (via
+    :func:`app.services._posting_reconcile.delta_legs`), or ``[]`` when
     already at target (an idempotent no-op).
 
     *target* maps each ledger account the correction should land on to its

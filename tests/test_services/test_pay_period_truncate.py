@@ -322,12 +322,17 @@ class TestTruncateHardLocks:
             assert _count_periods(db.session, user_id) == before
 
     def test_account_anchor_blocks(self, app, db, seed_user):
-        """A second account's anchor period in the window is hard-locked."""
+        """A ZERO-anchor account's anchor period in the window is hard-locked.
+
+        The $0.00 opening books nothing (the zero-delta rule), so the block
+        is the ACCOUNT_ANCHOR reason itself, not the LEDGER_POSTINGS gate a
+        non-zero opening would trip first (see the companion below).
+        """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             create_savings_account(
-                seed_user, db.session, "Savings", Decimal("500.00"),
+                seed_user, db.session, "Savings", Decimal("0.00"),
                 anchor_period_id=periods[2].id,  # index 3
             )
             db.session.commit()
@@ -339,6 +344,36 @@ class TestTruncateHardLocks:
             assert excinfo.value.blocking.get(periods[2].id) == (
                 PeriodLockReason.ACCOUNT_ANCHOR
             )
+
+    def test_nonzero_anchor_opening_blocks_as_ledger_postings(
+        self, app, db, seed_user,
+    ):
+        """A NON-zero anchor's opening correction hard-locks its period.
+
+        The Step-5 accepted behavior change (plan Section 3.5): a $500.00
+        savings anchored to a to-delete period posts its opening correction
+        there, so the period's per-ledger nets are non-zero and the
+        double-entry gate reports LEDGER_POSTINGS (it precedes
+        ACCOUNT_ANCHOR).  Nothing is deleted.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=6)
+            user_id = seed_user["user"].id
+            create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+                anchor_period_id=periods[2].id,  # index 3
+            )
+            db.session.commit()
+            before = _count_periods(db.session, user_id)
+
+            with pytest.raises(PayPeriodLocked) as excinfo:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_index=periods[1].period_index,
+                )
+            assert excinfo.value.blocking.get(periods[2].id) == (
+                PeriodLockReason.LEDGER_POSTINGS
+            )
+            assert _count_periods(db.session, user_id) == before
 
     def test_unbalanced_ledger_postings_block_and_delete_nothing(
         self, app, db, seed_user,

@@ -112,7 +112,8 @@ class TestSettleWiringAutoPosts:
         create_settled_transfer the payment correction (+500 principal) AND the
         opening (-250000) + true-up (+150000) are posted: the loan-linked ledger
         nets -99500.00 == -(current balance 99500), the interest ledger holds
-        +500, and Checking moved only by the Step-2 cash.
+        +500, and Checking moved only by the Step-2 cash on top of its
+        $1000.00 Step-5 opening: 1000 - 1000 = 0.00.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -132,7 +133,7 @@ class TestSettleWiringAutoPosts:
             ) == Decimal("500.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("-1000.00")
+            ) == Decimal("0.00")
 
     def test_settle_with_actual_amount_splits_from_actual_cash(
         self, app, db, seed_user, seed_periods,
@@ -188,7 +189,8 @@ class TestRevertAndDeletePostFullCashReversal:
 
         The correction (Loan -500 / Interest +500) carries a NULL transfer_id,
         so the Step-2 cash reader sees only the +1,000 cash on the loan ledger
-        and posts the FULL -1,000 reversal: Checking returns to 0 (not 500).  The
+        and posts the FULL -1,000 reversal: Checking returns to its $1000.00
+        opening (not 1500).  The
         loan sync reverses the now-projected payment's correction; the opening
         (-250000) + true-up (+150000) remain (the revert does not touch them), so
         the loan-linked ledger returns to the trued-up baseline -100000.00 ==
@@ -211,10 +213,10 @@ class TestRevertAndDeletePostFullCashReversal:
             )
             db.session.commit()
 
-            # Full cash reversal: Checking back to exactly 0.
+            # Full cash reversal: Checking back to exactly its 1000 opening.
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             # Payment correction + cash reversed; opening + true-up remain, so the
             # loan returns to the trued-up baseline -(verified 100000).
             assert posting_service.account_posting_total(
@@ -232,7 +234,8 @@ class TestRevertAndDeletePostFullCashReversal:
         reverse-before-delete zeroes the payment correction while the shadow id
         still exists (the CASCADE then SET-NULLs the entry's transaction_id), and
         the Step-2 reverse-before posts the FULL cash reversal.  Nothing stranded:
-        Checking and the interest ledger net to zero, and the loan-linked ledger
+        Checking returns to its $1000.00 opening, the interest ledger nets to
+        zero, and the loan-linked ledger
         returns to the trued-up baseline -100000.00 (opening + true-up remain --
         the delete touches only the payment correction).
         """
@@ -251,7 +254,7 @@ class TestRevertAndDeletePostFullCashReversal:
 
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             # Opening + true-up remain; only the payment correction is reversed.
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -278,7 +281,7 @@ class TestRevertAndDeletePostFullCashReversal:
 
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             # Payment correction reversed; opening + true-up remain, so the loan
             # returns to the trued-up baseline -(verified 100000).
             assert posting_service.account_posting_total(
@@ -366,8 +369,9 @@ class TestTrueUpWiring:
         BETWEEN them: genesis keeps P1's 500.00 (it is due before the new trueup)
         and re-splits P2 from 90000 to round(90000 * 0.005) = 450.00, so the
         interest ledger holds 500 + 450 = 950.00 (Step 4 reversed P1 and left only
-        450.00).  Checking is unchanged from its settled -2000.00 -- the true-up
-        sync touches only the loan's own ledgers.
+        450.00).  Checking is unchanged from its -1000.00 (the $1000.00
+        opening minus the two settles) -- the true-up sync touches only the
+        loan's own ledgers.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -383,7 +387,7 @@ class TestTrueUpWiring:
             checking_before = posting_service.account_posting_total(
                 checking.id, scenario_id,
             )
-            assert checking_before == Decimal("-2000.00")
+            assert checking_before == Decimal("-1000.00")
 
             outcome = anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("90000.00"),

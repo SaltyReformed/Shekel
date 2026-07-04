@@ -638,3 +638,65 @@ class TestResetResyncsLoanGenesis:
             ) == _LOAN_GENESIS_NET
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_referential_integrity(db.session))
+
+
+class TestResetResyncsAccountOpenings:
+    """A full reset re-posts the non-loan account openings the wipe cascades.
+
+    The Step-5 analogue of the loan re-sync above (plan Section 3.3, point
+    4): a non-loan account's opening correction carries a ``pay_period_id``
+    and CASCADE-deletes with the wiped periods -- along with its
+    ``AccountAnchorHistory`` rows -- yet ``_reanchor_accounts`` stages one
+    fresh origination row per account, so the per-user account re-sync must
+    re-derive each opening onto the rebuilt schedule in the same
+    transaction.  Without it every non-loan ledger reads empty (the
+    absolute invariant silently degrades to changes-only) until the
+    account's next anchor event.
+    """
+
+    def test_openings_reposted_and_reconcile_after_reset(
+        self, app, db, seed_user,
+    ):
+        """The Checking opening nets +1000 before AND after, re-attributed anew.
+
+        The seed Checking's $1000.00 opening posts at fixture time.  The
+        wipe disposes it with the old periods; the re-sync re-posts exactly
+        one opening entry attributed to the re-anchored period (the rebuilt
+        schedule's resolved anchor), and the linked ledger nets 1000.00
+        again -- it would be 0 without the fix.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking_id = seed_user["account"].id
+            _seed_old_schedule(db.session, seed_user)
+            assert posting_service.account_posting_total(
+                checking_id, scenario_id,
+            ) == Decimal("1000.00")
+
+            pay_period_admin.reset_pay_periods(
+                user_id, new_start_date=_NEW_START, num_periods=6,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            # Re-fetch: the reset's identity-map wipe detached the fixture
+            # object.
+            checking = db.session.get(Account, checking_id)
+            openings = (
+                db.session.query(JournalEntry)
+                .filter(
+                    JournalEntry.user_id == user_id,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.ACCOUNT_OPENING,
+                    ),
+                )
+                .all()
+            )
+            assert len(openings) == 1
+            assert openings[0].pay_period_id == checking.current_anchor_period_id
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            assert_pay_period_invariants(db.session, user_id)
+            assert all(r.passed for r in check_referential_integrity(db.session))

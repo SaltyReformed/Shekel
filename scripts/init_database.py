@@ -74,7 +74,7 @@ from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
 )
-from app.services import loan_posting_service
+from app.services import account_posting_service, loan_posting_service
 # pylint: enable=wrong-import-position
 
 
@@ -224,6 +224,52 @@ def backfill_loan_payment_postings_after_migration():
     print(f"Loan genesis-ledger backfill complete ({len(posted)} loan(s) reconciled).")
 
 
+def backfill_all_account_anchor_postings_after_migration():
+    """Post every non-loan account's anchor genesis ledger after the chain is at head.
+
+    Build-Order Step 5, C7.  Posts every NON-loan account's opening and
+    true-up anchor corrections (the equity counter-leg of each
+    ``AccountAnchorHistory`` assertion), so after this the trial balance closes
+    app-wide: every non-loan linked ledger sums to an ABSOLUTE balance.  Like
+    the loan genesis backfill this cannot run inside an Alembic migration -- it
+    needs the ``ref_cache`` / service layer, and this migration host builds the
+    app with ``init_ref_cache=False`` (the pre-migration bootstrap window; see
+    the ``3104f87`` deploy fix) so ``ref_cache`` is off while migrations run.
+    Unlike the Step-2 / Step-3 cash backfills, an anchor correction is a
+    moment-granular walk over the account's assertions against its linked
+    ledger, not a one-line SQL formula, so it cannot be reproduced in raw SQL
+    without duplicating that walk.  So it runs HERE, once the chain has reached
+    head and every ref row (the ``account_opening`` / ``account_trueup``
+    sources, the ``anchor_equity`` ledger-account kind) exists: it re-uses the
+    ``ref_cache`` this host initialised for the loan backfill above, then
+    delegates to the idempotent
+    :func:`app.services.account_posting_service.backfill_all_account_anchor_postings`.
+
+    Runs only on the existing-database path (the fresh-database branch stamps
+    Alembic without running migrations and its ref tables are not seeded until
+    after this host exits).  It rolls back and re-initialises ``ref_cache`` on a
+    fresh transaction first -- redundant after the loan backfill above committed,
+    but it keeps the hook self-contained and correct when invoked in isolation
+    (the deploy sequence and the backfill suite both call it directly).
+    Idempotent and self-healing (reconcile-to-target), so it is safe on every
+    deploy -- an account already carrying its go-forward corrections is at target
+    and nothing is re-posted.  Commits the corrections in one transaction; the
+    deferred balanced-journal trigger validates every entry at that COMMIT, so an
+    unbalanced correction aborts the deploy loud.
+    """
+    print("Backfilling historical account anchor ledger (opening/true-up)...")
+    # Fresh transaction + ref_cache re-init, so the hook is correct in isolation
+    # (see the loan backfill above for the idle-read-transaction rationale).
+    db.session.rollback()
+    ref_cache.init(db.session)
+    posted = account_posting_service.backfill_all_account_anchor_postings()
+    db.session.commit()
+    print(
+        f"Account anchor-ledger backfill complete "
+        f"({len(posted)} account(s) reconciled)."
+    )
+
+
 if __name__ == "__main__":
     # init_ref_cache=False: this migration host builds the app only for an
     # Alembic context and runs BEFORE the migrations seed new ref rows, so the
@@ -237,3 +283,4 @@ if __name__ == "__main__":
         else:
             migrate_existing_database()
             backfill_loan_payment_postings_after_migration()
+            backfill_all_account_anchor_postings_after_migration()

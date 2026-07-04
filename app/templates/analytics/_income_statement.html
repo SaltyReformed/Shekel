@@ -1,0 +1,172 @@
+{% from "_money_macros.html" import money %}
+{# Income Statement -- HTMX partial (Build-Order Step 5).
+   Rendered by analytics.income_statement_tab() into #tab-content.
+   Presents the confirmed posting ledger's Income and Expense accounts
+   over one window.  Transfers never appear (both a transfer's legs land
+   on linked Asset/Liability accounts, outside the Income/Expense filter),
+   so this is a pure operating statement. #}
+
+{# ── Header & Window Toggle ────────────────────────────────────── #}
+
+<div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
+  <h5 class="mb-0 me-3">Income Statement</h5>
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.income_statement_tab', window=window_type, period_id=period_id, month=month, year=year, format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <div class="btn-group" role="group" aria-label="Time window">
+    <button class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.income_statement_tab', window='pay_period') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Pay Period
+    </button>
+    <button class="btn btn-sm {% if window_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Month
+    </button>
+    <button class="btn btn-sm {% if window_type == 'year' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.income_statement_tab', window='year') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner">
+      Year
+    </button>
+    </div>
+  </div>
+</div>
+
+{# ── Window-Specific Selector ──────────────────────────────────── #}
+
+<div class="mb-3">
+{% if window_type == 'pay_period' %}
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.income_statement_tab', window='pay_period') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          name="period_id">
+    {% for p in periods %}
+    <option value="{{ p.id }}" {{ 'selected' if p.id == period_id }}>
+      {{ p.start_date.strftime('%b %d') }} - {{ p.end_date.strftime('%b %d, %Y') }}
+    </option>
+    {% endfor %}
+    {% if not periods %}
+    <option disabled selected>No periods available</option>
+    {% endif %}
+  </select>
+
+{% elif window_type == 'month' %}
+  <div class="d-flex gap-2">
+    <select class="form-select form-select-sm w-auto"
+            hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            hx-include="[name=year]"
+            name="month">
+      {% for m in range(1, 13) %}
+      <option value="{{ m }}" {{ 'selected' if m == month }}>
+        {{ m|month_name }}
+      </option>
+      {% endfor %}
+    </select>
+    <select class="form-select form-select-sm w-auto"
+            hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            hx-include="[name=month]"
+            name="year">
+      {% for y in available_years %}
+      <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+{% elif window_type == 'year' %}
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.income_statement_tab', window='year') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          name="year">
+    {% for y in available_years %}
+    <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+    {% endfor %}
+  </select>
+{% endif %}
+</div>
+
+<p class="text-muted small mb-3">{{ report.window_label }}</p>
+
+{% if not report.income.lines and not report.expense.lines %}
+{# ── Empty State ────────────────────────────────────────────────── #}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-clipboard-x fs-display"></i>
+  <p class="mt-2">No income or expenses in this window.</p>
+</div>
+
+{% else %}
+
+{# ── Income Section ─────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-arrow-down-circle"></i> Income</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table mb-0">
+      <tbody>
+        {% for line in report.income.lines %}
+        <tr>
+          <td>{{ line.label }}</td>
+          <td class="text-end font-mono">{{ money(line.amount) }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="text-muted" colspan="2">No income in this window.</td></tr>
+        {% endfor %}
+        <tr class="table-group-divider">
+          <td class="fw-bold">Total Income</td>
+          <td class="text-end font-mono fw-bold">{{ money(report.income.total) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Expense Section ────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-arrow-up-circle"></i> Expenses</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table mb-0">
+      <tbody>
+        {% for line in report.expense.lines %}
+        <tr>
+          <td>{{ line.label }}</td>
+          <td class="text-end font-mono">{{ money(line.amount) }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="text-muted" colspan="2">No expenses in this window.</td></tr>
+        {% endfor %}
+        <tr class="table-group-divider">
+          <td class="fw-bold">Total Expenses</td>
+          <td class="text-end font-mono fw-bold">{{ money(report.expense.total) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Net Income ─────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center">
+      <span class="fw-bold">Net Income</span>
+      <span class="font-mono fw-bold {% if report.net_income > 0 %}text-success{% elif report.net_income < 0 %}text-danger{% endif %}">
+        {{ money(report.net_income) }}
+      </span>
+    </div>
+  </div>
+</div>
+
+{% endif %}

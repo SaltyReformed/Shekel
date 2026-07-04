@@ -783,9 +783,10 @@ class TestSyncLoanPaymentPostings:
     ):
         """The loan sync moves only loan ledgers -- Checking is unchanged.
 
-        The Step-2 cash entry already moved Checking (-1000); the loan
-        correction must not move it further, so Checking's posted total is
-        identical before and after the sync.
+        The Step-2 cash entry already moved Checking (its $1000.00 Step-5
+        opening - 1000 = 0.00); the loan correction must not move it
+        further, so Checking's posted total is identical before and after
+        the sync.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -806,7 +807,7 @@ class TestSyncLoanPaymentPostings:
             checking_after = posting_service.account_posting_total(
                 checking.id, scenario_id,
             )
-            assert checking_before == Decimal("-1000.00")
+            assert checking_before == Decimal("0.00")
             assert checking_after == checking_before
 
     def test_correction_is_invisible_to_transfer_id_reader(
@@ -2075,6 +2076,35 @@ class TestConfirmedLoanInterestReader:
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_P1], amount=Decimal("1000.00"),
                 paid_at=_paid_on(2025, 12, 20),
+            )
+            db.session.commit()
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2025,
+            ) == Decimal("500.00")
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("0.00")
+
+    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE L9 CASE: a settle at 8:05 PM EST Dec 31 deducts in the Dec 31 year.
+
+        A payment settled 2025-12-31 20:05 Eastern is stored as
+        2026-01-01 01:05 UTC, so its journal ``entry_date`` books 2026 (the
+        UTC storage rule).  Schedule-A attribution follows the user's
+        wall-clock day (L9, decided 2026-07-03): the 500.00 interest deducts
+        in 2025, and 2026 sees nothing.  The pre-L9 UTC attribution reported
+        the reverse.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
             )
             db.session.commit()
 

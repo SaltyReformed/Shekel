@@ -27,7 +27,7 @@ from decimal import Decimal
 from sqlalchemy import case
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import LedgerAccountKindEnum, TxnTypeEnum
 from app.exceptions import ShekelError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
@@ -52,13 +52,17 @@ class PostingError(ShekelError):
 
 
 def _ledger_account_for(account_id: int) -> LedgerAccount:
-    """Return the ledger account paired with a real account, or fail loudly.
+    """Return the LINKED ledger account paired with a real account, or fail loudly.
 
     Every ``budget.accounts`` row has exactly one linked ledger account (the
     Commit-2 create hook pairs new accounts; the Commit-2 backfill paired
-    historical ones; ``uq_ledger_accounts_account`` permits only one).  A
-    missing pairing is a broken chart-of-accounts invariant, not a benign
-    lookup miss, so this raises rather than returning ``None``.
+    historical ones; ``uq_ledger_accounts_account_kind`` permits only one per
+    kind).  The ``linked``-kind filter is load-bearing since Step 5: an
+    account may ALSO carry an ``anchor_equity`` twin on the same
+    ``account_id``, and an unfiltered ``one_or_none`` would raise
+    ``MultipleResultsFound`` the moment the twin exists.  A missing pairing
+    is a broken chart-of-accounts invariant, not a benign lookup miss, so
+    this raises rather than returning ``None``.
 
     Args:
         account_id: The real account whose linked ledger account to load.
@@ -71,7 +75,12 @@ def _ledger_account_for(account_id: int) -> LedgerAccount:
     """
     ledger = (
         db.session.query(LedgerAccount)
-        .filter_by(account_id=account_id)
+        .filter_by(
+            account_id=account_id,
+            kind_id=ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+        )
         .one_or_none()
     )
     if ledger is None:

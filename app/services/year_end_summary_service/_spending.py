@@ -303,9 +303,13 @@ def _compute_payment_timeliness(
     total_days = 0
 
     for txn in applicable:
-        days_before = (txn.due_date - txn.paid_at.date()).days
+        # Route through the model property so the display-timezone paid-date
+        # rule (F3) lives in one place; ``applicable`` guarantees both fields
+        # are set, so the property never returns None here.  Paid on the due
+        # date or earlier (days_before >= 0) is on time.
+        days_before = txn.days_paid_before_due
         total_days += days_before
-        if txn.paid_at.date() <= txn.due_date:
+        if days_before >= 0:
             paid_on_time += 1
         else:
             paid_late += 1

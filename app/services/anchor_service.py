@@ -109,7 +109,11 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.pay_period import PayPeriod
-from app.services import entry_service, loan_posting_service
+from app.services import (
+    account_posting_service,
+    entry_service,
+    loan_posting_service,
+)
 from app.utils.db_errors import is_unique_violation
 
 
@@ -281,6 +285,20 @@ def apply_anchor_true_up(
     try:
         if account.account_type_id == checking_type_id:
             entry_service.clear_entries_for_anchor_true_up(user_id, account.id)
+        # Build-Order Step 5: the new assertion re-bases the account's
+        # anchor corrections in EVERY scenario (anchor history is
+        # per-account) -- the fresh history row autoflushes into the walk's
+        # first query, so the reconcile books the true-up delta in the same
+        # transaction.  Runs AFTER the entry reconcile (verified
+        # side-effect-free for posted amounts: it flips ``is_cleared`` on
+        # PROJECTED parents only, and the Step-3 effect formula never reads
+        # ``is_cleared``) and inside this ``try`` so a StaleDataError or the
+        # F-103 duplicate surfacing at its flushes translates into the same
+        # outcome enum.  An amortizing loan is a structural no-op (loans
+        # true-up through :func:`apply_loan_anchor_true_up`).
+        account_posting_service.sync_account_anchor_postings_all_scenarios(
+            account.id,
+        )
         db.session.commit()
     except StaleDataError:
         db.session.rollback()

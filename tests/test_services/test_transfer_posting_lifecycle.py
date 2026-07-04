@@ -22,9 +22,13 @@ resulting ledger state, covering the full ``is_settled`` truth table:
     inside the status-change helper -- the placement that makes the grid
     shadow-edit path correct).
 
-After each mutation the per-account reconciliation invariant
-(``account_posting_total == settled_transfer_effect``) is asserted -- the same
-equality the Commit-6 oracle will lock suite-wide.  All money is ``Decimal``
+After each mutation the per-account reconciliation invariant is asserted in
+its Build-Order Step 5 ABSOLUTE form: ``account_posting_total == opening
+anchor + settled_transfer_effect``.  ``create_account`` posts each fixture
+account's opening correction at create time (Checking $1000.00, the Savings
+$100.00 sentinel), and every settle here is stamped at server-now -- AFTER the
+origination assertion -- so the settled-shadow effect is exactly the
+post-assertion effect riding on top of the opening.  All money is ``Decimal``
 from strings, with the arithmetic shown per the testing standard.
 """
 # pylint: disable=redefined-outer-name
@@ -37,14 +41,14 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import PostingSourceEnum, StatusEnum
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from tests._test_helpers import (
     create_account_of_type,
-    ledger_accounts_for_account,
+    linked_ledger_account,
 )
 
 
@@ -54,8 +58,8 @@ from tests._test_helpers import (
 
 
 def _ledger_id(account):
-    """Return the linked ledger account id for *account*."""
-    return ledger_accounts_for_account(_db.session, account.id)[0].id
+    """Return the LINKED ledger account id for *account* (never its twin)."""
+    return linked_ledger_account(_db.session, account.id).id
 
 
 def _entries_for_transfer(transfer_id):
@@ -118,16 +122,21 @@ def _settle(transfer, user_id, **extra):
 def _assert_reconciles(scenario_id, *accounts):
     """Assert ledger == settled-shadow effect for each account (the oracle).
 
-    The per-account reconciliation invariant: the net of an account's posting
-    legs equals the net effect of its settled, non-deleted transfer shadows.
-    Asserted from the two independent producers so a divergence between the
-    ledger and the transaction state fails loudly.
+    The per-account reconciliation invariant in its Step-5 ABSOLUTE form: the
+    net of an account's posting legs equals its opening anchor correction
+    (posted at create time; the origination row is each fixture account's
+    only assertion) plus the net effect of its settled, non-deleted transfer
+    shadows -- every settle in this suite is stamped at server-now, after the
+    assertion instant, so the effect rides on top of the opening.  Asserted
+    from independent producers so a divergence fails loudly.
     """
     for account in accounts:
         posted = posting_service.account_posting_total(account.id, scenario_id)
         effect = posting_service.settled_transfer_effect(account.id, scenario_id)
-        assert posted == effect, (
-            f"account {account.id}: ledger {posted} != settled effect {effect}"
+        opening = Decimal(str(account.current_anchor_balance))
+        assert posted == opening + effect, (
+            f"account {account.id}: ledger {posted} != opening {opening} "
+            f"+ settled effect {effect}"
         )
 
 
@@ -163,7 +172,8 @@ class TestSettlePostsEntry:
         Arithmetic: settling a $100 Checking -> Savings transfer posts -100.00
         on Checking's ledger (money out, a credit) and +100.00 on Savings'
         (money in, a debit), summing to zero.  The reconcile invariant holds:
-        account_posting_total(Savings) == +100.00 == settled_transfer_effect.
+        account_posting_total(Savings) == 100.00 (opening) + 100.00 (effect)
+        = 200.00.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -187,7 +197,7 @@ class TestSettlePostsEntry:
             assert sum(legs.values()) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             _assert_reconciles(scenario_id, checking, savings)
 
     def test_done_to_settled_archive_is_noop(
@@ -195,9 +205,10 @@ class TestSettlePostsEntry:
     ):
         """done -> settled posts no second entry (already at target).
 
-        Arithmetic: the settle posted +100 to Savings; archiving Done -> Settled
-        keeps is_settled True, so target == current == +100, delta 0, no entry.
-        The ledger stays at one entry and still reconciles.
+        Arithmetic: the settle posted +100 to Savings (total 200.00 on the
+        $100.00 opening); archiving Done -> Settled keeps is_settled True, so
+        target == current == +100, delta 0, no entry.  The ledger stays at one
+        transfer entry and still reconciles.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -218,7 +229,7 @@ class TestSettlePostsEntry:
             assert len(_entries_for_transfer(transfer.id)) == 1
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             _assert_reconciles(scenario_id, seed_user["account"], savings)
 
 
@@ -237,9 +248,10 @@ class TestRevertReverses:
 
         Arithmetic: the settle posted +100; reverting posts the delta to reach
         the new target 0: 0 - 100 = -100 on Savings, +100 on Checking.  Two
-        entries survive (append-only -- the original is never edited).  Both
-        helpers return 0: the reverted income shadow is no longer is_settled,
-        so it drops from settled_transfer_effect too.
+        entries survive (append-only -- the original is never edited).  The
+        reverted income shadow is no longer is_settled, so it drops from
+        settled_transfer_effect, and the Savings total lands back on its
+        $100.00 opening.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -265,7 +277,7 @@ class TestRevertReverses:
             assert reversal_legs[_ledger_id(checking)] == Decimal("100.00")
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("100.00")
             _assert_reconciles(scenario_id, checking, savings)
 
 
@@ -284,7 +296,8 @@ class TestCancelPostsNothing:
 
         Arithmetic: a Projected transfer has no posted effect; cancelling keeps
         the target at 0 (is_settled False), delta 0, nothing written.  Both
-        ledgers stay empty and reconcile at zero.
+        accounts stay on their openings (Savings 100.00) with a zero settled
+        effect.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -304,7 +317,7 @@ class TestCancelPostsNothing:
             assert _entries_for_transfer(transfer.id) == []
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("100.00")
             _assert_reconciles(scenario_id, checking, savings)
 
 
@@ -321,9 +334,10 @@ class TestDeleteAndRestore:
     ):
         """Soft-delete reverses a settled transfer; restore re-posts it.
 
-        Arithmetic: settle +100 (1 entry); soft-delete reverses -100 (2 entries,
-        Savings nets 0); restore re-posts +100 (3 entries, Savings nets +100).
-        Append-only throughout -- every correction is a new entry, none edited.
+        Arithmetic: settle +100 (1 entry); soft-delete reverses -100 (2
+        entries, Savings back on its 100.00 opening); restore re-posts +100
+        (3 entries, Savings 200.00).  Append-only throughout -- every
+        correction is a new entry, none edited.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -342,7 +356,7 @@ class TestDeleteAndRestore:
             assert len(_entries_for_transfer(transfer.id)) == 2
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("100.00")
             # The reverted shadows are soft-deleted, so the effect is 0 too.
             _assert_reconciles(scenario_id, checking, savings)
 
@@ -352,7 +366,7 @@ class TestDeleteAndRestore:
             assert len(_entries_for_transfer(transfer.id)) == 3
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             _assert_reconciles(scenario_id, checking, savings)
 
     def test_hard_delete_settled_reverses_and_pair_survives_null_transfer_id(
@@ -362,8 +376,9 @@ class TestDeleteAndRestore:
 
         Arithmetic: settle +100 (1 entry); hard-delete first reverses -100 (2nd
         entry), then removes the transfer row, SET-NULLing ``transfer_id`` on
-        both entries.  The immutable legs survive: the Savings ledger holds
-        +100 and -100 (net 0); the transfer row is gone.  This is the
+        both entries.  The immutable legs survive: the Savings LINKED ledger
+        holds its +100.00 opening leg plus the +100 settle and -100 reversal
+        (net 100.00, the opening); the transfer row is gone.  This is the
         append-only correction proven through a hard delete.
         """
         with app.app_context():
@@ -384,13 +399,19 @@ class TestDeleteAndRestore:
 
             # The transfer row is gone.
             assert _db.session.get(Transfer, transfer_id) is None
-            # Both entries survive with transfer_id nulled (immutable history).
+            # Both entries survive with transfer_id nulled (immutable
+            # history).  Filtered by the TRANSFER source kind: the openings
+            # the fixtures posted are also concrete-FK-less entries, but
+            # carry the account_opening source.
             assert _entries_for_transfer(transfer_id) == []
             surviving = (
                 _db.session.query(JournalEntry)
                 .filter(
                     JournalEntry.user_id == user_id,
                     JournalEntry.transfer_id.is_(None),
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER,
+                    ),
                 )
                 .all()
             )
@@ -401,11 +422,11 @@ class TestDeleteAndRestore:
                 .filter_by(ledger_account_id=savings_ledger)
                 .all()
             )
-            assert len(savings_legs) == 2
-            assert sum(leg.amount for leg in savings_legs) == Decimal("0.00")
+            assert len(savings_legs) == 3
+            assert sum(leg.amount for leg in savings_legs) == Decimal("100.00")
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("100.00")
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +463,7 @@ class TestDoubleMarkDoneIdempotent:
             assert len(_entries_for_transfer(transfer.id)) == 1
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("100.00")
+            ) == Decimal("200.00")
             _assert_reconciles(scenario_id, seed_user["account"], savings)
 
 
@@ -467,8 +488,9 @@ class TestSettleWithActualSameCall:
 
         Arithmetic: nominal $100, settled actual $88.00 -> the income shadow's
         effective_amount is $88.00, so the posting is -88.00 / +88.00, NOT
-        -100 / +100.  A reconcile placed before ``actual_amount`` was applied
-        would wrongly post the $100 estimate -- the regression this guards.
+        -100 / +100 (Savings total 100.00 opening + 88.00 = 188.00).  A
+        reconcile placed before ``actual_amount`` was applied would wrongly
+        post the $100 estimate -- the regression this guards.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -490,5 +512,5 @@ class TestSettleWithActualSameCall:
             assert legs[_ledger_id(savings)] == Decimal("88.00")
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
-            ) == Decimal("88.00")
+            ) == Decimal("188.00")
             _assert_reconciles(scenario_id, checking, savings)

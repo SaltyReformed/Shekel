@@ -456,6 +456,238 @@ class TestAccountArchive:
             assert b"An account with that name already exists." in response2.data
 
 
+class TestTypeChangeBoundaryGuard:
+    """The C6 posting-boundary guards on account re-type and type edits.
+
+    Build-Order Step 5 (plan Section 3.3, point 7): an ``account_type_id``
+    change that crosses the amortizing boundary or flips the linked
+    ledger's Asset/Liability class is refused while the account carries
+    ledger postings -- it would strand one correction family or silently
+    re-interpret posted legs' balance-sheet meaning.  The second crossing
+    vector (editing a custom type's ``has_amortization`` / ``category_id``
+    in place) is guarded the same way.  Allowed crossings (empty ledgers)
+    re-class the empty linked row and re-sync the corrections.
+    """
+
+    def test_retype_posted_account_across_class_boundary_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """Re-typing the posted Checking to Credit Card (class flip) refuses.
+
+        The seed Checking's $1000.00 opening is posted ledger history;
+        Checking is Asset-category and Credit Card Liability-category, so
+        the re-type crosses the class boundary and the guard rejects it,
+        leaving the type unchanged.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            old_type_id = checking.account_type_id
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None)
+                .one()
+            )
+
+            response = auth_client.post(
+                f"/accounts/{checking.id}",
+                data={"account_type_id": str(cc_type.id)},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"posting-ledger history" in response.data
+            # Re-fetch: the request's session lifecycle detached the fixture
+            # object.
+            reloaded = db.session.get(Account, checking.id)
+            assert reloaded.account_type_id == old_type_id
+
+    def test_retype_unposted_account_reclasses_linked_row(
+        self, app, auth_client, seed_user,
+    ):
+        """A $0-anchor account re-types across the boundary and re-classes.
+
+        A zero opening books nothing, so the ledger is empty and the
+        crossing is allowed; the route re-snapshots the empty linked row's
+        class to the new category's (Asset -> Liability) so future postings
+        land in the right balance-sheet section.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs these helpers, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.enums import LedgerAccountClassEnum
+        from tests._test_helpers import linked_ledger_account
+
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings", user_id=None)
+                .one()
+            )
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None)
+                .one()
+            )
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Reclass Target",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+            linked = linked_ledger_account(db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.ASSET,
+            )
+
+            response = auth_client.post(
+                f"/accounts/{account.id}",
+                data={"account_type_id": str(cc_type.id)},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            # Re-fetch: the request's session lifecycle detached the objects.
+            reloaded = db.session.get(Account, account.id)
+            assert reloaded.account_type_id == cc_type.id
+            relinked = linked_ledger_account(db.session, account.id)
+            assert relinked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.LIABILITY,
+            )
+
+    def test_type_edit_amortization_flip_refused_with_posted_accounts(
+        self, app, auth_client, seed_user,
+    ):
+        """Flipping ``has_amortization`` on a type with posted accounts refuses.
+
+        The second crossing vector (C4 adversarial review M2): the custom
+        Liability type's account carries a posted opening, and flipping the
+        flag in place would move the account across the correction-family
+        boundary with no ``account_type_id`` change to guard.
+        """
+        with app.app_context():
+            liability_id = ref_cache.acct_category_id(
+                AcctCategoryEnum.LIABILITY,
+            )
+            custom_type = AccountType(
+                name="store_card",
+                category_id=liability_id,
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+            account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="Posted Store Card",
+                    anchor_balance=Decimal("-250.00"),
+                ),
+            )
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={
+                    "has_amortization": "true",
+                    "category_id": str(liability_id),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"posting-ledger history" in response.data
+            db.session.refresh(custom_type)
+            assert custom_type.has_amortization is False
+
+    def test_type_edit_category_flip_reclasses_unposted_accounts(
+        self, app, auth_client, seed_user,
+    ):
+        """A category flip on a type whose accounts are unposted re-classes them.
+
+        The type's only account has a $0 anchor (empty ledger), so the
+        Asset -> Liability category flip is allowed and the account's empty
+        linked row re-snapshots to the Liability class.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs these helpers, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.enums import LedgerAccountClassEnum
+        from tests._test_helpers import linked_ledger_account
+
+        with app.app_context():
+            custom_type = AccountType(
+                name="side_pocket",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="Unposted Pocket",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={
+                    "category_id": str(ref_cache.acct_category_id(
+                        AcctCategoryEnum.LIABILITY,
+                    )),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            linked = linked_ledger_account(db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.LIABILITY,
+            )
+
+    def test_update_account_anchor_edit_posts_trueup(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The direct anchor edit books its true-up correction (C6 point 3).
+
+        POSTing a new ``anchor_balance`` through the account edit form runs
+        the guarded reconcile: the history row lands AND the Step-5 sync
+        books the true-up delta in the same transaction, so the Checking
+        total moves from its $1000.00 opening to the asserted $1500.00.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs this reader, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.services import posting_service
+
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+
+            response = auth_client.post(
+                f"/accounts/{checking.id}",
+                data={"anchor_balance": "1500.00"},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1500.00")
+
+
 class TestHardDeletePostingLedgerGuard:
     """Hard-delete archives an account with surviving posting-ledger history.
 
@@ -2770,13 +3002,22 @@ class TestCheckingDetail:
         """The anchored-as-of date is displayed in the balance hero caption.
 
         The rebuilt hero caption renders ``anchor_as_of`` -- the anchor
-        EVENT date (the origination ``AccountAnchorHistory`` row, created
-        today) -- not the anchor period's start date (audit finding #2).
-        Here the account is created today and periods start today, so the
-        event date and the period start coincide on today's date; the
-        distinct-date case is pinned in
+        EVENT instant (the origination ``AccountAnchorHistory`` row), in the
+        user's DISPLAY timezone -- not the anchor period's start date (audit
+        finding #2) and not the UTC-day ``as_of_date`` (which shows the wrong
+        civil day for a late-evening-Eastern event).  The expected string is
+        computed from the anchor's ``created_at`` via ``to_display_date`` --
+        NOT ``date.today()``, which reads the PROCESS timezone and would
+        diverge from the Eastern caption in a UTC CI runner during the
+        late-evening-Eastern window.  Deriving both sides from the same
+        ``created_at`` also makes the assertion immune to a midnight race.
+        The distinct-date (event vs period start) case is pinned in
         ``TestCashDetailContext.test_anchor_as_of_is_event_date_not_period_start``.
         """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -2789,8 +3030,14 @@ class TestCheckingDetail:
             resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
-            # The anchored-as-of date (today) is displayed in the hero cap.
-            anchor_date_str = date.today().strftime("%b %-d, %Y")
+            # The caption shows the anchor event's DISPLAY-timezone civil date,
+            # computed here from the same ``created_at`` the caption renders.
+            anchor = balance_resolver.resolve_anchor(
+                acct, seed_user["scenario"].id,
+            )
+            anchor_date_str = to_display_date(anchor.created_at).strftime(
+                "%b %-d, %Y",
+            )
             assert anchor_date_str.encode() in resp.data
 
 
@@ -3528,12 +3775,15 @@ class TestCashDetailContext:
         ``start_date`` is roughly eight weeks before today), but its
         origination ``AccountAnchorHistory`` row is created now, so the
         anchor EVENT date (today) differs from the anchor PERIOD's start
-        date.  The context must carry the event date (the audit's finding
-        #2 fix), NOT the period start.
+        date.  The context must carry the event INSTANT (the audit's
+        finding #2 fix), NOT the period start; the template renders that
+        instant in the user's display timezone (``AnchorPoint.as_of_date``
+        stays UTC for anchor logic, so the context passes ``created_at``).
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
         from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",
@@ -3557,8 +3807,13 @@ class TestCashDetailContext:
             assert anchor.as_of_date != anchor.period.start_date
 
             context = _capture_cash_detail_context(app, auth_client, acct.id)
-            assert context["anchor_as_of"] == anchor.as_of_date
-            assert context["anchor_as_of"] != anchor.period.start_date
+            # The context carries the anchor EVENT instant (created_at); the
+            # template converts it to the display timezone for the caption.
+            assert context["anchor_as_of"] == anchor.created_at
+            assert (
+                to_display_date(context["anchor_as_of"])
+                != anchor.period.start_date
+            )
 
     def test_interest_next_year_zero_for_zero_apy(
         self, app, auth_client, seed_user, db,

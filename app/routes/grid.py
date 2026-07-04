@@ -24,6 +24,7 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import (
+    account_posting_service,
     balance_at,
     balance_resolver,
     grid_view_service,
@@ -649,10 +650,11 @@ def index():
 @login_required
 @require_owner
 def create_baseline():
-    """Create a missing baseline scenario for the current user.
+    """Create a missing baseline scenario, idempotently.
 
-    Idempotent: if a baseline already exists, redirects without
-    creating a duplicate.
+    Also the Build-Order Step 5 recovery path: accounts created while no
+    baseline existed had their anchor corrections loudly skipped, so the
+    per-user resync posts the stranded openings into the fresh baseline.
     """
     existing = get_baseline_scenario(current_user.id)
     if existing:
@@ -664,6 +666,9 @@ def create_baseline():
         is_baseline=True,
     )
     db.session.add(scenario)
+    account_posting_service.resync_user_account_anchor_postings(
+        current_user.id,
+    )
     db.session.commit()
 
     logger.info(

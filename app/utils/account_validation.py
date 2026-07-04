@@ -22,6 +22,14 @@ The helpers fall into two groups:
   so the route owns the flash + redirect composition while this
   module owns the business validation.
 
+* **Posting-boundary type guards** (Build-Order Step 5, C6).  A
+  re-type of an account (``_validate_account_type_change``) or an
+  in-place edit of a custom type's ``has_amortization`` /
+  ``category_id`` (``_validate_account_type_boundary_edit``) that
+  crosses the amortizing or Asset/Liability boundary is refused while
+  the affected account(s) carry ledger postings -- see
+  ``_crosses_posting_boundary`` for why exactly those two boundaries.
+
 The six Marshmallow schema singletons (``_anchor_schema``,
 ``_create_schema``, ``_update_schema``, ``_type_create_schema``,
 ``_type_update_schema``, ``_interest_params_schema``) are also kept
@@ -50,6 +58,8 @@ from app.schemas.validation import (
     AppreciationParamsUpdateSchema,
     InterestParamsUpdateSchema,
 )
+from app.services.ledger_account_service import ledger_class_id_for_category
+from app.utils import archive_helpers
 
 
 # Marshmallow schema singletons.  Constructed once per process and
@@ -145,6 +155,132 @@ def _account_type_is_visible(type_id, user_id):
     if account_type is None:
         return False
     return account_type.user_id is None or account_type.user_id == user_id
+
+
+def _crosses_posting_boundary(old_type, new_amortization, new_category_id):
+    """Return True iff a type change crosses a posting-correction boundary.
+
+    The single definition of "boundary" for the C6 account-type guards
+    (Build-Order Step 5).  Two crossings matter to the posting ledger, and
+    only these two -- the walk is otherwise type-agnostic for non-loans:
+
+    * **The amortizing boundary** (``has_amortization`` flips): an
+      amortizing loan books its anchor corrections through the loan
+      posting package onto per-loan ledgers; every other account books
+      through the account walk onto its ``anchor_equity`` twin.  Crossing
+      with posted corrections would strand one family and double-count
+      under the other.
+    * **The Asset/Liability class boundary** (the category-derived linked
+      ledger class flips, per
+      :func:`app.services.ledger_account_service.ledger_class_id_for_category`):
+      posted legs carry the class's economic meaning on the balance
+      sheet, and the class is a pairing-time snapshot.
+
+    Args:
+        old_type: The account's current :class:`~app.models.ref.AccountType`.
+        new_amortization: The proposed ``has_amortization`` value.
+        new_category_id: The proposed ``category_id`` value.
+
+    Returns:
+        bool -- True when either boundary is crossed.
+    """
+    if bool(old_type.has_amortization) != bool(new_amortization):
+        return True
+    return (
+        ledger_class_id_for_category(old_type.category_id)
+        != ledger_class_id_for_category(new_category_id)
+    )
+
+
+def _validate_account_type_change(account, new_type_id):
+    """Refuse a boundary-crossing re-type of an account with posted history.
+
+    The C6 type-change guard (Build-Order Step 5, the Guard-5 pattern):
+    an ``account_type_id`` change that crosses the amortizing boundary or
+    flips the linked ledger's Asset/Liability class
+    (:func:`_crosses_posting_boundary`) is refused while the account has
+    ledger postings -- re-typing it would strand one correction family
+    and double-count under the other, or silently re-interpret posted
+    legs' balance-sheet meaning.  A non-crossing change, or a crossing on
+    an account with an empty ledger (a $0-anchor account), passes; the
+    route then re-classes the empty linked row and re-syncs the
+    corrections.
+
+    Args:
+        account: The :class:`~app.models.account.Account` being re-typed
+            (its ``account_type`` is the CURRENT type).
+        new_type_id: The submitted ``account_type_id``.  The caller has
+            already proven it visible (``_account_type_is_visible``), so
+            it resolves.
+
+    Returns:
+        ``None`` when the change is allowed; otherwise a
+        ``(message, category)`` tuple ready for :func:`flask.flash`.
+    """
+    new_type = db.session.get(AccountType, new_type_id)
+    if not _crosses_posting_boundary(
+        account.account_type, new_type.has_amortization, new_type.category_id,
+    ):
+        return None
+    if archive_helpers.account_has_ledger_postings(account.id):
+        return (
+            "This account's type cannot change across the loan or "
+            "asset/liability boundary because it has posting-ledger "
+            "history.  Archive it and create a new account of the "
+            "desired type instead.",
+            "warning",
+        )
+    return None
+
+
+def _validate_account_type_boundary_edit(account_type, data):
+    """Refuse a boundary-crossing edit of a type whose accounts have postings.
+
+    The second crossing vector (C4 adversarial review M2): editing a
+    CUSTOM type's ``has_amortization`` or ``category_id`` IN PLACE crosses
+    the same posting boundaries as re-typing an account
+    (:func:`_crosses_posting_boundary`) -- with no ``account_type_id``
+    change for :func:`_validate_account_type_change` to see.  The edit is
+    refused while ANY of the owner's accounts of this type carries ledger
+    postings (the type row is one row -- it cannot change for some of its
+    accounts and not others).  Boundary edits on a type whose accounts all
+    have empty ledgers pass; the route then re-classes those linked rows
+    and re-syncs their corrections.
+
+    Args:
+        account_type: The owner's custom :class:`~app.models.ref.AccountType`
+            being edited.
+        data: The schema-loaded update payload (absent keys mean "field
+            unchanged").
+    Returns:
+        ``None`` when the edit is allowed; otherwise a
+        ``(message, category)`` tuple ready for :func:`flask.flash`.
+    The postings sweep is deliberately NOT owner-scoped: post C-28 only the
+    owner can hold accounts of their custom type, but the question is "does
+    ANY account of this type carry postings", so the unscoped query is free
+    defense-in-depth against pre-C-28 legacy cross-user rows.
+    """
+    if not _crosses_posting_boundary(
+        account_type,
+        data.get("has_amortization", account_type.has_amortization),
+        data.get("category_id", account_type.category_id),
+    ):
+        return None
+    account_ids = [
+        row[0] for row in
+        db.session.query(Account.id)
+        .filter_by(account_type_id=account_type.id)
+        .all()
+    ]
+    for account_id in account_ids:
+        if archive_helpers.account_has_ledger_postings(account_id):
+            return (
+                "This change crosses the loan or asset/liability boundary "
+                "and at least one account of this type has posting-ledger "
+                "history.  Create a new account type instead.",
+                "warning",
+            )
+    return None
 
 
 def _validate_collateral_link(collateral_account_id, source_account, user_id):
@@ -248,6 +384,20 @@ def _validate_update_account(account, form, user_id):
         and not _account_type_is_visible(data["account_type_id"], user_id)
     ):
         return {}, ("Invalid account type.", "danger")
+
+    # C6 boundary guard (Build-Order Step 5): a re-type that crosses the
+    # amortizing or Asset/Liability boundary is refused while the account
+    # has ledger postings.  Runs after the visibility gate so the type id
+    # is proven resolvable.
+    if (
+        "account_type_id" in data
+        and data["account_type_id"] != account.account_type_id
+    ):
+        failure = _validate_account_type_change(
+            account, data["account_type_id"],
+        )
+        if failure is not None:
+            return {}, failure
 
     # Stale-form check.  Performed before any mutation so the audit
     # trail (AccountAnchorHistory, audit_log triggers) records only

@@ -57,8 +57,7 @@ backfill and the oracle.
 """
 
 import logging
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 
 from app import ref_cache
@@ -74,6 +73,12 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import ledger_account_service, posting_reads
 from app.services.posting_reads import PostingError, _ledger_account_for
+from app.services._posting_write import (
+    _MAX_DESCRIPTION_LENGTH,
+    _PostingLeg,
+    _emit_balanced_entry,
+    _utc_civil_date,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,71 +87,17 @@ logger = logging.getLogger(__name__)
 # (the sibling-split convention); the ledger's one public surface stays HERE,
 # so the oracles and the loan posting package keep reading them off the
 # writer module.  ``PostingError`` / ``_ledger_account_for`` above are
-# re-exports of the same kind (this module also uses them itself).
+# re-exports of the same kind (this module also uses them itself), and so are
+# the balanced-write primitives imported from the
+# :mod:`app.services._posting_write` leaf (held below every writer so the
+# correction packages can share them without importing this module -- see
+# that module's docstring for the cycle this breaks).
 account_posting_total = posting_reads.account_posting_total
 settled_transfer_effect = posting_reads.settled_transfer_effect
 settled_transaction_effect = posting_reads.settled_transaction_effect
 
-# A double-entry journal entry has at least two legs (one debit, one credit).
-# Mirrors the ``COUNT(*) >= 2`` half of the deferred balanced-journal trigger
-# (``app.posting_infrastructure``); named so the service-side backstop and the
-# DB backstop read as the same rule.
-_MIN_POSTING_LEGS = 2
-
-# ``budget.journal_entries.description`` is ``VARCHAR(200)``.  The human label
-# is truncated to fit, mirroring the historical backfill's ``LEFT(..., 200)``
-# so the go-forward and backfilled entries carry identically-shaped
-# descriptions.
-_MAX_DESCRIPTION_LENGTH = 200
-
-
-@dataclass(frozen=True)
-class _PostingLeg:
-    """One signed leg to write into a balanced journal entry.
-
-    The unit the shared balanced-write path (:func:`_emit_balanced_entry`)
-    consumes, so the transfer lifecycle here and every future source type
-    (cash, loan, paycheck in later Build-Order steps) describe their legs the
-    same way.  ``amount`` is debit-positive / credit-negative; see the module
-    docstring for the sign convention.
-
-    Attributes:
-        ledger_account_id: ``budget.ledger_accounts.id`` the leg lands in.
-        amount: The signed leg amount (``Decimal``); non-zero (a zero leg is
-            refused by ``ck_account_postings_amount_nonzero``).
-        posting_kind_id: ``ref.posting_kinds.id`` for the leg's economic
-            nature (``transfer`` in Step 2).
-    """
-
-    ledger_account_id: int
-    amount: Decimal
-    posting_kind_id: int
-
 
 # ── Private helpers ────────────────────────────────────────────────
-
-
-def _utc_civil_date(instant: datetime) -> date:
-    """Return the UTC calendar date of a stored instant.
-
-    The Python counterpart of the historical backfill's
-    ``(paid_at AT TIME ZONE 'UTC')::date``: a transfer's settle date is the
-    civil date of its ``paid_at`` in UTC, the app's storage convention, NOT
-    the display timezone (``app.utils.dates.to_display_date`` would shift a
-    late-evening Eastern settle onto the wrong day and diverge from the
-    backfill).
-
-    Args:
-        instant: A stored ``paid_at`` instant.  Timezone-aware values are
-            converted to UTC; a naive value is assumed UTC (every
-            ``timestamptz`` in this app is stored UTC).
-
-    Returns:
-        The UTC calendar date of *instant*.
-    """
-    if instant.tzinfo is None:
-        return instant.date()
-    return instant.astimezone(timezone.utc).date()
 
 
 def _civil_settle_date(paid_at: datetime | None, pay_period: PayPeriod) -> date:
@@ -374,62 +325,6 @@ def _transfer_description(xfer: Transfer) -> str:
     )[:_MAX_DESCRIPTION_LENGTH]
 
 
-def _emit_balanced_entry(
-    entry: JournalEntry, legs: list[_PostingLeg]
-) -> JournalEntry:
-    """Persist a journal entry and its legs, enforcing the balanced invariant.
-
-    The single balanced-write path every posting source shares (Step 2's
-    transfers; cash / loan / paycheck in later steps).  Validates the two
-    cross-row invariants the deferred ``ck_account_postings_balanced`` trigger
-    enforces -- at least two legs, and legs summing to zero -- BEFORE the
-    write, so an unbalanced entry fails loudly at the call site with a clear
-    message instead of as an opaque deferred error at COMMIT.  The service is
-    the first backstop; the DB trigger is the second (the house "service + DB
-    backstop" pattern).
-
-    Adds the entry with its legs via the ``postings`` relationship cascade
-    (one flush assigns the entry id and inserts the legs with their FK) and
-    flushes so the caller sees assigned ids.  Does NOT commit.
-
-    Args:
-        entry: The unsaved :class:`~app.models.journal_entry.JournalEntry`
-            header, with every column already set by the caller.
-        legs: The :class:`_PostingLeg` list to attach; balanced by
-            construction for transfers.
-
-    Returns:
-        The persisted *entry* (flushed, with ``id`` and ``postings`` set).
-
-    Raises:
-        PostingError: If *legs* has fewer than two entries or does not sum
-            to zero.
-    """
-    if len(legs) < _MIN_POSTING_LEGS:
-        raise PostingError(
-            f"A journal entry needs at least {_MIN_POSTING_LEGS} legs; "
-            f"got {len(legs)}."
-        )
-    total = sum((leg.amount for leg in legs), Decimal("0"))
-    if total != 0:
-        raise PostingError(
-            f"Journal entry legs must sum to 0 (debit-positive double "
-            f"entry); got {total}."
-        )
-
-    db.session.add(entry)
-    for leg in legs:
-        entry.postings.append(
-            Posting(
-                ledger_account_id=leg.ledger_account_id,
-                amount=leg.amount,
-                posting_kind_id=leg.posting_kind_id,
-            )
-        )
-    db.session.flush()
-    return entry
-
-
 # ── Transaction (cash) posting helpers (Build-Order Step 3) ────────
 
 
@@ -564,6 +459,42 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
     return {cash_ledger.id: cash_leg, category_ledger.id: -cash_leg}
 
 
+def _self_heal_account_anchor_corrections(
+    account_ids: tuple, scenario_id: int, entries: list[JournalEntry],
+) -> None:
+    """Re-derive anchor corrections the just-emitted source deltas staled.
+
+    The Build-Order Step 5 effect-time self-heal, shared by the tails of
+    :func:`sync_transfer_postings` and :func:`sync_transaction_postings`
+    (which every settle / revert / delete path routes through, including
+    :func:`reverse_postings_before_delete`): when the emitted deltas touch a
+    non-loan account whose latest anchor assertion sits at-or-after the
+    earliest emitted ``entry_date``, that account's opening / true-up
+    corrections are reconciled again in the same transaction -- see
+    :func:`app.services.account_posting_service.self_heal_anchor_corrections`
+    for the predicate's correctness argument.  A no-op when nothing was
+    emitted, so the hot idempotent-resync paths pay nothing.
+
+    Args:
+        account_ids: The real accounts the deltas' LINKED legs can touch
+            (immutable on their source rows).
+        scenario_id: The scenario the deltas were emitted in.
+        entries: The just-emitted delta entries (empty -> no-op).
+    """
+    if not entries:
+        return
+    # Pylint: ``import-outside-toplevel`` -- reverse dependency: the account
+    # posting package imports this module's balanced-write path, so the
+    # top-level import would be circular.  Mirrors the loan package's
+    # function-local imports of the same shape.
+    # pylint: disable-next=import-outside-toplevel
+    from app.services import account_posting_service
+
+    account_posting_service.self_heal_anchor_corrections(
+        account_ids, scenario_id, entries,
+    )
+
+
 # ── Public API ─────────────────────────────────────────────────────
 
 
@@ -675,6 +606,9 @@ def sync_transfer_postings(
             period_id, settled, entry.id,
         )
         entries.append(entry)
+    _self_heal_account_anchor_corrections(
+        (xfer.from_account_id, xfer.to_account_id), xfer.scenario_id, entries,
+    )
     return entries
 
 
@@ -808,6 +742,9 @@ def sync_transaction_postings(
             period_id, settled, entry.id,
         )
         entries.append(entry)
+    _self_heal_account_anchor_corrections(
+        (txn.account_id,), txn.scenario_id, entries,
+    )
     return entries
 
 

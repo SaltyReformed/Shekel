@@ -1,7 +1,8 @@
 """
-Tests for csv_export_service.py -- Commit 17.
+Tests for csv_export_service.py -- Commit 17 + Build-Order Step 5 (C11).
 
-Verifies CSV generation for all four analytics export functions.
+Verifies CSV generation for the six analytics export functions
+(calendar, year-end, variance, trends, income statement, balance sheet).
 Tests cover header correctness, data formatting, edge cases
 (None, special characters, decimal precision), and CSV parseability.
 """
@@ -15,7 +16,9 @@ from decimal import Decimal
 import pytest
 
 from app.services.csv_export_service import (
+    export_balance_sheet_csv,
     export_calendar_csv,
+    export_income_statement_csv,
     export_trends_csv,
     export_variance_csv,
     export_year_end_csv,
@@ -149,6 +152,58 @@ class FakeTrendReport:
     group_trends: list = field(default_factory=list)
     data_sufficiency: str = "sufficient"
     threshold: Decimal = Decimal("0.1000")
+
+
+# ── Statement Fakes (Build-Order Step 5) ─────────────────────────
+# Duck-typed stand-ins for the ledger_report_service frozen shapes, kept
+# local so these stay pure formatting unit tests (the real report -> CSV
+# path is covered end-to-end by the route tests).  The CSV functions read
+# only the attributes named here.
+
+
+@dataclass(frozen=True)
+class FakeStatementLine:
+    """Minimal StatementLine for CSV tests (label + natural amount)."""
+    label: str
+    amount: Decimal
+    ledger_account_id: int | None = None
+
+
+@dataclass(frozen=True)
+class FakeStatementSection:
+    """Minimal StatementSection for CSV tests (lines + total)."""
+    lines: list = field(default_factory=list)
+    total: Decimal = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class FakeTieOut:
+    """Minimal TrialBalanceTieOut for CSV tests."""
+    assets: Decimal = Decimal("0.00")
+    liabilities_plus_equity: Decimal = Decimal("0.00")
+    ledger_net: Decimal = Decimal("0.00")
+    in_balance: bool = True
+
+
+@dataclass(frozen=True)
+class FakeIncomeStatement:
+    """Minimal IncomeStatementReport for CSV tests."""
+    window_label: str = "January 2026"
+    income: FakeStatementSection = field(default_factory=FakeStatementSection)
+    expense: FakeStatementSection = field(default_factory=FakeStatementSection)
+    net_income: Decimal = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class FakeBalanceSheet:
+    """Minimal BalanceSheetReport for CSV tests."""
+    as_of: date = date(2026, 3, 20)
+    assets: FakeStatementSection = field(default_factory=FakeStatementSection)
+    liabilities: FakeStatementSection = field(
+        default_factory=FakeStatementSection,
+    )
+    equity: FakeStatementSection = field(default_factory=FakeStatementSection)
+    tie_out: FakeTieOut = field(default_factory=FakeTieOut)
 
 
 def _parse_csv(csv_str):
@@ -301,6 +356,178 @@ class TestTrendsExport:
         rows = _parse_csv(result)
         # Header order: ..., Direction(3), Change (%)(4), ... -> index 4.
         assert rows[2][4] == "New"
+
+
+# ── Income Statement Tests (Build-Order Step 5) ──────────────────
+
+
+class TestIncomeStatementExport:
+    """Tests for export_income_statement_csv()."""
+
+    def test_export_income_statement_sections(self, app):
+        """C11-svc1: title, both bracketed sections, totals, and net income.
+
+        Income 2000 + 500 = 2500; expense 1200 + 300 = 1500; net 1000.
+        """
+        report = FakeIncomeStatement(
+            window_label="January 2026",
+            income=FakeStatementSection(
+                lines=[
+                    FakeStatementLine("Salary", Decimal("2000.00"), 1),
+                    FakeStatementLine("Freelance", Decimal("500.00"), 2),
+                ],
+                total=Decimal("2500.00"),
+            ),
+            expense=FakeStatementSection(
+                lines=[
+                    FakeStatementLine("Rent", Decimal("1200.00"), 3),
+                    FakeStatementLine("Groceries", Decimal("300.00"), 4),
+                ],
+                total=Decimal("1500.00"),
+            ),
+            net_income=Decimal("1000.00"),
+        )
+        rows = _parse_csv(export_income_statement_csv(report))
+        assert rows[0] == ["Income Statement", "January 2026"]
+        flat = {cell for row in rows for cell in row}
+        assert "[Income]" in flat
+        assert "[Expenses]" in flat
+        assert ["Salary", "2000.00"] in rows
+        assert ["Groceries", "300.00"] in rows
+        assert ["Total Income", "2500.00"] in rows
+        assert ["Total Expenses", "1500.00"] in rows
+        assert ["Net Income", "1000.00"] in rows
+
+    def test_export_income_statement_empty(self, app):
+        """C11-svc2: an empty statement still emits both sections and zeros.
+
+        A user with nothing posted in the window exports valid structure --
+        both bracketed sections, zero totals, and a zero net income -- not
+        an empty file.
+        """
+        report = FakeIncomeStatement(
+            window_label="2026",
+            income=FakeStatementSection(lines=[], total=Decimal("0.00")),
+            expense=FakeStatementSection(lines=[], total=Decimal("0.00")),
+            net_income=Decimal("0.00"),
+        )
+        rows = _parse_csv(export_income_statement_csv(report))
+        flat = {cell for row in rows for cell in row}
+        assert "[Income]" in flat
+        assert "[Expenses]" in flat
+        assert ["Total Income", "0.00"] in rows
+        assert ["Total Expenses", "0.00"] in rows
+        assert ["Net Income", "0.00"] in rows
+
+    def test_export_income_statement_negative_net(self, app):
+        """C11-svc3: a loss exports a negative net income (numeric, not quoted).
+
+        Expenses 800 exceed income 500 -> net -300; the numeric stays a
+        plain '-300.00' so a spreadsheet can aggregate it.
+        """
+        report = FakeIncomeStatement(
+            income=FakeStatementSection(
+                lines=[FakeStatementLine("Salary", Decimal("500.00"), 1)],
+                total=Decimal("500.00"),
+            ),
+            expense=FakeStatementSection(
+                lines=[FakeStatementLine("Rent", Decimal("800.00"), 3)],
+                total=Decimal("800.00"),
+            ),
+            net_income=Decimal("-300.00"),
+        )
+        rows = _parse_csv(export_income_statement_csv(report))
+        assert ["Net Income", "-300.00"] in rows
+
+
+# ── Balance Sheet Tests (Build-Order Step 5) ─────────────────────
+
+
+class TestBalanceSheetExport:
+    """Tests for export_balance_sheet_csv()."""
+
+    def test_export_balance_sheet_sections(self, app):
+        """C11-svc4: title (as-of), the three sections, and a green tie-out.
+
+        Assets 1500; Liabilities 200; Equity 1000 opening + 300 retained =
+        1300; L+E = 1500 = Assets, so In Balance is Yes.
+        """
+        report = FakeBalanceSheet(
+            as_of=date(2026, 3, 20),
+            assets=FakeStatementSection(
+                lines=[FakeStatementLine("Checking", Decimal("1500.00"), 1)],
+                total=Decimal("1500.00"),
+            ),
+            liabilities=FakeStatementSection(
+                lines=[FakeStatementLine("Credit Card", Decimal("200.00"), 2)],
+                total=Decimal("200.00"),
+            ),
+            equity=FakeStatementSection(
+                lines=[
+                    FakeStatementLine("Checking -- Opening",
+                                      Decimal("1000.00"), 3),
+                    FakeStatementLine("Retained Earnings",
+                                      Decimal("300.00"), None),
+                ],
+                total=Decimal("1300.00"),
+            ),
+            tie_out=FakeTieOut(
+                assets=Decimal("1500.00"),
+                liabilities_plus_equity=Decimal("1500.00"),
+                ledger_net=Decimal("0.00"),
+                in_balance=True,
+            ),
+        )
+        rows = _parse_csv(export_balance_sheet_csv(report))
+        assert rows[0] == ["Balance Sheet", "2026-03-20"]
+        flat = {cell for row in rows for cell in row}
+        assert "[Assets]" in flat
+        assert "[Liabilities]" in flat
+        assert "[Equity]" in flat
+        assert "[Trial Balance]" in flat
+        assert ["Total Assets", "1500.00"] in rows
+        assert ["Total Liabilities", "200.00"] in rows
+        assert ["Total Equity", "1300.00"] in rows
+        assert ["Retained Earnings", "300.00"] in rows
+        assert ["Assets", "1500.00"] in rows
+        assert ["Liabilities + Equity", "1500.00"] in rows
+        assert ["In Balance", "Yes"] in rows
+
+    def test_export_balance_sheet_out_of_balance(self, app):
+        """C11-svc5: a broken tie-out exports 'No' and the nonzero ledger net.
+
+        When the ledger does not close, the export must surface it (In
+        Balance = No) and carry the mechanical ledger-net figure so the
+        discrepancy is visible in the download, not just on screen.
+        """
+        report = FakeBalanceSheet(
+            tie_out=FakeTieOut(
+                assets=Decimal("1500.00"),
+                liabilities_plus_equity=Decimal("1475.00"),
+                ledger_net=Decimal("25.00"),
+                in_balance=False,
+            ),
+        )
+        rows = _parse_csv(export_balance_sheet_csv(report))
+        assert ["In Balance", "No"] in rows
+        assert ["Ledger Net", "25.00"] in rows
+
+    def test_export_balance_sheet_liability_natural_sign(self, app):
+        """C11-svc6: a natural-signed liability line exports positive.
+
+        The reader signs a credit-normal liability into positive
+        natural-balance terms (reader-contract C-4), so the CSV renders it
+        as a positive Liabilities line with no ``-abs`` in the exporter.
+        """
+        report = FakeBalanceSheet(
+            liabilities=FakeStatementSection(
+                lines=[FakeStatementLine("Loan", Decimal("5000.00"), 9)],
+                total=Decimal("5000.00"),
+            ),
+        )
+        rows = _parse_csv(export_balance_sheet_csv(report))
+        assert ["Loan", "5000.00"] in rows
+        assert ["Total Liabilities", "5000.00"] in rows
 
 
 # ── Cross-Cutting Tests ──────────────────────────────────────────
@@ -465,6 +692,46 @@ class TestFormulaInjection:
         cells = {c for row in _parse_csv(export_trends_csv(report)) for c in row}
         assert "'=evil()" in cells
         assert "'-Rent" in cells
+
+    def test_income_statement_names_neutralized(self, app):
+        """Income/Expense line labels (user category names) are neutralized."""
+        report = FakeIncomeStatement(
+            income=FakeStatementSection(
+                lines=[FakeStatementLine("=SUM(A1)", Decimal("100.00"), 1)],
+                total=Decimal("100.00"),
+            ),
+            expense=FakeStatementSection(
+                lines=[FakeStatementLine("@evil", Decimal("50.00"), 2)],
+                total=Decimal("50.00"),
+            ),
+            net_income=Decimal("50.00"),
+        )
+        cells = {
+            c for row in _parse_csv(export_income_statement_csv(report))
+            for c in row
+        }
+        assert "'=SUM(A1)" in cells
+        assert "'@evil" in cells
+
+    def test_balance_sheet_names_neutralized(self, app):
+        """Asset/Liability/Equity line labels (user account names) are
+        neutralized."""
+        report = FakeBalanceSheet(
+            assets=FakeStatementSection(
+                lines=[FakeStatementLine("+Checking", Decimal("100.00"), 1)],
+                total=Decimal("100.00"),
+            ),
+            equity=FakeStatementSection(
+                lines=[FakeStatementLine("-Opening", Decimal("100.00"), 3)],
+                total=Decimal("100.00"),
+            ),
+        )
+        cells = {
+            c for row in _parse_csv(export_balance_sheet_csv(report))
+            for c in row
+        }
+        assert "'+Checking" in cells
+        assert "'-Opening" in cells
 
     def test_ordinary_name_not_prefixed(self, app):
         """A name that does not lead with a formula char is unchanged --

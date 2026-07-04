@@ -54,6 +54,26 @@
       Trends
     </button>
   </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.income_statement_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="false">
+      Income Statement
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="pill"
+            hx-get="{{ url_for('analytics.balance_sheet_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-trigger="click"
+            hx-indicator="#tab-spinner"
+            role="tab" aria-selected="false">
+      Balance Sheet
+    </button>
+  </li>
 </ul>
 
 {# Loading indicator for subsequent tab switches -- survives content swaps

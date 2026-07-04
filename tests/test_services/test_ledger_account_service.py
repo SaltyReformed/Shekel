@@ -31,7 +31,7 @@ Both are idempotent (a repeat call is a no-op).  The Step-2 tests pin:
     Investment) maps to the Asset ledger class.  The derivation branches
     on the account-type category INTEGER ID, never the string name.
   * **Idempotency** -- a second sync returns the existing row, never a
-    duplicate (the partial unique ``uq_ledger_accounts_account`` would
+    duplicate (the partial unique ``uq_ledger_accounts_account_kind`` would
     otherwise raise).
 
 The Step-3 tests pin the resolver's behaviour (the storage-tier
@@ -61,11 +61,26 @@ from app.enums import LedgerAccountClassEnum, LedgerAccountKindEnum
 from app.extensions import db as _db
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
-from app.services import ledger_account_service
+from app.services import ledger_account_service, posting_reads
 from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
+    linked_ledger_account,
 )
+
+
+def _rows_by_kind(account_id):
+    """Return ``{kind_id: LedgerAccount}`` for an account's ledger rows.
+
+    The kind-aware shape lookup (Step 5): a non-loan account created with the
+    $100 ledger-suite sentinel carries TWO rows -- the ``linked`` pairing and
+    the ``anchor_equity`` twin its opening correction minted -- so a shape
+    assertion must say WHICH kinds it expects instead of counting rows.
+    """
+    return {
+        row.kind_id: row
+        for row in ledger_accounts_for_account(_db.session, account_id)
+    }
 
 
 class TestSyncHookShape:
@@ -87,9 +102,18 @@ class TestSyncHookShape:
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "New Checking",
             )
-            rows = ledger_accounts_for_account(_db.session, account.id)
-            assert len(rows) == 1
-            ledger_account = rows[0]
+            by_kind = _rows_by_kind(account.id)
+            # Exactly the linked pairing plus the Step-5 anchor-equity twin
+            # its $100 sentinel opening minted.
+            assert set(by_kind) == {
+                ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
+                ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                ),
+            }
+            ledger_account = by_kind[
+                ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED)
+            ]
             assert ledger_account.account_id == account.id
             assert ledger_account.name is None
             assert ledger_account.user_id == account.user_id
@@ -121,15 +145,16 @@ class TestSyncHookShape:
         Liability-category types (Mortgage, Auto Loan, Credit Card) ->
         Liability; every other category (Asset, Retirement, Investment) ->
         Asset.  Proves the category-ID branch end to end across all four
-        categories.
+        categories.  The class under test is the LINKED row's; a non-loan
+        type also carries the Step-5 anchor-equity twin (always Equity
+        class), while an amortizing type never does.
         """
         with app.app_context():
             account = create_account_of_type(
                 seed_user, _db.session, type_name, f"Test {type_name}",
             )
-            rows = ledger_accounts_for_account(_db.session, account.id)
-            assert len(rows) == 1
-            assert rows[0].class_id == ref_cache.ledger_account_class_id(
+            linked = linked_ledger_account(_db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
                 expected_class,
             )
 
@@ -150,15 +175,18 @@ class TestSyncHookIdempotency:
             account = create_account_of_type(
                 seed_user, _db.session, "Savings", "Idem Savings",
             )
-            first = ledger_accounts_for_account(_db.session, account.id)
-            assert len(first) == 1
-            first_id = first[0].id
+            first_id = linked_ledger_account(_db.session, account.id).id
 
             again = ledger_account_service.create_ledger_account_for_account(
                 account,
             )
             assert again.id == first_id
-            assert len(ledger_accounts_for_account(_db.session, account.id)) == 1
+            # Still exactly one LINKED row (the anchor-equity twin coexists
+            # beside it and is not the hook's concern).
+            assert linked_ledger_account(_db.session, account.id).id == first_id
+            assert len(ledger_accounts_for_account(
+                _db.session, account.id,
+            )) == 2
 
     def test_hook_recreates_after_deletion(self, app, db, seed_user):
         """Deleting the pairing then re-syncing restores exactly one row.
@@ -930,3 +958,235 @@ class TestLoanLedgerResolverValidation:
 
             assert len(row.name) == 100
             assert row.name == f"{long_name} -- Interest"[:100]
+
+
+class TestAnchorEquityResolver:
+    """``get_or_create_anchor_equity_account`` materialises the equity twin.
+
+    Build-Order Step 5's chart resolver: one ``anchor_equity`` Equity account
+    per NON-loan account -- the counter-leg of its ``account_opening`` /
+    ``account_trueup`` corrections -- sharing the ``account_id`` column with
+    the ``linked`` row under the re-keyed ``uq_ledger_accounts_account_kind``
+    unique.  These tests pin the resolver's behaviour (the index itself is
+    covered by ``test_models/test_ledger_account.py::TestPartialUnique``):
+    correct shape / Equity class / name snapshot; idempotency; coexistence
+    with the linked row; archived accounts still resolving; and the clip.
+    """
+
+    def test_creates_equity_twin_with_correct_shape(
+        self, app, db, seed_user,
+    ):
+        """The twin carries account_id, Equity class, the kind, and a snapshot.
+
+        Shape contract: ``account_id`` points at the account (shared with the
+        linked row); ``category_id`` / ``loan_account_id`` NULL and
+        ``is_fallback`` False; ``class_id`` Equity; ``kind_id``
+        ``anchor_equity``; ``name`` snapshots "<account> -- Opening" (unlike a
+        linked row -- the COALESCE display rule is the LINKED-row rule, so
+        readers render this snapshot); ``user_id`` the owner; flushed.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Twin Shape",
+            )
+
+            row = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+
+            assert row.id is not None
+            assert row.account_id == account.id
+            assert row.category_id is None
+            assert row.loan_account_id is None
+            assert row.is_fallback is False
+            assert row.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.EQUITY,
+            )
+            assert row.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.ANCHOR_EQUITY,
+            )
+            assert row.name == "Twin Shape -- Opening"
+            assert row.user_id == user_id
+
+    def test_idempotent_returns_existing_row(self, app, db, seed_user):
+        """A second call for the same account returns the same row.
+
+        ``uq_ledger_accounts_account_kind`` permits one row per
+        ``(account, kind)``; the resolver short-circuits on the existing row
+        and returns the same PK.  The account's total ledger-row count stays
+        exactly two (the linked row + the one twin).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "HYSA", "Idem Savings",
+            )
+
+            first = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+            second = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+
+            assert second.id == first.id
+            assert len(ledger_accounts_for_account(_db.session, account.id)) == 2
+
+    def test_twin_coexists_with_linked_row_and_hook_stays_idempotent(
+        self, app, db, seed_user,
+    ):
+        """The twin never displaces the linked pairing (the C3 hardening).
+
+        After the twin exists, ``create_ledger_account_for_account`` must
+        still resolve the LINKED row (not the twin) -- the kind filter added
+        in C3 -- and ``posting_reads._ledger_account_for`` must keep
+        returning the linked row rather than raising ``MultipleResultsFound``.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "Brokerage", "Coexist Brokerage",
+            )
+            linked_before = posting_reads._ledger_account_for(account.id)
+
+            twin = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+            assert twin.id != linked_before.id
+
+            # The hook's idempotency lookup still finds the LINKED row.
+            hook_row = ledger_account_service.create_ledger_account_for_account(
+                account,
+            )
+            assert hook_row.id == linked_before.id
+
+            # The shared pairing lookup still resolves the linked row.
+            assert posting_reads._ledger_account_for(account.id).id == (
+                linked_before.id
+            )
+
+            # THE DISCRIMINATING PIN for the C3 kind filter (the twin alone
+            # cannot catch a reverted filter: the linked row wins both heap
+            # and index order).  With the linked row GONE and only the twin
+            # left, an unfiltered lookup would return the twin and skip
+            # re-creating the pairing; the kind-filtered hook instead mints
+            # a fresh LINKED row distinct from the twin.
+            _db.session.delete(linked_before)
+            _db.session.flush()
+            recreated = ledger_account_service.create_ledger_account_for_account(
+                account,
+            )
+            assert recreated.id != twin.id
+            assert recreated.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            )
+
+    def test_archived_account_still_resolves(self, app, db, seed_user):
+        """An archived (inactive) account keeps resolving its equity twin.
+
+        Archiving disables new activity; it does not erase posted facts, so
+        the corrections on an archived account must keep reconciling.  The
+        loader deliberately does not filter ``is_active``.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Archived Checking",
+            )
+            account.is_active = False
+            _db.session.commit()
+
+            row = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+            assert row.account_id == account.id
+
+    def test_long_account_name_truncated_to_fit_column(
+        self, app, db, seed_user,
+    ):
+        """A name + suffix wider than the column is clipped, not rejected.
+
+        ``accounts.name`` is ``String(100)``, so "<name> -- Opening" can
+        reach 111 chars -- wider than ``ledger_accounts.name``'s
+        ``String(100)``, which PostgreSQL rejects on insert.  The resolver
+        clips the snapshot; ``name`` is display-only, so the clip is lossless
+        for logic.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            long_name = "A" * 95
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", long_name,
+            )
+
+            row = ledger_account_service.get_or_create_anchor_equity_account(
+                user_id, account.id,
+            )
+
+            assert len(row.name) == 100
+            assert row.name == f"{long_name} -- Opening"[:100]
+
+
+class TestAnchorEquityResolverValidation:
+    """The load-bearing guards: non-loan targets only, tenancy-filtered.
+
+    No database CHECK pins an ``anchor_equity`` row's target (the same
+    columns-only trust contract the loan shape CHECK carries), so the
+    resolver's guards are the app's sole defense -- and what keeps a loan's
+    linked ledger free of twins (the loan oracle's bare-``account_id``
+    helpers rely on that, per the Step-5 plan's C6 checklist).
+    """
+
+    def test_rejects_amortizing_loan(self, app, db, seed_user):
+        """A Mortgage target raises: loans book equity via equity_opening.
+
+        Minting an ``anchor_equity`` twin for a loan would double-book its
+        opening across two equity accounts (the loan path already posts onto
+        the per-loan ``equity_opening`` account).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = create_account_of_type(
+                seed_user, _db.session, "Mortgage", "Guarded Loan",
+            )
+            with pytest.raises(ValueError, match="amortizing loan"):
+                ledger_account_service.get_or_create_anchor_equity_account(
+                    user_id, loan.id,
+                )
+            # No twin row was minted alongside the linked pairing.
+            rows = ledger_accounts_for_account(_db.session, loan.id)
+            assert [row.kind_id for row in rows] == [
+                ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
+            ]
+
+    def test_missing_account_raises_value_error(self, app, db, seed_user):
+        """A nonexistent account id fails loud with the offending id."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            with pytest.raises(ValueError, match="no account with id=999999"):
+                ledger_account_service.get_or_create_anchor_equity_account(
+                    user_id, 999999,
+                )
+
+    def test_foreign_account_rejected(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """Another owner's account is treated as "not found" (tenancy)."""
+        with app.app_context():
+            user_a = seed_user["user"].id
+            foreign_account = seed_second_user["account"]
+            with pytest.raises(ValueError, match="no account with id="):
+                ledger_account_service.get_or_create_anchor_equity_account(
+                    user_a, foreign_account.id,
+                )
+            # Only the owner's own rows survive (their linked pairing and
+            # the twin their $2000 opening minted) -- none owned by user A.
+            foreign_rows = ledger_accounts_for_account(
+                _db.session, foreign_account.id,
+            )
+            assert len(foreign_rows) == 2
+            assert all(
+                row.user_id == seed_second_user["user"].id
+                for row in foreign_rows
+            )

@@ -51,8 +51,8 @@
         {% if current_balance is not none %}{{ money(current_balance) }}{% else %}--{% endif %}
       </div>
       <div class="nw-hero__cap">
-        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}{% endif %}
-        {%- elif anchor_as_of %}anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}
+        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}{% endif %}
+        {%- elif anchor_as_of %}anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}
         {%- else %}no pay periods yet
         {%- endif -%}
       </div>

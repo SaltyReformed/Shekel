@@ -21,14 +21,23 @@ def _property_type_id(db):
     return db.session.query(AccountType).filter_by(name="Property").one().id
 
 
-def _make_property(db, seed_user, periods, name="House", rate=None):
-    """Create a Property via the service (no params unless ``rate`` given)."""
+def _make_property(
+    db, seed_user, periods, name="House", rate=None,
+    anchor_balance=Decimal("400000.00"),
+):
+    """Create a Property via the service (no params unless ``rate`` given).
+
+    The default $400,000 anchor posts a Step-5 opening correction at create
+    time, which makes the account archive-only under hard-delete Guard 5;
+    the hard-delete test passes ``Decimal("0.00")`` (a zero opening books
+    nothing, keeping the row deletable).
+    """
     acct = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
             account_type_id=_property_type_id(db),
             name=name,
-            anchor_balance=Decimal("400000.00"),
+            anchor_balance=anchor_balance,
             anchor_period_id=periods[0].id,
         ),
     )
@@ -202,8 +211,12 @@ class TestPropertyDeletion:
     ):
         """Hard-deleting a Property removes its appreciation params row."""
         with app.app_context():
+            # $0 anchor: a non-zero anchor posts its Step-5 opening and the
+            # hard delete would archive instead (Guard 5); the subject here
+            # is the params-row cleanup on a real delete.
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+                anchor_balance=Decimal("0.00"),
             )
             loan = create_loan_account(seed_user, db.session, name="Mtg")
             loan.collateral_account_id = prop.id

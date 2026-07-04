@@ -1,0 +1,112 @@
+{% from "_money_macros.html" import money %}
+{# Balance Sheet -- HTMX partial (Build-Order Step 5).
+   Rendered by analytics.balance_sheet_tab() into #tab-content.
+   The posted ledger's position as of a date: Assets, Liabilities, and
+   Equity (with a derived Retained Earnings line) plus a two-part
+   trial-balance tie-out.  This is the posted ledger's statement -- it
+   excludes modeled growth / appreciation / interest between anchor
+   true-ups (that projection is Net Worth's job). #}
+
+{% macro section_card(title, section, icon) %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi {{ icon }}"></i> {{ title }}</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table mb-0">
+      <tbody>
+        {% for line in section.lines %}
+        <tr>
+          <td>{{ line.label }}</td>
+          <td class="text-end font-mono">{{ money(line.amount) }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="text-muted" colspan="2">None</td></tr>
+        {% endfor %}
+        <tr class="table-group-divider">
+          <td class="fw-bold">Total {{ title }}</td>
+          <td class="text-end font-mono fw-bold">{{ money(section.total) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endmacro %}
+
+{# ── Header & As-Of Selector ───────────────────────────────────── #}
+
+<div class="d-flex align-items-center justify-content-between flex-wrap mb-3">
+  <h5 class="mb-0 me-3">Balance Sheet</h5>
+  <div class="d-flex gap-2 align-items-center">
+    <a href="{{ url_for('analytics.balance_sheet_tab', as_of=as_of.isoformat(), format='csv') }}"
+       class="btn btn-sm btn-outline-secondary" download>
+      <i class="bi bi-download"></i> CSV
+    </a>
+    <label for="balance-sheet-as-of" class="form-label mb-0 small text-muted">As of</label>
+    <input type="date" id="balance-sheet-as-of"
+           class="form-control form-control-sm w-auto"
+           name="as_of"
+           value="{{ as_of.isoformat() }}"
+           min="2000-01-01" max="{{ today.isoformat() }}"
+           hx-get="{{ url_for('analytics.balance_sheet_tab') }}"
+           hx-target="#tab-content" hx-swap="innerHTML"
+           hx-indicator="#tab-spinner">
+  </div>
+</div>
+
+{# ``has_content`` drops the always-present derived Retained Earnings line
+   (the only line whose ``ledger_account_id`` is None) so a no-baseline user
+   -- whose sole equity line is a $0.00 Retained Earnings -- renders the empty
+   state rather than an all-zero sheet.  ``rejectattr(..., 'none')`` states the
+   intent exactly (drop the id-less derived line), not "drop falsy ids". #}
+{% set posted_equity = report.equity.lines | rejectattr('ledger_account_id', 'none') | list %}
+{% set has_content = report.assets.lines or report.liabilities.lines or posted_equity %}
+
+{% if not has_content %}
+{# ── Empty State ────────────────────────────────────────────────── #}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-clipboard-x fs-display"></i>
+  <p class="mt-2">No posted balances as of {{ as_of.strftime('%b %d, %Y') }}.</p>
+</div>
+
+{% else %}
+
+{{ section_card('Assets', report.assets, 'bi-wallet2') }}
+{{ section_card('Liabilities', report.liabilities, 'bi-credit-card') }}
+{{ section_card('Equity', report.equity, 'bi-graph-up-arrow') }}
+
+{# ── Trial-Balance Tie-Out ──────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span class="fw-bold">Trial Balance</span>
+      {% if report.tie_out.in_balance %}
+      <span class="badge bg-success">In balance</span>
+      {% else %}
+      <span class="badge bg-danger">Out of balance</span>
+      {% endif %}
+    </div>
+    <div class="d-flex justify-content-between small">
+      <span class="text-muted">Assets</span>
+      <span class="font-mono">{{ money(report.tie_out.assets) }}</span>
+    </div>
+    <div class="d-flex justify-content-between small">
+      <span class="text-muted">Liabilities + Equity</span>
+      <span class="font-mono">{{ money(report.tie_out.liabilities_plus_equity) }}</span>
+    </div>
+    {% if not report.tie_out.in_balance %}
+    <div class="d-flex justify-content-between small text-danger mt-1">
+      <span>Unbalanced ledger net</span>
+      <span class="font-mono">{{ money(report.tie_out.ledger_net) }}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<p class="text-muted small">
+  This is the posted ledger's statement. It reflects asserted anchor
+  facts and settled activity; it excludes modeled growth, appreciation,
+  and interest between anchor true-ups (that projection is Net Worth's).
+</p>
+
+{% endif %}
