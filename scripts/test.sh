@@ -128,4 +128,13 @@ else
     done
 fi
 
-exec pytest "$@"
+# Local default: skip container-spawning tests (marked ``docker``) so a
+# routine run never touches the production Docker daemon that the homelab
+# stack + wud/cadvisor/alloy share (see docs/test-harness-isolation.md).
+# Opt back in with:  PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...
+# CI is unaffected: it invokes pytest directly, not this wrapper, so it
+# still runs the full set.  An explicit ``-m`` in the caller's arguments
+# takes precedence (pytest keeps the last ``-m`` on the command line).
+PYTEST_MARKER_EXPR="${PYTEST_MARKER_EXPR:-not docker}"
+
+exec pytest -m "$PYTEST_MARKER_EXPR" "$@"

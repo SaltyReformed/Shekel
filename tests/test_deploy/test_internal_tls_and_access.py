@@ -857,6 +857,7 @@ class TestGitignoreExcludesPostgresKeyAndCert:
 # ──────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.docker
 class TestMergedComposeCarriesTLS:
     """Run ``docker compose config`` against the merged base + prod
     override and verify the C-37 fields appear on the merged result.
