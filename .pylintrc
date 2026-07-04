@@ -13,9 +13,11 @@ init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); 
 # shekel-decimal-from-float, shekel-refname-compare, shekel-bare-money-quantize,
 # shekel-disable-rationale, shekel-original-principal-as-balance,
 # shekel-balance-producer-bypass (every balance read must go through the
-# app.services.balance_at seam), and shekel-transaction-status-bypass (every
+# app.services.balance_at seam), shekel-transaction-status-bypass (every
 # Transaction.status_id change must go through the
-# transaction_service.apply_status_change seam). See docs/coding-standards.md
+# transaction_service.apply_status_change seam), and shekel-ledger-model-bypass
+# (every posted-ledger model import must stay inside the posting-ledger
+# services). See docs/coding-standards.md
 # (Type Safety, Reference Tables) for the rules they enforce.
 load-plugins=pylint.extensions.docparams,shekel_checkers
 

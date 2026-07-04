@@ -331,7 +331,60 @@ in throughout. Developer approval: 2026-07-03.
   note (a bare `"500.00"` balance-sheet assertion that Retained Earnings also
   matched) folded in as the exact-row pins above.  88 targeted green (service +
   `TestCsvExport` + the ownership file); `pylint app/` 10.00.
-- C12 (enforcement: W9908 + F-1) -- pending
+- C12 (enforcement: W9908 + F-1) -- DONE: new checker
+  `tools/pylint/shekel_checkers/ledger_model_fence.py`
+  (`ShekelLedgerModelFenceChecker`, message W9908 `shekel-ledger-model-bypass`),
+  registered in the package `__init__` (register + `__all__` + rule docstring).
+  It is an IMPORT fence on TWO axes, reusing the fail-closed
+  `_module_in_allowlist`: the NAME axis flags `Posting`/`JournalEntry`/
+  `LedgerAccount` imported from ANYWHERE (the `from app.models import Posting`
+  F-1 re-export, the defining submodule, a relative path, a laundering
+  re-export), and the MODULE axis flags binding a defining submodule
+  (`from app.models.journal_entry import <anything>`,
+  `from app.models import journal_entry` -- the submodule bound by name off the
+  package -- and the plain `import app.models.journal_entry` via `visit_import`).
+  `visit_importfrom` is three priority-ordered branches (submodule -> app.models
+  name/leaf -> universal class name) so each name reports at most once (no
+  double-report; traced on all five shapes). **Allowlist deviation from Section
+  4.4 (correct as-built):** the plan's allowlist predates the C6 commit that
+  created `app/services/_posting_write.py`, so `app.services._posting_write`
+  (a real importer of the write primitives) was ADDED; grep-verified complete
+  against every `app/` importer, and `pylint app/ scripts/` both hold 10.00 with
+  ZERO W9908 violations. **Design improvement over the plan (from the C12
+  adversarial `code-reviewer` pass, findings H1/M1):** the plan spec'd only the
+  module-path + `from app.models import <Class>` shapes, which left
+  `from app.models import journal_entry` (submodule-by-name -- a shape the loan
+  oracle's OWN detector already treats as ledger-reaching, so production would
+  have been WEAKER than the test-side fence) and relative CLASS imports
+  reachable; both are closed by the name axis + the app.models leaf-name branch.
+  The two accepted residual boundaries (bare `import app.models` + attribute
+  access; a RELATIVE submodule-by-name `from ..models import journal_entry`) are
+  non-idioms (cross-package imports are absolute, relative imports are
+  intra-package only) and are DOCUMENTED in the module docstring + W9908 help,
+  not falsely claimed closed. Gate lockstep: `shekel-ledger-model-bypass`
+  appended to `_CANONICAL_FAIL_ON` and every executable occurrence -- `ci.yml`
+  (four: the comment the regex matches + app/ + scripts/ + checker-package
+  steps), `.pre-commit-config.yaml` (three hooks), `post-edit-python.sh` (the
+  `--enable` line) -- plus the prose echoes (CLAUDE.md x2, `.pylintrc`, the ci.yml
+  and post-edit checker enumerations); `test_fail_on_gate_consistency` (bijection
+  with the registry + every gate location) green. **Test-side F-1 closure:** the
+  loan oracle's two import-fence detectors (`_imports_a_ledger_model`,
+  `_ledger_imports_in_source`) plus a new `_LEDGER_MODEL_CLASS_NAMES` now also
+  match `from app.models import Posting/JournalEntry/LedgerAccount`, and the
+  negative control (`test_import_fence_flags_a_ledger_import`) proves BOTH
+  detectors close the blind spot (with a no-false-positive check on a non-ledger
+  `app.models` import). **Pre-existing M-2 gap found + fixed:** the coverage
+  guard `test_ledger_import_tokens_cover_every_ledger_reader` was ALREADY RED on
+  committed HEAD -- C9's `ledger_report_service` imports the ledger models but was
+  never added to `_LEDGER_IMPORT_TOKENS` (it would first have surfaced at the
+  C13 full-suite gate); added the `ledger_report_service` token (the resolver
+  stack does not import it, so `test_resolver_stack_imports_no_ledger_module` is
+  not made a false pass). 133 checker/gate unit tests (25 new W9908 cases + the
+  gate-consistency pair) and 5 loan-oracle resolver-fence tests green; the three
+  pylint floors (app/, scripts/, checker package) 10.00; W9906's reader-name list
+  untouched. Out-of-scope note left for the developer: `.claude/commands/
+  standards.md`'s prose `--fail-on` echo is independently stale (it predates
+  `shekel-transaction-status-bypass`); not a gate location, deliberately left.
 - C13 (statements oracle + docs close-out + full suite) -- pending
 
 Gates for every commit: targeted tests green + `pylint` 10.00 on touched files + an adversarial

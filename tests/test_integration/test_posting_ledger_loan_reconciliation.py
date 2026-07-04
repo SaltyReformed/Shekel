@@ -1505,6 +1505,13 @@ _LEDGER_IMPORT_TOKENS = (
     "_posting_write",
     "loan_posting_service",
     "ledger_account_service",
+    # The Step-5 reporting package (income statement / balance sheet): its
+    # attribution core reads the posted ledger, so a resolver import of it must
+    # trip the fence.  ``ledger_account_service`` above does NOT cover it -- the
+    # substring "ledger_account_service" is not in "ledger_report_service" --
+    # and the M-2 coverage guard fails loud until this token is present (the
+    # objective proof the denylist stays complete as new readers land).
+    "ledger_report_service",
     "balance_at",
     "pay_period_admin",
 )
@@ -1516,6 +1523,13 @@ _LEDGER_IMPORT_TOKENS = (
 _LEDGER_MODEL_MODULES = ("app.models.journal_entry", "app.models.ledger_account")
 # Their leaf names -- for the ``from app.models import journal_entry`` import shape.
 _LEDGER_MODEL_NAMES = tuple(name.rsplit(".", 1)[-1] for name in _LEDGER_MODEL_MODULES)
+# The row-model CLASS names -- for the ``from app.models import Posting`` package
+# re-export shape (F-1: the class pulled off ``app.models`` rather than its
+# defining submodule, which the leaf-name list above never matches). Mirrors the
+# production-side W9908 ``shekel-ledger-model-bypass`` fence; both import-fence
+# detectors below check it so a resolver import (or a novel reader) cannot evade
+# the fence by re-exporting the model name off the package.
+_LEDGER_MODEL_CLASS_NAMES = ("Posting", "JournalEntry", "LedgerAccount")
 
 # The ``loan_payment_service`` functions permitted to read the posted ledger: the
 # read-switch seam (the sole call sites of the confirmed-ledger readers).  Every
@@ -1584,7 +1598,8 @@ def _imports_a_ledger_model(source: str) -> bool:
 
     Catches every import shape that reaches ``Posting`` / ``JournalEntry`` /
     ``LedgerAccount``: ``from app.models.journal_entry import ...``,
-    ``from app.models import journal_entry``, and plain
+    ``from app.models import journal_entry`` (leaf module), ``from app.models
+    import Posting`` (the F-1 class re-export), and plain
     ``import app.models.ledger_account``.  The objective test for "this module
     reads the posted ledger" the coverage guard is built on.
     """
@@ -1593,7 +1608,9 @@ def _imports_a_ledger_model(source: str) -> bool:
             if node.module in _LEDGER_MODEL_MODULES:
                 return True
             if node.module == "app.models" and any(
-                alias.name in _LEDGER_MODEL_NAMES for alias in node.names
+                alias.name in _LEDGER_MODEL_NAMES
+                or alias.name in _LEDGER_MODEL_CLASS_NAMES
+                for alias in node.names
             ):
                 return True
         elif isinstance(node, ast.Import):
@@ -1637,15 +1654,23 @@ def _ledger_imports_in_source(source: str) -> list[str]:
     a posted-ledger token.  For a ``from X import a, b`` node BOTH the module ``X``
     AND each imported name are inspected, so the common
     ``from app.services import posting_service`` shape is caught, not only the
-    ``from app.services.posting_service import ...`` submodule shape.  Docstring
-    ``:func:`` cross-references are string literals, not import nodes, so they
-    never appear here -- only a real import does.
+    ``from app.services.posting_service import ...`` submodule shape.  The
+    ``from app.models import Posting`` class re-export (F-1) is caught separately:
+    the token denylist is module leaf names, which never match a CamelCase class,
+    so the ledger class names imported off the ``app.models`` package are checked
+    explicitly.  Docstring ``:func:`` cross-references are string literals, not
+    import nodes, so they never appear here -- only a real import does.
     """
     hits: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom):
             candidates = [node.module or ""]
             candidates += [alias.name for alias in node.names]
+            if node.module == "app.models":
+                hits += [
+                    alias.name for alias in node.names
+                    if alias.name in _LEDGER_MODEL_CLASS_NAMES
+                ]
         elif isinstance(node, ast.Import):
             candidates = [alias.name for alias in node.names]
         else:
@@ -1770,13 +1795,17 @@ class TestResolverIsLedgerFree:
         vacuously.  Feeds the detector synthetic source using every risky shape --
         the submodule ``from`` (``from app.services.posting_service import ...``),
         the name ``from`` (``from app.services import posting_service``), a ledger
-        model, and a plain ``import`` -- and asserts each is flagged, while
-        genuinely ledger-free source produces no hits.
+        model submodule, the ``from app.models import Posting`` class re-export
+        (F-1), and a plain ``import`` -- and asserts each is flagged, while
+        genuinely ledger-free source produces no hits.  Both import-fence
+        detectors are proven to close the F-1 blind spot the production W9908
+        ``shekel-ledger-model-bypass`` fence closes.
         """
         flagged = _ledger_imports_in_source(
             "from app.services.posting_service import account_posting_total\n"
             "from app.services import posting_service\n"
             "from app.models.journal_entry import JournalEntry\n"
+            "from app.models import Posting\n"
             "import app.services.loan_posting_service\n"
         )
         assert any("posting_service" in hit for hit in flagged)
@@ -1785,6 +1814,15 @@ class TestResolverIsLedgerFree:
         # The name-``from`` shape specifically -- the one an earlier draft of the
         # fence missed by inspecting only the module of the import.
         assert "posting_service" in flagged
+        # F-1: the ``from app.models import Posting`` class re-export -- the shape
+        # the token denylist (module leaf names) cannot match.  Detector 2 (the
+        # resolver fence) now flags it explicitly.
+        assert "Posting" in flagged
+        # F-1 for detector 1 (the coverage-guard criterion): the class re-export
+        # counts as "reads the posted ledger", and a non-ledger app.models import
+        # does not (no false positive that would over-report an innocent module).
+        assert _imports_a_ledger_model("from app.models import LedgerAccount\n")
+        assert not _imports_a_ledger_model("from app.models import PayPeriod\n")
         # Ledger-free source produces no hits (no false positives).
         assert not _ledger_imports_in_source(
             "from app.models.loan_params import LoanParams\n"

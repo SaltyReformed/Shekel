@@ -51,7 +51,8 @@ _CANONICAL_FAIL_ON = (
     "shekel-disable-rationale,"
     "shekel-original-principal-as-balance,"
     "shekel-balance-producer-bypass,"
-    "shekel-transaction-status-bypass"
+    "shekel-transaction-status-bypass,"
+    "shekel-ledger-model-bypass"
 )
 
 # repo root: this file is <root>/tools/pylint/tests/test_*.py

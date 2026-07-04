@@ -67,6 +67,21 @@ Rules implemented:
   recognizably born-Projected (the 2026-07-02 adversarial review's H3:
   born-Projected was a convention three layers deep, not a machine rule). The
   status analog of the W9906 balance fence.
+* ``shekel-ledger-model-bypass`` (W9908, :mod:`.ledger_model_fence`): flags any
+  module OUTSIDE the posting-ledger allowlist that IMPORTS a posted-ledger row
+  model (``Posting`` / ``JournalEntry`` / ``LedgerAccount``). The append-only
+  ledger is written only through ``posting_service._emit_balanced_entry`` and
+  read only through the sanctioned reader packages; a module holding a model
+  class -- or its defining module -- can query or mutate a row outside those
+  seams, the bypass class Build-Order Steps 2-5 built the seams to prevent
+  (``docs/audits/balance_architecture/``). The fence binds on the NAME axis
+  (importing ``Posting`` / ``JournalEntry`` / ``LedgerAccount`` is flagged
+  wherever it comes from -- the ``from app.models import Posting`` F-1 re-export,
+  the defining submodule, a relative path, an alias) and the MODULE axis
+  (binding a defining submodule via ``from app.models.journal_entry import
+  <anything>``, ``from app.models import journal_entry``, or ``import
+  app.models.ledger_account``, reached as ``<module>.Posting``). The import
+  analog of the W9906/W9907 read/write fences.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -84,6 +99,13 @@ from .balance_seam import (
     ShekelBalanceSeamChecker,
 )
 from .disable_rationale import ShekelDisableRationaleChecker
+from .ledger_model_fence import (
+    _LEDGER_LEAF_MODULE_NAMES,
+    _LEDGER_MODEL_ALLOWLIST,
+    _LEDGER_MODEL_MODULES,
+    _LEDGER_MODEL_NAMES,
+    ShekelLedgerModelFenceChecker,
+)
 from .loan_balance import ShekelLoanBalanceSourceChecker
 from .money import ShekelMoneyChecker
 from .refname import ShekelRefNameChecker
@@ -98,11 +120,16 @@ from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassCh
 __all__ = [
     "_BALANCE_PRODUCERS",
     "_BALANCE_SEAM_MODULES",
+    "_LEDGER_LEAF_MODULE_NAMES",
+    "_LEDGER_MODEL_ALLOWLIST",
+    "_LEDGER_MODEL_MODULES",
+    "_LEDGER_MODEL_NAMES",
     "_LOAN_LEDGER_READER_MODULES",
     "_LOAN_LEDGER_READER_PRODUCERS",
     "_STATUS_SEAM_MODULES",
     "ShekelBalanceSeamChecker",
     "ShekelDisableRationaleChecker",
+    "ShekelLedgerModelFenceChecker",
     "ShekelLoanBalanceSourceChecker",
     "ShekelMoneyChecker",
     "ShekelRefNameChecker",
@@ -123,3 +150,4 @@ def register(linter) -> None:
     linter.register_checker(ShekelLoanBalanceSourceChecker(linter))
     linter.register_checker(ShekelBalanceSeamChecker(linter))
     linter.register_checker(ShekelTransactionStatusBypassChecker(linter))
+    linter.register_checker(ShekelLedgerModelFenceChecker(linter))
