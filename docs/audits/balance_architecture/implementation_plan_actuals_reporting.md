@@ -167,9 +167,10 @@ in throughout. Developer approval: 2026-07-03.
   `pylint app/ scripts/` 10.00 on the touched files (the migration carries only
   the standard Alembic-idiom findings, identical to the shipped loan boundary
   migration and outside the `pylint app/` gate); single head `c9f2e6a4b1d8`.
-- F1 (settled-transfer attribution seam) / F3 (timeliness display-tz) --
-  follow-up commits after C13; F2 (scenario-creation sync) pinned to R8.
-  See Section 6, "Follow-up commits".
+- F1 (settled-transfer attribution seam) / F3 (timeliness display-tz) -- DONE
+  on this branch after C13 (two separate commits); F2 (scenario-creation sync)
+  stays pinned to R8.  See Section 6, "Follow-up commits", for the as-built
+  record.
 - C8 (write-side oracle) -- DONE:
   `tests/test_integration/test_posting_ledger_account_anchor_reconciliation.py`
   (14 tests, 1336 lines).  The ABSOLUTE invariant per non-loan account
@@ -385,7 +386,77 @@ in throughout. Developer approval: 2026-07-03.
   untouched. Out-of-scope note left for the developer: `.claude/commands/
   standards.md`'s prose `--fail-on` echo is independently stale (it predates
   `shekel-transaction-status-bypass`); not a gate location, deliberately left.
-- C13 (statements oracle + docs close-out + full suite) -- pending
+- C13 (statements oracle + docs close-out + full suite) -- DONE: new read-side
+  oracle `tests/test_integration/test_posting_ledger_statements.py` (15 tests,
+  the FOURTH reconciliation oracle, read-side sibling of the C8 write oracle).
+  Non-tautological the same three ways the sibling oracles are: hand-computed
+  literals for every line / section total / net income / tie-out figure; an
+  INDEPENDENT balance-sheet re-derivation (`_independent_bs`) that groups
+  `account_postings` by ledger-account CLASS directly (a different path than the
+  reader's per-source attribution) and signs each class from a test-local
+  debit-normal set (NOT the ref-cache flag the reader signs by), retained
+  earnings derived here; and structural invariants the readers must satisfy
+  regardless of any single figure.  Coverage: a rich multi-account fixture
+  (category income/expense, the Uncategorized fallback, a negatively-anchored
+  Liability charge, a transfer) hand-computed on BOTH statements; a loan
+  payment's interest + escrow reaching the income statement as Expense lines
+  (500.00 / 100.00) while its cash legs never do, the loan LINKED signing
+  POSITIVE as a Liability (99600.00) and the loan `equity_opening` a big
+  negative Equity line (-100000.00); the accounting identity `A = L + E` and the
+  two-part tie-out at FIVE as-of dates -- THREE placed EXACTLY on an event day
+  so the inclusive `<= as_of` fold is pinned (a `< as_of` mutant is caught), two
+  straddling a true-up assertion inside one anchor period (the balance-sheet
+  moment-partition case); ARTICULATION (income net + windowed equity corrections
+  == equity delta between the bounding year-end sheets, relating THREE
+  independently-obtained quantities); period-vs-calendar agreement on an aligned
+  fixture; a reverted source and CROSS-YEAR hard-delete residue both netting to
+  zero and dropped from every window (the residue-drop's cross-year rationale);
+  the L9 8:05pm-ET Dec-31 boundary, the NULL-`paid_at` period-start fallback, and
+  an early-settled future-period source (the C-2 vs C-3 divergence); live-rename
+  / orphan / equity-twin-snapshot labels; scenario + owner isolation; and an
+  injected-leg tie-out non-vacuity proof (`ledger_net` off zero, `in_balance`
+  False, flushed-not-committed).  Proven NON-VACUOUS by mutation (each verified
+  to fail then reverted): dropping the reader's credit-normal negation fails the
+  rich + loan cases, flipping the retained-earnings sign fails articulation +
+  rich, and the `< as_of` fold mutant fails the as-of ladder (which is why the
+  ladder was strengthened to place three as-of dates exactly on event days).
+  `pylint` on the test file 9.92 -- only the C0302 line-count and the two W9908
+  ledger-model-import findings the sibling C8 oracle also carries (test files
+  are outside the `pylint app/` gate).  Docs close-out landed: M3's
+  reader-contract half and R9 annotated as closed by this arc, a new dated
+  header note in `adversarial_review_balance_architecture_2026-07-02.md`, and the
+  Step-5 section added to `level1_level2_scope_and_fitness.md`.  The full-suite
+  run surfaced a latent DISPLAY-TIMEZONE bug that the C6 test
+  `test_checking_detail_shows_anchor_date` catches only at the UTC/Eastern day
+  boundary: the account-detail hero caption rendered the anchor "as of" date from
+  `AnchorPoint.as_of_date`, which `balance_resolver.py` derives as the UTC-day of
+  the origination `created_at` (correctly UTC for the anchor-dedup index), so a
+  late-evening-Eastern anchor showed on the NEXT UTC day -- exactly the L9
+  wall-clock class Step 5 codified.  Fixed at the presentation boundary (the
+  established "store UTC, display Eastern" rule): `AnchorPoint` now also carries
+  the anchor event INSTANT (`created_at`), `routes/accounts/detail.py` passes it,
+  and `cash_detail.html` renders it via the `local_datetime` Jinja filter
+  (matching the `grid.html` anchor caption); `as_of_date` stays UTC for anchor
+  logic.  Three tests moved to the new contract: the immutability constructor
+  gains `created_at`; the context-contract test asserts the event instant, not
+  the UTC `as_of_date`; and the caption end-to-end test now computes its expected
+  string from the anchor's `created_at` via `to_display_date` rather than
+  `date.today()`.  That last change is REQUIRED, not cosmetic -- a focused
+  adversarial `code-reviewer` pass on the fix caught (HIGH) that leaving the test
+  on `date.today()` (the PROCESS timezone) would INVERT the flake onto CI: the
+  caption now renders Eastern, so a UTC CI runner would fail the `lint-and-test`
+  merge gate every day in the 00:00-04:00 UTC window.  Deriving both the caption
+  and the expected string from the same `created_at` makes the assertion
+  timezone- and midnight-race-independent, verified passing under BOTH the
+  Eastern dev box and `TZ=UTC`.  The reviewer's other notes (conversion
+  correctness, `as_of_date` semantics unchanged, the two constructors traced, the
+  non-vacuity of the context test) were clean; its one LOW (the `as_of_date`
+  docstring overclaimed a live logic consumer -- none remain after the route
+  moved to `created_at`) is folded in.  Final gate: full suite (run alone)
+  **7107 passed** under BOTH the dev (Eastern) and `TZ=UTC` (CI-equivalent)
+  timezones; `pylint app/ scripts/` 10.00 (`balance_resolver.py` now sits at
+  exactly its 1000-line cap -- a module split is a recorded follow-up, mirroring
+  the `transfer_service.py` R10 note).
 
 Gates for every commit: targeted tests green + `pylint` 10.00 on touched files + an adversarial
 `code-reviewer` pass on the staged diff BEFORE committing; migrations tested up AND down; the full
@@ -794,7 +865,30 @@ caller was verified safe, so none of these gates Step 5's PR.  Recorded as commi
 scheduled work, not lore.  F1 and F3 land on this branch after C13 (or as the first commits of
 the next arc); F2 is a requirement pinned to R8's owner.
 
-- **F1 -- Settled-transfer attribution-mutation seam (C6 review M2).**
+- **F1 -- Settled-transfer attribution-mutation seam (C6 review M2). DONE**
+  (after C13, own commit). As built exactly as specified below: `pay_period_id`
+  added to `_POSTING_RELEVANT_FIELDS` (a settled period move now fires the Step-2
+  reconcile, which re-posts R2-correctly per-(account, period) and self-heals);
+  a settled `paid_at` edit resyncs the two endpoint accounts' anchor corrections
+  directly (`sync_account_anchor_postings` per endpoint), since a `paid_at` move
+  changes no leg so the reconcile-to-target and its tail self-heal cannot see it.
+  The reconcile tail was extracted to a `_reconcile_postings_after_update` helper
+  to keep `update_transfer` within its branch/statement budget (the added
+  branches tripped `too-many-branches`/`too-many-statements`); the constant's
+  invariant note was rewritten (`pay_period_id` now in the set, `paid_at`
+  handled by the direct resync). `account_posting_service` imported at top level
+  (no cycle: it never reaches `transfer_service`; `posting_service`'s reverse
+  import of it is function-local). Two oracle cases in
+  `test_posting_ledger_account_anchor_reconciliation.py`
+  (`TestSettledTransferAttributionMutation`): a settled period move (asserts the
+  cash nets to zero in the old period and +150 in the new -- R2 -- with the
+  account total unchanged and the absolute invariant holding, no manual sync)
+  and a settled `paid_at` move across the anchor (asserts both endpoints
+  re-absorb the transfer into their openings and read their anchors, invariant
+  holding). Both mutation-proven non-vacuous (dropping `pay_period_id` fails the
+  period case; neutering the `paid_at` resync fails the paid_at case). Original
+  spec follows.
+
   `transfer_service.update_transfer` accepts `pay_period_id` and `paid_at` on a SETTLED transfer
   with no ledger reconcile (`_POSTING_RELEVANT_FIELDS` omits both; the invariant note now sits on
   that constant), so a future service caller could move the walk's attribution with no delta
@@ -824,7 +918,23 @@ the next arc); F2 is a requirement pinned to R8's owner.
   (`test_posting_ledger_reconciliation.py` / `..._cash_...`) document the same-day caveat and
   must have their scenario caveats retired by that commit.
 
-- **F3 -- Payment-timeliness display-timezone pass (C1 review, out of scope for L9).**
+- **F3 -- Payment-timeliness display-timezone pass (C1 review, out of scope for L9). DONE**
+  (after C13, own commit). `Transaction.days_paid_before_due` now truncates
+  `paid_at` via `app.utils.dates.to_display_date` (the display-timezone civil
+  day); `year_end_summary_service/_spending.py` was DRY-refactored to route its
+  paid_on_time / avg-days loop through that same model property (it had a
+  duplicate inline `paid_at.date()` calc), so the fix lives in one place and its
+  third consumer, `spending_trend_service._compute_avg_days_before_due`, inherits
+  it. Boundary tests at both the model
+  (`TestDaysPaidBeforeDue.test_days_paid_before_due_evening_eastern_is_on_time`)
+  and the year-end service (`TestPaymentTimeliness.
+  test_payment_timeliness_evening_eastern_is_on_time`): an 8:05pm-Eastern settle
+  on the due date is on time (0 days), not a day late by UTC drift; both pass
+  under `TZ=UTC`. Three pre-existing timeliness fixtures that used midnight-UTC
+  instants (ambiguous: the prior Eastern day) were re-pinned to noon UTC so their
+  documented intent holds under the display-tz rule, passing with their original
+  expected values. Original spec follows.
+
   `_spending.py:306` and `Transaction.days_paid_before_due` still truncate `paid_at` in UTC --
   the same wall-clock class L9 fixed for Schedule-A, but statistics rather than tax-year money.
   The commit: route both through `app.utils.dates.to_display_civil_date` with boundary tests

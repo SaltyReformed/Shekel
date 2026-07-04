@@ -75,7 +75,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
@@ -118,12 +118,17 @@ class AnchorPoint:
             day).  UTC is chosen for consistency with the
             ``uq_anchor_history_account_period_balance_day`` partial
             unique index (see ``app/models/account.py``), which
-            truncates the same column at UTC.
+            truncates the same column at UTC.  A canonical UTC identity,
+            not a display value (convert ``created_at`` instead).
+        created_at: The anchor event's stored UTC instant, carried so a
+            reader renders the anchor "as of" in the DISPLAY timezone via
+            ``local_datetime`` (not the UTC-day ``as_of_date``).
     """
 
     balance: Decimal
     period: PayPeriod
     as_of_date: date
+    created_at: datetime
 
 
 def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
@@ -244,6 +249,7 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
         balance=history_balance,
         period=latest.pay_period,
         as_of_date=as_of_date,
+        created_at=latest.created_at,
     )
 
 

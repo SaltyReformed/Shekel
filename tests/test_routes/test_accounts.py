@@ -3002,13 +3002,22 @@ class TestCheckingDetail:
         """The anchored-as-of date is displayed in the balance hero caption.
 
         The rebuilt hero caption renders ``anchor_as_of`` -- the anchor
-        EVENT date (the origination ``AccountAnchorHistory`` row, created
-        today) -- not the anchor period's start date (audit finding #2).
-        Here the account is created today and periods start today, so the
-        event date and the period start coincide on today's date; the
-        distinct-date case is pinned in
+        EVENT instant (the origination ``AccountAnchorHistory`` row), in the
+        user's DISPLAY timezone -- not the anchor period's start date (audit
+        finding #2) and not the UTC-day ``as_of_date`` (which shows the wrong
+        civil day for a late-evening-Eastern event).  The expected string is
+        computed from the anchor's ``created_at`` via ``to_display_date`` --
+        NOT ``date.today()``, which reads the PROCESS timezone and would
+        diverge from the Eastern caption in a UTC CI runner during the
+        late-evening-Eastern window.  Deriving both sides from the same
+        ``created_at`` also makes the assertion immune to a midnight race.
+        The distinct-date (event vs period start) case is pinned in
         ``TestCashDetailContext.test_anchor_as_of_is_event_date_not_period_start``.
         """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -3021,8 +3030,14 @@ class TestCheckingDetail:
             resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
-            # The anchored-as-of date (today) is displayed in the hero cap.
-            anchor_date_str = date.today().strftime("%b %-d, %Y")
+            # The caption shows the anchor event's DISPLAY-timezone civil date,
+            # computed here from the same ``created_at`` the caption renders.
+            anchor = balance_resolver.resolve_anchor(
+                acct, seed_user["scenario"].id,
+            )
+            anchor_date_str = to_display_date(anchor.created_at).strftime(
+                "%b %-d, %Y",
+            )
             assert anchor_date_str.encode() in resp.data
 
 
@@ -3760,12 +3775,15 @@ class TestCashDetailContext:
         ``start_date`` is roughly eight weeks before today), but its
         origination ``AccountAnchorHistory`` row is created now, so the
         anchor EVENT date (today) differs from the anchor PERIOD's start
-        date.  The context must carry the event date (the audit's finding
-        #2 fix), NOT the period start.
+        date.  The context must carry the event INSTANT (the audit's
+        finding #2 fix), NOT the period start; the template renders that
+        instant in the user's display timezone (``AnchorPoint.as_of_date``
+        stays UTC for anchor logic, so the context passes ``created_at``).
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
         from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",
@@ -3789,8 +3807,13 @@ class TestCashDetailContext:
             assert anchor.as_of_date != anchor.period.start_date
 
             context = _capture_cash_detail_context(app, auth_client, acct.id)
-            assert context["anchor_as_of"] == anchor.as_of_date
-            assert context["anchor_as_of"] != anchor.period.start_date
+            # The context carries the anchor EVENT instant (created_at); the
+            # template converts it to the display timezone for the caption.
+            assert context["anchor_as_of"] == anchor.created_at
+            assert (
+                to_display_date(context["anchor_as_of"])
+                != anchor.period.start_date
+            )
 
     def test_interest_next_year_zero_for_zero_apy(
         self, app, auth_client, seed_user, db,

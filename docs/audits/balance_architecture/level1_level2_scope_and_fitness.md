@@ -792,3 +792,51 @@ AND confirmed-loan-payment-split subset, validated by three oracles. The IMMEDIA
 switch (plan Section 10): post each loan's opening balance as an `equity_opening` entry, switch the
 seam's AMORTIZING confirmed read onto `sum(loan-ledger postings)`, retire the resolver's confirmed
 replay, and do the pre-anchor cleanup -- ending the per-off-schedule-payment true-up band-aid.
+
+**Build-Order Step 5 (close the trial balance app-wide + actuals reporting) -- DONE on
+`feat/actuals-reporting` (2026-07-03; not yet PR'd).** The final built step ("6. Stop." in the Option-D
+build order). The implementation plan (`implementation_plan_actuals_reporting.md`, C1-C13, adversarially
+reviewed before approval) carries the per-commit record. Until Step 5 every NON-loan account (checking,
+savings, investment, property, interest-bearing, non-loan liability) recorded only its confirmed
+cash/transfer sources on the ledger and no OPENING, so its linked ledger summed to a CHANGES-ONLY figure
+and `assets = liabilities + equity` did not close app-wide (the asymmetry R9 named). Step 5 generalizes
+the shipped loan-genesis discipline to every non-loan account, then reads the closed ledger:
+
+- **Write side** (`app/services/account_posting_service/`, C2-C8): each non-loan account posts an
+  anchor-equity OPENING correction for its earliest `AccountAnchorHistory` row and a TRUE-UP per later
+  row, against a per-account `anchor_equity` Equity ledger (a new `ledger_account_kinds` discriminator +
+  the `(account_id, kind_id)` unique re-key so the linked row and its equity twin coexist). The walk is
+  MOMENT-granular -- an anchor is a moment-of-assertion fact, so a settle attributed at or before the
+  assertion instant is ABSORBED into the delta and one after it RIDES ON TOP (a period-granular walk
+  would mis-state the balance sheet by every pre-true-up settle; the plan review's CRITICAL-1). Seven
+  lifecycle chokepoints keep it reconciled (create, true-up, account-type change, reset, the effect-time
+  self-heal at both posting-service tails, `create_baseline`, plus a type-change guard closing the
+  Guard-5 re-type gap); a deploy-hook backfill (C7) makes backfill == go-forward by construction. An
+  anchor is a FACT; modeled growth / interest / appreciation between assertions is a derivation and is
+  NEVER posted (Option D's fact-versus-derivation line).
+- **Read side** (`app/services/ledger_report_service/`, C9-C11): an income statement (pay-period AND
+  calendar month/year windows) and a balance sheet (as-of a date) with a two-part trial-balance tie-out,
+  as two new `/analytics` tabs + CSV export. Both consume ONE shared attribution core, so they articulate
+  automatically. The reader contract (M3's open half, recorded once in the plan's Section 2): whole
+  sources in never lone legs; pay-period windows filter `pay_period_id`; calendar / as-of windows
+  attribute each source's net to its CURRENT paid date in the DISPLAY timezone (the L9 rule, whose
+  Schedule-A switch is C1), corrections by `entry_date`, hard-delete residue dropped whole;
+  natural-balance presentation with NO `-abs`; retained earnings derived, never posted.
+- **Enforcement** (C12): a new W9908 `shekel-ledger-model-bypass` pylint import fence for the ledger
+  models, gate-locked in lockstep, plus the test-side F-1 detector closure.
+- **The statements oracle** (`tests/test_integration/test_posting_ledger_statements.py`, C13): the FOURTH
+  reconciliation oracle. It cross-checks both statements against an INDEPENDENT by-class re-derivation
+  (`account_postings` grouped by ledger-account class, signed from a test-local debit-normal set, not the
+  reader's attribution or the ref-cache flag) plus hand-computed literals, and asserts the structural
+  invariants the readers must satisfy regardless of any single figure: `A = L + E` and the two-part
+  tie-out at five as-of dates (three on exact event days, pinning the inclusive `<= as_of` fold), a loan
+  payment's interest + escrow reaching the income statement while its cash never does, ARTICULATION
+  (income net + windowed equity corrections == equity delta between bounding sheets), period-vs-calendar
+  agreement, cross-year residue drop, the L9 boundary, and scenario / owner isolation. Mutation-proven
+  non-vacuous (a dropped sign, a flipped retained-earnings sign, and a `< as_of` fold each fail it).
+
+**Reads for the app's balance screens INTENTIONALLY stay on the `balance_at` seam** -- a cash read switch
+is the explicit Step-5 non-goal; the engine remains the projection authority and the stale-anchor warning
+is unchanged. What Step 5 adds is a CONFIRMED-ledger statement of record: at every anchor assertion the
+ledger equals the asserted bank truth, and between assertions it extends forward with settled facts.
+Multi-scenario reporting (R8) stays deferred: the statements read the baseline scenario only, by design.
