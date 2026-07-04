@@ -86,6 +86,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.services import (
     balance_resolver,
+    daily_balance_series,
     income_service,
     net_worth_kernel,
     pay_period_service,
@@ -697,6 +698,57 @@ def cash_balance_at(
     """
     _require_scenario(scenario)
     return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+
+
+def cash_daily_balance_series(
+    account: Account,
+    scenario: Scenario,
+    first_day: date,
+    last_day: date,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
+) -> "OrderedDict[date, Decimal]":
+    """Return one account's projected end-of-day cash-flow balance per day.
+
+    The daily-granularity cash-flow view -- the running-balance counterpart
+    of the period-flat :func:`cash_balance_at`.  Delegates to
+    :func:`app.services.daily_balance_series.build_daily_series`, which walks
+    each calendar day in ``[first_day, last_day]`` as a true checkbook
+    balance that steps on that day's projected, period-clamped, entry-aware
+    flows and reconciles with the grid at every period end
+    (``series[P.end_date] == cash_balance_at(account, scenario, P.end_date)``).
+
+    Like :func:`cash_balance_at` this does NOT dispatch by kind: it is the
+    cash-flow balance of whatever account the surface points at (the
+    calendar's account can be any kind via an explicit ``account_id``).  Used
+    by the analytics calendar's flow strip and day-cell end-of-day balances.
+
+    Args:
+        account: The account to project.  Its kind is NOT consulted; must be
+            session-attached.
+        scenario: The baseline scenario (its id scopes the producer).
+        first_day: Inclusive first calendar day of the range.
+        last_day: Inclusive last calendar day of the range.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map, forwarded to the producer (built there when
+            None, so income is live by default).
+
+    Returns:
+        An ``OrderedDict`` mapping each calendar ``date`` in the inclusive
+        range (ascending) to its projected end-of-day cash-flow balance,
+        quantized to cents.  An inverted range yields an empty map.
+
+    Raises:
+        ValueError: When ``scenario`` is None -- callers that resolve a
+            nullable baseline must guard first.
+        TypeError: When ``first_day`` / ``last_day`` are not
+            :class:`datetime.date`.
+    """
+    _require_scenario(scenario)
+    return daily_balance_series.build_daily_series(
+        account, scenario.id, first_day, last_day,
+        amount_overrides=amount_overrides,
+    )
 
 
 # ── Grid / obligations kind-aware view ──────────────────────────────

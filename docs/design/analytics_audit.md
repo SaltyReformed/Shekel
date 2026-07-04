@@ -453,13 +453,93 @@ directions; "show the math" tables are secondary, collapsible support.
 10. **Year view:** out of slice-1 scope; ships unchanged and is revisited after the month view
     lands.
 
+### Calendar daily-balance semantics (Gate A follow-up, LOCKED 2026-07-04)
+
+Tracing the seam before P1 surfaced a contradiction between the locked round-2 mock B (a
+day-textured balance line with payday dots and a labeled single-day trough dot) and the P1 line's
+originally-written oracle ("series equals per-day `cash_balance_at` calls"). `cash_balance_at` ->
+`balance_resolver.balance_as_of_date` is **period-granular, not day-granular**: `_sum_period_as_of`
+sums the WHOLE pay period's projected income/expense with no `due_date` filter, so for a projected
+month it returns the identical value for every day in a period. A series built from it is flat for
+~2 weeks and steps only at period boundaries: paydays do not move it, the "trough" is a two-week
+span not a day, and the day cells visibly disagree with the flat line (violating "a figure and its
+caption never disagree"). The developer ruled (worked-example fork, 2026-07-04):
+
+1. **Daily balance = a projected running "checkbook" balance**, re-anchored at every pay-period
+   boundary to the seam's tested period-end balance. It ramps on each day's flows; payday is a
+   visible jump; the trough is a real day.
+2. **Projected-only, entry-aware flows.** The seam period net (`sum_projected`) is Projected-only,
+   so the daily line ramps only on Projected rows using the entry-aware amount -- this is what makes
+   `series[P.end_date] == cash_balance_at(P.end_date)` (reconciles with the grid period-end by
+   construction). Settled rows still render in the day cells (Paid badge, context) but do not move
+   the projected line, exactly as on the grid; `stale_anchor_warning` is surfaced when post-anchor
+   settled rows exist.
+3. **Period-clamped attribution.** A transaction's flow lands on its `due_date` (fallback: the
+   period `start_date`) clamped into its own period's `[start_date, end_date]`, so every period's
+   flows sum by the period end and boundaries always reconcile. The day cells attribute by the SAME
+   clamped rule so a flow's cell and the line's step share one day.
+4. **Corrected P1 oracle:** for each period P overlapping the month,
+   `series[P.end_date] == cash_balance_at(account, scenario, P.end_date)`; the line is continuous
+   across boundaries; a day's step equals that day's clamped projected net. (The old "equals per-day
+   `cash_balance_at`" line is retired -- it encoded the period-flat semantics rejected here.)
+
 ### Loop B build plan (Calendar slice)
 
 - **P1 -- data (Opus scope):** one-pass daily end-of-day balance series producer on the `balance_at`
-  seam (oracle test: series equals per-day `cash_balance_at` calls); calendar service reshape
-  (grouped per-day flows with collapse fields, summary figures, month trough, threshold from
-  settings); display-tz day boundaries; targeted tests then full suite.
+  seam per the "Calendar daily-balance semantics" ruling above (projected-only, entry-aware,
+  period-clamped running balance re-anchored to the seam period-end; oracle:
+  `series[P.end_date] == cash_balance_at(P.end_date)` for each overlapping period, plus continuity
+  and per-day step == clamped projected net); calendar service reshape (grouped per-day flows with
+  collapse fields, summary figures, month trough, `low_balance_threshold` from settings); display-tz
+  day boundaries; targeted tests then full suite.
 - **P2 -- presentation (Fable scope):** month template + `analytics.css` + strip chart/JS under CSP
   (data via `data-*`), both themes, `shoot.py` verification against the dev app.
 - **P3 -- acceptance:** developer drives the live page on real data; as-built record here; CSV
   column verified.
+
+### Loop B P1 as-built (COMPLETE 2026-07-04, on dev, full suite 7185 green)
+
+Data layer shipped; presentation (P2) not started. What landed:
+
+- **Producer:** new `app/services/daily_balance_series.py` (`build_daily_series`), a member of the
+  balance-seam cluster (added to the W9906 allowlist AND to `_BALANCE_PRODUCERS`), exposed as
+  `balance_at.cash_daily_balance_series`. It seeds from `balance_as_of_date` at the day before the
+  first overlapping period and ramps day by day using projected-only, entry-aware, period-clamped
+  nets from `balance_calculator.sum_projected`. Oracle test:
+  `series[P.end_date] == cash_balance_at(P.end_date)` for each overlapping period, plus continuity,
+  per-day step, pre-anchor-flat, settled-excluded, clamp, and within-period-entry reconciliation.
+- **Shared attribution rule:** `app/utils/dates.attribution_date` (due_date or period start, clamped
+  into the period span) is used by BOTH the producer's ramp and the calendar's day grouping, so a
+  flow's cell and the line's step share one day.
+- **Calendar query change:** `calendar_service._query_transactions_for_range` now selects by PERIOD
+  MEMBERSHIP (`pay_period_id.in_(period_ids)`), not raw `due_date` (`monthly_attribution_clause`
+  retired from calendar) -- required by the clamp so a stray-dated flow is not dropped. Two tests
+  whose data had a due_date outside its period were corrected (clamp behavior, developer-approved).
+- **Reshape:** `MonthSummary` gained `day_overflow` (the "+N more" residual) and `daily`
+  (`DailyView`: per-day balances, month trough, balance-today, elapsed/remaining split at display-tz
+  today). Day cells now order income-first then expense-desc. `low_balance_threshold` plumbed to the
+  template; per-day `daily_balance` added to the grid; display-tz `today` used for the today marker
+  and the split. Month CSV gained an "End-of-Day Balance ($)" column.
+
+Decisions / boundaries recorded for P2/P3:
+
+1. **Measured vs modeled basis (NOT a bug -- audit's core finding).** The balance line + day-cell
+   EOD hero are the PROJECTED basis (projected-only, entry-aware, override-aware) and reconcile with
+   the grid. The day-cell flow amounts and the summary strip in/out are the MEASURED / nominal basis
+   (`effective_amount`, from `day_totals`) and tie to each other. They coincide in ordinary data and
+   deliberately diverge where the projection excludes a settled row (already in the anchor), applies
+   an envelope's entry-aware reservation, or takes a live override.
+   **P2 MUST visually label measured vs modeled** so a user does not read
+   `balance_today != anchor + so-far-net` as an error.
+2. **Month-end figure.** `MonthSummary.projected_end_balance` is the period-flat seam scalar at the
+   last day (kept for the year view + backward compat); the month view's honest "balance on the last
+   day of the month" is `daily.daily_balances[last]` (the flow strip's right end).
+   **P2's month-end tile uses the running value**, not `projected_end_balance`.
+3. **Reconciliation boundary (M1):** the invariant holds whenever entries are dated within their
+   period (the normal case). A purchase entry dated AFTER its period end is the one anomaly where
+   the undated ramp and the date-cut `cash_balance_at` could drift; documented in the producer
+   docstring.
+4. **Stale anchor:** `cash_daily_balance_series` does not yet surface `stale_anchor_warning`; if P2
+   wants the calendar to show the grid's stale-anchor badge, add it from `cash_balance_map` at P2/P3
+   (not in the locked anatomy, so deferred).
+5. **Year view** unchanged (`daily=None`; no per-day balance read), per Calendar decision 10.

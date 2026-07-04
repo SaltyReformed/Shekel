@@ -158,3 +158,48 @@ def months_between(start: date, end: date) -> int:
         The signed whole-month delta as an ``int``.
     """
     return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+def attribution_date(
+    preferred: date | None, period_start: date, period_end: date,
+) -> date:
+    """Return the calendar day a pay-period item is attributed to, clamped.
+
+    The single attribution rule shared by the calendar's day-cell grouping
+    (``calendar_service``) and the balance-at seam's daily running-balance
+    ramp (``balance_resolver.daily_cash_balance_series``), so a flow's cell
+    and the balance line's step for it land on the SAME day (the design
+    principle "a figure and its caption never disagree").  An item lands on
+    ``preferred`` -- its ``due_date`` -- falling back to the pay period's
+    ``start_date`` when it has none; the result is then clamped into the
+    item's own pay period ``[period_start, period_end]`` span.
+
+    Clamping is load-bearing for the daily balance: every one of a period's
+    contributing items must fall on or before the period ``end_date`` so the
+    running balance summed through that day equals the period-end balance
+    the grid shows (the calendar/grid reconciliation invariant).  A
+    ``due_date`` outside the item's own period is possible -- the recurrence
+    engine can date an item just outside its period's range, which is why
+    the calendar query carries a due-date-in-range OR no-due-date path -- so
+    such a stray date is pulled to the nearest period boundary rather than
+    escaping onto a neighboring period's day and breaking that period's sum.
+
+    Args:
+        preferred: The item's preferred landing date (its ``due_date``), or
+            ``None`` to fall back to ``period_start``.
+        period_start: The item's pay period inclusive start date (both the
+            None fallback and the lower clamp bound).
+        period_end: The item's pay period inclusive end date (the upper
+            clamp bound).  Assumed ``>= period_start`` (a model CHECK
+            constraint enforces ``start_date < end_date``).
+
+    Returns:
+        The attributed calendar date, guaranteed within
+        ``[period_start, period_end]``.
+    """
+    landing = preferred if preferred is not None else period_start
+    if landing < period_start:
+        return period_start
+    if landing > period_end:
+        return period_end
+    return landing

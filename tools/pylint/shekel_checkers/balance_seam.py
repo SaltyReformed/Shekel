@@ -49,6 +49,7 @@ from ._common import _called_name_in, _module_in_allowlist
 _BALANCE_PRODUCERS = frozenset({
     "balances_for",
     "balance_as_of_date",
+    "build_daily_series",
     "calculate_balances",
     "calculate_balances_with_interest",
     "compute_loan_period_balance_map",
@@ -79,6 +80,12 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.balance_calculator",
     "app.services.account_projection",
     "app.services.net_worth_kernel",
+    # Daily distribution producer: composes ``balance_as_of_date`` for its
+    # per-day seed and ``sum_projected`` for the per-day nets, then exposed
+    # through the seam as ``balance_at.cash_daily_balance_series``.  It is a
+    # balance producer (daily granularity), so it lives inside the cluster
+    # rather than re-inventing the boundary from outside it.
+    "app.services.daily_balance_series",
 })
 
 # Genesis loan-ledger balance readers (W9906, the read switch's final commit):

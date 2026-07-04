@@ -73,7 +73,7 @@ def load_account_period_transactions(
     (``_compute_interest_for_year`` and ``_settled_net_by_period`` in
     :mod:`._balances`).  All three select EVERY non-deleted row for the
     account in the period span -- unlike
-    :func:`~app.services.balance_resolver._load_balance_transactions`,
+    :func:`~app.services.balance_resolver.load_balance_transactions`,
     which additionally drops Credit / Cancelled rows -- because their
     downstream consumers (interest accrual and the settled-net walk)
     apply their own status logic and need the full row set.

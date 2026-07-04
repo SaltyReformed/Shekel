@@ -10,7 +10,7 @@ ledger via ``ledger_report_service``.
 """
 
 import calendar as cal_mod
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from flask import (
@@ -20,6 +20,7 @@ from flask import (
 from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import to_display_date
 
 from app.extensions import db
 from app.models.account import Account
@@ -125,7 +126,11 @@ def calendar_tab():
     Non-HTMX requests redirect to the main analytics page unless
     format=csv (CSV downloads are regular browser navigations).
     """
-    today = date.today()
+    # ``today`` is the user's wall-clock day (display timezone), not the
+    # server's UTC day: the month default, the today marker, and the
+    # elapsed-vs-remaining split all follow the user's calendar per the
+    # timezone display policy.
+    today = to_display_date(datetime.now(timezone.utc))
     view = request.args.get("view", "month")
     year = request.args.get("year", today.year, type=int)
     month = request.args.get("month", today.month, type=int)
@@ -146,6 +151,7 @@ def calendar_tab():
         user_id=current_user.id,
     ).first()
     threshold = settings.large_transaction_threshold if settings else 500
+    low_balance = settings.low_balance_threshold if settings else 500
 
     # CSV export -- before HTMX guard.
     if request.args.get("format") == "csv":
@@ -158,9 +164,12 @@ def calendar_tab():
                 csv_str = csv_export_service.export_calendar_csv(data, "year")
                 fname = f"calendar_{year}_year.csv"
             else:
+                # Pass ``today`` so the daily running balance (and thus the
+                # CSV's end-of-day balance column) is computed.
                 data = calendar_service.get_month_detail(
                     user_id=current_user.id, year=year, month=month,
                     account_id=account_id, large_threshold=threshold,
+                    today=today,
                 )
                 csv_str = csv_export_service.export_calendar_csv(data, "month")
                 fname = f"calendar_{year}_{month:02d}.csv"
@@ -177,7 +186,11 @@ def calendar_tab():
     try:
         if view == "year":
             return _render_year_view(year, account_id, threshold)
-        return _render_month_view(year, month, account_id, threshold, today)
+        data = calendar_service.get_month_detail(
+            user_id=current_user.id, year=year, month=month,
+            account_id=account_id, large_threshold=threshold, today=today,
+        )
+        return _render_month_view(data, year, month, low_balance, today)
     except CalendarAccountNotResolvableError:
         # F-2: same contract as the CSV branch above -- 404 matches the
         # project security rule ("404 for both 'not found' and 'not
@@ -433,20 +446,15 @@ def balance_sheet_tab():
 # ── Calendar helpers ────────────────────────────────────────────────
 
 
-def _render_month_view(year, month, account_id, threshold, today):
-    """Render the month detail calendar view.
+def _render_month_view(data, year, month, low_balance, today):
+    """Render the month detail calendar view from resolved MonthSummary data.
 
-    Builds a 7-column Sun-Sat calendar grid from the service data
-    and pre-computes popover HTML for days with transactions.
+    Builds a 7-column Sun-Sat calendar grid (each day carrying its projected
+    end-of-day balance) and passes the low-balance threshold through for the
+    flow strip line and the below-threshold cell coloring.  The caller
+    resolves ``data`` via :func:`calendar_service.get_month_detail` (with
+    ``today``) so the fetch and its 404 handling stay in the route.
     """
-    data = calendar_service.get_month_detail(
-        user_id=current_user.id,
-        year=year,
-        month=month,
-        account_id=account_id,
-        large_threshold=threshold,
-    )
-
     # Build calendar grid (Sunday-start weeks).
     weeks = _build_calendar_weeks(year, month, data, today)
 
@@ -474,6 +482,7 @@ def _render_month_view(year, month, account_id, threshold, today):
         prev_year=prev_year,
         next_month=next_month,
         next_year=next_year,
+        low_balance_threshold=low_balance,
     )
 
 
@@ -506,14 +515,18 @@ def _build_calendar_weeks(year, month, data, today):
     """Build a list of week rows for the calendar grid.
 
     Each week is a list of 7 day dicts with keys: number, entries,
-    is_paycheck, is_today, income_total, expense_total.  Empty cells
-    have number=0.  Uses Sunday as the first day of the week.
+    is_paycheck, is_today, income_total, expense_total, daily_balance,
+    overflow.  ``daily_balance`` is the day's projected end-of-day running
+    balance (``None`` before the pay-period horizon or when no daily view was
+    computed); ``overflow`` is the day's "+N more" residual or ``None``.
+    Empty cells have number=0.  Uses Sunday as the first day of the week.
     """
     # Sunday-start calendar (firstweekday=6 in Python's calendar).
     cal = cal_mod.Calendar(firstweekday=6)
     month_weeks = cal.monthdayscalendar(year, month)
 
     paycheck_set = set(data.paycheck_days)
+    daily_balances = data.daily.daily_balances if data.daily else {}
 
     weeks = []
     for week in month_weeks:
@@ -527,6 +540,8 @@ def _build_calendar_weeks(year, month, data, today):
                     "is_today": False,
                     "income_total": Decimal("0"),
                     "expense_total": Decimal("0"),
+                    "daily_balance": None,
+                    "overflow": None,
                 })
             else:
                 entries = data.day_entries.get(day_num, [])
@@ -538,7 +553,7 @@ def _build_calendar_weeks(year, month, data, today):
                 # calendar_service folds the per-day income/expense totals
                 # (one rule, shared with the month headline); the route
                 # only renders them.
-                income_total, expense_total = data.day_totals.get(
+                totals = data.day_totals.get(
                     day_num, (Decimal("0"), Decimal("0")),
                 )
                 row.append({
@@ -546,8 +561,10 @@ def _build_calendar_weeks(year, month, data, today):
                     "entries": entries,
                     "is_paycheck": day_num in paycheck_set,
                     "is_today": is_today,
-                    "income_total": income_total,
-                    "expense_total": expense_total,
+                    "income_total": totals[0],
+                    "expense_total": totals[1],
+                    "daily_balance": daily_balances.get(day_num),
+                    "overflow": data.day_overflow.get(day_num),
                 })
         weeks.append(row)
     return weeks

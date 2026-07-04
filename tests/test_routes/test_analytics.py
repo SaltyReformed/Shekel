@@ -1966,6 +1966,40 @@ class TestCsvExport:
             assert resp.status_code == 200
             assert b"January Rent" in resp.data
 
+    def test_calendar_csv_has_eod_balance_column(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The month CSV carries the end-of-day running-balance column.
+
+        Anchor $1000 (period 0); a projected -$250 expense due Jan 8 leaves
+        the projected end-of-day balance at $750 on that day.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+            db.session.add(Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Groceries",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("250.00"),
+                due_date=date(2026, 1, 8),
+            ))
+            db.session.commit()
+            resp = auth_client.get(
+                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "End-of-Day Balance ($)" in body
+            # The Groceries row carries the day's projected EOD balance ($750).
+            assert "750.00" in body
+
     def test_year_end_csv_export(self, app, auth_client, seed_user,
                                   seed_periods):
         """C17-3: Year-end CSV returns 200 with text/csv."""
@@ -2469,8 +2503,12 @@ class TestCalendarMonthView:
     def test_calendar_today_highlighted(self, app, auth_client, seed_user, seed_periods):
         """Current month view contains today indicator class."""
         with app.app_context():
-            from datetime import date
-            today = date.today()
+            from datetime import datetime, timezone
+            from app.utils.dates import to_display_date
+            # The route marks today in the display timezone, so the test must
+            # ask for the display-tz month (not the server's UTC day) or it
+            # flakes at the midnight-UTC month boundary.
+            today = to_display_date(datetime.now(timezone.utc))
             resp = auth_client.get(
                 f"/analytics/calendar?view=month&year={today.year}&month={today.month}",
                 headers={"HX-Request": "true"},
@@ -2669,9 +2707,11 @@ class TestCalendarInlineTotals:
             from datetime import date
             from decimal import Decimal
 
+            # Period 1 (Jan 16-29) is the period whose span contains the
+            # Jan 20 due date, so the clamped attribution lands on the 20th.
             txn = Transaction(
                 account_id=seed_user["account"].id,
-                pay_period_id=seed_periods[0].id,
+                pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Click Test",

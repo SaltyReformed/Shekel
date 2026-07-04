@@ -160,8 +160,14 @@ def export_calendar_csv(data, view_type: str) -> str:
 def _export_calendar_month(data) -> str:
     """Export month calendar as one row per transaction.
 
+    The trailing "End-of-Day Balance ($)" column carries the day's projected
+    end-of-day running balance (repeated on every transaction row for that
+    day), sourced from the same :class:`DailyView` the on-screen flow strip
+    uses.  It is blank when no daily view was computed (the export route
+    always supplies ``today`` so it is populated in practice).
+
     Args:
-        data: MonthSummary with day_entries dict.
+        data: MonthSummary with day_entries dict and optional ``daily`` view.
 
     Returns:
         CSV string with transaction rows.
@@ -169,8 +175,10 @@ def _export_calendar_month(data) -> str:
     headers = [
         "Due Date", "Name", "Category Group", "Category Item",
         "Amount ($)", "Income/Expense", "Status", "Large", "Infrequent",
+        "End-of-Day Balance ($)",
     ]
     rows = [headers]
+    daily_balances = data.daily.daily_balances if data.daily else {}
 
     for day in sorted(data.day_entries.keys()):
         for entry in data.day_entries[day]:
@@ -184,6 +192,7 @@ def _export_calendar_month(data) -> str:
                 "Paid" if entry.is_paid else "Projected",
                 _bool_yn(entry.is_large),
                 _bool_yn(entry.is_infrequent),
+                _dec(daily_balances.get(day)),
             ])
 
     return _write_csv(rows)

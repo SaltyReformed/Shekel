@@ -54,7 +54,12 @@ class FakeMonthSummary:
     projected_end_balance: Decimal = Decimal("5000.00")
     is_third_paycheck_month: bool = False
     day_entries: dict = field(default_factory=dict)
+    day_totals: dict = field(default_factory=dict)
+    day_overflow: dict = field(default_factory=dict)
     paycheck_days: list = field(default_factory=list)
+    # Daily running-balance view; None here means the CSV's end-of-day
+    # balance column is blank (the route supplies it in production).
+    daily: object = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +232,20 @@ class TestCalendarExport:
         assert rows[0][0] == "Due Date"
         assert "Amount ($)" in rows[0]
         assert "Income/Expense" in rows[0]
+        assert "End-of-Day Balance ($)" in rows[0]
+
+    def test_export_calendar_month_eod_balance_column(self, app):
+        """The end-of-day balance column carries the day's running balance."""
+        from types import SimpleNamespace
+        data = FakeMonthSummary(
+            day_entries={5: [FakeDayEntry(name="Rent")]},
+            daily=SimpleNamespace(daily_balances={5: Decimal("800.00")}),
+        )
+        result = export_calendar_csv(data, "month")
+        rows = _parse_csv(result)
+        eod_col = rows[0].index("End-of-Day Balance ($)")
+        # The Rent row (day 5) carries that day's projected EOD balance.
+        assert rows[1][eod_col] == "800.00"
 
     def test_export_calendar_month_data(self, app):
         """C17-svc2: Month CSV has correct number of data rows."""

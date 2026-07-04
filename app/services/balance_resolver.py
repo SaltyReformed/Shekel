@@ -327,7 +327,7 @@ class PeriodSubtotal:
     net: Decimal
 
 
-def _load_balance_transactions(
+def load_balance_transactions(
     account: Account,
     scenario_id: int,
     period_ids: list[int],
@@ -492,7 +492,7 @@ def balances_for(
     """
     anchor = resolve_anchor(account, scenario_id)
     period_ids = [p.id for p in periods]
-    transactions = _load_balance_transactions(account, scenario_id, period_ids)
+    transactions = load_balance_transactions(account, scenario_id, period_ids)
 
     # Workstream B: projected salary income is recomputed live from the
     # salary profile; the stored estimated_amount is a cache.  Built here
@@ -597,7 +597,7 @@ def period_subtotals(
 
     The canonical multi-period producer (and the implementation
     :func:`period_subtotal` delegates to).  Issues a SINGLE
-    :func:`_load_balance_transactions` over all ``periods`` then groups
+    :func:`load_balance_transactions` over all ``periods`` then groups
     the rows by ``pay_period_id``, instead of one SELECT per period.
     This is what the grid footer consumes: the pre-existing per-period
     loop was an N+1 (one transaction query per visible column, over a
@@ -629,7 +629,7 @@ def period_subtotals(
         :class:`PeriodSubtotal`.  Every input period is present as a
         key (a zero subtotal when it has no contributing transactions).
     """
-    transactions = _load_balance_transactions(
+    transactions = load_balance_transactions(
         account, scenario_id, [period.id for period in periods],
     )
     # Build the live override map ONCE over the union set (the same
@@ -808,7 +808,7 @@ def balance_as_of_date(
     producer eliminates both defects: the projection runs through the
     real period containing ``as_of`` (so balances reflect the true
     date, not a days-stale period boundary), and entries are always
-    loaded by :func:`_load_balance_transactions` (so the entry-aware
+    loaded by :func:`load_balance_transactions` (so the entry-aware
     reduction is unconditional).
 
     Algorithm:
@@ -824,7 +824,7 @@ def balance_as_of_date(
          not project backward).
       4. Run :func:`~app.services.balance_calculator.calculate_balances`
          over ``[anchor_period .. target_period - 1]`` (entries
-         eager-loaded via :func:`_load_balance_transactions`).  The
+         eager-loaded via :func:`load_balance_transactions`).  The
          result is ``prior_balance`` -- the projected end balance of
          the period immediately preceding ``target_period``.  When
          ``target_period == anchor_period`` there is no prior period
@@ -921,10 +921,10 @@ def balance_as_of_date(
         p for p in all_periods
         if anchor.period.period_index <= p.period_index < target_period.period_index
     ]
-    prefix_txns = _load_balance_transactions(
+    prefix_txns = load_balance_transactions(
         account, scenario_id, [p.id for p in prefix_periods],
     )
-    target_txns = _load_balance_transactions(
+    target_txns = load_balance_transactions(
         account, scenario_id, [target_period.id],
     )
     amount_overrides = live_amount_overrides(
