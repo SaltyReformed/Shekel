@@ -253,6 +253,114 @@ def _apply_marginal_brackets(taxable_income, brackets):
     return round_money(total_tax)
 
 
+# ── Annual Filing-Time Liability (federal) ────────────────────────
+
+
+@dataclass(frozen=True)
+class AnnualFederalTax:
+    """The two computed figures of the filing-time federal calculation.
+
+    ``taxable`` is federal taxable income (wages plus W-4 Step 4(a) income,
+    less pre-tax deductions and the standard deduction, floored at zero);
+    ``liability`` is the tax owed on it after nonrefundable dependent
+    credits, floored at zero.  The two travel together so a caller that
+    renders the derivation -- the Taxes tab's assumptions card (T-P4) --
+    does not have to recompute ``taxable`` from the raw income components:
+    the taxable-income clamp expression lives in exactly one place,
+    :func:`calculate_annual_federal_liability`.
+    """
+
+    taxable: Decimal
+    liability: Decimal
+
+
+def calculate_annual_federal_liability(annual_wage_income, bracket_set, w4=W4Inputs()):
+    """Compute the filing-time FEDERAL income tax liability for a full year.
+
+    This is the annual-liability sibling of
+    :func:`calculate_federal_withholding`: it applies the SAME seeded
+    bracket ladder and dependent credits, but ONCE to the whole year's
+    income rather than per pay period, to answer "what will this taxpayer
+    owe the IRS at filing time" (the tax-refund estimate the analytics
+    Taxes tab is built around).  Both functions share the
+    :func:`_apply_marginal_brackets` and :func:`_dependent_credits`
+    primitives, so there is a single bracket implementation.
+
+    The identity (developer ruling 2026-07-04, worked-example fork):
+
+        taxable   = max(0, wages + Step 4(a) income
+                            - pre-tax deductions - standard deduction)
+        liability = max(0, marginal_brackets(taxable) - dependent_credits)
+
+    W-4 Step 4(a) additional income (``w4.additional_income``) counts as
+    REAL income and is included in the base.  W-4 Step 4(b) additional
+    deductions (``w4.additional_deductions``) and Step 4(c) extra
+    withholding (``w4.extra_withholding``) are withholding-only hints and
+    are DELIBERATELY NOT read here: at filing time the Schedule A check
+    owns the itemize-vs-standard election, so 4(b) must not move the
+    liability.  Dependent credits are treated as nonrefundable -- the
+    liability clamps at zero rather than producing a refundable balance
+    (Additional Child Tax Credit refundability is out of scope for v1 and
+    is disclosed in the assumptions card).
+
+    Args:
+        annual_wage_income: The year's Box-1 wage income (gross wages less
+            pre-tax deductions is passed as ``annual_wage_income`` minus
+            ``w4.pre_tax_deductions``).  Constructed to ``Decimal`` from a
+            string; a ``float`` argument is coerced via ``str`` first.
+        bracket_set: A TaxBracketSet (or a stand-in) exposing
+            ``standard_deduction``, ``child_credit_amount``,
+            ``other_dependent_credit_amount``, and ``brackets``.
+        w4: :class:`W4Inputs` -- the employee's W-4 inputs.  Only
+            ``additional_income``, ``pre_tax_deductions``,
+            ``qualifying_children``, and ``other_dependents`` are consulted;
+            ``additional_deductions`` and ``extra_withholding`` are ignored
+            (see above).  Defaults to an empty ``W4Inputs()`` (a blank W-4).
+
+    Returns:
+        :class:`AnnualFederalTax` -- the year's federal ``taxable`` income
+        and the ``liability`` owed on it, both Decimal at two places.
+
+    Raises:
+        InvalidFilingStatusError:   If ``bracket_set`` is None (mirrors
+            :func:`calculate_federal_withholding`, which cannot resolve a
+            bracket ladder without a filing status).
+        InvalidDependentCountError: If a dependent count is negative.
+    """
+    if bracket_set is None:
+        raise InvalidFilingStatusError(None)
+    if w4.qualifying_children < 0:
+        raise InvalidDependentCountError(
+            "qualifying_children", w4.qualifying_children,
+        )
+    if w4.other_dependents < 0:
+        raise InvalidDependentCountError(
+            "other_dependents", w4.other_dependents,
+        )
+
+    annual_wage_income = Decimal(str(annual_wage_income))
+    standard_deduction = Decimal(str(bracket_set.standard_deduction))
+
+    # Filing-time taxable income.  Step 4(a) is real income; Step 4(b)
+    # (w4.additional_deductions) and Step 4(c) (w4.extra_withholding) are
+    # withholding-only and deliberately excluded per the 2026-07-04 ruling.
+    taxable = (
+        annual_wage_income
+        + w4.additional_income
+        - w4.pre_tax_deductions
+        - standard_deduction
+    )
+    taxable = max(taxable, ZERO)
+
+    tax_before_credits = _apply_marginal_brackets(taxable, bracket_set.brackets)
+    total_credits = _dependent_credits(
+        bracket_set, w4.qualifying_children, w4.other_dependents,
+    )
+    liability = max(tax_before_credits - total_credits, ZERO)
+
+    return AnnualFederalTax(taxable=taxable, liability=liability)
+
+
 # ── State Tax ─────────────────────────────────────────────────────
 
 

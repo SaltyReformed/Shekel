@@ -12,7 +12,9 @@ import pytest
 from decimal import Decimal
 
 from app.services.tax_calculator import (
+    AnnualFederalTax,
     W4Inputs,
+    calculate_annual_federal_liability,
     calculate_federal_withholding,
     calculate_state_tax,
     calculate_fica,
@@ -944,3 +946,260 @@ class TestCappedSocialSecurityHelper:
         assert result == Decimal("0.00"), (
             f"None fica_config must yield ZERO, got {result}"
         )
+
+
+# ── Annual Filing-Time Federal Liability (T-P1) ────────────────────
+
+
+def _federal_2026_single():
+    """The seeded 2026 single-filer bracket set (auth_service DEFAULT_*).
+
+    Mirrors ``DEFAULT_FEDERAL_BRACKETS[2026]["single"]`` so the annual
+    liability arithmetic is hand-confirmed against the same numbers a
+    registered user is seeded with (std deduction 16,100; CTC 2,000;
+    ODC 500).
+    """
+    return FakeBracketSet(
+        standard_deduction=Decimal("16100"),
+        child_credit_amount=Decimal("2000"),
+        other_dependent_credit_amount=Decimal("500"),
+        brackets=[
+            FakeBracket(Decimal("0"),      Decimal("12400"),  Decimal("0.10"), 0),
+            FakeBracket(Decimal("12400"),  Decimal("50400"),  Decimal("0.12"), 1),
+            FakeBracket(Decimal("50400"),  Decimal("105700"), Decimal("0.22"), 2),
+            FakeBracket(Decimal("105700"), Decimal("201775"), Decimal("0.24"), 3),
+            FakeBracket(Decimal("201775"), Decimal("256225"), Decimal("0.32"), 4),
+            FakeBracket(Decimal("256225"), Decimal("640600"), Decimal("0.35"), 5),
+            FakeBracket(Decimal("640600"), None,              Decimal("0.37"), 6),
+        ],
+    )
+
+
+class _FakeNCStateConfig:
+    """The seeded 2026 NC flat state config (rate 3.99%, std ded 12,750)."""
+
+    def __init__(self, flat_rate="0.0399", standard_deduction="12750"):
+        self.flat_rate = Decimal(flat_rate)
+        self.standard_deduction = Decimal(standard_deduction)
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import TaxTypeEnum  # pylint: disable=import-outside-toplevel
+        self.tax_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
+
+
+class TestAnnualFederalLiability:
+    """calculate_annual_federal_liability: filing-time federal tax (T-P1).
+
+    Applies the seeded bracket ladder ANNUALLY to
+    (wages + 4(a) - pre-tax - standard deduction), minus nonrefundable
+    CTC/ODC.  Every expected number is hand-computed in the docstring.
+    """
+
+    def test_worked_anchor(self):
+        """Developer's locked anchor: single, NC, 2026 configs.
+
+        wages 110,000; pre-tax 12,000; 4(a) 1,200; no dependents.
+          taxable   = 110000 + 1200 - 12000 - 16100 = 83,100.00
+          brackets  = 12400*0.10 + (50400-12400)*0.12 + (83100-50400)*0.22
+                    = 1240.00 + 4560.00 + 7194.00 = 12,994.00
+          credits   = 0  ->  liability = 12,994.00
+        """
+        result = calculate_annual_federal_liability(
+            Decimal("110000.00"),
+            _federal_2026_single(),
+            W4Inputs(
+                additional_income=Decimal("1200.00"),
+                pre_tax_deductions=Decimal("12000.00"),
+            ),
+        )
+        assert isinstance(result, AnnualFederalTax)
+        assert result.taxable == Decimal("83100.00"), (
+            f"Anchor taxable: expected 83100.00, got {result.taxable}"
+        )
+        assert result.liability == Decimal("12994.00"), (
+            f"Anchor liability: expected 12994.00, got {result.liability}"
+        )
+
+    def test_step_4a_additional_income_is_real_income(self):
+        """W-4 Step 4(a) income raises taxable and liability (real income).
+
+        Same anchor without the 1,200 of 4(a):
+          taxable   = 110000 - 12000 - 16100 = 81,900.00
+          brackets  = 1240 + 4560 + (81900-50400)*0.22
+                    = 1240 + 4560 + 6930.00 = 12,730.00
+        The 1,200 of 4(a) sits entirely in the 22% band:
+          1200 * 0.22 = 264.00  ->  12730.00 + 264.00 = 12,994.00 (anchor).
+        """
+        without_4a = calculate_annual_federal_liability(
+            Decimal("110000.00"),
+            _federal_2026_single(),
+            W4Inputs(pre_tax_deductions=Decimal("12000.00")),
+        )
+        with_4a = calculate_annual_federal_liability(
+            Decimal("110000.00"),
+            _federal_2026_single(),
+            W4Inputs(
+                additional_income=Decimal("1200.00"),
+                pre_tax_deductions=Decimal("12000.00"),
+            ),
+        )
+        assert without_4a.taxable == Decimal("81900.00")
+        assert without_4a.liability == Decimal("12730.00")
+        assert with_4a.liability == Decimal("12994.00")
+        assert with_4a.liability - without_4a.liability == Decimal("264.00"), (
+            "4(a) income of 1,200 in the 22% band must add 264.00 of tax"
+        )
+
+    def test_step_4b_additional_deductions_excluded(self):
+        """W-4 Step 4(b) deductions do NOT change liability (the ruling lock).
+
+        Two W-4s differing ONLY in additional_deductions (0 vs 3,000, the
+        ruling's exact anchor 4(b) value) must yield identical taxable and
+        liability -- 4(b) is a withholding-only hint, excluded at filing.
+        """
+        base_w4 = W4Inputs(
+            additional_income=Decimal("1200.00"),
+            pre_tax_deductions=Decimal("12000.00"),
+        )
+        with_4b = W4Inputs(
+            additional_income=Decimal("1200.00"),
+            pre_tax_deductions=Decimal("12000.00"),
+            additional_deductions=Decimal("3000.00"),
+        )
+        no_4b = calculate_annual_federal_liability(
+            Decimal("110000.00"), _federal_2026_single(), base_w4,
+        )
+        yes_4b = calculate_annual_federal_liability(
+            Decimal("110000.00"), _federal_2026_single(), with_4b,
+        )
+        assert no_4b == yes_4b, (
+            "4(b) additional deductions must not affect filing liability"
+        )
+        assert yes_4b.liability == Decimal("12994.00")
+
+    def test_bracket_boundary_exactly_at_50400(self):
+        """Taxable exactly at the 12%/22% edge stays out of the 22% band.
+
+        wages 66,500; no 4(a); no pre-tax:
+          taxable  = 66500 - 16100 = 50,400.00 (the bracket edge)
+          brackets = 12400*0.10 + (50400-12400)*0.12
+                   = 1240.00 + 4560.00 = 5,800.00  (nothing spills into 22%)
+        """
+        result = calculate_annual_federal_liability(
+            Decimal("66500.00"), _federal_2026_single(),
+        )
+        assert result.taxable == Decimal("50400.00")
+        assert result.liability == Decimal("5800.00"), (
+            f"At bracket edge: expected 5800.00, got {result.liability}"
+        )
+
+    def test_ctc_and_odc_credits_applied(self):
+        """2 children + 1 other dependent = 4,500 nonrefundable credit.
+
+        Anchor before credits is 12,994.00 (see test_worked_anchor).
+          credit    = 2*2000 + 1*500 = 4,500.00
+          liability = 12994.00 - 4500.00 = 8,494.00
+        """
+        result = calculate_annual_federal_liability(
+            Decimal("110000.00"),
+            _federal_2026_single(),
+            W4Inputs(
+                additional_income=Decimal("1200.00"),
+                pre_tax_deductions=Decimal("12000.00"),
+                qualifying_children=2,
+                other_dependents=1,
+            ),
+        )
+        assert result.taxable == Decimal("83100.00")
+        assert result.liability == Decimal("8494.00"), (
+            f"After 4,500 credit: expected 8494.00, got {result.liability}"
+        )
+
+    def test_credits_clamp_liability_at_zero(self):
+        """Credits exceeding the tax clamp liability at zero (nonrefundable).
+
+        wages 25,000; no 4(a); no pre-tax; 1 child:
+          taxable   = 25000 - 16100 = 8,900.00
+          brackets  = 8900 * 0.10 = 890.00
+          credit    = 1 * 2000 = 2,000.00  (exceeds 890.00)
+          liability = max(0, 890.00 - 2000.00) = 0.00 (not -1,110.00)
+        """
+        result = calculate_annual_federal_liability(
+            Decimal("25000.00"),
+            _federal_2026_single(),
+            W4Inputs(qualifying_children=1),
+        )
+        assert result.taxable == Decimal("8900.00")
+        assert result.liability == Decimal("0.00"), (
+            f"Nonrefundable clamp: expected 0.00, got {result.liability}"
+        )
+
+    def test_taxable_clamps_at_zero_when_deductions_exceed_income(self):
+        """Pre-tax + standard deduction exceeding income -> zero taxable/tax.
+
+        wages 10,000; pre-tax 5,000; std ded 16,100:
+          10000 - 5000 - 16100 = -11,100 -> clamped to 0 -> liability 0.00
+        """
+        result = calculate_annual_federal_liability(
+            Decimal("10000.00"),
+            _federal_2026_single(),
+            W4Inputs(pre_tax_deductions=Decimal("5000.00")),
+        )
+        assert result.taxable == Decimal("0"), (
+            f"Taxable must clamp to 0, got {result.taxable}"
+        )
+        assert result.liability == Decimal("0"), (
+            f"Liability must clamp to 0, got {result.liability}"
+        )
+
+    def test_none_bracket_set_raises(self):
+        """A None bracket set raises InvalidFilingStatusError (engine contract)."""
+        with pytest.raises(InvalidFilingStatusError):
+            calculate_annual_federal_liability(Decimal("110000.00"), None)
+
+    def test_negative_qualifying_children_raises(self):
+        """Negative dependent counts raise, matching the withholding engine."""
+        with pytest.raises(InvalidDependentCountError):
+            calculate_annual_federal_liability(
+                Decimal("110000.00"),
+                _federal_2026_single(),
+                W4Inputs(qualifying_children=-1),
+            )
+
+    def test_negative_other_dependents_raises(self):
+        """Negative other-dependent count raises InvalidDependentCountError."""
+        with pytest.raises(InvalidDependentCountError):
+            calculate_annual_federal_liability(
+                Decimal("110000.00"),
+                _federal_2026_single(),
+                W4Inputs(other_dependents=-3),
+            )
+
+
+class TestAnnualStateBase:
+    """calculate_state_tax on the NC annual base (the T-P1 state layer).
+
+    The liability service computes the NC base = wages + 4(a) - pre-tax
+    (clamped) and delegates to calculate_state_tax, which subtracts the NC
+    standard deduction internally.  These pin the flat-rate std-deduction
+    branch the anchor depends on.
+    """
+
+    def test_nc_anchor_base_rounds_half_up(self):
+        """NC 2026 anchor: base 99,200 -> (99200-12750)*3.99% = 3,449.36.
+
+        (99200 - 12750) * 0.0399 = 86450 * 0.0399 = 3,449.3550 exactly;
+        ROUND_HALF_UP at the half-cent (the discarded .0050) rounds the
+        second decimal up: 3,449.35 -> 3,449.36.
+        """
+        result = calculate_state_tax(Decimal("99200.00"), _FakeNCStateConfig())
+        assert result == Decimal("3449.36"), (
+            f"NC anchor state tax: expected 3449.36, got {result}"
+        )
+
+    def test_nc_base_below_standard_deduction_is_zero(self):
+        """A base below the NC standard deduction yields zero state tax.
+
+        base 10,000 - std ded 12,750 = -2,750 -> clamped -> 0.00.
+        """
+        result = calculate_state_tax(Decimal("10000.00"), _FakeNCStateConfig())
+        assert result == Decimal("0.00")

@@ -252,6 +252,19 @@ liability service, clearly labeled as modeled, with an assumptions box (filing s
 deduction, credits, calibration date). v2 = a YTD checkpoint (user types YTD gross/fed/state/SS/
 Medicare from a real pay stub; estimate re-anchors on measured withholding). v2 is a small table
 plus a form, and turns the biggest error source (modeled withholding) into measured data.
+(Superseded by Gate A ruling 5: both stages ship as ONE arc.)
+
+**Liability basis ruling (developer, 2026-07-04, worked-example fork):** the filing-time liability
+counts W-4 Step 4(a) additional income as REAL income (in both the federal and NC bases) and
+EXCLUDES Step 4(b) additional deductions -- 4(b) stays a withholding-only hint because the Schedule
+A check owns the itemize-vs-standard election at filing. NC base = wages gross + 4(a) - pre-tax (the
+same AGI-style base the withholding path already uses via ``taxable_biweekly``,
+``paycheck_calculator.py:239``), minus the NC standard deduction inside ``calculate_state_tax``.
+CTC/ODC are applied as nonrefundable (liability clamps at zero; ACTC refundability out of scope v1)
+-- disclosed in the assumptions box. Worked anchor (single, NC, 2026; salary 110,000, pre-tax
+12,000, 4(a) 1,200, 4(b) 3,000): federal taxable 83,100 -> liability 12,994.00; NC (98,000 + 1,200 -
+12,750) x 3.99% = 3,449.36. Build process ruling: T-P1..T-P3 built by Opus subagents with review +
+verification between phases (the dashboard/salary pattern).
 
 ## Loop A record (Spending and Taxes slices)
 
