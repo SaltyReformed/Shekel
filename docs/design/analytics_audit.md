@@ -355,12 +355,34 @@ modeled / mixed treatment on every surface, explicit per-export CSV decisions at
 
 1. **Slice 1 -- Calendar** (flagship): daily end-of-day balance series producer (one-pass, via the
    `balance_at` seam; Opus scope), trough flag, due chips, elapsed-vs-remaining month summary.
-2. **Slice 2 -- Taxes**: annual liability service + YTD checkpoint model/form (Opus scope) + refund
-   hero + hybrid W-2 preview; replaces the Year-End pill.
-3. **Slice 3 -- Spending**: category breakdown generalized to any window + trend deltas + surprises
-   list; Variance and Trends pills retired.
-4. **Slice 4 -- Shell**: Statements grouped to one pill, nav collapsed to four pills, scope labels
-   and semantics chips applied page-wide.
+   Phases P1-P3 in "Loop B build plan (Calendar slice)" below.
+2. **Slice 2 -- Taxes** (replaces the Year-End pill; one arc per Gate A ruling 5):
+   - T-P1 (Opus): annual liability service - applies the seeded bracket tables ANNUALLY to (gross -
+     pre-tax - standard deduction), minus CTC/ODC credits; federal plus NC flat state;
+     hand-confirmed assertions per rule 5.
+   - T-P2 (Opus): YTD checkpoint - new small table (per profile: as-of stub date, YTD gross /
+     federal / state / SS / Medicare), migration both directions, entry form + update route;
+     withholding-to-date = measured checkpoint + calibrated projection for the remainder.
+   - T-P3 (Opus): refund producer (refund = withheld - liability, federal and state) + hybrid W-2
+     preview producer (measured through the checkpoint + projected remainder) + Schedule A check
+     (mortgage interest via the loan ledger reader + state tax + property tax vs the standard
+     deduction).
+   - T-P4 (Fable): the Taxes page per the locked anatomy (hero band + chips + checkpoint +
+     assumptions cards over the derivation ledger, W-2 preview, Schedule A). NO chart in v1.
+   - T-P5: acceptance; the year-end CSV's fate is decided here (it dies with the tab unless the
+     developer wants a tax-summary export).
+3. **Slice 3 -- Spending** (retires the Variance and Trends pills):
+   - S-P1 (Opus): window producer generalizing the year-end category breakdown to
+     pay-period/month/year windows; trend deltas from the existing engine with the month/period
+     sufficiency unit mismatch fixed; per-category PER-PERIOD sparkline series (the same series as
+     the chip, flat-guarded); surprises producer (settled rows where actual differs from estimate,
+     capped list + net); movers; hero figures (vs prior window, vs 6-window average, payment
+     timing).
+   - S-P2 (Fable): the Spending page per the locked anatomy. The variance CSV retires with its tab
+     (explicit decision; revisit at build if the developer objects).
+4. **Slice 4 -- Shell**: Statements grouped to one pill with an internal toggle, nav collapsed to
+   four pills, account-scope labels and measured/modeled/mixed chips applied page-wide, redirects
+   for retired tab URLs, remaining CSV endpoints re-audited.
 
 Each slice gets its own Loop A round (scratch mockups in /tmp per `visual_loop.md`, never committed)
 and its own gated Loop B build with the full suite green.

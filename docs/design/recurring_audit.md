@@ -236,3 +236,20 @@ per-instance keep/replace decisions) was built and tested but no UI ever calls i
   transfer live-preview gap, plus the developer-flagged DRY pass: collapse the parallel list
   routes/templates the unification obsoletes and share form scaffolding the merge makes common.
 - **P5 -- acceptance:** developer drive on real data; as-built record here.
+
+### Build-contract details (fresh-session notes)
+
+- **Default landing state:** grouped by kind (Income, then Expenses, then Transfers), each section
+  internally ordered by monthly-equivalent cost descending. The sort control re-orders WITHIN
+  sections (Name / Amount / Monthly cost / Next date); the kind filter pills hide non-matching
+  sections; search filters rows by name across sections.
+- **"+ New"** opens a kind picker (Expense / Income / Transfer) and routes to the matching form
+  variant; expense and income share the transaction-template form, transfer uses its own.
+- **Unit toggle** state applies page-wide (band values, section subtotals, the equivalents column,
+  and its column header label) and should persist per user (small settings column or session
+  preference - Opus call at P1, present options if ambiguous).
+- **Archived** renders as a single collapsed line with count; expanding shows both kinds' archived
+  definitions with Unarchive actions.
+- The mock's visual reference lived at /tmp/recurring_explore.html and
+  /tmp/recurring_chooser_explore.html (session scratchpad, deleted per anti-anchoring); the anatomy
+  paragraphs above are the binding description.
