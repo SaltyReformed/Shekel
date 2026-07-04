@@ -26,15 +26,24 @@ from app.services import account_service
 from tests._test_helpers import insert_origination_event, insert_origination_rate
 
 
-def _create_savings_account(seed_user, db_session, name="My Savings"):
-    """Helper to create a savings account."""
+def _create_savings_account(
+    seed_user, db_session, name="My Savings",
+    anchor_balance=Decimal("5000.00"),
+):
+    """Helper to create a savings account.
+
+    The default $5000 anchor posts a Step-5 opening correction at create
+    time, which makes the account archive-only under hard-delete Guard 5;
+    the hard-delete tests that need a deletable account pass
+    ``Decimal("0.00")`` (a zero opening books nothing).
+    """
     savings_type = db_session.query(AccountType).filter_by(name="Savings").one()
     account = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
             account_type_id=savings_type.id,
             name=name,
-            anchor_balance=Decimal("5000.00"),
+            anchor_balance=anchor_balance,
         ),
     )
     db_session.add(account)
@@ -330,9 +339,16 @@ class TestAccountHardDelete:
     """
 
     def test_hard_delete_account_no_history(self, app, auth_client, seed_user, db):
-        """C-5A.5-22: Account with no transactions or templates is permanently deleted."""
+        """C-5A.5-22: Account with no transactions or templates is permanently deleted.
+
+        $0-anchor: a non-zero anchor posts its Step-5 opening correction and
+        becomes archive-only under Guard 5 (see the companion test below).
+        """
         with app.app_context():
-            savings = _create_savings_account(seed_user, db.session, name="Deletable Savings")
+            savings = _create_savings_account(
+                seed_user, db.session, name="Deletable Savings",
+                anchor_balance=Decimal("0.00"),
+            )
             acct_id = savings.id
 
             resp = auth_client.post(
@@ -342,6 +358,33 @@ class TestAccountHardDelete:
             assert resp.status_code == 200
             assert b"permanently deleted" in resp.data
             assert db.session.get(Account, acct_id) is None
+
+    def test_hard_delete_nonzero_anchor_archives_instead(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A non-zero-anchor account is archive-only (Step-5 Guard 5).
+
+        The accepted behavior change (plan Section 3.5): the $5000 opening
+        correction posted at create time is immutable posting-ledger
+        history, so the hard delete archives the account instead --
+        identical to the shipped loan behavior.
+        """
+        with app.app_context():
+            savings = _create_savings_account(
+                seed_user, db.session, name="Opening Savings",
+            )
+            acct_id = savings.id
+
+            resp = auth_client.post(
+                f"/accounts/{acct_id}/hard-delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"posting-ledger history" in resp.data
+            assert b"archived instead" in resp.data
+            reloaded = db.session.get(Account, acct_id)
+            assert reloaded is not None
+            assert reloaded.is_active is False
 
     def test_hard_delete_account_with_history(
         self, app, auth_client, seed_user, db, seed_periods_today,
@@ -604,10 +647,16 @@ class TestAccountHardDelete:
     def test_hard_delete_account_with_anchor_history(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Account with anchor history records but no txns is permanently deleted."""
+        """Account with anchor history records but no txns is permanently deleted.
+
+        $0-anchor create (no opening posted), then a directly-added history
+        row that never synced: history ROWS alone do not block a hard
+        delete -- only posted ledger history (Guard 5) does.
+        """
         with app.app_context():
             savings = _create_savings_account(
                 seed_user, db.session, name="Anchor Test",
+                anchor_balance=Decimal("0.00"),
             )
             history = AccountAnchorHistory(
                 account_id=savings.id,

@@ -39,7 +39,7 @@ settings_bp = Blueprint("settings", __name__)
 
 _VALID_SECTIONS = [
     "general", "categories", "pay-periods", "tax", "account-types",
-    "retirement", "companions", "security",
+    "companions", "security",
 ]
 
 # The scalar UserSettings fields the POST handler copies straight from the
@@ -78,6 +78,9 @@ _PP_LOCK_BADGES = {
     pay_period_admin.PeriodLockReason.SETTLED_TXN: (
         "Settled", "bg-warning text-dark",
     ),
+    pay_period_admin.PeriodLockReason.LEDGER_POSTINGS: (
+        "Posted", "bg-warning text-dark",
+    ),
     pay_period_admin.PeriodLockReason.ACCOUNT_ANCHOR: (
         "Anchor", "bg-info text-dark",
     ),
@@ -94,6 +97,13 @@ _PP_MUTABLE_BADGE = ("Editable", "bg-success-subtle text-success-emphasis")
 def show():
     """Display the settings dashboard."""
     section = request.args.get("section", "general")
+    # Gate A ruling 6 (retirement rebuild P3a): the Settings > Retirement
+    # section retired -- the assumptions panel on /retirement is the
+    # persistent home for SWR, the planned retirement date, the estimated
+    # retirement tax rate, and the merit-raise horizon.  Old bookmarks and
+    # links land on the retirement page.
+    if section == "retirement":
+        return redirect(url_for("retirement.dashboard"))
     if section not in _VALID_SECTIONS:
         section = "general"
     return render_settings_dashboard(section)
@@ -104,9 +114,7 @@ def _section_context(section):
 
     Returns only the active section's slice; the caller overlays it on
     the full default context so the template's "all keys always supplied"
-    contract holds.  "retirement" needs no extra data (it renders from the
-    loaded ``settings``), so it -- like any unknown section -- falls
-    through to an empty dict.
+    contract holds.  An unknown section falls through to an empty dict.
     """
     loaders = {
         "general": lambda: {

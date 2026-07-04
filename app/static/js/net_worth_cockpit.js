@@ -43,25 +43,6 @@
   var horizon = DEFAULT_HORIZON;
 
   /**
-   * Convert a hex color (#rgb or #rrggbb) to an rgba() string.
-   * @param {string} hex - Hex color from a CSS custom property.
-   * @param {number} alpha - Alpha channel 0..1.
-   * @returns {string} rgba(...) color.
-   */
-  function hexToRgba(hex, alpha) {
-    var h = hex.replace("#", "").trim();
-    if (h.length === 3) {
-      h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-    }
-    var num = parseInt(h, 16);
-    if (!Number.isFinite(num)) return "rgba(0,0,0," + alpha + ")";
-    var r = (num >> 16) & 255;
-    var g = (num >> 8) & 255;
-    var b = num & 255;
-    return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
-  }
-
-  /**
    * Parse the canvas's ``data-chart`` JSON.
    * @param {Element} canvas - The trend canvas.
    * @returns {object|null} The series object, or null when missing /
@@ -113,31 +94,10 @@
   }
 
   /**
-   * Build the scriptable ``segment`` options that draw history solid and
-   * the forward projection dashed-and-lighter.
-   *
-   * A segment is "projection" when its END point is at or past the current
-   * period (``p1DataIndex >= currentIndex``); the segment that crosses the
-   * boundary (last-history -> current period) is the first dashed one.
-   *
-   * @param {number} currentIndex - The solid/dashed boundary index.
-   * @param {string} solidColor - History line color.
-   * @param {string} projColor - Projection line color (lighter).
-   * @returns {object} A Chart.js ``segment`` option object.
-   */
-  function splitSegment(currentIndex, solidColor, projColor) {
-    return {
-      borderDash: function (ctx) {
-        return ctx.p1DataIndex >= currentIndex ? PROJECTION_DASH : undefined;
-      },
-      borderColor: function (ctx) {
-        return ctx.p1DataIndex >= currentIndex ? projColor : solidColor;
-      }
-    };
-  }
-
-  /**
-   * Build the dataset list for the active view.
+   * Build the dataset list for the active view.  The solid-history vs
+   * dashed-projection segment styling comes from the shared
+   * ShekelChart.splitSegment helper (chart_theme.js), so this chart and
+   * the account-detail chart cannot drift apart.
    * @param {object} sliced - The sliced series.
    * @param {object} palette - Resolved theme colors.
    * @returns {Array<object>} Chart.js datasets.
@@ -156,8 +116,9 @@
           borderWidth: 2,
           tension: 0,
           pointRadius: 2,
-          segment: splitSegment(
-            currentIndex, palette.accent, hexToRgba(palette.accent, 0.5)
+          segment: ShekelChart.splitSegment(
+            currentIndex, palette.accent,
+            ShekelChart.hexToRgba(palette.accent, 0.5), PROJECTION_DASH
           )
         },
         {
@@ -167,8 +128,9 @@
           borderWidth: 2,
           tension: 0,
           pointRadius: 2,
-          segment: splitSegment(
-            currentIndex, palette.danger, hexToRgba(palette.danger, 0.5)
+          segment: ShekelChart.splitSegment(
+            currentIndex, palette.danger,
+            ShekelChart.hexToRgba(palette.danger, 0.5), PROJECTION_DASH
           )
         }
       ];
@@ -188,62 +150,16 @@
       pointBackgroundColor: function (ctx) {
         return ctx.parsed && ctx.parsed.y < 0 ? palette.danger : palette.accent;
       },
-      segment: splitSegment(
-        currentIndex, palette.accent, hexToRgba(palette.accent, 0.5)
+      segment: ShekelChart.splitSegment(
+        currentIndex, palette.accent,
+        ShekelChart.hexToRgba(palette.accent, 0.5), PROJECTION_DASH
       ),
       fill: {
         target: "origin",
-        above: hexToRgba(palette.accent, 0.10),
-        below: hexToRgba(palette.danger, 0.25)
+        above: ShekelChart.hexToRgba(palette.accent, 0.10),
+        below: ShekelChart.hexToRgba(palette.danger, 0.25)
       }
     }];
-  }
-
-  /**
-   * Inline plugin: draw a dashed vertical "Today" marker at the boundary
-   * between the last history point and the current period.
-   *
-   * Skipped when there is no history (currentIndex 0 -- the whole chart is
-   * projection and the leftmost point already IS today) or when the
-   * boundary is past the visible window.
-   *
-   * @param {number} currentIndex - The solid/dashed boundary index.
-   * @param {string} color - Marker line + label color.
-   * @returns {object} A Chart.js plugin.
-   */
-  function todayMarkerPlugin(currentIndex, color) {
-    return {
-      id: "nwTodayMarker",
-      afterDatasetsDraw: function (chart) {
-        var meta = chart.getDatasetMeta(0);
-        if (!meta || !meta.data) return;
-        var visibleLen = meta.data.length;
-        if (currentIndex < 1 || currentIndex >= visibleLen) return;
-
-        var xScale = chart.scales.x;
-        var yScale = chart.scales.y;
-        // Midpoint between the last history point and the current period.
-        var x = (xScale.getPixelForValue(currentIndex - 1) +
-          xScale.getPixelForValue(currentIndex)) / 2;
-
-        var ctx = chart.ctx;
-        ctx.save();
-        ctx.beginPath();
-        ctx.setLineDash([4, 4]);
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = color;
-        ctx.moveTo(x, yScale.top);
-        ctx.lineTo(x, yScale.bottom);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.font = "10px 'Inter', system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillText("Today", x, yScale.top + 2);
-        ctx.restore();
-      }
-    };
   }
 
   /**
@@ -306,7 +222,9 @@
           x: { grid: { display: false } }
         }
       },
-      plugins: [todayMarkerPlugin(sliced.currentIndex, colors.textSecondary)]
+      plugins: [
+        ShekelChart.todayMarkerPlugin(sliced.currentIndex, colors.textSecondary)
+      ]
     };
   }
 

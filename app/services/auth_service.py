@@ -933,6 +933,15 @@ def register_user(email, password, display_name):
     db.session.add(bootstrap_period)
     db.session.flush()
 
+    # Create the baseline scenario BEFORE the first account (Build-Order
+    # Step 5): ``account_service.create_account`` posts the new account's
+    # opening anchor correction into every scenario, and postings are
+    # scenario-scoped -- a baseline-less create has nowhere to post and is
+    # loudly skipped.  Creating the baseline first keeps "production users
+    # get a baseline at registration" true at the moment it matters.
+    scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)
+    db.session.add(scenario)
+
     # Default Checking account via the canonical factory (E-19): the
     # service writes both anchor columns + a matching origination
     # AccountAnchorHistory row in one call, so the contract is
@@ -950,10 +959,6 @@ def register_user(email, password, display_name):
             notes="origination (sign-up)",
         ),
     )
-
-    # Create baseline scenario.
-    scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)
-    db.session.add(scenario)
 
     # Create default categories.
     for sort_idx, (group, item) in enumerate(DEFAULT_CATEGORIES):

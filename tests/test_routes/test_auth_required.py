@@ -109,7 +109,12 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/accounts/99999/anchor-form"),
     # accounts.anchor_display
     ("GET", "/accounts/99999/anchor-display"),
-    ("GET", "/accounts/99999/interest"),  # accounts.interest_detail
+    # accounts.cash_detail -- the merged cash-account detail page
+    ("GET", "/accounts/99999/details"),
+    # accounts.checking_detail -- redirect stub to cash_detail
+    ("GET", "/accounts/99999/checking"),
+    # accounts.interest_detail -- redirect stub to cash_detail
+    ("GET", "/accounts/99999/interest"),
     # accounts.update_interest_params
     ("POST", "/accounts/99999/interest/params"),
 
@@ -124,7 +129,7 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/settings"),  # settings.update
 
     # -- salary blueprint --
-    ("GET", "/salary"),  # salary.list_profiles
+    ("GET", "/salary"),  # salary.cockpit
     ("GET", "/salary/new"),  # salary.new_profile
     ("POST", "/salary"),  # salary.create_profile
     # salary.edit_profile
@@ -132,6 +137,10 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/salary/99999"),  # salary.update_profile
     # salary.delete_profile
     ("POST", "/salary/99999/delete"),
+    # salary.reactivate_profile
+    ("POST", "/salary/99999/reactivate"),
+    # salary.anatomy
+    ("GET", "/salary/99999/anatomy/99999"),
     # salary.add_raise
     ("POST", "/salary/99999/raises"),
     # salary.delete_raise
@@ -235,8 +244,8 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/retirement/pension/99999"),
     # retirement.delete_pension
     ("POST", "/retirement/pension/99999/delete"),
-    # retirement.gap_analysis
-    ("GET", "/retirement/gap"),
+    # retirement.readiness_fragment
+    ("GET", "/retirement/readiness"),
     # retirement.update_settings
     ("POST", "/retirement/settings"),
 

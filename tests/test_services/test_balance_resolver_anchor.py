@@ -27,6 +27,8 @@ through C4-6).
 import logging
 from dataclasses import FrozenInstanceError
 from datetime import date as _date
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 from decimal import Decimal
 
 import pytest
@@ -390,6 +392,7 @@ class TestAnchorPointDataclass:
             balance=Decimal("100.00"),
             period=period,
             as_of_date=_date(2026, 1, 1),
+            created_at=_datetime(2026, 1, 1, 12, tzinfo=_timezone.utc),
         )
         with pytest.raises(FrozenInstanceError):
             anchor.balance = Decimal("999.00")  # type: ignore[misc]

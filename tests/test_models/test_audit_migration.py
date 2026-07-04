@@ -22,9 +22,11 @@ environment skips them cleanly instead of failing.
 # pylint: disable=redefined-outer-name  -- pytest fixture pattern
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import ProgrammingError
 
 from app.audit_infrastructure import (
     AUDITED_TABLES,
@@ -32,10 +34,20 @@ from app.audit_infrastructure import (
     apply_audit_infrastructure,
     remove_audit_infrastructure,
 )
+from app.enums import PostingKindEnum, PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.journal_entry import JournalEntry, Posting
+from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
+from app.posting_infrastructure import apply_ledger_append_only_privileges
 from app.services import account_service
+from tests._test_helpers import (
+    add_txn,
+    create_account_of_type,
+    ledger_accounts_for_account,
+    make_balanced_entry,
+)
 
 
 # Module-level xdist_group marker pins every test in this module to
@@ -383,6 +395,15 @@ def shekel_app_role(db):
     db.session.execute(db.text(
         f"GRANT USAGE ON SEQUENCE system.audit_log_id_seq TO {role_name}"
     ))
+    # Mirror init_db_role.sql's ledger append-only posture (review M1/R4):
+    # the blanket DML grant above just re-opened UPDATE/DELETE on the two
+    # ledger tables, exactly as every container start does -- re-close it
+    # through the same shared SQL the entrypoint, the fresh-DB path, and
+    # migration e3c23fadb21d apply, so the role's posture here matches the
+    # runtime posture bit for bit.
+    apply_ledger_append_only_privileges(
+        lambda statement: db.session.execute(db.text(statement))
+    )
     db.session.commit()
 
     try:
@@ -561,6 +582,246 @@ class TestLeastPrivilegeRole:
         finally:
             db.session.rollback()
             db.session.execute(db.text("RESET ROLE"))
+
+
+# ---------------------------------------------------------------------------
+# Ledger append-only privileges (balance-architecture review M1/R4)
+# ---------------------------------------------------------------------------
+
+
+class TestLedgerAppendOnlyPrivileges:
+    """The posting ledger is append-only at the DATABASE tier for ``shekel_app``.
+
+    The 2026-07-02 balance-architecture review demonstrated (M1) that a
+    raw-SQL DELETE of one leg of a balanced entry silently breaks the trial
+    balance: the deferred balanced trigger has no DELETE arm (CASCADE
+    disposal would see a transient ``COUNT < 2``), its UPDATE arm checks only
+    the NEW row's entry, and the ORM immutability guards do not fire for raw
+    SQL.  R4 closes that surface with ``REVOKE UPDATE, DELETE`` on
+    ``budget.journal_entries`` + ``budget.account_postings`` from the
+    runtime role (``app.posting_infrastructure.
+    apply_ledger_append_only_privileges``, applied by migration
+    ``e3c23fadb21d``, ``init_database.py``, and re-asserted by
+    ``init_db_role.sql`` on every container start).
+
+    These tests exercise the posture through the :func:`shekel_app_role`
+    fixture, which provisions the role exactly as ``init_db_role.sql`` does
+    (blanket DML grant, then the targeted ledger revoke) -- so what is
+    asserted here is the runtime posture, not a test-local approximation.
+    The two disposal tests are load-bearing: PostgreSQL executes referential
+    actions as the table OWNER, so tenancy CASCADE and source SET NULL must
+    keep working for a role that cannot DELETE or UPDATE the ledger tables
+    (verified live on the dev stack before this suite was authored).
+    """
+
+    @staticmethod
+    def _owner_ledger_pair(db_session, seed_user):
+        """Create a Savings account and return (checking, savings) ledger ids.
+
+        Runs as the OWNER role (callers RESET ROLE first): test data is
+        staged with owner privileges so the assertions exercise only the
+        app role's runtime behaviour, not its ability to build fixtures.
+        """
+        savings = create_account_of_type(
+            seed_user, db_session, "Savings", "R4 Posting Savings",
+        )
+        db_session.commit()
+        checking_ledger = ledger_accounts_for_account(
+            db_session, seed_user["account"].id,
+        )[0].id
+        savings_ledger = ledger_accounts_for_account(
+            db_session, savings.id,
+        )[0].id
+        return checking_ledger, savings_ledger
+
+    def test_ledger_posture_matches_runtime(self, db, shekel_app_role):
+        """SELECT/INSERT stay granted; UPDATE/DELETE are revoked; targeted only.
+
+        The last two columns are the control: ``budget.accounts`` keeps full
+        DML, proving the revoke is scoped to the two append-only tables and
+        did not silently widen into the posture that would break the app.
+        """
+        row = db.session.execute(db.text(
+            "SELECT "
+            "  has_table_privilege(:r, 'budget.journal_entries', 'SELECT'), "
+            "  has_table_privilege(:r, 'budget.journal_entries', 'INSERT'), "
+            "  has_table_privilege(:r, 'budget.journal_entries', 'UPDATE'), "
+            "  has_table_privilege(:r, 'budget.journal_entries', 'DELETE'), "
+            "  has_table_privilege(:r, 'budget.account_postings', 'SELECT'), "
+            "  has_table_privilege(:r, 'budget.account_postings', 'INSERT'), "
+            "  has_table_privilege(:r, 'budget.account_postings', 'UPDATE'), "
+            "  has_table_privilege(:r, 'budget.account_postings', 'DELETE'), "
+            "  has_table_privilege(:r, 'budget.accounts', 'UPDATE'), "
+            "  has_table_privilege(:r, 'budget.accounts', 'DELETE')"
+        ), {"r": shekel_app_role}).one()
+        assert tuple(row) == (
+            True, True, False, False,   # journal_entries: append-only
+            True, True, False, False,   # account_postings: append-only
+            True, True,                 # accounts: full DML (control)
+        )
+
+    def test_app_role_cannot_tamper_with_ledger_rows(
+        self, db, seed_user, shekel_app_role,
+    ):
+        """All four raw-SQL tamper forms are rejected with permission denied.
+
+        UPDATE/DELETE on each table -- the exact class the review
+        demonstrated live (a single-leg DELETE broke the trial balance by
+        +500.00 with nothing catching it).  After the four rejections the
+        entry and both legs must be byte-identical as seen by the owner.
+        """
+        try:
+            db.session.execute(db.text("RESET ROLE"))
+            from_ledger, to_ledger = self._owner_ledger_pair(
+                db.session, seed_user,
+            )
+            entry = make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=from_ledger, to_ledger_id=to_ledger,
+            )
+            entry_id = entry.id
+            posting_id = (
+                db.session.query(Posting)
+                .filter_by(journal_entry_id=entry_id)
+                .first().id
+            )
+
+            tamper_attempts = (
+                ("UPDATE budget.journal_entries SET description = 'tamper' "
+                 "WHERE id = :i", {"i": entry_id}),
+                ("DELETE FROM budget.journal_entries WHERE id = :i",
+                 {"i": entry_id}),
+                ("UPDATE budget.account_postings SET amount = amount + 10 "
+                 "WHERE id = :i", {"i": posting_id}),
+                ("DELETE FROM budget.account_postings WHERE id = :i",
+                 {"i": posting_id}),
+            )
+            for statement, params in tamper_attempts:
+                # A failed statement aborts the transaction, and the
+                # rollback also unwinds SET ROLE -- re-establish both
+                # per attempt.
+                db.session.execute(db.text("RESET ROLE"))
+                db.session.execute(db.text(f"SET ROLE {shekel_app_role}"))
+                with pytest.raises(ProgrammingError) as excinfo:
+                    db.session.execute(db.text(statement), params)
+                    db.session.flush()
+                assert "permission denied" in str(excinfo.value).lower(), (
+                    f"Expected a privilege rejection for: {statement}"
+                )
+                db.session.rollback()
+
+            db.session.execute(db.text("RESET ROLE"))
+            db.session.expire_all()
+            stored = db.session.get(JournalEntry, entry_id)
+            assert stored.description == "Test entry"
+            legs = (
+                db.session.query(Posting)
+                .filter_by(journal_entry_id=entry_id)
+                .count()
+            )
+            assert legs == 2
+        finally:
+            db.session.rollback()
+            db.session.execute(db.text("RESET ROLE"))
+
+    def test_period_cascade_disposal_survives_revoke(
+        self, db, seed_user, shekel_app_role,
+    ):
+        """Tenancy CASCADE disposes of entries + legs for the revoked role.
+
+        The user-reachable disposal path (pay-period truncate runs as the
+        app role in production): deleting a fresh, unanchored period as
+        ``shekel_app`` must cascade its journal entry AND both legs even
+        though the role holds neither DELETE -- PostgreSQL executes the
+        referential action as the table owner.
+        """
+        try:
+            db.session.execute(db.text("RESET ROLE"))
+            from_ledger, to_ledger = self._owner_ledger_pair(
+                db.session, seed_user,
+            )
+            fresh_period = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2027, 6, 4),
+                end_date=date(2027, 6, 17),
+                period_index=1,
+            )
+            db.session.add(fresh_period)
+            db.session.flush()
+            period_id = fresh_period.id
+            entry = make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=from_ledger, to_ledger_id=to_ledger,
+                period_id=period_id,
+            )
+            entry_id = entry.id
+
+            db.session.execute(db.text(f"SET ROLE {shekel_app_role}"))
+            db.session.execute(db.text(
+                "DELETE FROM budget.pay_periods WHERE id = :p"
+            ), {"p": period_id})
+            db.session.commit()
+        finally:
+            db.session.rollback()
+            db.session.execute(db.text("RESET ROLE"))
+
+        db.session.expire_all()
+        assert db.session.get(JournalEntry, entry_id) is None
+        assert (
+            db.session.query(Posting)
+            .filter_by(journal_entry_id=entry_id)
+            .count() == 0
+        )
+
+    def test_transaction_delete_set_null_survives_revoke(
+        self, db, seed_user, shekel_app_role,
+    ):
+        """Source SET NULL keeps working for the revoked role.
+
+        Deleting a transaction as ``shekel_app`` must null the entry's
+        ``transaction_id`` back-link -- an UPDATE of a table the role cannot
+        UPDATE, executed by the referential action as the owner.  The posted
+        fact itself (entry + legs) survives, per the ledger's immutability
+        contract.
+        """
+        try:
+            db.session.execute(db.text("RESET ROLE"))
+            from_ledger, to_ledger = self._owner_ledger_pair(
+                db.session, seed_user,
+            )
+            txn = add_txn(
+                db.session, seed_user, seed_user["bootstrap_period"],
+                "R4 set-null probe", Decimal("50.00"),
+            )
+            db.session.commit()
+            txn_id = txn.id
+            entry = make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=from_ledger, to_ledger_id=to_ledger,
+                transaction_id=txn_id,
+                source_kind=PostingSourceEnum.TRANSACTION,
+                posting_kind=PostingKindEnum.EXPENSE,
+            )
+            entry_id = entry.id
+
+            db.session.execute(db.text(f"SET ROLE {shekel_app_role}"))
+            db.session.execute(db.text(
+                "DELETE FROM budget.transactions WHERE id = :t"
+            ), {"t": txn_id})
+            db.session.commit()
+        finally:
+            db.session.rollback()
+            db.session.execute(db.text("RESET ROLE"))
+
+        db.session.expire_all()
+        stored = db.session.get(JournalEntry, entry_id)
+        assert stored is not None, "the posted fact must survive its source"
+        assert stored.transaction_id is None
+        assert (
+            db.session.query(Posting)
+            .filter_by(journal_entry_id=entry_id)
+            .count() == 2
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -13,41 +13,29 @@ All functions accept plain data (user_id, optional overrides) and
 return plain dicts.  No Flask imports.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import (
-    account_service,
-    balance_at,
-    growth_engine,
-    income_service,
     pay_period_service,
     paycheck_calculator,
     pension_calculator,
     retirement_gap_calculator,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    current_period_transfer_contribution,
+from app.services.retirement_projection import (
+    build_employer_salary_basis,
+    build_projection_context,
+    project_retirement_accounts,
 )
-from app.services.projection_inputs import (
-    build_investment_projection_inputs,
-    load_active_deductions_for_accounts,
-    load_shadow_income_contributions_for_accounts,
-)
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
+from app.utils.dates import add_months
 from app.utils.money import round_money
 
 
@@ -82,36 +70,50 @@ _PCT_SCALE = Decimal("100")
 # unquantised Decimal feeds through Python's % formatter.
 _PCT_QUANTUM = Decimal("0.01")
 
+# Default merit-raise horizon (years) when the user has no
+# ``UserSettings`` row (Gate A ruling 3 / fork F4).  Matches the
+# ``merit_raise_horizon_years`` column's server default (5) so a
+# settings-less user projects the same horizon a freshly-created
+# settings row would.  The column is NOT NULL, so a present settings row
+# always supplies a concrete int; only ``settings is None`` falls back
+# here.
+_DEFAULT_MERIT_HORIZON_YEARS = 5
+
 
 # ── Result and context bundles ───────────────────────────────────
 
 
 @dataclass(frozen=True)
-class _PensionSummary:
+class PensionSummary:
     """Aggregated pension-benefit outputs for the gap analysis.
 
-    Returned by :func:`_compute_pension_benefit` so the orchestrator
-    carries the three pension-derived values it forwards downstream as
-    one immutable result rather than three parallel locals: the most
-    recent per-pension benefit (for the template), the summed monthly
-    pension income (the gap calculator's pension input), and the
+    Returned by :func:`compute_pension_summary` so the orchestrator
+    carries the pension-derived values it forwards downstream as one
+    immutable result rather than parallel locals: the summed monthly
+    pension income (the gap calculator's pension input), the
     raise-projected salary-by-year series (reused by the gap-comparison
-    salary projection so it is not recomputed).
+    salary projection so it is not recomputed), and the per-pension
+    derivation entries (the P3c page's footer; the pre-P3b "last benefit
+    only" field this superseded is gone -- audit finding D6).
 
     Attributes:
-        benefit: The last computed :class:`PensionBenefit` across the
-            user's active pensions, or ``None`` when no pension has both
-            a planned retirement date and a linked salary profile.
         monthly_income: The summed monthly benefit across all qualifying
             pensions (``Decimal("0")`` when none qualify).
         salary_by_year: The ``(year, salary)`` projection produced for
             the last qualifying pension, or ``None`` when none qualified;
-            reused by :func:`_compute_gap_net_biweekly`.
+            reused by :func:`compute_gap_net_biweekly`.
+        per_pension: One dict per qualifying pension (``name``,
+            ``benefit_multiplier``, ``consecutive_high_years``,
+            ``benefit``), in iteration order.  Retains the benefits the
+            loop already computed so the page renders the derivation line
+            PER PENSION (audit finding D6: the old "last benefit only"
+            card silently disagreed with the summed gap row the moment a
+            second pension existed).
     """
 
-    benefit: pension_calculator.PensionBenefit | None
     monthly_income: Decimal
     salary_by_year: list[tuple[int, Decimal]] | None
+    per_pension: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -143,81 +145,65 @@ class _CurrentPay:
 
 
 @dataclass(frozen=True)
-class _RetirementProjectionContext:
-    """Read-only inputs shared by the per-account projection helpers.
+class GapInputs:
+    """The once-per-request loaded inputs the gap analysis reads.
 
-    Built by :func:`_build_projection_context` and threaded through
-    :func:`_load_projection_batch`, :func:`_resolve_balance_maps`,
-    and :func:`_project_one_account` so the projection takes one
-    parameter instead of eight.  All fields are inputs (no derived
-    state); the once-loaded batch data lives in :class:`_ProjectionBatch`.
-
-    Attributes:
-        user_id: The authenticated user's ID.
-        accounts: The active retirement / investment accounts to project.
-        all_periods: Every pay period for the user.
-        current_period: The current pay period, or ``None``.
-        planned_retirement_date: The horizon the synthetic projection
-            periods run to, or ``None`` (no horizon -> remaining real
-            periods only).
-        traditional_type_ids: Account-type IDs that are pre-tax (drives
-            each projection's ``is_traditional`` flag).
-        return_rate_override: Optional slider-supplied annual return that
-            overrides each account's stored ``assumed_annual_return``.
-    """
-
-    user_id: int
-    accounts: list[Account]
-    all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
-    planned_retirement_date: date | None
-    traditional_type_ids: frozenset[int]
-    return_rate_override: Decimal | None
-
-
-@dataclass(frozen=True)
-class _ProjectionBatch:
-    """Per-request data loaded once and reused across every account.
-
-    Built by :func:`_load_projection_batch` before the per-account loop
-    so the shared deduction / contribution / salary / balance queries run
-    a single time rather than once per account.
+    Returned by :func:`load_gap_inputs` so :func:`compute_gap_data` and the
+    lever solvers (:mod:`app.services.retirement_levers`, P2b) share one
+    loader for the date-independent inputs -- the retire-later solver's
+    binary-search probes load these ONCE and re-derive only the
+    date-dependent parts (salary path, pension benefit, growth horizon)
+    per probe.
 
     Attributes:
-        deductions_by_account: Active paycheck deductions keyed by
-            account ID.
-        contributions: Shadow-income contribution transactions across all
-            projected accounts (filtered per account in the loop).
-        salary_gross_biweekly: The raise-aware engine gross-biweekly used
-            as the employer-match cap basis.
-        synthetic_periods: Projection periods from today to the planned
-            retirement date (empty when no horizon is set).
-        balance_map: The model-from-anchor END-of-current-period balance
-            keyed by account ID -- the DISPLAYED current balance (and the
-            weight in ``compute_slider_defaults``' return-rate average),
-            read from the :mod:`app.services.balance_at` seam so it agrees
-            with the /savings net-worth tile and the /investment dashboard
-            (an account anchored in the past shows its modeled market
-            value, not the flat cash-basis contribution total).
-        seed_map: The CASH-BASIS END-of-current-period balance keyed by
-            account ID -- the pre-growth contribution total the forward
-            growth projection seeds from (NOT the modeled ``balance_map``).
-            Seeding from the modeled balance would re-grow the current
-            period, since the modeled value already compounded the anchor
-            forward to today; the per-account seed additionally removes the
-            current period's own transfer contribution (deep-quality-hunt
-            #14).
+        settings: The user's :class:`UserSettings`, or ``None``.
+        pensions: The user's active :class:`PensionProfile` rows.
+        salary_profiles: The user's active :class:`SalaryProfile` rows.
+        pay: The current-period pay snapshot (:class:`_CurrentPay`).
+        merit_horizon_years: The resolved merit-raise horizon.
     """
 
-    deductions_by_account: dict[int, list[PaycheckDeduction]]
-    contributions: list[Transaction]
-    salary_gross_biweekly: Decimal
-    synthetic_periods: list[growth_engine.SyntheticPeriod]
-    balance_map: dict[int, Decimal]
-    seed_map: dict[int, Decimal]
+    settings: UserSettings | None
+    pensions: list[PensionProfile]
+    salary_profiles: list[SalaryProfile]
+    pay: _CurrentPay
+    merit_horizon_years: int
 
 
-def _resolve_swr_fraction(settings):
+def load_gap_inputs(user_id):
+    """Load the gap analysis's per-request inputs in one place.
+
+    Args:
+        user_id: The user's integer ID.
+
+    Returns:
+        A :class:`GapInputs` bundle (settings, active pensions, active
+        salary profiles, the current-pay snapshot, and the resolved merit
+        horizon).
+    """
+    settings = (
+        db.session.query(UserSettings).filter_by(user_id=user_id).first()
+    )
+    pensions = (
+        db.session.query(PensionProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    salary_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    return GapInputs(
+        settings=settings,
+        pensions=pensions,
+        salary_profiles=salary_profiles,
+        pay=_compute_current_pay(user_id, salary_profiles),
+        merit_horizon_years=_resolve_merit_horizon(settings),
+    )
+
+
+def resolve_swr_fraction(settings):
     """Resolve the active safe-withdrawal rate as a fractional Decimal.
 
     A single definition shared by :func:`compute_gap_data` and
@@ -251,7 +237,35 @@ def _resolve_swr_fraction(settings):
     return Decimal(str(settings.safe_withdrawal_rate))
 
 
-def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
+def _resolve_merit_horizon(settings):
+    """Resolve the merit-raise horizon (years) from user settings.
+
+    The retirement salary projection's Gate A ruling 3 / fork F4 knob:
+    how many years from the current year (inclusive) merit-type and
+    custom-type raises keep applying before they stop (cola-type
+    recurring raises still extrapolate to the retirement date).
+
+    Args:
+        settings: the user's :class:`~app.models.user.UserSettings` row,
+            or ``None`` when the user has not yet created one.
+
+    Returns:
+        int -- the stored ``merit_raise_horizon_years`` (a NOT NULL
+        column, so always a concrete int when ``settings`` is present),
+        or :data:`_DEFAULT_MERIT_HORIZON_YEARS` when ``settings`` is
+        ``None``.
+    """
+    if settings is None:
+        return _DEFAULT_MERIT_HORIZON_YEARS
+    return settings.merit_raise_horizon_years
+
+
+def compute_gap_data(
+    user_id,
+    swr_override=None,
+    return_rate_override=None,
+    merit_horizon_override=None,
+):
     """Compute gap analysis data for the retirement dashboard or HTMX fragment.
 
     Loads pension profiles, salary data, and retirement/investment
@@ -262,68 +276,94 @@ def compute_gap_data(user_id, swr_override=None, return_rate_override=None):
         user_id: The user's integer ID.
         swr_override: Optional Decimal safe withdrawal rate from slider.
         return_rate_override: Optional Decimal annual return rate from slider.
+        merit_horizon_override: Optional int merit-raise horizon (years)
+            replacing the stored ``merit_raise_horizon_years`` for a
+            what-if recompute (P3a assumptions panel); ``None`` uses the
+            stored value.
 
     Returns:
-        dict with keys: gap_analysis, chart_data, pension_benefit,
+        dict with keys: gap_analysis, pension_benefits,
                         retirement_account_projections, settings,
-                        salary_profiles, pensions.
+                        salary_profiles, pensions, gap_net_biweekly, swr,
+                        planned_retirement_date, estimated_tax_rate.
     """
-    settings = (
-        db.session.query(UserSettings).filter_by(user_id=user_id).first()
-    )
-    pensions = (
-        db.session.query(PensionProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
-    salary_profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
+    inputs = load_gap_inputs(user_id)
+    salary_profiles = inputs.salary_profiles
+    pay = inputs.pay
+    merit_horizon = (
+        merit_horizon_override
+        if merit_horizon_override is not None
+        else inputs.merit_horizon_years
     )
 
-    pension = _compute_pension_benefit(pensions)
-    pay = _compute_current_pay(user_id, salary_profiles)
-    planned_retirement_date = _resolve_planned_retirement_date(
-        pensions, settings,
+    pension = compute_pension_summary(inputs.pensions, merit_horizon)
+    planned_retirement_date = resolve_planned_retirement_date(
+        inputs.pensions, inputs.settings,
     )
 
-    retirement_account_projections = _project_retirement_accounts(
-        _build_projection_context(
-            user_id, pay, planned_retirement_date, return_rate_override,
+    # P1b (finding D3 / fork F3): grow the employer-contribution base with
+    # the SAME P1a salary path (the per-period salary basis) instead of
+    # freezing it at today's gross; every other engine consumer keeps the
+    # constant base (they pass no salary basis, so ``project_balance``
+    # falls back to the constant ``employer_params["gross_biweekly"]``).
+    # The salary basis is built inline to keep this orchestrator within its
+    # local-variable budget.
+    retirement_account_projections = project_retirement_accounts(
+        build_projection_context(
+            user_id,
+            pay.all_periods,
+            pay.current_period,
+            planned_retirement_date,
+            return_rate_override,
+            build_employer_salary_basis(
+                salary_profiles, planned_retirement_date, merit_horizon,
+            ),
         )
     )
 
-    gap_net_biweekly = _compute_gap_net_biweekly(
+    gap_net_biweekly = compute_gap_net_biweekly(
         salary_profiles, planned_retirement_date, pay, pension.salary_by_year,
+        merit_horizon,
     )
 
     # CRIT-04 / E-12: route both SWR call sites (here and the slider in
-    # ``compute_slider_defaults``) through ``_resolve_swr_fraction`` so an
+    # ``compute_slider_defaults``) through ``resolve_swr_fraction`` so an
     # explicit stored zero is honoured everywhere -- no truthiness
     # fallback to the default for a real zero.
     swr = (
         swr_override
         if swr_override is not None
-        else _resolve_swr_fraction(settings)
+        else resolve_swr_fraction(inputs.settings)
     )
     gap_result = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=gap_net_biweekly,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,
-        estimated_tax_rate=_resolve_estimated_tax_rate(settings),
+        estimated_tax_rate=resolve_estimated_tax_rate(inputs.settings),
     )
-    chart_data = _build_chart_data(gap_result, pension.monthly_income, swr)
-
     return {
         "gap_analysis": gap_result,
-        "chart_data": chart_data,
-        "pension_benefit": pension.benefit,
+        # Per-pension derivation entries (D6): the readiness producer
+        # shapes these into the rebuilt page's one-line-per-pension
+        # footer, so the derivation card can never show a different
+        # pension than the summed gap row.
+        "pension_benefits": pension.per_pension,
         "retirement_account_projections": retirement_account_projections,
-        "settings": settings,
+        "settings": inputs.settings,
         "salary_profiles": salary_profiles,
-        "pensions": pensions,
+        "pensions": inputs.pensions,
+        # The projected final-year net biweekly, resolved SWR, planned
+        # retirement date, and stored estimated tax rate the gap used --
+        # exposed so ``retirement_readiness.compute_readiness_data`` can
+        # re-run the net-frame gap (F1) and build the chart / countdown
+        # without re-deriving them.  ``resolve_estimated_tax_rate`` is a
+        # cheap pure resolver, called inline here rather than stored, to
+        # keep this orchestrator within its local-variable budget.
+        "gap_net_biweekly": gap_net_biweekly,
+        "swr": swr,
+        "planned_retirement_date": planned_retirement_date,
+        "estimated_tax_rate": resolve_estimated_tax_rate(inputs.settings),
     }
 
 
@@ -380,7 +420,7 @@ def compute_slider_defaults(data):
     # truthiness ``or "0.04"`` -- two definitions of "missing SWR"
     # that disagreed on explicit zero (slider 0.00%, projection 4%).
     current_swr = (
-        _resolve_swr_fraction(settings) * _PCT_SCALE
+        resolve_swr_fraction(settings) * _PCT_SCALE
     ).quantize(_PCT_QUANTUM)
 
     projections = data.get("retirement_account_projections", [])
@@ -420,12 +460,15 @@ def compute_slider_defaults(data):
     return {"current_swr": current_swr, "current_return": current_return}
 
 
+
 # ── Private helpers: gap-data orchestration ──────────────────────
 
 
-def _compute_pension_benefit(
+def compute_pension_summary(
     pensions: list[PensionProfile],
-) -> _PensionSummary:
+    merit_horizon_years: int,
+    month_offset: int = 0,
+) -> PensionSummary:
     """Aggregate the pension benefit across the user's active pensions.
 
     Iterates the active pensions, projecting each one that carries both a
@@ -436,34 +479,56 @@ def _compute_pension_benefit(
 
     Args:
         pensions: The user's active :class:`PensionProfile` rows.
+        merit_horizon_years: The merit-raise horizon (years) forwarded to
+            :func:`~app.services.pension_calculator.project_salaries_by_year`
+            so merit/custom raises stop applying after the cutoff.
+        month_offset: Whole months added to EACH qualifying pension's
+            planned retirement date before projecting (the P2b retire-later
+            probes: a later retirement extends the salary path, the years
+            of service, and the high-salary window together).  ``0`` (the
+            default) evaluates the stored plan unchanged --
+            :func:`app.utils.dates.add_months` with 0 months is the
+            identity.
 
     Returns:
-        A :class:`_PensionSummary` bundling the most recent benefit, the
-        summed monthly pension income, and the last salary-by-year
-        series (the latter two default to ``Decimal("0")`` / ``None``
-        when no pension qualifies).
+        A :class:`PensionSummary` bundling the summed monthly pension
+        income, the last salary-by-year series (``Decimal("0")`` /
+        ``None`` when no pension qualifies), and the per-pension
+        derivation entries.
     """
-    benefit = None
     monthly_income = Decimal("0")
     salary_by_year = None
+    per_pension = []
     for pension in pensions:
         if pension.planned_retirement_date and pension.salary_profile:
             profile = pension.salary_profile
-            salary_by_year = pension_calculator.project_salaries_by_year(
-                Decimal(str(profile.annual_salary)),
-                profile.raises,
+            planned = add_months(
+                pension.planned_retirement_date, month_offset,
+            )
+            salary_by_year = pension_calculator.project_profile_salaries(
+                profile,
                 date.today().year,
-                pension.planned_retirement_date.year,
+                planned.year,
+                merit_horizon_years,
             )
             benefit = pension_calculator.calculate_benefit(
                 benefit_multiplier=pension.benefit_multiplier,
                 consecutive_high_years=pension.consecutive_high_years,
                 hire_date=pension.hire_date,
-                planned_retirement_date=pension.planned_retirement_date,
+                planned_retirement_date=planned,
                 salary_by_year=salary_by_year,
             )
             monthly_income += benefit.monthly_benefit
-    return _PensionSummary(benefit, monthly_income, salary_by_year)
+            # Retain every pension's derivation inputs (D6): the loop
+            # already computed the benefit; keeping only the last one is
+            # what made the old details card lie for multi-pension users.
+            per_pension.append({
+                "name": pension.name,
+                "benefit_multiplier": pension.benefit_multiplier,
+                "consecutive_high_years": pension.consecutive_high_years,
+                "benefit": benefit,
+            })
+    return PensionSummary(monthly_income, salary_by_year, per_pension)
 
 
 def _compute_current_pay(
@@ -506,14 +571,66 @@ def _compute_current_pay(
     )
 
 
-def _resolve_planned_retirement_date(
+def resolve_retirement_date_provenance(
+    pensions: list[PensionProfile], settings: UserSettings | None,
+) -> dict:
+    """Resolve the planned retirement date WITH its provenance.
+
+    The single owner of the precedence rule (a pension's planned date
+    beats the settings date; the latest pension wins), returned with the
+    facts the assumptions rail needs to render the date row honestly
+    (acceptance-drive fix 1): when a pension owns the date, a settings
+    save cannot change the resolved horizon, so the row must show the
+    resolved date read-only with a link to the owning pension instead of
+    an input whose Save silently loses.
+
+    Args:
+        pensions: The user's active pensions.
+        settings: The user's :class:`UserSettings`, or ``None``.
+
+    Returns:
+        dict with ``date`` (the resolved date, or ``None``), ``source``
+        (``"pension"`` / ``"settings"`` / ``"none"`` -- producer-computed
+        state strings, compared literally like the lever states), and
+        ``pension_id`` / ``pension_name`` (the MAX-date owning pension
+        when ``source == "pension"``, else ``None``).
+    """
+    dated_pensions = [
+        p for p in pensions if p.planned_retirement_date is not None
+    ]
+    if dated_pensions:
+        owner = max(dated_pensions, key=lambda p: p.planned_retirement_date)
+        return {
+            "date": owner.planned_retirement_date,
+            "source": "pension",
+            "pension_id": owner.id,
+            "pension_name": owner.name,
+        }
+    if settings is not None and settings.planned_retirement_date is not None:
+        return {
+            "date": settings.planned_retirement_date,
+            "source": "settings",
+            "pension_id": None,
+            "pension_name": None,
+        }
+    return {
+        "date": None,
+        "source": "none",
+        "pension_id": None,
+        "pension_name": None,
+    }
+
+
+def resolve_planned_retirement_date(
     pensions: list[PensionProfile], settings: UserSettings | None,
 ) -> date | None:
     """Derive the planned retirement date from pensions, else settings.
 
     Prefers the latest planned retirement date across the user's
     pensions; falls back to the retirement date stored on the user's
-    settings.
+    settings.  Delegates to
+    :func:`resolve_retirement_date_provenance` so the precedence rule
+    has exactly one definition.
 
     Args:
         pensions: The user's active pensions.
@@ -523,70 +640,16 @@ def _resolve_planned_retirement_date(
         The resolved planned retirement date, or ``None`` when neither a
         pension nor the settings supply one.
     """
-    pension_dates = [
-        p.planned_retirement_date for p in pensions
-        if p.planned_retirement_date is not None
-    ]
-    if pension_dates:
-        return max(pension_dates)
-    return settings.planned_retirement_date if settings else None
+    return resolve_retirement_date_provenance(pensions, settings)["date"]
 
 
-def _build_projection_context(
-    user_id: int,
-    pay: _CurrentPay,
-    planned_retirement_date: date | None,
-    return_rate_override: Decimal | None,
-) -> _RetirementProjectionContext:
-    """Load the retirement accounts and assemble the projection context.
 
-    Queries the user's active retirement / investment accounts and the
-    pre-tax (traditional) account-type IDs, then bundles them with the
-    pay-period and horizon inputs into the read-only context the
-    projection helpers consume.
-
-    Args:
-        user_id: The authenticated user's ID.
-        pay: The current-pay snapshot (supplies the period calendar).
-        planned_retirement_date: The projection horizon, or ``None``.
-        return_rate_override: Optional slider-supplied annual return.
-
-    Returns:
-        A :class:`_RetirementProjectionContext` ready for
-        :func:`_project_retirement_accounts`.
-    """
-    retirement_types = (
-        account_service.list_retirement_investment_account_types()
-    )
-    retirement_type_ids = {rt.id for rt in retirement_types}
-    traditional_type_ids = frozenset(
-        rt.id for rt in retirement_types if rt.is_pretax
-    )
-    accounts = (
-        db.session.query(Account)
-        .filter(
-            Account.user_id == user_id,
-            Account.account_type_id.in_(retirement_type_ids),
-            Account.is_active.is_(True),
-        )
-        .all()
-    )
-    return _RetirementProjectionContext(
-        user_id=user_id,
-        accounts=accounts,
-        all_periods=pay.all_periods,
-        current_period=pay.current_period,
-        planned_retirement_date=planned_retirement_date,
-        traditional_type_ids=traditional_type_ids,
-        return_rate_override=return_rate_override,
-    )
-
-
-def _compute_gap_net_biweekly(
+def compute_gap_net_biweekly(
     salary_profiles: list[SalaryProfile],
     planned_retirement_date: date | None,
     pay: _CurrentPay,
     salary_by_year: list[tuple[int, Decimal]] | None,
+    merit_horizon_years: int,
 ) -> Decimal:
     """Project the final-year net biweekly pay for the gap comparison.
 
@@ -604,6 +667,9 @@ def _compute_gap_net_biweekly(
         pay: The current-pay snapshot (net pay + breakdown gross source).
         salary_by_year: The pension-derived salary projection if one was
             already built, else ``None`` (recomputed here when needed).
+        merit_horizon_years: The merit-raise horizon (years) forwarded to
+            :func:`~app.services.pension_calculator.project_salaries_by_year`
+            when the salary series is recomputed here.
 
     Returns:
         The projected final-year net biweekly pay, or ``pay.net_biweekly``
@@ -633,11 +699,9 @@ def _compute_gap_net_biweekly(
 
     effective_take_home_rate = pay.net_biweekly / current_gross_biweekly
     if salary_by_year is None:
-        salary_by_year = pension_calculator.project_salaries_by_year(
-            Decimal(str(profile.annual_salary)),
-            profile.raises,
-            date.today().year,
-            planned_retirement_date.year,
+        salary_by_year = pension_calculator.project_profile_salaries(
+            profile, date.today().year, planned_retirement_date.year,
+            merit_horizon_years,
         )
     if not salary_by_year:
         return pay.net_biweekly
@@ -649,331 +713,30 @@ def _compute_gap_net_biweekly(
     return round_money(final_gross_biweekly * effective_take_home_rate)
 
 
-def _resolve_estimated_tax_rate(
+def resolve_estimated_tax_rate(
     settings: UserSettings | None,
 ) -> Decimal | None:
     """Resolve the estimated retirement tax rate from user settings.
+
+    Zero is a real value (E-12): an explicitly saved 0% rate returns
+    ``Decimal("0")`` -- the user has SET their estimate -- and only NULL
+    (settings absent or the column unset) returns ``None``, which is what
+    drives the F1 ``tax_rate_missing`` flag.  This closes the display
+    half of the LOW-05 / CRIT-04 carry-open (L1): pre-fix the truthiness
+    here made a saved 0% render "Not set -- 0% assumed" forever in the
+    three places F1 surfaced the flag.  Whether a bracket-based fallback
+    should ever be built for the unset case remains the carried product
+    question and is unaffected.
 
     Args:
         settings: The user's :class:`UserSettings`, or ``None``.
 
     Returns:
-        The stored estimated retirement tax rate as a Decimal, or
-        ``None`` when settings are absent or the rate is unset.
+        The stored estimated retirement tax rate as a Decimal (an
+        explicit zero preserved), or ``None`` only when settings are
+        absent or the column is NULL.
     """
-    # F-12 sibling: ``settings`` is a SQLAlchemy row -> explicit
-    # ``is not None`` (post-CRIT-04 convention).  The
-    # ``settings.estimated_retirement_tax_rate`` truthiness on the second
-    # conjunct is the LOW-05 / CRIT-04 carry-open (build vs do not build a
-    # bracket-based fallback for a stored zero tax rate) and is
-    # intentionally NOT changed here.
-    if settings is not None and settings.estimated_retirement_tax_rate:
+    if (settings is not None
+            and settings.estimated_retirement_tax_rate is not None):
         return Decimal(str(settings.estimated_retirement_tax_rate))
     return None
-
-
-def _build_chart_data(
-    gap_result: retirement_gap_calculator.RetirementGapAnalysis,
-    monthly_pension_income: Decimal,
-    swr: Decimal,
-) -> dict[str, str]:
-    """Build the retirement-gap chart's string-encoded data series.
-
-    Computes the SWR-derived monthly investment income and the residual
-    "gap" bar (income remaining after both pension and investment income
-    are covered), then encodes every series as a string Decimal for the
-    template's ``data-*`` attributes.
-
-    Args:
-        gap_result: The :class:`RetirementGapAnalysis` from
-            ``retirement_gap_calculator.calculate_gap``.
-        monthly_pension_income: The summed monthly pension income.
-        swr: The active fractional safe-withdrawal rate.
-
-    Returns:
-        dict of string-encoded Decimals keyed ``pension``,
-        ``investment_income``, ``gap``, ``pre_retirement``,
-        ``chart_remaining``.
-    """
-    investment_income_decimal = (
-        round_money(gap_result.projected_total_savings * swr / 12)
-        if gap_result.projected_total_savings > 0
-        else Decimal("0.00")
-    )
-    # MED-04 / E-17: the chart's "Gap" bar is the residual income
-    # remaining after BOTH pension and SWR investment income have been
-    # covered -- a different concept from ``gap_result.monthly_income_gap``
-    # (post-pension only, before investments).  Computed server-side so
-    # the data attribute is the value to render, not the inputs to add
-    # together client-side (previously done in ``retirement_gap_chart.js``).
-    covered = monthly_pension_income + investment_income_decimal
-    chart_remaining = max(
-        Decimal("0.00"),
-        gap_result.pre_retirement_net_monthly - covered,
-    )
-    return {
-        "pension": str(monthly_pension_income),
-        "investment_income": str(investment_income_decimal),
-        "gap": str(gap_result.monthly_income_gap),
-        "pre_retirement": str(gap_result.pre_retirement_net_monthly),
-        "chart_remaining": str(chart_remaining),
-    }
-
-
-# ── Private helpers: per-account projection ──────────────────────
-
-
-def _project_retirement_accounts(
-    ctx: _RetirementProjectionContext,
-) -> list[dict]:
-    """Project each retirement / investment account forward to retirement.
-
-    Loads the shared per-request projection inputs once
-    (:func:`_load_projection_batch`), then projects each account via
-    :func:`_project_one_account`.
-
-    Args:
-        ctx: The read-only projection context (accounts + period/horizon
-            inputs).
-
-    Returns:
-        A list of per-account projection dicts with keys ``account``,
-        ``current_balance``, ``projected_balance``, ``is_traditional``,
-        ``annual_return_rate``.
-    """
-    batch = _load_projection_batch(ctx)
-    return [_project_one_account(acct, ctx, batch) for acct in ctx.accounts]
-
-
-def _load_projection_batch(
-    ctx: _RetirementProjectionContext,
-) -> _ProjectionBatch:
-    """Load the per-request data shared across all account projections.
-
-    Runs the deduction, shadow-income, salary-gross, synthetic-period,
-    and entries-aware balance queries a single time (F-22 / Commit 18 for
-    the shared batch loaders) so the per-account loop does no repeated
-    I/O.
-
-    Args:
-        ctx: The read-only projection context.
-
-    Returns:
-        A :class:`_ProjectionBatch` with all shared inputs.
-    """
-    account_ids = [a.id for a in ctx.accounts]
-    period_ids = [p.id for p in ctx.all_periods]
-
-    # F-22 / Commit 18: shared batch loaders replace the filter-shape
-    # duplicate that previously lived inline here and in
-    # savings_dashboard_service / year_end_summary_service.
-    deductions_by_account = load_active_deductions_for_accounts(
-        ctx.user_id, account_ids,
-    )
-    contributions = load_shadow_income_contributions_for_accounts(
-        account_ids, period_ids,
-    )
-
-    # F-20 / MED-06 / F-032: raise-aware engine gross-biweekly (not the
-    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
-    # dropped any applicable SalaryRaise); feeds the employer-match cap.
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        ctx.user_id,
-    )
-
-    # Synthetic projection periods to the retirement date.
-    synthetic_periods = []
-    if ctx.planned_retirement_date:
-        synthetic_periods = growth_engine.generate_projection_periods(
-            start_date=date.today(),
-            end_date=ctx.planned_retirement_date,
-        )
-
-    # The displayed per-account balance is the model-from-anchor value (so
-    # it agrees with /savings and the /investment dashboard); the forward
-    # projection seeds from the cash basis instead.  Both read the one
-    # baseline scenario, resolved once here.
-    scenario = get_baseline_scenario(ctx.user_id)
-    balance_map, seed_map = _resolve_balance_maps(ctx, scenario)
-    return _ProjectionBatch(
-        deductions_by_account=deductions_by_account,
-        contributions=contributions,
-        salary_gross_biweekly=salary_gross_biweekly,
-        synthetic_periods=synthetic_periods,
-        balance_map=balance_map,
-        seed_map=seed_map,
-    )
-
-
-def _resolve_balance_maps(
-    ctx: _RetirementProjectionContext, scenario: Scenario | None,
-) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
-    """Resolve each account's ``(displayed, seed)`` current balances.
-
-    Returns two account-ID maps, both at the current period:
-
-    * **displayed** -- the model-from-anchor balance from the
-      :mod:`app.services.balance_at` seam
-      (:func:`~app.services.balance_at.build_maps`), so the per-account
-      "current balance" (and the weight in :func:`compute_slider_defaults`'
-      return-rate average) matches the /savings net-worth tile and the
-      /investment dashboard at today (the cross-page invariant: an account
-      anchored in the past shows its modeled market value, not the flat
-      cash-basis contribution total).
-    * **seed** -- the cash-basis (pre-growth) balance from the balance_at
-      seam's seed accessor
-      (:func:`~app.services.balance_at.investment_seed_map`), which the
-      forward growth projection seeds from.  Seeding from the modeled balance
-      would re-grow the current period (the modeled value already compounded
-      the anchor forward to today); reading the seed through the seam (not the
-      raw producer) keeps this consumer behind the W9906 fence.
-
-    Both are empty when there is no scenario or no periods (each account
-    then falls back to its anchor balance in :func:`_project_one_account`).
-
-    Args:
-        ctx: The read-only projection context.
-        scenario: The baseline scenario, or ``None``.
-
-    Returns:
-        ``(displayed_by_account, seed_by_account)``.
-    """
-    if scenario is None or not ctx.all_periods:
-        return {}, {}
-    modeled_maps = balance_at.build_maps(ctx.accounts, scenario, ctx.all_periods)
-    cash_maps = {
-        acct.id: balance_at.investment_seed_map(
-            acct, scenario, ctx.all_periods,
-        )
-        for acct in ctx.accounts
-        if acct.current_anchor_period_id is not None
-    }
-    return (
-        _pick_current_period_balances(ctx, modeled_maps),
-        _pick_current_period_balances(ctx, cash_maps),
-    )
-
-
-def _pick_current_period_balances(
-    ctx: _RetirementProjectionContext,
-    maps_by_account: dict[int, dict[int, Decimal]],
-) -> dict[int, Decimal]:
-    """Pick each account's current-period balance from its per-period map.
-
-    The shared current-period extractor for the two maps
-    :func:`_resolve_balance_maps` builds (model-from-anchor and cash-basis):
-    each is a per-account ``period_id -> balance`` map read at the current
-    period.  An account absent from *maps_by_account* (no anchor period, so
-    the seam / accessor omitted it) or with no current period falls back to
-    its stored anchor balance -- ``current_anchor_balance`` is NOT NULL, so
-    no ``or Decimal("0")`` guard is needed (the prior truthiness was dead
-    defence on a stored zero).
-
-    Args:
-        ctx: The read-only projection context.
-        maps_by_account: ``{account_id: period_id -> Decimal}`` for the
-            accounts the producer returned a map for.
-
-    Returns:
-        A mapping of account ID to its current-period balance.
-    """
-    result: dict[int, Decimal] = {}
-    for acct in ctx.accounts:
-        anchor = acct.current_anchor_balance
-        per_period = maps_by_account.get(acct.id)
-        if per_period is not None and ctx.current_period is not None:
-            result[acct.id] = per_period.get(ctx.current_period.id, anchor)
-        else:
-            result[acct.id] = anchor
-    return result
-
-
-def _project_one_account(
-    acct: Account,
-    ctx: _RetirementProjectionContext,
-    batch: _ProjectionBatch,
-) -> dict:
-    """Project a single account forward to the retirement horizon.
-
-    Builds the account's investment projection inputs from the batch's
-    shared data and runs ``growth_engine.project_balance`` over the
-    synthetic (or remaining real) periods.  An account with no
-    :class:`InvestmentParams` or no projectable periods keeps its current
-    balance as the projected balance.
-
-    Args:
-        acct: The account to project.
-        ctx: The read-only projection context.
-        batch: The shared per-request projection inputs.
-
-    Returns:
-        A projection dict with keys ``account``, ``current_balance``,
-        ``projected_balance``, ``is_traditional``, ``annual_return_rate``.
-    """
-    params = (
-        db.session.query(InvestmentParams)
-        .filter_by(account_id=acct.id)
-        .first()
-    )
-    balance = batch.balance_map.get(acct.id, acct.current_anchor_balance)
-    projected_balance = balance
-    effective_return = None
-
-    projection_periods = batch.synthetic_periods
-    if not projection_periods and ctx.current_period:
-        projection_periods = [
-            p for p in ctx.all_periods
-            if p.period_index >= ctx.current_period.period_index
-        ]
-
-    if params is not None and projection_periods:
-        acct_deductions = batch.deductions_by_account.get(acct.id, [])
-        adapted_deductions = adapt_deductions(acct_deductions)
-        acct_contributions = [
-            t for t in batch.contributions
-            if t.account_id == acct.id
-        ]
-        # Seed the forward projection from the CASH-BASIS end-of-current
-        # balance (``batch.seed_map``), NOT the modeled ``balance`` headline:
-        # the modeled value already compounded the anchor forward to today,
-        # so seeding from it would re-grow the current period.  The current
-        # period's own transfer contribution is removed because the
-        # projection window includes the current period and the engine
-        # re-applies it, so subtracting it first leaves it applied once.
-        # Other current-period movements stay in the seed because the engine
-        # never re-creates them (deep-quality-hunt #14).
-        seed = (
-            batch.seed_map.get(acct.id, acct.current_anchor_balance)
-            - current_period_transfer_contribution(
-                acct_contributions, ctx.current_period,
-            )
-        )
-        inputs = build_investment_projection_inputs(
-            params, adapted_deductions, acct_contributions,
-            ctx.all_periods, ctx.current_period, batch.salary_gross_biweekly,
-        )
-        annual_return = (
-            ctx.return_rate_override
-            if ctx.return_rate_override is not None
-            else params.assumed_annual_return
-        )
-        effective_return = annual_return
-        proj = growth_engine.project_balance(
-            current_balance=seed,
-            assumed_annual_return=annual_return,
-            periods=projection_periods,
-            periodic_contribution=inputs.periodic_contribution,
-            employer_params=inputs.employer_params,
-            annual_contribution_limit=inputs.annual_contribution_limit,
-            ytd_contributions_start=inputs.ytd_contributions_seed,
-        )
-        if proj:
-            projected_balance = proj[-1].end_balance
-
-    return {
-        "account": acct,
-        "current_balance": balance,
-        "projected_balance": projected_balance,
-        "is_traditional": acct.account_type_id in ctx.traditional_type_ids,
-        "annual_return_rate": effective_return,
-    }

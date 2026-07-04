@@ -453,3 +453,94 @@ def export_trends_csv(report) -> str:
         ])
 
     return _write_csv(rows)
+
+
+# ── Statement Export (Build-Order Step 5) ─────────────────────────
+
+
+def export_income_statement_csv(report) -> str:
+    """Export a confirmed-ledger income statement as a multi-section CSV.
+
+    A title row (the statement name and the window label), then the
+    Income and Expense sections, then the derived Net Income.  Each
+    section is a bracketed header, an ``Account`` / ``Amount ($)`` column
+    row, one row per already-natural-signed line, and a section total,
+    mirroring the blank-row-separated bracketed layout of
+    :func:`export_year_end_csv`.
+
+    Args:
+        report: An ``IncomeStatementReport`` from
+            :mod:`app.services.ledger_report_service` (``window_label``,
+            the ``income`` / ``expense`` sections, and ``net_income``).
+
+    Returns:
+        CSV string with the Income and Expense sections and Net Income.
+    """
+    rows: list[list] = [["Income Statement", report.window_label]]
+    _add_statement_section(rows, "Income", report.income)
+    _add_statement_section(rows, "Expenses", report.expense)
+    rows.append([])
+    rows.append(["Net Income", _dec(report.net_income)])
+    return _write_csv(rows)
+
+
+def export_balance_sheet_csv(report) -> str:
+    """Export a confirmed-ledger balance sheet as a multi-section CSV.
+
+    A title row (the statement name and the as-of date), the Assets,
+    Liabilities, and Equity sections (the Equity section carries the
+    derived Retained Earnings line the report already computed), then a
+    Trial Balance section reporting the two-part tie-out.  Mirrors the
+    section layout of :func:`export_year_end_csv`.
+
+    Args:
+        report: A ``BalanceSheetReport`` from
+            :mod:`app.services.ledger_report_service` (``as_of``, the
+            ``assets`` / ``liabilities`` / ``equity`` sections, and the
+            ``tie_out``).
+
+    Returns:
+        CSV string with the Assets, Liabilities, and Equity sections and
+        the trial-balance tie-out.
+    """
+    rows: list[list] = [["Balance Sheet", _date(report.as_of)]]
+    _add_statement_section(rows, "Assets", report.assets)
+    _add_statement_section(rows, "Liabilities", report.liabilities)
+    _add_statement_section(rows, "Equity", report.equity)
+    rows.append([])
+    rows.append(["[Trial Balance]"])
+    rows.append(["Check", "Amount ($)"])
+    rows.append(["Assets", _dec(report.tie_out.assets)])
+    rows.append([
+        "Liabilities + Equity", _dec(report.tie_out.liabilities_plus_equity),
+    ])
+    rows.append(["Ledger Net", _dec(report.tie_out.ledger_net)])
+    rows.append(["In Balance", _bool_yn(report.tie_out.in_balance)])
+    return _write_csv(rows)
+
+
+def _add_statement_section(rows: list, title: str, section) -> None:
+    """Append one confirmed-ledger statement section to the CSV rows.
+
+    Both statements present a ``StatementSection`` identically -- a
+    bracketed section header, an ``Account`` / ``Amount ($)`` column row,
+    one row per already-natural-signed line, and a section total -- so one
+    writer serves the income statement's Income / Expense sections and the
+    balance sheet's Assets / Liabilities / Equity sections.  Leads with a
+    blank separator row (every section follows either the title row or a
+    prior section).  Line labels are user-controlled (a category
+    ``display_name`` or an account name) and route through :func:`_safe`;
+    the amounts are system-formatted numerics via :func:`_dec`.
+
+    Args:
+        rows: The CSV row accumulator, mutated in place.
+        title: The section label (``"Income"``, ``"Assets"``, ...).
+        section: A ``StatementSection`` (a ``lines`` list of label +
+            natural ``amount``, and a ``total``).
+    """
+    rows.append([])
+    rows.append([f"[{title}]"])
+    rows.append(["Account", "Amount ($)"])
+    for line in section.lines:
+        rows.append([_safe(line.label), _dec(line.amount)])
+    rows.append([f"Total {title}", _dec(section.total)])

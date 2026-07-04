@@ -64,7 +64,7 @@ from app.schemas.validation import (
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
     RaiseCreateSchema,
-    RetirementGapQuerySchema,
+    RetirementReadinessQuerySchema,
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
@@ -539,8 +539,13 @@ class TestMiscSchemaBounds:
         assert result["assumed_annual_return"] == Decimal("-0.99999")
 
     def test_retirement_return_rate_negative_100_percent_rejected(self):
-        """The retirement return-rate slider mirrors the same > -1 bound."""
-        schema = RetirementGapQuerySchema()
+        """The retirement return-rate what-if mirrors the same > -1 bound.
+
+        Repointed in P3c: the gap fragment's RetirementGapQuerySchema
+        retired with the old page; the readiness what-if schema carries
+        the identical (-1, 1] bound (folded in, not weakened).
+        """
+        schema = RetirementReadinessQuerySchema()
         with pytest.raises(ValidationError) as info:
             schema.load({"return_rate": "-100"})
         assert "return_rate" in info.value.messages

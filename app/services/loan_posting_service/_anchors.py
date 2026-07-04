@@ -29,9 +29,7 @@ re-derives the target and posts the balancing delta, so a stale true-up
 self-heals.  Flushes but never commits -- the caller owns the transaction.
 """
 
-import logging
 from datetime import date
-from decimal import Decimal
 
 from app import ref_cache
 from app.enums import (
@@ -40,27 +38,25 @@ from app.enums import (
     PostingSourceEnum,
 )
 from app.extensions import db
-from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.services import account_projection, ledger_account_service
+from app.services._posting_reconcile import (
+    CorrectionKey,
+    LegMap,
+    account_owner_id,
+    delta_legs,
+    emit_anchor_correction_entry,
+    merge_target_legs,
+    posted_correction_legs,
+)
 from app.services.posting_service import (
-    _MAX_DESCRIPTION_LENGTH,
     PostingError,
-    _emit_balanced_entry,
     _ledger_account_for,
 )
 
 from app.services.loan_loaders import LoanAnchorFact
 
-from ._common import delta_legs, loan_owner_id, summed_posting_legs
 from ._walk import LoanAnchorCorrection, walk_loan_ledger
-
-logger = logging.getLogger(__name__)
-
-# The correction key: (journal ``source_kind_id``, civil ``entry_date``).
-_CorrectionKey = tuple[int, date]
-# The target/posted leg map: {ledger_account_id: (signed amount, posting_kind_id)}.
-_LegMap = dict[int, tuple[Decimal, int]]
 
 
 def _anchor_correction_kinds(
@@ -90,7 +86,7 @@ def _anchor_correction_kinds(
 
 def _loan_anchor_correction_target(
     correction: LoanAnchorCorrection, owner_id: int,
-) -> _LegMap:
+) -> LegMap:
     """Build the two-leg target for one anchor correction, or empty when it books nothing.
 
     The loan-linked leg is ``owed_before - anchor_balance`` (tagged ``opening`` or
@@ -137,16 +133,17 @@ def _loan_anchor_correction_target(
 
 def _anchor_correction_targets(
     corrections: list[LoanAnchorCorrection], owner_id: int,
-) -> dict[_CorrectionKey, _LegMap]:
+) -> dict[CorrectionKey, LegMap]:
     """Merge a loan's anchor corrections into per-(source, date) target legs.
 
     Groups every anchor correction by its ``(source_kind_id, anchor_date)`` key
-    and sums the legs within each group, so two same-day same-kind anchors (the
-    unique index permits two true-ups on one day with different balances) net to a
-    single balanced target that lands owed on the LATER value -- exactly the
-    combined jump they express.  A correction that books nothing still creates its
-    key with an empty leg map, so an entry it previously posted (now matching) is
-    reversed to zero by the reconcile.
+    and sums the legs within each group
+    (:func:`app.services._posting_reconcile.merge_target_legs`), so two same-day
+    same-kind anchors (the unique index permits two true-ups on one day with
+    different balances) net to a single balanced target that lands owed on the
+    LATER value -- exactly the combined jump they express.  A correction that
+    books nothing still creates its key with an empty leg map, so an entry it
+    previously posted (now matching) is reversed to zero by the reconcile.
 
     Args:
         corrections: The loan's anchor corrections from :func:`walk_loan_ledger`.
@@ -155,7 +152,7 @@ def _anchor_correction_targets(
     Returns:
         ``{(source_kind_id, entry_date): {ledger_account_id: (amount, kind_id)}}``.
     """
-    target: dict[_CorrectionKey, _LegMap] = {}
+    target: dict[CorrectionKey, LegMap] = {}
     for correction in corrections:
         source_enum, _posting_kind = _anchor_correction_kinds(correction.anchor)
         key = (
@@ -163,59 +160,10 @@ def _anchor_correction_targets(
             correction.anchor.anchor_date,
         )
         bucket = target.setdefault(key, {})
-        legs = _loan_anchor_correction_target(correction, owner_id)
-        for ledger_id, (amount, kind_id) in legs.items():
-            prev_amount, _prev_kind = bucket.get(
-                ledger_id, (Decimal("0.00"), kind_id),
-            )
-            bucket[ledger_id] = (prev_amount + amount, kind_id)
-    return target
-
-
-def _posted_loan_anchor_correction_legs(
-    loan_account_id: int, scenario_id: int,
-) -> dict[_CorrectionKey, _LegMap]:
-    """Return the loan's posted anchor-correction legs, keyed by (source, date).
-
-    Sums ``account_postings.amount`` over every ``loan_opening`` / ``loan_trueup``
-    journal entry in *scenario_id* that touches the loan's LINKED ledger (which
-    scopes the query to THIS loan, the linked ledger being per-account), grouped
-    by ``(source_kind_id, entry_date, ledger_account_id, posting_kind_id)``.  This
-    is the "already posted" side the reconcile (:func:`sync_loan_anchor_corrections`)
-    compares the target against, read straight from the ledger so a reversal
-    negates exactly what was posted and reuses the kind it was posted with.
-
-    Args:
-        loan_account_id: The loan whose posted anchor corrections to sum.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``{(source_kind_id, entry_date): {ledger_account_id: (net, kind_id)}}``;
-        empty when no opening / true-up is posted yet.
-    """
-    opening_source_id = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
-    trueup_source_id = ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP)
-    linked = _ledger_account_for(loan_account_id)
-    loan_entry_ids = (
-        db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked.id)
-    )
-    rows = summed_posting_legs(
-        [JournalEntry.source_kind_id, JournalEntry.entry_date],
-        [
-            JournalEntry.scenario_id == scenario_id,
-            JournalEntry.source_kind_id.in_(
-                [opening_source_id, trueup_source_id],
-            ),
-            JournalEntry.id.in_(loan_entry_ids),
-        ],
-    ).all()
-    posted: dict[_CorrectionKey, _LegMap] = {}
-    for source_kind_id, entry_date, ledger_id, net, kind_id in rows:
-        posted.setdefault((source_kind_id, entry_date), {})[ledger_id] = (
-            net, kind_id,
+        merge_target_legs(
+            bucket, _loan_anchor_correction_target(correction, owner_id),
         )
-    return posted
+    return target
 
 
 def _resolve_anchor_pay_period(
@@ -245,78 +193,6 @@ def _resolve_anchor_pay_period(
     return containing if containing is not None else periods[0]
 
 
-def _anchor_correction_description(
-    source_kind_id: int, opening_source_id: int, entry_date: date,
-) -> str:
-    """Return the human label for an anchor-correction entry (display only).
-
-    ``"Loan opening balance as of <date>"`` or ``"Loan balance true-up as of
-    <date>"``, truncated to the description column width.  Never read for logic.
-
-    Args:
-        source_kind_id: The entry's journal source kind id.
-        opening_source_id: The ``loan_opening`` ref id (opening vs. true-up).
-        entry_date: The correction's civil date.
-
-    Returns:
-        The truncated description string.
-    """
-    label = (
-        "opening balance" if source_kind_id == opening_source_id
-        else "balance true-up"
-    )
-    return (
-        f"Loan {label} as of {entry_date.isoformat()}"
-    )[:_MAX_DESCRIPTION_LENGTH]
-
-
-def _emit_anchor_correction_entry(
-    owner_id: int,
-    scenario_id: int,
-    key: _CorrectionKey,
-    period: PayPeriod,
-    legs: list,
-) -> JournalEntry:
-    """Emit one balanced anchor-correction delta entry (opening or true-up).
-
-    Builds the journal header -- ``transfer_id`` / ``transaction_id`` both NULL
-    (an anchor correction links to neither; ``source_kind_id`` disambiguates it),
-    dated at the anchor's ``entry_date``, attributed to *period* -- and writes the
-    balanced *legs* through the shared balanced-write path.  Flushes; does not
-    commit.
-
-    Args:
-        owner_id: The loan owner's user id.
-        scenario_id: The budget scenario the correction lives in.
-        key: The ``(source_kind_id, entry_date)`` the delta reconciles.
-        period: The resolved pay period for the NOT NULL ``pay_period_id``.
-        legs: The balanced delta legs from :func:`._common.delta_legs`.
-
-    Returns:
-        The persisted delta :class:`~app.models.journal_entry.JournalEntry`.
-    """
-    source_kind_id, entry_date = key
-    opening_source_id = ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING)
-    entry = JournalEntry(
-        user_id=owner_id,
-        scenario_id=scenario_id,
-        pay_period_id=period.id,
-        entry_date=entry_date,
-        source_kind_id=source_kind_id,
-        transfer_id=None,
-        transaction_id=None,
-        description=_anchor_correction_description(
-            source_kind_id, opening_source_id, entry_date,
-        ),
-    )
-    _emit_balanced_entry(entry, legs)
-    logger.info(
-        "Posted loan anchor correction (source %d as of %s) as journal entry %d",
-        source_kind_id, entry_date, entry.id,
-    )
-    return entry
-
-
 def reconcile_loan_anchor_corrections(
     loan_account_id: int,
     scenario_id: int,
@@ -330,7 +206,9 @@ def reconcile_loan_anchor_corrections(
     the payment and the anchor reconcile off ONE walk (the payment half is
     :func:`._payments.reconcile_loan_payment_splits`).  Builds the
     per-``(source kind, date)`` target legs (:func:`_anchor_correction_targets`),
-    reads back what is posted (:func:`_posted_loan_anchor_correction_legs`), and
+    reads back what is posted
+    (:func:`app.services._posting_reconcile.posted_correction_legs`, scoped to
+    the loan's linked ledger), and
     emits ONE balanced delta per key that differs -- posting a new opening /
     true-up, adjusting a true-up whose ``owed_before`` moved (a pre-true-up
     payment changed), or reversing one a matching balance retired.
@@ -353,7 +231,7 @@ def reconcile_loan_anchor_corrections(
     """
     if not corrections:
         return
-    owner_id = loan_owner_id(loan_account_id)
+    owner_id = account_owner_id(loan_account_id)
     if owner_id is None:
         return
     periods = (
@@ -370,14 +248,21 @@ def reconcile_loan_anchor_corrections(
         )
 
     target = _anchor_correction_targets(corrections, owner_id)
-    posted = _posted_loan_anchor_correction_legs(loan_account_id, scenario_id)
+    posted = posted_correction_legs(
+        _ledger_account_for(loan_account_id).id,
+        scenario_id,
+        [
+            ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING),
+            ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP),
+        ],
+    )
     for key in sorted(set(target) | set(posted)):
         legs = delta_legs(target.get(key, {}), posted.get(key, {}))
         if not legs:
             continue
         period = _resolve_anchor_pay_period(periods, key[1])
-        _emit_anchor_correction_entry(
-            owner_id, scenario_id, key, period, legs,
+        emit_anchor_correction_entry(
+            owner_id, scenario_id, key, period.id, legs,
         )
 
 

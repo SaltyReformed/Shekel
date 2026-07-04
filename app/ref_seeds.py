@@ -146,11 +146,15 @@ _REF_TABLE_SEEDS = (
     # kinds and the ``loan_payment`` source; the loan read switch (Step 4,
     # second half) adds the ``opening`` / ``trueup`` kinds and the
     # ``loan_opening`` / ``loan_trueup`` sources (each inline-seeded by its
-    # own migration, the same dual-seed pattern), and later steps INSERT more.
+    # own migration, the same dual-seed pattern); Step 5 adds the
+    # ``account_opening`` / ``account_trueup`` sources (the non-loan anchor
+    # corrections -- the ``opening`` / ``trueup`` KINDS are reused, the source
+    # disambiguates), and later steps INSERT more.
     # ``LedgerAccountKind`` (Step 4) is the explicit row-kind discriminator
     # for ``budget.ledger_accounts``: the four kinds the chart already uses,
-    # the three per-loan accounts the loan-payment correction books into, and
-    # the ``equity_opening`` per-loan Equity account the read switch adds.
+    # the three per-loan accounts the loan-payment correction books into, the
+    # ``equity_opening`` per-loan Equity account the read switch adds, and the
+    # ``anchor_equity`` per-NON-loan-account Equity account Step 5 adds.
     # Names match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("LedgerAccountClass", [
         {"name": "Asset",     "is_debit_normal": True},
@@ -167,11 +171,12 @@ _REF_TABLE_SEEDS = (
     ("PostingSource", [
         "transfer", "transaction", "loan_payment",
         "loan_opening", "loan_trueup",
+        "account_opening", "account_trueup",
     ]),
     ("LedgerAccountKind", [
         "linked", "category", "fallback", "orphan",
         "loan_interest", "loan_escrow", "loan_refund",
-        "equity_opening",
+        "equity_opening", "anchor_equity",
     ]),
 )
 # pylint: enable=line-too-long

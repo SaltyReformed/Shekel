@@ -17,8 +17,10 @@ from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.utils.auth_helpers import get_or_404
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
+from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.ref import (
     CalcMethod,
@@ -87,6 +89,37 @@ _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
 _state_tax_schema = StateTaxConfigSchema()
+
+
+def _get_owned_profile_and_period(profile_id, period_id):
+    """Load an owned salary profile and pay period, or abort 404.
+
+    The shared ownership gate for the two routes keyed on both a profile
+    and a period -- the cockpit's anatomy fragment
+    (:func:`app.routes.salary.cockpit.anatomy`) and the retired-breakdown
+    redirect stub (:func:`app.routes.salary.views.breakdown`).  Verifies
+    each id belongs to the current user BEFORE the caller acts, so a
+    cross-user id 404s here per the project's "404 for both 'not found'
+    and 'not yours'" rule rather than leaking existence.
+
+    Args:
+        profile_id: Primary key of the requested salary profile.
+        period_id: Primary key of the requested pay period.
+
+    Returns:
+        A ``(profile, period)`` tuple, both owned by the current user.
+
+    Raises:
+        werkzeug.exceptions.NotFound: (via ``abort(404)``) when either id
+            is missing or owned by another user.
+    """
+    profile = get_or_404(SalaryProfile, profile_id)
+    if profile is None:
+        abort(404)
+    period = get_or_404(PayPeriod, period_id)
+    if period is None:
+        abort(404)
+    return profile, period
 
 
 def _regenerate_salary_transactions(profile):

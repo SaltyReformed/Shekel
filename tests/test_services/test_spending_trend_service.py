@@ -895,8 +895,10 @@ class TestAvgDaysBeforeDue:
             window = _seed_window(db.session, seed_user)
             for p in window:
                 due = p.start_date
+                # Noon UTC so the paid civil day is unambiguous in the display
+                # timezone too (F3): midnight UTC would be the prior Eastern day.
                 paid = datetime(
-                    due.year, due.month, due.day, tzinfo=timezone.utc,
+                    due.year, due.month, due.day, 12, tzinfo=timezone.utc,
                 ) - timedelta(days=3)
                 _add_paid_expense(
                     db.session, seed_user, p, "Rent", "1200.00",
@@ -918,8 +920,10 @@ class TestAvgDaysBeforeDue:
             window = _seed_window(db.session, seed_user)
             for p in window:
                 due = p.start_date
+                # Noon UTC so the paid civil day is unambiguous in the display
+                # timezone too (F3): midnight UTC would be the prior Eastern day.
                 paid = datetime(
-                    due.year, due.month, due.day, tzinfo=timezone.utc,
+                    due.year, due.month, due.day, 12, tzinfo=timezone.utc,
                 ) + timedelta(days=2)
                 _add_paid_expense(
                     db.session, seed_user, p, "Rent", "1200.00",

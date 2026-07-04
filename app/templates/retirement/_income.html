@@ -1,0 +1,63 @@
+{% from "_money_macros.html" import money %}
+{# Income-in-retirement card body (direction D): the slim two-segment
+   coverage meter plus the four-row composition list, everything in the
+   monthly / retirement-year / net-of-estimated-tax frame the readiness
+   verdict uses.  Data contract: ``readiness`` from
+   retirement_readiness.compute_readiness_data (``income_meter`` carries
+   the service-computed segment percentages -- templates never compute
+   money).  Included by dashboard.html inside the stable #income-panel
+   div and re-sent as an hx-swap-oob sibling of every standalone
+   readiness fragment response. #}
+{% if readiness.retirement_date is none %}
+<p class="text-muted mb-0">
+  Set a planned retirement date -- in the assumptions panel or on a
+  <a href="{{ url_for('retirement.pension_list') }}">pension</a> --
+  to see your retirement income.
+</p>
+{% elif readiness.income_target_net_monthly <= 0 %}
+<p class="text-muted mb-0">
+  No projectable take-home pay yet --
+  <a href="{{ url_for('salary.cockpit') }}">set up a salary profile</a>
+  to see your retirement income.
+</p>
+{% else %}
+{% set meter = readiness.income_meter %}
+<p class="retire-frame-note mb-2">
+  Monthly, {{ readiness.retirement_date.year }} dollars, net of est. tax
+  {%- if readiness.tax_rate_missing %}
+  <span class="retire-flag">(not set -- 0% assumed)</span>
+  {%- endif %}.
+</p>
+<div class="retire-meter" role="img"
+     aria-label="Net pension {{ money(readiness.pension_net_monthly) }} and withdrawals {{ money(meter.withdrawals_net_monthly) }} cover part of the {{ money(readiness.income_target_net_monthly) }} monthly income to replace; {{ money(meter.uncovered_monthly) }} is uncovered">
+  {% if meter.pension_pct > 0 %}
+  <div class="retire-meter__seg retire-meter__seg--pension"
+       data-progress-pct="{{ meter.pension_pct }}"></div>
+  {% endif %}
+  {% if meter.withdrawals_pct > 0 %}
+  <div class="retire-meter__seg retire-meter__seg--withdrawals"
+       data-progress-pct="{{ meter.withdrawals_pct }}"></div>
+  {% endif %}
+</div>
+<div class="mt-2">
+  <div class="retire-income-row">
+    <span><span class="retire-swatch retire-swatch--pension"></span>Pension (net)</span>
+    <span class="font-mono">{{ money(readiness.pension_net_monthly) }}</span>
+  </div>
+  <div class="retire-income-row">
+    <span><span class="retire-swatch retire-swatch--withdrawals"></span>Withdrawals at
+      {{ "%.2f"|format(readiness.safe_withdrawal_rate|to_percent) }}% SWR</span>
+    <span class="font-mono">{{ money(meter.withdrawals_net_monthly) }}</span>
+  </div>
+  <div class="retire-income-row">
+    <span>Uncovered</span>
+    <span class="font-mono{% if meter.uncovered_monthly > 0 %} retire-neg fw-bold{% endif %}">
+      {{- money(meter.uncovered_monthly) -}}
+    </span>
+  </div>
+  <div class="retire-income-row fw-bold">
+    <span>Income to replace</span>
+    <span class="font-mono">{{ money(readiness.income_target_net_monthly) }}</span>
+  </div>
+</div>
+{% endif %}

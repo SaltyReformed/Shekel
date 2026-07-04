@@ -233,9 +233,14 @@ class TestBackfillShapeMapping:
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Kind Map Linked",
             )
+            # Kind-filtered: the $100 sentinel opening also minted the
+            # anchor-equity twin sharing this account_id (Step 5).
             linked = (
                 _db.session.query(LedgerAccount)
-                .filter_by(account_id=account.id)
+                .filter_by(
+                    account_id=account.id,
+                    kind_id=_kind_id(LedgerAccountKindEnum.LINKED),
+                )
                 .one()
             )
             derived, stored = self._derived_and_stored_kind(db, linked.id)

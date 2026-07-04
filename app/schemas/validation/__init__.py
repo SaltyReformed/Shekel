@@ -117,7 +117,7 @@ from app.schemas.validation.pay_periods import (
 from app.schemas.validation.retirement import (
     PensionProfileCreateSchema,
     PensionProfileUpdateSchema,
-    RetirementGapQuerySchema,
+    RetirementReadinessQuerySchema,
     RetirementSettingsSchema,
 )
 from app.schemas.validation.salary import (
@@ -206,7 +206,7 @@ __all__ = [
     "ReauthSchema",
     "RefinanceSchema",
     "RegisterSchema",
-    "RetirementGapQuerySchema",
+    "RetirementReadinessQuerySchema",
     "RetirementSettingsSchema",
     "SalaryProfileCreateSchema",
     "SalaryProfileUpdateSchema",

@@ -40,8 +40,6 @@ invisible to it).
 """
 from __future__ import annotations
 
-import importlib.util
-import os
 import pathlib
 from datetime import date
 from decimal import Decimal
@@ -68,6 +66,7 @@ from tests._test_helpers import (
     freeze_today,
     ledger_accounts_for_account,
     ledger_net,
+    load_init_database_module,
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
@@ -94,33 +93,7 @@ _GENESIS_MIGRATION_FILENAME = "f3d6b1a8c2e4_loan_genesis_postings_data_boundary.
 _GENESIS_MIGRATION = load_migration_module(_GENESIS_MIGRATION_FILENAME)
 
 
-def _load_init_database_module():
-    """Load ``scripts/init_database.py`` by path (it is not a package member).
-
-    ``scripts`` has no ``__init__``, so the deploy host is loaded by absolute
-    path -- the same importlib idiom :func:`load_migration_module` uses -- so a
-    test can call its post-migration backfill hook directly.  The script mutates
-    ``DATABASE_URL_APP`` to "" at import time (its deploy-host owner-role
-    override, which must run BEFORE the ``app`` import), a process-global side
-    effect this restores around the load so it never leaks into the test session.
-    """
-    script_path = (
-        pathlib.Path(__file__).resolve().parents[2] / "scripts" / "init_database.py"
-    )
-    saved = os.environ.get("DATABASE_URL_APP")
-    spec = importlib.util.spec_from_file_location(script_path.stem, str(script_path))
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if saved is None:
-            os.environ.pop("DATABASE_URL_APP", None)
-        else:
-            os.environ["DATABASE_URL_APP"] = saved
-    return module
-
-
-_INIT_DB = _load_init_database_module()
+_INIT_DB = load_init_database_module()
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +230,8 @@ class TestBackfillPostsHistoricalCorrection:
         correction AND the opening (-250000) + true-up (+150000), so the
         loan-linked ledger nets -250000 + 150000 + (1000 - 500) = -99500.00 ==
         -(current balance 99500), the interest ledger holds +500, and Checking is
-        untouched by the loan sync (-1000, the Step-2 cash only).  The 500.00
+        untouched by the loan sync (0.00: its $1000.00 Step-5 opening minus the
+        Step-2 cash).  The 500.00
         interest also proves the walk seeds from the $100,000 trueup anchor
         (origination $250,000 -> $1,250).
         """
@@ -281,10 +255,11 @@ class TestBackfillPostsHistoricalCorrection:
                 loan.id, scenario_id,
             ) == Decimal("-99500.00")
             assert _interest_ledger_net(loan, scenario_id) == Decimal("500.00")
-            # The loan sync never moves Checking; only the Step-2 cash did.
+            # The loan sync never moves Checking; only the Step-2 cash did
+            # (on top of the fixture's $1000.00 opening).
             assert posting_service.account_posting_total(
                 seed_user["account"].id, scenario_id,
-            ) == Decimal("-1000.00")
+            ) == Decimal("0.00")
 
     def test_posts_full_multi_payment_set_with_running_balance(
         self, app, db, seed_user, seed_periods,
@@ -808,15 +783,27 @@ class TestGenesisBoundaryMigration:
             # reference to Commit-1's three ref rows is cleared, so its downgrade's
             # RESTRICT deletes would succeed.  The sharpest reference is the
             # posting KIND -- assert no account_postings leg carries the opening /
-            # true-up kind any more.  This is an executed check, not an inference:
-            # those kinds land ONLY on genesis entries today, and this fails loud
-            # if a future change ever emits such a leg on a non-genesis entry (the
-            # one way the source-keyed teardown could leave a dangling kind ref).
-            assert db.session.query(Posting).filter(
+            # true-up kind any more, EXCLUDING the Step-5 account corrections
+            # (source account_opening / account_trueup), which reuse the same
+            # two kinds by design and whose OWN boundary migration downgrades
+            # first in the linear chain.  This stays an executed check: it
+            # fails loud if any OTHER future change emits such a leg on a
+            # non-genesis entry (the one way the source-keyed teardown could
+            # leave a dangling kind ref).
+            account_correction_source_ids = [
+                ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),
+                ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_TRUEUP),
+            ]
+            assert db.session.query(Posting).join(
+                JournalEntry, Posting.journal_entry_id == JournalEntry.id,
+            ).filter(
                 Posting.posting_kind_id.in_([
                     ref_cache.posting_kind_id(PostingKindEnum.OPENING),
                     ref_cache.posting_kind_id(PostingKindEnum.TRUEUP),
-                ])
+                ]),
+                JournalEntry.source_kind_id.notin_(
+                    account_correction_source_ids,
+                ),
             ).count() == 0
             # Payment correction, interest ledger, Step-2 cash, linked ledger survive.
             assert len(loan_correction_entries(db.session, shadow.id)) == 1

@@ -54,8 +54,10 @@ from app.routes._commit_helpers import (
 from app.routes._redirect_target import RedirectTarget
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
+    account_posting_service,
     account_service,
     entry_service,
+    ledger_account_service,
     pay_period_service,
     transfer_service,
 )
@@ -184,7 +186,7 @@ def _setup_redirect_url(account, kind):
         str: The ``url_for`` target to redirect to.
     """
     if kind is AccountProjectionKind.INTEREST:
-        return url_for("accounts.interest_detail", account_id=account.id, setup=1)
+        return url_for("accounts.cash_detail", account_id=account.id, setup=1)
     if kind is AccountProjectionKind.AMORTIZING:
         return url_for("loan.dashboard", account_id=account.id, setup=1)
     if kind is AccountProjectionKind.INVESTMENT:
@@ -371,9 +373,11 @@ def update_account(account_id):
                 )
                 db.session.add(history)
 
+    old_type_id = account.account_type_id
     for field, value in data.items():
         if field in _ACCOUNT_UPDATE_FIELDS:
             setattr(account, field, value)
+    type_changed = account.account_type_id != old_type_id
 
     # Reconcile entries on checking true-ups and commit.  Both
     # operations live inside the same try/except because
@@ -384,17 +388,39 @@ def update_account(account_id):
     # See the matching comment in :func:`true_up`.
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
 
-    def _clear_anchor_entries_if_changed():
-        """Clear checking entries on an anchor true-up (in-transaction step)."""
+    def _reconcile_anchor_and_type_effects():
+        """Reconcile the anchor / type side effects (in-transaction step).
+
+        On an anchor change: clear the checking entries (the true-up
+        contract) and re-base the account's Step-5 anchor corrections.
+        On a type change: re-class the (empty) linked ledger row when the
+        Asset/Liability boundary was crossed -- ``_validate_update_account``
+        already refused a crossing on a posted account -- and re-sync the
+        corrections so an amortizing-boundary crossing swaps correction
+        families instead of stranding one (the sync structurally no-ops
+        for the loan side).
+        """
         if anchor_changed and account.account_type_id == checking_type_id:
             entry_service.clear_entries_for_anchor_true_up(
                 current_user.id, account.id,
             )
+        if type_changed:
+            # Flush the new FK and expire the stale ``account_type``
+            # relationship so the re-class and the resync's classifier both
+            # read the NEW type (the relationship attribute is not refreshed
+            # by the setattr alone).
+            db.session.flush()
+            db.session.expire(account, ["account_type"])
+            ledger_account_service.sync_linked_ledger_class(account)
+        if anchor_changed or type_changed:
+            account_posting_service.sync_account_anchor_postings_all_scenarios(
+                account.id,
+            )
 
-    # The clear-entries step must run inside the same stale-race guard as
+    # The reconcile step must run inside the same stale-race guard as
     # the commit (it flushes and can itself raise StaleDataError).
     conflict = regenerate_and_commit_or_stale(
-        _clear_anchor_entries_if_changed,
+        _reconcile_anchor_and_type_effects,
         ctx=StaleConflictContext(
             logger=logger,
             log_label="update_account",

@@ -617,3 +617,21 @@ class TestDaysPaidBeforeDue:
                 paid_at_val=None,
             )
             assert txn.days_paid_before_due is None
+
+    def test_days_paid_before_due_evening_eastern_is_on_time(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An 8:05pm-Eastern settle on the due date is on time (0), not late (F3).
+
+        Paid at 2026-01-16 01:05 UTC -- 2026-01-15 8:05pm Eastern (EST,
+        UTC-5) -- on a 2026-01-15 due date.  Truncating ``paid_at`` in UTC
+        lands on Jan 16 and reports -1 (a day late by wall-clock drift); the
+        display-timezone rule lands it on the Jan 15 due date, so the result
+        is 0.  This pins the F3 fix that no other timeliness test (all
+        mid-morning UTC, same civil day either way) exercises.
+        """
+        with app.app_context():
+            due = date(2026, 1, 15)
+            paid = datetime(2026, 1, 16, 1, 5, tzinfo=timezone.utc)
+            txn = self._make_txn(seed_user, seed_periods, due, paid)
+            assert txn.days_paid_before_due == 0

@@ -76,6 +76,7 @@ Usage::
 """
 
 import os
+import pathlib
 import sys
 from urllib.parse import urlparse, urlunparse
 
@@ -112,8 +113,44 @@ _EXPECTED_ACCOUNT_TYPE_COUNT: int = 19
 # environment when the module was first loaded -- which is never the
 # template DB this script just created.
 # ---------------------------------------------------------------------------
+def _env_file_value(key: str) -> str | None:
+    """Return *key*'s value from the repo ``.env``, or ``None`` when absent.
+
+    The same one-key extraction contract ``scripts/test.sh`` applies (first
+    matching line, value after the first ``=``): the whole dotenv is never
+    shell-sourced or bulk-loaded because it may carry values with unquoted
+    spaces.  Needed so a bare ``python scripts/build_test_template.py`` in a
+    parallel checkout resolves the SAME template name the checkout's test
+    runs will clone (``tests/conftest.py`` reads the variable from the
+    environment, which ``test.sh`` populates from this same ``.env`` line) --
+    without it the builder would silently rebuild the DEFAULT shared
+    template at this checkout's migration head, breaking the other live
+    checkout's exact enum<->DB ref-parity tests.
+
+    Args:
+        key: The dotenv key to extract.
+
+    Returns:
+        The raw value string, or ``None`` when the file or key is absent.
+    """
+    env_path = pathlib.Path(__file__).resolve().parents[1] / ".env"
+    if not env_path.is_file():
+        return None
+    prefix = f"{key}="
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return None
+
+
 ADMIN_URL: str = os.environ.get("TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL)
-TEMPLATE_DB: str = os.environ.get("TEST_TEMPLATE_DATABASE", _DEFAULT_TEMPLATE_DATABASE)
+# Environment wins; then the repo .env (the parallel-checkout override the
+# test runner also reads); then the shared default.
+TEMPLATE_DB: str = (
+    os.environ.get("TEST_TEMPLATE_DATABASE")
+    or _env_file_value("TEST_TEMPLATE_DATABASE")
+    or _DEFAULT_TEMPLATE_DATABASE
+)
 
 # Build the template DSN by replacing the database name (the URL's
 # path component) in the admin DSN.  Preserves scheme, host, port,
@@ -154,7 +191,10 @@ from alembic.config import Config
 from app import create_app
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.extensions import db
-from app.posting_infrastructure import apply_posting_infrastructure
+from app.posting_infrastructure import (
+    apply_ledger_append_only_privileges,
+    apply_posting_infrastructure,
+)
 from app.ref_seeds import seed_reference_data
 
 
@@ -213,11 +253,15 @@ def _populate_template(app) -> None:
        the test-suite caller for the posting infrastructure: the
        per-test ``db`` fixture clones this template, so the trigger
        enforced here is the one every test runs against.
-    5. ``seed_reference_data``: populates ``ref.account_types`` (18
+    5. ``apply_ledger_append_only_privileges``: idempotent
+       re-application of the ledger append-only posture (review
+       M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
+       role happens to exist at rebuild time.
+    6. ``seed_reference_data``: populates ``ref.account_types`` (18
        rows) and the other ref tables.  The INSERTs on
        ``ref.account_types`` fire the audit trigger attached in
        step 2/3 and write 18 rows into ``system.audit_log``.
-    6. ``TRUNCATE system.audit_log``: clear those 18 seed-time
+    7. ``TRUNCATE system.audit_log``: clear those 18 seed-time
        audit rows so the template ships with a zeroed log.  Mirrors
        the per-test pattern in ``tests/conftest.py::db`` (line 244)
        and gives the per-session clones a clean slate.
@@ -244,6 +288,17 @@ def _populate_template(app) -> None:
         db.session.commit()
 
         apply_posting_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # Ledger append-only posture (review M1/R4): idempotent
+        # re-application for the same latest-definition-wins contract as
+        # steps 3-4.  Almost always a no-op here -- the cluster-scoped
+        # shekel_app role exists only while a role-privilege test is
+        # running -- but keeps the template correct on a developer
+        # cluster where the role is provisioned.
+        apply_ledger_append_only_privileges(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

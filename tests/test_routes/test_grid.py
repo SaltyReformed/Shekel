@@ -23,6 +23,7 @@ from app.services import (
     balance_at,
     income_service,
     pay_period_service,
+    posting_service,
 )
 
 from tests._test_helpers import (
@@ -1708,6 +1709,36 @@ class TestCreateBaseline:
                 user_id=seed_user["user"].id, is_baseline=True
             ).count()
             assert count == 1
+
+    def test_create_baseline_reposts_stranded_openings(
+        self, app, auth_client, seed_user,
+    ):
+        """The recovery path re-posts openings stranded by baseline-lessness.
+
+        The Step-5 wiring (plan Section 3.3, point 6): deleting the baseline
+        CASCADE-disposes its journal entries -- including the seed
+        Checking's $1000.00 opening -- reproducing the baseline-less state
+        where an account's corrections had nowhere to post.  The route's
+        per-user resync then posts the opening into the NEW baseline in the
+        same transaction, so it is not silently stranded until the next
+        anchor event.
+        """
+        with app.app_context():
+            checking_id = seed_user["account"].id
+            Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).delete()
+            db.session.commit()
+
+            response = auth_client.post("/create-baseline")
+            assert response.status_code == 302
+
+            new_baseline = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).one()
+            assert posting_service.account_posting_total(
+                checking_id, new_baseline.id,
+            ) == Decimal("1000.00")
 
     def test_create_baseline_requires_login(self, app, client):
         """POST /create-baseline without authentication redirects to login.

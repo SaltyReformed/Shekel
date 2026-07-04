@@ -40,6 +40,10 @@
 #                        ``TEST_ADMIN_DATABASE_URL`` when the latter
 #                        is not already set.  No-op if both are
 #                        already in the environment.
+#     TEST_TEMPLATE_DATABASE  Optional; passed through from ``.env``
+#                        for parallel-checkout template isolation
+#                        (see tests/conftest.py).  Absent = default
+#                        ``shekel_test_template``.
 #     SKIP_DB_RESTART    See above.
 #
 # Exit codes:
@@ -61,9 +65,25 @@ _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -z "${TEST_DATABASE_URL:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
     # Resolved via BASH_SOURCE, not the invoker's cwd, so a run from
     # outside the repo root still finds the dotenv (OPS/SH-26).
-    _env_value="$(grep -E '^TEST_DATABASE_URL=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2-)"
+    # ``|| true``: under ``set -euo pipefail`` a grep miss (the key
+    # absent from .env -- a legal state) would otherwise abort the
+    # whole runner via the command substitution's exit status.
+    _env_value="$(grep -E '^TEST_DATABASE_URL=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2- || true)"
     if [ -n "$_env_value" ]; then
         export TEST_DATABASE_URL="$_env_value"
+    fi
+    unset _env_value
+fi
+
+# Pass TEST_TEMPLATE_DATABASE through from .env the same way (see
+# tests/conftest.py: a parallel checkout whose migration head differs
+# from another live checkout's sets its own template name so neither
+# suite clones the other's schema).  Environment wins over .env.
+# Absence is the NORMAL case (single-checkout default), hence ``|| true``.
+if [ -z "${TEST_TEMPLATE_DATABASE:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
+    _env_value="$(grep -E '^TEST_TEMPLATE_DATABASE=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2- || true)"
+    if [ -n "$_env_value" ]; then
+        export TEST_TEMPLATE_DATABASE="$_env_value"
     fi
     unset _env_value
 fi

@@ -1,0 +1,98 @@
+{# HTMX fragment: the assumptions rail's savable rows (P3a contract,
+   P3b styling).  One small form per savable field so the rail saves ONE
+   field per POST (retirement.update_settings); submitted values are
+   echoed back on a 422 with the field's error (the retirement_controls
+   shim re-enables the swap for that status).  Saves target the stable
+   #assumptions-region wrapper in dashboard.html with an innerHTML swap;
+   a successful save triggers a full page reload there so every derived
+   figure re-computes.  The assumed-annual-return row is intentionally
+   ABSENT: its save semantics are an open developer question, so that
+   row is what-if-only and lives in dashboard.html OUTSIDE this fragment
+   (a panel re-render must not clear an active return what-if).
+
+   What-if wiring: the SWR input mirrors its value into the hidden
+   ``swr`` input (the GET parameter name differs from the POST field
+   name); the merit-horizon input's name already matches its GET
+   parameter, so it carries both jobs directly. #}
+{% set fd = form_data|default(none) %}
+<div id="assumptions-panel">
+  {# Acceptance r2 item 2 (developer ruling): the date row is ALWAYS
+     editable and Save writes through to the RESOLVED owner -- the
+     owning (max-date) pension when one carries a planned date (the
+     caption names it), else the settings column.  The input echoes the
+     RESOLVED date (what the whole page projects from), so what you see
+     is what a save edits.  ``source`` is a producer-computed state
+     string (like the lever states), compared literally. #}
+  <form method="POST" action="{{ url_for('retirement.update_settings') }}"
+        hx-post="{{ url_for('retirement.update_settings') }}"
+        hx-target="#assumptions-region" hx-swap="innerHTML"
+        class="retire-assump-row" data-assumption="planned_retirement_date">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="form-label" for="assump-retirement-date">Retirement date</label>
+    <input type="date" id="assump-retirement-date" name="planned_retirement_date"
+           class="form-control form-control-sm retire-assump-input retire-assump-input--date {% if errors and 'planned_retirement_date' in errors %}is-invalid{% endif %}"
+           value="{{ fd.get('planned_retirement_date', '') if fd else (date_provenance.date.isoformat() if date_provenance and date_provenance.date else '') }}">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+    {% if errors and 'planned_retirement_date' in errors %}
+    <div class="invalid-feedback">{{ errors['planned_retirement_date']|join('. ') }}</div>
+    {% endif %}
+    {% if date_provenance and date_provenance.source == 'pension' %}
+    <span class="retire-assump-caption w-100" data-assumption-source="pension">updates
+      <a href="{{ url_for('retirement.edit_pension', pension_id=date_provenance.pension_id) }}">{{ date_provenance.pension_name }}</a></span>
+    {% endif %}
+  </form>
+
+  <form method="POST" action="{{ url_for('retirement.update_settings') }}"
+        hx-post="{{ url_for('retirement.update_settings') }}"
+        hx-target="#assumptions-region" hx-swap="innerHTML"
+        class="retire-assump-row" data-assumption="safe_withdrawal_rate">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" id="swr-whatif-mirror" name="swr" class="whatif-param" value="">
+    <label class="form-label" for="assump-swr">Safe withdrawal rate (%)</label>
+    <input type="number" step="0.1" min="0" max="100" id="assump-swr"
+           name="safe_withdrawal_rate" data-mirror="swr-whatif-mirror"
+           class="form-control form-control-sm retire-assump-input js-whatif-input {% if errors and 'safe_withdrawal_rate' in errors %}is-invalid{% endif %}"
+           value="{{ fd.get('safe_withdrawal_rate', '') if fd else ("%.2f"|format(settings.safe_withdrawal_rate|to_percent) if settings and settings.safe_withdrawal_rate is not none else '') }}">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+    {% if errors and 'safe_withdrawal_rate' in errors %}
+    <div class="invalid-feedback">{{ errors['safe_withdrawal_rate']|join('. ') }}</div>
+    {% endif %}
+  </form>
+
+  <form method="POST" action="{{ url_for('retirement.update_settings') }}"
+        hx-post="{{ url_for('retirement.update_settings') }}"
+        hx-target="#assumptions-region" hx-swap="innerHTML"
+        class="retire-assump-row" data-assumption="merit_raise_horizon_years">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="form-label" for="assump-merit-horizon">Merit raises continue (years)</label>
+    <input type="number" step="1" min="0" max="50" id="assump-merit-horizon"
+           name="merit_raise_horizon_years"
+           class="form-control form-control-sm retire-assump-input whatif-param js-whatif-input {% if errors and 'merit_raise_horizon_years' in errors %}is-invalid{% endif %}"
+           value="{{ fd.get('merit_raise_horizon_years', '') if fd else (settings.merit_raise_horizon_years if settings else 5) }}">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+    {% if errors and 'merit_raise_horizon_years' in errors %}
+    <div class="invalid-feedback">{{ errors['merit_raise_horizon_years']|join('. ') }}</div>
+    {% endif %}
+  </form>
+
+  <form method="POST" action="{{ url_for('retirement.update_settings') }}"
+        hx-post="{{ url_for('retirement.update_settings') }}"
+        hx-target="#assumptions-region" hx-swap="innerHTML"
+        class="retire-assump-row" data-assumption="estimated_retirement_tax_rate">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="form-label" for="assump-tax-rate">Est. retirement tax (%)</label>
+    <input type="number" step="0.1" min="0" max="100" id="assump-tax-rate"
+           name="estimated_retirement_tax_rate"
+           class="form-control form-control-sm retire-assump-input {% if errors and 'estimated_retirement_tax_rate' in errors %}is-invalid{% endif %}"
+           value="{{ fd.get('estimated_retirement_tax_rate', '') if fd else ("%.1f"|format(settings.estimated_retirement_tax_rate|to_percent) if settings and settings.estimated_retirement_tax_rate is not none else '') }}">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+    {% if errors and 'estimated_retirement_tax_rate' in errors %}
+    <div class="invalid-feedback">{{ errors['estimated_retirement_tax_rate']|join('. ') }}</div>
+    {% endif %}
+    {% if settings and settings.estimated_retirement_tax_rate is none %}
+    <span class="retire-assump-caption retire-flag w-100" data-assumption-flag="tax-missing">
+      Not set -- the readiness verdict assumes 0%.
+    </span>
+    {% endif %}
+  </form>
+</div>

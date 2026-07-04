@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% from "_money_macros.html" import money %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% block title %}{{ account.name }} -- Account Detail -- Shekel{% endblock title %}
+
+{# Unified cash-account detail page: checking, interest-bearing (HYSA /
+   Money Market / CD / HSA), and plain Savings / Credit Card / custom
+   types all render here (docs/design/account_detail_audit.md, rebuild
+   decisions 1-2 and 6-7).  Anatomy: one hero band (balance + honest
+   anchored caption + horizon chips + trend chart with a Today marker),
+   then a Parameters card below the band for interest-bearing types.
+   The per-period table was DROPPED by developer ruling (decision 3
+   amendment): exact per-period values live in the chart's hover
+   tooltip; the grid is the per-period detail home for checking.
+
+   Context (accounts.cash_detail): account, is_interest,
+   current_balance, current_period, anchor_as_of, horizons (list of
+   {label, value, delta} -- deltas computed in the route with Decimal),
+   interest_next_year, params, compounding_frequencies, chart_json,
+   has_chart. #}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
+  </ol>
+</nav>
+{% endblock breadcrumbs %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-2 mb-3">
+  <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+  <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+</div>
+
+{% if request.args.get('setup') == '1' %}
+<div class="alert alert-info alert-dismissible fade show mb-3" role="alert">
+  <i class="bi bi-gear"></i> Account created. Configure the settings below to enable accurate projections.
+  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
+{# ── Hero band: balance + horizon chips + trend ─────────────────────── #}
+<div class="pulse-canvas mb-4">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Balance</div>
+      <div class="nw-hero__num font-mono{% if current_balance is not none and current_balance < 0 %} nw-hero__num--neg{% endif %}"
+        {%- if current_balance is not none %} data-current-balance="{{ current_balance }}"{% endif %}>
+        {% if current_balance is not none %}{{ money(current_balance) }}{% else %}--{% endif %}
+      </div>
+      <div class="nw-hero__cap">
+        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}{% endif %}
+        {%- elif anchor_as_of %}anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}
+        {%- else %}no pay periods yet
+        {%- endif -%}
+      </div>
+    </div>
+
+    {% if horizons or (is_interest and interest_next_year is not none) %}
+    <div class="pulse-statrow nw-statrow">
+      {% for h in horizons %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">In {{ h.label }}</div>
+        <div class="pulse-chip__value font-mono">{{ money(h.value, cents=false) }}</div>
+        <div class="acctd-chip__delta font-mono{% if h.delta < 0 %} acctd-chip__delta--neg{% endif %}">
+          {%- if h.delta >= 0 %}+{% endif %}{{ money(h.delta, cents=false) -}}
+        </div>
+      </div>
+      {% endfor %}
+      {% if is_interest and interest_next_year is not none %}
+      <div class="pulse-chip pulse-chip--done">
+        <div class="pulse-chip__label">Interest, next 12 mo</div>
+        <div class="pulse-chip__value font-mono">+{{ money(interest_next_year, cents=false) }}</div>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING %}
+    {# The grid is checking's per-period detail home (decision 3 amendment). #}
+    <a href="{{ url_for('grid.index') }}"
+       class="btn btn-outline-secondary btn-sm acctd-open-grid">
+      <i class="bi bi-grid-3x3"></i> Open Grid
+    </a>
+    {% endif %}
+  </div>
+
+  {% if has_chart %}
+  <div class="pulse-chart">
+    <canvas id="account-detail-chart-canvas" data-chart='{{ chart_json }}'
+            role="img"
+            aria-label="{{ account.name }} balance projection: solid history, dashed projection, Today marker"></canvas>
+  </div>
+  {% else %}
+  <div class="acctd-empty">
+    No projection to chart yet. Balances project forward once this account
+    has an anchored balance and pay periods exist.
+  </div>
+  {% endif %}
+</div>
+
+{# ── Parameters card, below the band (decision 7) ───────────────────── #}
+{% if is_interest %}
+<div class="card acctd-params">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('accounts.update_interest_params', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="mb-3">
+        <label for="apy" class="form-label">APY (Annual Percentage Yield)</label>
+        <div class="input-group">
+          <input type="number" class="form-control" id="apy" name="apy"
+                 value="{{ "%.3f"|format(params.apy|to_percent) }}"
+                 step="0.001" min="0" max="100">
+          <span class="input-group-text">%</span>
+        </div>
+        <div class="form-text">Enter as percentage (e.g. 4.5 for 4.5%)</div>
+      </div>
+      <div class="mb-3">
+        <label for="compounding_frequency_id" class="form-label">Compounding Frequency</label>
+        <select class="form-select" id="compounding_frequency_id" name="compounding_frequency_id">
+          {% for cf in compounding_frequencies %}
+          <option value="{{ cf.id }}" {% if params.compounding_frequency_id == cf.id %}selected{% endif %}>{{ cf.name|capitalize }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">
+        <i class="bi bi-check-lg"></i> Update Parameters
+      </button>
+      <div class="form-text mt-2">Projections recompute from the anchored balance.</div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/account_detail.js') }}"></script>
+{% endblock scripts %}

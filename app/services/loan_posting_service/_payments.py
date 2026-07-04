@@ -25,7 +25,7 @@ captured honestly.
 **Linked by ``transaction_id``, not ``transfer_id``.**  The correction links to
 the loan-side income shadow's ``transaction_id``, leaving ``transfer_id`` NULL.
 That NULL is load-bearing: the Step-2 cash path reads the loan ledger via
-``posting_service._posted_net(transfer_id, ...)``, so a ``transfer_id`` on the
+``posting_service._posted_by_period(transfer_id == ...)``, so a ``transfer_id`` on the
 correction would corrupt its cash reversals.  ``transaction_id`` is invisible to
 both the cash transfer path (which keys by ``transfer_id``) and the Step-3
 transaction path (which skips transfer shadows), so the correction is disjoint
@@ -59,7 +59,8 @@ from app.services.posting_service import (
     _ledger_account_for,
 )
 
-from ._common import delta_legs, summed_posting_legs
+from app.services._posting_reconcile import delta_legs, summed_posting_legs
+
 from ._walk import LoanPaymentSplit, compute_loan_payment_splits
 
 logger = logging.getLogger(__name__)
@@ -96,48 +97,92 @@ def _loan_payment_description(shadow: Transaction) -> str:
     )[:_MAX_DESCRIPTION_LENGTH]
 
 
+def _loan_payment_entry_filters(transaction_id: int) -> list:
+    """Return the entry filters selecting a shadow's loan-payment corrections.
+
+    The ``source_kind = loan_payment`` filter makes the selection disjoint from
+    the Step-2 cash path (which links the same shadow's TRANSFER by
+    ``transfer_id``, never this ``transaction_id``) and the Step-3 transaction
+    path (which skips transfer shadows): only the loan-payment correction is
+    ever summed under these filters.  Shared by the posted-legs reader and the
+    per-period date reader so the two can never select different entry sets.
+
+    Args:
+        transaction_id: The income shadow's id whose corrections to select.
+
+    Returns:
+        The filter expressions.
+    """
+    return [
+        JournalEntry.transaction_id == transaction_id,
+        JournalEntry.source_kind_id == ref_cache.posting_source_id(
+            PostingSourceEnum.LOAN_PAYMENT
+        ),
+    ]
+
+
 def _posted_loan_payment_legs(
     transaction_id: int,
-) -> dict[int, tuple[Decimal, int]]:
-    """Return the net loan-payment legs already posted under a shadow's id.
+) -> dict[int, dict[int, tuple[Decimal, int]]]:
+    """Return the loan-payment legs posted under a shadow's id, per pay period.
 
-    ``{ledger_account_id: (net_amount, posting_kind_id)}`` summed over every
-    ``loan_payment``-sourced journal entry linked to *transaction_id* (the
-    income shadow's id).  The loan analog of :func:`_posted_net_by_account`,
-    additionally carrying each ledger's posting kind: within a loan correction a
-    ledger account always carries ONE kind (the loan-linked principal leg, or a
+    ``{pay_period_id: {ledger_account_id: (net_amount, posting_kind_id)}}``
+    summed over every ``loan_payment``-sourced journal entry linked to
+    *transaction_id* (the income shadow's id).  The loan analog of
+    :func:`~app.services.posting_service._posted_by_period`, additionally
+    carrying each ledger's posting kind: within a loan correction a ledger
+    account always carries ONE kind (the loan-linked principal leg, or a
     per-loan interest / escrow / refund leg), so grouping by
     ``(ledger_account_id, posting_kind_id)`` yields one row per ledger and the
     kind travels with the net.  The reconcile (:func:`_reconcile_loan_payment`)
-    reads this back so a reversal leg negates EXACTLY what was posted and reuses
-    the kind it was posted with -- load-bearing when a component zeroes out (a
-    later true-up re-splits a payment to no escrow) and its target leg is no
-    longer resolved.
-
-    The ``source_kind = loan_payment`` filter makes this disjoint from the
-    Step-2 cash path (which links the same shadow's TRANSFER by ``transfer_id``,
-    never this ``transaction_id``) and the Step-3 transaction path (which skips
-    transfer shadows): only the loan-payment correction is ever summed here.
+    reads this back so a reversal leg negates EXACTLY what was posted -- with
+    the kind it was posted under (load-bearing when a component zeroes out and
+    its target leg is no longer resolved) and in the PERIOD it was posted in
+    (the 2026-07-02 review's R2 attribution rule: a revert-and-move must
+    reverse into the ORIGINAL period, never the shadow's new one).
 
     Args:
         transaction_id: The income shadow's id whose posted corrections to sum.
 
     Returns:
-        ``{ledger_account_id: (net Decimal, posting_kind_id)}``; empty when no
-        correction is posted yet.
+        ``{pay_period_id: {ledger_account_id: (net Decimal,
+        posting_kind_id)}}``; empty when no correction is posted yet.
     """
     rows = summed_posting_legs(
-        [],
-        [
-            JournalEntry.transaction_id == transaction_id,
-            JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.LOAN_PAYMENT
-            ),
-        ],
+        [JournalEntry.pay_period_id],
+        _loan_payment_entry_filters(transaction_id),
     ).all()
-    return {
-        ledger_id: (net, kind_id) for ledger_id, net, kind_id in rows
-    }
+    posted: dict[int, dict[int, tuple[Decimal, int]]] = {}
+    for period_id, ledger_id, net, kind_id in rows:
+        posted.setdefault(period_id, {})[ledger_id] = (net, kind_id)
+    return posted
+
+
+def _posted_loan_payment_dates(transaction_id: int) -> dict[int, date]:
+    """Return each period's latest posted entry date for a shadow's corrections.
+
+    ``{pay_period_id: max(entry_date)}`` over the same entry set
+    :func:`_posted_loan_payment_legs` sums (the shared
+    :func:`_loan_payment_entry_filters`) -- the date a reversal-only delta
+    entry inherits, so a reversal nets against what it reverses in
+    date-grouped reporting instead of taking the reversal-time fallback.
+
+    Args:
+        transaction_id: The income shadow's id whose correction dates to read.
+
+    Returns:
+        ``{pay_period_id: latest entry_date}``; empty when nothing is posted.
+    """
+    rows = (
+        db.session.query(
+            JournalEntry.pay_period_id,
+            db.func.max(JournalEntry.entry_date),
+        )
+        .filter(*_loan_payment_entry_filters(transaction_id))
+        .group_by(JournalEntry.pay_period_id)
+        .all()
+    )
+    return dict(rows)
 
 
 def _loan_payment_target(
@@ -205,22 +250,28 @@ def _loan_payment_target(
 def _reconcile_loan_payment(
     shadow: Transaction,
     target: dict[int, tuple[Decimal, int]],
-) -> JournalEntry | None:
+) -> list[JournalEntry]:
     """Reconcile one payment's posted correction to *target*, idempotently.
 
     The loan analog of the reconcile inside :func:`sync_transaction_postings`,
     keyed by the income shadow's ``transaction_id`` (NOT ``transfer_id`` -- that
     keeps the correction invisible to the Step-2 cash path; plan Section 5).
-    Emits ONE balanced delta journal entry (via :func:`._common.delta_legs`)
-    bringing the net posted ``loan_payment`` legs to *target*, or ``None`` when
+    Emits one balanced delta journal entry PER PAY PERIOD whose posted legs
+    differ from the target (via
+    :func:`app.services._posting_reconcile.delta_legs`), or ``[]`` when
     already at target (an idempotent no-op).
 
     *target* maps each ledger account the correction should land on to its
-    ``(signed amount, posting_kind_id)``; an EMPTY *target* reverses the whole
-    correction to zero (the reverse-before-delete / stale-shadow path).  The
-    posted side (:func:`_posted_loan_payment_legs`) carries each ledger's kind,
-    so a leg whose target dropped to zero is still reversed with the kind it was
-    posted under.
+    ``(signed amount, posting_kind_id)`` and belongs to the shadow's CURRENT
+    pay period; an EMPTY *target* reverses the whole correction to zero (the
+    reverse-before-delete / stale-shadow path).  The posted side
+    (:func:`_posted_loan_payment_legs`) carries each ledger's kind PER PERIOD,
+    so a leg whose target dropped to zero is still reversed with the kind it
+    was posted under -- and IN THE PERIOD it was posted in, dated by the
+    latest entry it reverses (the 2026-07-02 review's R2 attribution rule):
+    a reverted-and-moved payment's stale correction reverses into its
+    ORIGINAL period, never the shadow's new one, so the net-zero pair cannot
+    straddle periods.
 
     Flushes but does not commit (the caller owns the transaction).
 
@@ -229,40 +280,64 @@ def _reconcile_loan_payment(
             flushed (``id`` set) so the entry links by ``transaction_id`` and
             the posted legs read back.
         target: ``{ledger_account_id: (amount, posting_kind_id)}`` the ledger
-            should net to (empty to reverse to zero).
+            should net to in the shadow's current period (empty to reverse to
+            zero).
 
     Returns:
-        The new delta :class:`~app.models.journal_entry.JournalEntry`, or
-        ``None`` when already at target.
+        The new delta :class:`~app.models.journal_entry.JournalEntry` list,
+        one per period reconciled (in practice a single entry), or ``[]``
+        when already at target.
     """
-    legs = delta_legs(target, _posted_loan_payment_legs(shadow.id))
-    if not legs:
-        return None
+    targets: dict[int, dict[int, tuple[Decimal, int]]] = {}
+    if target:
+        targets[shadow.pay_period_id] = target
+    posted = _posted_loan_payment_legs(shadow.id)
+    legs_by_period = {
+        period_id: legs
+        for period_id in sorted(set(targets) | set(posted))
+        if (legs := delta_legs(
+            targets.get(period_id, {}), posted.get(period_id, {}),
+        ))
+    }
+    if not legs_by_period:
+        return []
 
-    entry = JournalEntry(
-        user_id=shadow.pay_period.user_id,
-        scenario_id=shadow.scenario_id,
-        pay_period_id=shadow.pay_period_id,
-        entry_date=_civil_settle_date(shadow.paid_at, shadow.pay_period),
-        source_kind_id=ref_cache.posting_source_id(
-            PostingSourceEnum.LOAN_PAYMENT
-        ),
-        # Linked by transaction_id (the income shadow), leaving transfer_id
-        # NULL.  That NULL is load-bearing: the Step-2 cash path reads the loan
-        # ledger via _posted_net(transfer_id, ...), so a transfer_id here would
-        # corrupt its cash reversals (plan Section 5 / the CRITICAL bug v1 had).
-        transaction_id=shadow.id,
-        description=_loan_payment_description(shadow),
-    )
-    _emit_balanced_entry(entry, legs)
-    logger.info(
-        "Posted loan-payment split correction for shadow %d (deltas %s) as "
-        "journal entry %d",
-        shadow.id,
-        {leg.ledger_account_id: leg.amount for leg in legs},
-        entry.id,
-    )
-    return entry
+    last_dates = _posted_loan_payment_dates(shadow.id)
+    entries = []
+    for period_id, legs in sorted(legs_by_period.items()):
+        entry = JournalEntry(
+            user_id=shadow.pay_period.user_id,
+            scenario_id=shadow.scenario_id,
+            pay_period_id=period_id,
+            # The target-period entry is dated by the shadow's settle instant;
+            # a reversal-only entry inherits the latest date it reverses (the
+            # R2 attribution rule).
+            entry_date=(
+                _civil_settle_date(shadow.paid_at, shadow.pay_period)
+                if target and period_id == shadow.pay_period_id
+                else last_dates[period_id]
+            ),
+            source_kind_id=ref_cache.posting_source_id(
+                PostingSourceEnum.LOAN_PAYMENT
+            ),
+            # Linked by transaction_id (the income shadow), leaving transfer_id
+            # NULL.  That NULL is load-bearing: the Step-2 cash path reads the
+            # loan ledger by transfer_id, so a transfer_id here would corrupt
+            # its cash reversals (plan Section 5 / the CRITICAL bug v1 had).
+            transaction_id=shadow.id,
+            description=_loan_payment_description(shadow),
+        )
+        _emit_balanced_entry(entry, legs)
+        logger.info(
+            "Posted loan-payment split correction for shadow %d (deltas %s) "
+            "in period %d as journal entry %d",
+            shadow.id,
+            {leg.ledger_account_id: leg.amount for leg in legs},
+            period_id,
+            entry.id,
+        )
+        entries.append(entry)
+    return entries
 
 
 def _stale_loan_payment_shadows(
@@ -397,15 +472,16 @@ def sync_loan_payment_postings(
 
     Idempotent and self-healing: a re-run with no change writes nothing, and a
     missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
-    (never Checking).  Reads ``as_of`` as the upper bound on which payments are
-    historical; the go-forward wiring passes ``date.today()``.  Flushes but does
-    not commit (the caller owns the transaction).
+    (never Checking).  ``as_of`` bounds the walk's ANCHORS only; every settled
+    payment splits, whatever its pay period (settlement is the confirming
+    event -- see :func:`.._walk._settled_income_shadows`).  The go-forward
+    wiring passes ``date.today()``.  Flushes but does not commit (the caller
+    owns the transaction).
 
     Args:
         loan_account_id: The loan whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date (a payment whose pay period has not begun by
-            it is a projection, excluded from the confirmed set).
+        as_of: The walk's anchor boundary (anchors after it do not reset).
     """
     reconcile_loan_payment_splits(
         loan_account_id, scenario_id,

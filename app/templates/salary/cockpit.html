@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% from "_money_macros.html" import money %}
+{% block title %}Salary -- Shekel{% endblock title %}
+
+{# Salary cockpit -- the section's single landing page (locked D2 "wide
+   sky" direction, docs/design/salary_audit.md): hero band with the
+   net-per-paycheck figure + chips + the net-pay staircase chart, then
+   the paycheck-anatomy composition card (HTMX period stepping via
+   salary/_anatomy.html), the deduction bar-list, the salary-path card,
+   and the calibration strip.  Every figure arrives precomputed from the
+   route/producers -- this template does no money math. #}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Salary</li>
+  </ol>
+</nav>
+{% endblock breadcrumbs %}
+
+{% block content %}
+{% if empty_state == "no_profiles" %}
+{# No active salary profiles: lead with a create CTA rather than a hero. #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-cash-coin"></i> Salary</h4>
+</div>
+<div class="card">
+  <div class="card-body text-center py-5">
+    <p class="mb-3">No salary profile yet. Create one to see your paycheck anatomy and projections.</p>
+    <a href="{{ url_for('salary.new_profile') }}" class="btn btn-primary">
+      <i class="bi bi-plus-circle"></i> New salary profile
+    </a>
+  </div>
+</div>
+
+{% elif empty_state == "no_periods" %}
+{# Profile exists but no usable pay-period schedule yet. #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi bi-cash-coin"></i> Salary</h4>
+    <span class="sal-profile-tag">{{ profile.name }}</span>
+  </div>
+  <a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}"
+     class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-gear"></i> Profile settings
+  </a>
+</div>
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle"></i>
+  No pay periods found.
+  <a href="{{ url_for('pay_periods.generate_form') }}" class="alert-link">Generate pay periods</a>
+  first to see paycheck figures.
+</div>
+
+{% else %}
+{# ── Header: title + profile tag/switcher + section links ─────────── #}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi bi-cash-coin"></i> Salary</h4>
+    {% if profiles|length > 1 %}
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+              data-bs-toggle="dropdown" aria-expanded="false">
+        {{ profile.name }}
+      </button>
+      <ul class="dropdown-menu">
+        {% for p in profiles %}
+        <li>
+          <a class="dropdown-item {{ 'active' if p.id == profile.id }}"
+             href="{{ url_for('salary.cockpit', profile=p.id) }}">{{ p.name }}</a>
+        </li>
+        {% endfor %}
+        <li><hr class="dropdown-divider"></li>
+        <li><a class="dropdown-item" href="{{ url_for('salary.new_profile') }}">
+          <i class="bi bi-plus-circle"></i> New profile
+        </a></li>
+      </ul>
+    </div>
+    {% else %}
+    <span class="sal-profile-tag">{{ profile.name }}</span>
+    {% endif %}
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('salary.projection', profile_id=profile.id) }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-table"></i> Projection ledger
+    </a>
+    <a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-gear"></i> Profile settings
+    </a>
+  </div>
+</div>
+
+{# ── Hero band: net hero + chips above the net-pay staircase ──────── #}
+<div class="pulse-canvas mb-4">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Net per paycheck</div>
+      <div class="nw-hero__num font-mono">{{ money(composition.net) }}</div>
+      <div class="nw-hero__cap">
+        period {{ focused_period.label }} &middot;
+        {% if calibration and calibration.is_active %}
+        <span class="sal-cal">calibrated</span> from your
+        {{ calibration.pay_stub_date.strftime('%Y-%m-%d') }} pay stub
+        {% else %}
+        estimated from tax brackets
+        {% endif %}
+      </div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Gross</div>
+        <div class="pulse-chip__value font-mono">{{ money(chips.gross) }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Annual salary</div>
+        <div class="pulse-chip__value font-mono">{{ money(chips.annual_salary, cents=false) }}</div>
+      </div>
+      <div class="pulse-chip {{ 'sal-chip-up' if chips.next_raise is not none }}">
+        <div class="pulse-chip__label">Next raise</div>
+        {% if chips.next_raise is not none %}
+        <div class="pulse-chip__value">{{ chips.next_raise.label }}</div>
+        <div class="sal-chip__sub">{{ chips.next_raise.period_start.strftime('%b %Y') }}</div>
+        {% else %}
+        <div class="pulse-chip__value">--</div>
+        <div class="sal-chip__sub">none scheduled</div>
+        {% endif %}
+      </div>
+      <div class="pulse-chip {{ 'sal-chip-up' if chips.third_paycheck is not none }}">
+        <div class="pulse-chip__label">3rd paycheck</div>
+        {% if chips.third_paycheck is not none %}
+        <div class="pulse-chip__value font-mono">+{{ money(chips.third_paycheck.delta) }}</div>
+        <div class="sal-chip__sub">{{ chips.third_paycheck.period_start.strftime('%b %-d') }} period</div>
+        {% else %}
+        <div class="pulse-chip__value">--</div>
+        <div class="sal-chip__sub">none ahead</div>
+        {% endif %}
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Take-home</div>
+        <div class="pulse-chip__value font-mono">
+          {%- if chips.take_home_rate_pct is not none -%}
+          {{ "%.1f"|format(chips.take_home_rate_pct) }}%
+          {%- else -%}--{%- endif -%}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sal-chart-caption">
+    Net pay per regular paycheck &middot; dots mark 3rd-paycheck periods
+  </div>
+  <div class="pulse-chart sal-chart">
+    <canvas id="salary-net-chart" data-chart='{{ chart_json }}'
+            role="img"
+            aria-label="Net pay per regular paycheck: solid history, dashed projection, Today marker, dots for third-paycheck periods"></canvas>
+  </div>
+</div>
+
+{# ── Cards: composition (full width), deductions | salary path ────── #}
+<div class="salary-grid">
+  {% include "salary/_anatomy.html" %}
+
+  <div class="card sal-path-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h6 class="mb-0"><i class="bi bi-signpost-2"></i> Salary path &middot; raises applied</h6>
+      <a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}"
+         class="btn btn-sm btn-outline-secondary">Manage raises</a>
+    </div>
+    <div class="card-body">
+      <div class="sal-path-chart">
+        <canvas id="salary-path-chart" data-chart='{{ salary_path_json }}'
+                role="img"
+                aria-label="Annual salary staircase over the projection horizon"></canvas>
+      </div>
+      {% if salary_path and salary_path.end_label %}
+      <div class="sal-path-end font-mono">reaches {{ salary_path.end_label }}</div>
+      {% endif %}
+      {% if raises %}
+      {% for r in raises %}
+      <div class="sal-rule-row">
+        <span class="sal-rule-name">{{ r.raise_type.name|title if r.raise_type else '--' }}</span>
+        <span class="sal-rule-cad">
+          {{ 'every' if r.is_recurring else 'one-time,' }}
+          {{ r.effective_month|month_name(abbr=true) }}{{ '' if r.is_recurring else ' ' ~ r.effective_year }}
+        </span>
+        <span class="sal-rule-amt font-mono">
+          {%- if r.percentage -%}
+          +{{ "%.2f"|format((r.percentage|to_percent)) }}%
+          {%- else -%}
+          +{{ money(r.flat_amount) }}
+          {%- endif -%}
+        </span>
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="text-muted small mb-0 mt-2">No raises configured.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Calibration status strip ──────────────────────────────────── #}
+  <div class="sal-calstrip">
+    {% if calibration and calibration.is_active %}
+    <span class="sal-calstrip__dot"></span>
+    <span class="sal-calstrip__text">
+      <b>Calibrated</b> from your {{ calibration.pay_stub_date.strftime('%Y-%m-%d') }} pay stub
+      &middot; projections use effective rates (federal
+      {{ "%.3f"|format((calibration.effective_federal_rate|to_percent)) }}%, state
+      {{ "%.3f"|format((calibration.effective_state_rate|to_percent)) }}%)
+    </span>
+    <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-repeat"></i> Re-calibrate
+    </a>
+    <form method="POST" class="d-inline"
+          action="{{ url_for('salary.calibrate_delete', profile_id=profile.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-x-circle"></i> Remove
+      </button>
+    </form>
+    {% else %}
+    <span class="sal-calstrip__dot sal-calstrip__dot--off"></span>
+    <span class="sal-calstrip__text">
+      <b>Not calibrated</b> &middot; enter actual withholding from a pay stub to
+      ground projections in real numbers
+    </span>
+    <a href="{{ url_for('salary.calibrate_form', profile_id=profile.id) }}"
+       class="btn btn-sm btn-outline-primary">
+      <i class="bi bi-bullseye"></i> Calibrate from pay stub
+    </a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/salary_chart.js') }}"></script>
+{% endblock scripts %}

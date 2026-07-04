@@ -301,8 +301,18 @@ _SETTLED_TRANSACTION_BACKFILL_SQL = (
     "       s.entry_date, "
     "       s.description "
     "  FROM settled_txns s "
+    # ``name IS NULL`` pins the join to the account's LINKED row.  At this
+    # revision's chain position it is a no-op (kind_id does not exist yet and
+    # every account-linked row is the Step-2 pairing, whose name is NULL by
+    # construction) -- but the builder is idempotent and re-runnable, and
+    # Step 5's ``anchor_equity`` twin shares the ``account_id`` column with a
+    # NON-NULL snapshotted name, so a bare account_id join against a current
+    # schema would fan out and double-post.  The linked row is the only
+    # account-linked kind with a NULL name (the COALESCE display rule; see
+    # app/models/ledger_account.py).
     "  JOIN budget.ledger_accounts cash_ledger "
     "    ON cash_ledger.account_id = s.account_id "
+    "   AND cash_ledger.name IS NULL "
     "  JOIN budget.ledger_accounts counter_ledger "
     "    ON counter_ledger.user_id = s.user_id "
     "   AND counter_ledger.account_id IS NULL "

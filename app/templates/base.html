@@ -70,6 +70,8 @@
   <link href="{{ url_for('static', filename='css/dashboard.css') }}" rel="stylesheet">
   <link href="{{ url_for('static', filename='css/accounts.css') }}" rel="stylesheet">
   <link href="{{ url_for('static', filename='css/analytics.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/retirement.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/salary.css') }}" rel="stylesheet">
   <link href="{{ url_for('static', filename='css/utilities.css') }}" rel="stylesheet">
 </head>
 
@@ -114,7 +116,7 @@
             {{ nav_link(url_for('savings.dashboard'), 'bi-wallet2', 'Accounts',
                         request.path == '/savings' or request.path.startswith('/savings/')
                         or request.path == '/accounts' or request.path.startswith('/accounts/')) }}
-            {{ nav_link(url_for('salary.list_profiles'), 'bi-cash-coin', 'Salary',
+            {{ nav_link(url_for('salary.cockpit'), 'bi-cash-coin', 'Salary',
                         request.path.startswith('/salary')) }}
             {{ nav_link(url_for('transfers.list_transfer_templates'), 'bi-arrow-left-right', 'Transfers',
                         request.path.startswith('/transfers')) }}
@@ -247,7 +249,7 @@
             <span class="text-muted text-decoration-line-through">Set up a salary profile</span>
             {% elif onboarding.has_periods %}
             <i class="bi bi-cash-coin text-primary"></i>
-            <a href="{{ url_for('salary.list_profiles') }}">Set up a salary profile</a>
+            <a href="{{ url_for('salary.cockpit') }}">Set up a salary profile</a>
             {% else %}
             <i class="bi bi-lock text-secondary"></i>
             <span class="text-muted">Set up a salary profile <small>(generate pay periods first)</small></span>

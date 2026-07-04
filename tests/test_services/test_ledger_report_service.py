@@ -1,0 +1,666 @@
+"""Service tests for the confirmed-ledger reporting statements (Step 5, C9).
+
+Hand-computed income statements and balance sheets over controlled fixtures,
+each produced through the REAL go-forward primitives (``create_account`` fires
+the opening sync; ``create_settled_cash_transaction`` /
+``create_settled_transfer`` settle through the status seam + posting builder),
+so every reconciled figure was posted exactly as production posts it.  The
+expected numbers are the test author's arithmetic over the seeded anchors and
+amounts, owing nothing to the reader under test.
+
+Scope is the reporting SERVICE (``ledger_report_service``): the reader-contract
+attribution rule (whole-source, display-timezone paid date; pay-period windows
+by ``pay_period_id``), the natural-balance presentation and derived retained
+earnings, the two-part balance-sheet tie-out, the kind-branched display labels,
+and the residue drop.  The exhaustive cross-year / loan / articulation oracle is
+Commit 13's ``test_posting_ledger_statements.py``.
+
+Balance-sheet "full position" cases use a far-future ``as_of`` so every posted
+source (including the seed Checking's opening, whose ``entry_date`` is its
+origination ``created_at``'s civil date) is folded regardless of the test clock
+or timezone; a dedicated case pins the as-of cutoff itself.
+"""
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+from app.enums import PostingKindEnum, PostingSourceEnum
+from app.models.category import Category
+from app.models.pay_period import PayPeriod
+from app.services import ledger_report_service
+from app.services.ledger_report_service import StatementWindow
+from app.services.ledger_report_service._attribution import dated_account_nets
+from tests._test_helpers import (
+    create_account_of_type,
+    create_settled_cash_transaction,
+    create_settled_transfer,
+    linked_ledger_account,
+    make_balanced_entry,
+)
+
+# A far-future as-of that folds every posted source into the balance sheet,
+# clock- and timezone-independent (nothing is ever attributed after it).
+_ALL_ACTIVITY = date.max
+
+# A settle instant comfortably AFTER any test-created account's origination
+# (which is the server clock at ``create_account`` time), so a settle pinned
+# here RIDES ON TOP of the opening -- it is strictly after the assertion moment
+# -- rather than being absorbed into it (the moment-of-assertion rule).  A
+# settle dated before origination is instead already inside the asserted
+# opening balance.
+_RIDES_ON_TOP = datetime(2099, 6, 1, 12, tzinfo=timezone.utc)
+
+
+def _find_line(lines, label):
+    """Return the single :class:`StatementLine` in *lines* with *label*."""
+    matches = [line for line in lines if line.label == label]
+    assert len(matches) == 1, (
+        f"expected exactly one {label!r} line, got {[m.label for m in lines]}"
+    )
+    return matches[0]
+
+
+def _labels(lines):
+    """Return the ordered labels of *lines* (they are label-sorted)."""
+    return [line.label for line in lines]
+
+
+# ---------------------------------------------------------------------------
+# 1. Income statement -- calendar windows (reader-contract C-3)
+# ---------------------------------------------------------------------------
+
+
+class TestIncomeStatementCalendarWindow:
+    """A month/year window sections revenue and cost by display-timezone date."""
+
+    def test_month_window_sections_and_totals(self, app, db, seed_user):
+        """March 2026: income 2000, expense 300 + fallback 50 -> net 1650.
+
+        Three settles pinned into March 2026 (noon UTC, so the display-tz civil
+        day is the same March day):
+
+          - income  "Income: Salary"       $2000.00  paid 2026-03-10
+          - expense "Family: Groceries"    $ 300.00  paid 2026-03-15
+          - expense Uncategorized (no cat) $  50.00  paid 2026-03-20
+
+        Income line +2000 (a credit-normal Income account presents negated);
+        expense lines +300 and +50 (debit-normal, as-is), sorted by label so
+        "Family: Groceries" precedes "Uncategorized Expense".  net income =
+        2000 - (300 + 50) = 1650.00.  The seed Checking opening is a correction
+        on Asset/Equity accounts, never Income/Expense, so it never appears.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("2000.00"),
+                account=checking, is_income=True,
+                category=seed_user["categories"]["Salary"],
+                paid_at=datetime(2026, 3, 10, 12, tzinfo=timezone.utc),
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("300.00"),
+                account=checking,
+                category=seed_user["categories"]["Groceries"],
+                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("50.00"),
+                account=checking, category=None,
+                paid_at=datetime(2026, 3, 20, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            report = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("month", month=3, year=2026),
+            )
+
+            assert report.window_label == "March 2026"
+            assert _labels(report.income.lines) == ["Income: Salary"]
+            assert _find_line(
+                report.income.lines, "Income: Salary",
+            ).amount == Decimal("2000.00")
+            assert _labels(report.expense.lines) == [
+                "Family: Groceries", "Uncategorized Expense",
+            ]
+            assert _find_line(
+                report.expense.lines, "Family: Groceries",
+            ).amount == Decimal("300.00")
+            assert _find_line(
+                report.expense.lines, "Uncategorized Expense",
+            ).amount == Decimal("50.00")
+            assert report.income.total == Decimal("2000.00")
+            assert report.expense.total == Decimal("350.00")
+            assert report.net_income == Decimal("1650.00")
+
+    def test_window_bounds_month_excludes_year_includes(
+        self, app, db, seed_user,
+    ):
+        """A March expense and an April expense: month sees one, year sees both.
+
+        Groceries $300 paid 2026-03-15 and Rent $800 paid 2026-04-15.  The
+        March 2026 month window totals 300.00 (April excluded); the 2026 year
+        window totals 1100.00 (both), proving the calendar bound filters the
+        attribution core by date.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("300.00"),
+                account=checking,
+                category=seed_user["categories"]["Groceries"],
+                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("800.00"),
+                account=checking, category=seed_user["categories"]["Rent"],
+                paid_at=datetime(2026, 4, 15, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            march = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("month", month=3, year=2026),
+            )
+            assert _labels(march.expense.lines) == ["Family: Groceries"]
+            assert march.expense.total == Decimal("300.00")
+
+            year = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("year", year=2026),
+            )
+            assert year.window_label == "2026"
+            assert _labels(year.expense.lines) == [
+                "Family: Groceries", "Home: Rent",
+            ]
+            assert year.expense.total == Decimal("1100.00")
+
+
+# ---------------------------------------------------------------------------
+# 2. Income statement -- pay-period window (reader-contract C-2)
+# ---------------------------------------------------------------------------
+
+
+class TestIncomeStatementPayPeriodWindow:
+    """A pay-period window filters ``pay_period_id`` directly, not by date."""
+
+    def test_period_window_scopes_to_its_period(self, app, db, seed_user):
+        """Groceries $100 in the bootstrap period, Rent $200 in a later period.
+
+        The bootstrap-period window sees only the $100 Groceries expense; the
+        second period's window sees only the $200 Rent -- the pay-period bound
+        keys on the entry's ``pay_period_id``, independent of any paid date.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period1 = seed_user["bootstrap_period"]
+            period2 = PayPeriod(
+                user_id=user_id, start_date=date(2026, 2, 6),
+                end_date=date(2026, 2, 19), period_index=1,
+            )
+            db.session.add(period2)
+            db.session.flush()
+
+            create_settled_cash_transaction(
+                seed_user, db.session, period1, Decimal("100.00"),
+                account=checking,
+                category=seed_user["categories"]["Groceries"],
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, period2, Decimal("200.00"),
+                account=checking, category=seed_user["categories"]["Rent"],
+            )
+            db.session.commit()
+
+            first = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("pay_period", period_id=period1.id),
+            )
+            assert _labels(first.expense.lines) == ["Family: Groceries"]
+            assert first.expense.total == Decimal("100.00")
+
+            second = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("pay_period", period_id=period2.id),
+            )
+            assert _labels(second.expense.lines) == ["Home: Rent"]
+            assert second.expense.total == Decimal("200.00")
+
+
+# ---------------------------------------------------------------------------
+# 3. The L9 display-timezone attribution (reader-contract C-3)
+# ---------------------------------------------------------------------------
+
+
+class TestDisplayTimezoneAttribution:
+    """A late-evening-Eastern settle attributes to the wall-clock civil day."""
+
+    def test_dec31_evening_et_attributes_to_prior_year(
+        self, app, db, seed_user,
+    ):
+        """An 8:05pm-ET Dec-31 settle lands in that year, not the UTC Jan-1.
+
+        A $500 Groceries expense paid at 2027-01-01 01:05 UTC -- 2026-12-31
+        8:05pm Eastern (EST, UTC-5).  The display-timezone rule (L9) attributes
+        it to Dec 31, so the 2026 year window includes it (expense 500.00) and
+        the 2027 window is empty, even though the STORED ``entry_date`` is the
+        Jan-1 the instant becomes in UTC.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("500.00"), account=seed_user["account"],
+                category=seed_user["categories"]["Groceries"],
+                paid_at=datetime(2027, 1, 1, 1, 5, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            in_2026 = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("year", year=2026),
+            )
+            assert in_2026.expense.total == Decimal("500.00")
+            assert _labels(in_2026.expense.lines) == ["Family: Groceries"]
+
+            in_2027 = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("year", year=2027),
+            )
+            assert not in_2027.expense.lines
+            assert in_2027.expense.total == Decimal("0.00")
+            assert in_2027.net_income == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# 4. Validation and the empty (no-baseline) statement
+# ---------------------------------------------------------------------------
+
+
+class TestIncomeStatementValidationAndEmpty:
+    """Bad windows raise; a baseline-less user yields an empty statement."""
+
+    def test_invalid_window_type_raises(self, app, seed_user):
+        """An unknown window type is a ValueError, not a silent empty report."""
+        with app.app_context():
+            with pytest.raises(ValueError, match="Invalid window_type"):
+                ledger_report_service.compute_income_statement(
+                    seed_user["user"].id, StatementWindow("weekly"),
+                )
+
+    def test_pay_period_without_period_id_raises(self, app, seed_user):
+        """A pay-period window with no ``period_id`` is under-specified."""
+        with app.app_context():
+            with pytest.raises(ValueError, match="period_id is required"):
+                ledger_report_service.compute_income_statement(
+                    seed_user["user"].id, StatementWindow("pay_period"),
+                )
+
+    def test_month_without_month_raises(self, app, seed_user):
+        """A month window needs both month and year."""
+        with app.app_context():
+            with pytest.raises(ValueError, match="month and year"):
+                ledger_report_service.compute_income_statement(
+                    seed_user["user"].id, StatementWindow("month", year=2026),
+                )
+
+    def test_no_baseline_scenario_is_empty(self, app, bare_user):
+        """A user with no baseline scenario gets a zeroed statement."""
+        with app.app_context():
+            report = ledger_report_service.compute_income_statement(
+                bare_user["user"].id, StatementWindow("year", year=2026),
+            )
+            assert not report.income.lines
+            assert not report.expense.lines
+            assert report.income.total == Decimal("0.00")
+            assert report.expense.total == Decimal("0.00")
+            assert report.net_income == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# 5. Transfers never touch the income statement
+# ---------------------------------------------------------------------------
+
+
+class TestTransfersNeverInIncomeStatement:
+    """A transfer moves assets on the balance sheet, absent from income."""
+
+    def test_transfer_absent_from_income_present_on_balance_sheet(
+        self, app, db, seed_user,
+    ):
+        """A $150 Checking -> Savings transfer: no income lines, assets shift.
+
+        Both a transfer's legs land on linked Asset accounts, so the income
+        statement stays empty.  Settled AFTER both accounts' origination (so it
+        rides on top of the openings), on the balance sheet the money simply
+        moves: Checking 1000 - 150 = 850, Savings 200 + 150 = 350; assets 1200
+        == Checking-equity 1000 + Savings-equity 200 = 1200 equity, tie-out
+        green.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Rainy Day",
+                anchor_balance=Decimal("200.00"),
+            )
+            db.session.commit()
+            create_settled_transfer(
+                seed_user, db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("150.00"),
+                paid_at=_RIDES_ON_TOP,
+            )
+            db.session.commit()
+
+            income = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("year", year=_RIDES_ON_TOP.year),
+            )
+            assert not income.income.lines
+            assert not income.expense.lines
+            assert income.net_income == Decimal("0.00")
+
+            sheet = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.assets.lines, "Checking",
+            ).amount == Decimal("850.00")
+            assert _find_line(
+                sheet.assets.lines, "Rainy Day",
+            ).amount == Decimal("350.00")
+            assert sheet.assets.total == Decimal("1200.00")
+            assert sheet.tie_out.in_balance is True
+            assert sheet.tie_out.ledger_net == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# 6. Balance sheet -- position, retained earnings, sign, as-of cutoff
+# ---------------------------------------------------------------------------
+
+
+class TestBalanceSheetPosition:
+    """The posted position ties out; income closes into retained earnings."""
+
+    def test_seed_opening_ties_out(self, app, seed_user):
+        """A fresh $1000 Checking: assets 1000 == equity (opening) 1000, RE 0.
+
+        The origination opening posts linked +1000 (Asset) and anchor-equity
+        -1000 -> presented Equity +1000.  Assets 1000 == Liabilities 0 +
+        Equity 1000 (opening 1000 + retained earnings 0); the mechanical
+        ledger net is 0.  Both tie-out halves hold, so ``in_balance`` is True.
+        """
+        with app.app_context():
+            sheet = ledger_report_service.compute_balance_sheet(
+                seed_user["user"].id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.assets.lines, "Checking",
+            ).amount == Decimal("1000.00")
+            assert sheet.assets.total == Decimal("1000.00")
+            assert not sheet.liabilities.lines
+            assert sheet.liabilities.total == Decimal("0.00")
+            assert _find_line(
+                sheet.equity.lines, "Checking -- Opening",
+            ).amount == Decimal("1000.00")
+            assert _find_line(
+                sheet.equity.lines, "Retained Earnings",
+            ).amount == Decimal("0.00")
+            assert sheet.equity.total == Decimal("1000.00")
+            assert sheet.tie_out.assets == Decimal("1000.00")
+            assert sheet.tie_out.liabilities_plus_equity == Decimal("1000.00")
+            assert sheet.tie_out.ledger_net == Decimal("0.00")
+            assert sheet.tie_out.in_balance is True
+
+    def test_income_and_expense_flow_to_retained_earnings(
+        self, app, db, seed_user,
+    ):
+        """Income 2000, expense 300: Checking 2700, retained earnings 1700.
+
+        Checking linked = 1000 (opening) + 2000 (income cash) - 300 (expense
+        cash) = 2700.  The Income + Expense accounts close into retained
+        earnings = -((-2000) + 300) = 1700, so Equity = opening 1000 + RE 1700
+        = 2700 == assets 2700.  The income/expense accounts themselves never
+        appear on the balance sheet.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("2000.00"),
+                account=checking, is_income=True,
+                category=seed_user["categories"]["Salary"],
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("300.00"),
+                account=checking,
+                category=seed_user["categories"]["Groceries"],
+            )
+            db.session.commit()
+
+            sheet = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.assets.lines, "Checking",
+            ).amount == Decimal("2700.00")
+            assert _find_line(
+                sheet.equity.lines, "Retained Earnings",
+            ).amount == Decimal("1700.00")
+            assert sheet.equity.total == Decimal("2700.00")
+            assert _labels(sheet.assets.lines) == ["Checking"]  # no I/E lines
+            assert sheet.tie_out.in_balance is True
+
+    def test_negatively_anchored_liability_signs_positive(
+        self, app, db, seed_user,
+    ):
+        """A Credit Card anchored -500 presents as a +500 Liability (no -abs).
+
+        The owed-as-negative opening books linked -500 (Liability) and
+        anchor-equity +500.  The statement presents the ledger FAITHFULLY: the
+        credit-normal Liability line is the negated debit net -> +500 (a
+        positive Liabilities line), and the equity opening presents -500.  With
+        the seed Checking: assets 1000 == Liabilities 500 + Equity (Checking
+        1000 - Card 500 + RE 0) 500; tie-out green.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+
+            sheet = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.liabilities.lines, "Rewards Card",
+            ).amount == Decimal("500.00")
+            assert sheet.liabilities.total == Decimal("500.00")
+            assert _find_line(
+                sheet.equity.lines, "Rewards Card -- Opening",
+            ).amount == Decimal("-500.00")
+            assert sheet.assets.total == Decimal("1000.00")
+            assert sheet.equity.total == Decimal("500.00")
+            assert sheet.tie_out.liabilities_plus_equity == Decimal("1000.00")
+            assert sheet.tie_out.in_balance is True
+
+    def test_as_of_folds_on_the_settle_date(self, app, db, seed_user):
+        """The as-of bound includes a settle exactly on its attribution day.
+
+        A $100 Groceries expense riding on top (paid 2099-06-01).  As of the
+        day BEFORE (2099-05-31) the settle is excluded whole -- Checking stays
+        at its 1000 opening.  As of the settle day itself (2099-06-01) it is
+        folded in -- Checking = 1000 - 100 = 900.  The tie-out is green in both,
+        because the settle's two legs (cash and expense) attribute to the same
+        day and so cross the bound together.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("100.00"), account=seed_user["account"],
+                category=seed_user["categories"]["Groceries"],
+                paid_at=_RIDES_ON_TOP,
+            )
+            db.session.commit()
+
+            before = ledger_report_service.compute_balance_sheet(
+                user_id, date(2099, 5, 31),
+            )
+            assert _find_line(
+                before.assets.lines, "Checking",
+            ).amount == Decimal("1000.00")
+            assert before.tie_out.in_balance is True
+
+            on_day = ledger_report_service.compute_balance_sheet(
+                user_id, _RIDES_ON_TOP.date(),
+            )
+            assert _find_line(
+                on_day.assets.lines, "Checking",
+            ).amount == Decimal("900.00")
+            assert on_day.tie_out.in_balance is True
+
+    def test_no_baseline_scenario_green_tieout(self, app, bare_user):
+        """A baseline-less user's balance sheet is empty and green (0 == 0)."""
+        with app.app_context():
+            sheet = ledger_report_service.compute_balance_sheet(
+                bare_user["user"].id, _ALL_ACTIVITY,
+            )
+            assert not sheet.assets.lines
+            assert not sheet.liabilities.lines
+            assert _labels(sheet.equity.lines) == ["Retained Earnings"]
+            assert sheet.equity.total == Decimal("0.00")
+            assert sheet.tie_out.ledger_net == Decimal("0.00")
+            assert sheet.tie_out.in_balance is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Display labels branch on kind (live category, orphan snapshot)
+# ---------------------------------------------------------------------------
+
+
+class TestDisplayLabels:
+    """A category line reflects a live rename; an orphan uses its snapshot."""
+
+    def test_category_rename_reflected_live(self, app, db, seed_user):
+        """Renaming a live category updates the line label (renames reflect).
+
+        A $100 Groceries expense posts to the "Family: Groceries" category
+        ledger account.  Renaming the category's item to "Snacks" makes the
+        income-statement line read the LIVE ``category.display_name`` -->
+        "Family: Snacks", not the "Family: Groceries" snapshot.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("100.00"), account=seed_user["account"],
+                category=seed_user["categories"]["Groceries"],
+                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            groceries = db.session.get(
+                Category, seed_user["categories"]["Groceries"].id,
+            )
+            groceries.item_name = "Snacks"
+            db.session.commit()
+
+            report = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("month", month=3, year=2026),
+            )
+            assert _labels(report.expense.lines) == ["Family: Snacks"]
+            assert report.expense.total == Decimal("100.00")
+
+    def test_orphaned_category_uses_snapshot_label(self, app, db, seed_user):
+        """Deleting the category leaves the line on its snapshot label.
+
+        A $100 Groceries expense posts to the category ledger account; deleting
+        the budget category SET-NULLs the account's ``category_id`` (its
+        ``kind_id`` stays ``category``), so the line falls back to the account's
+        own "Family: Groceries" snapshot and the amount is untouched.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("100.00"), account=seed_user["account"],
+                category=seed_user["categories"]["Groceries"],
+                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            groceries = db.session.get(
+                Category, seed_user["categories"]["Groceries"].id,
+            )
+            db.session.delete(groceries)
+            db.session.commit()
+
+            report = ledger_report_service.compute_income_statement(
+                user_id, StatementWindow("month", month=3, year=2026),
+            )
+            assert _labels(report.expense.lines) == ["Family: Groceries"]
+            assert report.expense.total == Decimal("100.00")
+
+
+# ---------------------------------------------------------------------------
+# 8. Hard-delete residue is dropped whole (reader-contract C-3)
+# ---------------------------------------------------------------------------
+
+
+class TestResidueDropped:
+    """A source-linked entry whose FK was SET-NULLed is excluded, whole."""
+
+    def test_residue_shape_excluded_from_reads(self, app, db, seed_user):
+        """A transaction-source entry with a NULL ``transaction_id`` is dropped.
+
+        A hard delete SET-NULLs ``journal_entries.transaction_id`` after
+        reversing the postings, leaving residue: a transaction-source entry
+        with both concrete FKs NULL.  The reader keeps only the correction
+        sources in the sourceless bucket, so this residue is excluded whole --
+        its -100 on the Checking ledger never lands.  Both the attribution core
+        (Checking still nets its 1000 opening) and the balance sheet (Checking
+        still reads 1000) prove the drop.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            linked = linked_ledger_account(db.session, checking.id)
+            equity = _find_line(
+                ledger_report_service.compute_balance_sheet(
+                    user_id, _ALL_ACTIVITY,
+                ).equity.lines,
+                "Checking -- Opening",
+            )
+
+            # Residue shape: transaction source, transaction_id NULL, both legs
+            # posted (would move Checking to 900 if the reader counted it).
+            make_balanced_entry(
+                db.session, seed_user,
+                from_ledger_id=linked.id,
+                to_ledger_id=equity.ledger_account_id,
+                amount=Decimal("100.00"),
+                source_kind=PostingSourceEnum.TRANSACTION,
+                transaction_id=None,
+                posting_kind=PostingKindEnum.EXPENSE,
+            )
+
+            # The attribution core ignores the residue: Checking still nets its
+            # 1000 opening, not 900.
+            nets = dated_account_nets(user_id, scenario_id)
+            checking_net = sum(
+                (net for (la_id, _d), net in nets.items() if la_id == linked.id),
+                Decimal("0.00"),
+            )
+            assert checking_net == Decimal("1000.00")
+
+            # End to end: the balance sheet is unmoved by the residue.
+            sheet = ledger_report_service.compute_balance_sheet(
+                user_id, _ALL_ACTIVITY,
+            )
+            assert _find_line(
+                sheet.assets.lines, "Checking",
+            ).amount == Decimal("1000.00")
+            assert sheet.tie_out.in_balance is True

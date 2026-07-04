@@ -5,7 +5,7 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('salary.list_profiles') }}">Salary</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('salary.cockpit') }}">Salary</a></li>
     <li class="breadcrumb-item"><a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}">{{ profile.name }}</a></li>
     <li class="breadcrumb-item active" aria-current="page">Confirm Calibration</li>
   </ol>

@@ -456,6 +456,238 @@ class TestAccountArchive:
             assert b"An account with that name already exists." in response2.data
 
 
+class TestTypeChangeBoundaryGuard:
+    """The C6 posting-boundary guards on account re-type and type edits.
+
+    Build-Order Step 5 (plan Section 3.3, point 7): an ``account_type_id``
+    change that crosses the amortizing boundary or flips the linked
+    ledger's Asset/Liability class is refused while the account carries
+    ledger postings -- it would strand one correction family or silently
+    re-interpret posted legs' balance-sheet meaning.  The second crossing
+    vector (editing a custom type's ``has_amortization`` / ``category_id``
+    in place) is guarded the same way.  Allowed crossings (empty ledgers)
+    re-class the empty linked row and re-sync the corrections.
+    """
+
+    def test_retype_posted_account_across_class_boundary_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """Re-typing the posted Checking to Credit Card (class flip) refuses.
+
+        The seed Checking's $1000.00 opening is posted ledger history;
+        Checking is Asset-category and Credit Card Liability-category, so
+        the re-type crosses the class boundary and the guard rejects it,
+        leaving the type unchanged.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            old_type_id = checking.account_type_id
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None)
+                .one()
+            )
+
+            response = auth_client.post(
+                f"/accounts/{checking.id}",
+                data={"account_type_id": str(cc_type.id)},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"posting-ledger history" in response.data
+            # Re-fetch: the request's session lifecycle detached the fixture
+            # object.
+            reloaded = db.session.get(Account, checking.id)
+            assert reloaded.account_type_id == old_type_id
+
+    def test_retype_unposted_account_reclasses_linked_row(
+        self, app, auth_client, seed_user,
+    ):
+        """A $0-anchor account re-types across the boundary and re-classes.
+
+        A zero opening books nothing, so the ledger is empty and the
+        crossing is allowed; the route re-snapshots the empty linked row's
+        class to the new category's (Asset -> Liability) so future postings
+        land in the right balance-sheet section.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs these helpers, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.enums import LedgerAccountClassEnum
+        from tests._test_helpers import linked_ledger_account
+
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings", user_id=None)
+                .one()
+            )
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None)
+                .one()
+            )
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Reclass Target",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+            linked = linked_ledger_account(db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.ASSET,
+            )
+
+            response = auth_client.post(
+                f"/accounts/{account.id}",
+                data={"account_type_id": str(cc_type.id)},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            # Re-fetch: the request's session lifecycle detached the objects.
+            reloaded = db.session.get(Account, account.id)
+            assert reloaded.account_type_id == cc_type.id
+            relinked = linked_ledger_account(db.session, account.id)
+            assert relinked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.LIABILITY,
+            )
+
+    def test_type_edit_amortization_flip_refused_with_posted_accounts(
+        self, app, auth_client, seed_user,
+    ):
+        """Flipping ``has_amortization`` on a type with posted accounts refuses.
+
+        The second crossing vector (C4 adversarial review M2): the custom
+        Liability type's account carries a posted opening, and flipping the
+        flag in place would move the account across the correction-family
+        boundary with no ``account_type_id`` change to guard.
+        """
+        with app.app_context():
+            liability_id = ref_cache.acct_category_id(
+                AcctCategoryEnum.LIABILITY,
+            )
+            custom_type = AccountType(
+                name="store_card",
+                category_id=liability_id,
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+            account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="Posted Store Card",
+                    anchor_balance=Decimal("-250.00"),
+                ),
+            )
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={
+                    "has_amortization": "true",
+                    "category_id": str(liability_id),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"posting-ledger history" in response.data
+            db.session.refresh(custom_type)
+            assert custom_type.has_amortization is False
+
+    def test_type_edit_category_flip_reclasses_unposted_accounts(
+        self, app, auth_client, seed_user,
+    ):
+        """A category flip on a type whose accounts are unposted re-classes them.
+
+        The type's only account has a $0 anchor (empty ledger), so the
+        Asset -> Liability category flip is allowed and the account's empty
+        linked row re-snapshots to the Liability class.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs these helpers, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.enums import LedgerAccountClassEnum
+        from tests._test_helpers import linked_ledger_account
+
+        with app.app_context():
+            custom_type = AccountType(
+                name="side_pocket",
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(custom_type)
+            db.session.commit()
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=custom_type.id,
+                    name="Unposted Pocket",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/types/{custom_type.id}",
+                data={
+                    "category_id": str(ref_cache.acct_category_id(
+                        AcctCategoryEnum.LIABILITY,
+                    )),
+                },
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            linked = linked_ledger_account(db.session, account.id)
+            assert linked.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.LIABILITY,
+            )
+
+    def test_update_account_anchor_edit_posts_trueup(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The direct anchor edit books its true-up correction (C6 point 3).
+
+        POSTing a new ``anchor_balance`` through the account edit form runs
+        the guarded reconcile: the history row lands AND the Step-5 sync
+        books the true-up delta in the same transaction, so the Checking
+        total moves from its $1000.00 opening to the asserted $1500.00.
+        """
+        # Pylint: ``import-outside-toplevel`` -- localized to the one test
+        # that needs this reader, matching the file's convention.
+        # pylint: disable=import-outside-toplevel
+        from app.services import posting_service
+
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+
+            response = auth_client.post(
+                f"/accounts/{checking.id}",
+                data={"anchor_balance": "1500.00"},
+                follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"updated" in response.data
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1500.00")
+
+
 class TestHardDeletePostingLedgerGuard:
     """Hard-delete archives an account with surviving posting-ledger history.
 
@@ -1786,7 +2018,13 @@ class TestAccountCreationRedirects:
     def test_hysa_creation_redirects_to_detail(
         self, app, auth_client, seed_user,
     ):
-        """HYSA creation redirects to HYSA detail with setup=1 and auto-creates InterestParams."""
+        """HYSA creation redirects to the cash detail page (setup=1) and auto-creates params.
+
+        The Fable 5 overhaul merged the interest detail page into
+        ``accounts.cash_detail`` (URL ``/accounts/<id>/details``), so the
+        post-create redirect for an interest-bearing account lands there
+        with ``setup=1`` for the wizard banner.
+        """
         with app.app_context():
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
 
@@ -1798,7 +2036,7 @@ class TestAccountCreationRedirects:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/interest" in location
+            assert "/details" in location
             assert "setup=1" in location
 
             acct = db.session.query(Account).filter_by(
@@ -2097,7 +2335,7 @@ class TestInterestDispatch:
 
             assert resp.status_code == 302
             location = resp.headers["Location"]
-            assert "/interest" in location
+            assert "/details" in location
             assert "setup=1" in location
 
             acct = db.session.query(Account).filter_by(
@@ -2127,7 +2365,7 @@ class TestInterestDispatch:
             })
 
             assert resp.status_code == 302
-            assert "/interest" in resp.headers["Location"]
+            assert "/details" in resp.headers["Location"]
 
             acct = db.session.query(Account).filter_by(
                 user_id=seed_user["user"].id, name="My MM",
@@ -2140,7 +2378,7 @@ class TestInterestDispatch:
     def test_interest_detail_accepts_any_interest_type(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Interest detail page renders for any has_interest=True type."""
+        """Cash detail page renders (with APY) for any has_interest=True type."""
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
@@ -2162,24 +2400,15 @@ class TestInterestDispatch:
             ))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/interest")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
-
-    def test_interest_detail_rejects_non_interest_type(
-        self, app, auth_client, seed_user,
-    ):
-        """Checking (has_interest=False) is rejected by interest detail."""
-        with app.app_context():
-            acct = seed_user["account"]
-            resp = auth_client.get(
-                f"/accounts/{acct.id}/interest", follow_redirects=True,
-            )
-            assert b"does not support interest parameters" in resp.data
+            # The interest-bearing variant shows the parameters card.
+            assert b"APY" in resp.data
 
     def test_has_interest_true_but_no_params_row(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Interest detail auto-creates params if row missing."""
+        """Cash detail auto-creates interest params if the row is missing."""
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
@@ -2199,10 +2428,10 @@ class TestInterestDispatch:
                 account_id=acct.id,
             ).first() is None
 
-            resp = auth_client.get(f"/accounts/{acct.id}/interest")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
-            # Auto-created by the detail route's safety fallback.
+            # Auto-created by the cash-detail route's safety fallback.
             assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).first() is not None
@@ -2355,7 +2584,7 @@ class TestWizardBanner:
             ))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/interest?setup=1")
+            resp = auth_client.get(f"/accounts/{acct.id}/details?setup=1")
             assert resp.status_code == 200
             assert b"Configure the settings below" in resp.data
             assert b"alert-dismissible" in resp.data
@@ -2387,7 +2616,7 @@ class TestWizardBanner:
             ))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/interest")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
             assert b"Configure the settings below" not in resp.data
 
@@ -2461,7 +2690,15 @@ class TestWizardBanner:
 
 
 class TestCheckingDetail:
-    """Tests for the checking account detail page with balance projections."""
+    """Tests for a checking account on the merged cash detail page.
+
+    The Fable 5 overhaul merged the checking / interest detail pages into
+    ``accounts.cash_detail`` (URL ``/accounts/<id>/details``); a plain
+    checking account renders its balance hero, horizon chips, and trend
+    chart there.  The per-period table was dropped (developer ruling);
+    exact per-period values live in the chart tooltip and, for checking,
+    on the grid.
+    """
 
     def _create_checking_account(self, seed_user, periods, balance="5000.00"):
         """Create a new checking account with anchor set to period 0.
@@ -2493,7 +2730,7 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
 
             assert resp.status_code == 200
             assert b"Detail Checking" in resp.data
@@ -2547,7 +2784,7 @@ class TestCheckingDetail:
                 ))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # 3 months (6 periods): 5000 + 6*500 = 8000
@@ -2628,17 +2865,23 @@ class TestCheckingDetail:
             calc_balance = balances[target_period.id]
 
             # Verify the detail page shows this exact value.
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # The projection summary uses {:,.0f} format.
             expected_str = "${:,.0f}".format(float(calc_balance))
             assert expected_str.encode() in resp.data
 
-    def test_checking_detail_rejects_non_checking_account(
+    def test_cash_detail_serves_plain_savings(
         self, app, auth_client, seed_user,
     ):
-        """GET /accounts/<id>/checking returns 404 for non-checking account types."""
+        """GET /accounts/<id>/details returns 200 for a plain Savings account.
+
+        The merged cash detail page closed the audit's Surface 6 coverage
+        gap: plain Savings (and Credit Card / custom cash) types -- which
+        had NO detail page before -- are now served with the plain context
+        shape (no interest parameters card).
+        """
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
             savings = account_service.create_account(
@@ -2653,16 +2896,19 @@ class TestCheckingDetail:
             db.session.add(savings)
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{savings.id}/checking")
-            assert resp.status_code == 404
+            resp = auth_client.get(f"/accounts/{savings.id}/details")
+            assert resp.status_code == 200
+            assert b"My Savings" in resp.data
+            # Plain cash: no interest parameters card (no APY input).
+            assert b'name="apy"' not in resp.data
 
-    def test_checking_detail_rejects_other_users_account(
+    def test_cash_detail_rejects_other_users_account(
         self, app, auth_client, seed_user, second_user,
     ):
-        """GET /accounts/<id>/checking returns 404 for another user's account (IDOR)."""
+        """GET /accounts/<id>/details returns 404 for another user's account (IDOR)."""
         with app.app_context():
             resp = auth_client.get(
-                f"/accounts/{second_user['account'].id}/checking"
+                f"/accounts/{second_user['account'].id}/details"
             )
             assert resp.status_code == 404
 
@@ -2679,7 +2925,7 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # With no transactions, projections should show the anchor balance.
@@ -2698,7 +2944,7 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # 3-month target (period index 6) is within range (10 periods).
@@ -2743,7 +2989,7 @@ class TestCheckingDetail:
             ))
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # The credit expense should NOT reduce the balance.
@@ -2753,7 +2999,25 @@ class TestCheckingDetail:
             assert b"$4,000" not in resp.data
 
     def test_checking_detail_shows_anchor_date(self, app, auth_client, seed_user):
-        """Anchor period start date is displayed on the checking detail page."""
+        """The anchored-as-of date is displayed in the balance hero caption.
+
+        The rebuilt hero caption renders ``anchor_as_of`` -- the anchor
+        EVENT instant (the origination ``AccountAnchorHistory`` row), in the
+        user's DISPLAY timezone -- not the anchor period's start date (audit
+        finding #2) and not the UTC-day ``as_of_date`` (which shows the wrong
+        civil day for a late-evening-Eastern event).  The expected string is
+        computed from the anchor's ``created_at`` via ``to_display_date`` --
+        NOT ``date.today()``, which reads the PROCESS timezone and would
+        diverge from the Eastern caption in a UTC CI runner during the
+        late-evening-Eastern window.  Deriving both sides from the same
+        ``created_at`` also makes the assertion immune to a midnight race.
+        The distinct-date (event vs period start) case is pinned in
+        ``TestCashDetailContext.test_anchor_as_of_is_event_date_not_period_start``.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -2763,11 +3027,17 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{acct.id}/checking")
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
-            # The anchor period's start date should be displayed.
-            anchor_date_str = periods[0].start_date.strftime("%b %-d, %Y")
+            # The caption shows the anchor event's DISPLAY-timezone civil date,
+            # computed here from the same ``created_at`` the caption renders.
+            anchor = balance_resolver.resolve_anchor(
+                acct, seed_user["scenario"].id,
+            )
+            anchor_date_str = to_display_date(anchor.created_at).strftime(
+                "%b %-d, %Y",
+            )
             assert anchor_date_str.encode() in resp.data
 
 
@@ -2961,10 +3231,10 @@ class TestCheckingDetailCanonicalProducer:
             #                = 614.29 - 454.29 = 160.00.
             assert grid_current_balance == Decimal("160.00")
 
-            # Detail-page current balance is rendered via the {:,.2f}
-            # format string at template line 43 (search "{:,.2f}" in
-            # accounts/checking_detail.html).
-            resp = auth_client.get(f"/accounts/{account.id}/checking")
+            # The cash-detail balance hero renders ``money(current_balance)``
+            # (accounts/cash_detail.html), so the entries-aware $160.00
+            # appears verbatim.
+            resp = auth_client.get(f"/accounts/{account.id}/details")
             assert resp.status_code == 200
             assert b"$160.00" in resp.data
             # Pre-Commit-7 the page showed the silent-degrade value.
@@ -3106,12 +3376,12 @@ class TestCheckingDetailCanonicalProducer:
             # anchor minus the entries-aware reservation on its own
             # transactions.  Pre-Commit-7 both pages showed the
             # non-entries-aware value ($114.29 and $700.00).
-            resp_a = auth_client.get(f"/accounts/{account_a.id}/checking")
+            resp_a = auth_client.get(f"/accounts/{account_a.id}/details")
             assert resp_a.status_code == 200
             assert b"$160.00" in resp_a.data
             assert b"$114.29" not in resp_a.data
 
-            resp_b = auth_client.get(f"/accounts/{account_b.id}/checking")
+            resp_b = auth_client.get(f"/accounts/{account_b.id}/details")
             assert resp_b.status_code == 200
             # 1000.00 - max(300 - 100, 0) = 1000.00 - 200.00 = 800.00.
             assert b"$800.00" in resp_b.data
@@ -3165,26 +3435,28 @@ class TestCheckingDetailCanonicalProducer:
             db.session.flush()
             db.session.commit()
 
-            resp = auth_client.get(f"/accounts/{account.id}/checking")
+            resp = auth_client.get(f"/accounts/{account.id}/details")
             assert resp.status_code == 200
             assert b"Zero Anchor Checking" in resp.data
-            # The current-balance display uses the {:,.2f} format
-            # (see checking_detail.html line 43); a real zero anchor
-            # must render as "$0.00", not blank or "--".
+            # The balance hero renders ``money(current_balance)``; a real
+            # zero anchor (E-12: zero is a value, not "missing") must show
+            # as "$0.00", not blank or "--".
             assert b"$0.00" in resp.data
-            # The 3-month horizon label appears when there is a period
-            # at offset 6 from the current period; the explicit 10-
-            # period setup guarantees one (matches the existing
-            # ``test_checking_detail_handles_short_horizon`` pattern).
+            # The 3-month horizon chip appears when there is a period at
+            # offset 6 from the current period; the explicit 10-period
+            # setup guarantees one (matches the existing
+            # ``test_checking_detail_handles_short_horizon`` pattern).  The
+            # chip label is "In 3 months".
             assert b"3 months" in resp.data
-            # The per-period projection table renders rows for every
-            # period covered (anchor + forward).  Each row uses {:,.2f}
-            # so the zero-anchor flat projection shows "$0.00" in the
-            # balance column at least once beyond the summary card.
-            assert resp.data.count(b"$0.00") >= 2
+            # The trend chart is populated (a real zero projection, not an
+            # empty state): the serialized series carries the flat-zero
+            # balances the chart renders, so the data-chart canvas is
+            # present rather than the "No projection to chart yet" state.
+            assert b"data-chart=" in resp.data
+            assert b"No projection to chart yet" not in resp.data
 
-    def test_accounts_checking_balance_routed_through_resolver(self):
-        """Static guard: detail-page balances route through the balance-at seam.
+    def test_cash_detail_balance_routed_through_seam(self):
+        """Static guard: cash_detail balances route through the balance-at seam.
 
         F-6 lock, sibling of
         ``test_grid_balance_computation_routed_through_resolver``.
@@ -3192,38 +3464,37 @@ class TestCheckingDetailCanonicalProducer:
         (``tests/test_integration/test_cross_page_balance_equality.py``,
         Commit 11 of the main remediation) cannot catch a route-handler
         bypass of the canonical producer because its /accounts reader
-        re-runs ``balance_resolver.balances_for`` itself rather than
-        parsing the rendered HTML.  A regression that swaps the detail
-        routes to the bare entries-blind producer
-        ``balance_calculator.calculate_balances`` (re-opening the F-009 /
-        CRIT-01 silent-degrade seam) would drift silently through that
-        lock.  This static guard closes the gap.
+        re-runs ``balance_at.cash_balance_map`` itself rather than parsing
+        the rendered HTML.  A regression that swaps the detail route to the
+        bare entries-blind producer ``balance_calculator.calculate_balances``
+        (re-opening the F-009 / CRIT-01 silent-degrade seam) would drift
+        silently through that lock.  This static guard closes the gap.
 
-        Updated for Level-1 Commit 8: both detail routes now read balances
-        through the balance-at seam -- ``checking_detail`` via the
-        cash-flow entry ``balance_at.cash_balance_map`` and
-        ``interest_detail`` via the kind-correct ``balance_at.balance_map``
-        (plus the kernel's ``interest_by_period_for_account`` for the
-        interest figure) -- which delegate to the canonical entries-aware
-        producers.  The route no longer calls ``balance_resolver`` or
-        ``balance_calculator`` for balances directly.
+        Updated for the Fable 5 cash-detail merge (Level-1 Commit 8 seam
+        preserved verbatim): the single ``cash_detail`` route reads plain
+        cash balances via the cash-flow entry
+        ``balance_at.cash_balance_map`` and interest-bearing balances via
+        the kind-correct ``balance_at.balance_map`` (plus the kernel's
+        ``interest_by_period_for_account`` for the earned-interest figure),
+        both of which delegate to the canonical entries-aware producers.
+        The route calls neither ``balance_resolver.balances_for`` nor any
+        ``balance_calculator`` producer for balances directly.
 
-        Two assertions:
-          1. ``balance_at.cash_balance_map`` must appear in the accounts
-             detail-route file (positive: the Commit-8 seam wiring on
-             ``checking_detail`` is intact).
-          2. ``balance_calculator.calculate_balances(`` (the bare
+        Three assertions:
+          1. ``balance_at.cash_balance_map`` must appear in the detail-route
+             file (positive: the plain-cash seam wiring is intact).
+          2. ``balance_at.balance_map`` must appear (positive: the
+             interest-bearing kind-correct seam wiring is intact).
+          3. ``balance_calculator.calculate_balances(`` (the bare
              entries-blind producer) must NOT appear in the file -- the
              open-paren anchors the substring to the bare function name,
-             so neither it nor the (now also absent)
-             ``calculate_balances_with_interest(`` can re-open the
-             entries-blind seam.
+             so neither it nor a ``calculate_balances_with_interest(`` can
+             re-open the entries-blind seam.
 
-        File path note: Commit 21 of the follow-up remediation (F-1)
-        split the monolithic ``app/routes/accounts.py`` into a per-
-        sub-domain package; ``checking_detail`` and
-        ``interest_detail`` now live in ``app/routes/accounts/detail.py``.
-        The static guard reads that file directly.
+        File path note: the merged ``cash_detail`` route (and the
+        ``checking_detail`` / ``interest_detail`` redirect stubs) live in
+        ``app/routes/accounts/detail.py``; the static guard reads that file
+        directly.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
@@ -3233,9 +3504,15 @@ class TestCheckingDetailCanonicalProducer:
         assert "balance_at.cash_balance_map" in accounts_source, (
             "app/routes/accounts/detail.py no longer calls "
             "``balance_at.cash_balance_map`` -- regression on the "
-            "Level-1 Commit 8 balance-at seam contract.  Route the "
-            "checking-detail balance computation through the seam's "
-            "cash-flow entry instead of a hand-rolled loop or a direct "
+            "balance-at seam contract.  Route the plain-cash balance "
+            "computation through the seam's cash-flow entry instead of a "
+            "hand-rolled loop or a direct producer call."
+        )
+        assert "balance_at.balance_map" in accounts_source, (
+            "app/routes/accounts/detail.py no longer calls "
+            "``balance_at.balance_map`` -- regression on the balance-at "
+            "seam contract.  Route the interest-bearing kind-correct "
+            "balance computation through the seam instead of a direct "
             "producer call."
         )
         assert "balance_calculator.calculate_balances(" not in accounts_source, (
@@ -3247,10 +3524,18 @@ class TestCheckingDetailCanonicalProducer:
 
 
 class TestCheckingDashboardLink:
-    """Tests for the checking detail link on the savings/accounts dashboard."""
+    """Tests for the cash-detail links on the savings/accounts dashboard.
+
+    The cockpit's ``detail_endpoint`` macro (shared via _acct_macros.html)
+    now routes EVERY cash account -- checking, interest-bearing, and the
+    previously page-less plain types -- to the unified
+    ``accounts.cash_detail`` page (account_detail_audit.md, rebuild
+    decisions 1-2), so the retired type-specific ``/checking`` URL must no
+    longer appear anywhere on the dashboard.
+    """
 
     def test_dashboard_has_checking_detail_link(self, app, auth_client, seed_user):
-        """GET /savings dashboard includes a link to the checking detail page."""
+        """GET /savings links the checking card to the unified detail page."""
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -3265,14 +3550,22 @@ class TestCheckingDashboardLink:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
 
-            # The dashboard should include a link to the checking detail page.
-            expected_url = f"/accounts/{seed_user['account'].id}/checking"
+            # The checking card links to the unified cash detail page,
+            # not the retired type-specific /checking URL.
+            expected_url = f"/accounts/{seed_user['account'].id}/details"
             assert expected_url.encode() in resp.data
+            legacy_url = f"/accounts/{seed_user['account'].id}/checking"
+            assert legacy_url.encode() not in resp.data
 
-    def test_dashboard_checking_link_not_shown_for_other_types(
+    def test_dashboard_links_plain_types_to_cash_detail(
         self, app, auth_client, seed_user,
     ):
-        """Dashboard does not show checking detail link for non-checking accounts."""
+        """A plain Savings card links to the unified page (decision 2).
+
+        Pre-rebuild, Savings / Credit Card cards had NO detail link (the
+        macro's empty fall-through branch); the coverage ruling gives
+        them the same cash detail page as checking.
+        """
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -3299,13 +3592,471 @@ class TestCheckingDashboardLink:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
 
-            # The savings account should NOT have a checking detail link.
-            savings_checking_url = f"/accounts/{savings.id}/checking"
-            assert savings_checking_url.encode() not in resp.data
+            # The savings card now links to the unified cash detail page.
+            savings_details_url = f"/accounts/{savings.id}/details"
+            assert savings_details_url.encode() in resp.data
 
-            # But the checking account should have one.
-            checking_url = f"/accounts/{seed_user['account'].id}/checking"
+            # And the checking card does too.
+            checking_url = f"/accounts/{seed_user['account'].id}/details"
             assert checking_url.encode() in resp.data
+
+
+# ── Cash Detail: merged-page context contract (Fable 5 rebuild) ─────
+
+
+def _capture_cash_detail_context(app, auth_client, account_id, *, setup=False):
+    """Return the exact context ``cash_detail`` handed ``render_template``.
+
+    Uses Flask's ``template_rendered`` signal so the test reads the route's
+    context contract (the Decimals, the horizons list, the chart JSON,
+    ``anchor_as_of``) WITHOUT parsing HTML -- the established chart / net-
+    worth route-test pattern (see
+    ``tests/test_routes/test_savings.py::_capture_dashboard_context``).
+    Asserts the cash-detail template rendered (a 200 page), so the helper
+    fails loud on a redirect / 404 rather than reading a wrong context.
+    """
+    # Pylint: import-outside-toplevel -- deferred import is the file-wide
+    # test convention.
+    from flask import template_rendered  # pylint: disable=import-outside-toplevel
+
+    recorded = []
+
+    def _record(sender, template, context, **extra):
+        recorded.append((template, context))
+
+    template_rendered.connect(_record, app)
+    try:
+        url = f"/accounts/{account_id}/details"
+        if setup:
+            url += "?setup=1"
+        response = auth_client.get(url)
+    finally:
+        template_rendered.disconnect(_record, app)
+
+    assert response.status_code == 200, (
+        f"GET {url} returned {response.status_code}; expected 200"
+    )
+    records = [
+        c for t, c in recorded if t.name == "accounts/cash_detail.html"
+    ]
+    assert records, (
+        "GET did not render accounts/cash_detail.html; rendered: "
+        f"{[t.name for t, _ in recorded]!r}"
+    )
+    return records[0]
+
+
+class TestCashDetailContext:
+    """The merged cash-detail route's context contract (Fable 5 rebuild).
+
+    Asserts the route hands the template the exact figures the rebuild
+    specifies -- the hero balance, the horizon chip rows with Decimal
+    deltas, the interest-next-year health figure, the anchored-as-of event
+    date, and the Chart.js series -- read straight from the render context
+    so the assertions are template-presentation independent.
+    """
+
+    def _checking_with_income(self, seed_user, num_periods=27):
+        """Create a checking account with +$500/period net income.
+
+        Anchor $5,000 at ``periods[0]`` (today), then a $2,000 income and a
+        $1,500 expense in every post-anchor period -- the same shape as
+        ``test_checking_detail_projection_values_are_correct`` so the
+        balances are the hand-computed 5000 + n*500.  Returns
+        ``(account, periods)``.
+        """
+        periods = pay_period_service.generate_pay_periods(
+            user_id=seed_user["user"].id,
+            start_date=date.today(),
+            num_periods=num_periods,
+        )
+        checking_type = db.session.query(AccountType).filter_by(
+            name="Checking",
+        ).one()
+        acct = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Ctx Checking",
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=periods[0].id,
+            ),
+        )
+        db.session.add(acct)
+        db.session.flush()
+
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        income_type = db.session.query(TransactionType).filter_by(
+            name="Income",
+        ).one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        category = seed_user["categories"]["Salary"]
+        for period in periods[1:]:
+            db.session.add(Transaction(
+                pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
+                account_id=acct.id, status_id=projected.id, name="Paycheck",
+                category_id=category.id, transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+            ))
+            db.session.add(Transaction(
+                pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
+                account_id=acct.id, status_id=projected.id, name="Bills",
+                category_id=category.id, transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1500.00"),
+            ))
+        db.session.commit()
+        return acct, periods
+
+    def test_horizons_carry_decimal_deltas(self, app, auth_client, seed_user):
+        """The horizon chip rows carry the projected value and the Decimal delta.
+
+        With anchor $5,000 at the current period (period 0, no transactions
+        there) and +$500 net per post-anchor period, the hero balance is
+        $5,000 and the horizons are (value, delta = value - current):
+
+          3 months  -> period  6: 5000 + 6*500  = 8000.00,  delta 3000.00
+          6 months  -> period 13: 5000 + 13*500 = 11500.00, delta 6500.00
+          1 year    -> period 26: 5000 + 26*500 = 18000.00, delta 13000.00
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(seed_user, num_periods=27)
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["current_balance"] == Decimal("5000.00")
+            triples = [
+                (h["label"], h["value"], h["delta"])
+                for h in context["horizons"]
+            ]
+            assert triples == [
+                ("3 months", Decimal("8000.00"), Decimal("3000.00")),
+                ("6 months", Decimal("11500.00"), Decimal("6500.00")),
+                ("1 year", Decimal("18000.00"), Decimal("13000.00")),
+            ]
+
+    def test_chart_json_structure_and_current_index(
+        self, app, auth_client, seed_user,
+    ):
+        """chart_json parses to the labeled float series with an int current_index.
+
+        The series is every period that has a projected balance, in
+        ``period_index`` order.  The current period is period 0 (start
+        today) -- the FIRST period with a balance -- so ``current_index``
+        is 0, and the chart's first balance is the hero figure ($5,000.00)
+        at the ``float`` serialization boundary.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        import json  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            acct, _periods = self._checking_with_income(seed_user, num_periods=27)
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["has_chart"] is True
+            chart = json.loads(context["chart_json"])
+            assert set(chart.keys()) == {"labels", "balance", "current_index"}
+            n = len(chart["balance"])
+            assert n > 0
+            assert len(chart["labels"]) == n
+            assert all(isinstance(v, float) for v in chart["balance"])
+            assert isinstance(chart["current_index"], int)
+            assert 0 <= chart["current_index"] < n
+            # Current period is the first period with a balance.
+            assert chart["current_index"] == 0
+            assert chart["balance"][0] == 5000.0
+
+    def test_anchor_as_of_is_event_date_not_period_start(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """anchor_as_of is the AccountAnchorHistory event date, not the period start.
+
+        The account is anchored at ``seed_periods_today[0]`` (whose
+        ``start_date`` is roughly eight weeks before today), but its
+        origination ``AccountAnchorHistory`` row is created now, so the
+        anchor EVENT date (today) differs from the anchor PERIOD's start
+        date.  The context must carry the event INSTANT (the audit's
+        finding #2 fix), NOT the period start; the template renders that
+        instant in the user's display timezone (``AnchorPoint.as_of_date``
+        stays UTC for anchor logic, so the context passes ``created_at``).
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Anchor Date Checking",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            anchor = balance_resolver.resolve_anchor(
+                acct, seed_user["scenario"].id,
+            )
+            # Non-vacuity: the event date and the period start genuinely differ.
+            assert anchor.as_of_date != anchor.period.start_date
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+            # The context carries the anchor EVENT instant (created_at); the
+            # template converts it to the display timezone for the caption.
+            assert context["anchor_as_of"] == anchor.created_at
+            assert (
+                to_display_date(context["anchor_as_of"])
+                != anchor.period.start_date
+            )
+
+    def test_interest_next_year_zero_for_zero_apy(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A zero-APY interest account's next-year figure is exactly $0.00.
+
+        Zero APY accrues no interest in any period, so the next-year window
+        sum is ``Decimal("0.00")`` -- a legitimate value (E-12: zero is a
+        value, not "missing"), not ``None``.  ``None`` is reserved for
+        plain (non-interest) accounts.
+        """
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=30,
+            )
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="Zero APY HYSA",
+                    anchor_balance=Decimal("10000.00"),
+                    anchor_period_id=periods[0].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+            assert context["is_interest"] is True
+            assert context["interest_next_year"] == Decimal("0.00")
+
+    def test_interest_next_year_sums_only_the_next_year_window(
+        self, app, auth_client, seed_user, db,
+    ):
+        """interest_next_year sums exactly the periods in [current+1, current+26].
+
+        Thirty-three periods are generated so periods beyond the one-year
+        window (``current.period_index + 26``) still accrue interest; the
+        route's figure must sum ONLY the 26 in-window periods, so it equals
+        the independently-summed window and is STRICTLY LESS than the sum
+        over every period (the out-of-window tail proves the window bites).
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services import net_worth_kernel  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=33,
+            )
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="Window HYSA",
+                    anchor_balance=Decimal("10000.00"),
+                    anchor_period_id=periods[0].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.05000"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            params = db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).one()
+            current = pay_period_service.get_current_period(seed_user["user"].id)
+            ibp = net_worth_kernel.interest_by_period_for_account(
+                acct, seed_user["scenario"], periods, params,
+            )
+            lo = current.period_index + 1
+            hi = current.period_index + 26  # 26 biweekly periods = 1 year.
+            window_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods
+                 if lo <= p.period_index <= hi),
+                Decimal("0.00"),
+            )
+            grand_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods),
+                Decimal("0.00"),
+            )
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+            assert context["interest_next_year"] == window_total
+            # Non-vacuity: periods beyond the window accrue interest that the
+            # route must NOT include, so the window sum is strictly smaller.
+            assert window_total < grand_total
+
+    def test_plain_account_interest_next_year_is_none(
+        self, app, auth_client, seed_user,
+    ):
+        """A plain (non-interest) account carries interest_next_year = None.
+
+        The next-year interest chip is interest-only; a checking account
+        has no interest projection, so the figure is ``None`` (the template
+        omits the chip), NOT ``Decimal("0.00")``.
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(seed_user, num_periods=10)
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+            assert context["is_interest"] is False
+            assert context["interest_next_year"] is None
+            assert context["params"] is None
+            assert context["compounding_frequencies"] == []
+
+
+class TestCashDetailRedirectStubs:
+    """The legacy /checking and /interest URLs redirect to the merged page.
+
+    The Fable 5 overhaul kept ``checking_detail`` / ``interest_detail`` as
+    thin redirect stubs (not deletions) so external bookmarks and the
+    not-yet-updated cockpit ``detail_endpoint`` macro still resolve; the
+    ``setup=1`` onboarding arg is forwarded so a post-create redirect still
+    lands on the wizard banner.
+    """
+
+    def test_checking_stub_redirects_to_details(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/checking 302-redirects to /accounts/<id>/details."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(f"/accounts/{acct_id}/checking")
+            assert resp.status_code == 302
+            assert f"/accounts/{acct_id}/details" in resp.headers["Location"]
+
+    def test_interest_stub_redirects_to_details(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /accounts/<id>/interest 302-redirects to /accounts/<id>/details."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(f"/accounts/{acct_id}/interest")
+            assert resp.status_code == 302
+            assert f"/accounts/{acct_id}/details" in resp.headers["Location"]
+
+    def test_interest_stub_preserves_setup_param(
+        self, app, auth_client, seed_user,
+    ):
+        """The interest stub forwards ?setup=1 so onboarding survives the redirect."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(f"/accounts/{acct_id}/interest?setup=1")
+            assert resp.status_code == 302
+            location = resp.headers["Location"]
+            assert f"/accounts/{acct_id}/details" in location
+            assert "setup=1" in location
+
+
+class TestCashDetailWrongTypeMatrix:
+    """Non-cash account kinds 404 out of the merged cash detail page.
+
+    The page serves cash accounts only; loans (has_amortization), physical
+    assets (has_appreciation), and retirement / investment accounts
+    (category RETIREMENT / INVESTMENT) keep their own screens and must 404
+    here -- resolved by boolean type flag and integer category id, never a
+    ref-table name string.
+    """
+
+    @pytest.mark.parametrize(
+        "type_name", ["Mortgage", "Property", "401(k)", "Brokerage"],
+    )
+    def test_non_cash_type_404(
+        self, app, auth_client, seed_user, db, type_name,
+    ):
+        """A loan / property / retirement / investment account 404s on /details."""
+        with app.app_context():
+            acct_type = db.session.query(AccountType).filter_by(
+                name=type_name,
+            ).one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=acct_type.id,
+                    name=f"WrongType {type_name}",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
+            assert resp.status_code == 404
+
+
+class TestCashDetailNewCoverage:
+    """Previously page-less cash types are now served (audit Surface 6)."""
+
+    def test_credit_card_served_as_plain(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A Credit Card account renders on the cash page with the plain shape.
+
+        Credit Card (Liability category, no amortization / appreciation /
+        interest) had no detail page before the merge; it is now served
+        with the plain context shape -- no interest params, no compounding
+        list.
+        """
+        with app.app_context():
+            cc_type = db.session.query(AccountType).filter_by(
+                name="Credit Card",
+            ).one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=cc_type.id,
+                    name="My Card",
+                    anchor_balance=Decimal("-250.00"),
+                    anchor_period_id=seed_user["bootstrap_period"].id,
+                ),
+            )
+            db.session.add(acct)
+            db.session.commit()
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+            assert context["is_interest"] is False
+            assert context["params"] is None
+            assert context["compounding_frequencies"] == []
+
+            resp = auth_client.get(f"/accounts/{acct.id}/details")
+            assert resp.status_code == 200
+            assert b"My Card" in resp.data
+            # Plain cash: no interest parameters card (no APY input).
+            assert b'name="apy"' not in resp.data
 
 
 # ── Optimistic Locking (commit C-17 / F-009) ────────────────────────

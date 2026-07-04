@@ -1,7 +1,8 @@
 {% from "_money_macros.html" import money %}
 {# Shared tax configuration sections: state tax, FICA, federal brackets.
-   Included by both salary/tax_config.html and settings/_tax_config.html
-   to avoid duplicating ~200 lines of identical markup (L-07).
+   Included by settings/_tax_config.html (the salary section links tax
+   settings straight to Settings; the former salary/tax_config.html page
+   was retired in the Fable 5 salary rebuild).
 
    Required template variables:
      state_configs  -- list of StateTaxConfig objects

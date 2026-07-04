@@ -6,7 +6,7 @@ payment timeliness integration.  Each test seeds its own data via
 conftest fixtures and helper functions.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -935,6 +935,122 @@ class TestMortgageInterestGenesisHybrid:
             assert _compute_mortgage_interest(
                 2025, debt_schedules, scenario_id,
             ) == Decimal("500.00")
+
+    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """THE L9 CASE, through the year-end hybrid: 8:05 PM EST Dec 31 is Dec 31.
+
+        A payment settled 2025-12-31 20:05 Eastern is stored as
+        2026-01-01 01:05 UTC, so the UTC calendar day (and the stored
+        ``entry_date``) is already 2026.  Schedule-A attribution follows the
+        user's wall-clock day (L9, decided 2026-07-03): the 500.00 interest
+        deducts in 2025 -- a year with NO amortization rows, so the figure is
+        PURE ledger and the pre-L9 UTC attribution reported 0.00 here.  This
+        pins the year-end WIRING onto the display-timezone basis, not just
+        the loan reader beneath it.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            scenario_id = seed_user["scenario"].id
+            (orig_principal, orig_date, rate, anchor_balance,
+             anchor_date, p1, _p2, _p3) = SPLIT_LOAN
+            loan = create_loan_with_trueup(
+                seed_user, db.session, origination_principal=orig_principal,
+                anchor_balance=anchor_balance, anchor_date=anchor_date,
+                rate=rate, origination_date=orig_date,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+
+            assert _compute_mortgage_interest(
+                2025, debt_schedules, scenario_id,
+            ) == Decimal("500.00")
+
+    def test_early_settled_payment_is_counted_exactly_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """An early-settled payment's due slot leaves the projected term.
+
+        A payment settled BEFORE its pay period begins posts its actual
+        interest at settle (the R1 split-at-settlement rule), attributed to
+        its paid year -- but the schedule replay bounds confirmed payments by
+        "period has begun", so the same due slot's row stays
+        ``is_confirmed=False``.  Counting that row in the projected term would
+        double-count the slot; the partition rule is "a slot is projected iff
+        no settled payment occupies it"
+        (``loan_loaders.load_settled_payment_due_months``).
+
+        Frozen 2026-02-10: P1 (due 02-01, begun) and P3 (due 04-01, EARLY)
+        both settle.  Ledger interest = P1 500.00 (100000 * 0.005) + P3 497.50
+        (round(99500 * 0.005)) = 997.50, both paid 2026.  The hybrid must be
+        ledger + projected-minus-the-April-slot; the pre-fix hybrid (ledger +
+        every not-confirmed 2026 row) reads HIGHER by exactly the April row's
+        interest -- the double count this test kills.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 2, 10))
+            scenario_id = seed_user["scenario"].id
+            (orig_principal, orig_date, rate, anchor_balance,
+             anchor_date, p1, _p2, p3) = SPLIT_LOAN
+            loan = create_loan_with_trueup(
+                seed_user, db.session, origination_principal=orig_principal,
+                anchor_balance=anchor_balance, anchor_date=anchor_date,
+                rate=rate, origination_date=orig_date,
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 5),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p3], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 10),
+            )
+            db.session.commit()
+            # The premise: P3's period has not begun by the frozen today (an
+            # EARLY settle), so its schedule row is not replay-confirmed.
+            assert seed_periods[p3].start_date > date(2026, 2, 10)
+
+            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            debt = debt_schedules[loan.id]
+            ledger_confirmed = confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            )
+            # P1 500.00 + early P3 497.50, both paid (and deductible) in 2026.
+            assert ledger_confirmed == Decimal("997.50")
+
+            # The April due slot still projects a not-confirmed row (the
+            # replay's period-begun bound cannot see the early settle) ...
+            april_rows = [
+                row for row in debt.schedule
+                if not row.is_confirmed
+                and (row.payment_date.year, row.payment_date.month) == (2026, 4)
+            ]
+            assert len(april_rows) == 1
+            assert april_rows[0].interest > Decimal("0.00")
+            naive_projected = sum(
+                (
+                    row.interest for row in debt.schedule
+                    if not row.is_confirmed and row.payment_date.year == 2026
+                ),
+                Decimal("0.00"),
+            )
+
+            # ... but the hybrid excludes it: ledger + projected WITHOUT the
+            # settled April slot.  The pre-fix hybrid (ledger + every
+            # not-confirmed row) reads higher by exactly that row's interest.
+            hybrid = _compute_mortgage_interest(2026, debt_schedules, scenario_id)
+            assert hybrid == (
+                ledger_confirmed + naive_projected - april_rows[0].interest
+            )
+            assert hybrid < ledger_confirmed + naive_projected
 
 
 # ── Spending by Category Tests ────────────────────────────────────
@@ -2574,6 +2690,10 @@ class TestSavingsProgressPreAnchor:
             periods[3].id: Decimal("15000.00"),
             periods[4].id: Decimal("20000.00"),
         }
+        # period_end is passed as end_date + 1 day to mirror
+        # _compute_pre_anchor_interest: pay periods carry an INCLUSIVE
+        # end_date, and calculate_interest treats period_end as the EXCLUSIVE
+        # boundary, so each period accrues over all 14 inclusive days.
         expected = sum(
             (
                 calculate_interest(
@@ -2581,7 +2701,7 @@ class TestSavingsProgressPreAnchor:
                     apy=apy,
                     compounding_frequency_id=freq_id,
                     period_start=p.start_date,
-                    period_end=p.end_date,
+                    period_end=p.end_date + timedelta(days=1),
                 )
                 for p in periods[0:5]
             ),
@@ -2599,7 +2719,7 @@ class TestSavingsProgressPreAnchor:
                     apy=apy,
                     compounding_frequency_id=freq_id,
                     period_start=p.start_date,
-                    period_end=p.end_date,
+                    period_end=p.end_date + timedelta(days=1),
                 )
                 for p in periods[0:5]
             ),
@@ -2752,17 +2872,19 @@ class TestPaymentTimeliness:
         periods = seed_periods
         cats = data["categories"]
 
+        # Noon UTC so the paid civil day is unambiguous in the display
+        # timezone too (F3): midnight UTC would be the prior Eastern day.
         _create_paid_expense(
             account, scenario, periods[0], "Bill A",
             Decimal("100.00"), cats["Rent"],
             due_date_val=date(2026, 1, 15),
-            paid_at_val=datetime(2026, 1, 10, tzinfo=timezone.utc),
+            paid_at_val=datetime(2026, 1, 10, 12, tzinfo=timezone.utc),
         )
         _create_paid_expense(
             account, scenario, periods[1], "Bill B",
             Decimal("100.00"), cats["Rent"],
             due_date_val=date(2026, 1, 28),
-            paid_at_val=datetime(2026, 1, 25, tzinfo=timezone.utc),
+            paid_at_val=datetime(2026, 1, 25, 12, tzinfo=timezone.utc),
         )
         db.session.commit()
 
@@ -2771,6 +2893,33 @@ class TestPaymentTimeliness:
 
         # (5 + 3) / 2 = 4.00
         assert pt["avg_days_before_due"] == Decimal("4.00")
+
+    def test_payment_timeliness_evening_eastern_is_on_time(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An 8:05pm-Eastern settle on the due date counts on time, not late (F3).
+
+        Paid 2026-01-16 01:05 UTC == 2026-01-15 8:05pm Eastern (EST, UTC-5) on
+        a Jan 15 due date.  Truncating ``paid_at`` in UTC lands on Jan 16 (one
+        day late); the display-timezone rule lands it on the Jan 15 due date,
+        so the bill is on time and adds 0 to the average -- an end-to-end proof
+        that the year-end timeliness stats route through the F3 fix.
+        """
+        data = seed_user
+        _create_paid_expense(
+            data["account"], data["scenario"], seed_periods[0],
+            "Evening Bill", Decimal("100.00"), data["categories"]["Rent"],
+            due_date_val=date(2026, 1, 15),
+            paid_at_val=datetime(2026, 1, 16, 1, 5, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        pt = compute_year_end_summary(data["user"].id, YEAR)[
+            "payment_timeliness"
+        ]
+        assert pt["paid_on_time"] == 1
+        assert pt["paid_late"] == 0
+        assert pt["avg_days_before_due"] == Decimal("0.00")
 
     def test_payment_timeliness_no_data(self, app, db, seed_user,
                                         seed_periods):

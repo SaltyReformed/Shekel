@@ -15,6 +15,7 @@ on a corrupted one.  See ``docs/plans/implementation_plan_pay_period_crud.md``.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -24,7 +25,11 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app.services import pay_period_admin, pay_period_service
 from app.services.pay_period_admin import PeriodLockReason
-from tests._test_helpers import add_txn, assert_pay_period_invariants
+from tests._test_helpers import (
+    add_txn,
+    assert_pay_period_invariants,
+    create_savings_account,
+)
 
 
 # Today is well after the seed_user bootstrap period (2024) and before
@@ -130,16 +135,41 @@ class TestClassifyPeriodLock:
             )
             assert pay_period_admin.classify_period_lock(periods[1]) is None
 
-    def test_account_anchor_locks(self, app, seed_user):
-        """The account's anchor period -> ACCOUNT_ANCHOR (when not historical).
+    def test_anchor_period_with_opening_reports_ledger_postings(
+        self, app, seed_user,
+    ):
+        """The seeded anchor period -> LEDGER_POSTINGS (the opening lives there).
 
-        ``as_of`` is set before the bootstrap period ends so the
-        historical check does not pre-empt the anchor reason.
+        The Step-5 accepted behavior change (plan Section 3.5): the seed
+        Checking's $1000.00 opening correction is attributed to its anchor
+        period, whose per-ledger nets are therefore non-zero, and the
+        double-entry gate precedes ACCOUNT_ANCHOR.  ``as_of`` is set before
+        the bootstrap period ends so the historical check does not pre-empt
+        either reason.
         """
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
             assert pay_period_admin.classify_period_lock(
                 bootstrap, as_of=_BOOTSTRAP_AS_OF,
+            ) == PeriodLockReason.LEDGER_POSTINGS
+
+    def test_account_anchor_locks(self, app, db, seed_user):
+        """A ZERO-anchor account's anchor period -> ACCOUNT_ANCHOR.
+
+        A $0.00 opening books nothing (the zero-delta rule), so the anchor
+        period holds no postings and the classifier reaches the
+        ACCOUNT_ANCHOR reason -- the reason itself stays covered now that
+        the seeded bootstrap reports LEDGER_POSTINGS instead.
+        """
+        with app.app_context():
+            periods = _make_future_periods(db.session, seed_user)
+            create_savings_account(
+                seed_user, db.session, "Zero Anchor Savings",
+                Decimal("0.00"), anchor_period_id=periods[3].id,
+            )
+            db.session.commit()
+            assert pay_period_admin.classify_period_lock(
+                periods[3],
             ) == PeriodLockReason.ACCOUNT_ANCHOR
 
     def test_recurrence_anchor_locks(self, app, db, seed_user):

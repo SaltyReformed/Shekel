@@ -6,6 +6,7 @@ test file.  Import functions from here in test modules that need them.
 """
 
 import importlib.util
+import os
 import pathlib
 import re
 import sys
@@ -649,7 +650,9 @@ def create_hysa_account(
 _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 
-def create_account_of_type(seed_user, db_session, type_name, name):
+def create_account_of_type(
+    seed_user, db_session, type_name, name, anchor_balance=None,
+):
     """Create an account of any built-in type via the canonical factory.
 
     The shared "build an account of type X" helper for the ledger-account
@@ -657,10 +660,12 @@ def create_account_of_type(seed_user, db_session, type_name, name):
     ``AccountSpec`` + ``create_account`` block is not copied per file (a
     duplicate-code finding).  ``create_account`` fires the Step-2
     ledger-account sync hook, so the returned account already carries its
-    paired ``budget.ledger_accounts`` row.  The opening anchor balance is a
-    fixed sentinel (the suites assert on ledger pairing, never on balance)
-    and the anchor period is resolved by the factory from the user's pay
-    periods.
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance
+    defaults to a fixed sentinel (the ledger-pairing suites assert on
+    pairing, never on balance); the Step-5 account-anchor suites pass an
+    explicit ``anchor_balance`` because the opening correction posts exactly
+    that value.  The anchor period is resolved by the factory from the
+    user's pay periods.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -668,6 +673,8 @@ def create_account_of_type(seed_user, db_session, type_name, name):
         type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
             ``"Mortgage"``, ``"401(k)"``).
         name: The account name.
+        anchor_balance: Optional opening anchor balance (``Decimal``);
+            ``None`` uses the ledger-suite sentinel.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -688,7 +695,10 @@ def create_account_of_type(seed_user, db_session, type_name, name):
             user_id=seed_user["user"].id,
             account_type_id=acct_type.id,
             name=name,
-            anchor_balance=_LEDGER_SUITE_ANCHOR_BALANCE,
+            anchor_balance=(
+                _LEDGER_SUITE_ANCHOR_BALANCE if anchor_balance is None
+                else anchor_balance
+            ),
         ),
     )
 
@@ -705,9 +715,12 @@ def ledger_accounts_for_account(db_session, account_id):
             fetch.
 
     Returns:
-        list[:class:`~app.models.ledger_account.LedgerAccount`] -- the
-        linked rows (zero or one in normal operation; the partial unique
-        index permits at most one).
+        list[:class:`~app.models.ledger_account.LedgerAccount`] -- every
+        row carrying this ``account_id``.  Since Step 5's
+        ``uq_ledger_accounts_account_kind`` re-key, TWO rows are normal
+        once an account has anchor corrections: the ``linked`` row plus
+        its ``anchor_equity`` twin (one per account-linked kind).  Callers
+        asserting counts or shapes must say WHICH kinds they expect.
     """
     # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
     # convention as the helpers above (no app symbols imported at module
@@ -720,6 +733,155 @@ def ledger_accounts_for_account(db_session, account_id):
         .filter_by(account_id=account_id)
         .all()
     )
+
+
+def ledger_account_of_kind(db_session, account_id, kind_enum):
+    """Return an account's ledger row of a given kind (linked / anchor_equity), or None.
+
+    The shared kind-scoped lookup behind :func:`linked_ledger_account` and the
+    account-anchor suites' anchor-equity lookups.  Since Step 5's
+    ``(account_id, kind_id)`` re-key an account can carry TWO rows sharing its
+    ``account_id`` (the ``linked`` row plus its ``anchor_equity`` equity twin),
+    so any "the account's ledger account" lookup must say WHICH kind -- a bare
+    ``[0]`` on :func:`ledger_accounts_for_account` is insertion-order-dependent.
+    Holding the ``(account_id, kind_id)`` query in one place keeps the several
+    kind-scoped lookups the posting suites use from drifting (a duplicate-code
+    finding otherwise).
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id.
+        kind_enum: The :class:`~app.enums.LedgerAccountKindEnum` member to
+            resolve (e.g. ``LINKED`` or ``ANCHOR_EQUITY``).
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount` of that kind for
+        the account, or ``None`` when the account has no such row yet.
+    """
+    # pylint: disable=import-outside-toplevel  -- same collection-time-safety
+    # convention every helper in this module follows (no app symbols at module
+    # load).
+    from app import ref_cache
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(
+            account_id=account_id,
+            kind_id=ref_cache.ledger_account_kind_id(kind_enum),
+        )
+        .one_or_none()
+    )
+
+
+def linked_ledger_account(db_session, account_id):
+    """Return the account's LINKED ledger row, never its anchor-equity twin.
+
+    Since Step 5's ``(account_id, kind_id)`` re-key an account with posted
+    anchor corrections carries TWO ledger rows sharing its ``account_id``
+    (the ``linked`` row plus the ``anchor_equity`` equity twin), so any
+    helper that grabs "the account's ledger account" must say WHICH kind --
+    a bare ``[0]`` on :func:`ledger_accounts_for_account` is
+    insertion-order-dependent.  This is the shared linked-kind lookup the
+    posting suites key their cash-leg assertions off (the ``LINKED`` case of
+    :func:`ledger_account_of_kind`).
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The real account's id.
+
+    Returns:
+        The LINKED :class:`~app.models.ledger_account.LedgerAccount`, or
+        ``None`` when the account has no pairing yet.
+    """
+    # pylint: disable=import-outside-toplevel  -- same collection-time-safety
+    # convention as the helpers above (no app symbols at module load).
+    from app.enums import LedgerAccountKindEnum
+
+    return ledger_account_of_kind(
+        db_session, account_id, LedgerAccountKindEnum.LINKED,
+    )
+
+
+def make_balanced_entry(
+    session, seed_user, *, from_ledger_id, to_ledger_id,
+    amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
+    source_kind=None, posting_kind=None, period_id=None,
+):
+    """Create and commit one balanced journal entry (two legs summing to zero).
+
+    The from leg is ``-amount`` (credit), the to leg is ``+amount`` (debit),
+    so the deferred balanced trigger passes at commit.  Returns the committed
+    :class:`~app.models.journal_entry.JournalEntry`.  Shared by the
+    journal-entry model suite and the ledger append-only role-privilege suite
+    (previously module-local to the former -- a duplicate-code finding once
+    the R4 tests needed the same shape).
+
+    ``source_kind`` / ``transfer_id`` / ``transaction_id`` / ``posting_kind``
+    default to the transfer shape (Step 2); a Step-3 transaction-sourced
+    entry passes ``source_kind=PostingSourceEnum.TRANSACTION``,
+    ``transaction_id=<id>``, and ``posting_kind=PostingKindEnum.EXPENSE`` (or
+    ``INCOME``).  Both concrete FKs default to ``None`` so a caller sets
+    exactly the one its source kind implies.  ``source_kind`` /
+    ``posting_kind`` default to ``None`` (resolved lazily to the TRANSFER
+    members) so the enums are not imported at module load, matching this
+    module's collection-time-safety convention.
+
+    Args:
+        session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies the user,
+            scenario, and bootstrap period).
+        from_ledger_id: Ledger account id for the ``-amount`` leg.
+        to_ledger_id: Ledger account id for the ``+amount`` leg.
+        amount: The leg magnitude (Decimal).
+        transfer_id: Optional ``budget.transfers`` back-link.
+        transaction_id: Optional ``budget.transactions`` back-link.
+        source_kind: :class:`~app.enums.PostingSourceEnum` member, or
+            ``None`` for TRANSFER.
+        posting_kind: :class:`~app.enums.PostingKindEnum` member, or
+            ``None`` for TRANSFER.
+        period_id: Pay period id, or ``None`` for the bootstrap period.
+
+    Returns:
+        The committed :class:`~app.models.journal_entry.JournalEntry`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same collection-time-safety
+    # convention as the helpers above (no app symbols imported at module
+    # load); load the enums, cache, and models lazily here.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import PostingKindEnum, PostingSourceEnum
+    from app.models.journal_entry import JournalEntry, Posting
+
+    if source_kind is None:
+        source_kind = PostingSourceEnum.TRANSFER
+    if posting_kind is None:
+        posting_kind = PostingKindEnum.TRANSFER
+    if period_id is None:
+        period_id = seed_user["bootstrap_period"].id
+    entry = JournalEntry(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        pay_period_id=period_id,
+        entry_date=_real_date(2026, 1, 15),
+        source_kind_id=ref_cache.posting_source_id(source_kind),
+        transfer_id=transfer_id,
+        transaction_id=transaction_id,
+        description="Test entry",
+    )
+    session.add(entry)
+    session.flush()
+    kind_id = ref_cache.posting_kind_id(posting_kind)
+    session.add(Posting(
+        journal_entry_id=entry.id, ledger_account_id=from_ledger_id,
+        amount=-amount, posting_kind_id=kind_id,
+    ))
+    session.add(Posting(
+        journal_entry_id=entry.id, ledger_account_id=to_ledger_id,
+        amount=amount, posting_kind_id=kind_id,
+    ))
+    session.commit()
+    return entry
 
 
 def loan_correction_entries(db_session, shadow_id):
@@ -884,6 +1046,42 @@ def load_migration_module(filename):
     return module
 
 
+def load_init_database_module():
+    """Load ``scripts/init_database.py`` by path (it is not a package member).
+
+    ``scripts`` has no ``__init__``, so the deploy host is loaded by absolute
+    path -- the same importlib idiom :func:`load_migration_module` uses -- so a
+    test can call its post-migration backfill hooks directly.  The script
+    mutates ``DATABASE_URL_APP`` to ``""`` at import time (its deploy-host
+    owner-role override, which must run BEFORE the ``app`` import), a
+    process-global side effect this restores around the load so it never leaks
+    into the test session.  Shared by the loan and account backfill suites so
+    the importlib + env-restore boilerplate lives in one place (a duplicate-code
+    finding otherwise).
+
+    Returns:
+        The loaded ``init_database`` module object, exposing the deploy hooks
+        (``backfill_loan_payment_postings_after_migration`` /
+        ``backfill_all_account_anchor_postings_after_migration``).
+    """
+    script_path = (
+        pathlib.Path(__file__).resolve().parents[1] / "scripts" / "init_database.py"
+    )
+    saved = os.environ.get("DATABASE_URL_APP")
+    spec = importlib.util.spec_from_file_location(
+        script_path.stem, str(script_path),
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if saved is None:
+            os.environ.pop("DATABASE_URL_APP", None)
+        else:
+            os.environ["DATABASE_URL_APP"] = saved
+    return module
+
+
 def clear_postings_for_transfer(transfer_id):
     """Delete a transfer's posted journal entries and legs (raw SQL).
 
@@ -1038,6 +1236,7 @@ def create_settled_cash_transaction(
     seed_user, db_session, period, amount,
     *, account=None, scenario=None, is_income=False,
     category=None, actual_amount=None, name="Cash Txn",
+    paid_at=_UNSET_PAID_AT,
 ):
     """Create an ordinary (non-transfer) transaction and settle it go-forward.
 
@@ -1083,6 +1282,14 @@ def create_settled_cash_transaction(
             the estimate, or ``None`` (effective == estimated == amount).
         name: The transaction display name (becomes the journal entry
             description).
+        paid_at: The settle instant.  Defaults to the seam-derived
+            ``db.func.now()`` (the realistic ``mark_done`` value); pass an
+            explicit instant to pin the attribution moment, or ``None`` to
+            settle with a NULL ``paid_at`` (the historical period-start
+            fallback state).  Pinned BEFORE the ledger emission -- mirroring
+            :func:`create_settled_transfer`'s ``paid_at`` -- so the posted
+            ``entry_date`` and the Step-5 walk's attribution instant agree,
+            exactly as production produces them.
 
     Returns:
         The settled (Paid / Received) :class:`~app.models.transaction.Transaction`,
@@ -1120,6 +1327,8 @@ def create_settled_cash_transaction(
     status_seam.apply_status_change(
         txn, ref_cache.status_id(settled_status),
     )
+    if paid_at is not _UNSET_PAID_AT:
+        txn.paid_at = paid_at
     if actual_amount is not None:
         txn.actual_amount = actual_amount
     posting_service.sync_transaction_postings(txn, settled=True)

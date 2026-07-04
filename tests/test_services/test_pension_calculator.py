@@ -10,6 +10,8 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import RaiseTypeEnum
 from app.services.pension_calculator import (
     PensionBenefit,
     calculate_benefit,
@@ -18,6 +20,7 @@ from app.services.pension_calculator import (
     _compute_high_salary_average,
     ZERO,
 )
+from app.utils.money import round_money
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -26,15 +29,20 @@ from app.services.pension_calculator import (
 class FakeRaise:
     def __init__(self, percentage=None, flat_amount=None,
                  effective_month=3, effective_year=2026,
-                 is_recurring=False):
+                 is_recurring=False, raise_type=RaiseTypeEnum.MERIT):
         self.percentage = Decimal(str(percentage)) if percentage else None
         self.flat_amount = Decimal(str(flat_amount)) if flat_amount else None
         self.effective_month = effective_month
         self.effective_year = effective_year
         self.is_recurring = is_recurring
+        # The merit horizon discriminates recurring cola raises from
+        # merit/custom raises by ``raise_type_id`` (never the name string);
+        # resolve the id at construction (ref_cache is initialised by the
+        # autouse conftest fixtures).
+        self.raise_type_id = ref_cache.raise_type_id(raise_type)
 
         class _FakeType:
-            name = "merit"
+            name = raise_type.value
         self.raise_type = _FakeType()
 
 
@@ -191,27 +199,31 @@ class TestHighSalaryAverage:
 
 class TestProjectSalariesByYear:
     def test_no_raises(self):
+        # No raises: the merit horizon is irrelevant (nothing to freeze).
         result = project_salaries_by_year(
-            Decimal("80000"), [], 2026, 2028,
+            Decimal("80000"), [], 2026, 2028, 5,
         )
         assert len(result) == 3
         for year, salary in result:
             assert salary == Decimal("80000.00")
 
     def test_with_recurring_raise(self):
-        """Recurring 3% raise compounds each year.
+        """Recurring 3% raise compounds each year (horizon does not bite).
 
-        FakePeriod uses month=12, so month >= effective_month=3 always.
-        2026: 1 application  → 80000 * 1.03   = 82400.00
-        2027: 2 applications → 80000 * 1.03^2 = 84872.00
-        2028: 3 applications → 80000 * 1.03^3 = 87418.16
+        FakePeriod evaluates at month=12, so month >= effective_month=3
+        always applies.  merit_horizon_years=5 -> cutoff 2026+5 = 2031,
+        which is past the 2028 end year, so every year is <= cutoff and
+        all raises apply exactly as before the horizon existed.
+        2026: 1 application  -> 80000 * 1.03   = 82400.00
+        2027: 2 applications -> 80000 * 1.03^2 = 84872.00
+        2028: 3 applications -> 80000 * 1.03^3 = 87418.16
         """
         raises = [
             FakeRaise(percentage="0.03", effective_month=3,
                       effective_year=2026, is_recurring=True),
         ]
         result = project_salaries_by_year(
-            Decimal("80000"), raises, 2026, 2028,
+            Decimal("80000"), raises, 2026, 2028, 5,
         )
         # 80000 * 1.03 = 82400.00
         assert result[0][1] == Decimal("82400.00"), (
@@ -226,14 +238,22 @@ class TestProjectSalariesByYear:
             f"2028 salary: expected 87418.16, got {result[2][1]}"
         )
 
-    def test_recurring_raise_highest_years_near_retirement(self):
-        """With compounding raises, highest-paid years should be near retirement."""
+    def test_recurring_cola_raise_highest_years_near_retirement(self):
+        """A recurring COLA raise extrapolates to retirement (highest years last).
+
+        A cola-type recurring raise keeps compounding past the merit
+        cutoff, so a 2.5% cola from 2026 to 2046 still makes the last 4
+        years the highest (unchanged from the pre-horizon behaviour for a
+        cola raise).  merit_horizon_years=5 (cutoff 2031) does not stop a
+        cola raise, so the salary rises every year through 2046.
+        """
         raises = [
             FakeRaise(percentage="0.025", effective_month=1,
-                      effective_year=2026, is_recurring=True),
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
         ]
         salary_by_year = project_salaries_by_year(
-            Decimal("90000"), raises, 2026, 2046,
+            Decimal("90000"), raises, 2026, 2046, 5,
         )
         result = calculate_benefit(
             benefit_multiplier=Decimal("0.0185"),
@@ -246,4 +266,213 @@ class TestProjectSalariesByYear:
         # The 4 highest consecutive salary years must be the last 4
         assert high_years == [2043, 2044, 2045, 2046], (
             f"Expected highest years near retirement, got {high_years}"
+        )
+
+
+class TestMeritHorizon:
+    """The merit-horizon behaviour (Gate A ruling 3 / fork F4).
+
+    Through the cutoff year (start_year + N) every raise applies; after
+    the cutoff only recurring cola-type raises keep compounding, from the
+    cutoff salary -- merit/custom raises stop but their earned effect
+    persists in the base.  Cola discrimination is by ``raise_type_id``.
+    All raises evaluate at December 1, so the effective month never gates
+    the December-of-year application.
+    """
+
+    def test_merit_freezes_after_cutoff_cola_continues(self):
+        """Merit + cola through cutoff; only cola compounds after it.
+
+        base 100,000; merit 10% (Jan) + cola 10% (July), both recurring
+        from 2026; start 2026, end 2031, N=2 -> cutoff = 2028.
+        Through the cutoff both apply once per year, so by year Y the
+        salary is 100000 * 1.10^(2*(Y-2025)) (merit and cola each applied
+        Y-2025 times):
+          2026: 100000 * 1.10^2 = 121,000.00
+          2028 (cutoff): 100000 * 1.10^6 = 177,156.10
+        After the cutoff merit FREEZES at the 2028 base and only the 10%
+        cola compounds from it:
+          2029: 177,156.10 * 1.10   = 194,871.71  (NOT 100000*1.10^8 =
+                                       214,358.88, which is both-continue)
+          2031: 177,156.10 * 1.10^3 = 235,794.77
+        """
+        raises = [
+            FakeRaise(percentage="0.10", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.MERIT),
+            FakeRaise(percentage="0.10", effective_month=7,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2031, 2,
+        ))
+        # 100000 * 1.10 * 1.10 = 121000.00
+        assert result[2026] == Decimal("121000.00")
+        # 100000 * 1.10^6 = 177156.10 (cutoff, both raises applied)
+        assert result[2028] == Decimal("177156.10")
+        # 177156.10 * 1.10 = 194871.71 (merit frozen; cola only)
+        assert result[2029] == Decimal("194871.71")
+        # 177156.10 * 1.10^3 = 235794.77 (three post-cutoff cola steps)
+        assert result[2031] == Decimal("235794.77")
+
+    def test_cola_only_extrapolates_without_double_count(self):
+        """A pure recurring cola compounds uninterrupted across the cutoff.
+
+        base 100,000; cola 10% (July) recurring from 2026; start 2026, end
+        2030, N=2 -> cutoff 2028.  With only a cola raise the re-anchored
+        post-cutoff compounding must reproduce the same 100000 * 1.10^k
+        curve (no occurrence dropped, none double-counted):
+          2026: 100000 * 1.10   = 110,000.00
+          2028 (cutoff): 100000 * 1.10^3 = 133,100.00
+          2029: 100000 * 1.10^4 = 146,410.00
+          2030: 100000 * 1.10^5 = 161,051.00
+        """
+        raises = [
+            FakeRaise(percentage="0.10", effective_month=7,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 2,
+        ))
+        assert result[2026] == Decimal("110000.00")   # 100000 * 1.10
+        assert result[2028] == Decimal("133100.00")   # 100000 * 1.10^3
+        assert result[2029] == Decimal("146410.00")   # 100000 * 1.10^4
+        assert result[2030] == Decimal("161051.00")   # 100000 * 1.10^5
+
+    def test_merit_only_plateaus_after_cutoff(self):
+        """A pure recurring merit stops compounding after the cutoff.
+
+        base 100,000; merit 10% (Jan) recurring from 2026; start 2026, end
+        2030, N=2 -> cutoff 2028.  With no cola raise nothing compounds
+        after the cutoff, so the salary plateaus at the cutoff value:
+          2026: 100000 * 1.10   = 110,000.00
+          2028 (cutoff): 100000 * 1.10^3 = 133,100.00
+          2029: 133,100.00 (frozen)
+          2030: 133,100.00 (frozen)
+        """
+        raises = [
+            FakeRaise(percentage="0.10", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.MERIT),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 2,
+        ))
+        assert result[2026] == Decimal("110000.00")   # 100000 * 1.10
+        assert result[2028] == Decimal("133100.00")   # 100000 * 1.10^3
+        assert result[2029] == Decimal("133100.00")   # frozen at cutoff
+        assert result[2030] == Decimal("133100.00")   # frozen at cutoff
+
+    def test_future_scheduled_cola_is_not_pulled_before_its_start(self):
+        """A COLA that starts after the cutoff first applies in ITS year (H1).
+
+        base 100,000; a 10% recurring COLA effective 2031; start 2026,
+        end 2032, N=2 -> cutoff 2028, re-anchor year 2029.  The re-anchor
+        must floor at the raise's OWN effective year
+        (max(2031, 2029) = 2031), never pull it backward:
+          2026-2030: 100,000.00  (the COLA does not exist yet)
+          2031: 100,000 * 1.10   = 110,000.00  (first application)
+          2032: 100,000 * 1.10^2 = 121,000.00
+        The pre-fix bug re-anchored it to 2029, yielding 110,000.00 in
+        2029 and 146,410.00 (1.10^4) in 2032.
+        """
+        raises = [
+            FakeRaise(percentage="0.10", effective_month=7,
+                      effective_year=2031, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2032, 2,
+        ))
+        assert result[2028] == Decimal("100000.00")  # cutoff, COLA not live
+        assert result[2029] == Decimal("100000.00")  # NOT 110,000 (H1 bug)
+        assert result[2030] == Decimal("100000.00")
+        assert result[2031] == Decimal("110000.00")  # 100000 * 1.10
+        assert result[2032] == Decimal("121000.00")  # 100000 * 1.10^2
+
+    def test_mixed_flat_and_percentage_colas_pinned_not_horizon_invariant(self):
+        """PINS current behavior: mixed flat+pct COLAs are NOT horizon-invariant (L4).
+
+        base 100,000; a flat $1,000 recurring COLA + a 10% recurring COLA,
+        both effective 2026.  ``apply_raises`` applies each raise's full
+        application count in sorted order, flat before percentage (M-01),
+        so splitting the compounding at the cutoff changes the ORDER the
+        flats interleave with the percents even though both raises are
+        pure COLAs:
+
+        continuous (N large, e.g. 10 -- cutoff beyond the range), 2030:
+          flat 5x first: 100,000 + 5,000 = 105,000
+          pct 5x:        105,000 * 1.10^5 = 105,000 * 1.61051
+                       = 169,103.55
+        horizon N=2 (cutoff 2028), 2030:
+          cutoff base:   (100,000 + 3 * 1,000) * 1.10^3
+                       = 103,000 * 1.331 = 137,093.00
+          post-cutoff (2 applications each, flat first):
+                         (137,093.00 + 2,000) * 1.21
+                       = 139,093.00 * 1.21 = 168,302.53
+
+        The 801.02 difference is the split-at-cutoff compounding-order
+        artifact this test DOCUMENTS (review finding L4) -- it is not a
+        behavioral promise, and any deliberate change to the split rule
+        must re-derive both pins.
+        """
+        raises = [
+            FakeRaise(flat_amount="1000", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+            FakeRaise(percentage="0.10", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+        ]
+        continuous = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 10,
+        ))
+        horizon = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2030, 2,
+        ))
+        # (100,000 + 3,000) * 1.331 = 137,093.00 at the cutoff.
+        assert horizon[2028] == Decimal("137093.00")
+        # Continuous: (100,000 + 5,000) * 1.61051 = 169,103.55.
+        assert continuous[2030] == Decimal("169103.55")
+        # Split: (137,093.00 + 2,000) * 1.21 = 168,302.53.
+        assert horizon[2030] == Decimal("168302.53")
+
+    def test_real_shaped_cola_and_merit(self):
+        """Real-shaped 3% July cola + 2.5% January merit, N=5.
+
+        base 100,000; both recurring from 2026; start 2026, end 2033,
+        N=5 -> cutoff 2031.  Through the cutoff both apply:
+          2026: 100000 * 1.025 * 1.03 = 105,575.00
+        After the cutoff only the 3% cola compounds, from the 2031 salary
+        (call it S).  The 2.5% merit is frozen, so:
+          2032 == round(S * 1.03)       (cola only -- NOT S * 1.025 * 1.03)
+          2033 == round(S * 1.03^2)
+        Asserting 2032/2033 against S proves the merit stopped while the
+        cola continued, without hand-computing the 6th-power cutoff salary.
+        """
+        raises = [
+            FakeRaise(percentage="0.03", effective_month=7,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.COLA),
+            FakeRaise(percentage="0.025", effective_month=1,
+                      effective_year=2026, is_recurring=True,
+                      raise_type=RaiseTypeEnum.MERIT),
+        ]
+        result = dict(project_salaries_by_year(
+            Decimal("100000"), raises, 2026, 2033, 5,
+        ))
+        # 100000 * 1.025 * 1.03 = 105575.00 (through cutoff, both apply)
+        assert result[2026] == Decimal("105575.00")
+        cutoff_salary = result[2031]
+        # Post-cutoff: only the 3% cola compounds from the cutoff salary.
+        assert result[2032] == round_money(cutoff_salary * Decimal("1.03"))
+        assert result[2033] == round_money(
+            cutoff_salary * Decimal("1.03") * Decimal("1.03")
+        )
+        # And the merit is genuinely frozen: applying it too would give
+        # a strictly larger 2032 than the cola-only value.
+        assert result[2032] < round_money(
+            cutoff_salary * Decimal("1.025") * Decimal("1.03")
         )

@@ -295,7 +295,7 @@ class TestCalculateGap:
         negative values, so ``required_retirement_savings = ZERO``.  The
         calculator is intentionally permissive (defense in depth): the
         validation layer that rejects a negative slider override lives
-        at the ``/retirement/gap`` route via ``RetirementGapQuerySchema``
+        at the ``/retirement/readiness`` route via ``RetirementReadinessQuerySchema``
         (F-13).  Direct calls into the calculator from trusted callers
         (the dashboard service reads the column whose CHECK constraint
         admits ``[0, 1]`` only) cannot pass a negative SWR through the

@@ -19,6 +19,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
 from app.exceptions import NotFoundError, ValidationError
+from tests._test_helpers import create_loan_account
 
 
 @pytest.fixture()
@@ -282,6 +283,43 @@ class TestCreateTransferValidation:
                         category_id=td["categories"]["Rent"].id,
                     ),
                 )
+
+    def test_transfer_out_of_a_loan_is_rejected(self, app, db, transfer_data):
+        """A transfer whose SOURCE is an amortizing loan raises ValidationError.
+
+        Money cannot be transferred OUT of a loan (the loan as ``from_account``):
+        the amortization engine only projects payments INTO a loan and the loan
+        posting ledger assumes every loan shadow is a payment IN (review M7), so
+        a disbursement would post a raw cash movement onto the loan ledger with
+        no interest / escrow split.  The guard rejects it at ``create_transfer``
+        -- the sole creation chokepoint -- and writes no transfer or shadow row.
+        """
+        with app.app_context():
+            td = transfer_data
+            loan = create_loan_account(
+                {"user": td["user"], "scenario": td["scenario"]},
+                db.session, name="Mortgage",
+                principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+                origination_date=date(2025, 1, 1), term=360,
+            )
+            db.session.commit()
+            transfers_before = db.session.query(Transfer).count()
+
+            with pytest.raises(ValidationError, match="out of a loan"):
+                transfer_service.create_transfer(
+                    transfer_service.TransferSpec(
+                        user_id=td["user"].id,
+                        from_account_id=loan.id,      # loan as SOURCE: forbidden
+                        to_account_id=td["account"].id,
+                        pay_period_id=td["periods"][0].id,
+                        scenario_id=td["scenario"].id,
+                        amount=Decimal("100"),
+                        status_id=td["projected_status"].id,
+                        category_id=td["categories"]["Rent"].id,
+                    ),
+                )
+            # The guard fired before any write: no transfer (and so no shadows).
+            assert db.session.query(Transfer).count() == transfers_before
 
     def test_wrong_user_account_rejected(self, app, db, transfer_data, second_user):
         """Account belonging to another user raises NotFoundError."""
@@ -1046,7 +1084,7 @@ class TestSoftDeleteHandling:
             # Bypass _get_transfer_or_raise by importing the helper directly.
             # This simulates a future code path that allows deleted transfers
             # through and hits the shadow count check.
-            from app.services.transfer_service import (  # pylint: disable=import-outside-toplevel
+            from app.services._transfer_validation import (  # pylint: disable=import-outside-toplevel
                 _get_shadow_transactions,
             )
 

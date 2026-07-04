@@ -48,12 +48,15 @@ plan Section 6:
      regression lock)** -- driven through the real PATCH route, then swept.
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
-transaction's estimate makes the per-account reconciliation FAIL (a real ledger
-drift would be caught), and injecting one extra leg makes the trial balance go
-non-zero (the ``= 0`` assertion is a real check, not one the per-entry trigger
-makes unconditionally true).  A reverted transaction reconciles at zero (original
-+ reversal net to zero; the source-side query drops it once it is no longer
-settled), proving the append-only correction discipline end to end.
+transaction's estimate makes the per-account reconciliation FAIL -- driven
+through the real ``_assert_full_reconciliation`` sweep helper under
+``pytest.raises``, so a regression in the helper itself is caught, not only in an
+inline re-derivation (a real ledger drift would be caught) -- and injecting one
+extra leg makes the trial balance go non-zero (the ``= 0`` assertion is a real
+check, not one the per-entry trigger makes unconditionally true).  A reverted
+transaction reconciles at zero (original + reversal net to zero; the source-side
+query drops it once it is no longer settled), proving the append-only correction
+discipline end to end.
 
 **Non-tautological by construction**, the same three independent ways as Step 2:
 
@@ -90,15 +93,18 @@ from sqlalchemy import case
 from app import ref_cache
 from app.enums import (
     LedgerAccountClassEnum,
+    LedgerAccountKindEnum,
     PostingKindEnum,
     StatusEnum,
     TxnTypeEnum,
 )
 from app.extensions import db as _db
+from app.models.account import Account
 from app.models.category import Category
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
+from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -111,7 +117,7 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     create_settled_transfer,
     inject_cash_backfill_kind_id,
-    ledger_accounts_for_account,
+    linked_ledger_account,
     load_migration_module,
 )
 
@@ -150,6 +156,12 @@ def _independent_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
     account via ``ledger_accounts.account_id``, a different join shape than
     ``posting_service.account_posting_total`` (which resolves the ledger account
     first), so the two cannot share a lookup bug.
+
+    Filtered to the LINKED kind (Step 5): an anchor correction lands
+    ``+delta`` on the linked row and ``-delta`` on the ``anchor_equity``
+    twin, which shares the ``account_id`` column -- a bare-``account_id``
+    sum would cancel the correction pairwise and silently reproduce the
+    pre-Step-5 changes-only figure, making the absolute assertions vacuous.
     """
     return (
         _db.session.query(
@@ -160,10 +172,29 @@ def _independent_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
         .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
         .filter(
             LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
             JournalEntry.scenario_id == scenario_id,
         )
         .scalar()
     )
+
+
+def _opening_anchor(account_id: int) -> Decimal:
+    """Return an account's anchor balance -- its posted opening's target.
+
+    The Step-5 opening correction drives the linked ledger to exactly the
+    account's asserted anchor (every account in this suite carries only its
+    origination assertion, and every settle is stamped at server-now, after
+    it), so the absolute reconciliation is ``linked ledger == anchor +
+    settled source effect``.
+    """
+    return Decimal(str(
+        _db.session.query(Account.current_anchor_balance)
+        .filter(Account.id == account_id)
+        .scalar()
+    ))
 
 
 def _ledger_account_sum(ledger_account_id: int, scenario_id: int) -> Decimal:
@@ -348,26 +379,58 @@ def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
 
 
 def _assert_linked_accounts_reconcile(scenario_id: int) -> None:
-    """Assert every LINKED ledger account reconciles in *scenario_id*.
+    """Assert every non-loan LINKED ledger reconciles ABSOLUTELY in *scenario_id*.
 
-    For each real account (its linked ledger account), the independent ledger sum
-    equals the independent combined (transfer + transaction) source effect.
-    Holds over every linked account that has postings, not only the ones a given
+    For each of the scenario owner's non-loan real accounts (its LINKED
+    ledger row), the independent ledger sum equals the account's opening
+    anchor plus the independent combined (transfer + transaction) source
+    effect -- the Step-5 absolute form (every settle in this suite is
+    stamped at server-now, after the origination assertion; every swept
+    scenario carries its owner's openings, posted in the baseline at create
+    time or into a what-if by the effect-time self-heal alongside that
+    scenario's first settle -- the latter ONLY because these fixtures
+    settle on the same UTC day the accounts were created; not a general
+    guarantee, and R8 owns the residual multi-scenario policy).  Amortizing loans are excluded -- their
+    absolute invariant couples on the amortization split and is the loan
+    oracle's job.  Holds over every such account, not only the ones a given
     test hand-computes.
     """
+    scenario_owner_id = (
+        _db.session.query(Scenario.user_id)
+        .filter(Scenario.id == scenario_id)
+        .scalar()
+    )
     linked = (
         _db.session.query(LedgerAccount)
-        .filter(LedgerAccount.account_id.isnot(None))
+        .join(Account, LedgerAccount.account_id == Account.id)
+        .join(AccountType, Account.account_type_id == AccountType.id)
+        .filter(
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            AccountType.has_amortization.is_(False),
+            Account.user_id == scenario_owner_id,
+        )
         .all()
+    )
+    # Every caller settles at least one cash movement, which mints the Checking
+    # linked ledger account, so an empty result means the query silently found
+    # nothing (a minting or filter regression) and the loop below would pass
+    # vacuously -- assert non-empty so the sweep cannot be a no-op.
+    assert linked, (
+        "no linked ledger accounts to reconcile -- the linked sweep would be "
+        "vacuous (expected at least the Checking account's linked ledger)"
     )
     for ledger_account in linked:
         ledger = _independent_ledger_sum(ledger_account.account_id, scenario_id)
         effect = _independent_combined_source_effect(
             ledger_account.account_id, scenario_id
         )
-        assert ledger == effect, (
+        opening = _opening_anchor(ledger_account.account_id)
+        assert ledger == opening + effect, (
             f"account {ledger_account.account_id}: ledger {ledger} != "
-            f"combined source effect {effect} in scenario {scenario_id}"
+            f"opening {opening} + combined source effect {effect} in "
+            f"scenario {scenario_id}"
         )
 
 
@@ -562,11 +625,15 @@ class TestPerLinkedAccountReconciliation:
           - cash EXPENSE $50 Groceries           -> Checking  -50, Groceries +50
           - cash INCOME  $2000 Salary            -> Checking +2000, Salary  -2000
 
-        Checking ledger = -100 -250 -50 +2000 = +1600.00; its transfer effect is
+        Checking's combined effect = -100 -250 -50 +2000 = +1600.00, riding
+        its $1000.00 Step-5 opening: ledger 2600.00.  Its transfer effect is
         -350 and its transaction effect is +1950, and -350 + 1950 = +1600.
-        Savings +100, Mortgage +250.  All three independent computations -- the
-        hand-computed literal, the independent cross-table query, and the
-        production service helpers -- must agree on every account.
+        Savings 100 (opening) + 100 = 200.00; the Mortgage is amortizing (no
+        account-walk opening, and it carries no LoanParams so no loan genesis
+        either), leaving its ledger at the bare +250.00.  All three
+        independent computations -- the hand-computed literal, the
+        independent cross-table query, and the production service helpers --
+        must agree on every account.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -599,21 +666,23 @@ class TestPerLinkedAccountReconciliation:
             db.session.commit()
 
             expected = {
-                checking.id: Decimal("1600.00"),
-                savings.id: Decimal("100.00"),
-                mortgage.id: Decimal("250.00"),
+                checking.id: (Decimal("2600.00"), Decimal("1600.00")),
+                savings.id: (Decimal("200.00"), Decimal("100.00")),
+                mortgage.id: (Decimal("250.00"), Decimal("250.00")),
             }
-            for account_id, want in expected.items():
+            for account_id, (want_ledger, want_effect) in expected.items():
                 # (a) hand-computed literal == independent ledger-table query.
-                assert _independent_ledger_sum(account_id, scenario_id) == want
-                # (b) independent ledger query == independent source query.
+                assert _independent_ledger_sum(
+                    account_id, scenario_id,
+                ) == want_ledger
+                # (b) independent source query == the hand-computed effect.
                 assert _independent_combined_source_effect(
                     account_id, scenario_id,
-                ) == want
+                ) == want_effect
                 # (c) the production service helpers agree too.
                 assert posting_service.account_posting_total(
                     account_id, scenario_id,
-                ) == want
+                ) == want_ledger
                 assert (
                     posting_service.settled_transfer_effect(
                         account_id, scenario_id,
@@ -621,7 +690,7 @@ class TestPerLinkedAccountReconciliation:
                     + posting_service.settled_transaction_effect(
                         account_id, scenario_id,
                     )
-                ) == want
+                ) == want_effect
 
             # Checking's split is exactly transfers -350 + transactions +1950.
             assert posting_service.settled_transfer_effect(
@@ -801,8 +870,10 @@ class TestPerEntryAndTrialBalance:
 
         Arithmetic: one $100 transfer (Checking -> Savings), one $50 Groceries
         expense, and one $2000 Salary income each post a single two-leg entry
-        summing to zero, so no entry violates ``SUM = 0`` / ``COUNT >= 2``, and
-        the whole-ledger total is (-100 +100) + (-50 +50) + (+2000 -2000) = 0.00.
+        summing to zero -- and the Step-5 openings (Checking +1000/-1000,
+        Savings +100/-100 against their equity twins) are balanced pairs too
+        -- so no entry violates ``SUM = 0`` / ``COUNT >= 2`` and the
+        whole-ledger total stays 0.00.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -824,8 +895,16 @@ class TestPerEntryAndTrialBalance:
             )
             db.session.commit()
 
-            # Three settled sources -> three balanced entries.
-            assert _db.session.query(JournalEntry).count() == 3
+            # Three settled sources -> three source-linked balanced entries
+            # (the Step-5 openings carry their own correction sources).
+            assert (
+                _db.session.query(JournalEntry)
+                .filter(_db.or_(
+                    JournalEntry.transfer_id.isnot(None),
+                    JournalEntry.transaction_id.isnot(None),
+                ))
+                .count()
+            ) == 3
             assert _entries_violating_balance() == []
             assert _trial_balance() == Decimal("0.00")
 
@@ -900,11 +979,14 @@ class TestMultiScenarioIsolation:
         """A $100 baseline and a $70 what-if expense never bleed together.
 
         Arithmetic: a $100 Groceries expense in the baseline scenario and a $70
-        Groceries expense in a separate what-if scenario, both on Checking.
-        Scoped to baseline the Checking ledger is -100.00 (NOT -170) and the
-        Groceries-Expense counter +100.00; scoped to the what-if they are -70.00
-        and +70.00.  The ``scenario_id`` denorm keeps the two apart, and each
-        scenario reconciles independently.
+        Groceries expense in a separate what-if scenario, both on Checking --
+        each scenario also carrying Checking's $1000.00 opening (posted in
+        the baseline at fixture time, into the what-if by the effect-time
+        self-heal alongside its settle).  Scoped to baseline the Checking
+        ledger is 1000 - 100 = 900.00 (NOT 830) and the Groceries-Expense
+        counter +100.00; scoped to the what-if they are 1000 - 70 = 930.00
+        and +70.00.  The ``scenario_id`` denorm keeps the two apart, and
+        each scenario reconciles independently.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -928,19 +1010,20 @@ class TestMultiScenarioIsolation:
             )
             db.session.commit()
 
-            # Checking: -100 in baseline, -70 in the what-if -- never -170.
+            # Checking: opening - 100 in baseline, opening - 70 in the
+            # what-if -- never the cross-scenario 830.
             assert _independent_ledger_sum(
                 checking.id, baseline.id,
-            ) == Decimal("-100.00")
+            ) == Decimal("900.00")
             assert _independent_ledger_sum(
                 checking.id, whatif.id,
-            ) == Decimal("-70.00")
+            ) == Decimal("930.00")
             assert posting_service.account_posting_total(
                 checking.id, baseline.id,
-            ) == Decimal("-100.00")
+            ) == Decimal("900.00")
             assert posting_service.account_posting_total(
                 checking.id, whatif.id,
-            ) == Decimal("-70.00")
+            ) == Decimal("930.00")
 
             # The shared Groceries-Expense counter splits per scenario: +100 / +70.
             groceries_counter = _counter_ledger_id(
@@ -966,9 +1049,10 @@ class TestOwnerIsolationViaJournalEntry:
     ):
         """Two independent owners settle cash; neither sees the other's.
 
-        Arithmetic: owner 1 settles a $100 Groceries expense on their Checking;
-        owner 2 settles a $200 Groceries expense on theirs.  Owner 1's Checking
-        ledger is -100.00 and owner 2's is -200.00 with no leakage.  Every
+        Arithmetic: owner 1 settles a $100 Groceries expense on their Checking
+        ($1000.00 opening); owner 2 settles a $200 Groceries expense on theirs
+        ($2000.00 opening).  Owner 1's Checking ledger is 1000 - 100 = 900.00
+        and owner 2's is 2000 - 200 = 1800.00 with no leakage.  Every
         journal entry's ``user_id`` matches its account owner, a ``Posting``
         carries no ``user_id`` of its own (its owner is reachable only via
         ``Posting.journal_entry.user_id``), and each owner's books reconcile in
@@ -995,10 +1079,10 @@ class TestOwnerIsolationViaJournalEntry:
             # No leakage: each owner's Checking ledger holds only their own.
             assert _independent_ledger_sum(
                 checking1, scenario1,
-            ) == Decimal("-100.00")
+            ) == Decimal("900.00")
             assert _independent_ledger_sum(
                 checking2, scenario2,
-            ) == Decimal("-200.00")
+            ) == Decimal("1800.00")
 
             # A Posting has no user_id; ownership is normalized onto the entry.
             assert not hasattr(Posting, "user_id")
@@ -1069,10 +1153,11 @@ class TestBackfillAndGoForwardAgree:
                 seed_user["categories"]["Groceries"].id,
             )
 
-            # Capture the go-forward legs.
+            # Capture the go-forward legs (Checking rides its $1000.00
+            # Step-5 opening: 1000 - 50).
             forward_checking = _independent_ledger_sum(checking.id, scenario_id)
             forward_counter = _ledger_account_sum(groceries_counter, scenario_id)
-            assert forward_checking == Decimal("-50.00")
+            assert forward_checking == Decimal("950.00")
             assert forward_counter == Decimal("50.00")
 
             # Clear to the pre-ledger historical state and re-post via the
@@ -1082,7 +1167,7 @@ class TestBackfillAndGoForwardAgree:
             clear_postings_for_transaction(txn_id)
             assert _independent_ledger_sum(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")  # cleared
+            ) == Decimal("1000.00")  # cleared back to the opening
             posted = _BACKFILL_MIGRATION._backfill_settled_transactions(
                 db.session,
             )
@@ -1179,6 +1264,116 @@ class TestRevertAndRecategorizeReconciles:
             _assert_full_reconciliation(scenario_id)
 
 
+class TestRevertAndMoveReconciles:
+    """A revert+move PATCH keeps every period's ledger attribution intact."""
+
+    def test_revert_move_resettle_attributes_per_period(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Settle in P, revert+move to F in one PATCH, re-settle; per-period ties.
+
+        The route-level R2 regression (the 2026-07-02 adversarial review's H1
+        class): a Paid $50 expense in period P is reverted to Projected AND
+        moved to a future period F in ONE PATCH (the finalised lock lifts on
+        the revert), then re-settled.  The handler applies the new
+        ``pay_period_id`` BEFORE the end-of-handler reconcile, so a reversal
+        stamped with the row's current period would land in F -- leaving P's
+        entry and its reversal straddling two periods, where truncating F
+        CASCADE-deletes half the pair and permanently strands the other
+        (``transaction_id`` SET NULL, unhealable).  Under the R2 attribution
+        rule the reversal lands in P: P's entries net to zero per ledger
+        account, F carries exactly the re-settled -50/+50, and the whole
+        sweep ties after every step.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            original = seed_periods_today[0]
+            moved_to = seed_periods_today[5]
+            txn = add_txn(
+                db.session, seed_user, original, "Groceries", "50.00",
+                category_key="Groceries",
+            )
+            db.session.commit()
+            txn_id = txn.id
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # Revert AND move in one PATCH (the H1 flow).
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "status_id": str(projected_id),
+                    "pay_period_id": str(moved_to.id),
+                },
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+            # The reversal landed in the ORIGINAL period: P nets to zero per
+            # ledger account, and F holds no entries at all yet.
+            assert _period_ledger_nets(txn_id, original.id) == {}
+            assert not _entry_ids_in_period(txn_id, moved_to.id)
+
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"status_id": str(done_id)},
+            ).status_code == 200
+            _assert_full_reconciliation(scenario_id)
+
+            # F carries exactly the re-settled split; P still nets to zero.
+            # (LINKED-kind lookup: a bare-account_id .scalar() would raise
+            # MultipleResultsFound beside the Step-5 anchor-equity twin.)
+            cash_ledger = linked_ledger_account(
+                _db.session, seed_user["account"].id,
+            ).id
+            moved_nets = _period_ledger_nets(txn_id, moved_to.id)
+            assert moved_nets[cash_ledger] == Decimal("-50.00")
+            assert sum(moved_nets.values()) == Decimal("0.00")
+            assert _period_ledger_nets(txn_id, original.id) == {}
+
+
+def _period_ledger_nets(transaction_id, pay_period_id):
+    """Return ``{ledger_account_id: net}`` for one transaction in one period.
+
+    Zero nets are dropped, so a period whose entries fully cancel (an
+    original + its reversal) returns ``{}`` -- the R2 attribution tests'
+    "nets to zero per ledger account" shape.  Independent of the service's
+    own per-period reader (a direct grouped query).
+    """
+    rows = (
+        _db.session.query(
+            Posting.ledger_account_id, _db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            JournalEntry.transaction_id == transaction_id,
+            JournalEntry.pay_period_id == pay_period_id,
+        )
+        .group_by(Posting.ledger_account_id)
+        .all()
+    )
+    return {
+        ledger_id: net for ledger_id, net in rows if net != 0
+    }
+
+
+def _entry_ids_in_period(transaction_id, pay_period_id):
+    """Return the journal-entry ids a transaction holds in one period."""
+    return [
+        entry_id for (entry_id,) in (
+            _db.session.query(JournalEntry.id)
+            .filter(
+                JournalEntry.transaction_id == transaction_id,
+                JournalEntry.pay_period_id == pay_period_id,
+            )
+            .all()
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Reverted transaction reconciles at zero (append-only correction discipline)
 # ---------------------------------------------------------------------------
@@ -1193,10 +1388,11 @@ class TestRevertedTransactionReconcilesAtZero:
         """Settle +50 expense, revert; the ledger nets to zero and ties.
 
         Arithmetic: a $50 Groceries expense posts -50 / +50, then a revert to
-        Projected reconciles a -50 / +50 reversal (append-only).  Checking and
-        Groceries-Expense each net to zero, the reverted row is no longer
-        ``is_settled`` so it drops from the source effect too, and two entries
-        survive (the original is never edited).
+        Projected reconciles a -50 / +50 reversal (append-only).
+        Groceries-Expense nets to zero and Checking lands back on its
+        $1000.00 opening, the reverted row is no longer ``is_settled`` so it
+        drops from the source effect too, and two entries survive (the
+        original is never edited).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1227,7 +1423,7 @@ class TestRevertedTransactionReconcilesAtZero:
 
             assert _independent_ledger_sum(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             assert _ledger_account_sum(
                 groceries_counter, scenario_id,
             ) == Decimal("0.00")
@@ -1303,7 +1499,7 @@ class TestHardDeletedTransactionReconcilesAtZero:
             ) == Decimal("0.00")
             assert _independent_ledger_sum(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             # Drives the transaction_id-NULL branch of the counter sweep.
             _assert_full_reconciliation(scenario_id)
 
@@ -1339,10 +1535,12 @@ class TestOracleIsNotVacuous:
             )
             db.session.commit()
             txn_id = txn.id
-            # Reconciled before tampering.
+            # Reconciled (absolutely) before tampering.
             assert _independent_ledger_sum(
                 checking.id, scenario_id,
-            ) == _independent_cash_txn_effect(checking.id, scenario_id)
+            ) == _opening_anchor(checking.id) + _independent_cash_txn_effect(
+                checking.id, scenario_id,
+            )
 
             # Tamper the estimate (transactions carry no balance trigger, so this
             # commits); with no actual, effective becomes 999.
@@ -1354,9 +1552,19 @@ class TestOracleIsNotVacuous:
 
             ledger = _independent_ledger_sum(checking.id, scenario_id)
             effect = _independent_cash_txn_effect(checking.id, scenario_id)
-            assert ledger == Decimal("-100.00")  # ledger unchanged
+            assert ledger == Decimal("900.00")  # ledger unchanged
             assert effect == Decimal("-999.00")  # transaction truth drifted
-            assert ledger != effect  # the oracle would catch this drift
+            # opening (1000) + effect (-999) != ledger (900): the drift shows.
+            assert ledger != _opening_anchor(checking.id) + effect
+            # Drive the REAL production-wide sweep helper (not just the inline
+            # re-derivation above) so a regression that broke the helper itself --
+            # e.g. one that stopped comparing the linked ledger to its source --
+            # would fail here.  ``match`` pins the linked-account reconciliation
+            # message specifically, so a future edit that weakened THAT comparison
+            # but left the non-empty guard or trial balance firing under tamper no
+            # longer keeps this test green -- the tooth cannot be lost undetected.
+            with pytest.raises(AssertionError, match="combined source effect"):
+                _assert_full_reconciliation(scenario_id)
 
     def test_trial_balance_catches_an_injected_leg(self, app, db, seed_user):
         """Injecting one extra leg pushes the trial balance off zero.
@@ -1369,17 +1577,22 @@ class TestOracleIsNotVacuous:
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
-            create_settled_cash_transaction(
+            txn = create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("100.00"),
                 category=seed_user["categories"]["Groceries"],
             )
             db.session.commit()
             assert _trial_balance() == Decimal("0.00")
 
-            # Inject one extra, unmatched leg onto an existing entry.  Flush (not
-            # commit) makes it visible; the DEFERRED balanced trigger validates
-            # only at COMMIT, which we never reach.
-            entry_id = _db.session.query(JournalEntry.id).scalar()
+            # Inject one extra, unmatched leg onto the transaction's entry
+            # (picked by its link -- the Step-5 openings mean several entries
+            # exist).  Flush (not commit) makes it visible; the DEFERRED
+            # balanced trigger validates only at COMMIT, which we never reach.
+            entry_id = (
+                _db.session.query(JournalEntry.id)
+                .filter_by(transaction_id=txn.id)
+                .scalar()
+            )
             _db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
                 "  (journal_entry_id, ledger_account_id, amount, "
@@ -1387,9 +1600,9 @@ class TestOracleIsNotVacuous:
                 "VALUES (:e, :l, :a, :k)"
             ), {
                 "e": entry_id,
-                "l": ledger_accounts_for_account(
+                "l": linked_ledger_account(
                     _db.session, seed_user["account"].id,
-                )[0].id,
+                ).id,
                 "a": Decimal("50.00"),
                 "k": ref_cache.posting_kind_id(PostingKindEnum.EXPENSE),
             })

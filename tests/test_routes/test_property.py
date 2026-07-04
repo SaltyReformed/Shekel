@@ -21,14 +21,23 @@ def _property_type_id(db):
     return db.session.query(AccountType).filter_by(name="Property").one().id
 
 
-def _make_property(db, seed_user, periods, name="House", rate=None):
-    """Create a Property via the service (no params unless ``rate`` given)."""
+def _make_property(
+    db, seed_user, periods, name="House", rate=None,
+    anchor_balance=Decimal("400000.00"),
+):
+    """Create a Property via the service (no params unless ``rate`` given).
+
+    The default $400,000 anchor posts a Step-5 opening correction at create
+    time, which makes the account archive-only under hard-delete Guard 5;
+    the hard-delete test passes ``Decimal("0.00")`` (a zero opening books
+    nothing, keeping the row deletable).
+    """
     acct = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
             account_type_id=_property_type_id(db),
             name=name,
-            anchor_balance=Decimal("400000.00"),
+            anchor_balance=anchor_balance,
             anchor_period_id=periods[0].id,
         ),
     )
@@ -89,7 +98,13 @@ class TestPropertyDetailPage:
     """The detail page renders the equity figures and the rate form."""
 
     def test_detail_renders_equity(self, app, auth_client, db, seed_user, seed_periods_today):
-        """GET the property page shows market value, equity, and LTV."""
+        """GET the property page shows market value, equity, and LTV.
+
+        Label strings match the Fable 5 band rebuild
+        (docs/design/account_detail_audit.md, Surface 5 verdict +
+        decisions 6-7): the hero label is "Equity" and the supporting
+        chips are "Market value" / "Secured debt" / "Loan-to-value".
+        """
         with app.app_context():
             acct = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
@@ -99,9 +114,11 @@ class TestPropertyDetailPage:
         resp = auth_client.get(f"/accounts/{acct_id}/property")
         assert resp.status_code == 200
         body = resp.data
-        assert b"Home Equity" in body
-        assert b"Market Value" in body
-        assert b"Loan-to-Value" in body
+        assert b"Equity" in body
+        assert b"Market value" in body
+        assert b"Secured debt" in body
+        assert b"Loan-to-value" in body
+        assert b"Secured by" in body
         # Market value renders (entered as 400000.00).
         assert b"400,000" in body
 
@@ -194,8 +211,12 @@ class TestPropertyDeletion:
     ):
         """Hard-deleting a Property removes its appreciation params row."""
         with app.app_context():
+            # $0 anchor: a non-zero anchor posts its Step-5 opening and the
+            # hard delete would archive instead (Guard 5); the subject here
+            # is the params-row cleanup on a real delete.
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+                anchor_balance=Decimal("0.00"),
             )
             loan = create_loan_account(seed_user, db.session, name="Mtg")
             loan.collateral_account_id = prop.id

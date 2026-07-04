@@ -24,15 +24,14 @@ class RetirementGapAnalysis:  # pylint: disable=too-many-instance-attributes
 
     Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
     because this is a cohesive single-return result aggregate -- every
-    field is one figure the ``retirement/_gap_analysis.html`` template
-    renders as a flat row-per-field table -- mirroring
-    ``amortization_engine.AmortizationRow`` /
+    field is one figure of the retirement net-frame analysis the
+    readiness producer (:mod:`app.services.retirement_readiness`) reads
+    -- mirroring ``amortization_engine.AmortizationRow`` /
     ``growth_engine.ProjectedBalance``. The pre-tax fields and their
     after-tax counterparts (``after_tax_monthly_pension``,
     ``after_tax_projected_savings``, ``after_tax_surplus_or_shortfall``)
-    are read side-by-side by that one consumer; nesting them would
-    fragment one domain concept and force template churn for no design
-    gain.
+    are read side-by-side by that consumer; nesting them would fragment
+    one domain concept for no design gain.
     """
     pre_retirement_net_monthly: Decimal
     monthly_pension_income: Decimal

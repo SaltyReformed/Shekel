@@ -124,6 +124,17 @@ class RetirementSettingsSchema(BaseSchema):
     ``user_settings`` DB CHECKs (``[0, 1]`` on both columns).  The
     ``@pre_load`` converts the form's user-facing percent (e.g.
     ``"4"`` for 4% SWR) to its fraction equivalent (``"0.04"``).
+
+    Every field is optional, so the assumptions panel's per-field saves
+    (P3a: one field per POST) and a multi-field submit validate through
+    the same schema.  ``merit_raise_horizon_years`` is a plain year
+    count (no percent conversion) whose 0-50 ``Range`` mirrors the DB
+    CHECK ``ck_user_settings_valid_merit_horizon``; it is NOT
+    ``allow_none`` -- the column is NOT NULL, so an empty submit means
+    "not provided" (the key is dropped), never a NULL write.  There is
+    deliberately NO field for an assumed annual return: its save
+    semantics are an open developer question, so the panel's return row
+    stays what-if-only.
     """
 
     _PERCENT_FIELDS = (
@@ -145,30 +156,50 @@ class RetirementSettingsSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+    merit_raise_horizon_years = fields.Integer(
+        validate=validate.Range(min=0, max=50),
+    )
+
+    @validates_schema
+    def validate_future_retirement_date(self, data, **kwargs):
+        """Reject a planned retirement date that is not in the future.
+
+        Mirrors the pension schemas' rule (M1): a past or today date
+        collapses the projection horizon to zero periods, producing a
+        contradictory page (a shortfall verdict beside a lever with no
+        periods to solve over).  ``None`` (clearing the date) stays
+        valid -- only a present-or-past DATE is rejected.
+        """
+        planned = data.get("planned_retirement_date")
+        if planned and planned <= date.today():
+            raise ValidationError(
+                "Planned retirement date must be in the future.",
+                field_name="planned_retirement_date",
+            )
 
 
-class RetirementGapQuerySchema(BaseSchema):
-    """Validates the /retirement/gap HTMX slider override query string.
+class RetirementReadinessQuerySchema(BaseSchema):
+    """Validates the /retirement/readiness HTMX what-if query string (P3a).
 
-    F-13: the slider's URL-editable ``swr`` parameter must reject
-    negative values rather than letting the calculator silently
-    collapse ``required_retirement_savings`` to zero.  Matches the
-    Commit 24 / HIGH-06 convention: the schema owns the percent-to-
-    fraction conversion via ``@pre_load`` so the route does no money
-    math.  ``Range(min=0, max=1)`` on the stored fraction mirrors
-    ``user_settings.safe_withdrawal_rate``'s CHECK constraint, so a
-    URL-edited ``swr=-5`` is rejected at the schema with a 422 instead
-    of silently zeroing the analysis.
-
-    F-17 (Commit 12 of the follow-up plan): the ``return_rate``
-    slider override is now routed through the same schema with the
-    same percent-to-fraction conversion -- this collapses the last
-    inline ``Decimal("100")`` division in the retirement route to
-    complete the "schemas own percent conversion" convention.  The
-    range mirrors ``investment_params.assumed_annual_return``'s
-    ``(-1, 1]`` storage bound (returns may be negative in a loss
-    scenario, but a -100% return is degenerate -- the growth engine's
-    per-period rate would be -1; DH-#28 follow-up).
+    The assumption what-ifs: ``swr`` rejects values outside ``[0, 1]``
+    (F-13: a URL-edited negative rate must 422, never silently zero the
+    required-savings figure -- the bound the retired gap fragment's
+    RetirementGapQuerySchema carried, folded in here when that fragment
+    retired in P3c); ``return_rate`` mirrors
+    ``investment_params.assumed_annual_return``'s ``(-1, 1]`` storage
+    bound (F-17: the schema owns the percent-to-fraction conversion via
+    ``@pre_load``, so the route does no money math);
+    ``merit_raise_horizon_years`` is 0-50, mirroring the DB CHECK and the
+    settings schema.  The two lever stepper values: ``months`` capped at
+    the P2b +180 search bound
+    (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`) and
+    ``contribution`` a money amount bounded to ``[0, 100000]`` (so it is
+    deliberately NOT in ``_PERCENT_FIELDS``; a URL-edited negative or
+    absurd amount is a 422).  All optional: an absent parameter means
+    "stored value" (no what-if on that row).  This is the ONE schema for
+    every lever/what-if refresh -- the P2c-era RetirementLeverQuerySchema
+    retired with its /retirement/levers route (M2: the page's steppers
+    all refresh through /retirement/readiness).
     """
 
     _PERCENT_FIELDS = ("swr", "return_rate")
@@ -187,5 +218,19 @@ class RetirementGapQuerySchema(BaseSchema):
         places=5, as_string=True, allow_none=True,
         validate=validate.Range(
             min=Decimal("-1"), max=Decimal("1"), min_inclusive=False,
+        ),
+    )
+    merit_raise_horizon_years = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=0, max=50),
+    )
+    months = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=0, max=180),
+    )
+    contribution = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=validate.Range(
+            min=Decimal("0"), max=Decimal("100000"),
         ),
     )

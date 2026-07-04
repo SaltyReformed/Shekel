@@ -27,7 +27,9 @@ from datetime import date
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
+from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import loan_posting_service
@@ -35,6 +37,34 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+
+
+def _reject_transfer_out_of_loan(from_account: Account) -> None:
+    """Reject a transfer whose SOURCE is an amortizing loan.
+
+    A transfer OUT of a loan (the loan as ``from_account``) is not a modeled
+    operation.  The amortization engine only projects payments INTO a loan, and
+    the loan's posting ledger assumes every loan shadow is a payment IN: the
+    per-payment interest / escrow split, the genesis reader's income-only
+    history walk, and the reconciliation oracle's superseding invariant
+    (``linked == settled_income_cash - per_loan_corrections``) all rest on it.
+    A disbursement would instead post a raw cash movement onto the loan's linked
+    ledger with no split correction and misproject every forward balance, so it
+    is forbidden at the sole transfer-creation chokepoint
+    (:func:`app.services.transfer_service.create_transfer`) rather than silently
+    corrupting the loan's balance.
+
+    Args:
+        from_account: The transfer's source account (already ownership-checked).
+
+    Raises:
+        ValidationError: When *from_account* is an amortizing loan.
+    """
+    if classify_account(from_account) is AccountProjectionKind.AMORTIZING:
+        raise ValidationError(
+            f"Cannot transfer money out of a loan: source account "
+            f"'{from_account.name}' is an amortizing loan."
+        )
 
 
 def _income_shadow_for_transfer(xfer: Transfer) -> Transaction | None:

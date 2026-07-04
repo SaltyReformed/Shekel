@@ -25,11 +25,15 @@ The load-bearing wiring properties, each pinned by a test below:
     payback chain) reverses before the row leaves the table;
   * carry-forward posts the confirmed effect of each envelope source it settles.
 
-After each mutation the per-account reconciliation invariant
-(``account_posting_total == settled_transfer_effect + settled_transaction_effect``)
-is asserted from the two independent producers -- the same equality the Commit-8
-oracle locks suite-wide.  All money is ``Decimal`` from strings, with the
-arithmetic shown per the testing standard.
+After each mutation the per-account reconciliation invariant is asserted in
+its Build-Order Step 5 ABSOLUTE form: ``account_posting_total == opening
+anchor + settled_transfer_effect + settled_transaction_effect``.  The seed
+Checking carries its $1000.00 opening correction from fixture time, and every
+settle in this suite is stamped at SERVER now (the seam's ``db.func.now()``,
+including carry-forward's ``settle_from_entries`` default) -- after the
+origination assertion -- so the settled effects ride on top of the opening
+and the Checking totals below are ``1000.00 + effect``.  All money is
+``Decimal`` from strings, with the arithmetic shown per the testing standard.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture pattern;
@@ -55,7 +59,7 @@ from app.services.entry_service import EntryDetails
 from tests._test_helpers import (
     add_txn,
     create_envelope_txn,
-    ledger_accounts_for_account,
+    linked_ledger_account,
 )
 
 
@@ -65,8 +69,8 @@ from tests._test_helpers import (
 
 
 def _linked_ledger_id(account):
-    """Return the linked ledger account id for a real *account*."""
-    return ledger_accounts_for_account(db.session, account.id)[0].id
+    """Return the LINKED ledger account id for *account* (never its twin)."""
+    return linked_ledger_account(db.session, account.id).id
 
 
 def _category_ledger_id(seed_user, category_key, ledger_class):
@@ -151,13 +155,16 @@ def _add_purchase(seed_user, txn, amount, *, is_credit=False):
 
 
 def _assert_reconciles(scenario_id, *accounts):
-    """Assert ledger == settled-source effect for each real account (the oracle).
+    """Assert ledger == opening + settled-source effect (the absolute oracle).
 
-    The per-account reconciliation invariant: the net of an account's posting
-    legs equals the combined net effect of its settled, non-deleted transfer
-    shadows AND ordinary transactions -- asserted from the two independent
-    producers so any divergence between the ledger and the source rows fails
-    loudly.
+    The per-account reconciliation invariant in its Step-5 ABSOLUTE form: the
+    net of an account's posting legs equals its opening anchor correction
+    (posted at fixture time; the origination row is each account's only
+    assertion here) plus the combined net effect of its settled, non-deleted
+    transfer shadows AND ordinary transactions.  Every settle in this suite
+    is stamped at server-now, after the assertion instant, so the effects
+    ride on top of the opening.  Asserted from independent producers so any
+    divergence between the ledger and the source rows fails loudly.
     """
     for account in accounts:
         posted = posting_service.account_posting_total(account.id, scenario_id)
@@ -165,8 +172,10 @@ def _assert_reconciles(scenario_id, *accounts):
             posting_service.settled_transfer_effect(account.id, scenario_id)
             + posting_service.settled_transaction_effect(account.id, scenario_id)
         )
-        assert posted == effect, (
-            f"account {account.id}: ledger {posted} != source effect {effect}"
+        opening = Decimal(str(account.current_anchor_balance))
+        assert posted == opening + effect, (
+            f"account {account.id}: ledger {posted} != opening {opening} "
+            f"+ source effect {effect}"
         )
 
 
@@ -329,7 +338,7 @@ class TestPatchPostingLifecycle:
             )) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("-50.00")
+            ) == Decimal("950.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
     def test_revert_and_recategorize_reconciles(
@@ -379,7 +388,7 @@ class TestPatchPostingLifecycle:
             assert _ledger_total(rent_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(scenario_id, checking)
 
             # Re-settle: now it posts to Rent (the current category).
@@ -424,7 +433,7 @@ class TestPatchPostingLifecycle:
             assert len(_entries_for_transaction(txn_id)) == 1
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("-50.00")
+            ) == Decimal("950.00")
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +465,7 @@ class TestCancelPostsNothing:
             assert _entries_for_transaction(txn_id) == []
             assert posting_service.account_posting_total(
                 seed_user["account"].id, seed_user["scenario"].id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +544,7 @@ class TestEnvelopePostingLifecycle:
             assert _ledger_total(groceries_ledger) == Decimal("70.00")
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("-70.00")
+            ) == Decimal("930.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
     def test_entry_credit_flip_on_settled_envelope_resyncs(
@@ -570,7 +579,7 @@ class TestEnvelopePostingLifecycle:
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
     def test_entry_delete_on_settled_envelope_resyncs(
@@ -605,7 +614,7 @@ class TestEnvelopePostingLifecycle:
             assert _ledger_total(groceries_ledger) == Decimal("40.00")
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("-40.00")
+            ) == Decimal("960.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
     def test_toggle_cleared_does_not_change_ledger(
@@ -637,7 +646,7 @@ class TestEnvelopePostingLifecycle:
             assert len(_entries_for_transaction(txn_id)) == 1
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("-40.00")
+            ) == Decimal("960.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
 
@@ -683,7 +692,7 @@ class TestDeleteReversesPostings:
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(scenario_id, checking)
 
     def test_soft_delete_template_settled_reverses(
@@ -722,7 +731,7 @@ class TestDeleteReversesPostings:
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(scenario_id, checking)
 
     def test_settled_payback_reversed_on_unmark_credit(
@@ -761,7 +770,7 @@ class TestDeleteReversesPostings:
             assert _ledger_total(cc_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(scenario_id, checking)
 
     def test_recursive_payback_chain_reverses_on_source_delete(
@@ -802,7 +811,7 @@ class TestDeleteReversesPostings:
             assert _ledger_total(cc_ledger) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")
             _assert_reconciles(scenario_id, checking)
 
 
@@ -875,4 +884,4 @@ class TestCarryForwardPostsSettledSources:
             assert _entries_for_transaction(source_id) == []
             assert posting_service.account_posting_total(
                 seed_user["account"].id, scenario_id,
-            ) == Decimal("0.00")
+            ) == Decimal("1000.00")

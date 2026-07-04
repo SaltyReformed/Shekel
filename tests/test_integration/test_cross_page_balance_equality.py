@@ -20,7 +20,11 @@ rendering surface MUST return the identical Decimal:
                                 ``balance_resolver.balances_for``.
   2. /savings                 -- ``savings_dashboard_service`` +
                                 ``GET /savings``.
-  3. /accounts checking detail -- ``GET /accounts/<id>/checking``.
+  3. /accounts cash detail    -- the balance ``GET /accounts/<id>/details``
+                                renders, read off its ``data-current-balance``
+                                hook (the L6 route-render lock: the ONE surface
+                                verified against real route output, not a
+                                re-call of the seam beneath it).
   4. Dashboard               -- ``dashboard_service.compute_balance_section``
                                 (the pulse hero) + ``GET /dashboard``.
   5. Year-end net-worth      -- ``year_end_summary_service.compute_year_end_summary``
@@ -59,6 +63,7 @@ Test IDs are C11-1..C11-6 mapping to the remediation plan's
 Commit 11 specification.
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -238,19 +243,40 @@ def _savings_value(ctx):
 
 
 def _accounts_checking_value(ctx):
-    """Read the /accounts checking-detail surface's current balance.
+    """Read the /accounts cash-detail balance the ROUTE actually rendered.
 
-    Mirrors the route's local ``current_bal = result.balances.get(current_period.id)``
-    where ``result`` now comes from the seam's cash-flow entry
-    ``balance_at.cash_balance_map`` (Level-1 Commit 8) -- the same seam call
-    the checking-detail route makes.  The fixture pins ``today`` inside the
-    anchor period, so ``current_period.id == anchor_period.id`` and the value
-    displayed equals ``balances[anchor_period.id]``.
+    Unlike the other cash readers, this one does not re-call the seam and
+    reconstruct the number the page ought to show -- it drives the real
+    ``GET /accounts/<id>/details`` request (the Fable 5 overhaul's unified
+    cash-detail page) and reads the balance the template rendered, off the
+    ``data-current-balance`` hook the hero balance carries (the raw Decimal,
+    not the formatted ``money()`` string, so the read is immune to
+    display-format changes).  This is the L6 route-render lock: a reader that
+    reconstructs the seam call would still match even if the route drifted onto
+    a different producer or a template bug mis-rendered the figure, because the
+    reader hardcodes the correct call.  Reading the rendered attribute makes
+    the cash-detail surface a genuinely distinct check (it was formerly a
+    byte-identical twin of :func:`_grid_value`'s ``cash_balance_map`` call) AND
+    catches a route that stopped rendering the seam's value.
+
+    The fixture pins ``today`` inside the anchor period, so the route's
+    ``current_period`` IS the anchor period and the rendered ``current_bal``
+    (``balances.get(current_period.id)``) equals ``balances[anchor_period.id]``
+    -- the same Decimal every other surface must agree on.
     """
-    result = balance_at.cash_balance_map(
-        ctx["account"], ctx["scenario"], ctx["all_periods"],
+    resp = ctx["client"].get(f"/accounts/{ctx['account_id']}/details")
+    assert resp.status_code == 200, (
+        f"/accounts/{ctx['account_id']}/details returned {resp.status_code}; "
+        "the cash-detail route must render the symptom-tuple data without "
+        "raising (the empty-state / falsy guards must not be zeroing the balance)"
     )
-    return result.balances[ctx["anchor_period"].id]
+    match = re.search(r'data-current-balance="([^"]*)"', resp.text)
+    assert match is not None, (
+        "the cash-detail response carried no data-current-balance attribute -- "
+        "the hero balance hook this route-render lock reads is gone; either the "
+        "template dropped it or the route rendered the empty-state branch"
+    )
+    return Decimal(match.group(1))
 
 
 def _year_end_per_account_value(ctx):
@@ -387,15 +413,21 @@ class TestCrossPageBalanceEquality:
         ``expected_balance`` pin alone would silently miss
         per-surface drifts that cancel in the aggregate.
 
-        The route surfaces (``GET /grid``, ``GET /savings``,
-        ``GET /accounts/<id>/checking``, ``GET /dashboard``) are
-        exercised once at the end of the body to lock the route-
-        level wiring; the service-level readers above are what the
-        equality assertion fires against because they expose the
-        underlying Decimal that the route template renders into the
-        HTML output (rendered HTML parsing is fragile and provides
-        no additional coverage over a route 200 + service-level
-        assertion combined).
+        Route coverage is layered (the L6 fix).  The ``accounts_checking``
+        reader drives the real ``GET /accounts/<id>/details`` and asserts the
+        balance the route RENDERED -- read off its ``data-current-balance``
+        hook -- so the equality set includes one surface verified against
+        actual route output.  This closes the gap an earlier revision left: a
+        service-level reader that re-calls the seam cannot catch a route that
+        drifted onto a different producer or mis-rendered the figure, because
+        it hardcodes the correct call; a render read can.  Reading a
+        raw-Decimal ``data-`` attribute (not the formatted currency text)
+        keeps that read robust, so it is NOT the fragile HTML scraping the
+        earlier revision rejected on fragility grounds.  The other HTTP
+        surfaces (``GET /grid``, ``GET /savings``, ``GET /dashboard``) still
+        get a 200 liveness check below; their rendered Decimal equals the
+        service reader's by the same seam the cash-detail route now proves is
+        wired.
         """
         with app.app_context():
             ctx = seed_cross_page_account(
@@ -403,6 +435,10 @@ class TestCrossPageBalanceEquality:
                 expense_amount=case["expense_amount"],
                 entries=case["entries"],
             )
+            # The accounts cash-detail reader drives the real route, so give it
+            # the authenticated client (the same fixture the liveness checks
+            # below use).
+            ctx["client"] = auth_client
 
             surface_values = _all_surface_values(ctx)
 
@@ -414,12 +450,13 @@ class TestCrossPageBalanceEquality:
                 surface_values, expected, f"case {case['id']!r}",
             )
 
-            # Route-level wiring: every HTTP surface returns 200 for
-            # the same fixture (i.e. the route plumbing does not
-            # raise on the symptom-tuple data even when the Decimal
-            # is negative or zero -- the empty-state / falsy guards
-            # the routes used to have are not silently zeroing the
-            # balance).
+            # Route-level liveness for the SERVICE-read surfaces: each returns
+            # 200 for the same fixture, so the route plumbing does not raise on
+            # the symptom-tuple data even when the Decimal is negative or zero
+            # (the empty-state / falsy guards the routes used to have are not
+            # silently zeroing the balance).  ``GET /accounts/<id>/details`` is
+            # exercised AND value-checked by ``_accounts_checking_value`` above,
+            # so it is not re-fetched here.
             resp = auth_client.get("/grid")
             assert resp.status_code == 200, (
                 f"/grid returned {resp.status_code} for case {case['id']!r}; "
@@ -429,11 +466,6 @@ class TestCrossPageBalanceEquality:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200, (
                 f"/savings returned {resp.status_code} for case {case['id']!r}"
-            )
-            resp = auth_client.get(f"/accounts/{ctx['account_id']}/checking")
-            assert resp.status_code == 200, (
-                f"/accounts/<id>/checking returned {resp.status_code} "
-                f"for case {case['id']!r}"
             )
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200, (
@@ -578,6 +610,7 @@ class TestSeamInjectionLock:
         self,
         app,
         seed_cross_page_account,
+        auth_client,
         monkeypatch,
     ):
         """C11-6: monkey-patching one surface produces a divergence the lock catches.
@@ -612,6 +645,10 @@ class TestSeamInjectionLock:
                 expense_amount=case["expense_amount"],
                 entries=case["entries"],
             )
+            # The accounts cash-detail reader drives the real route (it returns
+            # the correct 160.00 here); the divergence under test is injected
+            # into /savings below, not cash-detail.
+            ctx["client"] = auth_client
 
             # Patch the /savings reader to bypass the canonical
             # producer and return the silently-degraded value (the
@@ -652,6 +689,66 @@ class TestSeamInjectionLock:
                 "seam-injection negative control fired AssertionError "
                 "but the message did not reference the divergent "
                 f"Decimal 114.29: {excinfo.value!r}"
+            )
+
+    def test_route_render_lock_catches_a_cash_detail_route_misrender(
+        self,
+        app,
+        seed_cross_page_account,
+        auth_client,
+        monkeypatch,
+    ):
+        """L6: the cash-detail reader catches a ROUTE that mis-renders.
+
+        The other cash readers re-call the seam and reconstruct the number the
+        page ought to show, so a route that drifted onto a different producer
+        (or a template bug) would still pass them -- they hardcode the correct
+        call.  This control proves the accounts cash-detail reader is genuinely
+        different: it reads what ``GET /accounts/<id>/details`` actually
+        rendered.  Monkeypatching ONLY the route's ``_current_period_balance``
+        (the service-level readers are untouched, isolating the divergence to
+        the route-render path) makes the rendered ``data-current-balance``
+        diverge, and the cross-page equality assertion must fail naming the
+        ``accounts_checking`` surface.  Without this control a reader that
+        silently reconstructed the seam value -- the L6 defect the wiring
+        fixed -- would report green here, so this is the non-vacuity proof the
+        route-render lock bites.
+        """
+        with app.app_context():
+            case = next(c for c in _CASES if c["id"] == "pt01_base")
+            ctx = seed_cross_page_account(
+                anchor_balance=case["anchor_balance"],
+                expense_amount=case["expense_amount"],
+                entries=case["entries"],
+            )
+            ctx["client"] = auth_client
+
+            def _misrender(_balances, _current_period, _anchor):
+                """Force ONLY the cash-detail route to render a divergent balance."""
+                return Decimal("999.99")
+
+            monkeypatch.setattr(
+                "app.routes.accounts.detail._current_period_balance",
+                _misrender,
+            )
+
+            with pytest.raises(AssertionError) as excinfo:
+                _assert_surfaces_equal(
+                    _all_surface_values(ctx),
+                    case["expected_balance"],
+                    f"case {case['id']!r}",
+                )
+
+            assert "'accounts_checking'" in str(excinfo.value), (
+                "route-render negative control fired AssertionError but the "
+                "message did not name 'accounts_checking' -- the cash-detail "
+                f"reader is not reading the route's render: {excinfo.value!r}"
+            )
+            assert "999.99" in str(excinfo.value), (
+                "route-render negative control fired AssertionError but the "
+                "message did not reference the divergent rendered Decimal "
+                f"999.99 -- the reader did not read the route's value: "
+                f"{excinfo.value!r}"
             )
 
 

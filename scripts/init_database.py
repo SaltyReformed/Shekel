@@ -70,8 +70,11 @@ from alembic.config import Config
 from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
-from app.posting_infrastructure import apply_posting_infrastructure
-from app.services import loan_posting_service
+from app.posting_infrastructure import (
+    apply_ledger_append_only_privileges,
+    apply_posting_infrastructure,
+)
+from app.services import account_posting_service, loan_posting_service
 # pylint: enable=wrong-import-position
 
 
@@ -96,7 +99,7 @@ def is_fresh_database():
 def init_fresh_database(app):
     """Create the schema, the audit + posting infrastructure, and stamp Alembic.
 
-    Four steps in order:
+    Five steps in order:
 
     1. ``db.create_all()`` -- materialise every SQLAlchemy-modeled
        table.  This covers the ``ref``, ``auth``, ``budget``, and
@@ -118,7 +121,13 @@ def init_fresh_database(app):
        Like the audit trigger, these are raw SQL outside the model
        registry, so ``db.create_all`` (which made the
        ``budget.account_postings`` table) does not create them.
-    4. ``alembic stamp head`` -- mark every migration as applied so
+    4. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
+       on the two ledger tables from ``shekel_app`` (review M1/R4).
+       Required on this path specifically: ``init_db_role.sql`` ran
+       BEFORE the tables existed (its table-guarded REVOKE skipped),
+       and the stamp in step 5 marks the revoke migration
+       (``e3c23fadb21d``) as applied without running it.
+    5. ``alembic stamp head`` -- mark every migration as applied so
        subsequent ``flask db upgrade`` calls only apply
        newly-authored migrations.
 
@@ -144,6 +153,19 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Posting infrastructure ready.")
+
+    # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
+    # tables were just created AFTER init_db_role.sql ran (its table-guarded
+    # REVOKE skipped), and the Alembic stamp below marks the revoke migration
+    # (e3c23fadb21d) as applied without running it -- so this call is what
+    # closes UPDATE/DELETE for shekel_app on a fresh database.  A no-op when
+    # the role does not exist; idempotent when it does.
+    print("Applying ledger append-only privileges (shekel_app)...")
+    apply_ledger_append_only_privileges(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Ledger append-only privileges ready.")
 
     # Stamp Alembic so it knows all migrations are "applied".
     alembic_cfg = Config("alembic.ini")
@@ -202,6 +224,52 @@ def backfill_loan_payment_postings_after_migration():
     print(f"Loan genesis-ledger backfill complete ({len(posted)} loan(s) reconciled).")
 
 
+def backfill_all_account_anchor_postings_after_migration():
+    """Post every non-loan account's anchor genesis ledger after the chain is at head.
+
+    Build-Order Step 5, C7.  Posts every NON-loan account's opening and
+    true-up anchor corrections (the equity counter-leg of each
+    ``AccountAnchorHistory`` assertion), so after this the trial balance closes
+    app-wide: every non-loan linked ledger sums to an ABSOLUTE balance.  Like
+    the loan genesis backfill this cannot run inside an Alembic migration -- it
+    needs the ``ref_cache`` / service layer, and this migration host builds the
+    app with ``init_ref_cache=False`` (the pre-migration bootstrap window; see
+    the ``3104f87`` deploy fix) so ``ref_cache`` is off while migrations run.
+    Unlike the Step-2 / Step-3 cash backfills, an anchor correction is a
+    moment-granular walk over the account's assertions against its linked
+    ledger, not a one-line SQL formula, so it cannot be reproduced in raw SQL
+    without duplicating that walk.  So it runs HERE, once the chain has reached
+    head and every ref row (the ``account_opening`` / ``account_trueup``
+    sources, the ``anchor_equity`` ledger-account kind) exists: it re-uses the
+    ``ref_cache`` this host initialised for the loan backfill above, then
+    delegates to the idempotent
+    :func:`app.services.account_posting_service.backfill_all_account_anchor_postings`.
+
+    Runs only on the existing-database path (the fresh-database branch stamps
+    Alembic without running migrations and its ref tables are not seeded until
+    after this host exits).  It rolls back and re-initialises ``ref_cache`` on a
+    fresh transaction first -- redundant after the loan backfill above committed,
+    but it keeps the hook self-contained and correct when invoked in isolation
+    (the deploy sequence and the backfill suite both call it directly).
+    Idempotent and self-healing (reconcile-to-target), so it is safe on every
+    deploy -- an account already carrying its go-forward corrections is at target
+    and nothing is re-posted.  Commits the corrections in one transaction; the
+    deferred balanced-journal trigger validates every entry at that COMMIT, so an
+    unbalanced correction aborts the deploy loud.
+    """
+    print("Backfilling historical account anchor ledger (opening/true-up)...")
+    # Fresh transaction + ref_cache re-init, so the hook is correct in isolation
+    # (see the loan backfill above for the idle-read-transaction rationale).
+    db.session.rollback()
+    ref_cache.init(db.session)
+    posted = account_posting_service.backfill_all_account_anchor_postings()
+    db.session.commit()
+    print(
+        f"Account anchor-ledger backfill complete "
+        f"({len(posted)} account(s) reconciled)."
+    )
+
+
 if __name__ == "__main__":
     # init_ref_cache=False: this migration host builds the app only for an
     # Alembic context and runs BEFORE the migrations seed new ref rows, so the
@@ -215,3 +283,4 @@ if __name__ == "__main__":
         else:
             migrate_existing_database()
             backfill_loan_payment_postings_after_migration()
+            backfill_all_account_anchor_postings_after_migration()

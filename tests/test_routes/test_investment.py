@@ -921,7 +921,7 @@ class TestContributionPrompt:
         html = resp.data.decode()
         assert "No paycheck deduction linked" in html
         # With no active profile the deduction path resolves
-        # _salary_profile_action="list" -> url_for("salary.list_profiles")
+        # _salary_profile_action="list" -> url_for("salary.cockpit")
         # (/salary), so salary_profile_url is always set and the prompt
         # renders the reachable "Go to Salary Profile" link. This pins the
         # URL-resolution invariant: a broken endpoint name here would 500.

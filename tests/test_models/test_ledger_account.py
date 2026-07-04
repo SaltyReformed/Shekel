@@ -21,7 +21,7 @@ its migration jointly guarantee:
   * (Step 3) ``uq_ledger_accounts_category`` keys one category ledger
     account per (owner, category, class) and ``uq_ledger_accounts_uncategorized``
     one *fallback* per (owner, class) (keyed ``WHERE is_fallback``); those
-    plus ``uq_ledger_accounts_account`` constrain the linked / category /
+    plus ``uq_ledger_accounts_account_kind`` constrain the linked / category /
     fallback kinds, while deleted-category *orphans* (``is_fallback`` False,
     NULL/NULL) carry no unique and coexist freely;
   * (Step 3) ``ck_ledger_accounts_account_or_category_null`` forbids a row
@@ -35,6 +35,8 @@ its migration jointly guarantee:
   * the table is registered for auditing and its trigger fires.
 """
 from __future__ import annotations
+
+from decimal import Decimal
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -58,16 +60,24 @@ def _kind_id(member):
 
 
 class TestPartialUnique:
-    """``uq_ledger_accounts_account`` -- one linked row per account."""
+    """``uq_ledger_accounts_account_kind`` -- one row per (account, kind).
+
+    Re-keyed by Step 5 (migration ``b7d9f3a1c5e8``) from the original
+    single-column ``uq_ledger_accounts_account``: the ``anchor_equity``
+    twin shares the ``account_id`` column with the ``linked`` row, so the
+    key gained ``kind_id`` -- one row of EACH account-linked kind per
+    account, never two of either.
+    """
 
     def test_second_linked_row_for_same_account_rejected(
         self, app, db, seed_user,
     ):
-        """A second ledger account for the same ``account_id`` trips the index.
+        """A second LINKED row for the same ``account_id`` trips the index.
 
         The account already has one paired row from the sync hook; a second
-        linked row with the same ``account_id`` must raise on the partial
-        unique index (the uniqueness applies to linked rows only).
+        linked row with the same ``(account_id, kind_id)`` must raise on the
+        partial unique index (the uniqueness applies per account-linked
+        kind).
         """
         with app.app_context():
             account = create_account_of_type(seed_user, _db.session, "Checking", "Dup Checking")
@@ -82,11 +92,56 @@ class TestPartialUnique:
                 _db.session.commit()
             _db.session.rollback()
 
+    def test_anchor_equity_twin_coexists_but_never_duplicates(
+        self, app, db, seed_user,
+    ):
+        """One ``anchor_equity`` twin per account: coexists, second rejected.
+
+        The Step-5 widening this re-key exists for: an ``anchor_equity``
+        row sharing the linked row's ``account_id`` INSERTs cleanly
+        (different ``kind_id``), while a SECOND anchor-equity row for the
+        same account trips the ``(account_id, kind_id)`` key exactly as a
+        duplicate linked row would.
+        """
+        with app.app_context():
+            # $0 anchor: the zero-delta rule mints NO opening and NO twin, so
+            # this test constructs the twin manually at the storage tier.
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Twin Checking",
+                anchor_balance=Decimal("0.00"),
+            )
+            _db.session.add(LedgerAccount(
+                user_id=account.user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EQUITY),
+                kind_id=_kind_id(LedgerAccountKindEnum.ANCHOR_EQUITY),
+                account_id=account.id,
+                name=f"{account.name} -- Opening",
+            ))
+            _db.session.commit()
+            rows = (
+                _db.session.query(LedgerAccount)
+                .filter_by(account_id=account.id)
+                .count()
+            )
+            assert rows == 2  # the linked row + the equity twin
+
+            with pytest.raises(IntegrityError):
+                _db.session.add(LedgerAccount(
+                    user_id=account.user_id,
+                    class_id=_class_id(LedgerAccountClassEnum.EQUITY),
+                    kind_id=_kind_id(LedgerAccountKindEnum.ANCHOR_EQUITY),
+                    account_id=account.id,
+                    name=f"{account.name} -- Opening",
+                ))
+                _db.session.commit()
+            _db.session.rollback()
+
     def test_multiple_unlinked_rows_permitted(self, app, db, seed_user):
         """Multiple unlinked rows coexist -- the linked unique excludes them.
 
-        ``uq_ledger_accounts_account`` is partial (``WHERE account_id IS NOT
-        NULL``), so unlinked rows (NULL ``account_id``) never collide on it.
+        ``uq_ledger_accounts_account_kind`` is partial (``WHERE account_id IS
+        NOT NULL``), so unlinked rows (NULL ``account_id``) never collide on
+        it.
         Two DISTINCT category rows (different ``category_id``, same class)
         demonstrate this: they fall outside the linked unique, are kept apart
         by ``uq_ledger_accounts_category``, and coexist.
@@ -189,7 +244,12 @@ class TestLinkedRowDisplayName:
         the display label is never a stale snapshot.
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Checking", "Original Name")
+            # $0 anchor keeps the chart at the single linked row this
+            # storage-tier test reads with .one().
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Original Name",
+                anchor_balance=Decimal("0.00"),
+            )
             ledger_account = (
                 _db.session.query(LedgerAccount)
                 .filter_by(account_id=account.id)
@@ -226,7 +286,12 @@ class TestForeignKeyActions:
         account a delete can reach (see the model's impossibility argument).
         """
         with app.app_context():
-            account = create_account_of_type(seed_user, _db.session, "Savings", "Empty Savings")
+            # $0 anchor: a truly EMPTY account (a non-zero one posts its
+            # Step-5 opening and is archive-only, never hard-deletable).
+            account = create_account_of_type(
+                seed_user, _db.session, "Savings", "Empty Savings",
+                anchor_balance=Decimal("0.00"),
+            )
             account_id = account.id
             ledger_account_id = (
                 _db.session.query(LedgerAccount)
@@ -400,7 +465,7 @@ class TestCategoryFallbackUniques:
     ``uq_ledger_accounts_uncategorized`` (one *fallback* per owner+class,
     keyed ``WHERE is_fallback``) are the natural keys of the per-category
     chart of accounts.  Their predicates are disjoint from each other and
-    from ``uq_ledger_accounts_account``, and deleted-category *orphans*
+    from ``uq_ledger_accounts_account_kind``, and deleted-category *orphans*
     (``is_fallback`` False, NULL/NULL) fall outside every unique, so all four
     row kinds coexist correctly.
     """
@@ -651,16 +716,19 @@ class TestAccountOrCategoryExclusiveCheck:
         The account's auto-paired linked row is removed first
         (``ledger_accounts`` is not append-only) so the only constraint a
         both-set row can violate is the partition CHECK, not
-        ``uq_ledger_accounts_account`` -- pinning the CHECK as the surface
+        ``uq_ledger_accounts_account_kind`` -- pinning the CHECK as the surface
         regardless of constraint-evaluation order.
         """
         with app.app_context():
+            # $0 anchor keeps the chart at the single linked row this test
+            # removes below.
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Both Links",
+                anchor_balance=Decimal("0.00"),
             )
             category = seed_user["categories"]["Groceries"]
             # Free the account_id by removing its linked row so a both-set
-            # row cannot collide on uq_ledger_accounts_account.
+            # row cannot collide on uq_ledger_accounts_account_kind.
             linked = (
                 _db.session.query(LedgerAccount)
                 .filter_by(account_id=account.id)
@@ -719,11 +787,14 @@ class TestFallbackShapeCheck:
 
         The account's auto-paired linked row is removed first so the only
         constraint a (linked AND is_fallback) row can violate is the
-        fallback-shape CHECK, not ``uq_ledger_accounts_account``.
+        fallback-shape CHECK, not ``uq_ledger_accounts_account_kind``.
         """
         with app.app_context():
+            # $0 anchor keeps the chart at the single linked row this test
+            # removes below.
             account = create_account_of_type(
                 seed_user, _db.session, "Checking", "Fallback Account",
+                anchor_balance=Decimal("0.00"),
             )
             linked = (
                 _db.session.query(LedgerAccount)
@@ -769,7 +840,7 @@ class TestLoanLedgerShapeAndUnique:
         Expense class -- the shape the Step-4 resolver will create.  It coexists
         with the loan account's own linked row (different shape, different
         index), proving the loan unique does not collide with
-        ``uq_ledger_accounts_account``.
+        ``uq_ledger_accounts_account_kind``.
         """
         with app.app_context():
             loan = create_account_of_type(
@@ -807,7 +878,7 @@ class TestLoanLedgerShapeAndUnique:
         ``ck_ledger_accounts_loan_shape`` forbids ``account_id`` on a
         ``loan_account_id`` row.  The loan's auto-paired linked row is removed
         first so the only constraint a (loan AND account) row can violate is the
-        loan-shape CHECK, not ``uq_ledger_accounts_account`` -- pinning the
+        loan-shape CHECK, not ``uq_ledger_accounts_account_kind`` -- pinning the
         CHECK as the surface regardless of constraint-evaluation order.
         """
         with app.app_context():
@@ -991,7 +1062,12 @@ class TestAuditTableRegistration:
                 "   AND operation = 'INSERT'"
             )).scalar()
 
-            create_account_of_type(seed_user, _db.session, "Checking", "Audited Account")
+            # $0 anchor: exactly one ledger_accounts INSERT (a non-zero
+            # anchor would also mint the Step-5 anchor-equity twin).
+            create_account_of_type(
+                seed_user, _db.session, "Checking", "Audited Account",
+                anchor_balance=Decimal("0.00"),
+            )
 
             after = _db.session.execute(_db.text(
                 "SELECT count(*) FROM system.audit_log "
