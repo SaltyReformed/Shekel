@@ -12,6 +12,7 @@ from decimal import Decimal
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
+from app.utils.dates import to_display_date
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
@@ -308,10 +309,14 @@ class Transaction(
 
         Positive means paid early, negative means paid late, zero means
         paid on the due date.  Returns None when either field is missing.
+        ``paid_at`` is converted to the user's DISPLAY timezone before it is
+        truncated to a day (the app-wide "store UTC, display Eastern" rule),
+        so an 8:05pm-Eastern settle on the due date counts as ON TIME, not a
+        day late by UTC drift.  ``due_date`` is already a civil date.
         """
         if self.due_date is None or self.paid_at is None:
             return None
-        return (self.due_date - self.paid_at.date()).days
+        return (self.due_date - to_display_date(self.paid_at)).days
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

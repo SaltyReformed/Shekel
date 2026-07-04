@@ -2872,17 +2872,19 @@ class TestPaymentTimeliness:
         periods = seed_periods
         cats = data["categories"]
 
+        # Noon UTC so the paid civil day is unambiguous in the display
+        # timezone too (F3): midnight UTC would be the prior Eastern day.
         _create_paid_expense(
             account, scenario, periods[0], "Bill A",
             Decimal("100.00"), cats["Rent"],
             due_date_val=date(2026, 1, 15),
-            paid_at_val=datetime(2026, 1, 10, tzinfo=timezone.utc),
+            paid_at_val=datetime(2026, 1, 10, 12, tzinfo=timezone.utc),
         )
         _create_paid_expense(
             account, scenario, periods[1], "Bill B",
             Decimal("100.00"), cats["Rent"],
             due_date_val=date(2026, 1, 28),
-            paid_at_val=datetime(2026, 1, 25, tzinfo=timezone.utc),
+            paid_at_val=datetime(2026, 1, 25, 12, tzinfo=timezone.utc),
         )
         db.session.commit()
 
@@ -2891,6 +2893,33 @@ class TestPaymentTimeliness:
 
         # (5 + 3) / 2 = 4.00
         assert pt["avg_days_before_due"] == Decimal("4.00")
+
+    def test_payment_timeliness_evening_eastern_is_on_time(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An 8:05pm-Eastern settle on the due date counts on time, not late (F3).
+
+        Paid 2026-01-16 01:05 UTC == 2026-01-15 8:05pm Eastern (EST, UTC-5) on
+        a Jan 15 due date.  Truncating ``paid_at`` in UTC lands on Jan 16 (one
+        day late); the display-timezone rule lands it on the Jan 15 due date,
+        so the bill is on time and adds 0 to the average -- an end-to-end proof
+        that the year-end timeliness stats route through the F3 fix.
+        """
+        data = seed_user
+        _create_paid_expense(
+            data["account"], data["scenario"], seed_periods[0],
+            "Evening Bill", Decimal("100.00"), data["categories"]["Rent"],
+            due_date_val=date(2026, 1, 15),
+            paid_at_val=datetime(2026, 1, 16, 1, 5, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        pt = compute_year_end_summary(data["user"].id, YEAR)[
+            "payment_timeliness"
+        ]
+        assert pt["paid_on_time"] == 1
+        assert pt["paid_late"] == 0
+        assert pt["avg_days_before_due"] == Decimal("0.00")
 
     def test_payment_timeliness_no_data(self, app, db, seed_user,
                                         seed_periods):
