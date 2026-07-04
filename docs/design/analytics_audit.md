@@ -603,4 +603,11 @@ P3 notes / residuals:
 3. Deferred unchanged: stale-anchor badge (P1 note 4), year view (decision 10), account-scope label
    and measured/modeled chips page-wide (slice 4).
 4. The full-suite gate could not be run in isolation this session (shared test DB busy with parallel
-   harness work); it must be green before the P2 commit ships.
+   harness work); it must be green before the P2 commit ships. (Resolved same day: run in isolation
+   after clearance, 7190 passed; committed as `11d10c80`.)
+
+### P3 acceptance (COMPLETE 2026-07-04)
+
+Developer drove the live page on real data and accepted: "Calendar looks good." Slice 1 (Calendar)
+is CLOSED -- P1 `19b453a7`, P2 `11d10c80`, acceptance recorded here. The P3 residuals above stand as
+noted (no defects raised during the drive). Next: slice 2, Taxes (T-P1 annual liability service).
