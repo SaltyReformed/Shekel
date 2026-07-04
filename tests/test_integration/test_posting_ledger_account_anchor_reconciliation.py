@@ -69,7 +69,7 @@ standard.
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -84,10 +84,15 @@ from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
+from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import account_posting_service, posting_service
+from app.services import (
+    account_posting_service,
+    posting_service,
+    transfer_service,
+)
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
     create_account_of_type,
@@ -1334,3 +1339,158 @@ class TestOracleIsNotVacuous:
 
             # Discard the injected leg; the deferred trigger never fires.
             _db.session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 11. F1: a settled transfer's attribution mutation stays reconciled
+# ---------------------------------------------------------------------------
+
+
+def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
+    """Sum an account's transfer-linked LINKED-ledger legs in one pay period.
+
+    The transfer cash on *account_id*'s linked ledger (entries carrying a
+    ``transfer_id``) scoped to a single ``pay_period_id`` -- so a settled period
+    move can be checked to have moved the effect (R2): the old period nets to
+    zero and the new period carries it.
+    """
+    return (
+        _db.session.query(
+            _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0"))
+        )
+        .select_from(Posting)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
+        .filter(
+            LedgerAccount.account_id == account_id,
+            LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.LINKED,
+            ),
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.pay_period_id == period_id,
+            JournalEntry.transfer_id.isnot(None),
+        )
+        .scalar()
+    )
+
+
+class TestSettledTransferAttributionMutation:
+    """A settled transfer's period / paid_at edit keeps the anchor sound (F1)."""
+
+    def test_settled_period_move_reposts_and_reconciles(
+        self, app, db, seed_user,
+    ):
+        """Moving a settled transfer's period re-posts its cash (R2) and reconciles.
+
+        A $150.00 Checking -> Savings transfer settled in the bootstrap period
+        (riding on top of both openings; Savings 200 + 150 = 350).  Moving it to
+        a second period through ``update_transfer`` -- the settled-row period
+        edit the C6 review M2 flagged as unreconciled -- now fires the Step-2
+        reconcile because ``pay_period_id`` is in ``_POSTING_RELEVANT_FIELDS``:
+        the Savings transfer cash nets to ZERO in the old period and +150.00 in
+        the new one (R2), the account total is unchanged (350.00, no
+        double-count), and the absolute invariant still holds with NO manual
+        account-posting sync.  Before F1 the period edit skipped the reconcile,
+        stranding the cash in the old period.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Move Savings",
+                anchor_balance=Decimal("200.00"),
+            )
+            period2 = PayPeriod(
+                user_id=user_id, start_date=date(2026, 2, 6),
+                end_date=date(2026, 2, 19), period_index=1,
+            )
+            db.session.add(period2)
+            db.session.commit()
+
+            transfer = create_settled_transfer(
+                seed_user, db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("150.00"),
+            )
+            db.session.commit()
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("350.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # Move the SETTLED transfer's period through the service.
+            transfer_service.update_transfer(
+                transfer.id, user_id, pay_period_id=period2.id,
+            )
+            db.session.commit()
+
+            # R2: the transfer cash moved to the new period (old nets to zero),
+            # with no double-count in the account total.
+            assert _transfer_net_in_period(
+                savings.id, scenario_id, seed_user["bootstrap_period"].id,
+            ) == Decimal("0.00")
+            assert _transfer_net_in_period(
+                savings.id, scenario_id, period2.id,
+            ) == Decimal("150.00")
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("350.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+    def test_settled_paid_at_move_across_anchor_reconciles(
+        self, app, db, seed_user,
+    ):
+        """Moving a settled transfer's paid_at across the anchor re-derives openings.
+
+        A $150.00 Checking -> Savings transfer settled AFTER both origination
+        anchors (rides on top): Savings 200 + 150 = 350, Checking 1000 - 150 =
+        850.  Moving its ``paid_at`` to BEFORE the anchors (a 2024 instant)
+        through ``update_transfer`` makes the transfer PRE-assertion, so it must
+        be ABSORBED into the openings.  ``paid_at`` changes no leg, so the
+        Step-2 reconcile-to-target writes nothing and its effect-time self-heal
+        never fires; the F1 direct resync re-derives both endpoints' openings so
+        the absolute invariant still holds with NO manual sync.  Post-move both
+        accounts read their anchors (Savings 200, Checking 1000): the transfer
+        is absorbed, nothing rides on top.  Before F1 the openings stayed at
+        their ride-on-top values (Savings 350) while the invariant's RHS dropped
+        to 200 -- a silently stale correction.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "PaidAt Savings",
+                anchor_balance=Decimal("200.00"),
+            )
+            db.session.commit()
+
+            transfer = create_settled_transfer(
+                seed_user, db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("150.00"),
+            )
+            db.session.commit()
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("350.00")
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # Move paid_at BEFORE both origination anchors (server-now 2026).
+            transfer_service.update_transfer(
+                transfer.id, user_id,
+                paid_at=datetime(2024, 1, 5, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            # Pre-assertion now: absorbed into the openings, nothing on top.
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("200.00")
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            latest_asserted_at, _latest = _latest_assertion(savings.id)
+            assert _independent_post_assertion_source_effect(
+                savings.id, scenario_id, latest_asserted_at,
+            ) == Decimal("0.00")
+            _assert_account_anchors_reconcile(scenario_id)
