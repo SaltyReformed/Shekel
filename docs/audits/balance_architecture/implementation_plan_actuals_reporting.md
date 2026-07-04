@@ -39,7 +39,7 @@ in throughout. Developer approval: 2026-07-03.
   twin -- the C6-checklist guarantee); Equity class, name snapshot, idempotent under the re-keyed
   unique; 8 new tests incl. the C3-hardening coexistence proof (hook + `_ledger_account_for` keep
   resolving the LINKED row beside a live twin).
-- C5 (walk + reconcile, pure) -- IN THIS COMMIT: `app/services/_posting_reconcile.py` (the loan
+- C5 (walk + reconcile, pure) -- DONE (`8c2e9f9e`): `app/services/_posting_reconcile.py` (the loan
   package's `_common` graduated to a services-level shared module and grew the pieces both anchor
   reconciles must agree on: `delta_legs` / `summed_posting_legs` / `account_owner_id` +
   `posted_correction_legs` / `merge_target_legs` / `emit_anchor_correction_entry`, so the two
