@@ -3,179 +3,6 @@
 {% from "_recurrence_macros.html" import recurrence_cell with context %}
 {% block title %}Recurring -- Shekel{% endblock title %}
 
-{# ------------------------------------------------------------------ #}
-{# Local render macros.  Inline macros see top-level imports (money,   #}
-{# recurrence_cell) and their own args; the page-wide unit choice is  #}
-{# passed in as ``show_pp`` because it is a render-time local, not a   #}
-{# template global.  Money is never computed here -- the producer      #}
-{# passed both units in; these only pick and format one.               #}
-{# ------------------------------------------------------------------ #}
-{% macro equiv(pair, show_pp) %}
-{%- set val = pair.per_paycheck if show_pp else pair.monthly -%}
-{%- if val is none -%}<span class="text-muted">--</span>{%- else -%}{{ money(val) }}{%- endif -%}
-{% endmacro %}
-
-{% macro next_date_cell(value) %}
-{%- if value -%}{{ value.strftime('%b %d, %Y') }}{%- else -%}<span class="text-muted">--</span>{%- endif -%}
-{% endmacro %}
-
-{# Income and expense sections share this structure (category context, #}
-{# transaction-template action URLs, envelope/companion badges that    #}
-{# only ever render on expenses).                                      #}
-{% macro txn_section(title, section, show_pp) %}
-<section class="mb-4">
-  <div class="d-flex justify-content-between align-items-center border-bottom pb-1 mb-2">
-    <h5 class="mb-0">{{ title }}</h5>
-    <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
-  </div>
-  {% if section.rows %}
-  <div class="table-responsive">
-  <table class="table table-hover table-sm align-middle">
-    <caption class="visually-hidden">{{ title }} recurring definitions</caption>
-    <thead class="table-light">
-      <tr>
-        <th scope="col">Name</th>
-        <th scope="col">Category</th>
-        <th scope="col" class="text-end">Amount</th>
-        <th scope="col">Recurrence</th>
-        <th scope="col" class="text-end">{{ 'Per paycheck' if show_pp else 'Monthly' }}</th>
-        <th scope="col">Next</th>
-        <th scope="col">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in section.rows %}
-      {% set t = row.template %}
-      <tr>
-        <td>
-          {{ t.name }}
-          {% if t.is_envelope %}
-            <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
-              <i class="bi bi-cart"></i>
-            </span>
-          {% endif %}
-          {% if t.companion_visible %}
-            <span class="badge bg-success-subtle text-success ms-1" title="Companion visible">
-              <i class="bi bi-eye"></i>
-            </span>
-          {% endif %}
-        </td>
-        <td>{{ t.category.display_name if t.category else '--' }}</td>
-        <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-        <td>{{ recurrence_cell(t) }}</td>
-        <td class="text-end font-mono">
-          {{ equiv(row.equivalent, show_pp) }}
-          {% if row.share_pct is not none %}
-            <small class="text-muted d-block">{{ row.share_pct }}% of section</small>
-          {% endif %}
-        </td>
-        <td>{{ next_date_cell(row.next_date) }}</td>
-        <td class="text-nowrap">
-          <a href="{{ url_for('templates.edit_template', template_id=t.id) }}"
-             class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ t.name }}">
-            <i class="bi bi-pencil"></i>
-          </a>
-          <form method="POST" action="{{ url_for('templates.archive_template', template_id=t.id) }}"
-                class="d-inline"
-                data-confirm="Archive this recurring transaction? All projected transactions will be removed.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-warning" aria-label="Archive {{ t.name }}">
-              <i class="bi bi-archive"></i>
-            </button>
-          </form>
-          <form method="POST" action="{{ url_for('templates.hard_delete_template', template_id=t.id) }}"
-                class="d-inline"
-                data-confirm="Permanently delete this recurring transaction? This cannot be undone.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
-              <i class="bi bi-trash"></i>
-            </button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% else %}
-  <p class="text-muted small mb-0">None yet.</p>
-  {% endif %}
-</section>
-{% endmacro %}
-
-{% macro transfer_section(section, show_pp) %}
-<section class="mb-4">
-  <div class="d-flex justify-content-between align-items-center border-bottom pb-1 mb-2">
-    <h5 class="mb-0">Transfers</h5>
-    <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
-  </div>
-  {% if section.rows %}
-  <div class="table-responsive">
-  <table class="table table-hover table-sm align-middle">
-    <caption class="visually-hidden">Recurring transfer definitions</caption>
-    <thead class="table-light">
-      <tr>
-        <th scope="col">Name</th>
-        <th scope="col">From &rarr; To</th>
-        <th scope="col" class="text-end">Amount</th>
-        <th scope="col">Recurrence</th>
-        <th scope="col" class="text-end">{{ 'Per paycheck' if show_pp else 'Monthly' }}</th>
-        <th scope="col">Next</th>
-        <th scope="col">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in section.rows %}
-      {% set t = row.template %}
-      <tr>
-        <td>{{ t.name }}</td>
-        <td>
-          {{ t.from_account.name if t.from_account else '--' }}
-          <i class="bi bi-arrow-right mx-1"></i>
-          {{ t.to_account.name if t.to_account else '--' }}
-        </td>
-        <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-        <td>{{ recurrence_cell(t) }}</td>
-        <td class="text-end font-mono">
-          {{ equiv(row.equivalent, show_pp) }}
-          {% if row.share_pct is not none %}
-            <small class="text-muted d-block">{{ row.share_pct }}% of section</small>
-          {% endif %}
-        </td>
-        <td>{{ next_date_cell(row.next_date) }}</td>
-        <td class="text-nowrap">
-          <a href="{{ url_for('transfers.edit_transfer_template', template_id=t.id) }}"
-             class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ t.name }}">
-            <i class="bi bi-pencil"></i>
-          </a>
-          <form method="POST" action="{{ url_for('transfers.archive_transfer_template', template_id=t.id) }}"
-                class="d-inline"
-                data-confirm="Archive this recurring transfer? All projected transfers will be removed.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-warning" aria-label="Archive {{ t.name }}">
-              <i class="bi bi-archive"></i>
-            </button>
-          </form>
-          <form method="POST" action="{{ url_for('transfers.hard_delete_transfer_template', template_id=t.id) }}"
-                class="d-inline"
-                data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
-              <i class="bi bi-trash"></i>
-            </button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% else %}
-  <p class="text-muted small mb-0">None yet.</p>
-  {% endif %}
-</section>
-{% endmacro %}
-
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
@@ -186,165 +13,174 @@
 {% endblock breadcrumbs %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
-  <h4 class="mb-0"><i class="bi bi-arrow-repeat"></i> Recurring</h4>
-  <div class="d-flex align-items-center gap-2">
-    {# Page-wide unit toggle.  Both units were rendered server-side; this
-       persists which one shows first.  Works without JS (form POST). #}
-    <form method="POST" action="{{ url_for('templates.set_unit_preference') }}"
-          class="btn-group btn-group-sm" role="group" aria-label="Amount unit">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button type="submit" name="unit" value="monthly"
-              class="btn {{ 'btn-primary' if not show_per_paycheck else 'btn-outline-primary' }}">
-        Monthly
-      </button>
-      <button type="submit" name="unit" value="per_paycheck"
-              class="btn {{ 'btn-primary' if show_per_paycheck else 'btn-outline-primary' }}">
-        Per paycheck
-      </button>
-    </form>
-    <div class="dropdown">
-      <button class="btn btn-primary btn-sm dropdown-toggle" type="button"
-              data-bs-toggle="dropdown" aria-expanded="false">
-        <i class="bi bi-plus-circle"></i> New
-      </button>
-      <ul class="dropdown-menu dropdown-menu-end">
-        <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Expense</a></li>
-        <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Income</a></li>
-        <li><a class="dropdown-item" href="{{ url_for('transfers.new_transfer_template') }}">Transfer</a></li>
-      </ul>
-    </div>
-  </div>
-</div>
+<div data-recurring-page>
 
-{# ── Summary band: the /obligations monthly kernel ─────────────────── #}
-{% set band = view.band %}
-{% set net_val = band.net.per_paycheck if show_per_paycheck else band.net.monthly %}
-<div class="row g-2 mb-4">
-  <div class="col-6 col-md-3">
-    <div class="card h-100"><div class="card-body py-2">
-      <div class="text-muted small">Income</div>
-      <div class="fs-5 fw-bold font-mono">{{ equiv(band.income, show_per_paycheck) }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="card h-100"><div class="card-body py-2">
-      <div class="text-muted small">Expenses</div>
-      <div class="fs-5 fw-bold font-mono">{{ equiv(band.expenses, show_per_paycheck) }}</div>
-      {% if band.expenses_pct_of_income is not none %}
-        <div class="text-muted small">{{ band.expenses_pct_of_income }}% of income</div>
-      {% endif %}
-    </div></div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="card h-100"><div class="card-body py-2">
-      <div class="text-muted small">Transfers out</div>
-      <div class="fs-5 fw-bold font-mono">{{ equiv(band.transfers_out, show_per_paycheck) }}</div>
-    </div></div>
-  </div>
-  <div class="col-6 col-md-3">
-    <div class="card h-100"><div class="card-body py-2">
-      <div class="text-muted small">Net margin</div>
-      <div class="fs-5 fw-bold font-mono {{ 'text-danger' if net_val < 0 else 'text-success' }}">
-        {{ money(net_val) }}
+  {# ---- Header: title, unit toggle, and the New picker ---------------- #}
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <h4 class="mb-0"><i class="bi bi-arrow-repeat"></i> Recurring</h4>
+    <div class="d-flex align-items-center gap-2">
+      {# Monthly / Per-paycheck toggle. hx-post lives on each button (so the
+         button is the request trigger and its unit is sent explicitly via
+         hx-vals -- htmx 2.0.4 does not forward a form submitter's value);
+         htmx swaps #recurring-body live and recurring.js flips the active
+         button instantly. The enclosing form is the no-JS baseline: a native
+         submit sends name=unit and the route redirects back. Both units are
+         produced server-side, so the toggle only re-picks which one renders
+         -- money is never formatted in JS. #}
+      <form method="POST" action="{{ url_for('templates.set_unit_preference') }}"
+            class="btn-group btn-group-sm" role="group" aria-label="Amount unit">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" name="unit" value="monthly" data-unit-value="monthly"
+                hx-post="{{ url_for('templates.set_unit_preference') }}"
+                hx-vals='{"unit": "monthly"}'
+                hx-target="#recurring-body" hx-swap="innerHTML"
+                class="btn {{ 'btn-primary' if not show_per_paycheck else 'btn-outline-primary' }}">
+          Monthly
+        </button>
+        <button type="submit" name="unit" value="per_paycheck" data-unit-value="per_paycheck"
+                hx-post="{{ url_for('templates.set_unit_preference') }}"
+                hx-vals='{"unit": "per_paycheck"}'
+                hx-target="#recurring-body" hx-swap="innerHTML"
+                class="btn {{ 'btn-primary' if show_per_paycheck else 'btn-outline-primary' }}">
+          Per paycheck
+        </button>
+      </form>
+      <div class="dropdown">
+        <button class="btn btn-primary btn-sm dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-plus-circle"></i> New
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Expense</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Income</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('transfers.new_transfer_template') }}">Transfer</a></li>
+        </ul>
       </div>
-    </div></div>
-  </div>
-</div>
-<p class="text-muted small mb-4">From the rules, no projection. Toggle switches every figure between
-monthly and per-paycheck equivalents.</p>
-
-{% if view.income.rows or view.expenses.rows or view.transfers.rows %}
-  {{ txn_section('Income', view.income, show_per_paycheck) }}
-  {{ txn_section('Expenses', view.expenses, show_per_paycheck) }}
-  {{ transfer_section(view.transfers, show_per_paycheck) }}
-{% else %}
-<div class="alert alert-info">
-  No active recurring definitions. Use <strong>New</strong> to add a recurring expense, income, or
-  transfer -- each auto-generates budget entries every pay period.
-</div>
-{% endif %}
-
-{# ── Archived (both kinds, collapsed) ──────────────────────────────── #}
-{% set archived_count = archived_transactions|length + archived_transfers|length %}
-{% if archived_count %}
-<div class="mt-4">
-  <h6>
-    <a class="text-decoration-none text-muted" data-bs-toggle="collapse"
-       href="#archivedRecurring" role="button" aria-expanded="false"
-       aria-controls="archivedRecurring">
-      <i class="bi bi-chevron-right collapse-chevron"></i>
-      Archived ({{ archived_count }})
-    </a>
-  </h6>
-  <div class="collapse" id="archivedRecurring">
-    <div class="table-responsive">
-    <table class="table table-hover table-sm align-middle">
-      <caption class="visually-hidden">Archived recurring definitions</caption>
-      <thead class="table-light">
-        <tr>
-          <th scope="col">Name</th>
-          <th scope="col">Kind</th>
-          <th scope="col" class="text-end">Amount</th>
-          <th scope="col">Recurrence</th>
-          <th scope="col">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for t in archived_transactions %}
-        <tr class="text-muted">
-          <td>{{ t.name }}</td>
-          <td>{% if t.transaction_type_id == TXN_TYPE_INCOME %}Income{% else %}Expense{% endif %}</td>
-          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-          <td>{{ recurrence_cell(t) }}</td>
-          <td class="text-nowrap">
-            <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
-                  class="d-inline">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
-                <i class="bi bi-arrow-counterclockwise"></i>
-              </button>
-            </form>
-            <form method="POST" action="{{ url_for('templates.hard_delete_template', template_id=t.id) }}"
-                  class="d-inline"
-                  data-confirm="Permanently delete this recurring transaction? This cannot be undone.">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
-                <i class="bi bi-trash"></i>
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-        {% for t in archived_transfers %}
-        <tr class="text-muted">
-          <td>{{ t.name }}</td>
-          <td>Transfer</td>
-          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-          <td>{{ recurrence_cell(t) }}</td>
-          <td class="text-nowrap">
-            <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
-                  class="d-inline">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
-                <i class="bi bi-arrow-counterclockwise"></i>
-              </button>
-            </form>
-            <form method="POST" action="{{ url_for('transfers.hard_delete_transfer_template', template_id=t.id) }}"
-                  class="d-inline"
-                  data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
-                <i class="bi bi-trash"></i>
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
     </div>
   </div>
+
+  {# ---- Toolbar: search, kind filter, sort. Stays put across a unit swap,
+     so recurring.js re-applies it to the freshly-swapped rows. ---------- #}
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div class="d-flex align-items-center flex-wrap gap-2">
+      <input type="search" class="form-control form-control-sm recurring-search"
+             data-recurring-search placeholder="Search by name"
+             aria-label="Search recurring definitions">
+      <div class="btn-group btn-group-sm" role="group" aria-label="Filter by kind">
+        <button type="button" class="btn btn-outline-secondary active"
+                data-recurring-filter="all">All</button>
+        <button type="button" class="btn btn-outline-secondary recurring-filter"
+                data-recurring-filter="income">Income</button>
+        <button type="button" class="btn btn-outline-secondary recurring-filter"
+                data-recurring-filter="expense">Expenses</button>
+        <button type="button" class="btn btn-outline-secondary recurring-filter"
+                data-recurring-filter="transfer">Transfers</button>
+      </div>
+    </div>
+    <label class="d-flex align-items-center gap-1 mb-0 text-muted small">
+      <span class="text-nowrap">Sort by</span>
+      <select class="form-select form-select-sm w-auto" data-recurring-sort
+              aria-label="Sort definitions">
+        <option value="monthly">Monthly cost</option>
+        <option value="name">Name</option>
+        <option value="amount">Defined amount</option>
+        <option value="next">Next date</option>
+      </select>
+    </label>
+  </div>
+
+  {# ---- The swappable body (band + sections). ------------------------- #}
+  <div id="recurring-body">
+    {% include "templates/_recurring_body.html" %}
+  </div>
+
+  {# ---- Archived drawer (both kinds, collapsed). Permanent delete lives
+     here, not on active rows. ------------------------------------------ #}
+  {% set archived_count = archived_transactions|length + archived_transfers|length %}
+  {% if archived_count %}
+  <div class="mt-4">
+    <h6>
+      <a class="text-decoration-none text-muted" data-bs-toggle="collapse"
+         href="#archivedRecurring" role="button" aria-expanded="false"
+         aria-controls="archivedRecurring">
+        <i class="bi bi-chevron-right collapse-chevron"></i>
+        Archived ({{ archived_count }})
+      </a>
+    </h6>
+    <div class="collapse" id="archivedRecurring">
+      <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
+          <caption class="visually-hidden">Archived recurring definitions</caption>
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Kind</th>
+              <th scope="col" class="text-end">Amount</th>
+              <th scope="col">Recurrence</th>
+              <th scope="col" class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in archived_transactions %}
+            <tr class="text-muted">
+              <td>{{ t.name }}</td>
+              <td>{% if t.transaction_type_id == TXN_TYPE_INCOME %}Income{% else %}Expense{% endif %}</td>
+              <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+              <td>{{ recurrence_cell(t) }}</td>
+              <td class="text-nowrap text-end">
+                <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
+                      class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                </form>
+                <form method="POST" action="{{ url_for('templates.hard_delete_template', template_id=t.id) }}"
+                      class="d-inline"
+                      data-confirm="Permanently delete this recurring transaction? This cannot be undone.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+            {% for t in archived_transfers %}
+            <tr class="text-muted">
+              <td>{{ t.name }}</td>
+              <td>Transfer</td>
+              <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+              <td>{{ recurrence_cell(t) }}</td>
+              <td class="text-nowrap text-end">
+                <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
+                      class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                  </button>
+                </form>
+                <form method="POST" action="{{ url_for('transfers.hard_delete_transfer_template', template_id=t.id) }}"
+                      class="d-inline"
+                      data-confirm="Permanently delete this recurring transfer? This cannot be undone.">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger" aria-label="Delete {{ t.name }}">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
 </div>
-{% endif %}
 {% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/recurring.js') }}"></script>
+{% endblock scripts %}

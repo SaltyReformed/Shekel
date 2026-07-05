@@ -160,6 +160,30 @@ class TestUnifiedRender:
         html = auth_client.get("/templates").data.decode()
         assert "No active recurring definitions" in html
 
+    def test_body_carries_js_view_hooks(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The body carries the data-* hooks recurring.js drives: the swap
+        target, the per-section markers, and the per-row sort keys.  Pinning
+        them here means a template edit that drops one is caught rather than
+        silently breaking the client-side search / filter / sort.
+        """
+        user = seed_user["user"]
+        checking = seed_user["account"]
+        category = seed_user["categories"]["Rent"]
+        rule = _rule(user, RecurrencePatternEnum.EVERY_PERIOD)
+        _txn(user, checking, category, rule, "100.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Electric")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        assert 'id="recurring-body"' in html
+        assert 'data-recurring-section="expense"' in html
+        assert "data-recurring-row" in html
+        assert 'data-sort-name="electric"' in html
+        # The net verdict hero label anchors the summary band.
+        assert "Net committed" in html
+
 
 # ── Unit toggle ──────────────────────────────────────────────────────
 
@@ -212,6 +236,57 @@ class TestUnitToggle:
             "/templates/unit-preference", data={"unit": "furlongs"},
         )
         assert post.status_code == 302
+        db.session.refresh(seed_user["settings"])
+        assert seed_user["settings"].recurring_show_per_paycheck is False
+
+    def test_htmx_toggle_returns_body_fragment(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An HX-Request toggle returns the re-rendered body fragment (200,
+        not a redirect) in the chosen unit, and still persists the choice.
+
+        A monthly $1,300 expense: per-paycheck 1300 * 12 / 26 = $600.00.
+        The fragment carries that figure and omits the page chrome -- the
+        search toolbar lives in list.html, not the swapped body -- so a
+        stray full-page render would be caught.
+        """
+        user = seed_user["user"]
+        checking = seed_user["account"]
+        category = seed_user["categories"]["Rent"]
+        rule = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        _txn(user, checking, category, rule, "1300.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill")
+        db.session.commit()
+
+        resp = auth_client.post(
+            "/templates/unit-preference",
+            data={"unit": "per_paycheck"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "$600.00" in html
+        assert "Search by name" not in html
+
+        db.session.refresh(seed_user["settings"])
+        assert seed_user["settings"].recurring_show_per_paycheck is True
+
+    def test_htmx_invalid_unit_returns_fragment_unchanged(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An unrecognized unit on an HX request still gets a body fragment
+        (200, in the unchanged unit), never a redirect the swap would follow
+        and nest a whole page inside #recurring-body.  The preference stays
+        put.
+        """
+        resp = auth_client.post(
+            "/templates/unit-preference",
+            data={"unit": "furlongs"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        # It is the fragment (not the redirected full page).
+        assert "Search by name" not in resp.data.decode()
         db.session.refresh(seed_user["settings"])
         assert seed_user["settings"].recurring_show_per_paycheck is False
 

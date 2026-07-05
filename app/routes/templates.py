@@ -283,6 +283,28 @@ def _load_archived_templates(user_id):
     return archived_transactions, archived_transfers
 
 
+def _load_recurring_view(user_id):
+    """Build the unified Recurring display model for a user.
+
+    Shared by the full-page ``list_templates`` render and the
+    ``set_unit_preference`` HTMX toggle, so both paths produce identical
+    figures from one code path.  The toggle only re-picks which unit the
+    template displays; it does not open a second money path.
+    """
+    income_templates, expense_templates = _load_active_transaction_templates(
+        user_id,
+    )
+    transfer_templates = _load_active_transfer_templates(user_id)
+    periods = pay_period_service.get_all_periods(user_id)
+    return recurring_view.build_view(
+        income_templates=income_templates,
+        expense_templates=expense_templates,
+        transfer_templates=transfer_templates,
+        periods=periods,
+        as_of=date.today(),
+    )
+
+
 @templates_bp.route("/templates")
 @login_required
 @require_owner
@@ -299,22 +321,8 @@ def list_templates():
     toggle shows first, read from the user's stored preference.
     """
     user_id = current_user.id
-    as_of = date.today()
-
-    income_templates, expense_templates = _load_active_transaction_templates(
-        user_id,
-    )
-    transfer_templates = _load_active_transfer_templates(user_id)
+    view = _load_recurring_view(user_id)
     archived_transactions, archived_transfers = _load_archived_templates(user_id)
-    periods = pay_period_service.get_all_periods(user_id)
-
-    view = recurring_view.build_view(
-        income_templates=income_templates,
-        expense_templates=expense_templates,
-        transfer_templates=transfer_templates,
-        periods=periods,
-        as_of=as_of,
-    )
 
     settings = current_user.settings
     show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
@@ -338,24 +346,38 @@ def set_unit_preference():
     ``unit=per_paycheck``; the choice is stored on the user's settings so
     it survives across devices and sessions (the producer renders both
     units regardless -- this only sets which one shows first).  Any other
-    ``unit`` value is ignored.  Redirects back to the list so the page
-    re-renders in the chosen unit; the P2 build layers an instant client-
-    side swap over this same endpoint.
+    ``unit`` value is ignored.
+
+    Response shape depends on the caller.  An HTMX toggle (``HX-Request``
+    header) gets the re-rendered ``_recurring_body`` fragment in the
+    EFFECTIVE unit, swapped live into ``#recurring-body`` -- money is
+    formatted once, server-side, so the toggle never recomputes a figure in
+    JS.  A plain (no-JS) POST redirects back to the list, which then
+    re-renders in the stored unit.
+
+    An unrecognized ``unit`` leaves the stored preference untouched; the
+    response still matches the caller (a fragment in the unchanged unit for
+    HTMX, a redirect otherwise), so an HTMX request never receives a
+    redirect it would follow and swap the whole page into the body.
     """
     unit = request.form.get("unit")
-    if unit == _UNIT_PER_PAYCHECK:
-        new_value = True
-    elif unit == _UNIT_MONTHLY:
-        new_value = False
-    else:
-        return redirect(url_for("templates.list_templates"))
+    if unit in (_UNIT_MONTHLY, _UNIT_PER_PAYCHECK):
+        settings = current_user.settings
+        if settings is None:
+            settings = UserSettings(user_id=current_user.id)
+            db.session.add(settings)
+        settings.recurring_show_per_paycheck = unit == _UNIT_PER_PAYCHECK
+        db.session.commit()
 
-    settings = current_user.settings
-    if settings is None:
-        settings = UserSettings(user_id=current_user.id)
-        db.session.add(settings)
-    settings.recurring_show_per_paycheck = new_value
-    db.session.commit()
+    if request.headers.get("HX-Request"):
+        settings = current_user.settings
+        show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
+        view = _load_recurring_view(current_user.id)
+        return render_template(
+            "templates/_recurring_body.html",
+            view=view,
+            show_per_paycheck=show_per_paycheck,
+        )
     return redirect(url_for("templates.list_templates"))
 
 
