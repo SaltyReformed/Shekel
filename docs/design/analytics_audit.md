@@ -696,3 +696,19 @@ per-period federal withholding, one saved checkpoint):
 deduction (and the filing-status-aware NC standard deduction the diagnosis exposed) -- with 2025 +
 2026 constants VERIFIED AGAINST PRIMARY SOURCES (IRS / NCDOR) at build time, not from model memory;
 seed updates backfill existing per-user config rows in the migration.
+
+### T-P5 ACCEPTED (2026-07-05) -- slice 2 CLOSED
+
+Extensions shipped as `70ac1689` (which also corrected the stale OBBBA CTC seed 2,000 -> 2,200 per
+Rev. Proc. 2025-32); the developer re-drove the live tab on real data and accepted: "The Taxes tab
+looks right now." Live figures at acceptance: federal refund 3,478.92 (ACTC), NC refund 298.89,
+total 3,777.81.
+
+**CSV ruling (2026-07-05):** "I don't really need a CSV export of anything right now." The year-end
+CSV dies with the Year-End tab at the slice-4 shell collapse, with NO tax-summary export replacing
+it; the variance CSV retires with its tab at slice 3 (the audit's default, now developer-confirmed).
+The calendar month CSV KEEPS shipping per the earlier locked Calendar decision 9 (that ruling
+stands; this one addresses only the new-export question).
+
+Slice 2 (Taxes) is CLOSED: T-P1 `6936b8f9`, T-P2 `c7dd0a64`, T-P3 `20ad520b`, T-P4 `6a3366d8`, T-P5
+extensions `70ac1689`. Next: slice 3, Spending (S-P1 producers, then S-P2 page).
