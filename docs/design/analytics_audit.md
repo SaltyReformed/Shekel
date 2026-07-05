@@ -712,3 +712,74 @@ stands; this one addresses only the new-export question).
 
 Slice 2 (Taxes) is CLOSED: T-P1 `6936b8f9`, T-P2 `c7dd0a64`, T-P3 `20ad520b`, T-P4 `6a3366d8`, T-P5
 extensions `70ac1689`. Next: slice 3, Spending (S-P1 producers, then S-P2 page).
+
+## Spending slice as-built (S-P1..S-P2, on dev)
+
+Built per the locked Spending anatomy (hero band; Where It Went rows with share bar + amount/% +
+per-period sparkline + delta chip; rail = Top Movers + Estimate Surprises) and the S-P1 Gate rulings
+(checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED month; no
+CSV).
+
+- **S-P1 `c7bc39a4`** -- the unified
+  `spending_report_service.compute_spending_report(user_id, window)` producer + shared
+  `spending_analysis.py` primitives (query_settled_expenses, resolved_actual_amount, signed_pct,
+  category_names, payment_timeliness_from_txns, validate_window, calendar_window_bounds -- Variance,
+  Year-End, and the Income Statement now delegate). Trend unit-mismatch fixed: sufficiency + window
+  counted in COMPLETED PAY PERIODS (the series' unit); `ItemTrend` gained `period_totals` so the
+  sparkline shares the chip's source. Full suite 7300.
+
+- **S-P2 (this build)** -- `/analytics/spending` + `_spending.html` per the locked anatomy:
+  - Route (`analytics.py`): month window (default = prior completed month; Next capped at the
+    current month; no `period_id`/`account_id` param, so no IDOR surface). No CSV (the 2026-07-05
+    ruling).
+  - View-model helpers were EXTRACTED to a new `app/routes/analytics_view.py` (pure builders, no
+    Flask/db) -- forced by the 1000-line module ceiling and taken as the SOLID split: the Spending
+    helpers (`build_spending_display` magnitude/direction split, `build_spending_nav`,
+    `spending_sparklines` SVG geometry) plus the pre-existing `build_taxes_display`,
+    `serialize_flow_strip`, `build_calendar_weeks`, `build_variance_chart_data` moved verbatim; all
+    call sites rewired; 196 analytics tests + full suite green confirm no regression.
+  - Presentation: cockpit hero band (`pulse-canvas`/`nw-sky`) with spent hero + vs-prior /
+    vs-6-mo-avg / payment-timing chips; "Where It Went" group->item rows on one shared CSS grid,
+    share bars via `progress_bar.js` + `data-progress-pct` (CSP-safe), per-category trend sparklines
+    as SERVER-RENDERED inline `<svg><polyline>` (geometry attrs, theme-reactive via a direction CSS
+    class, zero new JS), delta chips reusing the `trend-up`/`down`/`flat` color vocabulary; rail
+    with Top Movers + Estimate Surprises. Groups default-expanded, Bootstrap-collapsible.
+  - Basis honesty: a "measured" chip + on-screen "Checking" scope label; the sparkline is captioned
+    "recent per-period trend" (it is the rolling-window trend, not the viewed month) so a
+    back-navigated month never reads as disagreeing.
+  - Nav: the Variance + Trends PILLS are replaced by one Spending pill; the `/analytics/variance`
+    and `/analytics/trends` ROUTES stay reachable until the slice-4 shell collapse (the T-P4
+    pattern).
+  - Tests: `TestSpendingTab` (8 hand-computed pins: breakdown/shares, vs-prior chip, surprises +
+    net, sparklines + movers under sufficiency, empty-month, no-account empty state, default-month,
+    non-HTMX redirect) + the pills pin updated (developer-locked Gate A change).
+  - Gates: `pylint app/` 10.00/10 (full --fail-on, incl. cross-file duplicate-code across the
+    extraction); biome clean; full suite 7308 passed. Live-verified via the real `_spending.html` +
+    real CSS rendered on a rich seeded story, screenshotted in BOTH themes and BOTH viewports; every
+    figure tied out by hand (hero 3,056 = Home 1,390 + Family 910 + Credit Card 406 + Auto 350;
+    Costco surprise +170 net; movers Payback +23.68% / Rent +15.86%). Independent code-reviewer
+    pass: clean, no Critical/High/Medium; the two moved-helper doc-comment references were
+    corrected.
+
+### S-P3 ACCEPTED (2026-07-05) -- slice 3 CLOSED
+
+The developer drove the live tab and accepted: "Spending looks good." Neither carry-forward item was
+raised at acceptance, so both stand as-built:
+
+1. **Transfer-out shadows stay counted as spending** (the S-P1 `query_settled_expenses` includes
+   them). Accepted as-is; not excluded. Revisit only if a future real-data view makes
+   transfers-to-savings misread as spending -- that would be a producer (S-P1) change.
+2. **The sparkline is the recent rolling-window trend, captioned "recent per-period trend"** (not
+   the viewed month). Read clearly; kept.
+
+Slice 3 (Spending) is CLOSED: S-P1 `c7bc39a4`, S-P2 (this commit; route + `_spending.html` + the
+`analytics_view` view-model extraction). The Variance and Trends ROUTES remain reachable until the
+slice-4 shell collapse; their CSVs and the year-end CSV die there (the 2026-07-05 CSV ruling).
+
+Next: **Slice 4 -- Shell.** Group Income Statement + Balance Sheet into one "Statements" pill with
+an internal toggle; collapse the nav to the four target pills (Calendar / Spending / Statements /
+Taxes); apply the on-screen account-scope label and the measured / modeled / mixed basis chips
+page-wide (unifying `tax-basis-chip` + `spend-basis-chip` into one vocabulary); add redirects for
+the retired `/analytics/variance`, `/analytics/trends`, and `/analytics/year-end` tab URLs; and
+retire those tabs' CSV exports and templates. Re-audit any remaining CSV endpoints (calendar month
+CSV KEEPS per Calendar decision 9).

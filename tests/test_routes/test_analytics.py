@@ -301,25 +301,28 @@ class TestAnalyticsPage:
             assert resp.status_code == 200
             assert b"Analytics" in resp.data
 
-    def test_analytics_page_has_six_pills(self, app, auth_client, seed_user):
-        """GET /analytics includes all six nav-pill button labels.
+    def test_analytics_page_has_pills(self, app, auth_client, seed_user):
+        """GET /analytics includes the current nav-pill button labels.
 
-        Build-Order Step 5 added the Income Statement and Balance Sheet
-        tabs (the confirmed-ledger statements) alongside the original four.
-        Slice 2 of the analytics rebuild (Gate A ruling 4, locked
-        2026-07-04) replaced the Year-End pill with Taxes; the
-        /analytics/year-end ROUTE stays alive until the slice-4 shell
-        collapse retires it with redirects.
+        Slice 3 of the analytics rebuild (Gate A rulings 2-3, locked
+        2026-07-04) replaced the Variance and Trends pills with a single
+        Spending pill; their /analytics/variance and /analytics/trends
+        ROUTES stay alive until the slice-4 shell collapse retires them with
+        redirects (verified by ``TestVarianceTab`` / ``TestTrendsTab``).
+        Slice 2 replaced the Year-End pill with Taxes the same way.
         """
         with app.app_context():
             resp = auth_client.get("/analytics")
             assert resp.status_code == 200
             html = resp.data
             assert b"Calendar" in html
+            assert b"Spending" in html
             assert b"Taxes" in html
             assert b"Year-End" not in html
-            assert b"Variance" in html
-            assert b"Trends" in html
+            # Variance / Trends pills removed (routes still alive, tested
+            # directly elsewhere); the labels no longer appear in the nav.
+            assert b"Variance" not in html
+            assert b"Trends" not in html
             assert b"Income Statement" in html
             assert b"Balance Sheet" in html
 
@@ -338,7 +341,7 @@ class TestAnalyticsPage:
             assert 'hx-trigger="click, load"' in html
 
     def test_other_tabs_no_auto_load(self, app, auth_client, seed_user):
-        """Only the Calendar pill auto-loads; the other five load on click."""
+        """Only the Calendar pill auto-loads; the other pills load on click."""
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
@@ -3167,5 +3170,228 @@ class TestTaxesTab:
         """A non-HTMX GET redirects to the analytics page."""
         with app.app_context():
             resp = auth_client.get("/analytics/taxes")
+            assert resp.status_code == 302
+            assert "/analytics" in resp.headers["Location"]
+
+
+def _settled_spending_txn(db, seed_user, period, name, category_key,
+                          estimated, *, actual=None, due_date=None):
+    """Create one settled (DONE) expense for the Spending route tests.
+
+    Args:
+        db: Database session fixture.
+        seed_user: User fixture dict.
+        period: The owning pay period.
+        name: Transaction name.
+        category_key: Key into ``seed_user['categories']`` (or ``None``).
+        estimated: Estimated amount (string, Decimal-safe).
+        actual: Entered actual (string) or ``None`` (settled-without-actual).
+        due_date: Optional due date; ``None`` attributes by the period start.
+
+    Returns:
+        The flushed :class:`Transaction`.
+    """
+    cat = seed_user["categories"].get(category_key)
+    txn = Transaction(
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
+        pay_period_id=period.id,
+        status_id=ref_cache.status_id(StatusEnum.DONE),
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name=name,
+        estimated_amount=Decimal(estimated),
+        actual_amount=Decimal(actual) if actual is not None else None,
+        category_id=cat.id if cat else None,
+        due_date=due_date,
+    )
+    db.session.add(txn)
+    db.session.flush()
+    return txn
+
+
+class TestSpendingTab:
+    """Pins for the Spending tab (Slice 3, S-P2): hero, breakdown, rail.
+
+    Today is frozen to 2026-03-20 by the module autouse fixture, so the
+    ``seed_periods`` months (Jan-May 2026) are completed and the calendar-
+    month windows below are deterministic.
+    """
+
+    def test_spending_tab_breakdown_and_hero(self, app, auth_client, seed_user,
+                                             seed_periods, db):
+        """A January window renders the spent hero, group shares, and scope.
+
+        seed_periods[0] (starts 2026-01-02) carries Rent 1200 (Home),
+        Groceries 500 (Family), Car Payment 300 (Auto): total 2000, shares
+        60% / 25% / 15%.
+        """
+        with app.app_context():
+            _settled_spending_txn(db, seed_user, seed_periods[0], "Rent",
+                                  "Rent", "1200.00")
+            _settled_spending_txn(db, seed_user, seed_periods[0], "Food",
+                                  "Groceries", "500.00")
+            _settled_spending_txn(db, seed_user, seed_periods[0], "Car",
+                                  "Car Payment", "300.00")
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Hero: 1200 + 500 + 300 = 2000, measured scope on Checking.
+            assert "$2,000.00" in html
+            assert "January 2026" in html
+            assert "measured" in html
+            assert "Checking" in html
+            # Where It Went: groups amount-descending with the group amount.
+            assert "Where It Went" in html
+            assert "Home" in html
+            assert "Family" in html
+            assert "Auto" in html
+            assert "$1,200.00" in html
+            # Shares 60 / 25 / 15 percent.
+            assert "60%" in html
+            assert "25%" in html
+            assert "15%" in html
+            # Share bars carry the CSP-safe width attribute.
+            assert "data-progress-pct" in html
+
+    def test_spending_tab_comparison_chips(self, app, auth_client, seed_user,
+                                           seed_periods, db):
+        """A February window shows the vs-January comparison chip.
+
+        January (period[0]) spent 1000; February (period[3], starts
+        2026-02-13) spent 1500.  vs-prior delta = 1500 - 1000 = +500 (+50%),
+        rendered as a spent-more (danger) direction.
+        """
+        with app.app_context():
+            _settled_spending_txn(db, seed_user, seed_periods[0], "JanRent",
+                                  "Rent", "1000.00")
+            _settled_spending_txn(db, seed_user, seed_periods[3], "FebRent",
+                                  "Rent", "1500.00")
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=2",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "$1,500.00" in html          # February spent hero
+            assert "vs January" in html          # vs-prior chip label
+            assert "$500.00" in html             # |delta| = 1500 - 1000
+            assert "+50.0% vs last month" in html
+            assert "trend-up" in html            # spent more -> danger dir
+
+    def test_spending_tab_surprises(self, app, auth_client, seed_user,
+                                    seed_periods, db):
+        """A settled row whose actual differs from estimate is a surprise.
+
+        Electric Bill est 100 actual 145 -> delta +45 (a surprise); Rent
+        Exact est 1200 actual 1200 -> delta 0 (not a surprise).  The net over
+        ALL surprises is +45.
+        """
+        with app.app_context():
+            _settled_spending_txn(db, seed_user, seed_periods[0], "Electric Bill",
+                                  "Rent", "100.00", actual="145.00")
+            _settled_spending_txn(db, seed_user, seed_periods[0], "Rent Exact",
+                                  "Rent", "1200.00", actual="1200.00")
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "Estimate Surprises" in html
+            assert "Electric Bill" in html
+            assert "+$45.00" in html             # delta 145 - 100
+            # Net over ALL surprises = +45 (the est==actual row is excluded).
+            assert "net +$45.00" in html
+
+    def test_spending_tab_sparklines_and_movers(self, app, auth_client,
+                                                seed_user, db):
+        """With 12+ completed periods, item rows carry sparklines and movers.
+
+        ``_seed_long_periods(14)`` starts 2025-07-03; its last period
+        (index 13) is 2026-01-01..14 (January 2026).  A rising Rent series
+        makes Rent both trendable (sparkline) and a top mover.
+        """
+        with app.app_context():
+            periods = _seed_long_periods(db, seed_user, 14)
+            _seed_increasing_trend(db, seed_user, periods)
+
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            # Rent is trendable -> its row carries a sparkline polyline.
+            assert "spend-spark-svg" in html
+            assert "<polyline points=" in html
+            # Rising Rent is a top mover; sufficiency met -> the reliability
+            # note is shown, not the insufficient-data note.
+            assert "Top Movers" in html
+            assert "Rent" in html
+            assert "recent per-period trend" in html
+            assert "Not enough completed pay periods" not in html
+
+    def test_spending_tab_empty_month(self, app, auth_client, seed_user,
+                                      seed_periods):
+        """A window with no settled spend renders the zeroed empty breakdown."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "$0.00" in html
+            assert "No settled spending in January 2026" in html
+
+    def test_spending_tab_empty_state_no_account(self, app, auth_client,
+                                                 seed_user):
+        """No active checking account renders the empty state, not a crash."""
+        from unittest.mock import patch
+        with app.app_context():
+            with patch(
+                "app.services.spending_report_service.resolve_analytics_account",
+                return_value=None,
+            ):
+                resp = auth_client.get(
+                    "/analytics/spending",
+                    headers={"HX-Request": "true"},
+                )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "No active checking account" in html
+            assert "Set up an account" in html
+
+    def test_spending_tab_default_is_prior_month(self, app, auth_client,
+                                                 seed_user, seed_periods):
+        """With no month param, the default window is the prior completed month.
+
+        Today is frozen 2026-03-20, so the default is February 2026.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/spending",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "February 2026" in resp.data.decode()
+
+    def test_spending_tab_non_htmx_redirects(self, app, auth_client, seed_user):
+        """A non-HTMX GET redirects to the analytics page."""
+        with app.app_context():
+            resp = auth_client.get("/analytics/spending")
             assert resp.status_code == 302
             assert "/analytics" in resp.headers["Location"]

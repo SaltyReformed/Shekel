@@ -7,8 +7,8 @@
  * ``data-chart`` attribute on the canvas:
  * {labels: [str], values: [float], current_index: int, threshold: float,
  *  payday_indices: [int], trough_index: int|null, week_tick_indices: [int]}.
- * Floats exist only at that serialization boundary (the analytics route's
- * ``_serialize_flow_strip``); this script never computes money -- it only
+ * Floats exist only at that serialization boundary
+ * (``analytics_view.serialize_flow_strip``); this script never computes money -- it only
  * splits the provided points at ``current_index`` (solid + stronger fill
  * through today, dashed + lighter fill after), styles the payday / trough
  * dots, draws the low-balance threshold line (the same second-dataset

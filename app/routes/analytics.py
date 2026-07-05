@@ -1,18 +1,21 @@
 """
 Shekel Budget App -- Analytics Routes
 
-Analytics dashboard with six HTMX lazy-loaded tabs: Calendar,
-Year-End Summary, Budget Variance, Spending Trends, Income Statement,
-and Balance Sheet.  Each tab endpoint returns an HTML partial loaded
-into the main page via nav-pills navigation.  The Income Statement and
-Balance Sheet tabs (Build-Order Step 5) present the confirmed posting
-ledger via ``ledger_report_service``.
+Analytics dashboard whose nav pills lazy-load one HTMX partial each:
+Calendar, Spending, Taxes, Income Statement, and Balance Sheet.  The
+Spending pill (Slice 3) replaced the retired Variance and Trends pills,
+and the Taxes pill (Slice 2) replaced Year-End; the underlying
+``/analytics/variance``, ``/analytics/trends``, and ``/analytics/year-end``
+ROUTES stay reachable until the Slice-4 shell collapse retires them with
+redirects.  Each tab endpoint returns an HTML partial loaded into the main
+page via nav-pills navigation.  The Income Statement and Balance Sheet tabs
+(Build-Order Step 5) present the confirmed posting ledger via
+``ledger_report_service``.
 """
 
 import calendar as cal_mod
-import json
 from datetime import date, datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 from flask import (
     Blueprint, abort, make_response, redirect, render_template, request,
@@ -20,6 +23,7 @@ from flask import (
 )
 from flask_login import current_user, login_required
 
+from app.routes import analytics_view
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import to_display_date
 
@@ -34,6 +38,7 @@ from app.services import (
     csv_export_service,
     ledger_report_service,
     pay_period_service,
+    spending_report_service,
     spending_trend_service,
     tax_report_service,
     tax_withholding_service,
@@ -104,12 +109,13 @@ def _validate_owned_or_abort(model, pk):
 @login_required
 @require_owner
 def page():
-    """Render the main analytics page with six lazy-loaded tab pills.
+    """Render the main analytics page with its lazy-loaded tab pills.
 
-    The page contains a nav-pills bar with Calendar, Year-End,
-    Variance, Trends, Income Statement, and Balance Sheet tabs.  The
-    Calendar tab auto-loads on page visit via HTMX.  Other tabs load
-    on click.
+    The page contains a nav-pills bar with Calendar, Spending, Taxes,
+    Income Statement, and Balance Sheet tabs (the Spending pill replaced
+    the retired Variance and Trends pills in Slice 3; the Taxes pill
+    replaced Year-End in Slice 2).  The Calendar tab auto-loads on page
+    visit via HTMX.  Other tabs load on click.
     """
     return render_template("analytics/analytics.html")
 
@@ -253,7 +259,7 @@ def taxes_tab():
         report=report,
         year=year,
         available_years=available_years,
-        display=_build_taxes_display(report),
+        display=analytics_view.build_taxes_display(report),
         profile=profile,
         checkpoint=checkpoint,
         errors={},
@@ -262,54 +268,71 @@ def taxes_tab():
     )
 
 
-# Two-decimal display quantum for the Taxes tab's percentage chips
-# (rates arrive as 4-dp fractions; render as 0.01%-resolution percents).
-_PCT_QUANTUM = Decimal("0.01")
-_HUNDRED = Decimal("100")
+@analytics_bp.route("/analytics/spending")
+@login_required
+@require_owner
+def spending_tab():
+    """HTMX partial: the Spending tab (Slice 3, S-P2).
 
+    Renders :func:`app.services.spending_report_service.compute_spending_report`
+    for one calendar month: the spent hero band with vs-prior / vs-average /
+    payment-timing chips, the "Where It Went" category breakdown (share bars,
+    per-period trend sparklines, and delta chips), and the Top Movers /
+    Estimate Surprises rail.  The surface is MEASURED (settled expenses on the
+    user's active checking account); the account scope and settled basis are
+    labeled on screen.  A user with no active checking account or no baseline
+    scenario gets the empty state.
 
-def _build_taxes_display(report):
-    """Compute the Taxes tab's route-layer display values.
+    The producer accepts pay-period / month / year windows, but S-P2 exposes
+    only the calendar-month picker (the S-P1 gate ruling).  The default is the
+    most recent COMPLETED month (the prior calendar month); a partial current
+    month would mislabel an incomplete total.  Forward navigation is capped at
+    the current month, since a measured surface has no settled spend in a
+    future month.
 
-    The presentation splits every signed figure into a magnitude plus a
-    direction flag (a "$1,234 owed" hero must not render "-$1,234 owed"),
-    and scales the 4-dp rate fractions to 2-dp percents -- Decimal display
-    math that belongs at the route layer (the ``_build_variance_chart_data``
-    precedent), never in the template.
+    Query parameters:
+        month: Calendar month 1-12 (default: the prior month), clamped to
+            [1, 12] like the sibling tabs.
+        year: Calendar year (default: the prior month's year), clamped to
+            [2000, 2100].
 
-    Args:
-        report: The populated
-            :class:`~app.services.tax_report_service.TaxReport`.
-
-    Returns:
-        dict with the hero/chip magnitudes and direction flags, the
-        percent-scaled rates (``None`` propagated for a ``None`` effective
-        rate or state rate), and the Schedule A margin split.
+    Non-HTMX requests redirect to the main analytics page (no CSV export for
+    this tab, per the 2026-07-05 CSV ruling).
     """
-    refund = report.refund
-    effective = report.chips.effective_rate
-    state_rate = report.liability.state.flat_rate
-    return {
-        "hero_is_refund": refund.total_refund >= 0,
-        "hero_amount": abs(refund.total_refund),
-        "federal_is_refund": refund.federal_refund >= 0,
-        "federal_amount": abs(refund.federal_refund),
-        "state_is_refund": refund.state_refund >= 0,
-        "state_amount": abs(refund.state_refund),
-        "effective_pct": (
-            (effective * _HUNDRED).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP)
-            if effective is not None else None
+    today = to_display_date(datetime.now(timezone.utc))
+    default_year, default_month = analytics_view.prev_month(
+        today.year, today.month,
+    )
+    month = request.args.get("month", default_month, type=int)
+    year = request.args.get("year", default_year, type=int)
+    month = max(1, min(12, month))
+    year = max(2000, min(2100, year))
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
+
+    window = spending_report_service.SpendingWindow(
+        window_type="month", month=month, year=year,
+    )
+    report = spending_report_service.compute_spending_report(
+        current_user.id, window,
+    )
+
+    return render_template(
+        "analytics/_spending.html",
+        report=report,
+        year=year,
+        month=month,
+        display=(
+            analytics_view.build_spending_display(report)
+            if report is not None else None
         ),
-        "marginal_pct": (
-            report.chips.marginal_rate * _HUNDRED
-        ).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP),
-        "state_rate_pct": (
-            (state_rate * _HUNDRED).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP)
-            if state_rate is not None else None
+        sparklines=(
+            analytics_view.spending_sparklines(report)
+            if report is not None else {}
         ),
-        "margin_positive": report.schedule_a.margin > 0,
-        "margin_amount": abs(report.schedule_a.margin),
-    }
+        **analytics_view.build_spending_nav(today, year, month),
+    )
 
 
 @analytics_bp.route("/analytics/year-end")
@@ -395,7 +418,7 @@ def variance_tab():
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
 
-    chart_data = _build_variance_chart_data(report)
+    chart_data = analytics_view.build_variance_chart_data(report)
     periods = pay_period_service.get_all_periods(current_user.id)
     available_years = _get_available_years(current_user.id, today.year)
 
@@ -576,7 +599,7 @@ def _render_month_view(data, year, month, low_balance, today):
     differ when the month ends mid-period).
     """
     # Build calendar grid (Sunday-start weeks).
-    weeks = _build_calendar_weeks(year, month, data, today)
+    weeks = analytics_view.build_calendar_weeks(year, month, data, today)
 
     # Compute prev/next month navigation.
     if month == 1:
@@ -615,85 +638,10 @@ def _render_month_view(data, year, month, low_balance, today):
         low_balance_threshold=low_balance,
         today=today,
         month_end_balance=month_end_balance,
-        flow_strip_json=_serialize_flow_strip(
+        flow_strip_json=analytics_view.serialize_flow_strip(
             data, low_balance, today, year, month,
         ),
     )
-
-
-def _serialize_flow_strip(data, low_balance, today, year, month):
-    """Serialize the month flow strip series to a JSON string.
-
-    The calendar's single Chart.js serialization boundary (coding-standards:
-    floats live only here, never in a calculation), mirroring the dashboard's
-    ``_serialize_chart``.  Emits one point per calendar day of the month from
-    the daily running-balance view the service computed
-    (:class:`~app.services.calendar_service.DailyView`), plus the display
-    indices the strip needs:
-
-    - ``current_index``: the count of measured days (points ``[0,
-      current_index)`` render solid, the rest dashed) -- ``today.day``
-      inside the month, ``0`` for a wholly future month (all dashed), the
-      day count for a wholly past month (all solid).  Matches the
-      net-worth cockpit's ``current_index`` semantics so the shared
-      ``splitSegment`` / ``todayMarkerPlugin`` helpers apply unchanged.
-    - ``threshold``: the user's low-balance-threshold setting (the same
-      source the grid and dashboard read -- Calendar rebuild decision 4).
-    - ``payday_indices`` / ``trough_index``: 0-based day indices for the
-      payday dots and the labeled trough dot.
-    - ``week_tick_indices``: the 1st of the month plus every Sunday
-      (0-based), the strip's weekly gridline/tick positions -- Sundays
-      match the calendar grid's week start.
-
-    Args:
-        data: The month's :class:`MonthSummary` (``daily`` must be present;
-            returns ``None`` when it is not, and the template skips the
-            strip).
-        low_balance: The user's low-balance threshold (whole dollars).
-        today: The current date in the display timezone.
-        year: Target calendar year.
-        month: Target calendar month (1-12).
-
-    Returns:
-        A JSON string for the canvas ``data-chart`` attribute, or ``None``
-        when no daily view was computed.
-    """
-    if data.daily is None:
-        return None
-    days_in_month = cal_mod.monthrange(year, month)[1]
-    first_day = date(year, month, 1)
-    last_day = date(year, month, days_in_month)
-
-    if today < first_day:
-        current_index = 0
-    elif today > last_day:
-        current_index = days_in_month
-    else:
-        current_index = today.day
-
-    week_ticks = sorted({0} | {
-        day - 1 for day in range(1, days_in_month + 1)
-        if date(year, month, day).weekday() == cal_mod.SUNDAY
-    })
-
-    balances = data.daily.daily_balances
-    return json.dumps({
-        "labels": [
-            date(year, month, day).strftime("%b %-d")
-            for day in range(1, days_in_month + 1)
-        ],
-        "values": [
-            float(balances[day]) for day in range(1, days_in_month + 1)
-        ],
-        "current_index": current_index,
-        "threshold": float(low_balance),
-        "payday_indices": [day - 1 for day in data.paycheck_days],
-        "trough_index": (
-            data.daily.trough_day - 1
-            if data.daily.trough_day is not None else None
-        ),
-        "week_tick_indices": week_ticks,
-    })
 
 
 def _render_year_view(year, account_id, threshold):
@@ -719,74 +667,6 @@ def _render_year_view(year, account_id, threshold):
         month_cards=month_cards,
         year=year,
     )
-
-
-def _build_calendar_weeks(year, month, data, today):
-    """Build a list of week rows for the calendar grid.
-
-    Each week is a list of 7 day dicts with keys: number, entries,
-    is_paycheck, is_today, is_modeled, income_total, expense_total,
-    daily_balance, overflow.  ``daily_balance`` is the day's projected
-    end-of-day running balance (``None`` before the pay-period horizon or
-    when no daily view was computed); ``overflow`` is the day's "+N more"
-    residual or ``None``.  ``is_modeled`` marks days AFTER today in the
-    display timezone -- the measured/modeled treatment is a date split, not
-    a status split (Calendar rebuild decision 7): the cell's balance hero
-    renders in secondary ink with a leading tilde on modeled days.
-    Empty cells have number=0.  Uses Sunday as the first day of the week.
-    """
-    # Sunday-start calendar (firstweekday=6 in Python's calendar).
-    cal = cal_mod.Calendar(firstweekday=6)
-    month_weeks = cal.monthdayscalendar(year, month)
-
-    paycheck_set = set(data.paycheck_days)
-    daily_balances = data.daily.daily_balances if data.daily else {}
-
-    weeks = []
-    for week in month_weeks:
-        row = []
-        for day_num in week:
-            if day_num == 0:
-                row.append({
-                    "number": 0,
-                    "entries": [],
-                    "is_paycheck": False,
-                    "is_today": False,
-                    "is_modeled": False,
-                    "income_total": Decimal("0"),
-                    "expense_total": Decimal("0"),
-                    "daily_balance": None,
-                    "overflow": None,
-                })
-            else:
-                entries = data.day_entries.get(day_num, [])
-                is_today = (
-                    year == today.year
-                    and month == today.month
-                    and day_num == today.day
-                )
-                # calendar_service folds the per-day income/expense totals
-                # (one rule, shared with the month headline); the route
-                # only renders them.
-                totals = data.day_totals.get(
-                    day_num, (Decimal("0"), Decimal("0")),
-                )
-                row.append({
-                    "number": day_num,
-                    "entries": entries,
-                    "is_paycheck": day_num in paycheck_set,
-                    "is_today": is_today,
-                    "is_modeled": (
-                        (year, month, day_num)
-                        > (today.year, today.month, today.day)
-                    ),
-                    "income_total": totals[0],
-                    "expense_total": totals[1],
-                    "daily_balance": daily_balances.get(day_num),
-                    "overflow": data.day_overflow.get(day_num),
-                })
-        weeks.append(row)
-    return weeks
 
 
 # ── CSV helpers ────────────────────────────────────────────────────
@@ -911,30 +791,6 @@ def _window_csv_filename(prefix, window_type, period_id, month, year):
     return f"{prefix}.csv"
 
 
-def _build_variance_chart_data(report):
-    """Build chart data dict from a VarianceReport.
-
-    Converts Decimal values to float for JSON serialization in
-    template data attributes.  Includes the per-group ``variance``
-    array (``actual - estimated``) computed server-side so the
-    variance tooltip in ``chart_variance.js`` renders without
-    recomputing it client-side (MED-04 / E-17 / JN-03).
-
-    Args:
-        report: VarianceReport from the variance service.
-
-    Returns:
-        dict with labels, estimated, actual, and variance lists.
-    """
-    return {
-        "labels": [g.group_name for g in report.groups],
-        "estimated": [float(g.figures.estimated) for g in report.groups],
-        "actual": [float(g.figures.actual) for g in report.groups],
-        "variance": [float(g.figures.variance) for g in report.groups],
-    }
-
-
-# ── Year-end helpers ───────────────────────────────────────────────
 
 
 def _get_available_years(user_id, current_year):

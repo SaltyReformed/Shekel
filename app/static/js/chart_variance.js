@@ -18,7 +18,7 @@ function renderVarianceChart(canvasId) {
   var estimated = JSON.parse(canvas.getAttribute('data-estimated') || '[]');
   var actual = JSON.parse(canvas.getAttribute('data-actual') || '[]');
   // MED-04 / E-17 / JN-03: the per-group variance (actual - estimated)
-  // is computed server-side in _build_variance_chart_data so the
+  // is computed server-side in analytics_view.build_variance_chart_data so the
   // tooltip below renders the same number as the table, not a
   // re-computation that could drift from the canonical formula.
   var variance = JSON.parse(canvas.getAttribute('data-variance') || '[]');

@@ -286,8 +286,12 @@
   color: var(--shekel-danger);
 }
 
-/* The page-level basis chip: this whole tab is a modeled estimate. */
-.tax-basis-chip {
+/* The page-level basis chip: one neutral chip stating a tab's data basis
+   (Taxes = "modeled estimate", Spending = "measured").  Shared visual across
+   the analytics tabs; Slice 4 unifies these into one page-wide basis-chip
+   vocabulary (measured / modeled / mixed). */
+.tax-basis-chip,
+.spend-basis-chip {
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -446,4 +450,198 @@
 .trend-payment-late {
   color: var(--shekel-danger);
   font-size: 0.8125rem;
+}
+
+/* ── Spending (slice-3 rebuild: hero + Where It Went + rail) ─────── */
+
+/* In-progress month caption + the "Where It Went" header note. */
+.spend-inprogress {
+  font-style: italic;
+}
+
+.spend-header-note {
+  font-size: 0.71875rem;
+}
+
+.spend-month-label {
+  min-width: 7.5rem;
+  text-align: center;
+}
+
+/* Where It Went rows: one shared grid so the group head and its item rows
+   align column-for-column (marker / name / share bar / sparkline / delta /
+   figures).  The group head is a <button>, the items are <div>s, so the grid
+   template is applied to both via .spend-row. */
+.spend-row {
+  display: grid;
+  grid-template-columns:
+    1.1rem minmax(4rem, 9rem) minmax(0, 1fr) 74px 66px minmax(5.5rem, auto);
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 1rem;
+}
+
+.spend-group {
+  border-bottom: 1px solid var(--shekel-border-subtle);
+}
+
+.spend-group:last-child {
+  border-bottom: none;
+}
+
+/* Group head: a full-width button that toggles its items' collapse. */
+.spend-group__head {
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.spend-group__head:hover,
+.spend-group__head:focus-visible {
+  background-color: var(--shekel-row-hover);
+}
+
+.spend-item {
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+}
+
+.spend-item .spend-name {
+  color: var(--shekel-text-secondary);
+}
+
+.spend-chevron {
+  font-size: 0.8rem;
+  color: var(--shekel-text-muted);
+  transition: transform 0.15s;
+}
+
+/* Default state is expanded (chevron-down); collapsed points right. */
+.spend-group__head[aria-expanded="false"] .spend-chevron {
+  transform: rotate(-90deg);
+}
+
+.spend-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Share bar: proportion of the window total.  Fill width is applied by
+   progress_bar.js from data-progress-pct (CSP forbids inline style). */
+.spend-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+  overflow: hidden;
+}
+
+.spend-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--shekel-accent);
+}
+
+/* Item fill is a lighter accent so a group bar reads as the sum of its
+   (nested) item bars. */
+.spend-bar__fill--item {
+  background: color-mix(in srgb, var(--shekel-accent) 55%, transparent);
+}
+
+/* Sparkline cell: the per-period trend polyline, stroke coloured by the
+   direction class (trend-up / trend-down / trend-flat) via currentColor, so
+   the cell is theme-reactive with no JS. */
+.spend-spark {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.spend-spark-svg {
+  width: 100%;
+  height: 22px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.spend-delta {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Figures cell: amount over its share of the window total. */
+.spend-figs {
+  text-align: right;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.spend-figs .font-mono {
+  display: block;
+}
+
+.spend-share {
+  font-size: 0.6875rem;
+  color: var(--shekel-text-muted);
+}
+
+/* Rail: Top Movers + Estimate Surprises. */
+.spend-mover {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.spend-mover__name {
+  min-width: 0;
+  font-size: 0.8125rem;
+}
+
+.spend-mover__abs {
+  font-size: 0.6875rem;
+}
+
+.spend-surprise__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.spend-surprise__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.spend-surprise__sub {
+  margin-top: 0.0625rem;
+}
+
+/* Mobile: drop the share bar and sparkline columns (the % and delta carry
+   the same signals in less space); the remaining four cells reflow into the
+   narrower grid in source order. */
+@media (max-width: 767.98px) {
+  .spend-row {
+    grid-template-columns: 1.1rem minmax(0, 1fr) auto auto;
+    gap: 0.375rem 0.625rem;
+  }
+
+  .spend-bar,
+  .spend-spark {
+    display: none;
+  }
 }
