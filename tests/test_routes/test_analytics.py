@@ -338,13 +338,18 @@ class TestAnalyticsPage:
 
         Build-Order Step 5 added the Income Statement and Balance Sheet
         tabs (the confirmed-ledger statements) alongside the original four.
+        Slice 2 of the analytics rebuild (Gate A ruling 4, locked
+        2026-07-04) replaced the Year-End pill with Taxes; the
+        /analytics/year-end ROUTE stays alive until the slice-4 shell
+        collapse retires it with redirects.
         """
         with app.app_context():
             resp = auth_client.get("/analytics")
             assert resp.status_code == 200
             html = resp.data
             assert b"Calendar" in html
-            assert b"Year-End" in html
+            assert b"Taxes" in html
+            assert b"Year-End" not in html
             assert b"Variance" in html
             assert b"Trends" in html
             assert b"Income Statement" in html
@@ -2962,3 +2967,154 @@ class TestCalendarFlowStrip:
             html = resp.data.decode()
             assert "calendar-pay-tag" in html
             assert ">PAY</span>" in html
+
+
+# ── Taxes Tab Tests (slice-2 rebuild, T-P4) ──────────────────────────
+
+
+def _seed_taxes_profile(seed_user, db):
+    """Seed the DEFAULT_* tax configs and a 130k single/NC salary profile.
+
+    The T-P4 route-test fixture: 130,000 / 26 = 5,000.00 gross per period
+    exactly (no rounding residue), no deductions, no calibration -- so every
+    figure asserted below is hand-computable from the 2026 seeds.
+    """
+    from app.extensions import db as _db
+    from app.models.ref import FilingStatus
+    from app.models.salary_profile import SalaryProfile
+    from app.services.auth_service import _seed_tax_data_for_user
+
+    _seed_tax_data_for_user(seed_user["user"].id)
+    filing_status = (
+        _db.session.query(FilingStatus).filter_by(name="single").one()
+    )
+    profile = SalaryProfile(
+        user_id=seed_user["user"].id,
+        scenario_id=seed_user["scenario"].id,
+        name="Taxes Tab Profile",
+        annual_salary=Decimal("130000.00"),
+        pay_periods_per_year=26,
+        filing_status_id=filing_status.id,
+        state_code="NC",
+        is_active=True,
+    )
+    db.session.add(profile)
+    db.session.commit()
+    return profile
+
+
+class TestTaxesTab:
+    """Pins for the Taxes tab (T-P4): hero, chips, ledger, W-2, Schedule A.
+
+    Hand-computed baseline (130k single/NC profile, seed_periods = 10
+    paydays in 2026, no checkpoint, no calibration, no deductions):
+
+      per-period federal = round(19,934 / 26) = 766.69 -> x10 = 7,666.90
+      per-period NC      = round(4,678.28 / 26) = 179.93 -> x10 = 1,799.30
+      liability on hybrid gross 50,000:
+        federal taxable 33,900 -> 1,240 + 21,500 x 0.12 = 3,820.00
+        NC (50,000 - 12,750) x 0.0399 = 1,486.2750 -> 1,486.28
+      federal refund 7,666.90 - 3,820.00 = 3,846.90
+      NC refund      1,799.30 - 1,486.28 =   313.02
+      total refund                       = 4,159.92
+      effective (3,820 + 1,486.28) / 50,000 = 0.106126 -> 10.61%
+      marginal: 33,900 sits in the 12,400-50,400 band -> 12.00%
+    """
+
+    def test_taxes_tab_hand_pinned_figures(self, app, auth_client, seed_user, seed_periods, db):
+        """The full-modeled baseline renders every hand-computed figure."""
+        with app.app_context():
+            _seed_taxes_profile(seed_user, db)
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "Estimated refund" in html
+            assert "$4,159.92" in html   # hero + ledger total
+            assert "$3,846.90" in html   # federal refund chip + ledger
+            assert "$313.02" in html     # NC refund chip + ledger
+            assert "10.61%" in html      # effective rate chip
+            assert "12.00%" in html      # marginal rate chip
+            assert "modeled estimate" in html
+            assert "withholding fully modeled" in html
+
+            # Derivation ledger + W-2 tie-out: Box 2 == federal withheld.
+            assert "How the estimate is derived" in html
+            assert "$7,666.90" in html
+            assert "$3,820.00" in html   # federal tax line
+            assert "$1,486.28" in html   # NC tax line
+            assert "W-2 preview" in html
+            assert "$50,000.00" in html  # Box 1 / Box 3 / Box 5 wages
+            assert "$1,799.30" in html   # Box 17 == NC withheld
+
+            # Schedule A: no loans seeded -> itemized = state tax only,
+            # standard deduction 16,100 wins by 16,100 - 1,799.30 = 14,300.70.
+            assert "Schedule A check" in html
+            assert "standard deduction wins by" in html
+            assert "$14,300.70" in html
+
+            # The YTD checkpoint card and assumptions card are present.
+            assert "ytd-checkpoint-card" in html
+            assert "Assumptions" in html
+            assert "bracket model" in html   # no calibration seeded
+
+    def test_taxes_tab_checkpoint_reanchors_withholding(self, app, auth_client, seed_user, seed_periods, db):
+        """A saved checkpoint re-anchors the measured side of the refund.
+
+        Stub dated 2026-01-16 (the second payday) covers paydays 1-2;
+        the remainder is the 8 later paydays.  Entered federal 1,600.00
+        (vs 2 x 766.69 = 1,533.38 modeled), so:
+
+          federal withheld = 1,600.00 + 8 x 766.69 = 7,733.52
+          federal refund   = 7,733.52 - 3,820.00   = 3,913.52
+        """
+        with app.app_context():
+            from datetime import date as date_cls
+            from app.services import tax_withholding_service
+            from app.services.tax_withholding_service import CheckpointFigures
+
+            profile = _seed_taxes_profile(seed_user, db)
+            tax_withholding_service.save_checkpoint(
+                profile.id,
+                CheckpointFigures(
+                    as_of_date=date_cls(2026, 1, 16),
+                    ytd_gross=Decimal("10000.00"),
+                    ytd_federal=Decimal("1600.00"),
+                    ytd_state=Decimal("360.00"),
+                    ytd_social_security=Decimal("620.00"),
+                    ytd_medicare=Decimal("145.00"),
+                ),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "$3,913.52" in html
+            assert "measured through Jan 16" in html
+            assert "Jan 16, 2026" in html   # assumptions "Measured through"
+
+    def test_taxes_tab_empty_state_without_profile(self, app, auth_client, seed_user):
+        """No active salary profile renders the empty state, not a crash."""
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/taxes",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "No active salary profile" in html
+            assert "Set up salary" in html
+
+    def test_taxes_tab_non_htmx_redirects(self, app, auth_client, seed_user):
+        """A non-HTMX GET redirects to the analytics page."""
+        with app.app_context():
+            resp = auth_client.get("/analytics/taxes")
+            assert resp.status_code == 302
+            assert "/analytics" in resp.headers["Location"]

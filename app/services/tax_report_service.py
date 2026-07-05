@@ -292,7 +292,7 @@ class TaxAssumptions:
 
 
 @dataclass(frozen=True)
-class TaxReport:
+class TaxReport:  # pylint: disable=too-many-instance-attributes
     """The complete analytics Taxes tab dataset for one filer and year.
 
     One bundle per T-P4 card: ``refund`` + ``chips`` (hero band),
@@ -301,6 +301,18 @@ class TaxReport:
     ``w2_preview`` (hybrid W-2), ``schedule_a`` (Schedule A check),
     ``assumptions`` (assumptions card).  ``withholding`` carries the shared
     measured/modeled split the hero and W-2 both read.
+
+    ``primary_profile_id`` is the resolved primary profile's id, carried so
+    the route can wire the YTD checkpoint card's form action (and its
+    ``latest_checkpoint`` read) WITHOUT re-deriving the primary-profile
+    rule -- this module's resolution stays the single implementation.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because
+    this is the one top-level bundle the Taxes tab renders: one cohesive
+    field per locked-anatomy card plus the primary-profile pointer; the
+    per-card sub-bundles already group everything groupable, so the only
+    "fix" would be an artificial extra nesting level no consumer reads as
+    a unit.
     """
 
     refund: RefundEstimate
@@ -310,6 +322,7 @@ class TaxReport:
     schedule_a: ScheduleACheck
     chips: TaxChips
     assumptions: TaxAssumptions
+    primary_profile_id: int
 
 
 def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None:
@@ -368,6 +381,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
             liability, box1_wages, configs.get("bracket_set"), next_stub,
         ),
         assumptions=_build_assumptions(primary, withholding, profiles),
+        primary_profile_id=primary.id,
     )
 
 

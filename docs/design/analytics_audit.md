@@ -624,3 +624,52 @@ P3 notes / residuals:
 Developer drove the live page on real data and accepted: "Calendar looks good." Slice 1 (Calendar)
 is CLOSED -- P1 `19b453a7`, P2 `11d10c80`, acceptance recorded here. The P3 residuals above stand as
 noted (no defects raised during the drive). Next: slice 2, Taxes (T-P1 annual liability service).
+
+## Taxes slice as-built (T-P1..T-P4 COMPLETE 2026-07-04/05, on dev)
+
+Built per Gate A ruling 5 (one arc, no v1/v2 staging), the liability-basis ruling, and the locked
+Taxes anatomy. Opus subagents built T-P1..T-P3 with orchestrator review + gate re-runs between
+phases; T-P4 was the Fable presentation phase.
+
+- **T-P1 `6936b8f9`** -- annual filing-time liability:
+  `tax_calculator.calculate_annual_federal_liability` (same bracket/credit primitives as
+  withholding; 4(a) in, 4(b)/4(c) out; nonrefundable clamp) +
+  `tax_liability_service.compute_annual_liability` (per-year configs via the SSOT loader; NC base =
+  wages + 4(a) - pre-tax, state std deduction inside `calculate_state_tax`). 20 hand-confirmed tests
+  incl. the locked worked anchor.
+- **T-P2 `c7dd0a64`** -- `salary.ytd_tax_checkpoints` (history-keeping per (profile, as_of_date);
+  migration `3e501a622c8f` verified both directions; audit trigger manually attached; 9 named
+  CHECKs), `POST /salary/<id>/checkpoint` (salary blueprint per the domain-write convention;
+  Marshmallow validation w/ display-tz future bound; `_tax_checkpoint_card.html` partial), and
+  `tax_withholding_service.compute_withholding_to_date`: measured stub + modeled remainder,
+  partitioned at payday (`start_date > as_of_date`), projected with FULL-year engine context (a
+  remainder-only list restarts cumulative wages -- caught in orchestrator review, fixed, pinned by
+  the 260k cap test where total projected SS == the 11,439.00 statutory max exactly).
+- **T-P3 `20ad520b`** -- `tax_report_service.compute_tax_report`: RefundEstimate (withheld -
+  liability per jurisdiction, positive = refund), hybrid W2Preview (Box 1/16 = gross - modeled
+  pretax; Box 3 SS-base-capped; per-box measured/modeled mix), ScheduleACheck (mortgage interest
+  REUSED from the year-end ledger+schedule hybrid; property tax OMITTED -- escrow lines are
+  free-text named, no ref-kind separates tax from insurance; SALT cap not applied, disclosed),
+  TaxChips (effective 4dp zero-safe; marginal via `marginal_rate_for`, exact edge = lower tier; next
+  stub), structured TaxAssumptions. Single-filer identity: wages/pretax/withholding summed across
+  active profiles, filing inputs from the primary. Shared-loader extraction into `projection_inputs`
+  closed a cross-file R0801 caught live by the Stop hook mid-build. NOTE: imports the private
+  `year_end_summary_service._income_tax._compute_mortgage_interest`; when slice 4 retires the
+  year-end tab, that hybrid should MOVE here and the private import disappear.
+- **T-P4** (this commit) -- `/analytics/taxes` + `_taxes.html` per the locked anatomy: hero band
+  (refund/owed hero + federal/NC/effective/marginal/next-stub chips) on the read-only
+  `nw-sky`/`pulse-chip` cockpit vocabulary; YTD checkpoint card (the T-P2 partial) + assumptions
+  card; derivation ledger (the table-IS-the-artifact exception, measured/modeled splits inline);
+  hybrid W-2 preview; Schedule A card. NO chart (the estimate-convergence line stays deferred until
+  checkpoint history exists). Signed figures split route-side into magnitude + direction
+  ("$X owed" never renders "-$X owed"); rates precomputed as 2dp percents (the `_pct` precedent).
+  `TaxReport.primary_profile_id` added so the route wires the checkpoint card without re-deriving
+  the primary rule. The Year-End PILL is replaced by Taxes; the `/analytics/year-end` ROUTE stays
+  until the slice-4 shell collapse retires it with redirects. Tests: 4 new route pins on
+  hand-computed figures (incl. the checkpoint re-anchor identity) + the six-pills pin updated
+  (approved Gate A change). Live-verified on a self-seeded instance (130k single/NC, 26 periods,
+  June-30 stub), both themes and viewports; every rendered figure tied out by hand (hero 103.78 =
+  federal +132.97 - NC 29.19; Box 4 8,060.00; Schedule A margin 11,450.91).
+
+T-P5 (developer acceptance) remains: drive the live tab on real data; decide the year-end CSV's fate
+(it dies with the tab at slice 4 unless a tax-summary export is wanted).

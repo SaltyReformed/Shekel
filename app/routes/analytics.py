@@ -12,7 +12,7 @@ ledger via ``ledger_report_service``.
 import calendar as cal_mod
 import json
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from flask import (
     Blueprint, abort, make_response, redirect, render_template, request,
@@ -26,6 +26,7 @@ from app.utils.dates import to_display_date
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
+from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
     budget_variance_service,
@@ -34,6 +35,8 @@ from app.services import (
     ledger_report_service,
     pay_period_service,
     spending_trend_service,
+    tax_report_service,
+    tax_withholding_service,
     year_end_summary_service,
 )
 from app.services.calendar_service import CalendarAccountNotResolvableError
@@ -197,6 +200,116 @@ def calendar_tab():
         # project security rule ("404 for both 'not found' and 'not
         # yours'", app/utils/auth_helpers.py).
         abort(404)
+
+
+@analytics_bp.route("/analytics/taxes")
+@login_required
+@require_owner
+def taxes_tab():
+    """HTMX partial: the Taxes tab (refund hero, W-2 preview, Schedule A).
+
+    Renders :func:`app.services.tax_report_service.compute_tax_report` for
+    one tax year: the refund hero band with rate/timing chips, the YTD
+    checkpoint card (the T-P2 partial, wired to the primary profile), the
+    assumptions card, the derivation ledger, the hybrid W-2 preview, and
+    the Schedule A check.  A user with no baseline scenario or no active
+    salary profile gets the empty state.
+
+    Query parameters:
+        year: Tax year (default: the display-timezone current year),
+            clamped to [2000, 2100] like the sibling tabs.
+
+    Non-HTMX requests redirect to the main analytics page (no CSV export
+    for this tab; the year-end CSV's fate is T-P5's explicit decision).
+    """
+    today = to_display_date(datetime.now(timezone.utc))
+    year = request.args.get("year", today.year, type=int)
+    year = max(2000, min(2100, year))
+
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("analytics.page"))
+
+    report = tax_report_service.compute_tax_report(current_user.id, year, today)
+    available_years = _get_available_years(current_user.id, today.year)
+
+    if report is None:
+        return render_template(
+            "analytics/_taxes.html",
+            report=None,
+            year=year,
+            available_years=available_years,
+        )
+
+    # The checkpoint card partial's contract (T-P2): the owned profile for
+    # its form action plus the year's latest checkpoint.  The report's
+    # primary_profile_id carries the service-resolved primary so the
+    # primary-profile rule is not re-derived here.
+    profile = db.session.get(SalaryProfile, report.primary_profile_id)
+    checkpoint = tax_withholding_service.latest_checkpoint(
+        report.primary_profile_id, year,
+    )
+    return render_template(
+        "analytics/_taxes.html",
+        report=report,
+        year=year,
+        available_years=available_years,
+        display=_build_taxes_display(report),
+        profile=profile,
+        checkpoint=checkpoint,
+        errors={},
+        save_error=None,
+        form_values={},
+    )
+
+
+# Two-decimal display quantum for the Taxes tab's percentage chips
+# (rates arrive as 4-dp fractions; render as 0.01%-resolution percents).
+_PCT_QUANTUM = Decimal("0.01")
+_HUNDRED = Decimal("100")
+
+
+def _build_taxes_display(report):
+    """Compute the Taxes tab's route-layer display values.
+
+    The presentation splits every signed figure into a magnitude plus a
+    direction flag (a "$1,234 owed" hero must not render "-$1,234 owed"),
+    and scales the 4-dp rate fractions to 2-dp percents -- Decimal display
+    math that belongs at the route layer (the ``_build_variance_chart_data``
+    precedent), never in the template.
+
+    Args:
+        report: The populated
+            :class:`~app.services.tax_report_service.TaxReport`.
+
+    Returns:
+        dict with the hero/chip magnitudes and direction flags, the
+        percent-scaled rates (``None`` propagated for a ``None`` effective
+        rate or state rate), and the Schedule A margin split.
+    """
+    refund = report.refund
+    effective = report.chips.effective_rate
+    state_rate = report.liability.state.flat_rate
+    return {
+        "hero_is_refund": refund.total_refund >= 0,
+        "hero_amount": abs(refund.total_refund),
+        "federal_is_refund": refund.federal_refund >= 0,
+        "federal_amount": abs(refund.federal_refund),
+        "state_is_refund": refund.state_refund >= 0,
+        "state_amount": abs(refund.state_refund),
+        "effective_pct": (
+            (effective * _HUNDRED).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP)
+            if effective is not None else None
+        ),
+        "marginal_pct": (
+            report.chips.marginal_rate * _HUNDRED
+        ).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP),
+        "state_rate_pct": (
+            (state_rate * _HUNDRED).quantize(_PCT_QUANTUM, rounding=ROUND_HALF_UP)
+            if state_rate is not None else None
+        ),
+        "margin_positive": report.schedule_a.margin > 0,
+        "margin_amount": abs(report.schedule_a.margin),
+    }
 
 
 @analytics_bp.route("/analytics/year-end")

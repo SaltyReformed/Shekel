@@ -273,6 +273,56 @@
   }
 }
 
+/* ── Taxes (slice-2 rebuild: refund hero + ledger + W-2 + Sch. A) ── */
+
+/* Money-state mapping for refund vs owed: positive/refund = done,
+   negative/owed = danger; always paired with the "refund"/"owed" word
+   (color is never the only signal). */
+.tax-refund {
+  color: var(--shekel-done);
+}
+
+.tax-owed {
+  color: var(--shekel-danger);
+}
+
+/* The page-level basis chip: this whole tab is a modeled estimate. */
+.tax-basis-chip {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.75rem;
+  color: var(--shekel-text-secondary);
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+}
+
+.tax-ledger td,
+.tax-w2 td {
+  padding: 0.4375rem 0.75rem;
+  vertical-align: middle;
+}
+
+/* Subtotal and result rows: the same divider grammar as the year-end
+   and variance tables (strong top border marks a computed line). */
+.tax-ledger-subtotal td,
+.tax-ledger-result td {
+  border-top: 2px solid var(--shekel-border-strong);
+}
+
+.tax-ledger-total td {
+  border-top: 2px solid var(--shekel-border-strong);
+  background-color: var(--shekel-summary-bg);
+}
+
+.tax-ledger-subtotal-dt {
+  border-top: 2px solid var(--shekel-border-strong);
+  padding-top: 0.25rem;
+  font-weight: 600;
+}
+
 /* ── Year-End Summary ──────────────────────────────────────────── */
 
 .year-end-section .card-header {

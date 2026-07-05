@@ -1,0 +1,343 @@
+{% from "_money_macros.html" import money %}
+{# Taxes tab -- HTMX partial (T-P4), per the locked anatomy in
+   docs/design/analytics_audit.md: hero band (refund hero + chips + YTD
+   checkpoint card + assumptions card) over the derivation ledger, the
+   hybrid W-2 preview, and the Schedule A check. NO chart in v1 (the
+   estimate-convergence line stays deferred until checkpoint history
+   exists).
+
+   Context contract (analytics.taxes_tab):
+     report           -- TaxReport, or None (empty state).
+     year             -- the tax year shown.
+     available_years  -- year-selector options.
+     display          -- route-computed magnitudes/flags/percents
+                         (_build_taxes_display; templates do no money math).
+     profile, checkpoint, errors, save_error, form_values
+                      -- the YTD checkpoint card partial's contract (T-P2).
+
+   Basis honesty: every figure on this tab is a MODELED estimate (the
+   audit's "modeled, labeled, calibrated" cell); the caption and the
+   assumptions card carry the calibration and measured-through anchors. #}
+
+{# ── Header: title + year selector ─────────────────────────────── #}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div class="d-flex align-items-center gap-2">
+    <h5 class="mb-0">Taxes</h5>
+    <span class="tax-basis-chip" title="Estimated from the salary projection engine; not a filing document.">modeled estimate</span>
+  </div>
+  <select class="form-select form-select-sm w-auto"
+        hx-get="{{ url_for('analytics.taxes_tab') }}"
+        hx-target="#tab-content" hx-swap="innerHTML"
+        hx-indicator="#tab-spinner"
+        name="year">
+  {% for y in available_years %}
+  <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+  {% endfor %}
+  </select>
+</div>
+
+{% if report is none %}
+{# ── Empty state ────────────────────────────────────────────────── #}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-receipt fs-display"></i>
+  <p class="mt-2 mb-1">No active salary profile.</p>
+  <p class="mb-3">The refund estimate is built from your salary projection.</p>
+  <a href="{{ url_for('salary.cockpit') }}" class="btn btn-sm btn-outline-primary">
+    Set up salary
+  </a>
+</div>
+
+{% else %}
+
+{# ── Hero band: refund hero + chips (read-only nw-sky vocabulary) ── #}
+<div class="pulse-canvas mb-3">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">
+        {{ "Estimated refund" if display.hero_is_refund else "Estimated amount owed" }}
+      </div>
+      <div class="nw-hero__num font-mono {{ 'tax-refund' if display.hero_is_refund else 'tax-owed' }}">
+        {{ money(display.hero_amount) }}
+      </div>
+      <div class="nw-hero__cap">
+        {{ year }} federal + NC combined &middot;
+        {%- if report.withholding.measured_through %}
+        withholding measured through {{ report.withholding.measured_through.strftime('%b %-d') }}, modeled after
+        {%- else %}
+        withholding fully modeled
+        {%- endif %}
+      </div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Federal</div>
+        <div class="pulse-chip__value font-mono {{ 'tax-refund' if display.federal_is_refund else 'tax-owed' }}">
+          {{ money(display.federal_amount) }}
+        </div>
+        <div class="calendar-chip-cap">{{ "refund" if display.federal_is_refund else "owed" }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">NC state</div>
+        <div class="pulse-chip__value font-mono {{ 'tax-refund' if display.state_is_refund else 'tax-owed' }}">
+          {{ money(display.state_amount) }}
+        </div>
+        <div class="calendar-chip-cap">{{ "refund" if display.state_is_refund else "owed" }}</div>
+      </div>
+      {% if display.effective_pct is not none %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Effective rate</div>
+        <div class="pulse-chip__value font-mono">{{ display.effective_pct }}%</div>
+        <div class="calendar-chip-cap">of Box 1 wages</div>
+      </div>
+      {% endif %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Marginal rate</div>
+        <div class="pulse-chip__value font-mono">{{ display.marginal_pct }}%</div>
+        <div class="calendar-chip-cap">federal bracket</div>
+      </div>
+      {% if report.chips.next_stub %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Next pay stub</div>
+        <div class="pulse-chip__value font-mono">{{ report.chips.next_stub.strftime('%b %-d') }}</div>
+        <div class="calendar-chip-cap">update the checkpoint then</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Checkpoint + assumptions cards ────────────────────────────── #}
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    {% include "analytics/_tax_checkpoint_card.html" %}
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h6 class="mb-0">Assumptions</h6></div>
+      <div class="card-body">
+        <dl class="row mb-0 small tax-assumptions">
+          <dt class="col-6 fw-normal">Tax year</dt>
+          <dd class="col-6 text-end mb-1">{{ report.liability.tax_year }}</dd>
+          <dt class="col-6 fw-normal">Filing status</dt>
+          <dd class="col-6 text-end mb-1">{{ report.assumptions.filing.filing_status_name|replace('_', ' ')|title }}</dd>
+          <dt class="col-6 fw-normal">Standard deduction</dt>
+          <dd class="col-6 text-end mb-1 font-mono">{{ money(report.liability.federal.standard_deduction) }}</dd>
+          {% if report.liability.federal.qualifying_children > 0 or report.liability.federal.other_dependents > 0 %}
+          <dt class="col-6 fw-normal">Dependent credits</dt>
+          <dd class="col-6 text-end mb-1">
+            {{ report.liability.federal.qualifying_children }} &times; {{ money(report.liability.federal.child_credit_amount, cents=false) }},
+            {{ report.liability.federal.other_dependents }} &times; {{ money(report.liability.federal.other_dependent_credit_amount, cents=false) }}
+          </dd>
+          {% endif %}
+          <dt class="col-6 fw-normal">State</dt>
+          <dd class="col-6 text-end mb-1">
+            {{ report.assumptions.filing.state_code }}
+            {%- if display.state_rate_pct is not none %} &middot; {{ display.state_rate_pct }}% flat
+            {%- if report.liability.state.standard_deduction is not none %} after {{ money(report.liability.state.standard_deduction, cents=false) }}{% endif %}
+            {%- else %} &middot; no income tax configured{% endif %}
+          </dd>
+          <dt class="col-6 fw-normal">Withholding basis</dt>
+          <dd class="col-6 text-end mb-1">
+            {%- if report.assumptions.disclosures.calibration_active -%}
+            calibrated {{ report.assumptions.disclosures.calibration_pay_stub_date.strftime('%b %-d, %Y') }}
+            {%- else -%}
+            bracket model
+            {%- endif -%}
+          </dd>
+          <dt class="col-6 fw-normal">Measured through</dt>
+          <dd class="col-6 text-end mb-1">
+            {%- if report.assumptions.disclosures.checkpoint_as_of_date -%}
+            {{ report.assumptions.disclosures.checkpoint_as_of_date.strftime('%b %-d, %Y') }}
+            {%- else -%}
+            fully modeled
+            {%- endif -%}
+          </dd>
+        </dl>
+        <hr class="my-2">
+        <ul class="small text-muted mb-0 ps-3 tax-caveats">
+          {% if report.assumptions.disclosures.pretax_modeled_for_elapsed %}
+          <li>Pre-tax deductions are modeled for the whole year (stubs carry no pre-tax figure).</li>
+          {% endif %}
+          <li>Dependent credits treated as nonrefundable (liability floors at zero).</li>
+          <li>Itemized election not applied; the estimate always uses the standard deduction.</li>
+          {% if report.assumptions.filing_inputs_from %}
+          <li>Filing inputs from profile "{{ report.assumptions.filing_inputs_from }}" ({{ report.assumptions.active_profile_count }} active profiles combined).</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Derivation ledger ─────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-header"><h6 class="mb-0">How the estimate is derived</h6></div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 tax-ledger">
+        <tbody>
+          <tr>
+            <td>Wages <small class="text-muted">(measured + modeled gross)</small></td>
+            <td class="text-end font-mono">{{ money(report.withholding.total.gross) }}</td>
+          </tr>
+          <tr>
+            <td>Less pre-tax deductions <small class="text-muted">(modeled)</small></td>
+            <td class="text-end font-mono">{{ money(report.liability.annual_pretax) }}</td>
+          </tr>
+          {% if report.liability.additional_income > 0 %}
+          <tr>
+            <td>Plus other income <small class="text-muted">(W-4 step 4a)</small></td>
+            <td class="text-end font-mono">{{ money(report.liability.additional_income) }}</td>
+          </tr>
+          {% endif %}
+          <tr>
+            <td>Less federal standard deduction</td>
+            <td class="text-end font-mono">{{ money(report.liability.federal.standard_deduction) }}</td>
+          </tr>
+          <tr class="tax-ledger-subtotal">
+            <td>Federal taxable income</td>
+            <td class="text-end font-mono">{{ money(report.liability.federal.taxable) }}</td>
+          </tr>
+          <tr>
+            <td>Federal tax
+              {%- if report.liability.federal.qualifying_children > 0 or report.liability.federal.other_dependents > 0 %}
+              <small class="text-muted">(after dependent credits)</small>
+              {%- endif %}
+            </td>
+            <td class="text-end font-mono">{{ money(report.liability.federal.liability) }}</td>
+          </tr>
+          <tr>
+            <td>Federal withheld
+              <small class="text-muted">({{ money(report.withholding.measured.federal) }} measured + {{ money(report.withholding.modeled.federal) }} modeled)</small>
+            </td>
+            <td class="text-end font-mono">{{ money(report.withholding.total.federal) }}</td>
+          </tr>
+          <tr class="tax-ledger-result">
+            <td>Federal {{ "refund" if display.federal_is_refund else "owed" }}</td>
+            <td class="text-end font-mono fw-bold {{ 'tax-refund' if display.federal_is_refund else 'tax-owed' }}">
+              {{ money(display.federal_amount) }}
+            </td>
+          </tr>
+          <tr>
+            <td>NC taxable base <small class="text-muted">(wages + other income, less pre-tax)</small></td>
+            <td class="text-end font-mono">{{ money(report.liability.state.taxable_base) }}</td>
+          </tr>
+          <tr>
+            <td>NC tax
+              {%- if display.state_rate_pct is not none %}
+              <small class="text-muted">({{ display.state_rate_pct }}% after {{ money(report.liability.state.standard_deduction, cents=false) }} deduction)</small>
+              {%- endif %}
+            </td>
+            <td class="text-end font-mono">{{ money(report.liability.state.liability) }}</td>
+          </tr>
+          <tr>
+            <td>NC withheld
+              <small class="text-muted">({{ money(report.withholding.measured.state) }} measured + {{ money(report.withholding.modeled.state) }} modeled)</small>
+            </td>
+            <td class="text-end font-mono">{{ money(report.withholding.total.state) }}</td>
+          </tr>
+          <tr class="tax-ledger-result">
+            <td>NC {{ "refund" if display.state_is_refund else "owed" }}</td>
+            <td class="text-end font-mono fw-bold {{ 'tax-refund' if display.state_is_refund else 'tax-owed' }}">
+              {{ money(display.state_amount) }}
+            </td>
+          </tr>
+          <tr class="tax-ledger-total">
+            <td>Total {{ "refund" if display.hero_is_refund else "owed" }}</td>
+            <td class="text-end font-mono fw-bold {{ 'tax-refund' if display.hero_is_refund else 'tax-owed' }}">
+              {{ money(display.hero_amount) }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── W-2 preview + Schedule A ──────────────────────────────────── #}
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0">W-2 preview</h6>
+        <span class="text-muted small">
+          {%- if report.w2_preview.measured_through -%}
+          measured through {{ report.w2_preview.measured_through.strftime('%b %-d') }}
+          {%- else -%}
+          fully modeled
+          {%- endif -%}
+        </span>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 tax-w2">
+          <tbody>
+            <tr>
+              <td>Wages <small class="text-muted">(Box 1)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.wages.box1_wages) }}</td>
+            </tr>
+            <tr>
+              <td>Federal income tax <small class="text-muted">(Box 2)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.withheld.box2_federal) }}</td>
+            </tr>
+            <tr>
+              <td>Social Security wages <small class="text-muted">(Box 3)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.wages.box3_ss_wages) }}</td>
+            </tr>
+            <tr>
+              <td>Social Security tax <small class="text-muted">(Box 4)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.withheld.box4_ss_withheld) }}</td>
+            </tr>
+            <tr>
+              <td>Medicare wages <small class="text-muted">(Box 5)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.wages.box5_medicare_wages) }}</td>
+            </tr>
+            <tr>
+              <td>Medicare tax <small class="text-muted">(Box 6)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.withheld.box6_medicare_withheld) }}</td>
+            </tr>
+            <tr>
+              <td>State wages <small class="text-muted">(Box 16)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.wages.box16_state_wages) }}</td>
+            </tr>
+            <tr>
+              <td>State income tax <small class="text-muted">(Box 17)</small></td>
+              <td class="text-end font-mono">{{ money(report.w2_preview.withheld.box17_state_withheld) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h6 class="mb-0">Schedule A check</h6></div>
+      <div class="card-body">
+        <dl class="row mb-2 small">
+          <dt class="col-7 fw-normal">Mortgage interest <small class="text-muted">(ledger + schedule)</small></dt>
+          <dd class="col-5 text-end mb-1 font-mono">{{ money(report.schedule_a.components.mortgage_interest) }}</dd>
+          <dt class="col-7 fw-normal">State income tax <small class="text-muted">(withheld)</small></dt>
+          <dd class="col-5 text-end mb-1 font-mono">{{ money(report.schedule_a.components.state_income_tax) }}</dd>
+          <dt class="col-7 fw-normal text-muted">Property tax</dt>
+          <dd class="col-5 text-end mb-1 text-muted">not tracked</dd>
+          <dt class="col-7 tax-ledger-subtotal-dt">Itemized estimate</dt>
+          <dd class="col-5 text-end mb-1 font-mono tax-ledger-subtotal-dt">{{ money(report.schedule_a.itemized_estimate) }}</dd>
+          <dt class="col-7 fw-normal">Standard deduction</dt>
+          <dd class="col-5 text-end mb-1 font-mono">{{ money(report.schedule_a.standard_deduction) }}</dd>
+        </dl>
+        <p class="mb-1 small fw-semibold">
+          {%- if display.margin_positive -%}
+          Itemizing could lower taxable income by <span class="font-mono">{{ money(display.margin_amount) }}</span>.
+          {%- else -%}
+          The standard deduction wins by <span class="font-mono">{{ money(display.margin_amount) }}</span>.
+          {%- endif -%}
+        </p>
+        <p class="mb-0 small text-muted">
+          Informational only; the estimate above always uses the standard
+          deduction. SALT cap not applied.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endif %}
