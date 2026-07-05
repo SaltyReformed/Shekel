@@ -2,10 +2,10 @@
 Shekel Budget App -- Shared Spending-Analysis Primitives
 
 The settled-expense primitives shared by every retrospective spending
-surface: the Trends engine (:mod:`spending_trend_service`), the Budget
-Variance surprises kernel (:mod:`budget_variance_service`), the Year-End
-spending section (:mod:`year_end_summary_service`), and the unified
-Spending report (:mod:`spending_report_service`).
+surface: the Trends engine (:mod:`spending_trend_service`), the Year-End
+spending section (:mod:`year_end_summary_service`), and the unified Spending
+report (:mod:`spending_report_service`, whose ``_build_surprises`` is the
+settled-surprises kernel the retired Variance tab once owned).
 
 Extracting them here means the "what counts as measured spending" rule is
 defined once rather than re-implemented per surface (coding-standards rule
@@ -17,12 +17,12 @@ defined once rather than re-implemented per surface (coding-standards rule
   scenario / period set).  The Trends engine and the Spending report both
   read spending through it, so a change to what "settled spending" selects
   is a single edit.
-* :func:`resolved_actual_amount` -- the Variance/surprises kernel's
+* :func:`resolved_actual_amount` -- the settled-surprises kernel's
   estimate-at-entry vs actual-at-settle rule (a settled row uses its
   entered actual, falling back to the estimate; an unsettled row has no
   actual yet, so it reads back its estimate and shows zero variance).
 * :func:`signed_pct` -- the guarded "signed value as a percentage of a
-  base" helper (``None`` when the base is zero), shared by the variance
+  base" helper (``None`` when the base is zero), shared by the surprises
   figures and the Spending hero's vs-prior / vs-average chips.
 * :func:`payment_timeliness_from_txns` -- the on-time / late / average
   days-before-due rule, given the already window-attributed settled
@@ -57,9 +57,9 @@ def validate_window(
     """Validate a discriminated pay-period / month / year window selector.
 
     Shared by the analytics window-based report services (the Spending
-    report, the Budget Variance tab, and the confirmed-ledger Income
-    Statement) so the required-field rule and its error messages live in one
-    place rather than a copy per surface.
+    report and the confirmed-ledger Income Statement) so the required-field
+    rule and its error messages live in one place rather than a copy per
+    surface.
 
     Args:
         window_type: One of ``"pay_period"`` / ``"month"`` / ``"year"``.
@@ -176,8 +176,8 @@ def calendar_window_bounds(
     """Return the inclusive ``(first_day, last_day)`` of a calendar window.
 
     Shared by the analytics window services (the Spending report and the
-    Budget Variance tab) so the month / year date-span rule is defined once
-    rather than re-derived per surface.
+    confirmed-ledger Income Statement) so the month / year date-span rule is
+    defined once rather than re-derived per surface.
 
     Args:
         window_type: ``"month"`` (spans ``month`` within ``year``) or any

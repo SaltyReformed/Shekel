@@ -171,7 +171,7 @@ class DailyView:  # pylint: disable=too-many-instance-attributes
 class MonthSummary:  # pylint: disable=too-many-instance-attributes
     """Aggregated data for one calendar month.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
+    Pylint: ``too-many-instance-attributes`` (13/7) -- suppressed
     because this is a cohesive single-return aggregate -- one calendar
     month's summary -- whose fields are flat columns read together by the
     calendar surface: the month and year templates render the money fields
@@ -185,6 +185,9 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     its own.  ``day_overflow`` is the parallel per-day "+N more" residual;
     ``daily`` bundles the whole daily running-balance projection as one
     cohesive sub-object (:class:`DailyView`), ``None`` for the year overview.
+    ``account_name`` is the resolved analytics account's display name (the
+    on-screen scope label the month template renders so the checking-only
+    scope is stated, not silent -- the analytics-audit cross-cutting fix).
 
     ``projected_end_balance`` is the period-flat seam scalar at the last
     calendar day (the containing period's end); the month view's honest
@@ -206,6 +209,7 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     day_overflow: dict[int, DayOverflow]
     paycheck_days: list[int]
     daily: DailyView | None
+    account_name: str
 
 
 @dataclass(frozen=True)
@@ -393,22 +397,6 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
-    # Pylint: ``duplicate-code`` -- the overlapping-periods preamble +
-    # eager-loaded ``Transaction`` query below (``get_overlapping_periods``
-    # then ``query(Transaction).options(joinedload(category), joinedload(
-    # status), ...)``) is incidental SQLAlchemy boilerplate structurally
-    # parallel to ``budget_variance_service._query_by_date_range`` (the
-    # R0801 preamble cluster).  Both queries apply the IDENTICAL
-    # balance-contributing gate -- calendar's ``balance_contributing_clause()``
-    # is exactly budget-variance's ``is_deleted.is_(False)`` +
-    # ``~status_id.in_(balance_excluded_status_ids())``.  Calendar diverges in
-    # two ways: it selects by period membership (``pay_period_id.in_``, the
-    # clamped-attribution basis) rather than a date range, and it adds
-    # ``joinedload(template -> recurrence_rule)`` for ``_is_infrequent``'s
-    # day-cell display.  A shared query builder would parameterize both per
-    # consumer for no logic saved (coding-standards rule 13), so the preamble
-    # stays a documented one-sided disable.
-    # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
 
@@ -430,7 +418,6 @@ def _query_transactions_for_range(
         )
         .all()
     )
-    # pylint: enable=duplicate-code
 
 
 def _build_day_entry(
@@ -667,6 +654,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         day_overflow=day_overflow,
         paycheck_days=paycheck_days,
         daily=daily,
+        account_name=ctx.account.name,
     )
 
 

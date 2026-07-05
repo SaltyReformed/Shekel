@@ -1,21 +1,19 @@
 """
 Shekel Budget App -- Analytics Routes
 
-Analytics dashboard whose nav pills lazy-load one HTMX partial each:
-Calendar, Spending, Taxes, Income Statement, and Balance Sheet.  The
-Spending pill (Slice 3) replaced the retired Variance and Trends pills,
-and the Taxes pill (Slice 2) replaced Year-End; the underlying
+Analytics dashboard whose four nav pills lazy-load one HTMX partial each:
+Calendar, Spending, Statements, and Taxes (the Slice-4 shell collapse).  The
+Statements pill groups the two confirmed-ledger reports (Income Statement and
+Balance Sheet, Build-Order Step 5, via ``ledger_report_service``) behind one
+internal toggle.  The Spending pill (Slice 3) replaced the Variance and Trends
+pills and the Taxes pill (Slice 2) replaced Year-End; the retired
 ``/analytics/variance``, ``/analytics/trends``, and ``/analytics/year-end``
-ROUTES stay reachable until the Slice-4 shell collapse retires them with
-redirects.  Each tab endpoint returns an HTML partial loaded into the main
-page via nav-pills navigation.  The Income Statement and Balance Sheet tabs
-(Build-Order Step 5) present the confirmed posting ledger via
-``ledger_report_service``.
+URLs now redirect to the main page (``retired_tab``) so old bookmarks do not
+404.  The calendar month CSV is the only surviving export.
 """
 
 import calendar as cal_mod
 from datetime import date, datetime, timezone
-from decimal import Decimal
 
 from flask import (
     Blueprint, abort, make_response, redirect, render_template, request,
@@ -33,16 +31,13 @@ from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
-    budget_variance_service,
     calendar_service,
     csv_export_service,
     ledger_report_service,
     pay_period_service,
     spending_report_service,
-    spending_trend_service,
     tax_report_service,
     tax_withholding_service,
-    year_end_summary_service,
 )
 from app.services.calendar_service import CalendarAccountNotResolvableError
 
@@ -57,8 +52,8 @@ def _validate_owned_or_abort(model, pk):
     'not yours.'"  Without this guard the underlying services
     silently fall back to default data on a cross-user
     ``account_id`` (calendar) or read victim metadata into the
-    response label and CSV filename on a cross-user ``period_id``
-    (variance), bypassing the access boundary documented in the
+    response window label on a cross-user ``period_id`` (income
+    statement), bypassing the access boundary documented in the
     project's auth-helper contract.
 
     Delegates the existence + ownership check to
@@ -111,11 +106,12 @@ def _validate_owned_or_abort(model, pk):
 def page():
     """Render the main analytics page with its lazy-loaded tab pills.
 
-    The page contains a nav-pills bar with Calendar, Spending, Taxes,
-    Income Statement, and Balance Sheet tabs (the Spending pill replaced
-    the retired Variance and Trends pills in Slice 3; the Taxes pill
-    replaced Year-End in Slice 2).  The Calendar tab auto-loads on page
-    visit via HTMX.  Other tabs load on click.
+    The page contains a nav-pills bar with four pills: Calendar, Spending,
+    Statements, and Taxes (the Slice-4 shell collapse).  The Statements pill
+    groups the Income Statement and Balance Sheet behind an internal toggle;
+    the Spending pill replaced the retired Variance and Trends pills (Slice
+    3) and the Taxes pill replaced Year-End (Slice 2).  The Calendar tab
+    auto-loads on page visit via HTMX; the others load on click.
     """
     return render_template("analytics/analytics.html")
 
@@ -226,7 +222,7 @@ def taxes_tab():
             clamped to [2000, 2100] like the sibling tabs.
 
     Non-HTMX requests redirect to the main analytics page (no CSV export
-    for this tab; the year-end CSV's fate is T-P5's explicit decision).
+    for this tab).
     """
     today = to_display_date(datetime.now(timezone.utc))
     year = request.args.get("year", today.year, type=int)
@@ -335,172 +331,54 @@ def spending_tab():
     )
 
 
+@analytics_bp.route("/analytics/variance")
+@analytics_bp.route("/analytics/trends")
 @analytics_bp.route("/analytics/year-end")
 @login_required
 @require_owner
-def year_end_tab():
-    """HTMX partial or CSV: year-end financial summary.
+def retired_tab():
+    """Redirect a retired Analytics tab URL to the main page (Slice 4).
 
-    Query parameters:
-        year: Calendar year (default: current year).
-        format: 'csv' for CSV download.
+    The Variance and Trends pills were folded into Spending (Slice 3) and
+    the Year-End pill into Taxes (Slice 2); the Slice-4 shell collapse
+    removes their nav pills entirely.  These three URLs (and their former
+    ``?format=csv`` exports) now 302 to ``/analytics`` so an old bookmark or
+    external link lands on the current page instead of 404ing.  All the
+    surviving analytics data lives on the four current pills (Calendar,
+    Spending, Statements, Taxes).
     """
-    today = date.today()
-    year = request.args.get("year", today.year, type=int)
-    year = max(2000, min(2100, year))
-
-    data = year_end_summary_service.compute_year_end_summary(
-        current_user.id, year,
-    )
-
-    if request.args.get("format") == "csv":
-        csv_str = csv_export_service.export_year_end_csv(data)
-        return _csv_response(csv_str, f"year_end_{year}.csv")
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
-    available_years = _get_available_years(current_user.id, today.year)
-    return render_template(
-        "analytics/_year_end.html",
-        data=data,
-        year=year,
-        available_years=available_years,
-    )
-
-
-@analytics_bp.route("/analytics/variance")
-@login_required
-@require_owner
-def variance_tab():
-    """HTMX partial or CSV: budget variance analysis.
-
-    Query parameters:
-        window: 'pay_period' (default), 'month', or 'year'.
-        period_id: Pay period ID (for pay_period window).
-        month: Month number 1-12 (for month window).
-        year: Calendar year (for month/year windows).
-        format: 'csv' for CSV download.
-    """
-    today = date.today()
-
-    # F-098 / commit C-30: validate user-supplied ``period_id`` at
-    # the route boundary.  The variance service ignores cross-user
-    # period_ids when ``window_type != "pay_period"`` and produces
-    # an empty report when it equals "pay_period" (the txn filter
-    # joins ``account_id`` -- a user-owned account -- with
-    # ``pay_period_id``, so a victim's period yields no rows).  The
-    # leak is in the metadata path: ``_build_window_label`` and
-    # ``_window_csv_filename`` both read ``PayPeriod.start_date``
-    # without re-checking ownership, exposing the victim's pay-
-    # period start date in the response and CSV filename.  Validate
-    # before ``_resolve_window_params`` runs because that helper
-    # also reads ``period_id`` from query args, and we want the 404
-    # to fire before any system-default fallback masks the probe.
-    _validate_owned_or_abort(
-        PayPeriod, request.args.get("period_id", type=int),
-    )
-
-    window_type, period_id, month, year = _resolve_window_params(today)
-    window = budget_variance_service.VarianceWindow(
-        window_type=window_type, period_id=period_id, month=month, year=year,
-    )
-
-    report = budget_variance_service.compute_variance(current_user.id, window)
-
-    if request.args.get("format") == "csv":
-        fname = _window_csv_filename(
-            "variance", window_type, period_id, month, year,
-        )
-        csv_str = csv_export_service.export_variance_csv(report)
-        return _csv_response(csv_str, fname)
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
-    chart_data = analytics_view.build_variance_chart_data(report)
-    periods = pay_period_service.get_all_periods(current_user.id)
-    available_years = _get_available_years(current_user.id, today.year)
-
-    return render_template(
-        "analytics/_variance.html",
-        report=report,
-        chart_data=chart_data,
-        window_type=window_type,
-        period_id=period_id,
-        month=month,
-        year=year,
-        periods=periods,
-        available_years=available_years,
-    )
-
-
-@analytics_bp.route("/analytics/trends")
-@login_required
-@require_owner
-def trends_tab():
-    """HTMX partial or CSV: spending trends analysis.
-
-    Query parameters:
-        format: 'csv' for CSV download.
-    """
-    settings = db.session.query(UserSettings).filter_by(
-        user_id=current_user.id,
-    ).first()
-    threshold = (
-        settings.trend_alert_threshold if settings
-        else Decimal("0.1000")
-    )
-
-    report = spending_trend_service.compute_trends(
-        user_id=current_user.id,
-        threshold=threshold,
-    )
-
-    if request.args.get("format") == "csv":
-        fname = f"trends_{report.window_months}month.csv"
-        csv_str = csv_export_service.export_trends_csv(report)
-        return _csv_response(csv_str, fname)
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
-
-    return render_template(
-        "analytics/_trends.html",
-        report=report,
-    )
+    return redirect(url_for("analytics.page"))
 
 
 @analytics_bp.route("/analytics/income-statement")
 @login_required
 @require_owner
 def income_statement_tab():
-    """HTMX partial or CSV: confirmed-ledger income statement.
+    """HTMX partial: confirmed-ledger income statement (Statements pill).
 
     Reads the append-only posting ledger's Income and Expense accounts
     into a revenue / cost statement over one window
     (:func:`app.services.ledger_report_service.compute_income_statement`),
     for the baseline scenario only (the deferred multi-scenario policy is
-    R8's).
+    R8's).  Grouped with the Balance Sheet behind the Statements pill's
+    internal toggle; ``active_statement="income"`` marks this half active.
 
     Query parameters:
         window: 'pay_period' (default), 'month', or 'year'.
         period_id: Pay period ID (for the pay_period window).
         month: Month number 1-12 (for the month window).
         year: Calendar year (for the month/year windows).
-        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page unless
-    format=csv (CSV downloads are regular browser navigations).
+    Non-HTMX requests redirect to the main analytics page.
     """
     today = date.today()
 
-    # IDOR (mirrors ``variance_tab``): validate a user-supplied
-    # ``period_id`` at the boundary before ``_resolve_window_params``
-    # reads it.  The statement's money queries are user-scoped (a foreign
-    # period yields an empty report), but the service reads the period for
-    # its window LABEL un-scoped, so a foreign ``period_id`` would
-    # otherwise leak the victim's period dates into the response.
+    # IDOR (the same route-boundary guard the calendar uses for
+    # ``account_id``): validate a user-supplied ``period_id`` before
+    # ``_resolve_window_params`` reads it.  The statement's money queries
+    # are user-scoped (a foreign period yields an empty report), but the
+    # service reads the period for its window LABEL un-scoped, so a foreign
+    # ``period_id`` would otherwise leak the victim's period dates.
     _validate_owned_or_abort(
         PayPeriod, request.args.get("period_id", type=int),
     )
@@ -512,13 +390,6 @@ def income_statement_tab():
     report = ledger_report_service.compute_income_statement(
         current_user.id, window,
     )
-
-    if request.args.get("format") == "csv":
-        fname = _window_csv_filename(
-            "income_statement", window_type, period_id, month, year,
-        )
-        csv_str = csv_export_service.export_income_statement_csv(report)
-        return _csv_response(csv_str, fname)
 
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
@@ -534,6 +405,7 @@ def income_statement_tab():
         year=year,
         periods=periods,
         available_years=available_years,
+        active_statement="income",
     )
 
 
@@ -541,33 +413,27 @@ def income_statement_tab():
 @login_required
 @require_owner
 def balance_sheet_tab():
-    """HTMX partial or CSV: confirmed-ledger balance sheet as of a date.
+    """HTMX partial: confirmed-ledger balance sheet as of a date.
 
     Reads the posted ledger's position as of ``as_of``
     (:func:`app.services.ledger_report_service.compute_balance_sheet`):
     Assets, Liabilities, and Equity sections with a derived
     retained-earnings line and a two-part trial-balance tie-out, for the
-    baseline scenario only.
+    baseline scenario only.  Grouped with the Income Statement behind the
+    Statements pill's internal toggle; ``active_statement="balance"`` marks
+    this half active.
 
     Query parameters:
         as_of: ISO date (YYYY-MM-DD); defaults to today and is clamped to
             [2000-01-01, today].
-        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page unless
-    format=csv (CSV downloads are regular browser navigations).
+    Non-HTMX requests redirect to the main analytics page.
     """
     today = date.today()
     as_of = _resolve_as_of_param(request.args.get("as_of"), today)
     report = ledger_report_service.compute_balance_sheet(
         current_user.id, as_of,
     )
-
-    if request.args.get("format") == "csv":
-        csv_str = csv_export_service.export_balance_sheet_csv(report)
-        return _csv_response(
-            csv_str, f"balance_sheet_{as_of.isoformat()}.csv",
-        )
 
     if not request.headers.get("HX-Request"):
         return redirect(url_for("analytics.page"))
@@ -577,6 +443,7 @@ def balance_sheet_tab():
         report=report,
         as_of=as_of,
         today=today,
+        active_statement="balance",
     )
 
 
@@ -638,6 +505,7 @@ def _render_month_view(data, year, month, low_balance, today):
         low_balance_threshold=low_balance,
         today=today,
         month_end_balance=month_end_balance,
+        account_name=data.account_name,
         flow_strip_json=analytics_view.serialize_flow_strip(
             data, low_balance, today, year, month,
         ),
@@ -690,25 +558,24 @@ def _csv_response(csv_content: str, filename: str):
     return response
 
 
-# ── Window / variance helpers ──────────────────────────────────────
-# ``_resolve_window_params`` is shared by the Variance and Income Statement
-# tabs; the remaining helpers below it are variance-specific.
+# ── Window helpers ─────────────────────────────────────────────────
+# ``_resolve_window_params`` parses the Income Statement tab's window
+# selector (the Variance tab that once shared it is retired).
 
 
 def _resolve_window_params(today):
-    """Parse and apply defaults for the shared window query parameters.
+    """Parse and apply defaults for the window query parameters.
 
-    The ``window`` / ``period_id`` / ``month`` / ``year`` parsing shared by
-    the Budget Variance and Income Statement tabs (both discriminate a
-    pay-period / month / year window the same way, though each builds its own
-    window value object over the result).  Applies the same defaults for both:
-    a bare ``pay_period`` window resolves the user's current period (falling
-    back to their most recent, then to a month window when the user has no
-    periods at all); a bare ``month`` / ``year`` window fills *today*'s
-    fields.  A calendar ``month`` / ``year`` is range-clamped here (month to
-    1-12, year to 2000-2100, the ``calendar_tab`` / ``year_end_tab``
-    convention) so a hand-crafted out-of-range value cannot reach ``date()``
-    / ``calendar.monthrange()`` in either tab's service and raise; the clamp
+    The ``window`` / ``period_id`` / ``month`` / ``year`` parsing for the
+    Income Statement tab, which discriminates a pay-period / month / year
+    window (building a ``StatementWindow`` over the result).  Applies the
+    defaults: a bare ``pay_period`` window resolves the user's current
+    period (falling back to their most recent, then to a month window when
+    the user has no periods at all); a bare ``month`` / ``year`` window fills
+    *today*'s fields.  A calendar ``month`` / ``year`` is range-clamped here
+    (month to 1-12, year to 2000-2100, the ``calendar_tab`` convention) so a
+    hand-crafted out-of-range value cannot reach ``date()`` /
+    ``calendar.monthrange()`` in the statement service and raise; the clamp
     is a no-op for the in-range defaults and for the ``pay_period`` window
     (whose ``month`` / ``year`` stay ``None``).
 
@@ -755,42 +622,6 @@ def _resolve_window_params(today):
         year = max(2000, min(2100, year))
 
     return window_type, period_id, month, year
-
-
-def _window_csv_filename(prefix, window_type, period_id, month, year):
-    """Build a descriptive CSV filename for a windowed-report export.
-
-    Shared by the Budget Variance and Income Statement tabs, which export
-    over the same ``pay_period`` / ``month`` / ``year`` window shape;
-    *prefix* names the report (``"variance"`` / ``"income_statement"``).
-    A ``pay_period`` window reads the period's ``start_date`` (the same
-    read the F-098 route guard protects -- every caller IDOR-validates
-    ``period_id`` before reaching here); a ``month`` / ``year`` window
-    uses the calendar fields.
-
-    Args:
-        prefix: The report-name filename prefix (e.g. ``"variance"``).
-        window_type: 'pay_period', 'month', or 'year'.
-        period_id: Pay period ID (if pay_period window).
-        month: Month number (if month window).
-        year: Year (if month or year window).
-
-    Returns:
-        Filename string like 'variance_2026_01.csv' or
-        'income_statement_period_2026-01-02.csv'.
-    """
-    if window_type == "pay_period" and period_id is not None:
-        period = db.session.get(PayPeriod, period_id)
-        if period:
-            return f"{prefix}_period_{period.start_date.isoformat()}.csv"
-        return f"{prefix}_period.csv"
-    if window_type == "month" and month and year:
-        return f"{prefix}_{year}_{month:02d}.csv"
-    if window_type == "year" and year:
-        return f"{prefix}_{year}.csv"
-    return f"{prefix}.csv"
-
-
 
 
 def _get_available_years(user_id, current_year):

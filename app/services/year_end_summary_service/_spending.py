@@ -337,7 +337,7 @@ def _attribution_year(txn: Transaction) -> int:
     Delegates to the shared
     :func:`app.utils.balance_predicates.attribution_year` rule
     (COALESCE(due_date, pay_period.start_date)), the single definition
-    used by the transfers section and the calendar / variance services.
+    used by the year-end spending and transfers sections.
     """
     return attribution_year(txn.due_date, txn.pay_period.start_date)
 

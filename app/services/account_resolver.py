@@ -15,7 +15,7 @@ queries.
     5. None
 
 * ``resolve_analytics_account`` -- 2-step fallback used by the
-  analytics services (budget_variance, calendar, spending_trend).
+  calendar and spending analytics surfaces.
   No user-settings or override layer; the caller has already
   resolved either an explicit account_id or wants the user's
   default checking account.
@@ -106,8 +106,8 @@ def resolve_analytics_account(
 ) -> Account | None:
     """Return the account to scope analytics queries to.
 
-    Two-step fallback chain used by the budget-variance, calendar,
-    spending-trend, and similar analytics services:
+    Two-step fallback chain used by the calendar, spending-report, and
+    spending-trend analytics services:
 
       1. If ``account_id`` is provided, verify it exists, belongs to
          ``user_id``, and is still active.  Return the account on

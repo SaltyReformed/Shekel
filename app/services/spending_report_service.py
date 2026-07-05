@@ -16,9 +16,9 @@ answers "where did the money actually go" for one chosen window
   the chip cannot disagree (the S-P1 build rule).  Each cell also carries a
   flat-guard so a sub-percent wiggle is not auto-scaled to full height.
 * **Estimate surprises** -- the settled rows whose entered actual differed
-  from the estimate (the Variance tab's one real signal, reused via the
-  shared :func:`spending_analysis.resolved_actual_amount` kernel), a capped
-  ranked list plus the net.
+  from the estimate (the retired Variance tab's one real signal, reused via
+  the shared :func:`spending_analysis.resolved_actual_amount` kernel), a
+  capped ranked list plus the net.
 * **Top movers** -- the Trends engine's ranked up / down category lists.
 * **Hero band** -- window spent total, versus the prior window of the same
   type, versus the trailing-window average, and payment timing (the
@@ -76,14 +76,12 @@ class SpendingWindow:
     """The time window a spending report is computed over.
 
     A discriminated selector mirroring
-    :class:`app.services.budget_variance_service.VarianceWindow` and
     :class:`app.services.ledger_report_service.StatementWindow`:
     ``window_type`` decides which of the other fields are meaningful --
     ``period_id`` for ``"pay_period"``, ``month`` + ``year`` for
     ``"month"``, ``year`` for ``"year"``.  A deliberately separate value
-    object per its own bounded context (the retrospective spending surface),
-    so it does not couple to the Variance tab that is retired in S-P2; the
-    route layer shares only the parameter parsing.
+    object per its own bounded context (the retrospective spending surface);
+    the route layer shares only the parameter parsing.
 
     Attributes:
         window_type: One of ``"pay_period"`` / ``"month"`` / ``"year"``.
@@ -93,12 +91,12 @@ class SpendingWindow:
     """
 
     # Pylint: ``duplicate-code`` -- incidental structural similarity with the
-    # ``VarianceWindow`` / ``StatementWindow`` four-field selectors.  They are
-    # deliberately separate value objects in separate bounded contexts (a
-    # spending window scopes settled-expense attribution; the others scope a
-    # due-date variance and a confirmed-ledger paid-date basis), so a shared
-    # base would couple three unrelated attribution rules (coding-standards
-    # rule 13).  One-sided disable, mirroring the StatementWindow precedent.
+    # ``StatementWindow`` four-field selector.  They are deliberately separate
+    # value objects in separate bounded contexts (a spending window scopes
+    # settled-expense attribution; a statement window scopes a confirmed-ledger
+    # paid-date basis), so a shared base would couple two unrelated attribution
+    # rules (coding-standards rule 13).  One-sided disable so ``StatementWindow``
+    # stays the un-disabled anchor.
     # pylint: disable=duplicate-code
     window_type: str
     period_id: int | None = None

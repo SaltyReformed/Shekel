@@ -20,6 +20,18 @@
 {% set is_past_month = (today.year, today.month) > (year, month) %}
 {% set trough_day = data.daily.trough_day if data.daily else none %}
 
+{# Basis + account scope (Slice-4 cross-cutting fix): the calendar is a MIXED
+   surface -- a projected end-of-day balance line combined with measured and
+   projected day flows, split visibly (measured days solid, projected days a
+   leading tilde in secondary ink).  The scope names the checking account the
+   whole surface reads (previously silent). #}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+  <h5 class="mb-0">Calendar</h5>
+  <span class="analytics-basis-chip"
+        title="A projected end-of-day balance line combined with measured and projected day flows; days after today are modeled, shown with a leading tilde.">mixed</span>
+</div>
+<p class="text-muted small mb-3">Checking account: {{ account_name }}.</p>
+
 {# Navigation #}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <button class="btn btn-sm btn-outline-secondary"

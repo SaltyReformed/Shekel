@@ -189,8 +189,8 @@ def _apply_fields_and_propagate_rename(template, data):
     only deletes/recreates non-override rows on or after ``effective_from``,
     so historic rows, overrides, and settled rows would otherwise keep the
     old label and desync every view that renders ``txn.name`` directly
-    (variance report, CSV export, calendar, companion card, edit form
-    header).  The partial unique index on transactions covers
+    (calendar CSV export, calendar, companion card, edit form header).
+    The partial unique index on transactions covers
     ``(template_id, pay_period_id, scenario_id)`` only, so a bulk name
     update cannot trip a constraint.  Template ownership is verified by the
     caller, so ``template_id`` alone scopes the update to the current user.

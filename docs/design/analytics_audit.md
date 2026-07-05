@@ -783,3 +783,88 @@ page-wide (unifying `tax-basis-chip` + `spend-basis-chip` into one vocabulary); 
 the retired `/analytics/variance`, `/analytics/trends`, and `/analytics/year-end` tab URLs; and
 retire those tabs' CSV exports and templates. Re-audit any remaining CSV endpoints (calendar month
 CSV KEEPS per Calendar decision 9).
+
+## Shell slice as-built (Slice 4, on dev 2026-07-05)
+
+The four-pill target IA is now fully realized: the nav is Calendar / Spending / Statements / Taxes,
+every surface carries an explicit basis chip and (where account-scoped) an on-screen scope label,
+and no dead route, template, service, JS, or CSV code is left behind. Built in one pass (Opus for
+routes/services/tests, applying the design language to the templates/CSS directly), gated and
+live-verified before commit.
+
+Three developer rulings taken at the build gate:
+
+1. **`budget_variance_service` DELETED (module + test).** Once the Variance route became a redirect
+   it had zero functional callers -- the settled-surprises kernel already lives independently in
+   `spending_report_service._build_surprises` via the shared `spending_analysis` primitives.
+   Deleting it also orphaned `analytics_view.build_variance_chart_data` (removed),
+   `chart_variance.js` (removed), AND `balance_predicates.monthly_attribution_clause` (removed --
+   its last live caller was the deleted variance query; the calendar retired it at P1). The
+   `duplicate-code` suppression that anchored on `VarianceWindow` was re-seated: `StatementWindow`
+   becomes the un-disabled anchor of the Statement<->Spending selector pair, `SpendingWindow` keeps
+   the one-sided disable (pylint 10.00/10 confirms both stay useful; `useless-suppression` is on).
+2. **Statements chip = a distinct `confirmed` term** (the audit's fourth data semantics, a stronger
+   claim than "measured"). Page-wide vocabulary: Calendar = `mixed`, Spending = `measured`,
+   Statements = `confirmed`, Taxes = `modeled`.
+3. **Statements CSV exports RETIRED** (Income Statement + Balance Sheet). Combined with the earlier
+   ruling, the calendar month CSV is now the ONLY surviving export.
+
+What landed:
+
+- **Shell** (`analytics.html`): four pills; the Statements pill loads `income_statement_tab` by
+  default; `chart_variance.js` / `chart_year_end.js` script tags removed.
+- **Statements grouping**: new `_statements_toggle.html` (title + `confirmed` chip + "all accounts /
+  confirmed ledger" scope note + an Income Statement / Balance Sheet `btn-group` toggle, each
+  targeting `#tab-content`). Included at the top of `_income_statement.html` and
+  `_balance_sheet.html` (their per-report `<h5>` and CSV buttons removed; each keeps its own window
+  / as-of selector). The route passes `active_statement` = "income"/"balance"; the nav pill stays
+  active while the toggle swaps content (the toggle is not a nav pill).
+- **Routes** (`analytics.py`): `variance_tab` / `trends_tab` / `year_end_tab` collapsed into one
+  `retired_tab` redirect (three `@route` decorators -> `redirect(url_for("analytics.page"))`). The
+  `format=csv` branches + `export_income_statement_csv` / `export_balance_sheet_csv` calls removed
+  from the two statement routes; the dead `_window_csv_filename` helper deleted; the
+  `budget_variance_service` / `spending_trend_service` / `year_end_summary_service` / `Decimal`
+  imports pruned. The income-statement `period_id` IDOR guard stays intact.
+- **Calendar scope** (`calendar_service.py`): `MonthSummary` gained `account_name: str` (single
+  construction site, set from the already-resolved `account.name`); the month template renders the
+  `mixed` chip + "Checking account: <name>." The year view is unchanged (scope label is month-view
+  only, per Calendar decision 10).
+- **CSV service** (`csv_export_service.py`): pruned to the calendar exports + shared formatting
+  helpers; the five retired export functions, the `_pct` helper, the `TWO_PLACES` / `HUNDRED`
+  constants, and the `ROUND_HALF_UP` import all removed.
+- **CSS** (`analytics.css`): `.tax-basis-chip` / `.spend-basis-chip` renamed to one
+  `.analytics-basis-chip`; the dead `.year-end-*`, `.variance-*`, and orphaned `.trend-*`
+  (arrow/item/pct/abs/flagged/payment-late) rule blocks removed (`.trend-up`/`down`/`flat` kept --
+  Spending reuses them).
+- **Deleted templates/JS**: `_variance.html`, `_trends.html`, `_year_end.html`, `chart_variance.js`,
+  `chart_year_end.js`.
+- **Stale references**: every docstring/comment that named the deleted `budget_variance_service` as
+  a CURRENT consumer was corrected across `account_resolver`, `scenario_resolver`,
+  `net_worth_kernel`, `spending_analysis`, `spending_report_service`,
+  `ledger_report_service._types`, `pay_period_service`, `year_end_summary_service._spending`,
+  `routes/templates`, and `balance_predicates`; the surviving in-app references are all explicitly
+  past-tense. Two test-file docstrings (`test_services_no_flask`, `test_balance_predicates`) keep
+  `budget_variance_service.py` as accurate historical narrative of a past audit finding.
+- **Tests**: deleted `TestYearEndTab` / `TestVarianceTab` / `TestTrendsTab`, the retired export +
+  export-button tests, `test_budget_variance_service.py`, the variance IDOR ownership classes, and
+  the year-end/trends baseline tests; the CSV service test rewritten to the calendar-only exports.
+  Added redirect tests (302 -> `/analytics`), Statements-toggle tests (confirmed chip + IS/BS toggle
+  target + no CSV button + `?format=csv` no longer exports), a calendar basis-chip + scope test, and
+  repointed the period_id audit-event test from the retired variance route to the surviving income
+  statement route. The pills test now asserts the four current pills.
+- **Gates**: `pylint app/` 10.00/10 (full `--fail-on`); `biome lint` clean; full suite 7167 passed;
+  live-verified all four pills in BOTH themes on real data (Statements toggle switches IS<->BS with
+  the pill staying active and the trial balance tying out; the four chips render mixed / measured /
+  confirmed / modeled; the calendar scope label reads "Checking account: Checking"). Independent
+  `code-reviewer` pass: clean on correctness / financial / security / IDOR / test-quality; only
+  low-severity stale docstrings, corrected before commit.
+
+The `/analytics/variance`, `/analytics/trends`, and `/analytics/year-end` ROUTES survive as redirect
+stubs (not deleted) so old bookmarks land on the page. `year_end_summary_service` and
+`spending_trend_service` are KEPT (deeply reused elsewhere; only their analytics routes / templates
+/ CSV / JS retire). The Taxes tab's private import of
+`year_end_summary_service._income_tax._compute_mortgage_interest` stays (its relocation was a T-P3
+note, not shell work).
+
+The four-pill analytics overhaul (Calendar / Spending / Statements / Taxes) is COMPLETE pending the
+developer's live acceptance drive.

@@ -967,9 +967,8 @@ def _load_shadow_contributions(
 
     # Shadow-income definition + status/pay_period eager-loads come from
     # the shared ``query_shadow_income`` builder (the R0801 sibling is
-    # ``loan_payment_service.get_payment_history``, NOT ``budget_variance``
-    # as a prior rationale wrongly claimed); the feed scopes it to the
-    # supplied periods.
+    # ``loan_payment_service.get_payment_history``); the feed scopes it to
+    # the supplied periods.
     return (
         query_shadow_income(account_id, scenario_id)
         .filter(Transaction.pay_period_id.in_(period_ids))

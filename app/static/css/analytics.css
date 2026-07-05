@@ -1,5 +1,5 @@
-/* Shekel analytics screen -- the calendar, year-end summary, budget
-   variance, and spending trends tabs.
+/* Shekel analytics screen -- the Calendar, Spending, Statements, and Taxes
+   tabs (the Slice-4 four-pill shell).
 
    Load-order contract (see base.html): after theme-steel-ink.css and
    base.css.  The calendar's mobile media block must stay after the
@@ -286,12 +286,12 @@
   color: var(--shekel-danger);
 }
 
-/* The page-level basis chip: one neutral chip stating a tab's data basis
-   (Taxes = "modeled estimate", Spending = "measured").  Shared visual across
-   the analytics tabs; Slice 4 unifies these into one page-wide basis-chip
-   vocabulary (measured / modeled / mixed). */
-.tax-basis-chip,
-.spend-basis-chip {
+/* The page-level basis chip: one neutral chip stating each tab's data basis
+   in the unified page-wide vocabulary (Calendar = "mixed", Spending =
+   "measured", Statements = "confirmed", Taxes = "modeled estimate").  Slice 4
+   collapsed the former per-tab .tax-basis-chip / .spend-basis-chip into this
+   one class. */
+.analytics-basis-chip {
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -327,93 +327,10 @@
   font-weight: 600;
 }
 
-/* ── Year-End Summary ──────────────────────────────────────────── */
-
-.year-end-section .card-header {
-  background-color: var(--shekel-surface-raised);
-}
-
-.year-end-table {
-  margin-bottom: 0;
-}
-
-.year-end-table td,
-.year-end-table th {
-  padding: 0.5rem 0.75rem;
-  vertical-align: middle;
-}
-
-.year-end-subtotal td {
-  border-top: 2px solid var(--shekel-border-strong);
-}
-
-.year-end-delta-positive {
-  color: var(--shekel-done);
-}
-
-.year-end-delta-negative {
-  color: var(--shekel-danger);
-}
-
-.year-end-chart-wrap {
-  min-height: 280px;
-  position: relative;
-}
-
-/* ── Budget Variance ───────────────────────────────────────────── */
-
-.variance-over {
-  color: var(--shekel-danger);
-}
-
-.variance-under {
-  color: var(--shekel-done);
-}
-
-.variance-zero {
-  color: var(--shekel-text-muted);
-}
-
-.variance-table td,
-.variance-table th {
-  padding: 0.5rem 0.75rem;
-  vertical-align: middle;
-}
-
-.variance-group-row {
-  cursor: pointer;
-}
-
-.variance-group-row:hover {
-  background-color: var(--shekel-row-hover);
-}
-
-.variance-item-row {
-  cursor: pointer;
-}
-
-.variance-txn-row td {
-  font-size: 0.875rem;
-}
-
-.variance-total-row td {
-  border-top: 2px solid var(--shekel-border-strong);
-}
-
-.variance-chart-wrap {
-  min-height: 280px;
-  position: relative;
-}
-
-.variance-chevron {
-  transition: transform 0.15s;
-}
-
-[aria-expanded="true"] > td .variance-chevron {
-  transform: rotate(90deg);
-}
-
-/* ── Spending Trends ───────────────────────────────────────────── */
+/* ── Spending trend deltas (movers + delta chips) ──────────────── */
+/* trend-up/down/flat map a trend direction to the money-state colours;
+   reused by the Spending tab's delta chips, movers, and sparkline strokes
+   (the sparkline stroke colours via currentColor from the direction class). */
 
 .trend-up {
   color: var(--shekel-danger);
@@ -425,31 +342,6 @@
 
 .trend-flat {
   color: var(--shekel-text-muted);
-}
-
-.trend-arrow {
-  font-size: 0.875rem;
-}
-
-.trend-item {
-  padding: 0.625rem 1rem;
-}
-
-.trend-pct {
-  font-weight: 600;
-}
-
-.trend-abs {
-  font-size: 0.8125rem;
-}
-
-.trend-flagged {
-  font-size: 0.75rem;
-}
-
-.trend-payment-late {
-  color: var(--shekel-danger);
-  font-size: 0.8125rem;
 }
 
 /* ── Spending (slice-3 rebuild: hero + Where It Went + rail) ─────── */
