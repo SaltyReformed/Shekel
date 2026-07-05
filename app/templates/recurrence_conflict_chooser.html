@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% from "_money_macros.html" import money %}
+{% block title %}Confirm recurring change -- Shekel{% endblock title %}
+
+{# Recurrence-conflict chooser (Loop B, P3).
+
+   Shown when editing a recurring definition would regenerate upcoming
+   instances the user had hand-edited on the grid.  Nothing has been
+   committed: this page re-POSTs the SAME edit (echoed below as hidden
+   inputs) to ``action_url`` together with a per-instance keep/use
+   decision.  Cancel abandons the whole edit.
+
+   Context (routes/_recurrence_form_helpers.render_recurrence_conflict_chooser):
+     choices          -- list[ConflictChoice] (row_id, due_date,
+                         period_label, your_amount, is_deleted_conflict).
+     template_name    -- the edit's new name.
+     new_amount       -- the template's new amount (the "Use" figure).
+     effective_from   -- the edit's effective date.
+     echo             -- {field: value} of the original edit form, re-emitted
+                         so Apply reproduces the identical edit (csrf excluded;
+                         a fresh token is issued below).
+     action_url       -- where Apply posts (the update endpoint).
+     cancel_url       -- where Cancel returns (the list).
+     apply_marker / decision_prefix / decision_keep / decision_use
+                      -- field-name constants, single-sourced from the helper. #}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-9 col-xl-8">
+    <div class="card" data-conflict-chooser>
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle text-warning"></i>
+          Some upcoming instances were hand-edited</h5>
+      </div>
+      <div class="card-body">
+        <p>
+          You changed <strong>{{ template_name }}</strong> to
+          <span class="font-mono">{{ money(new_amount) }}</span>,
+          effective {{ effective_from.strftime('%b %d, %Y') }}.
+          The instances below were edited to a different amount on the grid.
+          Choose which to keep and which to move to the new value.
+        </p>
+
+        <form method="POST" action="{{ action_url }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="{{ apply_marker }}" value="1">
+          {# Re-emit the original edit so Apply re-runs the identical change. #}
+          {% for field, value in echo.items() %}
+          <input type="hidden" name="{{ field }}" value="{{ value }}">
+          {% endfor %}
+
+          <div class="d-flex justify-content-end gap-2 mb-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    data-conflict-bulk="{{ decision_keep }}">Keep all</button>
+            <button type="button" class="btn btn-sm btn-outline-primary"
+                    data-conflict-bulk="{{ decision_use }}">Use new value for all</button>
+          </div>
+
+          <ul class="list-group mb-3">
+            {% for choice in choices %}
+            <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2">
+              <span>
+                <span class="fw-semibold">
+                  {{ choice.due_date.strftime('%b %d, %Y') if choice.due_date else '--' }}
+                </span>
+                <span class="text-muted small">{{ choice.period_label }}</span>
+                {% if choice.is_deleted_conflict %}
+                <span class="badge bg-secondary-subtle text-secondary ms-1">you deleted this</span>
+                {% endif %}
+              </span>
+              <span class="btn-group btn-group-sm" role="group"
+                    aria-label="Decision for {{ choice.due_date.strftime('%b %d, %Y') if choice.due_date else 'this instance' }}">
+                <input type="radio" class="btn-check" autocomplete="off"
+                       name="{{ decision_prefix }}{{ choice.row_id }}"
+                       id="keep-{{ choice.row_id }}" value="{{ decision_keep }}" checked>
+                <label class="btn btn-outline-secondary" for="keep-{{ choice.row_id }}">
+                  {% if choice.is_deleted_conflict %}
+                  Keep deleted
+                  {% else %}
+                  Keep <span class="font-mono">{{ money(choice.your_amount) }}</span>
+                  {% endif %}
+                </label>
+                <input type="radio" class="btn-check" autocomplete="off"
+                       name="{{ decision_prefix }}{{ choice.row_id }}"
+                       id="use-{{ choice.row_id }}" value="{{ decision_use }}">
+                <label class="btn btn-outline-primary" for="use-{{ choice.row_id }}">
+                  Use <span class="font-mono">{{ money(new_amount) }}</span>
+                </label>
+              </span>
+            </li>
+            {% endfor %}
+          </ul>
+
+          <p class="text-muted small">
+            <i class="bi bi-info-circle"></i>
+            Your other upcoming instances move to
+            <span class="font-mono">{{ money(new_amount) }}</span> when you apply.
+            Settled history is never touched.
+          </p>
+
+          <div class="d-flex justify-content-between">
+            <a href="{{ cancel_url }}" class="btn btn-outline-secondary">Cancel edit</a>
+            <button type="submit" class="btn btn-primary">Apply</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/conflict_chooser.js') }}"></script>
+{% endblock scripts %}

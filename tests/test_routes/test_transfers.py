@@ -500,6 +500,116 @@ class TestTemplateUpdate:
             db.session.refresh(template)
             assert template.default_amount == Decimal("300.00")
 
+    def test_transfer_amount_change_with_override_shows_chooser(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A transfer-template amount change colliding with a hand-edited
+        transfer shows the conflict chooser (the shared flow, transfer kind)
+        and does not commit the pending edit."""
+        with app.app_context():
+            from app.services import (
+                pay_period_service, transfer_recurrence, transfer_service,
+            )
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)  # rule, amount 200
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            transfer_recurrence.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.flush()
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=template.id)
+                .order_by(Transfer.due_date.desc())
+                .first()
+            )
+            # Hand-edit the future transfer, shadow-safe via the service.
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                amount=Decimal("350.00"), is_override=True,
+            )
+            db.session.commit()
+            tid = template.id
+            ep_id = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period",
+            ).one().id
+
+            resp = auth_client.post(f"/transfers/{tid}", data={
+                "name": "Monthly Savings",
+                "default_amount": "250.00",
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "recurrence_pattern": str(ep_id),
+            })
+            assert resp.status_code == 200
+            assert b"hand-edited" in resp.data
+            assert b"Keep" in resp.data and b"Use" in resp.data
+            # Rolled back: the template keeps its pre-edit amount.
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, tid,
+            ).default_amount == Decimal("200.00")
+
+    def test_transfer_chooser_apply_use_realigns_transfer_and_shadows(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Apply 'use' realigns the overridden transfer AND both shadow
+        transactions to the new amount, preserving transfer invariant 3
+        (shadow amounts always equal the parent's)."""
+        with app.app_context():
+            from app.services import (
+                pay_period_service, transfer_recurrence, transfer_service,
+            )
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)  # rule, amount 200
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            transfer_recurrence.generate_for_template(
+                template, periods, scenario.id,
+            )
+            db.session.flush()
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=template.id)
+                .order_by(Transfer.due_date.desc())
+                .first()
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                amount=Decimal("350.00"), is_override=True,
+            )
+            db.session.commit()
+            tid, xfer_id = template.id, xfer.id
+            ep_id = db.session.query(RecurrencePattern).filter_by(
+                name="Every Period",
+            ).one().id
+
+            resp = auth_client.post(f"/transfers/{tid}", data={
+                "name": "Monthly Savings",
+                "default_amount": "250.00",
+                "from_account_id": seed_user["account"].id,
+                "to_account_id": savings.id,
+                "recurrence_pattern": str(ep_id),
+                "conflict_apply": "1",
+                f"conflict_decision_{xfer_id}": "use",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(Transfer, xfer_id)
+            assert reloaded.amount == Decimal("250.00")
+            assert reloaded.is_override is False
+            # Both shadows mirror the realigned amount (invariant 3).
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .all()
+            )
+            assert len(shadows) == 2
+            assert all(
+                s.estimated_amount == Decimal("250.00") for s in shadows
+            )
+
     def test_archive_template(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers/<id>/archive archives the template and soft-deletes transfers."""
         with app.app_context():

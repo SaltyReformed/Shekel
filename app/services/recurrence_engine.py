@@ -712,6 +712,18 @@ def _get_existing_map(template_id, scenario_id, periods):
     return result
 
 
+def is_salary_linked_template(template_id):
+    """Return True iff an active salary profile drives this template's amounts.
+
+    A salary-linked template's instance amounts are paycheck-calculated per
+    period (:func:`_get_transaction_amount`), so its ``default_amount`` is
+    vestigial: editing it does not change generated rows.  The update route
+    uses this to skip the amount-change conflict chooser for such templates
+    (their ``default_amount`` diff is not a real per-instance amount change).
+    """
+    return _get_salary_profile(template_id) is not None
+
+
 def _get_salary_profile(template_id):
     """Check if a template has a linked salary profile.
 

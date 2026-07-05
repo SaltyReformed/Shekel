@@ -36,7 +36,6 @@ from app.services import (
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
-from app.exceptions import RecurrenceConflict
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
@@ -44,10 +43,11 @@ from app.routes._commit_helpers import (
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
-    handle_recurrence_conflict,
     handle_stale_form_conflict,
+    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._redirect_target import RedirectTarget
@@ -185,18 +185,21 @@ def _apply_fields_and_propagate_rename(template, data):
     """Apply allowlisted field updates, propagating a rename to instances.
 
     Writes every :data:`_TEMPLATE_UPDATE_FIELDS` key present in *data* onto
-    *template*, then propagates a changed name to every existing
-    non-deleted Transaction generated from this template.
+    *template*, then propagates a changed name to EVERY existing Transaction
+    generated from this template -- including soft-deleted ones.
 
     The rename propagation is load-bearing: ``regenerate_for_template``
     only deletes/recreates non-override rows on or after ``effective_from``,
     so historic rows, overrides, and settled rows would otherwise keep the
     old label and desync every view that renders ``txn.name`` directly
     (calendar CSV export, calendar, companion card, edit form header).
-    The partial unique index on transactions covers
-    ``(template_id, pay_period_id, scenario_id)`` only, so a bulk name
-    update cannot trip a constraint.  Template ownership is verified by the
-    caller, so ``template_id`` alone scopes the update to the current user.
+    Soft-deleted rows are renamed too, so a row later restored -- by the
+    recurrence-conflict chooser's "use" action or by carry-forward --
+    surfaces with the current name rather than a stale one.  The partial
+    unique index on transactions covers ``(template_id, pay_period_id,
+    scenario_id)`` only, so a bulk name update cannot trip a constraint.
+    Template ownership is verified by the caller, so ``template_id`` alone
+    scopes the update to the current user.
     """
     old_name = template.name
     for field, value in data.items():
@@ -206,7 +209,6 @@ def _apply_fields_and_propagate_rename(template, data):
     if template.name != old_name:
         db.session.query(Transaction).filter(
             Transaction.template_id == template.id,
-            Transaction.is_deleted.is_(False),
         ).update({"name": template.name}, synchronize_session="fetch")
 
 
@@ -515,6 +517,17 @@ def edit_template(template_id):
     )
 
 
+# The transaction-template kind for the shared regenerate-or-chooser flow:
+# how to regenerate, resolve, load, and re-edit an expense / income row.
+_TXN_TEMPLATE_KIND = RecurrenceConflictKind(
+    model=Transaction,
+    amount_attr="estimated_amount",
+    regenerate_fn=recurrence_engine.regenerate_for_template,
+    resolve_fn=recurrence_engine.resolve_conflicts,
+    update_endpoint="templates.update_template",
+)
+
+
 @templates_bp.route("/templates/<int:template_id>", methods=["POST"])
 @login_required
 @require_owner
@@ -622,31 +635,22 @@ def update_template(template_id):
 
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
+    old_amount = template.default_amount
     _apply_fields_and_propagate_rename(template, data)
 
-    # Regenerate future transactions.
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario and template.recurrence_rule:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        try:
-            recurrence_engine.regenerate_for_template(
-                template, periods, scenario.id, effective_from=effective_from,
-            )
-        except RecurrenceConflict as conflict:
-            # Phase-1 auto-keep-overrides advisory.  Routed through
-            # the F-26 helper so the log message and the user-facing
-            # flash share a single implementation with the parallel
-            # transfer-template regeneration call.  ``log_label``
-            # preserves the templates-side prefix verbatim so log-
-            # grep patterns stay valid.
-            handle_recurrence_conflict(
-                logger=logger,
-                log_label="Recurrence conflict for template",
-                log_id=template.id,
-                conflict=conflict,
-            )
+    # Regenerate future transactions, diverting to the conflict chooser when
+    # an amount change would overwrite hand-edited upcoming instances (the
+    # chooser rolls the pending edit back; its Apply re-runs this same edit).
+    diverted = regenerate_or_conflict_chooser(
+        template, old_amount, effective_from, _TXN_TEMPLATE_KIND,
+        amount_drives_instances=not recurrence_engine.is_salary_linked_template(
+            template.id,
+        ),
+    )
 
-    conflict = commit_or_handle_stale(StaleConflictContext(
+    # The chooser short-circuits (its pending edit is already rolled back);
+    # otherwise commit the edit, subject to the stale-version guard.
+    response = diverted or commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="update_template",
         log_id=template_id,
@@ -658,8 +662,8 @@ def update_template(template_id):
             {"template_id": template_id},
         ),
     ))
-    if conflict is not None:
-        return conflict
+    if response is not None:
+        return response
     flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 

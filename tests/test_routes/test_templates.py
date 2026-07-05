@@ -74,6 +74,36 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     return template
 
 
+def _pattern_id(name="Every Period"):
+    """Return a recurrence pattern's id by name (display lookup, test-only)."""
+    return db.session.query(RecurrencePattern).filter_by(name=name).one().id
+
+
+def _future_override_txn(seed_user, template, amount="1500.00"):
+    """Generate a template's instances and override the latest (future) one.
+
+    The latest instance is comfortably on or after today, so it sits inside
+    the update route's regeneration window and a subsequent amount-change
+    edit collides with it.  Returns the committed override Transaction
+    (is_override=True, carrying its own ``amount``).
+    """
+    from app.services import recurrence_engine, pay_period_service
+    scenario = seed_user["scenario"]
+    periods = pay_period_service.get_all_periods(seed_user["user"].id)
+    recurrence_engine.generate_for_template(template, periods, scenario.id)
+    db.session.flush()
+    txn = (
+        db.session.query(Transaction)
+        .filter_by(template_id=template.id)
+        .order_by(Transaction.due_date.desc())
+        .first()
+    )
+    txn.is_override = True
+    txn.estimated_amount = Decimal(amount)
+    db.session.commit()
+    return txn
+
+
 def _create_other_user_with_template():
     """Create a second user with their own template.
 
@@ -396,37 +426,178 @@ class TestTemplateUpdate:
             )
             assert resp.status_code == 404
 
-    def test_update_triggers_recurrence_conflict(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /templates/<id> flashes warning when recurrence conflict occurs."""
+    def test_amount_change_with_override_shows_chooser(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An amount change colliding with a hand-edited instance shows the
+        conflict chooser and does NOT commit the edit (the pending change is
+        rolled back until Apply)."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(
+                seed_user, pattern_name="Every Period", amount="1200.00",
+            )
+            _future_override_txn(seed_user, template, amount="1500.00")
+            tid = template.id
 
-            # Generate transactions via recurrence, then override one.
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                "recurrence_pattern": str(_pattern_id()),
+            })
+            assert resp.status_code == 200
+            assert b"hand-edited" in resp.data
+            assert b"Keep" in resp.data and b"Use" in resp.data
+            # Rolled back: the template keeps its pre-edit amount.
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, tid,
+            ).default_amount == Decimal("1200.00")
+
+    def test_chooser_apply_use_realigns_override(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Apply with 'use' clears the override and moves it to the new
+        amount; the template edit commits.  Every-Period amount is the
+        template default, so the realigned instance reads $1,400.00."""
+        with app.app_context():
+            template = _create_template(
+                seed_user, pattern_name="Every Period", amount="1200.00",
+            )
+            txn = _future_override_txn(seed_user, template, amount="1500.00")
+            tid, txn_id = template.id, txn.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                "recurrence_pattern": str(_pattern_id()),
+                "conflict_apply": "1",
+                f"conflict_decision_{txn_id}": "use",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert reloaded.is_override is False
+            assert db.session.get(
+                TransactionTemplate, tid,
+            ).default_amount == Decimal("1400.00")
+
+    def test_chooser_apply_keep_preserves_override(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Apply with 'keep' leaves the override untouched at its hand-edited
+        $1,500.00; the template amount edit still commits."""
+        with app.app_context():
+            template = _create_template(
+                seed_user, pattern_name="Every Period", amount="1200.00",
+            )
+            txn = _future_override_txn(seed_user, template, amount="1500.00")
+            tid, txn_id = template.id, txn.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                "recurrence_pattern": str(_pattern_id()),
+                "conflict_apply": "1",
+                f"conflict_decision_{txn_id}": "keep",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert reloaded.estimated_amount == Decimal("1500.00")
+            assert reloaded.is_override is True
+            assert db.session.get(
+                TransactionTemplate, tid,
+            ).default_amount == Decimal("1400.00")
+
+    def test_name_only_edit_with_override_skips_chooser(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A rename that leaves the amount unchanged never shows the chooser,
+        even with an override present: it commits, keeping the override's
+        amount and propagating the new name to it."""
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+                amount="1200.00",
+            )
+            txn = _future_override_txn(seed_user, template, amount="1500.00")
+            tid, txn_id = template.id, txn.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "name": "Apartment Rent",
+                "default_amount": "1200.00",
+                "recurrence_pattern": str(_pattern_id()),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"hand-edited" not in resp.data
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert reloaded.estimated_amount == Decimal("1500.00")
+            assert reloaded.is_override is True
+            assert reloaded.name == "Apartment Rent"
+
+    def test_is_salary_linked_template_detects_active_link(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """The signal the update route uses to skip the chooser for salary
+        rows: True iff an active salary profile references the template.
+
+        A salary-linked template's instances are paycheck-calculated, so its
+        ``default_amount`` is vestigial; the update route passes
+        ``amount_drives_instances=False`` for it, suppressing a chooser that
+        would otherwise mis-state a paycheck on 'use'.
+        """
+        with app.app_context():
+            from app.services.recurrence_engine import (
+                is_salary_linked_template,
+            )
+            from tests._test_helpers import make_salary_profile
+            template = _create_template(seed_user, txn_type="Income")
+            assert is_salary_linked_template(template.id) is False
+
+            profile = make_salary_profile(seed_user, db.session)
+            profile.template_id = template.id
+            profile.is_active = True
+            db.session.commit()
+            assert is_salary_linked_template(template.id) is True
+
+    def test_chooser_use_on_deleted_conflict_restores_with_current_name(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Apply 'use' on a soft-deleted conflict restores it at the new
+        amount AND with the edit's new name.  The rename now reaches
+        soft-deleted rows, so a restored instance is never stale-named."""
+        with app.app_context():
             from app.services import recurrence_engine, pay_period_service
+            template = _create_template(
+                seed_user, name="Rent", pattern_name="Every Period",
+                amount="1200.00",
+            )
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, periods, scenario.id)
             db.session.flush()
+            txn = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id)
+                .order_by(Transaction.due_date.desc())
+                .first()
+            )
+            txn.is_deleted = True  # a soft-deleted conflict in the window
+            db.session.commit()
+            tid, txn_id = template.id, txn.id
 
-            # Override a transaction to trigger RecurrenceConflict on regen.
-            txn = db.session.query(Transaction).filter_by(
-                template_id=template.id
-            ).first()
-            if txn:
-                txn.is_override = True
-                db.session.commit()
-
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-            resp = auth_client.post(f"/templates/{template.id}", data={
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "name": "Apartment Rent",
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(every_period.id),
+                "recurrence_pattern": str(_pattern_id()),
+                "conflict_apply": "1",
+                f"conflict_decision_{txn_id}": "use",
             }, follow_redirects=True)
-
             assert resp.status_code == 200
-            # Should flash the conflict warning.
-            assert b"overridden" in resp.data or b"updated" in resp.data
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert reloaded.is_deleted is False
+            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert reloaded.name == "Apartment Rent"
 
     def test_rename_template_propagates_to_all_instances(
         self, app, auth_client, seed_user, seed_periods_today,
