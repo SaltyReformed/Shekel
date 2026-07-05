@@ -219,3 +219,53 @@
 .password-toggle-btn:focus {
   color: var(--shekel-text-primary);
 }
+
+/* =============================================
+   FORM CARD  (app-wide standalone-form idiom, all-forms consistency
+   pass 2026-07-05)
+   Every standalone create / edit / setup form is presented in a themed
+   Bootstrap .card via the form_card macro (_form_macros.html) so the
+   surfaces read as one system in both themes.  The card itself is pure
+   Bootstrap + Steel Ink tokens; only the title weight and the in-body
+   sub-section vocabulary need rules here.
+   ============================================= */
+.form-card__title {
+  font-weight: 600;
+}
+
+/* A labelled sub-section inside a form body, separated by a hairline so
+   grouped fields (Tracking, Recurrence, W-4) read as a unit without the
+   visual weight of a nested card.  Core fields sit unwrapped at the top of
+   the body; the first .form-section's top rule separates them from it. */
+.form-section {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.form-section__title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--shekel-text-secondary);
+  margin-bottom: 1rem;
+}
+
+/* Accent emphasis variant: a tinted, left-ruled block for the one section
+   that is a form's centre of gravity (the recurrence picker), echoing the
+   Recurring list's accent section banner so the create / edit surface ties
+   back to the list it returns to.  Accent differs per theme, so the tint is
+   color-mixed from --shekel-accent rather than a fixed rgba. */
+.form-section--accent {
+  margin-top: 1.5rem;
+  padding: 1.125rem 1.125rem 0.75rem;
+  border: 1px solid var(--shekel-border-subtle);
+  border-left: 3px solid var(--shekel-accent);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--shekel-accent) 6%, var(--shekel-surface));
+}
+
+.form-section--accent .form-section__title {
+  color: var(--shekel-accent);
+}

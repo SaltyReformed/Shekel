@@ -51,8 +51,8 @@
           <i class="bi bi-plus-circle"></i> New
         </button>
         <ul class="dropdown-menu dropdown-menu-end">
-          <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Expense</a></li>
-          <li><a class="dropdown-item" href="{{ url_for('templates.new_template') }}">Income</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('templates.new_template', type='expense') }}">Expense</a></li>
+          <li><a class="dropdown-item" href="{{ url_for('templates.new_template', type='income') }}">Income</a></li>
           <li><a class="dropdown-item" href="{{ url_for('transfers.new_transfer_template') }}">Transfer</a></li>
         </ul>
       </div>

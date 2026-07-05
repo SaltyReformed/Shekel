@@ -110,6 +110,36 @@
 {% endmacro %}
 
 
+{# --- Form card shell (all-forms consistency pass, 2026-07-05) ---
+
+   The shared Steel Ink card every standalone create / edit / setup form is
+   presented in.  Wrap the form body with {% call %}:
+
+     {% from "_form_macros.html" import form_card %}
+     {% call form_card('New Account', 'bi-bank') %}
+       <form ...>...</form>
+     {% endcall %}
+
+   The card, header, and body are a themed Bootstrap .card, so a theme is a
+   single block of token values and both light and dark render correctly.
+   Sub-sections inside the body use the .form-section / .form-section--accent
+   vocabulary from components.css.  ``caller()`` runs in the invoking
+   template's context, so csrf_token(), url_for(), and per-form values inside
+   the wrapped form resolve normally. #}
+{% macro form_card(title, icon="") %}
+<div class="card form-card">
+  <div class="card-header">
+    <h5 class="form-card__title mb-0">
+      {% if icon %}<i class="bi {{ icon }}"></i> {% endif %}{{ title }}
+    </h5>
+  </div>
+  <div class="card-body">
+    {{ caller() }}
+  </div>
+</div>
+{% endmacro %}
+
+
 {# --- Inline Error Summary (for forms that don't use per-field macros) --- #}
 {% macro render_errors(errors) %}
 {% if errors %}

@@ -1,0 +1,130 @@
+{# Shared recurrence-rule form fields (Recurring cluster Loop B, P4).
+
+   Single source for the recurrence picker that templates/form.html
+   (recurring income / expense) and transfers/form.html (recurring
+   transfer) previously each defined verbatim.  The two forms differ only
+   in three parameters, so the markup itself is shared here and the
+   differences are passed in:
+
+     * include_none_option -- expense / income offer "None (one-time /
+       manual)"; a transfer's one-time case is the ONCE pattern, so it has
+       no null option.
+     * include_due_day -- only transaction templates carry a separate bill
+       due-day; the transfer schemas do not expose the field.
+     * the pay-period selector's placement -- a transaction's start period
+       only matters for a recurring pattern (it sits INSIDE
+       #recurrence-fields, hidden with the container in the manual case),
+       while a transfer needs it for the one-time case too (it sits OUTSIDE
+       the container).  So start_period_field is a separate macro each form
+       places itself; it is not baked into recurrence_detail_fields.
+
+   Import WITH CONTEXT -- the pattern select renders recurrence_pattern_labels,
+   which is an @app.context_processor variable (app/__init__.py) and so is only
+   visible to a macro imported with context.  (The REC_* pattern ids in the
+   data-* attributes are Jinja globals, registered by register_ref_id_globals
+   in app/jinja_globals.py, so they resolve regardless -- but without context
+   the label lookup would silently fall back to the raw pattern name.)
+   recurrence_form.js drives the show / hide + live preview off the element ids
+   emitted here. #}
+
+
+{# The pattern <select>.  ``selected_pattern_id`` is the id to pre-select
+   (an int, an IntEnum, or None); the caller resolves it from the template's
+   rule or the create-time default, so this macro only renders. #}
+{% macro recurrence_pattern_select(patterns, selected_pattern_id, include_none_option) %}
+<div class="mb-3">
+  <label for="recurrence_pattern" class="form-label">Pattern</label>
+  <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
+          data-every-n="{{ REC_EVERY_N_PERIODS }}"
+          data-monthly="{{ REC_MONTHLY }}"
+          data-quarterly="{{ REC_QUARTERLY }}"
+          data-semi-annual="{{ REC_SEMI_ANNUAL }}"
+          data-annual="{{ REC_ANNUAL }}"
+          data-once="{{ REC_ONCE }}">
+    {% if include_none_option %}
+    <option value="" {{ 'selected' if selected_pattern_id is none else '' }}>None (one-time / manual)</option>
+    {% endif %}
+    {% for p in patterns %}
+    <option value="{{ p.id }}" {{ 'selected' if selected_pattern_id == p.id else '' }}>
+      {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+    </option>
+    {% endfor %}
+  </select>
+</div>
+{% endmacro %}
+
+
+{# The pattern-dependent fields inside #recurrence-fields: interval, the
+   day / due-day / month row, and the end date.  recurrence_form.js toggles
+   each on by id for the selected pattern.  Does NOT include the pay-period
+   selector or the preview (each form places those). #}
+{% macro recurrence_detail_fields(template, include_due_day) %}
+<div class="mb-3 d-none" id="field-interval">
+  <label for="interval_n" class="form-label">Repeat every N paychecks</label>
+  <input type="number" id="interval_n" name="interval_n" class="form-control" min="1"
+         value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
+</div>
+<div class="row mb-3">
+  <div class="col d-none" id="field-dom">
+    <label for="day_of_month" class="form-label">Day of Month</label>
+    <input type="number" id="day_of_month" name="day_of_month" class="form-control" min="1" max="31"
+           value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
+  </div>
+  {% if include_due_day %}
+  <div class="col d-none" id="field-due-dom">
+    <label for="due_day_of_month" class="form-label">Due Day of Month</label>
+    <input type="number" id="due_day_of_month" name="due_day_of_month" class="form-control" min="1" max="31"
+           value="{{ template.recurrence_rule.due_day_of_month if template and template.recurrence_rule and template.recurrence_rule.due_day_of_month else '' }}"
+           placeholder="Same as day">
+    <small class="form-text text-muted">Actual bill due day (if different from scheduled day)</small>
+  </div>
+  {% endif %}
+  <div class="col d-none" id="field-moy">
+    <label for="month_of_year" class="form-label">Month</label>
+    <select id="month_of_year" name="month_of_year" class="form-select">
+      <option value="">--</option>
+      {% for num in range(1, 13) %}
+      <option value="{{ num }}"
+        {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
+        {{ num|month_name }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+<div class="mb-3 d-none" id="field-end-date">
+  <label for="end_date" class="form-label">End Date</label>
+  <input type="date" id="end_date" name="end_date" class="form-control" aria-describedby="end-date-help"
+         value="{{ template.recurrence_rule.end_date.isoformat() if template and template.recurrence_rule and template.recurrence_rule.end_date else '' }}">
+  <div id="end-date-help" class="form-text">Leave blank for indefinite. Entries won't be generated after this date.</div>
+</div>
+{% endmacro %}
+
+
+{# The live occurrence preview.  recurrence_form.js fetches ``preview_url``
+   (the kind-agnostic templates.preview_recurrence endpoint, which reads
+   only the rule params + the user's periods) and swaps the result in. #}
+{% macro recurrence_preview(preview_url) %}
+<div id="recurrence-preview" class="mt-2 mb-1" data-preview-url="{{ preview_url }}">
+  <small class="text-muted">Select a pattern to see upcoming dates</small>
+</div>
+{% endmacro %}
+
+
+{# The pay-period selector.  Starts hidden; recurrence_form.js reveals it
+   and swaps its label / help text ("First paycheck" for a recurring
+   pattern, "Pay period" for a transfer's one-time case).  Each form places
+   this itself (see the module note on placement). #}
+{% macro start_period_field(periods, current_period) %}
+<div class="mb-3 d-none" id="field-start-period">
+  <label class="form-label" id="start-period-label" for="start_period_id">First paycheck</label>
+  <select id="start_period_id" name="start_period_id" class="form-select" aria-describedby="start-period-help">
+    {% for p in periods %}
+    <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id else '' }}>
+      {{ p.label }}
+    </option>
+    {% endfor %}
+  </select>
+  <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
+</div>
+{% endmacro %}

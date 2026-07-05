@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_form_macros.html" import form_card %}
 {% block title %}{{ account.name }} -- {{ account_type.name }} Setup -- Shekel{% endblock title %}
 
 {% block content %}
@@ -11,95 +12,90 @@
 
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
-    <div class="card">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-gear"></i> Configure {{ account_type.name }} Parameters</h6>
+    {% call form_card('Configure ' ~ account_type.name ~ ' Parameters', 'bi-gear') %}
+    <p class="text-muted">
+      Enter the details of your {{ account_type.name|lower }} to enable amortization tracking,
+      escrow management, and payoff analysis.
+    </p>
+    <form method="POST" action="{{ url_for('loan.create_params', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="row mb-3">
+        <div class="col-6">
+          <label for="original_principal" class="form-label">Original Principal</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" id="original_principal"
+                   name="original_principal" step="0.01" min="0" required>
+          </div>
+        </div>
+        <div class="col-6">
+          <label for="current_principal" class="form-label">Current Principal</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" id="current_principal"
+                   name="current_principal" step="0.01" min="0" required
+                   value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance is not none else '' }}">
+          </div>
+        </div>
       </div>
-      <div class="card-body">
-        <p class="text-muted">
-          Enter the details of your {{ account_type.name|lower }} to enable amortization tracking,
-          escrow management, and payoff analysis.
-        </p>
-        <form method="POST" action="{{ url_for('loan.create_params', account_id=account.id) }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-          <div class="row mb-3">
-            <div class="col-6">
-              <label for="original_principal" class="form-label">Original Principal</label>
-              <div class="input-group">
-                <span class="input-group-text">$</span>
-                <input type="number" class="form-control" id="original_principal"
-                       name="original_principal" step="0.01" min="0" required>
-              </div>
-            </div>
-            <div class="col-6">
-              <label for="current_principal" class="form-label">Current Principal</label>
-              <div class="input-group">
-                <span class="input-group-text">$</span>
-                <input type="number" class="form-control" id="current_principal"
-                       name="current_principal" step="0.01" min="0" required
-                       value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance is not none else '' }}">
-              </div>
-            </div>
+      <div class="row mb-3">
+        <div class="col-6">
+          <label for="interest_rate" class="form-label">Interest Rate</label>
+          <div class="input-group">
+            <input type="number" class="form-control" id="interest_rate"
+                   name="interest_rate" step="0.001" min="0" max="100" required
+                   placeholder="6.500">
+            <span class="input-group-text">%</span>
           </div>
-
-          <div class="row mb-3">
-            <div class="col-6">
-              <label for="interest_rate" class="form-label">Interest Rate</label>
-              <div class="input-group">
-                <input type="number" class="form-control" id="interest_rate"
-                       name="interest_rate" step="0.001" min="0" max="100" required
-                       placeholder="6.500">
-                <span class="input-group-text">%</span>
-              </div>
-              <div class="form-text">Enter as percentage (e.g. 6.5 for 6.5%)</div>
-            </div>
-            <div class="col-6">
-              <label for="term_months" class="form-label">Term (months)</label>
-              <input type="number" class="form-control" id="term_months"
-                     name="term_months" min="1"
-                     max="{{ account_type.max_term_months or 600 }}" required
-                     placeholder="{{ account_type.max_term_months or 360 }}">
-              <div class="form-text">
-                {% if account_type.max_term_months %}
-                  Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
-                {% else %}
-                  e.g. 360 for 30 years
-                {% endif %}
-              </div>
-            </div>
+          <div class="form-text">Enter as percentage (e.g. 6.5 for 6.5%)</div>
+        </div>
+        <div class="col-6">
+          <label for="term_months" class="form-label">Term (months)</label>
+          <input type="number" class="form-control" id="term_months"
+                 name="term_months" min="1"
+                 max="{{ account_type.max_term_months or 600 }}" required
+                 placeholder="{{ account_type.max_term_months or 360 }}">
+          <div class="form-text">
+            {% if account_type.max_term_months %}
+              Max {{ account_type.max_term_months }} months ({{ account_type.max_term_months|months_to_years(0) }} years)
+            {% else %}
+              e.g. 360 for 30 years
+            {% endif %}
           </div>
-
-          <div class="row mb-3">
-            <div class="col-6">
-              <label for="origination_date" class="form-label">Origination Date</label>
-              <input type="date" class="form-control" id="origination_date"
-                     name="origination_date" required>
-            </div>
-            <div class="col-6">
-              <label for="payment_day" class="form-label">Payment Day of Month</label>
-              <input type="number" class="form-control" id="payment_day"
-                     name="payment_day" min="1" max="31" required value="1">
-              <div class="form-text">For months with fewer days (e.g. February), the payment will be on the last day of the month.</div>
-            </div>
-          </div>
-
-          <div class="mb-3">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="is_arm"
-                     name="is_arm" value="true">
-              <label class="form-check-label" for="is_arm">
-                Adjustable Rate (ARM)
-              </label>
-            </div>
-          </div>
-
-          <button type="submit" class="btn btn-primary">
-            <i class="bi bi-check-lg"></i> Save & Continue
-          </button>
-        </form>
+        </div>
       </div>
-    </div>
+
+      <div class="row mb-3">
+        <div class="col-6">
+          <label for="origination_date" class="form-label">Origination Date</label>
+          <input type="date" class="form-control" id="origination_date"
+                 name="origination_date" required>
+        </div>
+        <div class="col-6">
+          <label for="payment_day" class="form-label">Payment Day of Month</label>
+          <input type="number" class="form-control" id="payment_day"
+                 name="payment_day" min="1" max="31" required value="1">
+          <div class="form-text">For months with fewer days (e.g. February), the payment will be on the last day of the month.</div>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="is_arm"
+                 name="is_arm" value="true">
+          <label class="form-check-label" for="is_arm">
+            Adjustable Rate (ARM)
+          </label>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-check-lg"></i> Save & Continue
+      </button>
+    </form>
+    {% endcall %}
   </div>
 </div>
 {% endblock content %}

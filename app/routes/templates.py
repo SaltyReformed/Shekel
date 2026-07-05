@@ -218,6 +218,13 @@ def _apply_fields_and_propagate_rename(template, data):
 _UNIT_MONTHLY = "monthly"
 _UNIT_PER_PAYCHECK = "per_paycheck"
 
+# Query-param hint the Recurring surface's "New" picker passes so the
+# creation form pre-selects the right transaction type.  "income" selects
+# the income type; any other value (including the default Expense picker
+# entry and a hand-crafted request) falls back to expense, the most common
+# recurring definition.
+_NEW_TYPE_INCOME = "income"
+
 
 def _load_active_transaction_templates(user_id):
     """Load the user's active income and expense templates, partitioned.
@@ -387,13 +394,24 @@ def set_unit_preference():
 @login_required
 @require_owner
 def new_template():
-    """Display the template creation form."""
+    """Display the template creation form.
+
+    The Recurring surface's "New" picker offers Expense / Income / Transfer;
+    the Income entry links here with ``?type=income`` so the form lands with
+    the income type pre-selected (expense and income share this form).  Any
+    other ``type`` value falls back to expense.
+    """
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
+
+    if request.args.get("type") == _NEW_TYPE_INCOME:
+        default_txn_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    else:
+        default_txn_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     return render_template(
         "templates/form.html",
@@ -404,6 +422,7 @@ def new_template():
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
+        default_txn_type_id=default_txn_type_id,
     )
 
 
@@ -514,6 +533,9 @@ def edit_template(template_id):
         txn_types=txn_types,
         periods=[],
         current_period=None,
+        # Unused when editing (the form reads the template's own type), but
+        # passed so the shared template never references an undefined value.
+        default_txn_type_id=None,
     )
 
 

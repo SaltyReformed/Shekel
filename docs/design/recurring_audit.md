@@ -253,3 +253,53 @@ per-instance keep/replace decisions) was built and tested but no UI ever calls i
 - The mock's visual reference lived at /tmp/recurring_explore.html and
   /tmp/recurring_chooser_explore.html (session scratchpad, deleted per anti-anchoring); the anatomy
   paragraphs above are the binding description.
+
+## Loop B P4 + P5 as-built (2026-07-05)
+
+P4 (forms) built and P5 accepted ("Everything looks good") on dev; not yet PR'd to main.
+
+**Scope grew mid-P4 by developer directive** ("All forms need to be the consistent Steel Ink
+cards"): P4 became an app-wide standalone-form-card unification, not just the two recurring form
+variants. The app was internally inconsistent (accounts / savings / recurring were bare `<h4>` +
+form; salary / loan / retirement / auth were already carded in three different ways).
+
+**Shared scaffold (consistency is structural, not copy-pasted):**
+
+- `form_card(title, icon)` macro in `app/templates/_form_macros.html` -- the themed Steel Ink card
+  (`.card` + titled `.card-header` + `.card-body`) every standalone form wraps itself in via
+  `{% call %}`.
+- `.form-section` / `.form-section--accent` token vocabulary in `app/static/css/components.css`
+  (hairline-separated section vs a tinted, accent-left-ruled emphasis box; tokens only, `color-mix`
+  off `--shekel-accent`, no raw hex, no `!important`).
+- `app/templates/_recurrence_fields.html` (NEW): DRY partial, 4 macros (`recurrence_pattern_select`,
+  `recurrence_detail_fields`, `recurrence_preview`, `start_period_field`) shared by both recurring
+  forms (was ~120 duplicated lines). Imported WITH CONTEXT for `recurrence_pattern_labels` (a
+  context processor); the REC_* ids are Jinja globals.
+
+**Recurring P4 specifics:**
+
+- Both recurring forms rebuilt on the scaffold; recurrence picker sits in the
+  `.form-section--accent` tinted box that echoes the list's accent section banner.
+- Transfer live-preview gap CLOSED: the form now emits `#recurrence-preview` pointing at the
+  kind-agnostic, user-scoped `templates.preview_recurrence` (reviewer confirmed no IDOR, no
+  transaction-only assumption).
+- Income pre-select: the New picker's Income entry links `?type=income`; `new_template` maps it to
+  `default_txn_type_id`. Also cleared the two P1 follow-ups: the stale "Recurring Transfers"
+  breadcrumb and the double-hop Cancel both now target `templates.list_templates`.
+- Start-period placement preserved (transaction inside `#recurrence-fields`, hidden with the
+  container in the manual case; transfer outside it, visible for the ONCE one-time case);
+  `recurrence_form.js` unchanged, every element id it reads is still emitted.
+
+**Forms moved onto the shared card:** recurring expense/income, recurring transfer, accounts,
+savings goal, loan setup, retirement pension, salary calibrate.
+
+**Intentionally left (rule 10 -- do not rewrite complex working financial UI unilaterally):**
+`salary/form.html` (multi-part, already stacked Steel Ink cards) and `salary/calibrate_confirm.html`
+(a confirmation page of display cards, like the P3 chooser). Auth pages kept as the narrow logo gate
+(developer ruling); already themed. Settings-tab sub-forms and grid/transfer inline HTMX edits are
+explicitly OUT of this pass (they belong to their host surface).
+
+**Verification:** full suite 7182 passed; `pylint app/routes/templates.py` 10.00/10; 117 templates
+parse; CSP clean; both themes checked manually by the developer. Adversarial code-reviewer pass: no
+Critical/High/Medium; 1 Low (a `with context` docstring misattribution) fixed before commit. P4 adds
+NO migration (schema-free), so no dev-DB upgrade step this time.
