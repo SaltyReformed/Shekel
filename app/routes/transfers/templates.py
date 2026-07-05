@@ -81,24 +81,15 @@ _TEMPLATE_UPDATE_FIELDS = {
 @login_required
 @require_owner
 def list_transfer_templates():
-    """List all transfer templates for the current user.
+    """Redirect the retired /transfers list to the unified Recurring surface.
 
-    Separates templates into active and archived lists for the UI.
-    Both lists inherit the same ordering (sort_order, name).
+    Transfer templates are now listed and managed alongside recurring
+    income and expenses on the unified ``/templates`` (Recurring) surface
+    (Loop B).  This URL is kept as a redirect so old bookmarks -- and the
+    transfer create/update routes' post-save redirects, which still target
+    this endpoint -- land on the surface that replaced the standalone list.
     """
-    templates = (
-        db.session.query(TransferTemplate)
-        .filter_by(user_id=current_user.id)
-        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
-        .all()
-    )
-    active_templates = [t for t in templates if t.is_active]
-    archived_templates = [t for t in templates if not t.is_active]
-    return render_template(
-        "transfers/list.html",
-        active_templates=active_templates,
-        archived_templates=archived_templates,
-    )
+    return redirect(url_for("templates.list_templates"))
 
 
 @transfers_bp.route("/transfers/new", methods=["GET"])

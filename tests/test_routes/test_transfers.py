@@ -211,16 +211,27 @@ def _create_other_user_with_template():
 class TestTemplateList:
     """Tests for GET /transfers and GET /transfers/new."""
 
-    def test_list_templates(self, app, auth_client, seed_user, seed_periods_today):
-        """GET /transfers renders the transfer templates list."""
+    def test_list_redirects_to_unified_recurring(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /transfers redirects to the unified Recurring surface.
+
+        The standalone transfers list retired when /transfers folded into
+        /templates (Loop B); the URL is kept as a redirect for old
+        bookmarks and the create/update routes' post-save redirects.
+        Following it lands on /templates showing the transfer.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             _create_template(seed_user, savings, with_rule=False)
 
             response = auth_client.get("/transfers")
+            assert response.status_code == 302
+            assert response.headers["Location"].endswith("/templates")
 
-            assert response.status_code == 200
-            assert b"Monthly Savings" in response.data
+            followed = auth_client.get("/transfers", follow_redirects=True)
+            assert followed.status_code == 200
+            assert b"Monthly Savings" in followed.data
 
     def test_new_template_form(self, app, auth_client, seed_user):
         """GET /transfers/new renders the creation form."""
@@ -408,8 +419,11 @@ class TestTemplateCreate:
                 f"Redirect went to {location}, expected /transfers list"
             )
 
-            # Follow redirect and verify flash warning.
-            resp3 = auth_client.get(location)
+            # Follow the redirect chain and verify the flash warning.  The
+            # /transfers list URL now forwards to the unified Recurring
+            # surface, so the create route's redirect hops once more before
+            # rendering; Flask carries the flash across the chain.
+            resp3 = auth_client.get(location, follow_redirects=True)
             assert resp3.status_code == 200
             assert b"already exists" in resp3.data, (
                 "Flash warning about duplicate name not found in response"
@@ -2671,9 +2685,11 @@ class TestTransferTemplateHardDelete:
             assert db.session.get(TransferTemplate, other_id) is not None
 
     def test_list_separates_active_and_archived_transfers(
-        self, app, auth_client, seed_user,
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C-5A.5-21: List page shows active and archived in separate sections."""
+        """C-5A.5-21: The unified Recurring surface shows active transfers in
+        the Transfers section and archived transfers under the collapsed
+        Archived section (reached by following the /transfers redirect)."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
 
@@ -2695,14 +2711,14 @@ class TestTransferTemplateHardDelete:
             db.session.add_all([active, archived])
             db.session.commit()
 
-            resp = auth_client.get("/transfers")
+            resp = auth_client.get("/transfers", follow_redirects=True)
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Active template in main table.
+            # Active transfer in the Transfers section.
             assert "Active Transfer" in html
 
-            # Archived section with count indicator.
+            # Archived section with count indicator (both kinds share it).
             assert "Archived (1)" in html
             assert "Archived Transfer" in html
 

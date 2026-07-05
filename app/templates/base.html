@@ -118,10 +118,6 @@
                         or request.path == '/accounts' or request.path.startswith('/accounts/')) }}
             {{ nav_link(url_for('salary.cockpit'), 'bi-cash-coin', 'Salary',
                         request.path.startswith('/salary')) }}
-            {{ nav_link(url_for('transfers.list_transfer_templates'), 'bi-arrow-left-right', 'Transfers',
-                        request.path.startswith('/transfers')) }}
-            {{ nav_link(url_for('obligations.summary'), 'bi-file-earmark-text', 'Obligations',
-                        request.path.startswith('/obligations')) }}
             {{ nav_link(url_for('retirement.dashboard'), 'bi-briefcase', 'Retirement',
                         request.path.startswith('/retirement')) }}
             {{ nav_link(url_for('analytics.page'), 'bi-bar-chart-line', 'Analytics',

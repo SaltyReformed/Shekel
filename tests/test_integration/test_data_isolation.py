@@ -204,7 +204,8 @@ class TestTransfersIsolation:
     ):
         """User A sees 'Monthly Savings' but not 'Bi-Weekly Savings' on transfers."""
         with app.app_context():
-            response = auth_client.get("/transfers")
+            # /transfers forwards to the unified Recurring surface.
+            response = auth_client.get("/transfers", follow_redirects=True)
             assert response.status_code == 200
 
             # Positive: User A's transfer template name is present.
@@ -218,7 +219,8 @@ class TestTransfersIsolation:
     ):
         """User B sees 'Bi-Weekly Savings' but not 'Monthly Savings' on transfers."""
         with app.app_context():
-            response = second_auth_client.get("/transfers")
+            # /transfers forwards to the unified Recurring surface.
+            response = second_auth_client.get("/transfers", follow_redirects=True)
             assert response.status_code == 200
 
             # Positive: User B's transfer template name is present.

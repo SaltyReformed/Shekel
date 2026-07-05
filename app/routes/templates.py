@@ -15,12 +15,14 @@ from markupsafe import Markup
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.user import UserSettings
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
@@ -30,6 +32,7 @@ from app.services import (
     category_service,
     pay_period_service,
     recurrence_engine,
+    recurring_view,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
@@ -207,28 +210,153 @@ def _apply_fields_and_propagate_rename(template, data):
         ).update({"name": template.name}, synchronize_session="fetch")
 
 
+# Form values the unit-preference toggle submits, mapped to the stored
+# boolean.  Any other value is ignored (the toggle only ever sends one of
+# these two), so a hand-crafted request cannot force an unexpected state.
+_UNIT_MONTHLY = "monthly"
+_UNIT_PER_PAYCHECK = "per_paycheck"
+
+
+def _load_active_transaction_templates(user_id):
+    """Load the user's active income and expense templates, partitioned.
+
+    One query (relationships are ``lazy="joined"`` on the model, so no
+    N+1), split by transaction type so the producer receives the income
+    and expense sections separately.  ``sort_order, name`` fixes the
+    tie-break order the producer then re-sorts by monthly cost.
+    """
+    income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    templates = (
+        db.session.query(TransactionTemplate)
+        .filter(
+            TransactionTemplate.user_id == user_id,
+            TransactionTemplate.is_active.is_(True),
+        )
+        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
+        .all()
+    )
+    income = [t for t in templates if t.transaction_type_id == income_id]
+    expense = [t for t in templates if t.transaction_type_id == expense_id]
+    return income, expense
+
+
+def _load_active_transfer_templates(user_id):
+    """Load the user's active transfer templates, ordered for display."""
+    return (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == user_id,
+            TransferTemplate.is_active.is_(True),
+        )
+        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
+        .all()
+    )
+
+
+def _load_archived_templates(user_id):
+    """Load the user's archived transaction and transfer templates.
+
+    Returns ``(archived_transactions, archived_transfers)``; the unified
+    page renders both under one collapsed Archived section with Unarchive
+    actions.  Archived rows carry no monthly equivalent (they are inactive
+    and excluded from every total), so they bypass the producer.
+    """
+    archived_transactions = (
+        db.session.query(TransactionTemplate)
+        .filter(
+            TransactionTemplate.user_id == user_id,
+            TransactionTemplate.is_active.is_(False),
+        )
+        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
+        .all()
+    )
+    archived_transfers = (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == user_id,
+            TransferTemplate.is_active.is_(False),
+        )
+        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
+        .all()
+    )
+    return archived_transactions, archived_transfers
+
+
 @templates_bp.route("/templates")
 @login_required
 @require_owner
 def list_templates():
-    """List all transaction templates for the current user.
+    """Render the unified Recurring surface.
 
-    Separates templates into active and archived lists for the UI.
-    Both lists inherit the same ordering (sort_order, name).
+    One page for every recurring definition -- income, expense, and
+    transfer templates -- replacing the retired ``/transfers`` list and
+    ``/obligations`` page.  ``recurring_view.build_view`` produces the
+    summary band (the /obligations monthly kernel), the three grouped
+    sections with per-section subtotals, and per row the monthly +
+    per-paycheck equivalents, engine-backed next date, and share of section
+    committed total.  ``show_per_paycheck`` seeds which unit the page-wide
+    toggle shows first, read from the user's stored preference.
     """
-    templates = (
-        db.session.query(TransactionTemplate)
-        .filter_by(user_id=current_user.id)
-        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
-        .all()
+    user_id = current_user.id
+    as_of = date.today()
+
+    income_templates, expense_templates = _load_active_transaction_templates(
+        user_id,
     )
-    active_templates = [t for t in templates if t.is_active]
-    archived_templates = [t for t in templates if not t.is_active]
+    transfer_templates = _load_active_transfer_templates(user_id)
+    archived_transactions, archived_transfers = _load_archived_templates(user_id)
+    periods = pay_period_service.get_all_periods(user_id)
+
+    view = recurring_view.build_view(
+        income_templates=income_templates,
+        expense_templates=expense_templates,
+        transfer_templates=transfer_templates,
+        periods=periods,
+        as_of=as_of,
+    )
+
+    settings = current_user.settings
+    show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
+
     return render_template(
         "templates/list.html",
-        active_templates=active_templates,
-        archived_templates=archived_templates,
+        view=view,
+        archived_transactions=archived_transactions,
+        archived_transfers=archived_transfers,
+        show_per_paycheck=show_per_paycheck,
     )
+
+
+@templates_bp.route("/templates/unit-preference", methods=["POST"])
+@login_required
+@require_owner
+def set_unit_preference():
+    """Persist the Recurring surface's Monthly / Per-paycheck unit choice.
+
+    The page-wide unit toggle POSTs ``unit=monthly`` or
+    ``unit=per_paycheck``; the choice is stored on the user's settings so
+    it survives across devices and sessions (the producer renders both
+    units regardless -- this only sets which one shows first).  Any other
+    ``unit`` value is ignored.  Redirects back to the list so the page
+    re-renders in the chosen unit; the P2 build layers an instant client-
+    side swap over this same endpoint.
+    """
+    unit = request.form.get("unit")
+    if unit == _UNIT_PER_PAYCHECK:
+        new_value = True
+    elif unit == _UNIT_MONTHLY:
+        new_value = False
+    else:
+        return redirect(url_for("templates.list_templates"))
+
+    settings = current_user.settings
+    if settings is None:
+        settings = UserSettings(user_id=current_user.id)
+        db.session.add(settings)
+    settings.recurring_show_per_paycheck = new_value
+    db.session.commit()
+    return redirect(url_for("templates.list_templates"))
 
 
 @templates_bp.route("/templates/new", methods=["GET"])

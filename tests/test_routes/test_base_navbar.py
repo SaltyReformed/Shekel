@@ -17,12 +17,13 @@ import re
 
 
 # ── Owner nav-items ─────────────────────────────────────────────────
-# Pre-commit owner navbar shipped these 10 main-nav items (Dashboard,
-# Budget, Recurring, Accounts, Salary, Transfers, Obligations,
-# Retirement, Analytics, Settings) plus 3 right-side items
-# (theme-toggle, display-name span, logout form button).  Total = 13
-# ``<li class="nav-item">`` rows inside the navbar.
-_OWNER_NAV_ITEM_COUNT = 13
+# The owner navbar ships 8 main-nav items (Dashboard, Budget, Recurring,
+# Accounts, Salary, Retirement, Analytics, Settings) plus 3 right-side
+# items (theme-toggle, display-name span, logout form button).  Total = 11
+# ``<li class="nav-item">`` rows inside the navbar.  The standalone
+# Transfers and Obligations items retired when both folded into the unified
+# Recurring surface (Loop B).
+_OWNER_NAV_ITEM_COUNT = 11
 
 
 class TestOffcanvasMarkup:
@@ -79,14 +80,13 @@ class TestNavLinksCarryForward:
     """All pre-commit navigation entries land inside offcanvas-body."""
 
     def test_owner_nav_items_count(self, auth_client):
-        """C23-3: same number of ``<li class="nav-item">`` as pre-commit.
+        """C23-3: the owner navbar renders exactly the expected nav-items.
 
         Counts the main owner nav links (Dashboard, Budget, Recurring,
-        Accounts, Salary, Transfers, Obligations, Retirement, Analytics,
-        Settings -- 10 entries) plus the three right-side rows
-        (theme-toggle, display-name span, logout form).  Total = 13.
-        Drift in either direction means a nav entry was dropped or an
-        unintended one was added.
+        Accounts, Salary, Retirement, Analytics, Settings -- 8 entries)
+        plus the three right-side rows (theme-toggle, display-name span,
+        logout form).  Total = 11.  Drift in either direction means a nav
+        entry was dropped or an unintended one was added.
         """
         resp = auth_client.get("/")
         assert resp.status_code == 200
@@ -101,7 +101,7 @@ class TestNavLinksCarryForward:
         )
 
     def test_owner_nav_link_labels_present(self, auth_client):
-        """Each of the 10 owner main-nav labels still renders.
+        """Each of the 8 owner main-nav labels still renders.
 
         Asserts on the visible label text so a renamed icon or
         re-grouped ``<li>`` does not silently drop a link.
@@ -110,8 +110,7 @@ class TestNavLinksCarryForward:
         assert resp.status_code == 200
         for label in (
             b"Dashboard", b"Budget", b"Recurring", b"Accounts",
-            b"Salary", b"Transfers", b"Obligations", b"Retirement",
-            b"Analytics", b"Settings",
+            b"Salary", b"Retirement", b"Analytics", b"Settings",
         ):
             assert label in resp.data, f"Missing nav label: {label!r}"
 

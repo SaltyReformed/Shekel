@@ -165,11 +165,11 @@ class TestTemplateList:
             assert b"Car Payment" in resp.data
 
     def test_list_templates_empty(self, app, auth_client, seed_user):
-        """GET /templates renders correctly when user has no templates."""
+        """GET /templates renders correctly when user has no definitions."""
         with app.app_context():
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
-            assert b"No active recurring transactions" in resp.data
+            assert b"No active recurring definitions" in resp.data
             assert b"Car Payment" not in resp.data
 
 
@@ -1915,9 +1915,11 @@ class TestRecurrenceCellLock:
         ),
     )
 
+    # The unified Recurring surface (Loop B) is the single list template
+    # that renders recurrence descriptions; the former transfers/list.html
+    # was retired when /transfers folded into /templates.
     _LIST_TEMPLATE_PATHS = (
         ("templates/list.html", ("app", "templates", "templates", "list.html")),
-        ("transfers/list.html", ("app", "templates", "transfers", "list.html")),
     )
 
     _EXPECTED_REC_CONSTANTS = (
@@ -1980,12 +1982,12 @@ class TestRecurrenceCellLock:
                 )
 
     def test_list_templates_import_shared_recurrence_macro(self):
-        """Both list templates import the consolidated macro (TPLB/TPL-07).
+        """The unified list template imports the consolidated macro (TPLB/TPL-07).
 
-        The recurrence_cell macro was deduplicated out of the two list
-        templates into ``_recurrence_macros.html``.  Locking the import
-        ensures neither template re-inlines a private copy that could
-        diverge from the single source the two tests above guard.  The
+        The recurrence_cell macro lives once in ``_recurrence_macros.html``.
+        Locking the import ensures the unified Recurring list does not
+        re-inline a private copy that could diverge from the single source
+        the two tests above guard.  The
         ``with context`` clause is required: the macro's else-branch
         fallback reads ``recurrence_pattern_labels``, an
         ``@app.context_processor`` variable invisible to a context-less
