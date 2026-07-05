@@ -20,7 +20,6 @@ Asset/Liability accounts, outside the Income/Expense filter.  Flask-isolated,
 read-only.
 """
 
-import calendar as calendar_module
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -29,6 +28,7 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
+from app.services import spending_analysis
 from app.services.scenario_resolver import get_baseline_scenario
 
 from ._attribution import (
@@ -41,7 +41,6 @@ from ._attribution import (
 from ._types import IncomeStatementReport, StatementWindow
 
 _ZERO_MONEY = Decimal("0.00")
-_VALID_WINDOW_TYPES = frozenset({"pay_period", "month", "year"})
 
 
 def compute_income_statement(
@@ -66,12 +65,15 @@ def compute_income_statement(
 
     Raises:
         ValueError: If the window is an invalid type or omits a field its type
-            requires (via :func:`_validate_window`).
+            requires (via
+            :func:`app.services.spending_analysis.validate_window`).
         PostingError: If a source with a nonzero net cannot resolve its
             attribution date (a broken linkage invariant -- from
             :func:`._attribution.dated_account_nets`).
     """
-    _validate_window(window)
+    spending_analysis.validate_window(
+        window.window_type, window.period_id, window.month, window.year,
+    )
     period = (
         db.session.get(PayPeriod, window.period_id)
         if window.window_type == "pay_period" else None
@@ -90,56 +92,15 @@ def compute_income_statement(
         )
     else:
         nets = _calendar_income_expense_nets(
-            user_id, scenario.id, _calendar_bounds(window), chart, class_ids,
+            user_id,
+            scenario.id,
+            spending_analysis.calendar_window_bounds(
+                window.window_type, window.year, window.month,
+            ),
+            chart,
+            class_ids,
         )
     return _income_statement_from_nets(nets, chart, class_ids, window_label)
-
-
-def _validate_window(window: StatementWindow) -> None:
-    """Raise :class:`ValueError` for an invalid or under-specified window.
-
-    Args:
-        window: The window to validate.
-
-    Raises:
-        ValueError: If ``window_type`` is unknown, or a required field for the
-            type (``period_id`` / ``month`` + ``year`` / ``year``) is missing.
-    """
-    if window.window_type not in _VALID_WINDOW_TYPES:
-        raise ValueError(
-            f"Invalid window_type {window.window_type!r}. Must be one of "
-            f"{sorted(_VALID_WINDOW_TYPES)}."
-        )
-    if window.window_type == "pay_period" and window.period_id is None:
-        raise ValueError(
-            "period_id is required when window_type is 'pay_period'."
-        )
-    if window.window_type == "month" and (
-        window.month is None or window.year is None
-    ):
-        raise ValueError(
-            "Both month and year are required when window_type is 'month'."
-        )
-    if window.window_type == "year" and window.year is None:
-        raise ValueError("year is required when window_type is 'year'.")
-
-
-def _calendar_bounds(window: StatementWindow) -> tuple[date, date]:
-    """Return the inclusive ``(first_day, last_day)`` of a calendar window.
-
-    Args:
-        window: A ``"month"`` or ``"year"`` window (validated).
-
-    Returns:
-        The first and last calendar dates of the month or year.
-    """
-    if window.window_type == "month":
-        last_dom = calendar_module.monthrange(window.year, window.month)[1]
-        return (
-            date(window.year, window.month, 1),
-            date(window.year, window.month, last_dom),
-        )
-    return date(window.year, 1, 1), date(window.year, 12, 31)
 
 
 def _window_label(window: StatementWindow, period: PayPeriod | None) -> str:

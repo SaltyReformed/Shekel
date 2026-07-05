@@ -7,7 +7,7 @@ which share the settled-expense query and year-attribution helpers.
 """
 
 from collections import defaultdict
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import joinedload
@@ -21,11 +21,11 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.services import spending_analysis
 from app.utils.balance_predicates import attribution_year, settled_status_ids
 from app.utils.money import round_money
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
 
 
 def _compute_spending_by_category(
@@ -71,7 +71,7 @@ def _compute_spending_by_category(
     for txn in transactions:
         if _attribution_year(txn) != year:
             continue
-        group_name, item_name = _txn_category_names(txn)
+        group_name, item_name = spending_analysis.category_names(txn)
         groups[group_name][item_name] += abs(txn.effective_amount)
 
     spending = _build_spending_hierarchy(groups)
@@ -208,7 +208,7 @@ def _accumulate_entry_row(
     Looks up (or creates) the breakdown dict keyed by the parent
     transaction's category and increments the running totals.  Missing
     categories are mapped to "Uncategorized" so the key matches what
-    _txn_category_names() produces in the existing aggregation.
+    spending_analysis.category_names() produces in the existing aggregation.
 
     Args:
         breakdowns: Mutable mapping from (group_name, item_name) to
@@ -264,9 +264,12 @@ def _compute_payment_timeliness(
 ) -> dict | None:
     """Compute bill payment timeliness metrics for the year.
 
-    Examines settled expense transactions that have both paid_at
-    and due_date populated.  Counts how many were paid on time
-    vs. late, and computes the average days paid before the due date.
+    Loads the year's settled expenses, keeps those attributed to the target
+    calendar year (COALESCE(due_date, pay period start_date)), and delegates
+    the on-time / late / average-days-before-due counting to the shared
+    :func:`app.services.spending_analysis.payment_timeliness_from_txns` rule
+    -- the same rule the unified Spending report reuses over its chosen
+    window, so the two surfaces cannot drift on what "paid on time" means.
 
     Args:
         user_id: User ID for ownership filtering.
@@ -285,45 +288,11 @@ def _compute_payment_timeliness(
     transactions = _query_settled_expenses(
         user_id, period_ids, scenario_id,
     )
-
-    # Filter to transactions with both paid_at and due_date,
-    # attributed to the target year.
-    applicable = [
+    in_year = [
         txn for txn in transactions
-        if txn.paid_at is not None
-        and txn.due_date is not None
-        and _attribution_year(txn) == year
+        if _attribution_year(txn) == year
     ]
-
-    if not applicable:
-        return None
-
-    paid_on_time = 0
-    paid_late = 0
-    total_days = 0
-
-    for txn in applicable:
-        # Route through the model property so the display-timezone paid-date
-        # rule (F3) lives in one place; ``applicable`` guarantees both fields
-        # are set, so the property never returns None here.  Paid on the due
-        # date or earlier (days_before >= 0) is on time.
-        days_before = txn.days_paid_before_due
-        total_days += days_before
-        if days_before >= 0:
-            paid_on_time += 1
-        else:
-            paid_late += 1
-
-    avg_days = (
-        Decimal(str(total_days)) / Decimal(str(len(applicable)))
-    ).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
-
-    return {
-        "total_bills_paid": len(applicable),
-        "paid_on_time": paid_on_time,
-        "paid_late": paid_late,
-        "avg_days_before_due": avg_days,
-    }
+    return spending_analysis.payment_timeliness_from_txns(in_year)
 
 
 def _query_settled_expenses(
@@ -371,13 +340,6 @@ def _attribution_year(txn: Transaction) -> int:
     used by the transfers section and the calendar / variance services.
     """
     return attribution_year(txn.due_date, txn.pay_period.start_date)
-
-
-def _txn_category_names(txn: Transaction) -> tuple[str, str]:
-    """Return (group_name, item_name) for a transaction's category."""
-    if txn.category is None:
-        return ("Uncategorized", "Uncategorized")
-    return (txn.category.group_name, txn.category.item_name)
 
 
 def _build_spending_hierarchy(

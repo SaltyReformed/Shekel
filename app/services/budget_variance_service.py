@@ -8,18 +8,18 @@ drill-down from category group to individual transactions.
 Pure-function service -- no Flask imports, no database writes.
 """
 
-import calendar as cal_mod
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
@@ -29,11 +29,6 @@ from app.utils.balance_predicates import (
 )
 
 logger = logging.getLogger(__name__)
-
-_VALID_WINDOW_TYPES = frozenset({"pay_period", "month", "year"})
-
-_TWO_PLACES = Decimal("0.01")
-_HUNDRED = Decimal("100")
 
 
 # ── Data Structures ─────────────────────────────────────────────────
@@ -46,11 +41,11 @@ class VarianceWindow:
     A discriminated selector: ``window_type`` decides which of the other
     fields are meaningful -- ``period_id`` for ``"pay_period"``,
     ``month`` + ``year`` for ``"month"``, ``year`` for ``"year"``.  The
-    three service helpers that read these fields (``_validate_params``,
-    ``_get_transactions_for_window``, ``_build_window_label``) all consume
-    them as a unit, so they are one cohesive value rather than four loose
-    arguments; the analytics route builds one solely to call
-    :func:`compute_variance`.  Validate one with :func:`_validate_params`.
+    service helpers that read these fields (``_get_transactions_for_window``,
+    ``_build_window_label``) consume them as a unit, so they are one
+    cohesive value rather than four loose arguments; the analytics route
+    builds one solely to call :func:`compute_variance`.  Validate one with
+    :func:`app.services.spending_analysis.validate_window`.
     """
 
     window_type: str
@@ -80,7 +75,8 @@ class VarianceFigures:
 
         ``variance`` is ``actual - estimated``; ``variance_pct`` is that
         variance as a percentage of the estimated base, or ``None`` when
-        the base is zero (see :func:`_pct`).
+        the base is zero (see
+        :func:`app.services.spending_analysis.signed_pct`).
 
         Args:
             estimated: The budgeted/estimated amount (the percentage base).
@@ -94,7 +90,7 @@ class VarianceFigures:
             estimated=estimated,
             actual=actual,
             variance=variance,
-            variance_pct=_pct(variance, estimated),
+            variance_pct=spending_analysis.signed_pct(variance, estimated),
         )
 
 
@@ -168,7 +164,9 @@ def compute_variance(
     Raises:
         ValueError: If the window is invalid or missing required fields.
     """
-    _validate_params(window)
+    spending_analysis.validate_window(
+        window.window_type, window.period_id, window.month, window.year,
+    )
 
     transactions, period = _get_transactions_for_window(user_id, window, account_id)
 
@@ -189,21 +187,6 @@ def compute_variance(
 
 
 # ── Internal helpers ────────────────────────────────────────────────
-
-
-def _validate_params(window: VarianceWindow) -> None:
-    """Raise ValueError for an invalid or under-specified window."""
-    if window.window_type not in _VALID_WINDOW_TYPES:
-        raise ValueError(
-            f"Invalid window_type {window.window_type!r}. "
-            f"Must be one of {sorted(_VALID_WINDOW_TYPES)}."
-        )
-    if window.window_type == "pay_period" and window.period_id is None:
-        raise ValueError("period_id is required when window_type is 'pay_period'.")
-    if window.window_type == "month" and (window.month is None or window.year is None):
-        raise ValueError("Both month and year are required when window_type is 'month'.")
-    if window.window_type == "year" and window.year is None:
-        raise ValueError("year is required when window_type is 'year'.")
 
 
 @dataclass(frozen=True)
@@ -260,14 +243,9 @@ def _get_transactions_for_window(
     if window.window_type == "pay_period":
         return _query_by_period(scope, window.period_id)
 
-    if window.window_type == "month":
-        last_dom = cal_mod.monthrange(window.year, window.month)[1]
-        first_day = date(window.year, window.month, 1)
-        last_day = date(window.year, window.month, last_dom)
-    else:
-        first_day = date(window.year, 1, 1)
-        last_day = date(window.year, 12, 31)
-
+    first_day, last_day = spending_analysis.calendar_window_bounds(
+        window.window_type, window.year, window.month,
+    )
     txns = _query_by_date_range(scope, user_id, first_day, last_day)
     return txns, None
 
@@ -394,36 +372,12 @@ def _build_txn_variance(txn: Transaction) -> TransactionVariance:
     return TransactionVariance(
         transaction_id=txn.id,
         name=txn.name,
-        figures=VarianceFigures.of(txn.estimated_amount, _compute_actual(txn)),
+        figures=VarianceFigures.of(
+            txn.estimated_amount, spending_analysis.resolved_actual_amount(txn),
+        ),
         is_paid=bool(txn.status and txn.status.is_settled),
         due_date=txn.due_date,
     )
-
-
-def _compute_actual(txn: Transaction) -> Decimal:
-    """Extract the 'actual' amount for variance computation.
-
-    For settled transactions: actual_amount if not None, else
-    estimated_amount (handles done-without-actual edge case).
-    For projected transactions: estimated_amount (no actual yet,
-    so individual variance is always zero).
-    """
-    if txn.status and txn.status.is_settled:
-        if txn.actual_amount is not None:
-            return txn.actual_amount
-        return txn.estimated_amount
-    return txn.estimated_amount
-
-
-def _pct(variance: Decimal, estimated: Decimal) -> Decimal | None:
-    """Compute variance percentage, guarding against division by zero.
-
-    Returns (variance / estimated) * 100 rounded to 2 decimal places,
-    or None if estimated is zero.
-    """
-    if estimated == Decimal("0"):
-        return None
-    return (variance / estimated * _HUNDRED).quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def _build_window_label(

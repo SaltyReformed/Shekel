@@ -15,13 +15,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy.orm import joinedload
-
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import settled_status_ids
@@ -57,6 +56,26 @@ _MATERIALITY_FLOOR = Decimal("20.00")
 # ("New", pct_change=None) rather than with a fabricated percentage.
 _NEW_BASELINE_FLOOR = Decimal("5.00")
 
+# Data-sufficiency window sizes, counted in COMPLETED PAY PERIODS with
+# settled spending -- the SAME unit the trend series is built in.  The
+# audit's Tab 4 finding was a UNIT MISMATCH: the old gate counted distinct
+# calendar MONTHS while the series it then fit was per PAY PERIOD, so the
+# banner could flip independently of the series' actual density.  Counting
+# the series' native unit -- periods -- closes that gap.  Shekel runs on ~26
+# biweekly periods per year, so 12 periods is ~6 months (the full window)
+# and 6 periods is ~3 months (the preliminary minimum below which there is
+# no two-halved series to fit).
+_FULL_WINDOW_PERIODS = 12
+_PRELIMINARY_MIN_PERIODS = 6
+
+# Nominal calendar-month labels for each sufficiency tier.  These drive NO
+# gate (the gate is period-based, above); they exist only so the still-
+# shipping trends template / CSV render a coarse "~N months" human label
+# next to the exact ``window_periods`` count.  12 biweekly periods ~= 6
+# months (full), 6 ~= 3 months (preliminary).
+_FULL_WINDOW_MONTHS = 6
+_PRELIMINARY_WINDOW_MONTHS = 3
+
 
 # ── Data Structures ─────────────────────────────────────────────────
 
@@ -65,7 +84,7 @@ _NEW_BASELINE_FLOOR = Decimal("5.00")
 class ItemTrend:  # pylint: disable=too-many-instance-attributes
     """Trend data for a single category item.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- this is a cohesive
+    Pylint: ``too-many-instance-attributes`` (12/7) -- this is a cohesive
     value record -- one category's trend row,
     produced in a single pass by _compute_item_trend -- consumed verbatim
     by row-rendering surfaces: the trends template reads the fields
@@ -74,6 +93,12 @@ class ItemTrend:  # pylint: disable=too-many-instance-attributes
     trend metrics, timing) as a unit, and no field owns a section total.
     Every field is an irreducible column of the row; splitting it would
     fragment one domain concept for no design gain.
+
+    ``period_totals`` is the per-period spending series the half-window
+    ``pct_change`` / ``absolute_change`` were computed from (zero-filled for
+    empty periods, chronological).  It is carried on the row so the Spending
+    surface's sparkline reads the SAME series the trend chip's delta came
+    from -- one data source, they cannot disagree (the S-P1 build rule).
 
     ``pct_change`` is ``None`` for an emerging category -- one whose
     prior-half spend is below ``_NEW_BASELINE_FLOOR`` so there is no stable
@@ -93,6 +118,7 @@ class ItemTrend:  # pylint: disable=too-many-instance-attributes
     data_points: int
     total_spending: Decimal
     avg_days_before_due: Decimal | None
+    period_totals: list[Decimal]
 
 
 @dataclass(frozen=True)
@@ -170,20 +196,31 @@ def compute_trends(
     if scenario is None:
         return _empty_report(threshold)
 
-    # Determine data sufficiency by counting distinct months with paid data.
-    distinct_months = _count_distinct_paid_months(account.id, scenario.id, user_id)
-    if distinct_months < 3:
+    # Determine data sufficiency by counting completed pay periods that
+    # carry settled spending -- the SAME unit the series is built in (the
+    # unit-mismatch fix; see the ``_FULL_WINDOW_PERIODS`` block).
+    distinct_periods = _count_distinct_paid_periods(account.id, scenario.id, user_id)
+    if distinct_periods < _PRELIMINARY_MIN_PERIODS:
         return _empty_report(threshold, data_sufficiency="insufficient")
 
-    window_months = 6 if distinct_months >= 6 else 3
-    sufficiency = "sufficient" if distinct_months >= 6 else "preliminary"
+    if distinct_periods >= _FULL_WINDOW_PERIODS:
+        window_size = _FULL_WINDOW_PERIODS
+        window_months = _FULL_WINDOW_MONTHS
+        sufficiency = "sufficient"
+    else:
+        window_size = _PRELIMINARY_MIN_PERIODS
+        window_months = _PRELIMINARY_WINDOW_MONTHS
+        sufficiency = "preliminary"
 
-    # Determine date range for the window.
-    periods = _get_window_periods(user_id, window_months)
+    # The window is the last ``window_size`` COMPLETED pay periods -- a
+    # period-native span, so the gate's unit and the series' unit are one.
+    periods = _get_window_periods(user_id, window_size)
     if not periods:
         return _empty_report(threshold, data_sufficiency="insufficient")
 
-    txns = _query_paid_expenses(account.id, scenario.id, [p.id for p in periods])
+    txns = spending_analysis.query_settled_expenses(
+        scenario.id, [p.id for p in periods], account.id,
+    )
 
     items = _build_item_trends(txns, periods, threshold)
     groups = _build_group_trends(items, threshold)
@@ -204,20 +241,27 @@ def compute_trends(
 # ── Internal helpers ────────────────────────────────────────────────
 
 
-def _count_distinct_paid_months(
+def _count_distinct_paid_periods(
     account_id: int,
     scenario_id: int,
     user_id: int,
 ) -> int:
-    """Count distinct calendar months with at least one paid expense.
+    """Count completed pay periods that carry settled spending.
 
-    Uses COALESCE(due_date, pay_period.start_date) for monthly
-    attribution, consistent with the calendar and variance services.
+    A period is counted when it has fully elapsed (``end_date < today`` --
+    the same completed-period gate F1 applies to the window) AND holds at
+    least one settled expense on this account / scenario.  This is the
+    data-density measure the sufficiency banner reads, counted in PAY
+    PERIODS -- the same unit the trend series is built in.  It replaces the
+    former distinct-calendar-month count, whose different unit let the
+    banner flip independently of the series' actual period density (the
+    audit's Tab 4 unit-mismatch finding).
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    today = date.today()
 
     rows = (
-        db.session.query(Transaction)
+        db.session.query(Transaction.pay_period_id)
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .filter(
             Transaction.account_id == account_id,
@@ -226,26 +270,25 @@ def _count_distinct_paid_months(
             Transaction.transaction_type_id == expense_type_id,
             Transaction.status_id.in_(settled_status_ids()),
             PayPeriod.user_id == user_id,
+            PayPeriod.end_date < today,
         )
+        .distinct()
         .all()
     )
-
-    months: set[tuple[int, int]] = set()
-    for txn in rows:
-        ref_date = txn.due_date if txn.due_date is not None else txn.pay_period.start_date
-        months.add((ref_date.year, ref_date.month))
-    return len(months)
+    return len(rows)
 
 
 def _get_window_periods(
     user_id: int,
-    window_months: int,
+    window_size: int,
 ) -> list[PayPeriod]:
-    """Return the completed pay periods that fall within the window.
+    """Return the last ``window_size`` completed pay periods, chronological.
 
-    The lower bound is the first of the month ``window_months`` before the
-    current month.  The upper bound is the present: a period is included
-    only once it has fully elapsed (``end_date < today``).
+    A period is admitted only once it has fully elapsed (``end_date <
+    today``); the most recent ``window_size`` such periods form the trend
+    window, ordered oldest-first so each category's per-period series is
+    chronological.  Fewer than ``window_size`` completed periods yields all
+    of them.
 
     F1 -- the in-progress current period and any future periods are
     EXCLUDED.  The app projects ~2 years of pay periods forward, and the
@@ -254,71 +297,22 @@ def _get_window_periods(
     the tail of every category's series, dragging nearly every trend toward
     "decreasing" purely because the latest periods have not been paid yet.
     Only completed periods carry realized spending.
+
+    The window is sized in PAY PERIODS (not a calendar-month lookback) so
+    the sufficiency gate's unit, the window's unit, and the series' unit are
+    all one -- the audit's Tab 4 unit-mismatch fix.
     """
     today = date.today()
-
-    # Lower bound: the first of the month ``window_months`` before the
-    # current month.
-    start_month = today.month - window_months
-    start_year = today.year
-    while start_month < 1:
-        start_month += 12
-        start_year -= 1
-    first_day = date(start_year, start_month, 1)
-
-    return (
+    completed = (
         db.session.query(PayPeriod)
         .filter(
             PayPeriod.user_id == user_id,
-            PayPeriod.start_date >= first_day,
             PayPeriod.end_date < today,
         )
         .order_by(PayPeriod.period_index)
         .all()
     )
-
-
-def _query_paid_expenses(
-    account_id: int,
-    scenario_id: int,
-    period_ids: list[int],
-) -> list[Transaction]:
-    """Load paid expense transactions for the given periods.
-
-    Filters: settled status only (Done/Received/Settled), expense
-    type only, not deleted, not cancelled (cancelled is excluded by
-    requiring settled status).  Transfer shadows are included for
-    consistency with sibling services.
-
-    Eager-loads category and pay_period to prevent N+1 queries.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-
-    # Pylint: ``duplicate-code`` -- settled-expense query for the
-    # spending-trend report.  The account / scenario / period /
-    # expense-type filter core coincides with ``dashboard_service``'s
-    # expense query, but the two diverge on the parts that matter
-    # (eager-loads and the settled-vs-projected status gate), so a shared
-    # builder would need both as parameters and save no logic
-    # (coding-standards rule 13).  One-sided ``duplicate-code`` disable.
-    # pylint: disable=duplicate-code
-    return (
-        db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.category),
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-            Transaction.transaction_type_id == expense_type_id,
-            Transaction.status_id.in_(settled_status_ids()),
-        )
-        .all()
-    )
-    # pylint: enable=duplicate-code
+    return completed[-window_size:]
 
 
 def _build_item_trends(
@@ -498,6 +492,10 @@ def _compute_item_trend(
         total_spending=total_spending,
         # OP-3: average days a bill is paid before its due date.
         avg_days_before_due=_compute_avg_days_before_due(txns),
+        # The per-period series the half-window change above was computed
+        # from, carried so the Spending sparkline and the trend chip share
+        # one data source (S-P1 build rule).
+        period_totals=period_totals,
     )
 
 

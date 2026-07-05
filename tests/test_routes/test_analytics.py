@@ -104,38 +104,6 @@ def _seed_long_periods(db, seed_user, count):
     return periods
 
 
-def _seed_multi_month_expenses(db, seed_user, periods, num_months):
-    """Create paid expenses spread across num_months distinct months.
-
-    Distributes one expense per month, attributed by due_date.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    months_seeded = set()
-    for p in periods:
-        month_key = (p.start_date.year, p.start_date.month)
-        if month_key in months_seeded:
-            continue
-        if len(months_seeded) >= num_months:
-            break
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %Y')}",
-            estimated_amount=Decimal("1200.00"),
-            actual_amount=Decimal("1200.00"),
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        months_seeded.add(month_key)
-    db.session.commit()
-
-
 def _seed_increasing_trend(db, seed_user, periods):
     """Create expenses in every period with increasing amounts.
 
@@ -1423,12 +1391,21 @@ class TestTrendsTab:
             )
             assert b"Not enough data" in resp.data
 
-    def test_trends_preliminary_banner(self, app, auth_client, seed_user,
-                                       seed_periods, db):
-        """C16-3: 3-5 months of data shows preliminary banner."""
+    def test_trends_preliminary_banner(self, app, auth_client, seed_user, db):
+        """C16-3: 6-11 completed periods with data shows preliminary banner.
+
+        Under the S-P1 period-based sufficiency gate the preliminary tier is
+        6 to 11 completed pay periods with settled spending.  With today
+        frozen at 2026-03-20 (the module autouse fixture),
+        ``_seed_long_periods(8)`` yields 8 periods that all completed before
+        then; seeding a settled expense in each gives distinct_paid_periods
+        == 8 -> preliminary (8 < _FULL_WINDOW_PERIODS 12).  (Was: "3-5 distinct
+        months" under the retired month-based gate -- S-P1 unit-mismatch fix.)
+        """
         with app.app_context():
-            # Create paid expenses in 3 distinct months.
-            _seed_multi_month_expenses(db, seed_user, seed_periods, 3)
+            # 8 completed periods carry settled spending -> preliminary tier.
+            periods = _seed_long_periods(db, seed_user, 8)
+            _seed_increasing_trend(db, seed_user, periods)
 
             resp = auth_client.get(
                 "/analytics/trends",
@@ -1438,10 +1415,18 @@ class TestTrendsTab:
 
     def test_trends_sufficient_no_banner(self, app, auth_client, seed_user,
                                           db):
-        """C16-extra3: 6+ months of data shows no banner."""
+        """C16-extra3: 12+ completed periods with data shows no banner.
+
+        Under the S-P1 period-based sufficiency gate the sufficient tier is
+        >= _FULL_WINDOW_PERIODS (12) completed pay periods with settled
+        spending.  ``_seed_long_periods(26)`` starts ~8 months ago, so well
+        over 12 periods have completed; seeding every one keeps the tier
+        sufficient (no banner).  (Was: "6+ distinct months" under the retired
+        month-based gate -- see the S-P1 unit-mismatch fix.)
+        """
         with app.app_context():
             periods = _seed_long_periods(db, seed_user, 26)
-            _seed_multi_month_expenses(db, seed_user, periods, 6)
+            _seed_increasing_trend(db, seed_user, periods)
 
             resp = auth_client.get(
                 "/analytics/trends",
