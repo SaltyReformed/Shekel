@@ -9,20 +9,18 @@ params, payroll deductions) the section helpers project against.
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, subqueryload
-
 from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
-from app.models.salary_profile import SalaryProfile
 from app.models.scenario import Scenario
 from app.services import income_service
 from app.services.account_projection import AccountProjectionKind, classify_account
 from app.services.projection_inputs import (
+    load_active_accounts_with_types,
     load_active_deductions_for_accounts,
+    load_active_salary_profiles,
     load_investment_params_for_accounts,
 )
 
@@ -68,29 +66,8 @@ def _load_common_data(
         .all()
     )
 
-    accounts = (
-        db.session.query(Account)
-        .options(joinedload(Account.account_type))
-        .filter(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-        )
-        .all()
-    )
-
-    salary_profiles = (
-        db.session.query(SalaryProfile)
-        .options(
-            subqueryload(SalaryProfile.raises),
-            subqueryload(SalaryProfile.deductions),
-        )
-        .filter(
-            SalaryProfile.user_id == user_id,
-            SalaryProfile.scenario_id == scenario.id,
-            SalaryProfile.is_active.is_(True),
-        )
-        .all()
-    )
+    accounts = load_active_accounts_with_types(user_id)
+    salary_profiles = load_active_salary_profiles(user_id, scenario.id)
 
     liability_cat_id = ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)
     checking_id = _get_primary_checking_id(accounts)

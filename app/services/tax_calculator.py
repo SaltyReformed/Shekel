@@ -253,6 +253,69 @@ def _apply_marginal_brackets(taxable_income, brackets):
     return round_money(total_tax)
 
 
+def marginal_rate_for(taxable, brackets):
+    """Return the marginal bracket rate that contains ``taxable`` income.
+
+    The rate on the taxpayer's LAST dollar of taxable income -- the chip
+    the analytics Taxes hero band shows next to the effective rate.  It is
+    the rate of the highest bracket whose ``min_income`` is STRICTLY below
+    ``taxable``, which is exactly the last bracket
+    :func:`_apply_marginal_brackets` adds tax from (that loop stops at the
+    first bracket with ``taxable <= min_income``).  Sourcing the chip from
+    the same bracket ladder the liability uses means the marginal chip and
+    the tax math cannot disagree.
+
+    Boundary rule (documented so the chip and the liability agree at an
+    exact edge): a ``taxable`` sitting EXACTLY on a bracket edge -- i.e.
+    equal to the upper bracket's ``min_income`` (and the lower bracket's
+    ``max_income``) -- belongs to the LOWER bracket.  The upper bracket
+    starts STRICTLY above its ``min_income`` (``taxable > min_income`` is
+    required for it to apply), so at the edge the last taxed dollar is
+    still in the lower tier.  Example (2026 single): ``taxable == 50,400``
+    -> 12% (the 22% tier opens above 50,400), while ``taxable == 50,401``
+    -> 22%.
+
+    ``taxable`` at or below the lowest bracket's ``min_income`` (the usual
+    case being income fully absorbed by the standard deduction, ``taxable
+    == 0``) returns the LOWEST bracket's rate: the rate the first positive
+    dollar of taxable income would meet.  An empty ``brackets`` iterable
+    returns ``ZERO`` (no tax structure to place ``taxable`` in) -- a
+    degenerate seed the analytics producer never hits, since it computes
+    the liability (which raises on a missing bracket set) first.
+
+    Args:
+        taxable: The federal taxable income to place (Decimal, or any
+            value ``Decimal(str(...))`` accepts; coerced from a string so
+            a ``float`` never enters the money math).
+        brackets: The bracket set's TaxBracket iterable, each exposing
+            ``sort_order``, ``min_income``, and ``rate`` (the same objects
+            :func:`_apply_marginal_brackets` iterates).
+
+    Returns:
+        Decimal -- the marginal bracket rate as a fraction (e.g.
+        ``Decimal("0.2400")`` for the 24% tier).
+    """
+    ordered = sorted(brackets, key=lambda b: b.sort_order)
+    if not ordered:
+        return ZERO
+
+    taxable = Decimal(str(taxable))
+    # Default to the lowest tier's rate: for ``taxable`` at or below the
+    # lowest ``min_income`` no bracket is strictly below it, so the first
+    # positive taxable dollar's rate is the honest answer.
+    marginal = Decimal(str(ordered[0].rate))
+    for bracket in ordered:
+        # Mirror _apply_marginal_brackets: a bracket taxes income only when
+        # ``taxable > min_income``, so the marginal tier is the last one
+        # that gate admits.  An exact edge (``taxable == min_income``) fails
+        # the gate and leaves the lower tier as marginal.
+        if taxable > Decimal(str(bracket.min_income)):
+            marginal = Decimal(str(bracket.rate))
+        else:
+            break
+    return marginal
+
+
 # ── Annual Filing-Time Liability (federal) ────────────────────────
 
 

@@ -19,6 +19,7 @@ from app.services.tax_calculator import (
     calculate_state_tax,
     calculate_fica,
     capped_social_security,
+    marginal_rate_for,
     _apply_marginal_brackets,
 )
 from app.services.exceptions import (
@@ -559,6 +560,74 @@ class TestApplyMarginalBrackets:
     def test_negative_taxable_income(self):
         result = _apply_marginal_brackets(Decimal("-1000"), _single_brackets())
         assert result == Decimal("0")
+
+
+class TestMarginalRateFor:
+    """The marginal-rate chip helper, boundary-pinned against the ladder.
+
+    Uses the file's ``_single_brackets()`` test ladder:
+      10% (0, 10000] | 12% (10000, 40000] | 22% (40000, 85000] |
+      24% (85000, 160000] | 32% (160000, 210000] | 35% (210000, 540000] |
+      37% (540000, inf).
+    The rule is "the bracket that CONTAINS taxable, an exact edge belonging
+    to the LOWER bracket" -- the same gate ``_apply_marginal_brackets`` taxes
+    from (``taxable > min_income``), so the chip and the tax math agree.
+    """
+
+    def test_interior_value(self):
+        """50,000 sits inside (40,000, 85,000] -> 22%."""
+        assert marginal_rate_for(Decimal("50000"), _single_brackets()) == (
+            Decimal("0.22")
+        )
+
+    def test_exact_edge_belongs_to_lower_bracket(self):
+        """40,000 is the 12%/22% edge -> LOWER 12% (22% opens above 40,000)."""
+        assert marginal_rate_for(Decimal("40000"), _single_brackets()) == (
+            Decimal("0.12")
+        )
+
+    def test_one_dollar_above_edge_is_upper_bracket(self):
+        """40,001 crosses into (40,000, 85,000] -> 22%."""
+        assert marginal_rate_for(Decimal("40001"), _single_brackets()) == (
+            Decimal("0.22")
+        )
+
+    def test_first_bracket_edge_belongs_to_lowest(self):
+        """10,000 is the 10%/12% edge -> LOWER 10%."""
+        assert marginal_rate_for(Decimal("10000"), _single_brackets()) == (
+            Decimal("0.10")
+        )
+
+    def test_top_open_bracket(self):
+        """600,000 is above the last edge (540,000) -> top 37%."""
+        assert marginal_rate_for(Decimal("600000"), _single_brackets()) == (
+            Decimal("0.37")
+        )
+
+    def test_top_bracket_edge_belongs_to_lower(self):
+        """540,000 is the 35%/37% edge -> LOWER 35% (37% opens above)."""
+        assert marginal_rate_for(Decimal("540000"), _single_brackets()) == (
+            Decimal("0.35")
+        )
+
+    def test_zero_taxable_returns_lowest_rate(self):
+        """Taxable 0 (income absorbed by the std deduction) -> lowest 10%.
+
+        No bracket sits strictly below 0, so the first positive taxable
+        dollar's rate is the honest chip.
+        """
+        assert marginal_rate_for(Decimal("0"), _single_brackets()) == (
+            Decimal("0.10")
+        )
+
+    def test_empty_brackets_returns_zero(self):
+        """No bracket structure -> ZERO (the degenerate seed)."""
+        assert marginal_rate_for(Decimal("50000"), []) == Decimal("0")
+
+    def test_unsorted_brackets_are_ordered_by_sort_order(self):
+        """The helper sorts by sort_order, so input order does not matter."""
+        shuffled = list(reversed(_single_brackets()))
+        assert marginal_rate_for(Decimal("120000"), shuffled) == Decimal("0.24")
 
 
 # ── Test: Annual Consistency ─────────────────────────────────────

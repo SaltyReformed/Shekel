@@ -24,7 +24,7 @@ DB-touching helpers in a sibling module preserves that boundary.
 
 import logging
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, subqueryload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -44,6 +44,74 @@ from app.services.investment_projection import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def load_active_salary_profiles(
+    user_id: int, scenario_id: int,
+) -> list[SalaryProfile]:
+    """Return a user's active salary profiles for a scenario, primary first.
+
+    The single home for the "active profiles in this scenario, raises and
+    deductions eager-loaded" query the year-end summary
+    (:mod:`app.services.year_end_summary_service._data`) and the analytics
+    Taxes report (:mod:`app.services.tax_report_service`) both drive -- an
+    R0801 duplicate otherwise, the same consolidation rationale as the
+    deduction loaders below.  Ordered by ``(sort_order, name)`` so
+    ``result[0]`` is the PRIMARY profile (the salary cockpit's
+    default-profile rule the Taxes report relies on); the year-end summary,
+    an order-independent sum across the profiles, is unaffected by the
+    ordering.
+
+    Args:
+        user_id: The owning user.
+        scenario_id: The scenario to scope the profiles to.
+
+    Returns:
+        The active :class:`~app.models.salary_profile.SalaryProfile` list,
+        ordered ``(sort_order, name)`` with ``raises`` and ``deductions``
+        eager-loaded.
+    """
+    return (
+        db.session.query(SalaryProfile)
+        .options(
+            subqueryload(SalaryProfile.raises),
+            subqueryload(SalaryProfile.deductions),
+        )
+        .filter(
+            SalaryProfile.user_id == user_id,
+            SalaryProfile.scenario_id == scenario_id,
+            SalaryProfile.is_active.is_(True),
+        )
+        .order_by(SalaryProfile.sort_order, SalaryProfile.name)
+        .all()
+    )
+
+
+def load_active_accounts_with_types(user_id: int) -> list[Account]:
+    """Return a user's active accounts with their ``account_type`` joined.
+
+    The single home for the "active accounts, account_type eager-loaded"
+    query the year-end summary and the analytics Taxes report (its Schedule
+    A debt-account selection) both drive; joining the type avoids an N+1
+    when the callers read ``account.account_type`` to classify each row
+    (amortizing / interest-bearing / savings).
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The active :class:`~app.models.account.Account` list with
+        ``account_type`` joined.
+    """
+    return (
+        db.session.query(Account)
+        .options(joinedload(Account.account_type))
+        .filter(
+            Account.user_id == user_id,
+            Account.is_active.is_(True),
+        )
+        .all()
+    )
 
 
 def load_active_deductions_for_account(
