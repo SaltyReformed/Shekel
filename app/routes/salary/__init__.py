@@ -35,6 +35,8 @@ Module map:
   redirect stubs into the cockpit.
 * :mod:`app.routes.salary.calibration` -- the pay-stub calibration flow
   (form/preview/confirm/delete).
+* :mod:`app.routes.salary.checkpoint` -- the analytics Taxes tab's YTD
+  tax-checkpoint upsert (update-from-stub).
 * :mod:`app.routes.salary.tax_config` -- state-tax and FICA config updates.
 """
 
@@ -52,6 +54,7 @@ from app.routes.salary import profiles  # noqa: F401, E402
 from app.routes.salary import items  # noqa: F401, E402
 from app.routes.salary import views  # noqa: F401, E402
 from app.routes.salary import calibration  # noqa: F401, E402
+from app.routes.salary import checkpoint  # noqa: F401, E402
 from app.routes.salary import tax_config  # noqa: F401, E402
 
 

@@ -58,6 +58,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
+from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.models.tax_config import (
     FicaConfig,
     StateTaxConfig,
@@ -123,6 +124,7 @@ __all__ = [
     "PaycheckDeduction",
     "PensionProfile",
     "CalibrationOverride",
+    "YtdTaxCheckpoint",
     "FicaConfig",
     "StateTaxConfig",
     "TaxBracket",

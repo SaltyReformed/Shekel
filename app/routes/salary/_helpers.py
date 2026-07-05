@@ -47,6 +47,7 @@ from app.schemas.validation import (
     SalaryProfileCreateSchema,
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
+    YtdTaxCheckpointSchema,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
 _state_tax_schema = StateTaxConfigSchema()
+_ytd_checkpoint_schema = YtdTaxCheckpointSchema()
 
 
 def _get_owned_profile_and_period(profile_id, period_id):

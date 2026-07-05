@@ -132,6 +132,7 @@ from app.schemas.validation.salary import (
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
     TaxBracketSetSchema,
+    YtdTaxCheckpointSchema,
 )
 from app.schemas.validation.savings import (
     SavingsGoalCreateSchema,
@@ -223,4 +224,5 @@ __all__ = [
     "TransferTemplateUpdateSchema",
     "TransferUpdateSchema",
     "UserSettingsSchema",
+    "YtdTaxCheckpointSchema",
 ]

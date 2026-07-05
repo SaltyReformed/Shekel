@@ -108,6 +108,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("salary", "state_tax_configs"),
     ("salary", "tax_bracket_sets"),
     ("salary", "tax_brackets"),
+    ("salary", "ytd_tax_checkpoints"),
 )
 
 
