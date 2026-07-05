@@ -17,10 +17,12 @@ Liability basis (developer ruling 2026-07-04, worked-example fork):
   federal and NC bases; Step 4(b) additional deductions are EXCLUDED (a
   withholding-only hint -- the Schedule A check owns the itemize-vs-standard
   election at filing).
-* NC base = wages + Step 4(a) - pre-tax deductions, floored at zero; the NC
-  standard deduction is subtracted inside ``calculate_state_tax``.
-* Dependent credits (CTC/ODC) are nonrefundable: the federal liability
-  clamps at zero.
+* NC base = wages + Step 4(a) - pre-tax deductions, floored at zero; the
+  filing-status NC standard deduction AND the AGI-tiered NC per-child
+  deduction (T-P5) are subtracted inside / alongside ``calculate_state_tax``.
+* Dependent credits (CTC/ODC) are nonrefundable for the federal liability
+  (it clamps at zero), but the UNUSED child credit spills into the separate
+  refundable Additional Child Tax Credit (``federal.refundable_actc``, T-P5).
 
 The dataclasses below carry both the computed liabilities and the
 assumption inputs (standard deductions, credit amounts and counts, flat
@@ -35,29 +37,45 @@ from app.services.tax_calculator import (
     W4Inputs,
     calculate_annual_federal_liability,
     calculate_state_tax,
+    resolve_child_deduction_per_child,
 )
-from app.services.tax_config_service import load_tax_configs_for_year
+from app.services.tax_config_service import (
+    load_state_child_deductions,
+    load_tax_configs_for_year,
+)
 
 ZERO = Decimal("0")
 
 
 @dataclass(frozen=True)
-class FederalLiability:
+class FederalLiability:  # pylint: disable=too-many-instance-attributes
     """The federal annual tax layer plus the assumptions T-P4 renders.
 
-    ``taxable`` and ``liability`` are the engine's computed figures; the
-    remaining fields are the inputs the derivation and assumptions card
-    display (the standard deduction, the two dependent counts, and their
-    per-unit credit amounts) so the presentation layer does no arithmetic.
+    ``taxable`` and ``liability`` are the engine's nonrefundable figures;
+    ``refundable_actc`` is the separately-computed refundable Additional
+    Child Tax Credit (T-P5), and ``child_credit_refundable_cap`` is the
+    per-child refundable ceiling the derivation card shows.  The remaining
+    fields are the inputs the derivation and assumptions card display (the
+    standard deduction, the two dependent counts, and their per-unit credit
+    amounts) so the presentation layer does no arithmetic.
+
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed because this
+    is the one flat federal-figures bundle the derivation ledger renders
+    field-by-field (``report.liability.federal.<figure>``); each attribute is
+    a distinct line the card shows, and nesting a sub-bundle would only add an
+    access level no consumer reads as a unit (and would ripple into the
+    template the orchestrator owns).
     """
 
     standard_deduction: Decimal
     taxable: Decimal
     liability: Decimal
+    refundable_actc: Decimal
     qualifying_children: int
     other_dependents: int
     child_credit_amount: Decimal
     other_dependent_credit_amount: Decimal
+    child_credit_refundable_cap: Decimal
 
 
 @dataclass(frozen=True)
@@ -66,13 +84,18 @@ class StateLiability:
 
     ``flat_rate`` and ``standard_deduction`` are ``None`` when the profile's
     state has no configured tax (``taxable_base`` is still reported for
-    context, but ``liability`` is zero).
+    context, but ``liability`` is zero).  ``child_deduction_per_child`` is the
+    resolved AGI-tier per-child deduction (T-P5) and ``child_deduction_total``
+    the amount actually subtracted (per-child x qualifying children); both are
+    zero for a state with no child deduction or a filer with no children.
     """
 
     flat_rate: Decimal | None
     standard_deduction: Decimal | None
     taxable_base: Decimal
     liability: Decimal
+    child_deduction_per_child: Decimal
+    child_deduction_total: Decimal
 
 
 @dataclass(frozen=True)
@@ -133,7 +156,22 @@ def compute_annual_liability(
     federal = _federal_layer(
         configs["bracket_set"], profile, wage, pretax, additional_income,
     )
-    state = _state_layer(configs["state_config"], wage, pretax, additional_income)
+    # NC base (AGI proxy for the child-deduction tier lookup, documented
+    # approximation of federal AGI): wages + 4(a) - pre-tax, floored at zero.
+    taxable_base = max(ZERO, wage + additional_income - pretax)
+    state_config = configs["state_config"]
+    child_tiers = (
+        load_state_child_deductions(
+            user_id, state_config.state_code, state_config.tax_year,
+            state_config.filing_status_id,
+        )
+        if state_config is not None
+        else []
+    )
+    state = _state_layer(
+        state_config, taxable_base, child_tiers,
+        int(profile.qualifying_children),
+    )
 
     return AnnualLiability(
         tax_year=year,
@@ -180,34 +218,48 @@ def _federal_layer(
         standard_deduction=Decimal(str(bracket_set.standard_deduction)),
         taxable=fed.taxable,
         liability=fed.liability,
+        refundable_actc=fed.refundable_actc,
         qualifying_children=int(profile.qualifying_children),
         other_dependents=int(profile.other_dependents),
         child_credit_amount=Decimal(str(bracket_set.child_credit_amount)),
         other_dependent_credit_amount=Decimal(
             str(bracket_set.other_dependent_credit_amount)
         ),
+        child_credit_refundable_cap=Decimal(
+            str(bracket_set.child_credit_refundable_cap)
+        ),
     )
 
 
-def _state_layer(state_config, wage, pretax, additional_income) -> StateLiability:
+def _state_layer(
+    state_config, taxable_base, child_tiers, qualifying_children,
+) -> StateLiability:
     """Build the NC state liability layer.
 
-    The NC base is wages plus Step 4(a) income less pre-tax deductions,
-    floored at zero (the same AGI-style base the withholding path uses); the
-    NC standard deduction is applied inside :func:`calculate_state_tax`,
-    which also returns zero for a None or non-taxing config.
+    ``taxable_base`` is the NC base (wages + Step 4(a) - pre-tax, floored at
+    zero), computed by the caller and reused BOTH as the state-tax base and
+    as the AGI proxy for the child-deduction tier lookup (a documented
+    approximation of federal AGI).  The NC standard deduction is applied
+    inside :func:`calculate_state_tax`; the resolved per-child deduction times
+    the qualifying-child count is passed as the additional deduction (T-P5).
+    :func:`calculate_state_tax` returns zero for a None or non-taxing config,
+    and an empty ``child_tiers`` (a non-NC state) resolves to a zero child
+    deduction.
 
     Args:
         state_config: The year's StateTaxConfig, or None (no state tax).
-        wage: The year's wage income (Decimal).
-        pretax: The year's pre-tax deductions (Decimal).
-        additional_income: The profile's W-4 Step 4(a) income (Decimal).
+        taxable_base: The NC base / AGI proxy (Decimal, already floored).
+        child_tiers: The state's child-deduction tier rows (possibly empty).
+        qualifying_children: The primary filer's qualifying-child count.
 
     Returns:
         The populated :class:`StateLiability`.
     """
-    taxable_base = max(ZERO, wage + additional_income - pretax)
-    liability = calculate_state_tax(taxable_base, state_config)
+    per_child = resolve_child_deduction_per_child(taxable_base, child_tiers)
+    child_deduction_total = per_child * qualifying_children
+    liability = calculate_state_tax(
+        taxable_base, state_config, additional_deduction=child_deduction_total,
+    )
 
     flat_rate = None
     standard_deduction = None
@@ -222,4 +274,6 @@ def _state_layer(state_config, wage, pretax, additional_income) -> StateLiabilit
         standard_deduction=standard_deduction,
         taxable_base=taxable_base,
         liability=liability,
+        child_deduction_per_child=per_child,
+        child_deduction_total=child_deduction_total,
     )

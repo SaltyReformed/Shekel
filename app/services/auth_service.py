@@ -32,9 +32,19 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
+from app.models.tax_config import FicaConfig
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.services import account_service
+from app.services.tax_seed_data import (
+    DEFAULT_FEDERAL_BRACKETS,
+    DEFAULT_FICA,
+    DEFAULT_STATE_CHILD_DEDUCTIONS,
+    DEFAULT_STATE_TAX,
+    build_state_child_deductions,
+    build_state_tax_configs,
+    build_tax_bracket_set,
+    build_tax_brackets,
+)
 from app.utils.log_events import (
     AUTH,
     EVT_ACCOUNT_LOCKED,
@@ -294,276 +304,25 @@ DEFAULT_CATEGORIES = [
     ("Credit Card", "Payback"),
 ]
 
-DEFAULT_FEDERAL_BRACKETS = {
-    2025: {
-        "single": {
-            "standard_deduction": Decimal("15000"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 11925, Decimal("0.1000")),
-                (11925, 48475, Decimal("0.1200")),
-                (48475, 103350, Decimal("0.2200")),
-                (103350, 197300, Decimal("0.2400")),
-                (197300, 250525, Decimal("0.3200")),
-                (250525, 626350, Decimal("0.3500")),
-                (626350, None, Decimal("0.3700")),
-            ],
-        },
-        "married_jointly": {
-            "standard_deduction": Decimal("30000"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 23850, Decimal("0.1000")),
-                (23850, 96950, Decimal("0.1200")),
-                (96950, 206700, Decimal("0.2200")),
-                (206700, 394600, Decimal("0.2400")),
-                (394600, 501050, Decimal("0.3200")),
-                (501050, 751600, Decimal("0.3500")),
-                (751600, None, Decimal("0.3700")),
-            ],
-        },
-        "married_separately": {
-            "standard_deduction": Decimal("15000"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 11925, Decimal("0.1000")),
-                (11925, 48475, Decimal("0.1200")),
-                (48475, 103350, Decimal("0.2200")),
-                (103350, 197300, Decimal("0.2400")),
-                (197300, 250525, Decimal("0.3200")),
-                (250525, 375800, Decimal("0.3500")),
-                (375800, None, Decimal("0.3700")),
-            ],
-        },
-        "head_of_household": {
-            "standard_deduction": Decimal("22500"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 17000, Decimal("0.1000")),
-                (17000, 64850, Decimal("0.1200")),
-                (64850, 103350, Decimal("0.2200")),
-                (103350, 197300, Decimal("0.2400")),
-                (197300, 250500, Decimal("0.3200")),
-                (250500, 626350, Decimal("0.3500")),
-                (626350, None, Decimal("0.3700")),
-            ],
-        },
-    },
-    # 2026 brackets per IRS Rev. Proc. 2025-32 (One Big Beautiful Bill Act).
-    2026: {
-        "single": {
-            "standard_deduction": Decimal("16100"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 12400, Decimal("0.1000")),
-                (12400, 50400, Decimal("0.1200")),
-                (50400, 105700, Decimal("0.2200")),
-                (105700, 201775, Decimal("0.2400")),
-                (201775, 256225, Decimal("0.3200")),
-                (256225, 640600, Decimal("0.3500")),
-                (640600, None, Decimal("0.3700")),
-            ],
-        },
-        "married_jointly": {
-            "standard_deduction": Decimal("32200"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 24800, Decimal("0.1000")),
-                (24800, 100800, Decimal("0.1200")),
-                (100800, 211400, Decimal("0.2200")),
-                (211400, 403550, Decimal("0.2400")),
-                (403550, 512450, Decimal("0.3200")),
-                (512450, 768700, Decimal("0.3500")),
-                (768700, None, Decimal("0.3700")),
-            ],
-        },
-        "married_separately": {
-            "standard_deduction": Decimal("16100"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 12400, Decimal("0.1000")),
-                (12400, 50400, Decimal("0.1200")),
-                (50400, 105700, Decimal("0.2200")),
-                (105700, 201775, Decimal("0.2400")),
-                (201775, 256225, Decimal("0.3200")),
-                (256225, 384350, Decimal("0.3500")),
-                (384350, None, Decimal("0.3700")),
-            ],
-        },
-        "head_of_household": {
-            "standard_deduction": Decimal("24150"),
-            "child_credit_amount": Decimal("2000"),
-            "other_dependent_credit_amount": Decimal("500"),
-            "brackets": [
-                (0, 17700, Decimal("0.1000")),
-                (17700, 67450, Decimal("0.1200")),
-                (67450, 105700, Decimal("0.2200")),
-                (105700, 201775, Decimal("0.2400")),
-                (201775, 256200, Decimal("0.3200")),
-                (256200, 640600, Decimal("0.3500")),
-                (640600, None, Decimal("0.3700")),
-            ],
-        },
-    },
-}
-
-DEFAULT_FICA = {
-    2025: {
-        "ss_rate": Decimal("0.0620"),
-        "ss_wage_base": Decimal("176100"),
-        "medicare_rate": Decimal("0.0145"),
-        "medicare_surtax_rate": Decimal("0.0090"),
-        "medicare_surtax_threshold": Decimal("200000"),
-    },
-    # 2026 SS wage base per SSA announcement Oct 2025.
-    2026: {
-        "ss_rate": Decimal("0.0620"),
-        "ss_wage_base": Decimal("184500"),
-        "medicare_rate": Decimal("0.0145"),
-        "medicare_surtax_rate": Decimal("0.0090"),
-        "medicare_surtax_threshold": Decimal("200000"),
-    },
-}
-
-DEFAULT_STATE_TAX = {
-    2025: {
-        "state_code": "NC",
-        "flat_rate": Decimal("0.0425"),
-        "standard_deduction": Decimal("12750"),
-    },
-    2026: {
-        "state_code": "NC",
-        "flat_rate": Decimal("0.0399"),
-        "standard_deduction": Decimal("12750"),
-    },
-}
-
-
-def build_tax_bracket_set(
-    user_id: int,
-    filing_status_id: int,
-    tax_year: int,
-    status_name: str,
-    data: dict[str, object],
-) -> TaxBracketSet:
-    """Build (not add) a TaxBracketSet row from a DEFAULT_FEDERAL_BRACKETS entry.
-
-    The single dict-to-row mapping shared by the sign-up path
-    (:func:`_seed_tax_data_for_user`) and the per-user repair script
-    ``scripts/seed_tax_brackets.py``, so the two cannot drift on which
-    keys feed which columns (they had already diverged on fallback
-    semantics for the credit fields before this extraction).  Keys are
-    indexed directly -- a missing key is a defect in the defaults dict
-    and must fail loud, not silently seed a zero credit.
-
-    Args:
-        user_id: The owning user's ID.
-        filing_status_id: PK of the ``ref.filing_statuses`` row.
-        tax_year: The bracket set's tax year.
-        status_name: The filing-status key (e.g. ``"married_joint"``),
-            used only for the display description.
-        data: One filing status's entry from
-            :data:`DEFAULT_FEDERAL_BRACKETS` (standard_deduction,
-            credit amounts, brackets).
-
-    Returns:
-        An un-added TaxBracketSet; the caller owns session.add/flush.
-    """
-    return TaxBracketSet(
-        user_id=user_id,
-        filing_status_id=filing_status_id,
-        tax_year=tax_year,
-        standard_deduction=data["standard_deduction"],
-        child_credit_amount=data["child_credit_amount"],
-        other_dependent_credit_amount=data["other_dependent_credit_amount"],
-        description=f"{tax_year} Federal - {status_name.replace('_', ' ').title()}",
-    )
-
-
-def build_tax_brackets(
-    bracket_set_id: int,
-    brackets: list[tuple[int, int | None, Decimal]],
-) -> list[TaxBracket]:
-    """Build (not add) the TaxBracket rows for one bracket set.
-
-    Shared with ``scripts/seed_tax_brackets.py`` (see
-    :func:`build_tax_bracket_set` for the rationale).  ``sort_order``
-    is the tuple's position in the defaults list.
-
-    Args:
-        bracket_set_id: PK of the already-flushed parent TaxBracketSet.
-        brackets: The ``"brackets"`` list from a
-            :data:`DEFAULT_FEDERAL_BRACKETS` entry --
-            ``(min_income, max_income_or_None, rate)`` tuples.
-
-    Returns:
-        Un-added TaxBracket rows; the caller owns session.add.
-    """
-    return [
-        TaxBracket(
-            bracket_set_id=bracket_set_id,
-            min_income=Decimal(str(min_inc)),
-            max_income=Decimal(str(max_inc)) if max_inc else None,
-            rate=rate,
-            sort_order=idx,
-        )
-        for idx, (min_inc, max_inc, rate) in enumerate(brackets)
-    ]
-
-
-def build_state_tax_config(
-    user_id: int,
-    tax_type_id: int,
-    tax_year: int,
-    data: dict[str, object],
-) -> StateTaxConfig:
-    """Build (not add) a StateTaxConfig row from a DEFAULT_STATE_TAX entry.
-
-    Shared with ``scripts/seed_tax_brackets.py`` (see
-    :func:`build_tax_bracket_set` for the rationale).
-    ``standard_deduction`` uses ``.get`` deliberately: a state entry
-    without a standard deduction is a legal shape (the column is
-    nullable), unlike the always-present federal keys.
-
-    Args:
-        user_id: The owning user's ID.
-        tax_type_id: PK of the ``ref.tax_types`` row (FLAT).
-        tax_year: The config's tax year.
-        data: One year's entry from :data:`DEFAULT_STATE_TAX`.
-
-    Returns:
-        An un-added StateTaxConfig; the caller owns session.add.
-    """
-    return StateTaxConfig(
-        user_id=user_id,
-        tax_type_id=tax_type_id,
-        tax_year=tax_year,
-        state_code=data["state_code"],
-        flat_rate=data["flat_rate"],
-        standard_deduction=data.get("standard_deduction"),
-    )
-
 
 def _seed_tax_data_for_user(user_id):
-    """Create default federal brackets, FICA, and state tax for a new user.
+    """Create default federal brackets, FICA, and NC state tax for a new user.
 
     Fresh-user path: no existence checks (a brand-new user has no tax
-    rows).  The per-row construction is shared with the idempotent
-    repair script ``scripts/seed_tax_brackets.py`` via the
-    ``build_tax_*`` helpers above; ``FicaConfig`` needs no builder --
-    its ``**data`` spread maps the defaults dict to columns directly
-    at both sites with no field list to drift.
+    rows).  The per-row construction is shared with the idempotent repair
+    script ``scripts/seed_tax_brackets.py`` via the ``build_*`` helpers in
+    ``tax_seed_data``; ``FicaConfig`` needs no builder -- its ``**data``
+    spread maps the defaults dict to columns directly at both sites.
+
+    Post-T-P5 the state layer is filing-status-aware: one
+    :class:`~app.models.tax_config.StateTaxConfig` per filing status (the NC
+    standard deduction is status-specific) plus the AGI-tiered NC per-child
+    deduction rows (:class:`~app.models.tax_config.StateChildDeduction`).
     """
     filing_statuses = {
         fs.name: fs for fs in db.session.query(FilingStatus).all()
     }
+    filing_status_ids = {name: fs.id for name, fs in filing_statuses.items()}
 
     for tax_year, year_data in DEFAULT_FEDERAL_BRACKETS.items():
         for status_name, data in year_data.items():
@@ -585,9 +344,15 @@ def _seed_tax_data_for_user(user_id):
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
     if flat_type_id:
         for tax_year, data in DEFAULT_STATE_TAX.items():
-            db.session.add(build_state_tax_config(
-                user_id, flat_type_id, tax_year, data,
-            ))
+            for config in build_state_tax_configs(
+                user_id, flat_type_id, tax_year, data, filing_status_ids,
+            ):
+                db.session.add(config)
+        for tax_year, data in DEFAULT_STATE_CHILD_DEDUCTIONS.items():
+            for row in build_state_child_deductions(
+                user_id, tax_year, data, filing_status_ids,
+            ):
+                db.session.add(row)
 
 
 def hash_password(plain_password, rounds=None):

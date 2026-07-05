@@ -673,3 +673,26 @@ phases; T-P4 was the Fable presentation phase.
 
 T-P5 (developer acceptance) remains: drive the live tab on real data; decide the year-end CSV's fate
 (it dies with the tab at slice 4 unless a tax-summary export is wanted).
+
+### T-P5 acceptance findings (2026-07-05): the refund model vs filing reality
+
+The developer's drive surfaced a real-data reconciliation gap: the tab showed a zero federal refund
+and an NC balance due, vs his actual 2025 filing (roughly $4,000 federal and $800 NC refunds).
+Quantified diagnosis against his live data (MFJ, 4 qualifying children, calibrated zero-dollar
+per-period federal withholding, one saved checkpoint):
+
+1. **Federal:** the model is arithmetically correct AND useless for this household -- tax before
+   credits (~5,321) is fully absorbed by 4 x 2,000 CTC, the v1 nonrefundable clamp floors the
+   liability at zero, withholding is genuinely zero, so refund = 0 by construction. His real refund
+   is (almost) entirely the REFUNDABLE Additional Child Tax Credit -- the exact mechanism the v1
+   ruling excluded-and-disclosed. For a household whose CTC exceeds its tax, the disclosed caveat IS
+   the whole refund.
+2. **NC:** two unmodeled filing rules -- (a) the NC per-child deduction (AGI-tiered, not in
+   `StateTaxConfig` at all) and (b) `StateTaxConfig.standard_deduction` is FILING-STATUS-BLIND,
+   seeded with the single-filer 12,750 while MFJ gets roughly double; both overstate NC liability
+   for this household by hundreds of dollars each.
+
+**Developer ruling (2026-07-05): build both extensions** -- federal refundable ACTC + the NC child
+deduction (and the filing-status-aware NC standard deduction the diagnosis exposed) -- with 2025 +
+2026 constants VERIFIED AGAINST PRIMARY SOURCES (IRS / NCDOR) at build time, not from model memory;
+seed updates backfill existing per-user config rows in the migration.

@@ -255,7 +255,10 @@ class TestSingleProfileFullyModeled:
         assert report.assumptions.disclosures.calibration_active is False
         assert report.assumptions.disclosures.checkpoint_as_of_date is None
         assert report.assumptions.disclosures.pretax_modeled_for_elapsed is False
-        assert report.assumptions.disclosures.nonrefundable_credit_clamp is True
+        # T-P5: nonrefundable_credit_clamp retired in favour of the honest
+        # ACTC disclosures (the refundable credit IS now modeled).
+        assert report.assumptions.disclosures.actc_modeled is True
+        assert report.assumptions.disclosures.phase_out_not_modeled is True
 
         # Schedule A (no loans -> mortgage 0; state component == withheld).
         assert report.schedule_a.components.mortgage_interest == ZERO
@@ -271,6 +274,40 @@ class TestSingleProfileFullyModeled:
         )
         assert report.schedule_a.margin == (
             report.schedule_a.itemized_estimate - Decimal("16100.00")
+        )
+
+
+class TestActcDrivesFederalRefund:
+    """T-P5: a CTC-heavy household's federal refund IS the refundable ACTC."""
+
+    def test_actc_added_to_federal_refund(self, app, db, seed_user):
+        """MFJ, 4 children, 78,000 (3,000/period): liability 0, ACTC drives refund.
+
+        Federal (2026 MFJ, std ded 32,200; CTC 2,200; refundable cap 1,700):
+          taxable  = 78000 - 32200 = 45,800.00
+          brackets = 24800*0.10 + (45800-24800)*0.12 = 2480 + 2520 = 5,000.00
+          credits  = 4 * 2200 = 8,800.00  ->  liability max(0, 5000-8800) = 0
+          ACTC     = min(unused 3800, cap 6800, earned 11325) = 3,800.00
+        So federal_refund = withheld - 0 + 3,800.00 -- the ACTC is the refund
+        the old nonrefundable-clamp model (liability 0, refund = withheld)
+        would have missed entirely.
+        """
+        _seed_and_profile(
+            seed_user, filing_status_name="married_jointly",
+            annual_salary="78000.00", qualifying_children=4,
+        )
+        _make_full_year_periods(seed_user["user"])
+        db.session.commit()
+
+        report = compute_tax_report(
+            seed_user["user"].id, 2026, date(2026, 3, 1),
+        )
+
+        assert report.liability.federal.liability == Decimal("0.00")
+        assert report.liability.federal.refundable_actc == Decimal("3800.00")
+        # The ACTC is added on top of (withheld - liability).
+        assert report.refund.federal_refund == (
+            report.withholding.total.federal + Decimal("3800.00")
         )
 
 
@@ -494,8 +531,9 @@ class TestMultiProfileSum:
           10%: 1,240.00 + 12%: 4,560.00 + 22%: 12,166.00
              + 24%: (201,775-105,700)*0.24 = 23,058.00
              + 32%: (213,900-201,775)*0.32 =  3,880.00
-          before credits = 44,904.00; credits = 2 * 2,000 = 4,000
-          liability = 40,904.00
+          before credits = 44,904.00; credits = 2 * 2,200 = 4,400
+          liability = 40,504.00  (CTC $2,200 per OBBBA)
+        Credit fully absorbed (44,904 > 4,400) so no ACTC.
         Marginal = 32% (213,900 in (201,775, 256,225]).
         Filing inputs disclosed as coming from the primary profile.
         """
@@ -520,7 +558,8 @@ class TestMultiProfileSum:
         assert report.liability.annual_wage_income == Decimal("230000.00")
         assert report.liability.federal.taxable == Decimal("213900.00")
         assert report.liability.federal.qualifying_children == 2
-        assert report.liability.federal.liability == Decimal("40904.00")
+        assert report.liability.federal.liability == Decimal("40504.00")
+        assert report.liability.federal.refundable_actc == Decimal("0.00")
         assert report.chips.marginal_rate == Decimal("0.3200")
         # Filing inputs disclosed from the primary.
         assert report.assumptions.filing.filing_status_name == "single"

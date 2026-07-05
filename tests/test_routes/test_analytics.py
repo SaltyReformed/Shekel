@@ -566,6 +566,7 @@ class TestYearEndTab:
             flat_type = db.session.query(TaxType).filter_by(name="flat").one()
             db.session.add(StateTaxConfig(
                 user_id=user.id, tax_type_id=flat_type.id,
+                filing_status_id=profile.filing_status_id,
                 state_code="NC", tax_year=2026,
                 flat_rate=Decimal("0.0450"),
             ))
@@ -687,6 +688,7 @@ class TestYearEndTab:
             flat_type = db.session.query(TaxType).filter_by(name="flat").one()
             db.session.add(StateTaxConfig(
                 user_id=user.id, tax_type_id=flat_type.id,
+                filing_status_id=profile.filing_status_id,
                 state_code="NC", tax_year=2026,
                 flat_rate=Decimal("0.0450"),
             ))
@@ -955,6 +957,7 @@ class TestYearEndTab:
             flat_type = db.session.query(TaxType).filter_by(name="flat").one()
             db.session.add(StateTaxConfig(
                 user_id=user.id, tax_type_id=flat_type.id,
+                filing_status_id=profile.filing_status_id,
                 state_code="NC", tax_year=2026,
                 flat_rate=Decimal("0.0450"),
             ))
@@ -3099,6 +3102,69 @@ class TestTaxesTab:
             assert "$3,913.52" in html
             assert "measured through Jan 16" in html
             assert "Jan 16, 2026" in html   # assumptions "Measured through"
+
+    def test_taxes_tab_actc_and_nc_child_deduction(self, app, auth_client, seed_user, seed_periods, db):
+        """An MFJ 4-child household renders the ACTC row and NC child deduction.
+
+        Hand-computed (130k MFJ, 4 qualifying children, seed_periods = 10
+        paydays, no pre-tax, no checkpoint, 2026 seeds w/ OBBBA CTC 2,200 and
+        ACTC cap 1,700):
+
+          liability on hybrid gross 50,000:
+            fed taxable 50,000 - 32,200 = 17,800 -> 10% band -> 1,780.00
+            credits 4 x 2,200 = 8,800 -> liability clamps at 0
+            unused 8,800 - 1,780 = 7,020
+            ACTC = min(7,020, 4 x 1,700 = 6,800, 15% x 47,500 = 7,125)
+                 = 6,800.00 (the CAP leg binds)
+          fed withheld: annualized taxable 97,800 -> 11,240 - 8,800 = 2,440
+            -> 93.85/period x 10 = 938.50
+          fed refund = 938.50 - 0 + 6,800.00 = 7,738.50
+          NC: base 50,000 -> tier 40-60k -> 2,500 x 4 = 10,000 child ded;
+            taxable 50,000 - 25,500 - 10,000 = 14,500 x 0.0399 = 578.55
+          NC withheld: (130,000 - 25,500) x 0.0399 = 4,169.55 -> 160.37 x 10
+            = 1,603.70 -> NC refund 1,603.70 - 578.55 = 1,025.15
+        """
+        with app.app_context():
+            from app.extensions import db as _db
+            from app.models.ref import FilingStatus
+            from app.models.salary_profile import SalaryProfile
+            from app.services.auth_service import _seed_tax_data_for_user
+
+            _seed_tax_data_for_user(seed_user["user"].id)
+            filing_status = (
+                _db.session.query(FilingStatus)
+                .filter_by(name="married_jointly").one()
+            )
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                name="MFJ Four Kids",
+                annual_salary=Decimal("130000.00"),
+                pay_periods_per_year=26,
+                filing_status_id=filing_status.id,
+                state_code="NC",
+                is_active=True,
+                qualifying_children=4,
+            )
+            db.session.add(profile)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/taxes?year=2026",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            assert "Plus refundable child tax credit" in html
+            assert "$6,800.00" in html          # the ACTC (cap leg binds)
+            assert "$7,738.50" in html          # federal refund
+            assert "$1,025.15" in html          # NC refund
+            assert "$10,000 child deduction" in html
+            assert "ACTC refundable cap" in html
+            assert "$1,700 / child" in html
+            assert "Refundable child tax credit (ACTC) modeled" in html
+            assert "nonrefundable" not in html  # the stale caveat is gone
 
     def test_taxes_tab_empty_state_without_profile(self, app, auth_client, seed_user):
         """No active salary profile renders the empty state, not a crash."""

@@ -138,6 +138,7 @@ def _add_tax_configs(user, profile):
     state_config = StateTaxConfig(
         user_id=user.id,
         tax_type_id=flat_type.id,
+        filing_status_id=profile.filing_status_id,
         state_code="NC",
         tax_year=YEAR,
         flat_rate=Decimal("0.0450"),

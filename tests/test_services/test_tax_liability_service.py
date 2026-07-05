@@ -108,20 +108,26 @@ class TestWorkedAnchor:
         assert result.annual_pretax == Decimal("12000.00")
         assert result.additional_income == Decimal("1200.00")
 
-        # Federal layer.
+        # Federal layer (0 children -> no CTC, no ACTC; CTC amount is the
+        # OBBBA-corrected 2,200, refundable cap 1,700).
         assert result.federal.taxable == Decimal("83100.00")
         assert result.federal.liability == Decimal("12994.00")
+        assert result.federal.refundable_actc == Decimal("0.00")
         assert result.federal.standard_deduction == Decimal("16100.00")
-        assert result.federal.child_credit_amount == Decimal("2000.00")
+        assert result.federal.child_credit_amount == Decimal("2200.00")
         assert result.federal.other_dependent_credit_amount == Decimal("500.00")
+        assert result.federal.child_credit_refundable_cap == Decimal("1700.00")
         assert result.federal.qualifying_children == 0
         assert result.federal.other_dependents == 0
 
-        # State layer.
+        # State layer (single, 0 children -> no NC child deduction; AGI base
+        # 99,200 is above the single $70k top tier anyway).
         assert result.state.taxable_base == Decimal("99200.00")
         assert result.state.liability == Decimal("3449.36")
         assert result.state.flat_rate == Decimal("0.0399")
         assert result.state.standard_deduction == Decimal("12750.00")
+        assert result.state.child_deduction_per_child == Decimal("0")
+        assert result.state.child_deduction_total == Decimal("0")
 
 
 class TestFourBExclusion:
@@ -201,10 +207,13 @@ class TestDependentCredits:
     """Dependent counts flow off the profile into the nonrefundable credit."""
 
     def test_two_children_one_other_dependent(self, app, db, seed_user):
-        """2 children + 1 other dependent = 4,500 credit off the anchor tax.
+        """2 children + 1 other dependent = 4,900 credit off the anchor tax.
 
-          credit    = 2*2000 + 1*500 = 4,500.00
-          liability = 12994.00 - 4500.00 = 8,494.00
+          credit    = 2*2200 + 1*500 = 4,900.00  (CTC $2,200 per OBBBA)
+          liability = 12994.00 - 4900.00 = 8,094.00
+        Credit fully absorbed (12,994 > 4,900) so no ACTC.  State: single
+        AGI base 99,200 is above the single $70k top child-deduction tier,
+        so the NC child deduction is 0 -> state liability unchanged (3,449.36).
         """
         profile = _seed_and_profile(
             seed_user,
@@ -218,7 +227,150 @@ class TestDependentCredits:
         )
         assert result.federal.qualifying_children == 2
         assert result.federal.other_dependents == 1
-        assert result.federal.liability == Decimal("8494.00")
+        assert result.federal.liability == Decimal("8094.00")
+        assert result.federal.refundable_actc == Decimal("0.00")
+        assert result.state.child_deduction_total == Decimal("0")
+        assert result.state.liability == Decimal("3449.36")
+
+
+class TestDeveloperLiveAnchorMFJ:
+    """The developer's live-shape anchor: 2026 MFJ, 4 children (T-P5).
+
+    Ties the whole extension together on his real numbers -- refundable ACTC,
+    NC filing-status standard deduction, and NC per-child deduction.
+    """
+
+    def test_live_shape_full_integration(self, app, db, seed_user):
+        """MFJ, 4 children, wages 94,619.62, pre-tax 13,943.93, no 4(a).
+
+        Federal (2026 MFJ, std ded 32,200; CTC 2,200; refundable cap 1,700):
+          taxable  = 94619.62 - 13943.93 - 32200 = 48,475.69
+          brackets = 24800*0.10 + (48475.69-24800)*0.12
+                   = 2480.00 + 2841.0828 = 5,321.08
+          credits  = 4 * 2200 = 8,800.00  ->  liability max(0, 5321.08-8800)=0
+          ACTC     = min(unused 3478.92, cap 6800, earned 13817.94) = 3,478.92
+        NC state (flat 3.99%, MFJ std ded 25,500; child deduction tier):
+          AGI base = 94619.62 - 13943.93 = 80,675.69
+          per child = 1,500 (AGI in the MFJ 80k-100k tier)
+          child ded = 4 * 1500 = 6,000.00
+          taxable   = 80675.69 - 25500 - 6000 = 49,175.69
+          tax       = 49175.69 * 0.0399 = 1,962.110031 -> 1,962.11
+        """
+        profile = _seed_and_profile(
+            seed_user,
+            filing_status_name="married_jointly",
+            qualifying_children=4,
+        )
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("94619.62"), Decimal("13943.93"),
+        )
+
+        assert result.federal.taxable == Decimal("48475.69")
+        assert result.federal.liability == Decimal("0.00")
+        assert result.federal.refundable_actc == Decimal("3478.92")
+        assert result.federal.child_credit_amount == Decimal("2200.00")
+
+        assert result.state.standard_deduction == Decimal("25500.00")
+        assert result.state.taxable_base == Decimal("80675.69")
+        assert result.state.child_deduction_per_child == Decimal("1500.00")
+        assert result.state.child_deduction_total == Decimal("6000.00")
+        assert result.state.liability == Decimal("1962.11")
+
+
+class TestNCFilingStatusStandardDeduction:
+    """finding 2b: the NC standard deduction is now filing-status-specific."""
+
+    def test_mfj_uses_25500_not_single_12750(self, app, db, seed_user):
+        """An MFJ profile resolves the $25,500 NC standard deduction.
+
+        MFJ, 0 children, wages 100,000, no pre-tax/4(a):
+          AGI base = 100,000; MFJ std ded 25,500 (NOT the single 12,750)
+          taxable  = 100000 - 25500 = 74,500.00
+          tax      = 74500 * 0.0399 = 2,972.55
+        """
+        profile = _seed_and_profile(
+            seed_user, filing_status_name="married_jointly",
+        )
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("100000.00"), Decimal("0.00"),
+        )
+        assert result.state.standard_deduction == Decimal("25500.00")
+        assert result.state.liability == Decimal("2972.55")
+
+    def test_single_still_uses_12750(self, app, db, seed_user):
+        """A single profile keeps the $12,750 NC standard deduction (regression).
+
+        Single, 0 children, wages 100,000:
+          taxable = 100000 - 12750 = 87,250.00
+          tax     = 87250 * 0.0399 = 3,481.275 -> 3,481.28 (ROUND_HALF_UP)
+        """
+        profile = _seed_and_profile(seed_user, filing_status_name="single")
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("100000.00"), Decimal("0.00"),
+        )
+        assert result.state.standard_deduction == Decimal("12750.00")
+        assert result.state.liability == Decimal("3481.28")
+
+
+class TestNCChildDeductionTierBoundary:
+    """The NC child-deduction tier edge belongs to the lower (generous) tier."""
+
+    def test_single_agi_exactly_at_tier_edge(self, app, db, seed_user):
+        """Single AGI exactly 40,000 -> 2,000/child ("Up to 40,000" inclusive).
+
+        The single tiers put "Over 30,000 - Up to 40,000" at 2,000/child; an
+        AGI of exactly 40,000 is the inclusive upper of that tier (NOT the
+        1,500 "Over 40,000" tier).  Single, 1 child, wages 40,000, no pre-tax:
+          AGI base  = 40,000; per child = 2,000 -> child ded = 2,000.00
+          taxable   = 40000 - 12750 - 2000 = 25,250.00
+          tax       = 25250 * 0.0399 = 1,007.475 -> 1,007.48 (ROUND_HALF_UP)
+        """
+        profile = _seed_and_profile(
+            seed_user, filing_status_name="single", qualifying_children=1,
+        )
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("40000.00"), Decimal("0.00"),
+        )
+        assert result.state.child_deduction_per_child == Decimal("2000.00")
+        assert result.state.child_deduction_total == Decimal("2000.00")
+        assert result.state.liability == Decimal("1007.48")
+
+    def test_single_agi_one_cent_over_edge_drops_tier(self, app, db, seed_user):
+        """Single AGI 40,000.01 -> 1,500/child ("Over 40,000" tier).
+
+        wages 40,000.01, 1 child:
+          per child = 1,500 -> child ded = 1,500.00
+          taxable   = 40000.01 - 12750 - 1500 = 25,750.01
+          tax       = 25750.01 * 0.0399 = 1,027.4254... -> 1,027.43
+        """
+        profile = _seed_and_profile(
+            seed_user, filing_status_name="single", qualifying_children=1,
+        )
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("40000.01"), Decimal("0.00"),
+        )
+        assert result.state.child_deduction_per_child == Decimal("1500.00")
+        assert result.state.child_deduction_total == Decimal("1500.00")
+        assert result.state.liability == Decimal("1027.43")
+
+    def test_zero_children_no_child_deduction(self, app, db, seed_user):
+        """A filer with 0 children gets no child deduction regardless of AGI."""
+        profile = _seed_and_profile(
+            seed_user, filing_status_name="single", qualifying_children=0,
+        )
+        result = compute_annual_liability(
+            seed_user["user"].id, profile, 2026,
+            Decimal("40000.00"), Decimal("0.00"),
+        )
+        assert result.state.child_deduction_total == Decimal("0")
+        # taxable = 40000 - 12750 = 27,250; tax = 27250 * 0.0399 = 1,087.275
+        # -> 1,087.28 (ROUND_HALF_UP).
+        assert result.state.liability == Decimal("1087.28")
 
 
 class TestClampAndMissingConfigs:

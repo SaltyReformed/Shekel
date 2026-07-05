@@ -1118,10 +1118,11 @@ class TestStateTaxConfigCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO salary.state_tax_configs "
-                        "(user_id, tax_type_id, state_code, tax_year, "
-                        " flat_rate, standard_deduction, created_at) "
-                        "VALUES (:uid, :ttid, 'CA', 2026, 0.05, "
-                        "        -1.00, now())"
+                        "(user_id, tax_type_id, filing_status_id, state_code, "
+                        " tax_year, flat_rate, standard_deduction, created_at) "
+                        "VALUES (:uid, :ttid, "
+                        " (SELECT id FROM ref.filing_statuses WHERE name='single'), "
+                        " 'CA', 2026, 0.05, -1.00, now())"
                     ),
                     {"uid": seed_user["user"].id, "ttid": tax_type_id},
                 )
@@ -1139,10 +1140,11 @@ class TestStateTaxConfigCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO salary.state_tax_configs "
-                        "(user_id, tax_type_id, state_code, tax_year, "
-                        " flat_rate, created_at) "
-                        "VALUES (:uid, :ttid, 'CA', 2200, 0.05, "
-                        "        now())"
+                        "(user_id, tax_type_id, filing_status_id, state_code, "
+                        " tax_year, flat_rate, created_at) "
+                        "VALUES (:uid, :ttid, "
+                        " (SELECT id FROM ref.filing_statuses WHERE name='single'), "
+                        " 'CA', 2200, 0.05, now())"
                     ),
                     {"uid": seed_user["user"].id, "ttid": tax_type_id},
                 )

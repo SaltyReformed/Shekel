@@ -9,7 +9,9 @@ preview, and the Schedule A check -- for one tax year:
 * **Refund** = withholding-to-date TOTAL (measured checkpoint + modeled
   remainder, from :mod:`tax_withholding_service`) minus the filing-time
   liability (from :mod:`tax_liability_service`), computed SEPARATELY for
-  federal and NC state.  Positive = refund, negative = owed (see
+  federal and NC state.  The federal refund ADDS the refundable Additional
+  Child Tax Credit (T-P5), so a household whose CTC exceeds its tax still
+  shows the ACTC as a refund.  Positive = refund, negative = owed (see
   :class:`RefundEstimate`).
 * **Hybrid W-2 preview** = per-filer W-2 boxes built from the hybrid gross
   and the four hybrid withholding lines, labelled "measured through <stub
@@ -28,9 +30,12 @@ inputs the liability needs -- filing status, dependent counts, W-4 Step
 first-by-``(sort_order, name)`` rule).  With the developer's single active
 profile this degrades to the trivially-correct one-profile case.
 
-Liability basis (T-P1 ruling): 4(a) in, 4(b) out, nonrefundable CTC/ODC
-clamp -- all owned by :func:`tax_liability_service.compute_annual_liability`;
-this module only feeds it the hybrid wage and the modeled pre-tax.
+Liability basis (T-P1 ruling + T-P5 extension): 4(a) in, 4(b) out,
+nonrefundable CTC/ODC clamp on the liability with the unused child credit
+paid out as the refundable ACTC, and the NC filing-status standard deduction
+plus AGI-tiered per-child deduction -- all owned by
+:func:`tax_liability_service.compute_annual_liability`; this module only
+feeds it the hybrid wage and the modeled pre-tax.
 
 Pre-tax modelling (assumptions disclosure): the YTD checkpoint captures no
 pre-tax figure, so the annual pre-tax that reduces the liability's taxable
@@ -118,11 +123,13 @@ class WithholdingSummary:
 class RefundEstimate:
     """The refund producer's output: federal + state + total refund.
 
-    Each refund is ``withheld - liability`` (positive = money back,
-    negative = owed at filing); the withheld and liability operands
-    themselves live on the report's ``withholding`` / ``liability`` bundles,
-    so only the three precomputed deltas the templates cannot compute are
-    carried here.  ``total_refund`` (federal + state) is the hero headline.
+    State refund is ``withheld - liability``; federal refund is
+    ``withheld - liability + refundable_actc`` (the refundable Additional
+    Child Tax Credit, T-P5).  Positive = money back, negative = owed at
+    filing.  The withheld, liability, and ACTC operands themselves live on
+    the report's ``withholding`` / ``liability`` bundles, so only the three
+    precomputed deltas the templates cannot compute are carried here.
+    ``total_refund`` (federal + state) is the hero headline.
     """
 
     federal_refund: Decimal
@@ -260,16 +267,20 @@ class ModellingDisclosures:
     primary profile's calibration; ``checkpoint_as_of_date`` is the measured
     stub date (``None`` = fully modeled); ``pretax_modeled_for_elapsed`` is
     ``True`` when a checkpoint exists (the elapsed withholding is measured
-    but its pre-tax is still modeled); ``nonrefundable_credit_clamp`` is
-    always ``True`` (CTC/ODC clamp the liability at zero, ACTC refundability
-    out of scope).
+    but its pre-tax is still modeled).  ``actc_modeled`` is always ``True``
+    (T-P5: the refundable Additional Child Tax Credit IS now modeled, so the
+    liability's zero clamp no longer swallows a CTC-heavy household's refund);
+    ``phase_out_not_modeled`` is always ``True`` (the CTC/ACTC MAGI phase-outs
+    -- $400k MFJ / $200k other -- are not applied; the developer's AGI is far
+    below them).
     """
 
     calibration_active: bool
     calibration_pay_stub_date: date | None
     checkpoint_as_of_date: date | None
     pretax_modeled_for_elapsed: bool
-    nonrefundable_credit_clamp: bool
+    actc_modeled: bool
+    phase_out_not_modeled: bool
 
 
 @dataclass(frozen=True)
@@ -536,7 +547,15 @@ def _build_refund(
     Returns:
         The :class:`RefundEstimate` (positive = refund, negative = owed).
     """
-    federal_refund = withholding.total.federal - liability.federal.liability
+    # Federal refund adds the refundable ACTC: withheld minus the
+    # nonrefundable liability PLUS the refundable Additional Child Tax Credit
+    # (T-P5).  For a household whose CTC exceeds its tax, the ACTC IS the
+    # refund (the liability floors at zero).
+    federal_refund = (
+        withholding.total.federal
+        - liability.federal.liability
+        + liability.federal.refundable_actc
+    )
     state_refund = withholding.total.state - liability.state.liability
     return RefundEstimate(
         federal_refund=federal_refund,
@@ -751,7 +770,8 @@ def _build_assumptions(
             ),
             checkpoint_as_of_date=withholding.measured_through,
             pretax_modeled_for_elapsed=withholding.has_checkpoint,
-            nonrefundable_credit_clamp=True,
+            actc_modeled=True,
+            phase_out_not_modeled=True,
         ),
         active_profile_count=len(profiles),
         filing_inputs_from=primary.name if len(profiles) > 1 else None,

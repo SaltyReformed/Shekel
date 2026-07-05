@@ -19,8 +19,14 @@ import requests
 from app.extensions import db
 from app.models.user import User, UserSettings
 from app.models.category import Category
+from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.tax_config import (
+    FicaConfig,
+    StateChildDeduction,
+    StateTaxConfig,
+    TaxBracketSet,
+)
 from app.services import auth_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 
@@ -571,7 +577,11 @@ class TestRegisterUser:
             assert years == {2025, 2026}
 
     def test_register_user_creates_state_tax_config(self, app, db):
-        """register_user() creates default NC state tax configs (one per year)."""
+        """register_user() creates NC state tax configs (one per year+status).
+
+        T-P5: filing-status-keyed, so one row per (year, filing status), and
+        the MFJ standard deduction is $25,500 (not the single $12,750).
+        """
         with app.app_context():
             user = auth_service.register_user(
                 "state@example.com", "securepass123", "State Test"
@@ -581,8 +591,64 @@ class TestRegisterUser:
             state_configs = db.session.query(StateTaxConfig).filter_by(
                 user_id=user.id
             ).all()
-            assert len(state_configs) == len(auth_service.DEFAULT_STATE_TAX)
+            expected = sum(
+                len(data["standard_deduction_by_status"])
+                for data in auth_service.DEFAULT_STATE_TAX.values()
+            )
+            assert len(state_configs) == expected
             assert all(sc.state_code == "NC" for sc in state_configs)
+            # The MFJ standard deduction is the status-specific $25,500.
+            mfj_status = (
+                db.session.query(FilingStatus)
+                .filter_by(name="married_jointly").one()
+            )
+            mfj = (
+                db.session.query(StateTaxConfig)
+                .filter_by(
+                    user_id=user.id, tax_year=2026,
+                    filing_status_id=mfj_status.id,
+                )
+                .one()
+            )
+            assert mfj.standard_deduction == Decimal("25500.00")
+
+    def test_register_user_creates_state_child_deductions(self, app, db):
+        """register_user() seeds the NC AGI-tiered per-child deduction (T-P5)."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "childded@example.com", "securepass123", "Child Ded Test"
+            )
+            db.session.flush()
+
+            expected = sum(
+                len(tiers)
+                for data in auth_service.DEFAULT_STATE_CHILD_DEDUCTIONS.values()
+                for tiers in data["tiers_by_status"].values()
+            )
+            assert (
+                db.session.query(StateChildDeduction)
+                .filter_by(user_id=user.id).count() == expected
+            )
+
+    def test_register_user_corrects_ctc_to_2200(self, app, db):
+        """register_user() seeds the OBBBA-corrected $2,200 CTC + $1,700 ACTC cap."""
+        with app.app_context():
+            user = auth_service.register_user(
+                "ctc@example.com", "securepass123", "CTC Test"
+            )
+            db.session.flush()
+
+            bracket_sets = db.session.query(TaxBracketSet).filter_by(
+                user_id=user.id
+            ).all()
+            assert bracket_sets  # non-vacuous
+            assert all(
+                bs.child_credit_amount == Decimal("2200.00") for bs in bracket_sets
+            )
+            assert all(
+                bs.child_credit_refundable_cap == Decimal("1700.00")
+                for bs in bracket_sets
+            )
 
 
 class TestNegativeAndBoundaryPaths:

@@ -14,6 +14,7 @@ from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import require_owner
 from app.extensions import db
+from app.models.ref import FilingStatus
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app import ref_cache
 from app.enums import TaxTypeEnum
@@ -57,16 +58,25 @@ def update_tax_config():
 
     standard_deduction = data.get("standard_deduction")
 
-    state_config = (
+    # T-P5: the state config is filing-status-keyed, so there is one row per
+    # filing status for a (state, year).  The settings form carries a single
+    # rate + standard-deduction field, so this handler applies them UNIFORMLY
+    # across every filing status.  (The seeded NC rows carry per-status
+    # standard deductions; editing them here flattens them to the entered
+    # value -- a known limitation until the settings UI grows a per-status
+    # field.  The flat rate is status-independent, so applying it uniformly is
+    # always correct.)
+    existing_configs = (
         db.session.query(StateTaxConfig)
         .filter_by(user_id=current_user.id, state_code=state_code, tax_year=tax_year)
-        .first()
+        .all()
     )
 
-    if state_config:
-        if flat_rate is not None:
-            state_config.flat_rate = flat_rate
-        state_config.standard_deduction = standard_deduction
+    if existing_configs:
+        for state_config in existing_configs:
+            if flat_rate is not None:
+                state_config.flat_rate = flat_rate
+            state_config.standard_deduction = standard_deduction
         flash(f"State tax config for {state_code} {tax_year} updated.", "success")
     else:
         if flat_rate is None:
@@ -81,15 +91,16 @@ def update_tax_config():
             )
             return redirect(url_for("settings.show", section="tax"))
         flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
-        new_config = StateTaxConfig(
-            user_id=current_user.id,
-            tax_type_id=flat_type_id,
-            state_code=state_code,
-            tax_year=tax_year,
-            flat_rate=flat_rate,
-            standard_deduction=standard_deduction,
-        )
-        db.session.add(new_config)
+        for filing_status in db.session.query(FilingStatus).all():
+            db.session.add(StateTaxConfig(
+                user_id=current_user.id,
+                tax_type_id=flat_type_id,
+                filing_status_id=filing_status.id,
+                state_code=state_code,
+                tax_year=tax_year,
+                flat_rate=flat_rate,
+                standard_deduction=standard_deduction,
+            ))
         flash(f"State tax config for {state_code} {tax_year} created.", "success")
 
     db.session.commit()

@@ -61,6 +61,7 @@ from app.models.calibration_override import CalibrationOverride
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.models.tax_config import (
     FicaConfig,
+    StateChildDeduction,
     StateTaxConfig,
     TaxBracket,
     TaxBracketSet,
@@ -126,6 +127,7 @@ __all__ = [
     "CalibrationOverride",
     "YtdTaxCheckpoint",
     "FicaConfig",
+    "StateChildDeduction",
     "StateTaxConfig",
     "TaxBracket",
     "TaxBracketSet",

@@ -29,6 +29,16 @@ class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
             "other_dependent_credit_amount >= 0",
             name="ck_tax_bracket_sets_nonneg_other_credit",
         ),
+        # Taxes slice T-P5: the refundable Additional Child Tax Credit
+        # (ACTC) cap PER qualifying child.  A per-year federal constant
+        # ($1,700 for 2025 and 2026 per IRS Rev. Proc. 2025-32 sec.
+        # 4.05(2) / 2025 Schedule 8812 instructions) that bounds the
+        # refundable portion of the CTC, so it lives on the year+status
+        # bracket set alongside the nonrefundable credit amounts.
+        db.CheckConstraint(
+            "child_credit_refundable_cap >= 0",
+            name="ck_tax_bracket_sets_nonneg_refundable_cap",
+        ),
         # F-077 / C-24: ``tax_year`` is the IRS tax year a bracket
         # set applies to.  The schema layer added the same Range in
         # commit C-24; the CHECK is the storage-tier counterpart.
@@ -68,6 +78,16 @@ class TaxBracketSet(UserScopedMixin, CreatedAtMixin, db.Model):
         db.Numeric(12, 2), nullable=False, default=0,
         server_default="0",
     )  # Per other dependent
+    # Refundable ACTC cap per qualifying child (Taxes slice T-P5).  Same
+    # ``server_default="0"`` bare-string form as the credit columns above
+    # so pg_dump matches the migration-built schema; the seed sets the
+    # verified $1,700 explicitly and the migration backfills existing
+    # per-user rows.  A bracket set that omits it degrades to a zero
+    # refundable credit (never an inflated refund).
+    child_credit_refundable_cap = db.Column(
+        db.Numeric(12, 2), nullable=False, default=0,
+        server_default="0",
+    )  # Refundable ACTC cap per qualifying child
     description = db.Column(db.String(200))
 
     # Relationships
@@ -127,13 +147,21 @@ class TaxBracket(SortOrderMixin, db.Model):
 
 
 class StateTaxConfig(UserScopedMixin, CreatedAtMixin, db.Model):
-    """State-level tax configuration (flat rate or none), per year."""
+    """State-level tax configuration (flat rate or none), per year and filing status.
+
+    Taxes slice T-P5 (finding 2b): the NC standard deduction is
+    filing-status-specific (Single/MFS $12,750, MFJ $25,500, HoH $19,125
+    per N.C.G.S. 105-153.5(a)(1)), so the config is keyed on
+    ``(user, state, year, filing_status)`` -- one row per filing status --
+    rather than the former status-blind ``(user, state, year)``.  The flat
+    rate itself is status-independent; only ``standard_deduction`` varies.
+    """
 
     __tablename__ = "state_tax_configs"
     __table_args__ = (
         db.UniqueConstraint(
-            "user_id", "state_code", "tax_year",
-            name="uq_state_tax_configs_user_state_year",
+            "user_id", "state_code", "tax_year", "filing_status_id",
+            name="uq_state_tax_configs_user_state_year_status",
         ),
         db.CheckConstraint(
             "flat_rate IS NULL OR (flat_rate >= 0 AND flat_rate <= 1)",
@@ -168,6 +196,18 @@ class StateTaxConfig(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
+    # T-P5: the filing-status dimension.  RESTRICT + fk_* name mirror the
+    # tax_bracket_sets filing-status FK; a deleted ref row must not orphan
+    # a config.
+    filing_status_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.filing_statuses.id",
+            name="fk_state_tax_configs_filing_status_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
     state_code = db.Column(db.String(2), nullable=False)
     tax_year = db.Column(db.Integer, nullable=False)
     flat_rate = db.Column(db.Numeric(5, 4))
@@ -175,9 +215,13 @@ class StateTaxConfig(UserScopedMixin, CreatedAtMixin, db.Model):
 
     # Relationships
     tax_type = db.relationship("TaxType", lazy="joined")
+    filing_status = db.relationship("FilingStatus", lazy="joined")
 
     def __repr__(self):
-        return f"<StateTaxConfig {self.state_code} rate={self.flat_rate}>"
+        return (
+            f"<StateTaxConfig {self.state_code} {self.tax_year} "
+            f"status_id={self.filing_status_id} rate={self.flat_rate}>"
+        )
 
 
 class FicaConfig(UserScopedMixin, CreatedAtMixin, db.Model):
@@ -247,3 +291,77 @@ class FicaConfig(UserScopedMixin, CreatedAtMixin, db.Model):
 
     def __repr__(self):
         return f"<FicaConfig year={self.tax_year}>"
+
+
+class StateChildDeduction(UserScopedMixin, CreatedAtMixin, db.Model):
+    """State per-child deduction tier (AGI-tiered, per filing status).
+
+    Taxes slice T-P5 (finding 2): the NC child deduction (N.C.G.S.
+    105-153.5(a1)) is a per-qualifying-child deduction whose amount depends
+    on BOTH filing status AND an adjusted-gross-income tier.  Each row is one
+    tier: the per-child deduction that applies when AGI falls in
+    ``(agi_min, agi_max]`` for a given ``(state, year, filing_status)``.
+
+    Boundary semantics follow the NC statute/D-401 table wording exactly:
+    a tier reads "Up to $X" (inclusive of X) then "Over $X - Up to $Y", so a
+    threshold dollar value belongs to the LOWER / more-generous tier.  The
+    tier lookup therefore selects the row with the smallest ``agi_max`` that
+    is >= AGI; the open-ended top tier (``agi_max IS NULL``, deduction $0)
+    catches everything above the last finite bound.  ``agi_min`` is the
+    exclusive lower bound ("Over $X"; 0 for the first tier) -- stored for the
+    ordering CHECK and the uniqueness key; the lookup keys on ``agi_max``.
+    """
+
+    __tablename__ = "state_child_deductions"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "user_id", "state_code", "tax_year", "filing_status_id", "agi_min",
+            name="uq_state_child_deductions_user_state_year_status_agi",
+        ),
+        db.CheckConstraint(
+            "agi_min >= 0", name="ck_state_child_deductions_nonneg_agi_min",
+        ),
+        db.CheckConstraint(
+            "agi_max IS NULL OR agi_max > agi_min",
+            name="ck_state_child_deductions_agi_order",
+        ),
+        db.CheckConstraint(
+            "deduction_per_child >= 0",
+            name="ck_state_child_deductions_nonneg_deduction",
+        ),
+        db.CheckConstraint(
+            "tax_year >= 2000 AND tax_year <= 2100",
+            name="ck_state_child_deductions_valid_tax_year",
+        ),
+        {"schema": "salary"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    # RESTRICT + fk_* name mirror the sibling filing-status FKs.
+    filing_status_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.filing_statuses.id",
+            name="fk_state_child_deductions_filing_status_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    state_code = db.Column(db.String(2), nullable=False)
+    tax_year = db.Column(db.Integer, nullable=False)
+    # Exclusive lower AGI bound of the tier (0 for the first tier).
+    agi_min = db.Column(db.Numeric(12, 2), nullable=False)
+    # Inclusive upper AGI bound; NULL = open-ended top tier.  Nullable is
+    # deliberate: the top tier ("Over $X", deduction $0) has no upper bound.
+    agi_max = db.Column(db.Numeric(12, 2))
+    deduction_per_child = db.Column(db.Numeric(12, 2), nullable=False)
+
+    # Relationships
+    filing_status = db.relationship("FilingStatus", lazy="joined")
+
+    def __repr__(self):
+        return (
+            f"<StateChildDeduction {self.state_code} {self.tax_year} "
+            f"status_id={self.filing_status_id} "
+            f"({self.agi_min}-{self.agi_max}) per_child={self.deduction_per_child}>"
+        )

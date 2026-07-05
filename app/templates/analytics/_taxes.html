@@ -128,6 +128,10 @@
             {{ report.liability.federal.qualifying_children }} &times; {{ money(report.liability.federal.child_credit_amount, cents=false) }},
             {{ report.liability.federal.other_dependents }} &times; {{ money(report.liability.federal.other_dependent_credit_amount, cents=false) }}
           </dd>
+          {% if report.liability.federal.qualifying_children > 0 %}
+          <dt class="col-6 fw-normal">ACTC refundable cap</dt>
+          <dd class="col-6 text-end mb-1">{{ money(report.liability.federal.child_credit_refundable_cap, cents=false) }} / child</dd>
+          {% endif %}
           {% endif %}
           <dt class="col-6 fw-normal">State</dt>
           <dd class="col-6 text-end mb-1">
@@ -158,7 +162,12 @@
           {% if report.assumptions.disclosures.pretax_modeled_for_elapsed %}
           <li>Pre-tax deductions are modeled for the whole year (stubs carry no pre-tax figure).</li>
           {% endif %}
-          <li>Dependent credits treated as nonrefundable (liability floors at zero).</li>
+          {% if report.assumptions.disclosures.actc_modeled %}
+          <li>Refundable child tax credit (ACTC) modeled from wages; tax owed still floors at zero.</li>
+          {% endif %}
+          {% if report.assumptions.disclosures.phase_out_not_modeled %}
+          <li>Credit phase-outs at high income are not modeled.</li>
+          {% endif %}
           <li>Itemized election not applied; the estimate always uses the standard deduction.</li>
           {% if report.assumptions.filing_inputs_from %}
           <li>Filing inputs from profile "{{ report.assumptions.filing_inputs_from }}" ({{ report.assumptions.active_profile_count }} active profiles combined).</li>
@@ -212,6 +221,14 @@
             </td>
             <td class="text-end font-mono">{{ money(report.withholding.total.federal) }}</td>
           </tr>
+          {% if report.liability.federal.refundable_actc > 0 %}
+          <tr>
+            <td>Plus refundable child tax credit
+              <small class="text-muted">(ACTC, paid out even at zero tax)</small>
+            </td>
+            <td class="text-end font-mono tax-refund">{{ money(report.liability.federal.refundable_actc) }}</td>
+          </tr>
+          {% endif %}
           <tr class="tax-ledger-result">
             <td>Federal {{ "refund" if display.federal_is_refund else "owed" }}</td>
             <td class="text-end font-mono fw-bold {{ 'tax-refund' if display.federal_is_refund else 'tax-owed' }}">
@@ -225,7 +242,8 @@
           <tr>
             <td>NC tax
               {%- if display.state_rate_pct is not none %}
-              <small class="text-muted">({{ display.state_rate_pct }}% after {{ money(report.liability.state.standard_deduction, cents=false) }} deduction)</small>
+              <small class="text-muted">({{ display.state_rate_pct }}% after {{ money(report.liability.state.standard_deduction, cents=false) }} deduction
+                {%- if report.liability.state.child_deduction_total > 0 %} + {{ money(report.liability.state.child_deduction_total, cents=false) }} child deduction{% endif %})</small>
               {%- endif %}
             </td>
             <td class="text-end font-mono">{{ money(report.liability.state.liability) }}</td>
