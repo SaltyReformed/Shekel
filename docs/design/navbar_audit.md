@@ -178,9 +178,19 @@ desktop + mobile; sidebar and rail alternatives rendered and rejected against th
   (grayscale, brightness 1.02, contrast 1.12, sepia .14) so it joins the achromatic-plus-accent
   palette; historically apt, since the ancient shekel was a silver coin. Baked as the 28 KB
   coin-only `img/shekel_coin.png` (120px, 4x the 30px slot); the steel-blue tint and geometric SVG
-  redraw were rendered and rejected. The gold `shekel_logo.png` remains for the pre-login auth
-  pages, which keep their logo-gate look by the standing exception.
+  redraw were rendered and rejected.
 - **Ctrl+K hint:** shown in the bar on grid pages at md+ only, matching where `command_palette.js`
   actually binds (surface 9).
 
 Built into `base.html` + `base.css` on dev, 2026-07-06.
+
+### Follow-up: silver coin everywhere (2026-07-06)
+
+The developer extended the brand decision app-wide for consistency: the four pre-login auth cards
+(login, register, MFA verify, reauth) now render the silver coin + text wordmark instead of the gold
+full-logo PNG, and the favicon plus the apple-touch / PWA icon set were re-baked with the same
+silver recipe -- the coin centered at 72% of an opaque `--shekel-header-bg` tile, inside the
+maskable safe zone the manifest's `"any maskable"` purpose requires (the old 192/512 icons were
+crops of the full logo with the wordmark running off the tile edge). The manifest `background_color`
+was aligned to the `--shekel-header-bg` token value. With no live reference left, the gold
+`shekel_logo.png` was deleted; it remains recoverable from git history as the bake source.

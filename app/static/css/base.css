@@ -42,6 +42,17 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--shekel-header-text) 14%, transparent);
 }
 
+/* Auth logo-gate brand (login / register / MFA / reauth cards): the same
+   coin + text wordmark as the navbar, sized up and colored for a card
+   surface instead of the ink band. */
+.shekel-auth-brand {
+  gap: 0.65rem;
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--shekel-text-primary);
+}
+
 /* Destination pills: the active page is a tinted, ringed accent pill --
    the "which page am I on" signal the stock 55%-white treatment lacked
    (navbar_audit.md surface 2). */

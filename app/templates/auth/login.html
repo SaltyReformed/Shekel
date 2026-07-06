@@ -6,8 +6,9 @@
   <div class="col-md-4 col-lg-3">
     <div class="card shadow-sm">
       <div class="card-body">
-        <div class="text-center mb-4">
-          <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="40" class="logo-img">
+        <div class="d-flex align-items-center justify-content-center mb-4 shekel-auth-brand">
+          <img src="{{ url_for('static', filename='img/shekel_coin.png') }}" alt="" height="40" class="logo-img shekel-brand-coin">
+          Shekel
         </div>
         <form method="POST" action="{{ url_for('auth.login') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
