@@ -24,7 +24,7 @@ from app.extensions import db
 from app.models.loan_features import EscrowComponent
 from app.models.ref import AccountType
 from app.services import account_service
-from app.services.loan_payment_service import load_active_escrow_components
+from app.services.loan_loaders import load_active_escrow_components
 
 
 def _mortgage(seed_user, name="Mortgage"):

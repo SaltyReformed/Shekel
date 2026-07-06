@@ -8,6 +8,7 @@ the debt account.  The amount defaults to the resolver-derived monthly payment
 """
 
 import logging
+from datetime import date
 
 from flask import Response, flash, redirect, url_for
 from flask_login import current_user, login_required
@@ -62,8 +63,9 @@ def _resolve_transfer_amount(account, params, data):
         return data["amount"], False
 
     state = _resolve_loan_state(account, params)
-    escrow_components = loan_loaders.load_active_escrow_components(
-        account.id,
+    escrow_lines = loan_loaders.load_escrow_lines(account.id)
+    escrow_components = escrow_calculator.resolve_active_lines(
+        escrow_lines, date.today(),
     )
     transfer_amount = escrow_calculator.calculate_total_payment(
         state.monthly_payment, escrow_components,

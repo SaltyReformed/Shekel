@@ -108,7 +108,8 @@ def _project_next_year_escrow(escrow_components, escrow_portion):
     change.
 
     Args:
-        escrow_components: List of active EscrowComponent objects.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
         escrow_portion: Decimal current monthly escrow.
 
     Returns:
@@ -147,7 +148,8 @@ def _compute_payment_breakdown(schedule, escrow_components):
 
     Args:
         schedule: List of AmortizationRow objects (committed schedule).
-        escrow_components: List of active EscrowComponent objects.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
 
     Returns:
         dict with breakdown data, or None if no schedule data.

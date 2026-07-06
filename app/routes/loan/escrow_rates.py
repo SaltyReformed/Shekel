@@ -2,9 +2,10 @@
 Shekel Budget App -- Loan route package: escrow + rate-history management.
 
 The HTMX partial routes that add a rate-history entry and add / remove escrow
-components.  The escrow routes share the out-of-band payment-summary tail
-(recomputing monthly escrow + total payment for the OOB swap); co-locating
-them keeps that parallel code intra-file (R0801 is cross-file only).
+lines.  Both escrow routes rebuild the escrow list through the shared
+:func:`_render_escrow_list` tail (resolve today's active lines, recompute monthly
+escrow + total payment, emit the OOB payment-summary swap), so that parallel
+render lives in exactly one place.
 """
 
 import logging
@@ -14,8 +15,8 @@ from flask import flash, render_template, request
 from flask_login import login_required
 
 from app.extensions import db
-from app.models.loan_features import EscrowComponent, RateHistory
-from app.models.loan_params import LoanParams
+from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+from app.models.loan_features import RateHistory
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _RATE_HISTORY_UNIQUE_CONSTRAINT,
@@ -33,6 +34,7 @@ from app.services import (
     loan_recurrence_sync,
 )
 from app.utils.auth_helpers import require_owner
+from app.utils.money import ZERO
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +176,104 @@ def add_rate_change(account_id):
     )
 
 
+def _active_line_with_name(account_id, name):
+    """Return the account's ACTIVE escrow line with ``name``, or None.
+
+    Decision C (route-enforced active-name uniqueness): a line is active iff its
+    latest version -- greatest ``effective_date`` -- is not a removal tombstone.
+    That predicate depends on a line's child versions, so it cannot be a raw
+    partial unique index; the ``ix_escrow_lines_account_name`` index serves this
+    lookup.  A line whose latest version is a tombstone is removed, so its name
+    is free to reuse under a new line.
+
+    Args:
+        account_id: The loan account to search.
+        name: The candidate escrow line name.
+
+    Returns:
+        The matching active :class:`~app.models.escrow_line.EscrowLine`, or
+        ``None`` when no active line carries that name.
+    """
+    for line in loan_loaders.load_escrow_lines(account_id):
+        if line.name != name:
+            continue
+        latest = max(
+            line.versions, key=lambda v: v.effective_date, default=None,
+        )
+        if latest is not None and not latest.is_removed:
+            return line
+    return None
+
+
+def _tombstone_line_today(line):
+    """Mark an escrow line removed as of today (idempotent).
+
+    Appends a removal tombstone version (``is_removed``, $0) at today's date, so
+    the line resolves to 0 from today forward while its history stays intact --
+    the supersession analogue of the old ``end_date`` stamp.  No-op when the line
+    already resolves to inactive today (a repeat delete).  When a version already
+    exists AT today (a same-day add or amount change), that version is converted
+    to the tombstone in place rather than appending a second: the
+    ``(line_id, effective_date)`` unique forbids two versions on one date, and a
+    line added and removed the same day never contributed (matching the legacy
+    zero-length range).
+
+    Args:
+        line: The :class:`~app.models.escrow_line.EscrowLine` to remove.
+    """
+    if not escrow_calculator.resolve_active_lines([line], date.today()):
+        return  # already inactive as of today
+    today_version = next(
+        (v for v in line.versions if v.effective_date == date.today()), None,
+    )
+    if today_version is not None:
+        today_version.is_removed = True
+        today_version.annual_amount = ZERO
+        return
+    db.session.add(EscrowComponentVersion(
+        line_id=line.id, effective_date=date.today(),
+        annual_amount=ZERO, is_removed=True,
+    ))
+
+
+def _render_escrow_list(account, params):
+    """Reload the escrow lines and render the list partial with the OOB tail.
+
+    The shared reload used by both :func:`add_escrow` and :func:`delete_escrow`:
+    load the account's lines, resolve them to today's active set, recompute the
+    monthly-escrow badge + total payment, and emit the out-of-band
+    payment-summary swap -- so that render logic lives in one place.
+
+    Args:
+        account: ORM :class:`~app.models.account.Account` for the loan.
+        params: ORM :class:`~app.models.loan_params.LoanParams`, or None.
+
+    Returns:
+        The rendered ``loan/_escrow_list.html`` partial.
+    """
+    escrow_lines = loan_loaders.load_escrow_lines(account.id)
+    escrow_components = escrow_calculator.resolve_active_lines(
+        escrow_lines, date.today(),
+    )
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
+    total_payment = _compute_total_payment(account, params, escrow_components)
+    return render_template(
+        "loan/_escrow_list.html",
+        account=account,
+        escrow_components=escrow_calculator.build_escrow_display(
+            escrow_components,
+        ),
+        monthly_escrow=monthly_escrow,
+        total_payment=total_payment,
+        oob_swaps=True,
+    )
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
 @require_owner
 def add_escrow(account_id):
-    """Add an escrow component (HTMX)."""
+    """Add an escrow line (HTMX): a new line plus its opening version today."""
     account, params, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
@@ -189,99 +284,50 @@ def add_escrow(account_id):
 
     data = _escrow_schema.load(request.form)
 
-    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
-    # converted the form percent to the storage-domain fraction
-    # before validation, so ``data["inflation_rate"]`` is stored
-    # verbatim.
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` converted the form
+    # percent to the storage-domain fraction before validation, so
+    # ``data["inflation_rate"]`` is stored verbatim.
 
-    # Check for a duplicate name among the CURRENTLY-ACTIVE components; a
-    # component removed earlier (``end_date`` set) may be re-added under the
-    # same name, so a historical version must not block the add.  The partial
-    # unique ``uq_escrow_components_account_name_active`` is the DB backstop.
-    existing = (
-        db.session.query(EscrowComponent)
-        .filter(
-            EscrowComponent.account_id == account.id,
-            EscrowComponent.name == data["name"],
-            EscrowComponent.end_date.is_(None),
-        )
-        .first()
-    )
-    if existing:
+    # Reject a duplicate ACTIVE line name (decision C); a removed line's name is
+    # reusable, so only an active collision blocks the add.
+    if _active_line_with_name(account.id, data["name"]) is not None:
         return "An escrow component with that name already exists.", 400
 
-    # ``effective_date`` is omitted -- the column's CURRENT_DATE server default
-    # takes effect today, opening the component's active range.
-    comp = EscrowComponent(account_id=account.id, **data)
-    db.session.add(comp)
+    # New line + its opening version effective today.  The operator-facing
+    # effective-date field is a later step; the add defaults the version to
+    # today, reproducing the legacy CURRENT_DATE-defaulted ``effective_date``.
+    line = EscrowLine(account_id=account.id, name=data["name"])
+    db.session.add(line)
+    db.session.flush()  # assign line.id for the version FK
+    db.session.add(EscrowComponentVersion(
+        line_id=line.id,
+        effective_date=date.today(),
+        annual_amount=data["annual_amount"],
+        inflation_rate=data.get("inflation_rate"),
+    ))
     db.session.commit()
 
-    logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
-
-    escrow_components = loan_loaders.load_active_escrow_components(
-        account.id,
-    )
-
-    # Compute updated payment summary for OOB swap.
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
-    total_payment = _compute_total_payment(account, params, escrow_components)
-
-    return render_template(
-        "loan/_escrow_list.html",
-        account=account,
-        escrow_components=escrow_calculator.build_escrow_display(
-            escrow_components,
-        ),
-        monthly_escrow=monthly_escrow,
-        total_payment=total_payment,
-        oob_swaps=True,
-    )
+    logger.info("Added escrow line '%s' to loan %d", data["name"], account.id)
+    return _render_escrow_list(account, params)
 
 
 @loan_bp.route(
-    "/accounts/<int:account_id>/loan/escrow/<int:component_id>/delete",
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/delete",
     methods=["POST"],
 )
 @login_required
 @require_owner
-def delete_escrow(account_id, component_id):
-    """Remove an escrow component (HTMX)."""
-    account, _, _account_type = _load_loan_account(account_id)
+def delete_escrow(account_id, line_id):
+    """Remove an escrow line (HTMX): append a removal tombstone as of today."""
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
-    comp = db.session.get(EscrowComponent, component_id)
-    if comp is None or comp.account_id != account.id:
+    line = db.session.get(EscrowLine, line_id)
+    if line is None or line.account_id != account.id:
         return "Component not found", 404
 
-    # Close the component's active range as of today (replaces the old
-    # ``is_active = False``); the row survives as history.  Guarded so a repeat
-    # delete does not move an already-set ``end_date`` (idempotent).
-    if comp.end_date is None:
-        comp.end_date = date.today()
+    _tombstone_line_today(line)
     db.session.commit()
-    logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
-
-    escrow_components = loan_loaders.load_active_escrow_components(
-        account.id,
-    )
-
-    # Compute updated payment summary for OOB swap.
-    params = (
-        db.session.query(LoanParams)
-        .filter_by(account_id=account.id)
-        .first()
-    )
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
-    total_payment = _compute_total_payment(account, params, escrow_components)
-
-    return render_template(
-        "loan/_escrow_list.html",
-        account=account,
-        escrow_components=escrow_calculator.build_escrow_display(
-            escrow_components,
-        ),
-        monthly_escrow=monthly_escrow,
-        total_payment=total_payment,
-        oob_swaps=True,
-    )
+    logger.info("Removed escrow line %d from loan %d", line_id, account.id)
+    return _render_escrow_list(account, params)

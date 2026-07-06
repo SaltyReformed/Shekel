@@ -17,7 +17,6 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
-from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
@@ -27,6 +26,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import account_service, loan_payment_service, transfer_recurrence
 from app.services.rate_period_engine import monthly_due_date
 from tests._test_helpers import (
+    add_escrow_line,
     insert_origination_event,
     insert_origination_rate,
 )
@@ -35,7 +35,7 @@ from tests._test_helpers import (
 def _build_derived_loan_transfer(seed_user, escrow_annual):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
 
-    Returns ``(loan_account, escrow_component, scenario_id)``.  The
+    Returns ``(loan_account, escrow_version, scenario_id)``.  The
     transfer's stored default amount is intentionally a stale value so
     the test can prove the live override, not the stored amount, drives
     the result.
@@ -71,11 +71,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     insert_origination_event(params)
     insert_origination_rate(params, Decimal("0.06000"))
 
-    escrow = EscrowComponent(
-        account_id=loan.id, name="Property Tax",
-        annual_amount=escrow_annual,
+    escrow = add_escrow_line(
+        db.session, loan.id, "Property Tax", escrow_annual,
+        effective_date=params.origination_date,
     )
-    db.session.add(escrow)
 
     rule = RecurrenceRule(
         user_id=user.id,

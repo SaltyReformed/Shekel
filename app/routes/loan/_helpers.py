@@ -255,7 +255,8 @@ def _compute_total_payment(account, params, escrow_components):
         account: ORM :class:`Account` instance for the loan account.
             Required to load anchor events for the resolver.
         params: ORM :class:`LoanParams` instance, or None.
-        escrow_components: Iterable of :class:`EscrowComponent`.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
     """
     if params is None:
         return None

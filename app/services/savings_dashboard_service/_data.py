@@ -9,10 +9,12 @@ data and returns plain data.
 
 from decimal import Decimal
 
+from sqlalchemy.orm import selectinload
+
 from app.extensions import db
 from app.models.account import Account
+from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
-from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.services import pay_period_service
@@ -67,8 +69,10 @@ def _load_loan_params_and_escrow(accounts):
     Returns:
         ``(loan_params_map, escrow_map)`` -- the first maps account_id
         to its :class:`LoanParams`; the second maps account_id to a
-        list of :class:`EscrowComponent` (for the debt-summary PITI
-        total).  Both are empty when no loan accounts exist.
+        list of :class:`~app.models.escrow_line.EscrowLine` with their
+        versions (for the debt-summary PITI total, resolved to today by
+        :func:`~app.services.escrow_calculator.escrow_monthly_as_of`).  Both
+        are empty when no loan accounts exist.
     """
     amort_type_ids = {
         at.id for at in db.session.query(AccountType).filter_by(has_amortization=True).all()
@@ -83,15 +87,17 @@ def _load_loan_params_and_escrow(accounts):
         ).all():
             loan_params_map[lp.account_id] = lp
 
-        # Currently-active escrow components for loan accounts (for debt
-        # summary PITI).  Filtered to ``end_date IS NULL`` because
-        # ``calculate_monthly_escrow`` no longer gates on active state -- the
-        # caller supplies the set active on the relevant date.
-        for ec in db.session.query(EscrowComponent).filter(
-            EscrowComponent.account_id.in_(loan_account_ids),
-            EscrowComponent.end_date.is_(None),
+        # Escrow LINES (with their versions) for the loan accounts, batched to
+        # avoid an N+1 across loans; the metric resolves each to today's active
+        # version via ``escrow_monthly_as_of``.  The whole line set is loaded (no
+        # active pre-filter): "active on today" is a per-line supersession
+        # resolution the calculator owns, not a stored flag to filter on.
+        for line in db.session.query(EscrowLine).options(
+            selectinload(EscrowLine.versions),
+        ).filter(
+            EscrowLine.account_id.in_(loan_account_ids),
         ).all():
-            escrow_map.setdefault(ec.account_id, []).append(ec)
+            escrow_map.setdefault(line.account_id, []).append(line)
 
     return loan_params_map, escrow_map
 

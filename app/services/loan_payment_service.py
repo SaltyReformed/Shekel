@@ -46,7 +46,7 @@ from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_loaders import (
     _rate_change_records_from,
-    load_active_escrow_components,
+    load_escrow_lines,
     load_loan_anchor_facts,
     load_loan_params,
     load_rate_history,
@@ -74,8 +74,9 @@ class LoanContext:
             carries an origination row).  ``None`` only for a loan with
             no RateHistory rows at all, which the origination-row
             invariant forbids in production.
-        escrow_components: Active EscrowComponent ORM objects for
-            display and escrow calculation.
+        escrow_components: The loan's escrow lines resolved to their in-effect
+            version on today (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`),
+            for display and escrow calculation.
         monthly_escrow: Aggregated monthly escrow Decimal.
         contractual_pi: Standard monthly P&I payment (no escrow).
         rate_history: RateHistory ORM objects for rate display.  Carries
@@ -85,7 +86,7 @@ class LoanContext:
 
     payments: list[PaymentRecord]
     rate_changes: list[RateChangeRecord] | None
-    escrow_components: list  # list[EscrowComponent]
+    escrow_components: list  # list[ResolvedEscrowLine]
     monthly_escrow: Decimal
     contractual_pi: Decimal
     rate_history: list = field(default_factory=list)  # list[RateHistory]
@@ -116,8 +117,14 @@ def load_loan_context(
     Returns:
         LoanContext with all data needed for amortization projection.
     """
-    # Escrow -- loaded first because payment preparation needs it.
-    escrow_components = load_active_escrow_components(account_id)
+    # Escrow -- loaded first because payment preparation needs it.  Resolve the
+    # lines to their in-effect versions on today ONCE: ``escrow_components`` is
+    # that resolved-today display/calc set and ``monthly_escrow`` its sum, which
+    # equals ``escrow_monthly_as_of(escrow_lines, today)`` by construction.
+    escrow_lines = load_escrow_lines(account_id)
+    escrow_components = escrow_calculator.resolve_active_lines(
+        escrow_lines, date.today(),
+    )
     monthly_escrow = escrow_calculator.calculate_monthly_escrow(
         escrow_components,
     )

@@ -26,12 +26,13 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.escrow_line import EscrowLine
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_features import EscrowComponent, RateHistory
 from app.models.loan_params import LoanParams
@@ -448,6 +449,38 @@ def load_all_escrow_components(account_id: int) -> list:
     return (
         db.session.query(EscrowComponent)
         .filter(EscrowComponent.account_id == account_id)
+        .all()
+    )
+
+
+def load_escrow_lines(account_id: int) -> list:
+    """Load a loan account's escrow LINES with every version, ordered by name.
+
+    The single escrow read for the supersession model: one query returns each
+    :class:`~app.models.escrow_line.EscrowLine` with its
+    :class:`~app.models.escrow_line.EscrowComponentVersion` history eager-loaded
+    (``selectinload`` -- one extra query for all lines, not one per line), so a
+    caller resolves "escrow as of date D" purely in memory via
+    :func:`app.services.escrow_calculator.escrow_monthly_as_of` /
+    :func:`~app.services.escrow_calculator.resolve_active_lines`.  It serves BOTH
+    the loan-payment split (which resolves each historical payment's date against
+    the same rows, so a since-removed version still applies to a past payment) and
+    the today's-escrow display / cash surfaces (which resolve on today) -- one
+    loader, one source of truth, no separate active/all split.
+
+    Args:
+        account_id: The loan account whose escrow lines to load.
+
+    Returns:
+        The account's :class:`~app.models.escrow_line.EscrowLine` rows, ascending
+        by ``name`` (stable order for the display cent-allocation), each with
+        ``versions`` populated.  Empty when the account carries no escrow.
+    """
+    return (
+        db.session.query(EscrowLine)
+        .options(selectinload(EscrowLine.versions))
+        .filter(EscrowLine.account_id == account_id)
+        .order_by(EscrowLine.name)
         .all()
     )
 

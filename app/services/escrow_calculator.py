@@ -6,7 +6,7 @@ No database access -- operates only on values passed in.
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.utils.dates import months_between
@@ -46,6 +46,33 @@ class EscrowComponentDisplay:
     monthly_amount: Decimal
     inflation_rate: Decimal | None
     inflation_rate_pct: Decimal | None
+
+
+@dataclass(frozen=True)
+class ResolvedEscrowLine:
+    """An escrow line resolved to the version in effect on a given date.
+
+    The output of :func:`resolve_active_lines` and the input every "today's
+    escrow" surface consumes -- the supersession model's answer to "what escrow
+    does this line carry on date D."  ``id`` is the LINE's stable identity (not a
+    version id): it is the target of the escrow tab's delete/edit control, so a
+    rename or amount change never breaks the link.  ``annual_amount`` /
+    ``inflation_rate`` come from the resolved version; ``created_at`` is that
+    version's insert timestamp, carried solely for the forward-inflation display
+    projection (:func:`calculate_monthly_escrow`'s ``as_of_date`` branch) so a
+    resolved line drives the same "next year" note the legacy component did.
+
+    Exposes exactly the attributes :func:`calculate_monthly_escrow` and
+    :func:`build_escrow_display` read (``id``, ``name``, ``annual_amount``,
+    ``inflation_rate``, ``created_at``), so the resolved set is a drop-in for the
+    component list those functions took under the legacy model.
+    """
+
+    id: int
+    name: str
+    annual_amount: Decimal
+    inflation_rate: Decimal | None
+    created_at: datetime | None
 
 
 def _allocate_monthly_amounts(annuals: list[Decimal]) -> list[Decimal]:
@@ -137,14 +164,13 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
 def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -> Decimal:
     """Sum the given escrow components' annual amounts / 12.
 
-    The caller supplies the component set relevant to the date in question
-    -- the components active today
-    (:func:`app.services.loan_loaders.load_active_escrow_components`)
-    or, for a past payment's date, every version
-    (:func:`app.services.loan_loaders.load_all_escrow_components`)
-    filtered by :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
-    This function no longer filters by active state itself; it sums exactly the
-    components handed to it.
+    The pure summation primitive: the caller supplies the component set already
+    resolved for the date in question.  For the supersession escrow model that
+    resolution is :func:`resolve_active_lines` (each line's in-effect, non-removed
+    version on a date), and :func:`escrow_monthly_as_of` is the date-keyed wrapper
+    that pairs the two -- the split reads it per payment date, the display / cash
+    surfaces on today.  This function no longer filters by active state itself; it
+    sums exactly the components handed to it.
 
     Args:
         components: List of objects with .annual_amount, and optionally
@@ -183,6 +209,98 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
         total += monthly
 
     return round_money(total)
+
+
+def _version_as_of(versions: list, on_date: date) -> object | None:
+    """Return a line's version in effect on ``on_date`` (supersession resolution).
+
+    The version with the greatest ``effective_date <= on_date`` -- the one the
+    later versions have not yet superseded.  ``None`` when the line has no version
+    on or before ``on_date`` (it did not exist yet).  This is the single
+    "which version applies" primitive; a removal tombstone is a normal version
+    here (it wins if it is the latest on/before the date), and the caller decides
+    a tombstone contributes 0.
+
+    Args:
+        versions: The line's :class:`~app.models.escrow_line.EscrowComponentVersion`
+            objects (each with ``effective_date``), in any order.
+        on_date: The date to resolve the in-effect version for.
+
+    Returns:
+        The in-effect version, or ``None`` if none is on/before ``on_date``.
+    """
+    candidates = [v for v in versions if v.effective_date <= on_date]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda v: v.effective_date)
+
+
+def resolve_active_lines(lines: list, on_date: date) -> list[ResolvedEscrowLine]:
+    """Resolve each escrow line to its in-effect, non-removed version on ``on_date``.
+
+    For every line, pick the version in effect on ``on_date``
+    (:func:`_version_as_of`); drop the line when it has no version yet or its
+    in-effect version is a removal tombstone (``is_removed``), so it contributes
+    nothing on that date.  The returned rows preserve input line order (the
+    loaders sort by name), which the display cent-allocation relies on for stable
+    tie-breaking.
+
+    The single "what escrow is active on date D" resolver: both the display
+    surfaces (via :func:`build_escrow_display`) and the monthly total (via
+    :func:`escrow_monthly_as_of`) read exactly this set, so a rendered row and the
+    figure it is summed into can never disagree.
+
+    Args:
+        lines: :class:`~app.models.escrow_line.EscrowLine` objects, each exposing
+            ``id``, ``name``, and ``versions``.
+        on_date: The date to resolve every line's in-effect version for.
+
+    Returns:
+        One :class:`ResolvedEscrowLine` per line active on ``on_date``, in the
+        input line order; empty when no line is active.
+    """
+    resolved: list[ResolvedEscrowLine] = []
+    for line in lines:
+        version = _version_as_of(line.versions, on_date)
+        if version is None or version.is_removed:
+            continue
+        inflation = version.inflation_rate
+        resolved.append(ResolvedEscrowLine(
+            id=line.id,
+            name=line.name,
+            annual_amount=Decimal(str(version.annual_amount)),
+            inflation_rate=(
+                Decimal(str(inflation)) if inflation is not None else None
+            ),
+            created_at=getattr(version, "created_at", None),
+        ))
+    return resolved
+
+
+def escrow_monthly_as_of(lines: list, on_date: date) -> Decimal:
+    """Monthly escrow total for a loan's lines as of ``on_date`` (the DRY heart).
+
+    Resolves each line to its in-effect, non-removed version
+    (:func:`resolve_active_lines`) and sums ``annual_amount / 12`` with the same
+    sum-then-round boundary :func:`calculate_monthly_escrow` uses (E-26).  The
+    ONE function every date-keyed escrow figure flows through: the loan-payment
+    split reads it on each payment's date and the cash / display surfaces read it
+    on today, so the escrow built into a payment's cash and the escrow its split
+    subtracts are the same figure by construction, never by coincidence.  No
+    inflation is applied -- recorded past/present escrow is exact; inflation is a
+    forward-projection display concern only (:func:`calculate_monthly_escrow`'s
+    ``as_of_date`` branch).
+
+    Args:
+        lines: :class:`~app.models.escrow_line.EscrowLine` objects with their
+            ``versions`` loaded.
+        on_date: The date to compute the monthly escrow total for.
+
+    Returns:
+        The rounded monthly escrow total; ``Decimal("0.00")`` when no line is
+        active on ``on_date``.
+    """
+    return calculate_monthly_escrow(resolve_active_lines(lines, on_date))
 
 
 def calculate_total_payment(

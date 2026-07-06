@@ -1803,14 +1803,11 @@ class TestDebtProgress:
         periods = seed_periods
         mortgage_acct, _ = _create_mortgage_account(user, periods)
 
-        # Add escrow component to the mortgage.
-        from app.models.loan_features import EscrowComponent  # pylint: disable=import-outside-toplevel
-        escrow = EscrowComponent(
-            account_id=mortgage_acct.id,
-            name="Property Tax",
-            annual_amount=Decimal("3396.00"),
+        # Add an escrow line (one origination-dated version) to the mortgage.
+        from tests._test_helpers import add_escrow_line  # pylint: disable=import-outside-toplevel
+        add_escrow_line(
+            db.session, mortgage_acct.id, "Property Tax", Decimal("3396.00"),
         )
-        db.session.add(escrow)
 
         # Make one payment that includes escrow.
         _create_transfer_with_shadows(

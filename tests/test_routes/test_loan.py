@@ -17,8 +17,9 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_params import LoanParams
-from app.models.loan_features import RateHistory, EscrowComponent
+from app.models.loan_features import RateHistory
 from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.loan_posting_service import confirmed_loan_interest_in_year
@@ -26,6 +27,7 @@ from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 from tests._test_helpers import (
+    add_escrow_line,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
@@ -772,7 +774,7 @@ class TestEscrow:
     """Tests for escrow component management."""
 
     def test_escrow_add(self, auth_client, seed_user, db, seed_periods):
-        """POST escrow creates component with percentage-to-decimal conversion."""
+        """POST escrow creates a line + opening version, percent -> decimal."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow",
@@ -781,16 +783,23 @@ class TestEscrow:
         assert resp.status_code == 200
         assert b"Property Tax" in resp.data
 
-        comp = db.session.query(EscrowComponent).filter_by(account_id=acct.id).first()
-        assert comp is not None
-        assert comp.inflation_rate == Decimal("0.03")
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="Property Tax").one()
+        )
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line.id).one()
+        )
+        assert version.annual_amount == Decimal("4800.00")
+        # 3% form percent stored as the 0.03 decimal fraction.
+        assert version.inflation_rate == Decimal("0.03")
+        assert version.is_removed is False
 
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
-        """Duplicate escrow name returns 400."""
+        """Duplicate ACTIVE line name returns 400."""
         acct = _create_mortgage(seed_user, db.session)
-        db.session.add(EscrowComponent(
-            account_id=acct.id, name="Insurance", annual_amount=Decimal("2400.00"),
-        ))
+        add_escrow_line(db.session, acct.id, "Insurance", Decimal("2400.00"))
         db.session.commit()
 
         resp = auth_client.post(
@@ -801,36 +810,96 @@ class TestEscrow:
         assert b"already exists" in resp.data
 
     def test_escrow_delete(self, auth_client, seed_user, db, seed_periods):
-        """POST delete closes the component's active range (stamps end_date)."""
+        """POST delete appends a removal tombstone; the line resolves inactive."""
         acct = _create_mortgage(seed_user, db.session)
-        comp = EscrowComponent(
-            account_id=acct.id, name="Old Insurance", annual_amount=Decimal("1200.00"),
-        )
-        db.session.add(comp)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Old Insurance", Decimal("1200.00"),
+        ).line_id
         db.session.commit()
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{comp.id}/delete")
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
         assert resp.status_code == 200
-        db.session.refresh(comp)
-        # Removal stamps end_date (the effective-dated "removed" marker that
-        # replaced is_active=False); the row survives as history.
-        assert comp.end_date is not None
+        db.session.expire_all()
+        # Removal appends an is_removed tombstone (supersession) at today, so the
+        # line's latest version is that tombstone and it contributes nothing now.
+        line = db.session.get(EscrowLine, line_id)
+        latest = max(line.versions, key=lambda v: v.effective_date)
+        assert latest.is_removed is True
 
     def test_escrow_delete_idor(self, auth_client, second_user, db, seed_periods):
         """DELETE another user's escrow returns 404 and leaves it active."""
         other = _create_other_loan(second_user, db.session, "Mortgage")
-        comp = EscrowComponent(
-            account_id=other.id, name="Tax", annual_amount=Decimal("3000.00"),
-        )
-        db.session.add(comp)
+        line_id = add_escrow_line(
+            db.session, other.id, "Tax", Decimal("3000.00"),
+        ).line_id
         db.session.commit()
 
-        resp = auth_client.post(f"/accounts/{other.id}/loan/escrow/{comp.id}/delete")
+        resp = auth_client.post(f"/accounts/{other.id}/loan/escrow/{line_id}/delete")
         assert resp.status_code == 404
 
         db.session.expire_all()
-        after = db.session.get(EscrowComponent, comp.id)
-        assert after.end_date is None
+        # No tombstone appended: the line's only version is the original, active.
+        line = db.session.get(EscrowLine, line_id)
+        latest = max(line.versions, key=lambda v: v.effective_date)
+        assert latest.is_removed is False
+
+    def test_escrow_delete_same_day_add_converts_in_place(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Add then delete the SAME day converts the today-version in place.
+
+        The route add opens the line's version AT today, so a same-day delete
+        cannot append a second tombstone at today (the
+        ``uq_escrow_component_versions_line_effective_date`` unique forbids two
+        versions on one date).  It must convert that version in place --
+        ``is_removed`` True, ``annual_amount`` 0.00 (satisfying the
+        tombstone-zero CHECK) -- leaving exactly one version and an inactive line.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        # Add via the route so the opening version is effective TODAY.
+        add = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={"name": "PMI", "annual_amount": "1200.00"},
+        )
+        assert add.status_code == 200
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="PMI").one()
+        )
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line.id}/delete")
+        assert resp.status_code == 200
+        db.session.expire_all()
+        line = db.session.get(EscrowLine, line.id)
+        # Converted in place: still ONE version, now a zero-amount tombstone.
+        assert len(line.versions) == 1
+        assert line.versions[0].is_removed is True
+        assert line.versions[0].annual_amount == Decimal("0.00")
+
+    def test_escrow_delete_twice_is_idempotent(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A repeat delete is a no-op: still exactly one tombstone, no 500.
+
+        After the first delete the line resolves inactive today, so the second
+        delete's resolve-active-today guard short-circuits before appending
+        another tombstone (a double-click must not stack tombstones or error).
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Old Insurance", Decimal("1200.00"),
+        ).line_id
+        db.session.commit()
+
+        first = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
+        second = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
+        assert first.status_code == 200
+        assert second.status_code == 200
+        db.session.expire_all()
+        line = db.session.get(EscrowLine, line_id)
+        # Exactly one tombstone appended (the origination version + one tombstone).
+        tombstones = [v for v in line.versions if v.is_removed]
+        assert len(tombstones) == 1
 
     def test_escrow_oob_payment_update(self, auth_client, seed_user, db, seed_periods):
         """Adding escrow returns OOB fragments for payment summary."""
@@ -1816,7 +1885,7 @@ class TestLoanNegativePaths:
         )
         assert resp.status_code == 404
 
-        count = db.session.query(EscrowComponent).filter_by(account_id=other.id).count()
+        count = db.session.query(EscrowLine).filter_by(account_id=other.id).count()
         assert count == 0
 
 
@@ -2744,16 +2813,16 @@ class TestMultiScenarioVisualization:
 
 def _add_escrow(db_session, account_id, name, annual_amount,
                 inflation_rate=None):
-    """Helper to add an escrow component to a loan account."""
-    comp = EscrowComponent(
-        account_id=account_id,
-        name=name,
-        annual_amount=annual_amount,
+    """Add an escrow line (with one origination-dated version) to a loan.
+
+    Thin wrapper over the shared :func:`tests._test_helpers.add_escrow_line`;
+    the version defaults to the loan's origination date, so the escrow is active
+    for the current-period breakdown these tests read.
+    """
+    return add_escrow_line(
+        db_session, account_id, name, annual_amount,
         inflation_rate=inflation_rate,
     )
-    db_session.add(comp)
-    db_session.flush()
-    return comp
 
 
 class TestPaymentBreakdown:

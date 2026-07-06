@@ -10,6 +10,8 @@ from app.services.escrow_calculator import (
     build_escrow_display,
     calculate_monthly_escrow,
     calculate_total_payment,
+    escrow_monthly_as_of,
+    resolve_active_lines,
 )
 
 
@@ -329,3 +331,149 @@ class TestEscrowDisplayCentAllocation:
         for row in rows:
             exact = row.annual_amount / Decimal("12")
             assert abs(row.monthly_amount - exact) < Decimal("0.01")
+
+
+def _ver(effective_date, annual, *, is_removed=False, inflation=None):
+    """Build a mock escrow version (supersession model)."""
+    return SimpleNamespace(
+        effective_date=effective_date,
+        annual_amount=Decimal(str(annual)),
+        is_removed=is_removed,
+        inflation_rate=Decimal(str(inflation)) if inflation is not None else None,
+        created_at=None,
+    )
+
+
+def _line(line_id, name, versions):
+    """Build a mock escrow line carrying its versions."""
+    return SimpleNamespace(id=line_id, name=name, versions=versions)
+
+
+class TestEscrowMonthlyAsOf:
+    """The date-keyed supersession resolver + sum (the DRY heart)."""
+
+    def test_single_version_resolves_annual_over_twelve(self):
+        """One line, one version -> annual / 12 as of any date on/after it.
+
+        1200 / 12 = 100.00 (exact).
+        """
+        line = _line(1, "Escrow", [_ver(date(2020, 1, 1), "1200")])
+        assert escrow_monthly_as_of([line], date(2026, 6, 1)) == Decimal("100.00")
+
+    def test_supersession_greatest_effective_le_date(self):
+        """As-of resolves to the greatest effective_date <= D version.
+
+        v1 $1,200/yr from 2020-01-01, v2 $2,400/yr from 2026-03-01.
+        As of 2026-02-01 -> v1 1200/12 = 100.00; as of the boundary
+        2026-03-01 -> v2 2400/12 = 200.00 (effective_date is inclusive).
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 3, 1), "2400"),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 2, 1)) == Decimal("100.00")
+        assert escrow_monthly_as_of([line], date(2026, 3, 1)) == Decimal("200.00")
+
+    def test_ordering_independent(self):
+        """Version order within a line does not change the resolution.
+
+        Same two versions listed newest-first; as of 2026-02-01 still
+        resolves to v1 -> 100.00.
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2026, 3, 1), "2400"),
+            _ver(date(2020, 1, 1), "1200"),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 2, 1)) == Decimal("100.00")
+
+    def test_tombstone_contributes_zero(self):
+        """A line whose in-effect version is a removal tombstone contributes 0.
+
+        v1 $1,200/yr from 2020, tombstone from 2026-01-01.  As of 2026-06-01
+        the tombstone is in effect -> 0.00; as of 2025-06-01 -> v1 100.00.
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 1, 1), "0", is_removed=True),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 6, 1)) == Decimal("0.00")
+        assert escrow_monthly_as_of([line], date(2025, 6, 1)) == Decimal("100.00")
+
+    def test_no_version_on_or_before_date_contributes_zero(self):
+        """A line whose earliest version starts after D contributes 0 on D.
+
+        Only version effective 2026-03-01; as of 2026-01-01 no version is
+        on/before D -> line contributes 0.00.
+        """
+        line = _line(1, "Escrow", [_ver(date(2026, 3, 1), "2400")])
+        assert escrow_monthly_as_of([line], date(2026, 1, 1)) == Decimal("0.00")
+
+    def test_multi_line_sum_then_round(self):
+        """Two $100/yr lines sum full-precision then round once -> 16.67.
+
+        100/12 = 8.3333...; full-precision sum 16.6666... -> round_money 16.67
+        (preserves calculate_monthly_escrow's E-26 sum-then-round boundary).
+        """
+        lines = [
+            _line(1, "Tax", [_ver(date(2020, 1, 1), "100")]),
+            _line(2, "Ins", [_ver(date(2020, 1, 1), "100")]),
+        ]
+        assert escrow_monthly_as_of(lines, date(2026, 1, 1)) == Decimal("16.67")
+
+    def test_empty_lines(self):
+        """No lines -> $0.00."""
+        assert escrow_monthly_as_of([], date(2026, 1, 1)) == Decimal("0.00")
+
+
+class TestResolveActiveLines:
+    """The shared resolver feeding both the display and the monthly total."""
+
+    def test_carries_line_identity_and_version_fields(self):
+        """A resolved row carries the LINE id/name and the version's amount/rate.
+
+        id/name are the line's (the delete/edit target); annual_amount and
+        inflation_rate come from the in-effect version (v2 as of 2026-06-01).
+        """
+        line = _line(7, "Property Tax", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 3, 1), "2400", inflation="0.03"),
+        ])
+        rows = resolve_active_lines([line], date(2026, 6, 1))
+        assert len(rows) == 1
+        assert rows[0].id == line.id == 7
+        # The row carries the LINE's display name (compared to the input line,
+        # not a literal -- the name is display text, not ref-table key logic).
+        assert rows[0].name == line.name
+        assert rows[0].annual_amount == Decimal("2400.00")
+        assert rows[0].inflation_rate == Decimal("0.03")
+
+    def test_drops_removed_and_absent_lines_preserves_order(self):
+        """Tombstoned or not-yet-effective lines drop; survivors keep input order.
+
+        id 1 active, id 2 tombstoned as of D, id 3 not yet effective.  Only id 1
+        survives.
+        """
+        lines = [
+            _line(1, "A", [_ver(date(2020, 1, 1), "1200")]),
+            _line(2, "B", [_ver(date(2026, 1, 1), "0", is_removed=True)]),
+            _line(3, "C", [_ver(date(2027, 1, 1), "2400")]),
+        ]
+        rows = resolve_active_lines(lines, date(2026, 6, 1))
+        assert [r.id for r in rows] == [1]
+
+    def test_monthly_as_of_equals_calculate_over_resolved(self):
+        """escrow_monthly_as_of == calculate_monthly_escrow(resolve_active_lines).
+
+        Pins the delegation so the two "today's escrow" paths (LoanContext's
+        field and the as-of wrapper) can never diverge.  7200/12 + 2400/12 =
+        600.00 + 200.00 = 800.00.
+        """
+        lines = [
+            _line(1, "Tax", [_ver(date(2020, 1, 1), "7200")]),
+            _line(2, "Ins", [_ver(date(2020, 1, 1), "2400")]),
+        ]
+        as_of = date(2026, 1, 1)
+        assert escrow_monthly_as_of(lines, as_of) == calculate_monthly_escrow(
+            resolve_active_lines(lines, as_of),
+        )
+        assert escrow_monthly_as_of(lines, as_of) == Decimal("800.00")
