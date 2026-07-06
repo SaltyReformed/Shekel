@@ -117,6 +117,35 @@ def growth_chart(account_id):
     return render_template("investment/_growth_chart.html", **ctx)
 
 
+@investment_bp.route("/accounts/<int:account_id>/investment/balance-hero")
+@login_required
+@require_owner
+def balance_hero(account_id):
+    """HTMX partial: the investment balance hero cell (Loop B P1 C4).
+
+    The Cancel / Escape and 409-conflict revert target for the detail page's
+    click-to-edit anchor editor: ``accounts._anchor_revert_url`` maps
+    ``revert=investment`` here, mirroring how the cockpit's ``revert=accounts``
+    maps to ``savings.cockpit_balance``.  Renders
+    ``investment/_balance_hero.html`` with the model-from-anchor balance the
+    detail headline shows, so a reverted cell restores the exact figure.
+
+    The narrow producer is the IDOR + active gate: it returns ``None`` -- a
+    404 -- for an account that is not among the user's active accounts (not
+    found, not owned, or archived between page load and the revert),
+    satisfying the 404-for-both security rule.  Non-HTMX requests redirect to
+    the dashboard page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("investment.dashboard", account_id=account_id))
+    cell = investment_dashboard_service.compute_balance_hero_cell(
+        current_user.id, account_id,
+    )
+    if cell is None:
+        abort(404)
+    return render_template("investment/_balance_hero.html", **cell)
+
+
 def _resolve_salary_profile_url(action: str | None, profile_id: int | None):
     """Map service-side action hints to a flask URL string.
 

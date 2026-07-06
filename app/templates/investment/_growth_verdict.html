@@ -1,0 +1,41 @@
+{% from "_money_macros.html" import money %}
+{# Shared projection-verdict strip (docs/design/investment_audit.md, locked
+   anatomy): spans beneath BOTH lever cards because the horizon and the
+   what-if amount both feed these figures.  Rendered on the initial page
+   inside #growth-verdict and re-delivered out-of-band by the growth-chart
+   fragment on every lever change, so clearing the what-if resets it.
+
+   Two states: with a what-if entered (``comparison`` present) it shows the
+   current-plan vs what-if vs difference triple; with no what-if it shows the
+   committed plan's projected end balance alone (``projection_end``).
+
+   Context: comparison (dict | None), what_if_amount (Decimal | None),
+   projection_end (Decimal | None -- the committed end balance at the horizon). #}
+{% if comparison is defined and comparison %}
+<div class="invd-verdict">
+  <div>
+    <div class="pulse-chip__label">Current plan</div>
+    <div class="invd-verdict__val font-mono">{{ money(comparison.committed_end) }}</div>
+  </div>
+  <div>
+    <div class="pulse-chip__label">What-if ({{ money(what_if_amount) }}/period)</div>
+    <div class="invd-verdict__val font-mono">{{ money(comparison.whatif_end) }}</div>
+  </div>
+  <div>
+    <div class="pulse-chip__label">Difference</div>
+    <div class="invd-verdict__val font-mono {% if comparison.is_zero %}text-muted{% elif comparison.is_positive %}invd-verdict__val--pos{% else %}invd-verdict__val--neg{% endif %}">
+      {%- if comparison.is_zero %}$0.00 -- same as current plan
+      {%- elif comparison.is_positive %}+{{ money(comparison.difference) }}
+      {%- else %}{{ money(comparison.difference) }}{% endif %}
+    </div>
+  </div>
+</div>
+{% elif projection_end is defined and projection_end is not none %}
+<div class="invd-verdict">
+  <div>
+    <div class="pulse-chip__label">Projected balance at horizon</div>
+    <div class="invd-verdict__val font-mono">{{ money(projection_end) }}</div>
+  </div>
+  <div class="invd-lever-cap">Enter a what-if contribution above to compare scenarios.</div>
+</div>
+{% endif %}

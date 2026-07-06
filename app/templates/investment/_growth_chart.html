@@ -1,42 +1,43 @@
 {% from "_money_macros.html" import money %}
+{# Growth-chart fragment (HTMX target #growth-chart-container).
+
+   One canvas carrying the full merged-axis series as data-* attributes
+   (CSP: JS reads element.dataset; growth_chart.js merges history +
+   projection client-side -- display assembly, no money math):
+   history_* = solid modeled past (balance_at.balance_map, ends at the
+   current period), labels/balances/contributions = the dashed forward
+   projection on the fragment's synthetic-period basis,
+   data-boundary = the Today split index, data-retirement-* = the
+   retirement-year marker when a planned retirement date is set.
+
+   The verdict strip lives OUTSIDE this container (below the lever
+   cards), so fragment responses re-deliver it out-of-band; the initial
+   page include sets oob_verdict=false and renders the strip in place
+   instead (dashboard.html). #}
 {% if chart_labels %}
 <canvas id="growthChart"
         data-labels='{{ chart_labels|tojson }}'
         data-balances='{{ chart_balances|tojson }}'
         data-contributions='{{ chart_contributions|tojson }}'
+        data-history-labels='{{ history_labels|tojson }}'
+        data-history-balances='{{ history_balances|tojson }}'
+        data-boundary="{{ today_boundary_index }}"
+        {% if retirement_marker_index is not none %}
+        data-retirement-index="{{ retirement_marker_index }}"
+        data-retirement-year="{{ retirement_year }}"
+        {% endif %}
         {% if what_if_balances is defined and what_if_balances %}
         data-whatif-balances='{{ what_if_balances|tojson }}'
-        data-whatif-label="What-If ({{ money(what_if_amount) }}/period)"
+        data-whatif-label="What-if ({{ money(what_if_amount) }}/period)"
         {% endif %}
-        class="canvas-max-h-350">
-</canvas>
-{% if comparison is defined and comparison %}
-<div class="row text-center mt-3 py-2 border rounded">
-  <div class="col-md-4">
-    <div class="text-muted small">Current Plan</div>
-    <div class="fw-bold font-mono">{{ money(comparison.committed_end) }}</div>
-  </div>
-  <div class="col-md-4">
-    <div class="text-muted small">What-If ({{ money(what_if_amount) }}/period)</div>
-    <div class="fw-bold font-mono">{{ money(comparison.whatif_end) }}</div>
-  </div>
-  <div class="col-md-4">
-    <div class="text-muted small">Difference</div>
-    <div class="fw-bold font-mono {% if comparison.is_zero %}text-muted{% elif comparison.is_positive %}text-success{% else %}text-danger{% endif %}">
-      {% if comparison.is_zero %}
-      $0.00 -- same as current plan
-      {% elif comparison.is_positive %}
-      +{{ money(comparison.difference) }}
-      {% else %}
-      -{{ money(comparison.difference|abs) }}
-      {% endif %}
-    </div>
-  </div>
+        role="img"
+        aria-label="{{ account.name if account is defined and account else 'Investment' }} growth projection: solid history, dashed projection with contributions-only baseline, Today marker"></canvas>
+{% else %}
+<div class="acctd-empty">
+  No projection data available. Balances project forward once this account
+  has parameters and pay periods exist.
 </div>
 {% endif %}
-{% else %}
-<div class="text-center py-4 text-muted">
-  <i class="bi bi-graph-up fs-1"></i>
-  <p class="mt-2">No projection data available.</p>
-</div>
+{% if oob_verdict|default(true) %}
+<div id="growth-verdict" hx-swap-oob="true">{% include "investment/_growth_verdict.html" %}</div>
 {% endif %}

@@ -3,30 +3,23 @@ Shekel Budget App -- Investment Dashboard Service (MED-01 / S6-01)
 
 Pure-data orchestration for the investment / retirement dashboard
 template (``investment/dashboard.html``) and the HTMX growth-chart
-fragment (``investment/_growth_chart.html``).  Pre-Commit-28 these
-two surfaces lived as 295/241-line route bodies in
-``app/routes/investment.py`` mixing HTTP, 8 inline ORM queries, and
-business logic in one function (S6-01 in
-``docs/audits/financial_calculations/06_dry_solid.md``).  The extraction
-collapses the duplicated salary-profile / deduction / contribution /
-projection-inputs loading that previously appeared verbatim in both
-route bodies into one shared helper, and reduces ``investment.py`` to
-a thin delegator mirroring the long-standing ``savings.py`` shape
-(``app/routes/savings.py:107-113``).
+fragment (``investment/_growth_chart.html``).  Extracted from the route
+bodies in Commit 28 (S6-01 / MED-01), collapsing the duplicated
+salary-profile / deduction / contribution / projection-inputs loading
+into one shared feed (:class:`_ProjectionContext`) so ``investment.py``
+stays a thin delegator mirroring ``savings.py``.
 
 Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"):
-this module imports no Flask symbol.  The route handles ``current_user``,
-``request``, ``url_for``, and the 404 / 302 HTTP responses; this service
-owns only ``Decimal``-money math, ORM queries, and the projection-engine
-calls.  The dashboard service returns plain dicts the route renders;
-``salary_profile_url`` resolution lives in the route because it depends
-on :func:`flask.url_for`.
+this module imports no Flask symbol.  The route owns ``current_user`` /
+``request`` / ``url_for`` and the HTTP responses; this service owns the
+``Decimal``-money math, ORM queries, and projection-engine calls, and
+returns plain dicts (``salary_profile_url`` is resolved route-side).
 
-Outputs are byte-identical to the pre-Commit-28 route bodies: this is a
-pure structural refactor (S6-01 facet of the MED-01 finding); no
-financial value changes.  The route-level
-``tests/test_routes/test_investment.py`` regression suite is the
-load-bearing assert-unchanged gate.
+The initial dashboard chart and the HTMX fragment share ONE synthetic-period
+basis at the slider default horizon (so they cannot disagree), carrying a
+modeled-history series with Today / retirement markers; the measured
+growth-since-anchor chip reconciles with the displayed balance via the
+``balance_at`` seam.
 """
 
 import logging
@@ -42,12 +35,14 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
+from app.models.scenario import Scenario
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
 from app.models.user import UserSettings
 from app.services import (
     balance_at,
+    balance_resolver,
     growth_engine,
     income_service,
     pay_period_service,
@@ -65,11 +60,21 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_account,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.dates import to_display_date
 from app.utils.money import percent_complete, round_money
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_HORIZON_YEARS = 10
+
+# C1 (Loop B P1): funding-provenance discriminator for the contribution
+# chip's caption (deduction / recurring transfer / none).  A presentation
+# discriminator (a template branch), NOT a ref-table row, so plain string
+# constants are the right vocabulary (the ``.name``-string ban is about
+# ref-table lookups, which this is not).
+CONTRIBUTION_FUNDING_DEDUCTION = "deduction"
+CONTRIBUTION_FUNDING_TRANSFER = "transfer"
+CONTRIBUTION_FUNDING_NONE = "none"
 
 # A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
 # future periods) or a synthetic horizon period from
@@ -80,26 +85,21 @@ _PeriodList = list[PayPeriod | growth_engine.SyntheticPeriod]
 
 
 @dataclass(frozen=True)
-class _ProjectionContext:
+class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     """Every per-account input the dashboard + growth-chart both consume.
 
-    Built once per request by :func:`_load_projection_context` and
-    threaded through the projection primitives and card builders so the
-    two public entry points stay thin orchestration.  Bundling these seven
-    values into one frozen struct removes the parallel-load duplication
-    the dashboard and the chart fragment previously each carried inline
-    (S6-01): the entries-aware current balance, the projection inputs,
-    and the contribution timeline were resolved the same way in both
-    bodies.
-
-    This is a load-once *feed* object: it is resolved in one place and its
-    fields fan out to different consumers (``contributions`` -> the growth
-    projection; ``deductions`` / ``active_profile`` -> the contribution
-    prompt), so consumers read subsets rather than the whole struct as a
-    unit.  Note the annual contribution limit is reachable two ways --
-    ``params.annual_contribution_limit`` and ``inputs.annual_contribution_limit``
-    (copied from params in ``calculate_investment_inputs``); read it from
-    one place consistently if this struct is ever tightened.
+    Pylint: ``too-many-instance-attributes`` (11/7) -- a cohesive load-once
+    *feed*, not a god-object: every field is a per-account projection input
+    resolved once by :func:`_load_projection_context` and fanned out to
+    different consumers (``contributions`` -> the growth projection;
+    ``deductions`` / ``active_profile`` -> the contribution prompt; ``scenario``
+    / ``all_periods`` -> the history chart and anchor caption, so they read the
+    SAME inputs the headline resolved against).  Bundling them removes the
+    parallel-load duplication the dashboard and chart fragment each carried
+    inline (S6-01).  The annual contribution limit is reachable two ways
+    (``params.annual_contribution_limit`` /
+    ``inputs.annual_contribution_limit``, copied in
+    ``calculate_investment_inputs``); read it from one place.
 
     Attributes:
         params: The account's :class:`InvestmentParams` row, or ``None``
@@ -139,6 +139,12 @@ class _ProjectionContext:
             this account; drives the contribution-prompt decision.
         active_profile: The user's active :class:`SalaryProfile`, or
             ``None``; drives the deduction-path salary-profile link.
+        scenario: The baseline scenario (or ``None``); the history chart and
+            anchor caption read it so both agree with the headline balance.
+        anchor_as_of: Display-tz date of the account's latest anchor event
+            (C1 hero caption), or ``None`` when no baseline scenario exists.
+        all_periods: The user's full pay-period calendar (C2 history basis).
+        current_period: The current :class:`PayPeriod`, or ``None``.
     """
 
     params: InvestmentParams | None
@@ -148,6 +154,10 @@ class _ProjectionContext:
     contributions: list[growth_engine.ContributionRecord]
     deductions: list[PaycheckDeduction]
     active_profile: SalaryProfile | None
+    scenario: Scenario | None
+    anchor_as_of: date | None
+    all_periods: list
+    current_period: PayPeriod | None
 
 
 # ── Shared loaders ─────────────────────────────────────────────────
@@ -171,6 +181,25 @@ def _load_investment_params(account_id: int) -> InvestmentParams | None:
     )
 
 
+def _resolve_anchor_as_of(
+    account: Account, scenario: Scenario | None,
+) -> date | None:
+    """Return the display-tz date of the account's latest anchor EVENT (C1).
+
+    Dates the hero's "anchored <date>" caption against the dated anchor SoT
+    (the latest :class:`AccountAnchorHistory` row via
+    :func:`~app.services.balance_resolver.resolve_anchor`, the same accessor
+    the cockpit "as of" uses), NOT the anchor period's ``start_date``.  The
+    UTC ``created_at`` is converted to display tz
+    (:func:`~app.utils.dates.to_display_date`); ``None`` when no baseline
+    scenario is configured.
+    """
+    if scenario is None:
+        return None
+    anchor_point = balance_resolver.resolve_anchor(account, scenario.id)
+    return to_display_date(anchor_point.created_at)
+
+
 def _resolve_current_balance(
     account: Account,
     scenario,
@@ -179,23 +208,13 @@ def _resolve_current_balance(
 ) -> Decimal:
     """Return the model-from-anchor "current balance" headline for *account*.
 
-    The displayed "current balance" tile, read from the
-    :mod:`app.services.balance_at` seam
-    (:func:`~app.services.balance_at.balance_map`) at the current period.
-    Routing through the seam makes the headline agree to the cent with the
-    /savings net-worth tile, the year-end asset aggregate, and the
-    net-worth trend for the same account at today (the cross-page balance
-    invariant): an investment anchored in the past shows its modeled market
-    value -- the anchor compounded forward to today -- not the flat
-    cash-basis contribution total it showed pre-Level-1.
-
-    This is the DISPLAYED figure only.  The forward growth projection seeds
-    from the cash-basis balance instead (:func:`_resolve_seed_balance`):
-    the modeled value already includes the anchor-to-today growth, so
-    seeding the projection from it would re-grow -- double-count -- the
-    current period.  Falls back to :attr:`Account.current_anchor_balance`
-    when no baseline scenario is configured, the account has no anchor
-    period, or no period covers today.
+    The displayed tile, read from the :mod:`app.services.balance_at` seam's
+    :func:`~app.services.balance_at.balance_map` at the current period so it
+    agrees to the cent with /savings and the net-worth trend (an investment
+    anchored in the past shows its modeled market value, not the flat cash
+    basis).  DISPLAY only -- the projection seeds from the cash basis
+    (:func:`_resolve_seed_balance`) to avoid re-growing today.  Falls back to
+    :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
     if scenario is None or current_period is None:
@@ -214,21 +233,14 @@ def _resolve_seed_balance(
 ) -> Decimal:
     """Return the cash-basis balance the forward growth projection seeds from.
 
-    The contributed / transacted END-of-current-period balance with NO
-    modeled growth layered on, read from the balance_at seam's cash-basis
-    seed accessor
-    (:func:`~app.services.balance_at.investment_seed_map`) -- the same cash
-    basis the grid and every cash surface render.  The growth projection
-    compounds FROM this, not from the modeled headline
-    (:func:`_resolve_current_balance`): the modeled value already grew the
-    anchor forward to today, so seeding the projection from it would re-grow
-    -- double-count -- the current period's growth.  This mirrors
-    deep-quality-hunt #9 (which keeps the per-period CONTRIBUTION applied
-    once) for the per-period GROWTH.  Reading the seed through the seam (not
-    the raw producer) keeps this consumer behind the W9906 fence.  Falls back
-    to
-    :attr:`Account.current_anchor_balance` when no baseline scenario is
-    configured, the account has no anchor period, or no period covers today.
+    The end-of-current balance with NO modeled growth, read through the
+    seam's cash-basis seed accessor
+    (:func:`~app.services.balance_at.investment_seed_map`) so the projection
+    compounds from the cash basis, not the modeled headline (which already
+    grew the anchor to today -- seeding from it would double-count the current
+    period's growth, deep-quality-hunt #9; reading through the seam keeps this
+    behind the W9906 fence).  Falls back to
+    :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
     if (scenario is None
@@ -325,6 +337,11 @@ def _load_projection_context(
         contributions=contributions,
         deductions=deductions,
         active_profile=active_profile,
+        scenario=scenario,
+        # C1 anchor caption date (inlined to stay under the locals limit).
+        anchor_as_of=_resolve_anchor_as_of(account, scenario),
+        all_periods=all_periods,
+        current_period=current_period,
     )
 
 
@@ -410,12 +427,27 @@ def _compute_limit_info(
     card renders ``$0`` with 100% used at any positive YTD, matching
     the growth engine's ``min(period_contribution, 0) = 0`` semantics.
     ``None`` continues to mean "no cap configured" and hides the card.
+
+    C1 (Loop B P1): the clamped ``pct`` cannot express OVER-contribution
+    (an excess $600 and a perfect max both read 100%), so the dict also
+    carries ``is_over`` (``ytd > limit``) and ``over_amount``
+    (``ytd - limit`` :class:`~decimal.Decimal`, else ``None``) for the
+    goal-framed bar's overage text.  E-12 zero-cap preserved exactly: a zero
+    cap is over by the full positive YTD (``100 > 0``), not over at zero YTD.
+
+    Returns:
+        ``{"limit", "ytd", "pct", "is_over", "over_amount"}`` when a cap is
+        configured, else ``None`` (no cap / no params) to hide the card.
     """
     if investment_params is None:
         return None
     limit = investment_params.annual_contribution_limit
     if limit is None:
         return None
+    is_over = ytd_contributions > limit
+    over_amount = (
+        round_money(ytd_contributions - limit) if is_over else None
+    )
     if limit > 0:
         # Canonical money.percent_complete (ROUND_HALF_UP, clamped [0, 100],
         # Decimal) -- the one "percent funded" contract the budget-dashboard
@@ -438,7 +470,22 @@ def _compute_limit_info(
         "limit": limit,
         "ytd": ytd_contributions,
         "pct": pct,
+        "is_over": is_over,
+        "over_amount": over_amount,
     }
+
+
+def _load_planned_retirement_date(user_id: int) -> date | None:
+    """Return the user's planned retirement date, or ``None`` if unset (C2).
+
+    Shared by :func:`_compute_default_horizon` and :func:`_build_chart_markers`.
+    """
+    settings = (
+        db.session.query(UserSettings)
+        .filter_by(user_id=user_id)
+        .first()
+    )
+    return settings.planned_retirement_date if settings else None
 
 
 def _compute_default_horizon(user_id: int, all_periods: list) -> int:
@@ -448,15 +495,9 @@ def _compute_default_horizon(user_id: int, all_periods: list) -> int:
     else the last projection period's year, else the
     :data:`_FALLBACK_HORIZON_YEARS` constant.  Always >= 1.
     """
-    settings = (
-        db.session.query(UserSettings)
-        .filter_by(user_id=user_id)
-        .first()
-    )
-    if settings and settings.planned_retirement_date:
-        return max(
-            1, settings.planned_retirement_date.year - date.today().year,
-        )
+    retirement_date = _load_planned_retirement_date(user_id)
+    if retirement_date is not None:
+        return max(1, retirement_date.year - date.today().year)
     if all_periods:
         last_period = all_periods[-1]
         return max(1, (last_period.end_date.year - date.today().year) + 1)
@@ -574,27 +615,19 @@ def _has_active_recurring_transfer_to(account_id: int, user_id: int) -> bool:
 def compute_dashboard_data(user_id: int, account: Account) -> dict:
     """Build the full template context for ``investment/dashboard.html``.
 
-    Mirrors :func:`savings_dashboard_service.compute_dashboard_data`:
-    plain inputs (user id + the already-ownership-checked account
-    instance), plain dict output, no Flask reads.
-
-    The returned dict carries two underscore-prefixed keys
-    (``_salary_profile_action`` / ``_active_profile_id``) that the
-    route consumes via :func:`flask.url_for` to fill the template's
-    ``salary_profile_url`` slot; the underscore prefix marks them as
-    internal to the route-service contract.  Every other key is a
-    template-facing context value.
+    Mirrors :func:`savings_dashboard_service.compute_dashboard_data`: plain
+    inputs (user id + the ownership-checked account), plain dict output, no
+    Flask reads.  The dict carries two underscore-prefixed route hints
+    (``_salary_profile_action`` / ``_active_profile_id``) the route resolves
+    via :func:`flask.url_for` into ``salary_profile_url``; every other key is
+    template-facing.
 
     Args:
         user_id: ID of the authenticated user.
-        account: The pre-ownership-checked
-            :class:`~app.models.account.Account` instance the route
-            already loaded via
-            :func:`app.utils.auth_helpers.get_or_404`.
+        account: The pre-ownership-checked account the route loaded.
 
     Returns:
-        A dict with the template context plus the two route-side
-        URL-resolution hints.
+        The template context plus the two route-side URL hints.
     """
     params = _load_investment_params(account.id)
     all_periods = pay_period_service.get_all_periods(user_id)
@@ -602,111 +635,200 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
     ctx = _load_projection_context(
         user_id, account, params, all_periods, current_period,
     )
+    default_horizon = _compute_default_horizon(user_id, all_periods)
+    # C2: initial chart at the default horizon on the fragment's synthetic basis.
+    chart_context = (
+        _assemble_chart_context(account, ctx, default_horizon, None)
+        if params else _empty_chart_context()
+    )
+    # Measured growth since the anchor (None -> chip hidden), via the seam.
+    growth = (
+        balance_at.investment_growth_since_anchor(
+            account, ctx.scenario, all_periods, current_period,
+        )
+        if ctx.scenario is not None else None
+    )
 
     return {
         "account": account,
         "params": params,
         "current_balance": ctx.current_balance,
+        "anchor_as_of": ctx.anchor_as_of,
         "periodic_contribution": ctx.inputs.periodic_contribution,
         "employer_contribution_per_period": _compute_employer_per_period(
             ctx.inputs,
         ),
         "employer_params": ctx.inputs.employer_params,
         "limit_info": _compute_limit_info(params, ctx.inputs.ytd_contributions),
-        "default_horizon": _compute_default_horizon(user_id, all_periods),
-        # Projection + chart series (``projection`` / ``chart_labels`` /
-        # ``chart_balances`` / ``chart_contributions``).
-        **_project_dashboard_balances(ctx, all_periods, current_period),
-        # Contribution-prompt block, including the two underscore-prefixed
-        # ``_salary_profile_action`` / ``_active_profile_id`` route hints.
-        **_compute_contribution_prompt(
-            user_id, account, ctx, all_periods, current_period,
-        ),
+        "default_horizon": default_horizon,
+        "growth_since_anchor": growth[0] if growth else None,
+        "growth_since_anchor_contributed": growth[1] if growth else None,
+        **chart_context,  # projection + history + Today/retirement markers (C2)
+        **_compute_contribution_prompt(user_id, account, ctx),  # + funding, hints
     }
 
 
-def _project_dashboard_balances(
-    ctx: _ProjectionContext,
-    all_periods: list,
-    current_period,
-) -> dict:
-    """Run the dashboard growth projection and build the chart series.
+def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
+    """Narrow producer for the investment balance hero cell (C4 revert target).
 
-    Returns the four template-context keys (``projection`` plus
-    ``chart_labels`` / ``chart_balances`` / ``chart_contributions``) so
-    :func:`compute_dashboard_data` can merge them with ``**``.  Empty
-    results (no params or no current period) produce the four empty
-    containers the template expects, preserving the pre-Commit-28
-    default-empty behaviour exactly.
+    Backs ``investment.balance_hero`` (the anchor editor's Cancel / Escape /
+    409 revert target): the model-from-anchor balance the headline shows (via
+    the :mod:`app.services.balance_at` seam scalar) plus the anchor caption
+    date, so the reverted cell restores the page's figure.  ``None`` (a 404)
+    when the account is not the user's active account (404-for-both).
     """
-    projection: list = []
-    chart_labels: list[str] = []
-    chart_balances: list[str] = []
-    chart_contributions: list[str] = []
-
-    if ctx.params and current_period:
-        future_periods = [
-            p for p in all_periods
-            if p.period_index >= current_period.period_index
-        ]
-        projection = _run_growth_projection(ctx, future_periods)
-        chart_labels, chart_balances, chart_contributions = _build_chart_series(
-            projection, future_periods, ctx.projection_seed,
-        )
-
+    account = db.session.get(Account, account_id)
+    if account is None or account.user_id != user_id or not account.is_active:
+        return None
+    scenario = get_baseline_scenario(user_id)
+    balance = (
+        balance_at.balance_at(account, scenario, date.today())
+        if scenario is not None
+        else account.current_anchor_balance or Decimal("0.00")
+    )
     return {
-        "projection": projection,
-        "chart_labels": chart_labels,
-        "chart_balances": chart_balances,
-        "chart_contributions": chart_contributions,
+        "account": account,
+        "current_balance": balance,
+        "anchor_as_of": _resolve_anchor_as_of(account, scenario),
+    }
+
+
+def _empty_chart_context() -> dict:
+    """Return the empty-chart context (no projection to draw)."""
+    return {
+        "chart_labels": [],
+        "chart_balances": [],
+        "chart_contributions": [],
+        "projection_end": None,
+    }
+
+
+def _assemble_chart_context(
+    account: Account,
+    ctx: _ProjectionContext,
+    horizon_years: int,
+    what_if_raw: str | None,
+) -> dict:
+    """Build the full chart context: projection + history + markers (C2).
+
+    The single code path the dashboard first paint and the HTMX fragment both
+    use (synthetic periods across ``horizon_years`` for the committed +
+    optional what-if series, plus modeled history and Today/retirement
+    markers), so they cannot disagree on basis.  Empty when the horizon yields
+    no periods; callers guard ``ctx.params is not None``.
+    """
+    horizon_years = max(1, min(horizon_years, 40))
+    end_date = date.today() + timedelta(days=horizon_years * 365)
+    periods = growth_engine.generate_projection_periods(
+        start_date=date.today(), end_date=end_date,
+    )
+    if not periods:
+        return _empty_chart_context()
+    projection = _run_growth_projection(ctx, periods)
+    chart_context = _growth_chart_context(ctx, periods, projection, what_if_raw)
+    history = _build_history_series(account, ctx)
+    markers = _build_chart_markers(
+        account.user_id, len(history["history_balances"]), periods,
+    )
+    return {**chart_context, **history, **markers}
+
+
+def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
+    """Return the modeled-history chart series over real past periods (C2).
+
+    Modeled balances up to and including the current period, read through the
+    SAME :func:`app.services.balance_at.balance_map` the headline uses (so the
+    tail meets the headline at the Today boundary).  Empty when no scenario /
+    current period / map; values are stringified cent ``Decimal``.
+    """
+    if ctx.scenario is None or ctx.current_period is None:
+        return {"history_labels": [], "history_balances": []}
+    balances = balance_at.balance_map(account, ctx.scenario, ctx.all_periods)
+    if balances is None:
+        return {"history_labels": [], "history_balances": []}
+    labels: list[str] = []
+    values: list[str] = []
+    for period in ctx.all_periods:
+        if period.period_index > ctx.current_period.period_index:
+            continue
+        balance = balances.get(period.id)
+        if balance is None:
+            continue
+        labels.append(period.start_date.strftime("%b %Y"))
+        values.append(str(round_money(balance)))
+    return {"history_labels": labels, "history_balances": values}
+
+
+def _build_chart_markers(
+    user_id: int, history_len: int, projection_periods: _PeriodList,
+) -> dict:
+    """Return the Today-boundary and retirement-year chart markers (C2).
+
+    ``today_boundary_index`` (== history length) splits solid history from
+    the dashed projection; ``retirement_marker_index`` / ``retirement_year``
+    mark the projection period holding the planned retirement date, else
+    ``None`` (unset or beyond the horizon).
+    """
+    retirement_date = _load_planned_retirement_date(user_id)
+    retirement_year = (
+        retirement_date.year if retirement_date is not None else None
+    )
+    retirement_marker_index = None
+    if retirement_date is not None:
+        for offset, period in enumerate(projection_periods):
+            if period.start_date <= retirement_date <= period.end_date:
+                retirement_marker_index = history_len + offset
+                break
+    return {
+        "today_boundary_index": history_len,
+        "retirement_year": retirement_year,
+        "retirement_marker_index": retirement_marker_index,
     }
 
 
 def _compute_contribution_prompt(
-    user_id: int,
-    account: Account,
-    ctx: _ProjectionContext,
-    all_periods: list,
-    current_period: PayPeriod | None,
+    user_id: int, account: Account, ctx: _ProjectionContext,
 ) -> dict:
     """Decide whether to show the "set up contributions" prompt + how.
 
-    Returns the seven template-context keys (the five
-    ``show_contribution_prompt`` / ``is_deduction_path`` /
-    ``source_accounts`` / ``default_source_id`` / ``suggested_amount``
-    values plus the two underscore-prefixed ``_salary_profile_action`` /
-    ``_active_profile_id`` route hints) so
-    :func:`compute_dashboard_data` can merge them with ``**``.
-
-    Three states:
-
-    * **Hidden** when no params row exists or a deduction / recurring
-      transfer is already linked.
-    * **Deduction-path** when the account type is payroll-deduction
-      funded (S6-04 centralised helper:
-      :func:`account_projection.is_payroll_deduction_funded`).  The
-      route renders a link to the salary profile -- this helper
-      returns the action + profile id so the route can
-      ``url_for`` the result.
-    * **Transfer-path** otherwise: returns a suggested per-period
-      amount, eligible source accounts, and the default source id.
+    Returns the prompt keys (``show_contribution_prompt`` /
+    ``is_deduction_path`` / ``source_accounts`` / ``default_source_id`` /
+    ``suggested_amount``), the C1 ``contribution_funding`` discriminator,
+    and the two underscore-prefixed ``_salary_profile_action`` /
+    ``_active_profile_id`` route hints so :func:`compute_dashboard_data`
+    can merge them with ``**``.  Prompt states: hidden (no params, or a
+    deduction / recurring transfer already linked); deduction-path (payroll
+    funded -- hands the route the salary-profile action + id); transfer-path
+    (suggested amount + eligible sources).
     """
+    has_linked_deduction = bool(ctx.deductions)
+    has_recurring_transfer = _has_active_recurring_transfer_to(
+        account.id, user_id,
+    )
+    # C1: funding provenance for the contribution chip's caption -- resolved
+    # here (where both funding signals are already computed) and surfaced
+    # even when the setup prompt is hidden.  A linked deduction wins over a
+    # recurring transfer so a doubly-funded 401(k) captions its payroll
+    # source.
+    if has_linked_deduction:
+        funding = CONTRIBUTION_FUNDING_DEDUCTION
+    elif has_recurring_transfer:
+        funding = CONTRIBUTION_FUNDING_TRANSFER
+    else:
+        funding = CONTRIBUTION_FUNDING_NONE
     result = {
         "show_contribution_prompt": False,
         "is_deduction_path": False,
         "source_accounts": [],
         "default_source_id": None,
         "suggested_amount": Decimal("0"),
+        "contribution_funding": funding,
         "_salary_profile_action": None,
         "_active_profile_id": None,
     }
     if not ctx.params:
         return result
 
-    has_linked_deduction = bool(ctx.deductions)
-    has_recurring_transfer = _has_active_recurring_transfer_to(
-        account.id, user_id,
-    )
     show = not has_linked_deduction and not has_recurring_transfer
     result["show_contribution_prompt"] = show
     if not show:
@@ -728,7 +850,8 @@ def _compute_contribution_prompt(
     # Transfer-path: compute the suggested per-period amount and
     # load eligible source accounts.
     result["suggested_amount"] = _compute_suggested_contribution(
-        ctx.params, ctx.inputs.ytd_contributions, all_periods, current_period,
+        ctx.params, ctx.inputs.ytd_contributions,
+        ctx.all_periods, ctx.current_period,
     )
     result["source_accounts"], result["default_source_id"] = (
         _load_transfer_source_accounts(user_id, account.id)
@@ -744,59 +867,30 @@ def compute_growth_chart_data(
 ) -> dict:
     """Build the context for the ``investment/_growth_chart.html`` fragment.
 
+    Routes through the SAME :func:`_assemble_chart_context` the dashboard's
+    first paint uses (C2), so both agree on the synthetic-period basis and
+    carry the history series + markers.  Empty-chart shape when no params row
+    exists or the horizon yields no periods.
+
     Args:
         user_id: ID of the authenticated user.
-        account: The pre-ownership-checked
-            :class:`~app.models.account.Account` instance.
-        horizon_years: Slider value, post-validation; the caller is
-            expected to clamp to ``[1, 40]`` but this helper does
-            so defensively as well.
-        what_if_raw: Optional unparsed ``what_if_contribution`` query
-            value.  Invalid or negative inputs degrade gracefully to
-            the single-line chart; ``Decimal("0")`` is a valid
-            growth-only scenario.
+        account: The pre-ownership-checked account instance.
+        horizon_years: Slider value; clamped to ``[1, 40]`` defensively.
+        what_if_raw: Optional ``what_if_contribution``; invalid / negative
+            degrade to the single-line chart, ``Decimal("0")`` is valid.
 
     Returns:
-        A dict with the chart fragment's context keys.  Returns the
-        empty-chart shape when no :class:`InvestmentParams` row
-        exists or the engine produced no periods.  Returns ``None``
-        instead of the dict when the chart engine could not build any
-        periods at all (the caller renders the empty chart in that
-        case too).  The caller distinguishes ``None`` from "empty
-        chart with what-if fields" by the presence/absence of the
-        ``chart_labels`` key.
+        The chart fragment's context dict.
     """
     params = _load_investment_params(account.id)
     if not params:
-        return {
-            "chart_labels": [],
-            "chart_balances": [],
-            "chart_contributions": [],
-        }
-
-    horizon_years = max(1, min(horizon_years, 40))
-
+        return _empty_chart_context()
     all_periods = pay_period_service.get_all_periods(user_id)
     current_period = pay_period_service.get_current_period(user_id)
-
-    # Synthetic future periods for the chosen horizon.
-    end_date = date.today() + timedelta(days=horizon_years * 365)
-    periods = growth_engine.generate_projection_periods(
-        start_date=date.today(),
-        end_date=end_date,
-    )
-    if not periods:
-        return {
-            "chart_labels": [],
-            "chart_balances": [],
-            "chart_contributions": [],
-        }
-
     ctx = _load_projection_context(
         user_id, account, params, all_periods, current_period,
     )
-    projection = _run_growth_projection(ctx, periods)
-    return _growth_chart_context(ctx, periods, projection, what_if_raw)
+    return _assemble_chart_context(account, ctx, horizon_years, what_if_raw)
 
 
 def _growth_chart_context(
@@ -828,6 +922,9 @@ def _growth_chart_context(
         "what_if_balances": what_if_balances,
         "what_if_amount": what_if_amount,
         "comparison": comparison,
+        # Committed end balance at the horizon: the verdict strip's current-plan
+        # figure when no what-if is entered.
+        "projection_end": round_money(projection[-1].end_balance) if projection else None,
     }
 
 

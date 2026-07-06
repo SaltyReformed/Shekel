@@ -27,8 +27,8 @@ from app.services.interest_projection import calculate_interest
 # ``_balances._generate_debt_schedules``.  The kernel is the one
 # definition; these names are stable aliases over it (listed in
 # ``__all__`` so the re-export is intentional, not an unused import).
+from app.services.net_worth_investment import _load_shadow_contributions
 from app.services.net_worth_kernel import (
-    _load_shadow_contributions,
     generate_debt_schedules as _generate_debt_schedules,
 )
 

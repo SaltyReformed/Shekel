@@ -21,7 +21,7 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_service, investment_dashboard_service
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, make_investment_account
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
@@ -136,7 +136,9 @@ class TestInvestmentDashboard:
         assert resp.status_code == 200
         assert b"Brokerage" in resp.data
         assert b"25,000.00" in resp.data
-        assert b"Assumed Return" in resp.data
+        # P2 rebuild: the summary tile became the hero's "modeled at x%
+        # assumed return" caption (investment_audit.md, locked anatomy).
+        assert b"assumed return" in resp.data
 
     def test_dashboard_employer_match_card(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -159,7 +161,10 @@ class TestInvestmentDashboard:
         )
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
-        assert b"Employer Contribution" in resp.data
+        # P2 rebuild: the employer card became the band chip's caption
+        # ("50% match to 6.00%") plus the Parameters card's formula
+        # sentence; both still branch on type_id (the TPLA-01 pin).
+        assert b"50% match to 6.00%" in resp.data
         assert b"Employer matches" in resp.data
         # Stored fractions render through |to_percent: 0.50 -> 50%, 0.06 -> 6.00%.
         assert b"50%" in resp.data
@@ -179,7 +184,9 @@ class TestInvestmentDashboard:
         )
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
-        assert b"Employer Contribution" in resp.data
+        # P2 rebuild: employer card -> chip caption ("3.00% of gross") +
+        # Parameters formula sentence (same TPLA-01 type_id-branch pin).
+        assert b"3.00% of gross" in resp.data
         assert b"Employer contributes" in resp.data
         # 0.03 -> 3.00% through |to_percent.
         assert b"3.00%" in resp.data
@@ -200,7 +207,52 @@ class TestInvestmentDashboard:
         )
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
-        assert b"2026 Contributions" in resp.data
+        # P2 rebuild: the YTD card became the "<year> limit" band chip;
+        # the TPLA-04 pin (configured year renders, no undefined `date`
+        # global) carries over to the chip label.
+        assert b"2026 limit" in resp.data
+
+    def test_growth_since_anchor_chip_renders_for_past_anchor(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The measured growth-since-anchor chip renders for a past anchor.
+
+        Anchored at the first period (well before the current one, index 3
+        under seed_periods_today) via the proper anchor builder, so the
+        growth window ``(anchor, current]`` is non-empty and the seam returns
+        a real (growth, contributed) pair -- the band shows the "Growth since"
+        chip with its "on <contributed> contributed" caption.  The exact
+        figures and the reconciliation identity are pinned at the service
+        level (TestInvestmentGrowthSinceAnchor); this pins the render.
+        """
+        inv = make_investment_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
+            name="Growth 401k",
+        )
+        resp = auth_client.get(f"/accounts/{inv.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Growth since" in html
+        assert "contributed" in html
+
+    def test_growth_chip_hidden_when_anchored_at_current(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """No growth-since-anchor chip when the account was anchored this period.
+
+        With the anchor AT the current period there is no elapsed window, so
+        the seam returns None and the band omits the chip (rather than showing
+        a spurious +$0.00).
+        """
+        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+        current = pay_period_service.get_current_period(seed_user["user"].id)
+        inv = make_investment_account(
+            seed_user, db.session, current, Decimal("10000.00"),
+            name="Fresh 401k",
+        )
+        resp = auth_client.get(f"/accounts/{inv.id}/investment")
+        assert resp.status_code == 200
+        assert "Growth since" not in resp.data.decode()
 
 
 class TestContributionLimitZeroCap:
@@ -230,10 +282,16 @@ class TestContributionLimitZeroCap:
         result = investment_dashboard_service._compute_limit_info(
             params, Decimal("100.00"),
         )
+        # C1 (Loop B P1): the dict gained is_over / over_amount.  Zero cap +
+        # $100 YTD is OVER by the full YTD: is_over = (100 > 0) = True;
+        # over_amount = round_money(100.00 - 0) = 100.00.  The zero-cap pct
+        # semantics (100 via the explicit elif) are unchanged.
         assert result == {
             "limit": Decimal("0"),
             "ytd": Decimal("100.00"),
             "pct": Decimal("100"),
+            "is_over": True,
+            "over_amount": Decimal("100.00"),
         }
 
     def test_limit_info_zero_cap_zero_ytd_is_zero_used(self):
@@ -247,10 +305,14 @@ class TestContributionLimitZeroCap:
         result = investment_dashboard_service._compute_limit_info(
             params, Decimal("0"),
         )
+        # C1: zero cap + zero YTD is NOT over (0 > 0 is false), so over_amount
+        # is None; the pct 0 semantics are unchanged.
         assert result == {
             "limit": Decimal("0"),
             "ytd": Decimal("0"),
             "pct": Decimal("0"),
+            "is_over": False,
+            "over_amount": None,
         }
 
     def test_limit_info_none_cap_hides_card(self):
@@ -282,10 +344,38 @@ class TestContributionLimitZeroCap:
         result = investment_dashboard_service._compute_limit_info(
             params, Decimal("4980.00"),
         )
+        # C1: $4,980 <= $5,000 cap, so is_over = (4980 > 5000) = False and
+        # over_amount is None; the pct 99.60 rounding is unchanged.
         assert result == {
             "limit": Decimal("5000"),
             "ytd": Decimal("4980.00"),
             "pct": Decimal("99.60"),
+            "is_over": False,
+            "over_amount": None,
+        }
+
+    def test_limit_info_over_limit_states_the_overage(self):
+        """C1: a positive cap with YTD over it flags is_over + the overage.
+
+        The clamped pct saturates at 100 and cannot distinguish an excess
+        contribution from a perfect max, so the goal-framed bar reads the
+        overage from ``over_amount``.  $24,100 YTD against the $23,500 2026
+        401(k) cap: is_over = (24100 > 23500) = True; over_amount =
+        round_money(24100.00 - 23500.00) = 600.00; pct clamps to 100.00
+        (percent_complete's high clamp).
+        """
+        params = InvestmentParams(
+            annual_contribution_limit=Decimal("23500.00"),
+        )
+        result = investment_dashboard_service._compute_limit_info(
+            params, Decimal("24100.00"),
+        )
+        assert result == {
+            "limit": Decimal("23500.00"),
+            "ytd": Decimal("24100.00"),
+            "pct": Decimal("100.00"),
+            "is_over": True,
+            "over_amount": Decimal("600.00"),
         }
 
     def test_suggested_contribution_zero_cap_is_zero(self):
@@ -903,8 +993,11 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No recurring contribution" in html
-        assert "Create Recurring Transfer" in html
+        # P2 rebuild: the alert became the band-foot funding hint with the
+        # transfer form behind a collapse (same prompt logic).
+        assert "No funding linked to this account" in html
+        assert "Set up a recurring transfer" in html
+        assert "Create recurring transfer" in html
 
     def test_prompt_shown_401k_no_deduction(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -919,13 +1012,15 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No paycheck deduction linked" in html
+        # P2 rebuild: deduction-path copy is now the funding hint's
+        # "Link a paycheck deduction" line.
+        assert "No funding linked to this account" in html
         # With no active profile the deduction path resolves
         # _salary_profile_action="list" -> url_for("salary.cockpit")
-        # (/salary), so salary_profile_url is always set and the prompt
-        # renders the reachable "Go to Salary Profile" link. This pins the
+        # (/salary), so salary_profile_url is always set and the hint
+        # renders the reachable deduction link. This pins the
         # URL-resolution invariant: a broken endpoint name here would 500.
-        assert "Go to Salary Profile" in html
+        assert "Link a paycheck deduction" in html
         assert 'href="/salary"' in html
 
     def test_prompt_hidden_transfer_exists(
@@ -950,8 +1045,9 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No recurring contribution" not in html
-        assert "No paycheck deduction" not in html
+        # P2 rebuild: the prompt is the band-foot funding hint now; its
+        # absence pins the hidden state.
+        assert "No funding linked to this account" not in html
 
     def test_prompt_hidden_deduction_linked(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -973,7 +1069,8 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No paycheck deduction linked" not in html
+        # P2 rebuild: hint copy replaces the deduction alert.
+        assert "No funding linked to this account" not in html
 
     def test_prompt_hidden_no_params(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -983,8 +1080,8 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No recurring contribution" not in html
-        assert "No paycheck deduction" not in html
+        # P2 rebuild: hint copy replaces both alert variants.
+        assert "No funding linked to this account" not in html
 
     def test_prompt_shown_archived_transfer(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1009,7 +1106,8 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No recurring contribution" in html
+        # P2 rebuild: alert copy -> band-foot funding hint.
+        assert "No funding linked to this account" in html
 
     def test_create_transfer_success(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1120,7 +1218,8 @@ class TestContributionPrompt:
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "No recurring contribution" not in html
+        # P2 rebuild: hint copy replaces the alert.
+        assert "No funding linked to this account" not in html
 
     def test_create_transfer_validates_source_not_self(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1326,8 +1425,9 @@ class TestWhatIfContributionCalculator:
             "What-if balances should be present"
         )
         assert len(whatif_balances) > 0
-        # Comparison card rendered.
-        assert "Current Plan" in html
+        # P2 rebuild: the comparison card became the OOB verdict strip
+        # ("Current plan" sentence case).
+        assert "Current plan" in html
         assert "Difference" in html
         # What-if label includes the amount.
         assert "500.00" in html
@@ -2200,13 +2300,21 @@ class TestProjectionNoCurrentPeriodDoubleCount:
 
         Entries-aware end-of-current balance = 10,000 + 1,000 = $11,000
         (the displayed tile).  The projection seed removes the current
-        period's own $1,000 contribution -> $10,000, then the engine
-        re-applies it once for the current period:
-          projection[0].start_balance = $10,000  (seed)
-          projection[0].contribution  = $1,000
-          projection[0].end_balance   = $11,000  (10,000 + 0 growth + 1,000)
-        The pre-fix double-count seeded $11,000 and re-added $1,000, giving
-        a $12,000 first-row end balance -- which this test forbids.
+        period's own $1,000 contribution -> $10,000; the engine then
+        re-applies it once for the first projected period.
+
+        C2 (Loop B P1, developer-approved behavior change): the dashboard
+        chart now renders on the SAME synthetic-period basis as the HTMX
+        fragment, and the ``projection`` context key was dropped, so the
+        double-count is verified through the first PROJECTED chart balance
+        (``chart_balances[0]``) instead of the removed per-row
+        ``ProjectedBalance`` list.  With 0% return the first synthetic period
+        accrues no growth, and the $1,000 transfer averaged over its single
+        period gives a $1,000 periodic contribution, so:
+          chart_balances[0] = 10,000 seed + 0 growth + 1,000 = 11,000.
+        The pre-fix double-count (seed 11,000, then re-add 1,000) would land
+        the first projected point at 12,000 -- which this test forbids.  The
+        headline tile (11,000) is unchanged by the basis change.
         """
         from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
         from app.services.investment_dashboard_service import (  # pylint: disable=import-outside-toplevel
@@ -2232,16 +2340,141 @@ class TestProjectionNoCurrentPeriodDoubleCount:
 
         data = compute_dashboard_data(seed_user["user"].id, acct)
 
-        # Displayed tile = entries-aware end-of-current (unchanged by the fix).
+        # Displayed tile = entries-aware end-of-current (unchanged by the fix
+        # and by the C2 chart-basis change).
         assert data["current_balance"] == Decimal("11000.00")
 
-        projection = data["projection"]
-        assert projection, "projection should include the current period forward"
-        first = projection[0]
-        assert first.period_id == current_period.id
-        # Seed = end-of-current 11,000 minus the current period's own 1,000.
-        assert first.start_balance == Decimal("10000.00")
-        assert first.contribution == Decimal("1000.00")
-        # 10,000 + 0% growth + 1,000 contribution = 11,000 (NOT the
+        # First projected chart point applies the current-period contribution
+        # exactly once: 10,000 seed + 0% growth + 1,000 = 11,000 (NOT the
         # pre-fix double-counted 12,000).
-        assert first.end_balance == Decimal("11000.00")
+        chart_balances = data["chart_balances"]
+        assert chart_balances, "chart should project the horizon forward"
+        assert Decimal(chart_balances[0]) == Decimal("11000.00")
+
+
+class TestInvestmentBalanceHeroTrueUp:
+    """Loop B P1 C4: the detail page's click-to-edit balance hero true-up.
+
+    The hero reuses the shared anchor editor (accounts.anchor_form /
+    accounts.true_up / anchor_service) via a new ``revert=investment``
+    surface: ``investment.balance_hero`` is the Cancel / Escape / 409 revert
+    target (rendering the model-from-anchor balance), and the PATCH records a
+    statement balance as a dated anchor as-of today -- the same semantics as
+    the cockpit card's click-to-edit editor.
+    """
+
+    def test_balance_hero_renders_editable_cell(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET (HX) returns the model-from-anchor balance + the editor opener."""
+        acct = _create_investment_account(seed_user, db.session)
+        _create_investment_params(db.session, acct.id)
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/investment/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Anchor == current period, so the modeled balance equals the $50,000
+        # anchor (no contributions, no growth accrued yet).
+        assert "50,000.00" in html
+        assert "investment-balance-hero" in html
+        # Opens the shared anchor editor scoped to the investment surface, so
+        # Cancel / Escape / 409 revert back to this hero, not the grid cell.
+        assert "revert=investment" in html
+
+    def test_balance_hero_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET without HX-Request redirects to the dashboard page."""
+        acct = _create_investment_account(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/investment/balance-hero")
+        assert resp.status_code == 302
+        assert "/investment" in resp.headers.get("Location", "")
+
+    def test_balance_hero_idor(
+        self, auth_client, second_user, db, seed_periods_today,
+    ):
+        """GET another user's balance hero returns 404 and leaks nothing."""
+        other_acct = _create_other_investment(second_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{other_acct.id}/investment/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
+        assert b"Other 401k" not in resp.data
+
+    def test_balance_hero_nonexistent(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """GET a nonexistent account's balance hero returns 404."""
+        resp = auth_client.get(
+            "/accounts/99999/investment/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
+
+    def test_true_up_from_investment_surface_persists_dated_anchor(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """PATCH true-up (revert=investment) records a dated anchor + fires event.
+
+        Reuses accounts.true_up -> anchor_service.apply_anchor_true_up: a
+        new AccountAnchorHistory row is appended carrying the submitted
+        balance (as-of today, anchored to the current period), and the
+        response fires ``balanceChanged`` so the detail page re-renders its
+        hero -- identical to the cockpit editor's success contract.
+        """
+        from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+
+        acct = _create_investment_account(seed_user, db.session)
+        _create_investment_params(db.session, acct.id)
+        db.session.commit()
+
+        resp = auth_client.patch(
+            f"/accounts/{acct.id}/true-up?revert=investment",
+            data={
+                "anchor_balance": "51234.56",
+                "version_id": acct.version_id,
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("HX-Trigger") == "balanceChanged"
+
+        db.session.expire_all()
+        history = (
+            db.session.query(AccountAnchorHistory)
+            .filter_by(
+                account_id=acct.id, anchor_balance=Decimal("51234.56"),
+            )
+            .all()
+        )
+        assert len(history) == 1, (
+            "true-up should append exactly one dated anchor history row"
+        )
+
+    def test_true_up_from_investment_409_reopens_investment(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A stale-version true-up returns 409 whose retry keeps revert=investment."""
+        acct = _create_investment_account(seed_user, db.session)
+        _create_investment_params(db.session, acct.id)
+        db.session.commit()
+        # A freshly created account is at version_id == 1, and the schema
+        # requires version_id >= 1, so submitting version_id - 1 (== 0) would
+        # 400 at validation before the conflict check.  Submit a valid but
+        # mismatched (higher) version so the optimistic-lock guard's
+        # ``submitted != current`` fires the 409 conflict path.
+        mismatched_version = acct.version_id + 1
+
+        resp = auth_client.patch(
+            f"/accounts/{acct.id}/true-up?revert=investment",
+            data={
+                "anchor_balance": "60000.00", "version_id": mismatched_version,
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 409
+        # The conflict cell's retry opener keeps the investment surface.
+        assert "revert=investment" in resp.data.decode()

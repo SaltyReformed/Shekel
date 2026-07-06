@@ -505,3 +505,165 @@
     max-width: none;
   }
 }
+
+/* =============================================
+   INVESTMENT DETAIL (investment/dashboard.html)
+   Shares the band vocabulary (.pulse-canvas / .nw-sky / .nw-hero* /
+   .pulse-chip* / .pulse-chart) and the acctd-* additions above; the
+   invd-* classes below add only what is new on the investment /
+   retirement detail page: the click-to-edit hero affordance, the chip
+   caption line, the goal-framed limit mini bar, the demoted funding
+   hint, the lever value/caption text, and the levers' shared verdict
+   strip (docs/design/investment_audit.md, locked anatomy).
+   ============================================= */
+
+/* The hero figure doubles as the click-to-edit anchor control (the
+   dashboard .pulse-hero__num affordance, applied to the band hero). */
+.invd-hero-edit {
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+  margin-left: -0.4rem;
+  border-radius: 0.375rem;
+  transition: background-color 0.15s;
+}
+
+.invd-hero-edit:hover,
+.invd-hero-edit:focus-visible {
+  background-color: rgba(var(--shekel-accent-rgb), 0.12);
+}
+
+.invd-hero-edit__pencil {
+  font-size: 0.9rem;
+  color: var(--shekel-text-muted);
+  margin-left: 0.4rem;
+  vertical-align: 0.5em;
+}
+
+.invd-chip__cap {
+  font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
+  margin-top: 0.0625rem;
+}
+
+/* Goal-framed contribution-limit chip (Gate A ruling 2): accent while
+   filling, done at the limit, danger ONLY over it -- each state paired
+   with caption text so color is never the only signal. */
+.invd-limit-chip {
+  min-width: 13.5rem;
+}
+
+.invd-limit-chip__pair {
+  font-size: 0.95rem;
+}
+
+.invd-limit-chip__of {
+  color: var(--shekel-text-muted);
+  font-weight: 400;
+}
+
+.invd-limitbar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--shekel-border-subtle);
+  margin-top: 0.375rem;
+  overflow: hidden;
+}
+
+.invd-limitbar__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--shekel-accent);
+}
+
+.invd-limitbar__fill--done {
+  background: var(--shekel-done);
+}
+
+.invd-limitbar__fill--over {
+  background: var(--shekel-danger);
+}
+
+.invd-limit-note--done {
+  color: var(--shekel-done);
+  font-weight: 600;
+}
+
+.invd-limit-note--over {
+  color: var(--shekel-danger);
+  font-weight: 600;
+}
+
+/* Demoted funding hint in the band foot (lived-workflow ruling): one
+   quiet line, not a full-width alert. */
+.invd-fund-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 1.375rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--shekel-text-muted);
+}
+
+.invd-fund-form {
+  padding: 0 1.375rem 1rem;
+}
+
+/* Lever cards' value/caption text and the number input between the
+   slider's end labels. */
+.invd-lever-val {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.invd-lever-cap {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--shekel-text-muted);
+}
+
+.invd-horizon-input {
+  max-width: 5.5rem;
+}
+
+.invd-whatif-input {
+  max-width: 12rem;
+}
+
+/* Shared verdict strip beneath BOTH levers (horizon and what-if both
+   feed its figures).  Difference color pairs with the rendered sign. */
+.invd-verdict {
+  display: flex;
+  align-items: center;
+  gap: 2.25rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 1.1rem;
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 0.75rem;
+}
+
+.invd-verdict__val {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.invd-verdict__val--pos {
+  color: var(--shekel-done);
+}
+
+.invd-verdict__val--neg {
+  color: var(--shekel-danger);
+}
+
+@media (max-width: 767.98px) {
+  .invd-verdict {
+    gap: 1.1rem;
+  }
+
+  .invd-fund-hint,
+  .invd-fund-form {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}

@@ -1,27 +1,39 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
-{% block title %}{{ account.name }} -- Shekel{% endblock title %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% block title %}{{ account.name }} -- Account Detail -- Shekel{% endblock title %}
+
+{# Fable 5 investment / retirement detail page (docs/design/investment_audit.md,
+   locked anatomy 2026-07-06).  Anatomy: header (glyph + type tag + a
+   Retirement-outlook link for RETIREMENT-category accounts), then one band
+   (click-to-edit balance hero with the honest anchored/modeled caption;
+   contribution / employer / limit chips; the full-width growth chart with
+   solid history, dashed projection, Today + retirement markers), the two
+   projection levers (Horizon, What-if contribution) with their SHARED
+   verdict strip, and the Parameters card.  The old summary / limit /
+   employer cards and the full-width funding alert are gone as separate
+   surfaces; the unfunded state is a quiet one-line hint in the band foot.
+
+   All money is computed in the route / service and passed in; templates
+   format only.  The Growth-YTD chip is pending the C3 producer ruling
+   (audit, Loop B build plan) and is deliberately absent. #}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }} Investment</li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
   </ol>
 </nav>
 {% endblock breadcrumbs %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4>
-    <i class="bi bi-graph-up"></i> {{ account.name }}
-    <small class="text-muted">
-      {% if account.account_type %}{{ account.account_type.name }}{% endif %}
-    </small>
-  </h4>
-  <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back
-  </a>
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+  <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+  <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+  {% if account.account_type and account.account_type.category_id == ACCT_CAT_RETIREMENT %}
+  <a href="{{ url_for('retirement.dashboard') }}" class="ms-auto small">Retirement outlook <i class="bi bi-arrow-right"></i></a>
+  {% endif %}
 </div>
 
 {% if request.args.get('setup') == '1' %}
@@ -31,103 +43,129 @@
 </div>
 {% endif %}
 
-{# --- Account Summary Card --- #}
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="row text-center">
-      <div class="col-md-3">
-        <div class="text-muted small">Current Balance</div>
-        <div class="fs-4 fw-bold font-mono text-accent">
-          {{ money(current_balance) }}
-        </div>
+{# ── Band: hero + chips + growth chart ─────────────────────────────── #}
+<div class="pulse-canvas mb-4">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Balance</div>
+      {# The hero region re-renders itself after an anchor save (the
+         editor's success response fires balanceChanged). #}
+      <div id="investment-hero-region"
+           hx-get="{{ url_for('investment.balance_hero', account_id=account.id) }}"
+           hx-trigger="balanceChanged from:body"
+           hx-swap="innerHTML">
+        {% include "investment/_balance_hero.html" %}
       </div>
-      <div class="col-md-3">
-        <div class="text-muted small">Assumed Return</div>
-        <div class="fs-4 fw-bold">
-          {% if params %}
-            {{ "%.2f"|format(params.assumed_annual_return|to_percent) }}%
-          {% else %}
-            --
-          {% endif %}
-        </div>
-      </div>
-      <div class="col-md-3">
-        <div class="text-muted small">Per-Period Contribution</div>
-        <div class="fs-4 fw-bold font-mono">
-          {{ money(periodic_contribution) }}
-        </div>
-      </div>
-      <div class="col-md-3">
-        <div class="text-muted small">Employer Per Period</div>
-        <div class="fs-4 fw-bold font-mono">
-          {{ money(employer_contribution_per_period) }}
-        </div>
-      </div>
+      {% if params %}
+      <div class="nw-hero__cap">modeled at {{ "%.2f"|format(params.assumed_annual_return|to_percent) }}% assumed return</div>
+      {% endif %}
     </div>
-  </div>
-</div>
 
-{# --- YTD Contribution Limit Progress --- #}
-{% if limit_info %}
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <span class="text-muted">{% if params.contribution_limit_year is not none %}{{ params.contribution_limit_year }} {% endif %}Contributions</span>
-      <span class="font-mono fw-bold">
-        {{ money(limit_info.ytd) }} / {{ money(limit_info.limit) }}
-      </span>
-    </div>
-    <div class="progress progress-h-10">
-      <div class="progress-bar {% if limit_info.pct >= 100 %}bg-danger{% elif limit_info.pct >= 90 %}bg-warning{% else %}bg-primary{% endif %}"
-           role="progressbar"
-           data-progress-pct="{{ limit_info.pct }}"
-           aria-valuenow="{{ limit_info.pct }}"
-           aria-valuemin="0"
-           aria-valuemax="100">
+    {% if params %}
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Contribution</div>
+        <div class="pulse-chip__value font-mono">{{ money(periodic_contribution) }}</div>
+        {# contribution_funding is a computed domain discriminator from the
+           dashboard service (CONTRIBUTION_FUNDING_*), not a reference-table
+           .name column, so literal comparison is the sanctioned pattern
+           (see _money_macros.html pace_pill note). #}
+        <div class="invd-chip__cap">
+          {%- if contribution_funding == 'deduction' %}per period &middot; paycheck deduction
+          {%- elif contribution_funding == 'transfer' %}per period &middot; recurring transfer
+          {%- else %}per period &middot; no funding linked{% endif -%}
+        </div>
       </div>
+      {% if employer_params %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Employer</div>
+        <div class="pulse-chip__value font-mono">+{{ money(employer_contribution_per_period) }}</div>
+        <div class="invd-chip__cap">
+          {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}per period &middot; {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross
+          {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}per period &middot; {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% match to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}%
+          {%- endif -%}
+        </div>
+      </div>
+      {% endif %}
+      {% if growth_since_anchor is not none %}
+      {# Measured growth since the anchor (Gate A ruling 4a). growth +
+         contributed reconciles with the hero balance minus the anchor balance
+         to the cent (balance_at seam). Gain in the done token, loss in danger;
+         the rendered sign carries the meaning so color is never the only
+         signal. #}
+      <div class="pulse-chip{% if growth_since_anchor >= 0 %} pulse-chip--done{% endif %}">
+        <div class="pulse-chip__label">
+          Growth{% if anchor_as_of %} since {{ anchor_as_of.strftime('%b %-d') }}{% endif %}
+        </div>
+        <div class="pulse-chip__value font-mono{% if growth_since_anchor < 0 %} invd-verdict__val--neg{% endif %}">
+          {%- if growth_since_anchor >= 0 %}+{% endif %}{{ money(growth_since_anchor) }}
+        </div>
+        <div class="invd-chip__cap">on {{ money(growth_since_anchor_contributed) }} contributed</div>
+      </div>
+      {% endif %}
+      {% if limit_info %}
+      <div class="pulse-chip invd-limit-chip">
+        <div class="pulse-chip__label">{% if params.contribution_limit_year is not none %}{{ params.contribution_limit_year }} {% endif %}limit</div>
+        <div class="pulse-chip__value font-mono invd-limit-chip__pair">{{ money(limit_info.ytd) }} <span class="invd-limit-chip__of">/ {{ money(limit_info.limit) }}</span></div>
+        <div class="invd-limitbar" role="progressbar"
+             aria-valuenow="{{ limit_info.pct }}" aria-valuemin="0" aria-valuemax="100"
+             aria-label="Contributions toward the annual limit">
+          <div class="invd-limitbar__fill{% if limit_info.is_over %} invd-limitbar__fill--over{% elif limit_info.pct >= 100 %} invd-limitbar__fill--done{% endif %}"
+               data-progress-pct="{{ limit_info.pct }}"></div>
+        </div>
+        {# Goal framing (Gate A ruling 2): filling is neutral, reaching the
+           limit is done, only OVER-contributing is danger -- with the
+           over-amount stated so color is never the only signal. #}
+        {% if limit_info.is_over %}
+        <div class="invd-chip__cap invd-limit-note--over">{{ money(limit_info.over_amount) }} over the limit</div>
+        {% elif limit_info.pct >= 100 %}
+        <div class="invd-chip__cap invd-limit-note--done"><i class="bi bi-check-lg"></i> limit reached</div>
+        {% else %}
+        <div class="invd-chip__cap">{{ "{:.0f}".format(limit_info.pct) }}% of the annual limit</div>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
-    <small class="text-muted">{{ "{:.0f}".format(limit_info.pct) }}% of annual limit</small>
-  </div>
-</div>
-{% endif %}
-
-{# --- Contribution Setup Prompt --- #}
-{% if show_contribution_prompt %}
-{% if is_deduction_path %}
-<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
-  <i class="bi bi-briefcase me-3 fs-4"></i>
-  <div class="flex-grow-1">
-    <h6 class="alert-heading mb-1">No paycheck deduction linked to this account</h6>
-    <p class="mb-2 small">
-      Link a paycheck deduction to this account so contributions are tracked automatically.
-      Configure a deduction with this account as the target on your salary profile.
-    </p>
-    {% if salary_profile_url %}
-    <a href="{{ salary_profile_url }}" class="btn btn-primary btn-sm">
-      <i class="bi bi-gear"></i> Go to Salary Profile
-    </a>
-    {% else %}
-    <a href="{{ url_for('salary.cockpit') }}" class="btn btn-primary btn-sm">
-      <i class="bi bi-gear"></i> Set Up Salary Profile
-    </a>
     {% endif %}
   </div>
-</div>
-{% elif source_accounts %}
-<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
-  <i class="bi bi-arrow-repeat me-3 fs-4"></i>
-  <div class="flex-grow-1">
-    <h6 class="alert-heading mb-1">No recurring contribution set up for this account</h6>
-    <p class="mb-2 small">
-      {% if suggested_amount and suggested_amount > 0 %}
-      Create a recurring transfer of
-      <strong class="font-mono">{{ money(suggested_amount) }}</strong>
-      per pay period to stay on track with your contribution limit.
-      {% else %}
-      Create a recurring transfer to this account to start building your investment.
-      {% endif %}
-    </p>
-    <form method="POST" action="{{ url_for('investment.create_contribution_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
+
+  {% if params %}
+  <div class="pulse-chart" id="growth-chart-container"
+       hx-get="{{ url_for('investment.growth_chart', account_id=account.id) }}"
+       hx-trigger="slider-changed, balanceChanged from:body"
+       hx-swap="innerHTML"
+       hx-include="#horizon_years, #what_if_contribution">
+    {% with oob_verdict = false %}{% include "investment/_growth_chart.html" %}{% endwith %}
+  </div>
+  {% else %}
+  <div class="acctd-empty">
+    No projection to chart yet. Set an assumed annual return in the
+    parameters below and the growth projection renders here.
+  </div>
+  {% endif %}
+
+  {% if show_contribution_prompt %}
+  {# Demoted funding hint (Gate A + lived-workflow ruling): one quiet line
+     replaces the old full-width alert; the unfunded state can be deliberate
+     and long-lived.  Prompt logic unchanged in the service. #}
+  <div class="invd-fund-hint">
+    <i class="bi bi-info-circle" aria-hidden="true"></i>
+    <span>No funding linked to this account.</span>
+    {% if is_deduction_path %}
+    {% if salary_profile_url %}
+    <a href="{{ salary_profile_url }}">Link a paycheck deduction</a>
+    {% else %}
+    <a href="{{ url_for('salary.cockpit') }}">Set up a salary profile</a>
+    {% endif %}
+    {% elif source_accounts %}
+    <a data-bs-toggle="collapse" href="#fund-transfer-form" role="button"
+       aria-expanded="false" aria-controls="fund-transfer-form">Set up a recurring transfer</a>
+    {% endif %}
+  </div>
+  {% if not is_deduction_path and source_accounts %}
+  <div class="collapse" id="fund-transfer-form">
+    <form method="POST" action="{{ url_for('investment.create_contribution_transfer', account_id=account.id) }}"
+          class="row g-2 align-items-end invd-fund-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-auto">
         <label for="source_account_id" class="form-label form-label-sm mb-0">From</label>
@@ -151,166 +189,154 @@
       </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">
-          <i class="bi bi-plus-circle"></i> Create Recurring Transfer
+          <i class="bi bi-plus-circle"></i> Create recurring transfer
         </button>
       </div>
     </form>
   </div>
+  {% endif %}
+  {% endif %}
 </div>
-{% endif %}
-{% endif %}
 
-{# --- Employer Contribution Details --- #}
-{# The service returns employer_params=None for the NONE/unset type, so a
-   non-None dict always carries a real type_id (flat-percentage or match).
-   Branch on type_id, not a non-existent 'type' string key. #}
-{% if employer_params %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-building"></i> Employer Contribution</h6>
-  </div>
-  <div class="card-body">
-    {% if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
-    <p class="mb-0">
-      Employer contributes <strong>{{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}%</strong>
-      of gross salary each pay period, regardless of employee contribution.
-    </p>
-    {% elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
-    <p class="mb-0">
-      Employer matches <strong>{{ "%.0f"|format(employer_params.match_percentage|to_percent) }}%</strong>
-      of employee contributions up to <strong>{{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}%</strong>
-      of gross salary.
-    </p>
-    {% endif %}
-  </div>
-</div>
-{% endif %}
-
-{# --- Growth Projection Chart --- #}
+{# ── Projection levers + shared verdict strip ──────────────────────── #}
 {% if params %}
-<div class="card mb-4">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <h6 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Growth Projection</h6>
-  </div>
-  <div class="card-body">
-    <div class="row align-items-center mb-3">
-      <div class="col-md-4">
-        <label for="horizon_years" class="form-label mb-0">Projection Horizon</label>
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-clock-history"></i> Horizon</h6>
       </div>
-      <div class="col-md-6">
-        <input type="range" class="form-range" id="horizon_slider"
+      <div class="card-body">
+        <div class="invd-lever-val font-mono">
+          <span id="horizon-display">{{ default_horizon }}</span> yr
+          <span class="invd-lever-cap" id="horizon-year-caption"
+                {% if retirement_year is not none %}data-retirement-year="{{ retirement_year }}"{% endif %}></span>
+        </div>
+        <input type="range" class="form-range mt-2" id="horizon_slider"
                min="1" max="40" step="1" value="{{ default_horizon }}"
                data-slider-group="horizon"
                data-slider-target="growth-chart-container"
-               data-slider-debounce="300">
-      </div>
-      <div class="col-md-2">
-        <div class="input-group input-group-sm">
-          <input type="number" class="form-control" id="horizon_years"
-                 name="horizon_years" min="1" max="40" step="1"
+               data-slider-debounce="300"
+               aria-label="Projection horizon slider">
+        <div class="d-flex justify-content-between align-items-center">
+          <small class="text-muted">1 yr</small>
+          <input type="number" class="form-control form-control-sm invd-horizon-input"
+                 id="horizon_years" name="horizon_years" min="1" max="40" step="1"
                  value="{{ default_horizon }}"
-                 data-slider-group="horizon">
-          <span class="input-group-text">yr</span>
+                 data-slider-group="horizon"
+                 aria-label="Projection horizon in years">
+          <small class="text-muted">40 yr</small>
         </div>
       </div>
     </div>
-    <div class="row align-items-center mb-3">
-      <div class="col-md-4">
-        <label for="what_if_contribution" class="form-label mb-0">What-If Contribution</label>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-currency-dollar"></i> What-if contribution</h6>
       </div>
-      <div class="col-md-6">
-        <div class="input-group input-group-sm">
+      <div class="card-body">
+        <label for="what_if_contribution" class="form-label">Per-period contribution</label>
+        <div class="input-group invd-whatif-input">
           <span class="input-group-text">$</span>
           <input type="number" class="form-control" id="what_if_contribution"
                  name="what_if_contribution" min="0" step="0.01"
-                 placeholder="Enter amount per period">
+                 placeholder="{{ "{:.2f}".format(periodic_contribution) }}">
+        </div>
+        <div class="invd-lever-cap mt-2">
+          currently {{ money(periodic_contribution) }} per period &middot;
+          clear to return to the committed plan
         </div>
       </div>
-      <div class="col-md-2">
-        <span class="text-muted small">per period</span>
-      </div>
     </div>
-    <div id="growth-chart-container"
-         hx-get="{{ url_for('investment.growth_chart', account_id=account.id) }}"
-         hx-trigger="slider-changed"
-         hx-swap="innerHTML"
-         hx-include="#horizon_years, #what_if_contribution">
-      {% include "investment/_growth_chart.html" %}
-    </div>
+  </div>
+  <div class="col-12">
+    <div id="growth-verdict">{% include "investment/_growth_verdict.html" %}</div>
   </div>
 </div>
 {% endif %}
 
-{# --- Parameters Form --- #}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
-  </div>
-  <div class="card-body">
-    <form method="POST" action="{{ url_for('investment.update_params', account_id=account.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="row g-3">
-        <div class="col-md-3">
-          <label class="form-label">Assumed Annual Return (%)</label>
-          <input type="number" step="0.01" name="assumed_annual_return"
-                 class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.assumed_annual_return|to_percent) if params else '7.00' }}"
-                 required>
-          <small class="text-muted">Enter as percentage (e.g. 7 for 7%)</small>
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Annual Contribution Limit</label>
-          <div class="input-group input-group-sm">
-            <span class="input-group-text">$</span>
-            <input type="number" step="0.01" name="annual_contribution_limit"
-                   class="form-control"
-                   value="{{ params.annual_contribution_limit if params and params.annual_contribution_limit else '' }}">
+{# ── Parameters (demoted: the last card -- lived-workflow ruling) ───── #}
+<div class="row">
+  <div class="col-lg-6">
+    <div class="card mb-4">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
+      </div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('investment.update_params', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="row g-3">
+            <div class="col-sm-6">
+              <label class="form-label" for="assumed_annual_return">Assumed annual return (%)</label>
+              <input type="number" step="0.01" name="assumed_annual_return" id="assumed_annual_return"
+                     class="form-control form-control-sm"
+                     value="{{ "%.2f"|format(params.assumed_annual_return|to_percent) if params else '7.00' }}"
+                     required>
+              <div class="form-text">Enter as percentage (e.g. 7 for 7%)</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="annual_contribution_limit">Annual contribution limit</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" step="0.01" name="annual_contribution_limit" id="annual_contribution_limit"
+                       class="form-control"
+                       value="{{ params.annual_contribution_limit if params and params.annual_contribution_limit else '' }}">
+              </div>
+              <div class="form-text">Leave blank for no limit</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="contribution_limit_year">Limit year</label>
+              <input type="number" name="contribution_limit_year" id="contribution_limit_year"
+                     class="form-control form-control-sm"
+                     value="{{ params.contribution_limit_year if params and params.contribution_limit_year else '' }}">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="employer_contribution_type_id">Employer type</label>
+              <select name="employer_contribution_type_id" id="employer_contribution_type_id" class="form-select form-select-sm">
+                {% for ect in employer_contribution_types %}
+                <option value="{{ ect.id }}" data-name="{{ ect.name }}" {{ 'selected' if (params and params.employer_contribution_type_id == ect.id) or (not params and ect.id == default_employer_contribution_type_id) }}>{{ ect.name | replace('_', ' ') | title }}</option>
+                {% endfor %}
+              </select>
+            </div>
           </div>
-          <small class="text-muted">Leave blank for no limit</small>
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Limit Year</label>
-          <input type="number" name="contribution_limit_year"
-                 class="form-control form-control-sm"
-                 value="{{ params.contribution_limit_year if params and params.contribution_limit_year else '' }}">
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Employer Type</label>
-          <select name="employer_contribution_type_id" class="form-select form-select-sm">
-            {% for ect in employer_contribution_types %}
-            <option value="{{ ect.id }}" data-name="{{ ect.name }}" {{ 'selected' if (params and params.employer_contribution_type_id == ect.id) or (not params and ect.id == default_employer_contribution_type_id) }}>{{ ect.name | replace('_', ' ') | title }}</option>
-            {% endfor %}
-          </select>
-        </div>
+          <div class="row g-3 mt-0" id="employer-fields-container">
+            <div class="col-sm-4">
+              <label class="form-label" for="employer_flat_percentage">Employer flat %</label>
+              <input type="number" step="0.01" name="employer_flat_percentage" id="employer_flat_percentage"
+                     class="form-control form-control-sm"
+                     value="{{ "%.2f"|format(params.employer_flat_percentage|to_percent) if params and params.employer_flat_percentage else '' }}">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label" for="employer_match_percentage">Match %</label>
+              <input type="number" step="0.01" name="employer_match_percentage" id="employer_match_percentage"
+                     class="form-control form-control-sm"
+                     value="{{ "%.0f"|format(params.employer_match_percentage|to_percent) if params and params.employer_match_percentage else '' }}">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label" for="employer_match_cap_percentage">Match cap %</label>
+              <input type="number" step="0.01" name="employer_match_cap_percentage" id="employer_match_cap_percentage"
+                     class="form-control form-control-sm"
+                     value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
+            </div>
+          </div>
+          {% if employer_params %}
+          <div class="form-text mt-2">
+            {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
+            Employer contributes {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross salary each pay period, regardless of employee contribution.
+            {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
+            Employer matches {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% of contributions up to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}% of gross salary.
+            {%- endif -%}
+          </div>
+          {% endif %}
+          <div class="mt-3">
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-check-lg"></i> Save parameters
+            </button>
+          </div>
+        </form>
       </div>
-      <div class="row g-3 mt-1" id="employer-fields-container">
-        <div class="col-md-3">
-          <label class="form-label">Employer Flat %</label>
-          <input type="number" step="0.01" name="employer_flat_percentage"
-                 class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.employer_flat_percentage|to_percent) if params and params.employer_flat_percentage else '' }}">
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Match %</label>
-          <input type="number" step="0.01" name="employer_match_percentage"
-                 class="form-control form-control-sm"
-                 value="{{ "%.0f"|format(params.employer_match_percentage|to_percent) if params and params.employer_match_percentage else '' }}">
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Match Cap %</label>
-          <input type="number" step="0.01" name="employer_match_cap_percentage"
-                 class="form-control form-control-sm"
-                 value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
-        </div>
-      </div>
-      <div class="row g-3 mt-1">
-        <div class="col-md-3 d-flex align-items-end">
-          <button type="submit" class="btn btn-primary btn-sm">
-            <i class="bi bi-check"></i> Save Parameters
-          </button>
-        </div>
-      </div>
-    </form>
+    </div>
   </div>
 </div>
 {% endblock content %}
