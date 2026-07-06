@@ -29,7 +29,7 @@ from app.routes.loan._helpers import (
     _resolve_loan_state,
     _transfer_schema,
 )
-from app.services import escrow_calculator, loan_loaders
+from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,11 @@ def create_payment_transfer(account_id):
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # R-4: bound the new recurrence to the loan's projected payoff BEFORE
+    # generating, so no shadow transaction is ever generated past payoff (the
+    # template is flushed above, so the sync finds it).
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
 
     # Generate transfers for existing pay periods.
     generate_transfers_for_all_periods(template)

@@ -29,6 +29,7 @@ from app.services import (
     escrow_calculator,
     loan_loaders,
     loan_posting_service,
+    loan_recurrence_sync,
 )
 from app.utils.auth_helpers import require_owner
 
@@ -148,6 +149,9 @@ def add_rate_change(account_id):
         )
         return _render_rate_history(account, params)
 
+    # R-4: a rate change re-amortizes the loan, moving the projected payoff, so
+    # re-bound the recurring payment's end_date before committing.
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
     db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
     return _render_rate_history(account, params)

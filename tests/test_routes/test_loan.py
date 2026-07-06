@@ -24,6 +24,7 @@ from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 from tests._test_helpers import (
+    create_settled_transfer,
     freeze_today,
     insert_origination_event,
     insert_origination_rate,
@@ -3813,32 +3814,26 @@ class TestDashboardChartComposer:
             f"Breakdown percentages sum to {total_pct}, expected 100.0"
         )
 
-    def test_recurrence_end_date_update_idempotent(
+    def test_recurrence_end_date_sync_is_idempotent(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-4: Recurrence end_date update is idempotent on dashboard reload.
+        """The relocated end_date sync writes recurrence_rules only on a change.
 
-        When ``_update_transfer_end_date`` is called with a planned
-        schedule whose last row's payment_date equals the recurrence
-        rule's existing end_date, NO write occurs (the guard at
-        ``loan.py:_update_transfer_end_date``).  Re-rendering the
-        dashboard a second time must not mutate the row.
+        R-4: creating the recurring transfer sets end_date once.  A follow-on
+        mutation that does NOT move the payoff (a params re-save with the same
+        6.5% / 360-month terms) recomputes the same end_date, so the guard skips
+        the write -- no new ``recurrence_rules`` UPDATE lands in the audit log.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # Create a recurring transfer template; its rule's end_date
-        # starts at None.  First GET will sync end_date to the
-        # planned schedule's last payment date.  Second GET must be
-        # a no-op.
-        _create_transfer_template(seed_user, db.session, acct)
         db.session.commit()
+        # Creating the recurring transfer via the route sets end_date once.
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(seed_user["account"].id)},
+        )
 
-        # First GET sets end_date.
-        resp1 = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp1.status_code == 200
-
-        # Re-fetch the rule's end_date after the first sync.
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
         template = db.session.query(TransferTemplate).filter_by(
@@ -3847,20 +3842,25 @@ class TestDashboardChartComposer:
         first_end_date = template.recurrence_rule.end_date
         assert first_end_date is not None
 
-        # Count audit log rows for recurrence_rule UPDATE before the
-        # second GET.  The guard at ``_update_transfer_end_date``
-        # short-circuits when the new end_date equals the current
-        # one; the system.audit_log row count must NOT increase
-        # after the second dashboard render.
+        # The guard short-circuits when the recomputed end_date equals the
+        # current one; the system.audit_log row count must NOT increase after a
+        # no-op-payoff params re-save.
         audit_count_sql = sa.text(
             "SELECT COUNT(*) FROM system.audit_log "
             "WHERE table_name = 'recurrence_rules' AND operation = 'UPDATE'"
         )
         audit_before = db.session.execute(audit_count_sql).scalar()
 
-        # Second GET must be a no-op (end_date already matches).
-        resp2 = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp2.status_code == 200
+        # A params re-save with unchanged terms recomputes the SAME payoff.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/params",
+            data={
+                "interest_rate": "6.500",
+                "payment_day": "1",
+                "term_months": "360",
+            },
+        )
+        assert resp.status_code == 302
         db.session.expire_all()
         rule = db.session.query(RecurrenceRule).filter_by(
             id=template.recurrence_rule_id,
@@ -3868,9 +3868,9 @@ class TestDashboardChartComposer:
         assert rule.end_date == first_end_date
         audit_after = db.session.execute(audit_count_sql).scalar()
         assert audit_after == audit_before, (
-            "Second dashboard GET wrote a new recurrence_rule UPDATE row "
+            "A no-op-payoff mutation wrote a new recurrence_rule UPDATE row "
             f"to system.audit_log ({audit_before} -> {audit_after}) -- "
-            "idempotency guard at _update_transfer_end_date failed"
+            "the end_date sync's idempotency guard failed"
         )
 
     def test_no_direct_generate_schedule_in_dashboard(self):
@@ -4059,121 +4059,91 @@ def _create_transfer_template(seed_user, db_session, loan_account,
 
 
 class TestRecurrenceEndDateUpdate:
-    """Tests for auto-updating the recurrence rule end_date on dashboard load.
+    """The recurring payment's end_date is synced to the projected payoff (R-4).
 
-    Commit 5.9-1: when the loan dashboard computes the projected payoff
-    date, the recurring transfer template's recurrence rule end_date is
-    synchronized to prevent shadow transaction generation beyond payoff.
+    This used to be a write on the dashboard GET (Risk R-4); it now runs at every
+    payoff-affecting mutation -- recurring-transfer creation, a settled payment, a
+    params / rate edit, and a balance true-up -- and NEVER on the GET.  The payoff
+    computation itself is unit-tested in
+    tests/test_services/test_loan_recurrence_sync.py; these tests pin the WIRING
+    through the real routes.
     """
 
-    def test_end_date_set_on_dashboard_load(
+    def test_end_date_set_on_transfer_creation(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Mortgage + recurring transfer with end_date=None: dashboard sets
-        end_date to the projected payoff date.
+        """Creating the recurring transfer bounds its end_date to the payoff.
 
-        After GET, the recurrence rule's end_date in the database must
-        equal the committed schedule's last payment date.
+        The create-transfer POST resolves the loan and sets the new rule's
+        end_date BEFORE generating any shadow, so nothing is generated past
+        payoff -- the primary place the relocated write now happens.  A
+        mortgage's payoff is years out.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(seed_user["account"].id)},
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        rule = tpl.recurrence_rule
+        assert rule.end_date is not None
+        assert isinstance(rule.end_date, date)
+        # Mortgage payoff is years in the future.
+        assert rule.end_date > date.today()
+
+    def test_end_date_set_when_a_payment_settles(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Settling a loan payment re-syncs the recurring end_date (settle path).
+
+        With a recurring transfer whose end_date starts unset, settling a payment
+        through the real Projected -> Paid chokepoint fires the transfer settle
+        path's sync, which bounds the end_date to the loan's projected payoff --
+        no GET involved.
         """
         acct = _create_mortgage(seed_user, db.session)
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        assert rule.end_date is None
 
+        # Settle a payment in a period that has begun, so the resolver replays it.
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[4], amount=Decimal("1580.17"),
+        )
+        db.session.commit()
+
+        db.session.refresh(rule)
+        assert rule.end_date is not None
+        assert rule.end_date > date.today()
+
+    def test_dashboard_get_is_read_only(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """R-4: loading the loan dashboard NEVER writes the recurrence end_date.
+
+        A mortgage with a recurring transfer whose end_date is unset stays unset
+        across a GET -- the relocated sync runs only on mutations, so the detail
+        page is read-only.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
 
         db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert isinstance(rule.end_date, date)
-        # Mortgage payoff is years in the future.
-        assert rule.end_date > date.today()
-
-    def test_end_date_updated_when_payoff_changes(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """Extra payment accelerates payoff: end_date moves earlier.
-
-        First dashboard load sets end_date to the original payoff date.
-        After adding a confirmed payment, the next dashboard load
-        updates end_date to the earlier accelerated payoff date.
-        """
-        acct = _create_mortgage(seed_user, db.session)
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
-
-        # First load: set initial end_date.
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-        db.session.refresh(rule)
-        original_end_date = rule.end_date
-        assert original_end_date is not None
-
-        # Add a large extra payment to accelerate payoff.
-        # Use period 7 (April 2026) so the payment falls within the
-        # schedule's date range (schedule starts from current month).
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[7], Decimal("50000.00"),
-            status_enum=StatusEnum.DONE,
-        )
-        db.session.commit()
-
-        # Second load: end_date should move earlier.
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-        db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert rule.end_date < original_end_date, (
-            f"Expected payoff to accelerate: {rule.end_date} should be "
-            f"before {original_end_date}"
-        )
-
-    def test_end_date_cleared_when_no_payoff(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """Negative amortization (payment < interest): end_date is None.
-
-        When the committed schedule ends with a positive remaining
-        balance, the loan does not pay off within the projected term.
-        The recurrence rule end_date should be None (indefinite).
-
-        Setup: ARM loan with 60% rate, 1-month term originating in
-        March 2026 so the only payment month is April (due 4/1).
-        seed_periods[6] (2026-03-27 .. 2026-04-09) CONTAINS 4/1, so its
-        payment is the April 1 payment that the schedule's only row
-        expects -- the due-date-keyed override and the projection row
-        line up.  The $100 payment is far below the monthly interest of
-        $5,000, producing negative amortization and a remaining balance
-        > $0.
-        """
-        # ARM loan: origination Mar 2026, term 1 month.
-        # First (and only) payment month = April 2026 (due 4/1).
-        # 60% annual rate, $100K principal, monthly interest = $5,000.
-        acct = _create_loan_account(
-            seed_user, db.session, "Auto Loan", "Neg Am Loan",
-            Decimal("100000.00"), Decimal("0.60000"), 1,
-            date(2026, 3, 1), 1, is_arm=True,
-        )
-        _tpl, rule = _create_transfer_template(
-            seed_user, db.session, acct, amount=Decimal("100.00"),
-        )
-
-        # Create a transfer with amount ($100) far below monthly
-        # interest ($5,000).  The engine uses this instead of the
-        # contractual payment, so the balance stays at ~$100K.  Placed in
-        # the pay period containing 4/1 so it funds the loan's April
-        # payment (the schedule's single row).
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[6], Decimal("100.00"),
-            status_enum=StatusEnum.PROJECTED,
-        )
-        db.session.commit()
-
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-
-        db.session.refresh(rule)
         assert rule.end_date is None, (
-            f"Expected None for non-paying-off loan, got {rule.end_date}"
+            "The dashboard GET must not write end_date (R-4); it is set only "
+            f"at payoff-affecting mutations. Got {rule.end_date}"
         )
 
     def test_no_update_when_no_transfer(
@@ -4191,182 +4161,94 @@ class TestRecurrenceEndDateUpdate:
         assert resp.status_code == 200
         assert b"Loan Summary" in resp.data
 
-    def test_end_date_idempotent_no_write_on_repeat(
+    def test_end_date_set_on_params_edit(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Repeat dashboard load with no changes: end_date stays the same.
+        """Editing loan params re-syncs the recurring end_date (params path).
 
-        The idempotency guard prevents a database write when the
-        projected payoff date has not changed since the last visit.
+        A term / rate / payment-day edit moves the projected payoff, so the
+        update-params POST bounds the recurring rule's end_date to it: starting
+        from unset, the edit sets it to a future payoff.
         """
         acct = _create_mortgage(seed_user, db.session)
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        assert rule.end_date is None
 
-        # First load: sets end_date.
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/params",
+            data={
+                "interest_rate": "6.500",
+                "payment_day": "1",
+                "term_months": "360",
+            },
+        )
+        assert resp.status_code == 302
+
         db.session.refresh(rule)
-        first_end_date = rule.end_date
-        assert first_end_date is not None
+        assert rule.end_date is not None
+        assert rule.end_date > date.today()
 
-        # Second load: same loan, no changes.
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-        db.session.refresh(rule)
-        assert rule.end_date == first_end_date
-
-    def test_end_date_reverts_when_payoff_extends(
+    def test_end_date_set_on_rate_change(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Extra payment accelerates payoff; identical loan without it
-        has a later end_date, confirming the update is payment-sensitive.
+        """Recording an ARM rate change re-syncs the recurring end_date (rate path).
 
-        This verifies the symmetric case of C-5.9-2: if extra payments
-        were removed, the end_date would revert to the later baseline
-        date.  Two identical mortgages are compared -- one with a large
-        extra payment, one without.
+        A rate change re-amortizes the loan, moving payoff, so the add-rate POST
+        bounds the recurring rule's end_date to the new payoff -- starting from
+        unset, the change sets it.
         """
-        # Mortgage A: with a large extra payment.
-        acct_a = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Accelerated Mortgage",
-            Decimal("250000.00"), Decimal("0.06500"), 360,
-            date(2023, 6, 1), 1,
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "ARM End Date Mortgage",
+            Decimal("250000.00"), Decimal("0.05000"), 360,
+            date(2023, 6, 1), 1, is_arm=True,
         )
-        _tpl_a, rule_a = _create_transfer_template(
-            seed_user, db.session, acct_a,
-        )
-        _create_transfer_to_loan(
-            seed_user, acct_a, seed_periods[7], Decimal("50000.00"),
-            status_enum=StatusEnum.DONE,
-        )
-        db.session.commit()
-        resp = auth_client.get(f"/accounts/{acct_a.id}/loan")
-        assert resp.status_code == 200
-        db.session.refresh(rule_a)
-        accelerated_end_date = rule_a.end_date
-        assert accelerated_end_date is not None
-
-        # Mortgage B: identical parameters, no extra payment.
-        acct_b = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Baseline Mortgage",
-            Decimal("250000.00"), Decimal("0.06500"), 360,
-            date(2023, 6, 1), 1,
-        )
-        _tpl_b, rule_b = _create_transfer_template(
-            seed_user, db.session, acct_b,
-        )
-        resp = auth_client.get(f"/accounts/{acct_b.id}/loan")
-        assert resp.status_code == 200
-        db.session.refresh(rule_b)
-        baseline_end_date = rule_b.end_date
-        assert baseline_end_date is not None
-
-        # The extra payment should produce an earlier payoff.
-        assert accelerated_end_date < baseline_end_date, (
-            f"Accelerated {accelerated_end_date} should be before "
-            f"baseline {baseline_end_date}"
-        )
-
-    def test_end_date_type_matches_column(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """Stored end_date is a date, not a datetime.
-
-        Type mismatches between the assigned value and the column
-        type can cause comparison failures on subsequent loads.
-        """
-        from datetime import datetime  # pylint: disable=import-outside-toplevel
-
-        acct = _create_mortgage(seed_user, db.session)
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        assert rule.end_date is None
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-01-01", "interest_rate": "7.000"},
+        )
         assert resp.status_code == 200
 
         db.session.refresh(rule)
         assert rule.end_date is not None
-        assert isinstance(rule.end_date, date)
-        assert not isinstance(rule.end_date, datetime), (
-            f"end_date should be date, not datetime: {rule.end_date!r}"
-        )
+        assert rule.end_date > date.today()
 
-    def test_end_date_paid_off_loan(
+    def test_end_date_set_past_when_paid_off_via_trueup(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Paid-off loan via confirmed payment: end_date in the past.
+        """Trueing a loan up to $0 sets a PAST end_date (true-up path).
 
-        When confirmed payments have retired the loan, the schedule
-        ends early.  The end_date should be set to the payoff date
-        (in the past) so the recurrence engine stops generating
-        transfers.
+        Recording a $0 balance retires the loan, so its projected schedule is
+        empty and the recurring rule's end_date falls back to the origination
+        date -- a past date that stops future generation.  The stored value is a
+        plain ``date`` (not a ``datetime``), so later comparisons hold.
         """
-        # Small loan: $1000 at 5% for 12 months, origination Jan 2026.
-        # First payment month: Feb 2026 (seed_periods[3] = Feb 13).
+        from datetime import datetime  # pylint: disable=import-outside-toplevel
+
         acct = _create_loan_account_exact(
             seed_user, db.session, "Auto Loan", "Paid Off Loan",
             Decimal("1000.00"), Decimal("0.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
-        # Large confirmed payment in Feb, then the operator records the
-        # payoff as a balance true-up to $0.  Under the contractual-
-        # schedule model a cash lump sum does not auto-pay-off; the
-        # true-up is the explicit-event path, and the recurrence engine
-        # sets end_date once the loan is paid off.
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[3], Decimal("1100.00"),
-            status_enum=StatusEnum.DONE,
-        )
-        insert_trueup_event(acct.loan_params, Decimal("0.00"))
-        db.session.commit()
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        assert rule.end_date is None
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-
-        db.session.refresh(rule)
-        assert rule.end_date is not None, (
-            "Paid-off loan should have end_date set to stop future transfers"
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/trueup",
+            data={"anchor_date": "2026-03-01", "anchor_balance": "0.00"},
         )
-        # The end_date should be today or in the past -- no future
-        # payments needed for a paid-off loan.
-        assert rule.end_date <= date.today(), (
-            f"Expected end_date <= today for paid-off loan, got {rule.end_date}"
-        )
-
-    def test_end_date_with_arm_rate_changes(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """ARM mortgage with rate history: end_date reflects ARM-adjusted payoff.
-
-        The committed schedule incorporates rate changes.  Verify the
-        end_date matches the ARM-adjusted payoff, not a fixed-rate payoff.
-        """
-        # ARM mortgage: 5% initial rate, 360 months.
-        acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
-            Decimal("250000.00"), Decimal("0.05000"), 360,
-            date(2023, 6, 1), 1, is_arm=True,
-        )
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
-
-        # Add a rate increase: 7% effective Jan 2026.
-        rate_entry = RateHistory(
-            account_id=acct.id,
-            effective_date=date(2026, 1, 1),
-            interest_rate=Decimal("0.07000"),
-        )
-        db.session.add(rate_entry)
-        db.session.commit()
-
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
+        assert resp.status_code == 302
 
         db.session.refresh(rule)
         assert rule.end_date is not None
         assert isinstance(rule.end_date, date)
-        # ARM loan at 5% with no rate change should pay off sooner
-        # than one at 7%.  Just verify the end_date is set and future.
-        assert rule.end_date > date.today()
+        assert not isinstance(rule.end_date, datetime)
+        assert rule.end_date <= date.today(), (
+            f"Paid-off loan should stop generation with a past end_date, "
+            f"got {rule.end_date}"
+        )
 
     def test_end_date_no_params_no_crash(
         self, auth_client, seed_user, db, seed_periods,
@@ -4467,6 +4349,63 @@ class TestRecurrenceEndDateUpdate:
         # Other user's recurrence rule should be untouched.
         db.session.refresh(rule)
         assert rule.end_date is None
+
+
+class TestLoanScheduleRoute:
+    """The standalone amortization-schedule page (demoted off the detail page)."""
+
+    def test_schedule_page_renders_the_table(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET /loan/schedule renders the month-by-month schedule for the loan.
+
+        The full statement table lives on its own page now; it renders the
+        planned schedule (the same LoanState the detail card reads), so the
+        Month-by-Month heading, the Balance column, and a Confirmed/Projected
+        status badge are all present.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
+        assert resp.status_code == 200
+        assert b"Amortization Schedule" in resp.data
+        assert b"Month-by-Month Schedule" in resp.data
+        assert b"Balance" in resp.data
+        assert b"Projected" in resp.data
+
+    def test_schedule_page_404_for_other_users_loan(
+        self, auth_client, seed_user, second_user, db, seed_periods,
+    ):
+        """A cross-owner loan's schedule 404s (404 for not-found and not-yours)."""
+        other = _create_other_loan(second_user, db.session)
+
+        resp = auth_client.get(f"/accounts/{other.id}/loan/schedule")
+        assert resp.status_code == 404
+
+    def test_schedule_page_redirects_when_unconfigured(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An amortizing account with no LoanParams redirects to the detail page.
+
+        There is no schedule to show until the loan is set up; the shared
+        configured-loan guard redirects to the detail page (the setup surface)
+        instead of 500-ing.
+        """
+        loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Unconfigured Loan",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{account.id}/loan/schedule")
+        assert resp.status_code == 302
+        assert f"/accounts/{account.id}/loan" in resp.headers.get("Location", "")
 
 
 # ── Refinance Calculator Tests ──────────────────────────────────────────

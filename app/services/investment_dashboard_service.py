@@ -42,7 +42,9 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.transfer_template import TransferTemplate
+from app.services.recurring_transfer_query import (
+    active_recurring_transfer_template,
+)
 from app.models.user import UserSettings
 from app.services import (
     balance_at,
@@ -563,17 +565,7 @@ def _load_transfer_source_accounts(
 
 def _has_active_recurring_transfer_to(account_id: int, user_id: int) -> bool:
     """Return True iff an active recurring transfer targets *account_id*."""
-    template = (
-        db.session.query(TransferTemplate)
-        .filter(
-            TransferTemplate.user_id == user_id,
-            TransferTemplate.to_account_id == account_id,
-            TransferTemplate.is_active.is_(True),
-            TransferTemplate.recurrence_rule_id.isnot(None),
-        )
-        .first()
-    )
-    return template is not None
+    return active_recurring_transfer_template(account_id, user_id) is not None
 
 
 # ── Public entry points ────────────────────────────────────────────

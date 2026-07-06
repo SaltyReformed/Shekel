@@ -37,8 +37,10 @@ from app.services.loan_payment_service import (
     resolve_loan_seeded,
 )
 from app.services.loan_resolver import LoanState
+from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
+from app.utils.money import round_money
 
 
 # Field allowlist for the loan-params update route -- the LoanParams
@@ -319,3 +321,82 @@ def _build_chart_series(series_rows):
         for name, rows in series_rows.items()
     }
     return chart_labels, balances
+
+
+def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
+    """Sum payment, principal, interest, escrow, and extra from a schedule.
+
+    The Payment column in the schedule shows P&I + escrow for each month.
+    Totals are computed from the actual schedule rows so the footer row
+    matches the individual data rows exactly.
+
+    Args:
+        schedule: List of AmortizationRow objects.
+        monthly_escrow: Monthly escrow amount added to each row's
+            payment for display.
+
+    Returns:
+        dict with keys: total_payment, total_principal, total_interest,
+        total_escrow, total_extra, has_extra.  Empty dict if schedule
+        is empty.
+    """
+    if not schedule:
+        return {}
+    num_months = len(schedule)
+    total_pi = sum((row.payment for row in schedule), Decimal("0.00"))
+    total_principal = sum((row.principal for row in schedule), Decimal("0.00"))
+    total_interest = sum((row.interest for row in schedule), Decimal("0.00"))
+    total_extra = sum((row.extra_payment for row in schedule), Decimal("0.00"))
+    total_escrow = monthly_escrow * num_months
+    return {
+        "total_payment": total_pi + total_escrow + total_extra,
+        "total_principal": total_principal,
+        "total_interest": total_interest,
+        "total_escrow": total_escrow,
+        "total_extra": total_extra,
+        "has_extra": total_extra > Decimal("0.00"),
+    }
+
+
+def build_schedule_context(planned_schedule, monthly_escrow, current_rate, params):
+    """Build the amortization-schedule template context.
+
+    Shared by the loan detail page's transitional schedule tab and the
+    standalone schedule route (:mod:`app.routes.loan.schedule`).  The planned
+    schedule shows the user's trajectory with confirmed actuals + projected
+    payments.  Three index-parallel lists are computed server-side (consumed via
+    ``loop.index0``) so the schedule template renders without inline Jinja
+    arithmetic (MED-04 / E-16): per-row total monthly outflow (P&I + escrow +
+    extra), the ARM display rate (storage-domain fraction times 100), and a
+    continuous payment number from origination so a mid-life loan's "#" column
+    keeps counting up instead of restarting at 1.
+
+    Returns:
+        dict of template vars: amortization_schedule, show_rate_column,
+        schedule_totals, schedule_row_totals, schedule_row_rates_pct,
+        schedule_row_numbers.
+    """
+    show_rate_column = bool(params.is_arm)
+    schedule_row_totals = [
+        round_money(row.payment + monthly_escrow + row.extra_payment)
+        for row in planned_schedule
+    ]
+    schedule_row_rates_pct = [
+        (row.interest_rate if row.interest_rate is not None else current_rate)
+        * Decimal("100")
+        for row in planned_schedule
+    ] if show_rate_column else None
+    schedule_row_numbers = [
+        payment_number(params.origination_date, row.payment_date)
+        for row in planned_schedule
+    ]
+    return {
+        "amortization_schedule": planned_schedule,
+        "show_rate_column": show_rate_column,
+        "schedule_totals": _compute_schedule_totals(
+            planned_schedule, monthly_escrow,
+        ),
+        "schedule_row_totals": schedule_row_totals,
+        "schedule_row_rates_pct": schedule_row_rates_pct,
+        "schedule_row_numbers": schedule_row_numbers,
+    }

@@ -31,6 +31,8 @@ Module map:
   calculators (HTMX partials).
 * :mod:`app.routes.loan.payment_transfer` -- recurring monthly payment-transfer
   creation.
+* :mod:`app.routes.loan.schedule` -- the standalone amortization-schedule page
+  (demoted off the detail page in the Loop B rebuild).
 """
 
 # Re-export ``loan_bp`` from the leaf declaration module so consumers that
@@ -47,6 +49,7 @@ from app.routes.loan import params  # noqa: F401, E402
 from app.routes.loan import escrow_rates  # noqa: F401, E402
 from app.routes.loan import calculators  # noqa: F401, E402
 from app.routes.loan import payment_transfer  # noqa: F401, E402
+from app.routes.loan import schedule  # noqa: F401, E402
 
 
 __all__ = ["loan_bp"]

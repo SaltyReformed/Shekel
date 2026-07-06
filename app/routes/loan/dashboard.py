@@ -10,41 +10,33 @@ dashboard is where the payoff date is computed with full payment context.
 """
 
 import dataclasses
-import logging
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
 
 from flask import abort, render_template
 from flask_login import current_user, login_required
-from sqlalchemy.exc import SQLAlchemyError
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
-from app.models.transfer_template import TransferTemplate
+from app.services.recurring_transfer_query import (
+    active_recurring_transfer_template,
+)
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _build_chart_series,
     _load_loan_account,
     _load_loan_context,
+    build_schedule_context,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.amortization_engine import AmortizationRow, AmortizationSummary
+from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import confirmed_loan_view
-from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_LOAN_RECURRENCE_END_DATE_UPDATED,
-    log_event,
-)
-from app.utils.money import round_money
-
-logger = logging.getLogger(__name__)
 
 
 def _find_current_period_row(schedule):
@@ -190,123 +182,6 @@ def _compute_payment_breakdown(schedule, escrow_components):
         "payment_date": current_row.payment_date,
         "next_year_escrow": next_year_escrow,
     }
-
-
-def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
-    """Sum payment, principal, interest, escrow, and extra from a schedule.
-
-    The Payment column in the schedule shows P&I + escrow for each month.
-    Totals are computed from the actual schedule rows so the footer row
-    matches the individual data rows exactly.
-
-    Args:
-        schedule: List of AmortizationRow objects.
-        monthly_escrow: Monthly escrow amount added to each row's
-            payment for display.
-
-    Returns:
-        dict with keys: total_payment, total_principal, total_interest,
-        total_escrow, total_extra, has_extra.  Empty dict if schedule
-        is empty.
-    """
-    if not schedule:
-        return {}
-    num_months = len(schedule)
-    total_pi = sum((row.payment for row in schedule), Decimal("0.00"))
-    total_principal = sum((row.principal for row in schedule), Decimal("0.00"))
-    total_interest = sum((row.interest for row in schedule), Decimal("0.00"))
-    total_extra = sum((row.extra_payment for row in schedule), Decimal("0.00"))
-    total_escrow = monthly_escrow * num_months
-    return {
-        "total_payment": total_pi + total_escrow + total_extra,
-        "total_principal": total_principal,
-        "total_interest": total_interest,
-        "total_escrow": total_escrow,
-        "total_extra": total_extra,
-        "has_extra": total_extra > Decimal("0.00"),
-    }
-
-
-def _update_transfer_end_date(
-    template: TransferTemplate,
-    summary: AmortizationSummary,
-    schedule: list[AmortizationRow],
-    account_id: int,
-) -> None:
-    """Update the recurring transfer's end date to match the projected payoff.
-
-    Sets the recurrence rule end_date to the committed schedule's payoff
-    date so the recurrence engine stops generating transfers beyond
-    payoff.  The update is idempotent -- if the end_date already matches,
-    no write occurs.
-
-    Three cases:
-      - Normal payoff: end_date = last scheduled payment date.
-      - Already paid off (empty schedule): end_date = summary fallback
-        date (first of current month), stopping future generation.
-      - No payoff within term (negative amortization, remaining balance
-        > 0 at schedule end): end_date = None (indefinite recurrence).
-
-    This is a write on a GET request (Risk R-4). Acknowledged as a
-    pragmatic trade-off: the dashboard is the natural place where the
-    payoff date is computed with full payment context, the write is
-    idempotent, and the alternative (hooks in the transfer service)
-    was rejected for coupling complexity.
-
-    Args:
-        template: The active recurring transfer template targeting
-            this debt account.  Only the first matching template is
-            updated -- multiple recurring transfers to the same debt
-            account is unusual and likely a user configuration issue.
-        summary: The committed schedule summary.  Used as a fallback
-            payoff date when the schedule is empty (already paid off).
-        schedule: The committed amortization schedule.  Used to
-            determine payoff status and exact payoff date.
-        account_id: The debt account ID, for logging.
-    """
-    rule = template.recurrence_rule
-
-    # Determine the projected payoff date from the committed schedule.
-    if not schedule:
-        # Loan already paid off (zero principal).  Use the summary's
-        # fallback payoff date (first of current month) to prevent
-        # the recurrence engine from generating future transfers.
-        projected_payoff = summary.payoff_date
-    elif schedule[-1].remaining_balance > Decimal("0.00"):
-        # Schedule ends with outstanding balance -- the loan does not
-        # pay off within the projected term (e.g., payments less than
-        # monthly interest).  Leave recurrence indefinite so transfers
-        # continue until the user adjusts payments.
-        projected_payoff = None
-    else:
-        # Normal payoff at the last scheduled payment date.
-        projected_payoff = schedule[-1].payment_date
-
-    current_end_date = rule.end_date
-
-    if projected_payoff == current_end_date:
-        return
-
-    rule.end_date = projected_payoff
-    try:
-        db.session.commit()
-    except SQLAlchemyError:
-        logger.exception(
-            "Failed to update recurrence rule end_date for template %d",
-            template.id,
-        )
-        db.session.rollback()
-        return
-
-    log_event(
-        logger, logging.INFO,
-        EVT_LOAN_RECURRENCE_END_DATE_UPDATED, BUSINESS,
-        "Updated recurrence rule end date to projected payoff",
-        account_id=account_id,
-        template_id=template.id,
-        old_end_date=str(current_end_date),
-        new_end_date=str(projected_payoff),
-    )
 
 
 def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
@@ -483,24 +358,14 @@ def _resolve_transfer_prompt(account):
     the default source (the checking account, if any) are loaded.
 
     Returns:
-        Tuple of (existing_template, prompt_context) where
-        ``existing_template`` is the active transfer template (or None)
-        -- the caller also needs it for the end_date sync -- and
-        ``prompt_context`` is a dict of template vars:
-        show_transfer_prompt, source_accounts, default_source_id.
+        ``prompt_context`` -- a dict of template vars: show_transfer_prompt,
+        source_accounts, default_source_id.
     """
-    existing_template = (
-        db.session.query(TransferTemplate)
-        .filter(
-            TransferTemplate.user_id == current_user.id,
-            TransferTemplate.to_account_id == account.id,
-            TransferTemplate.is_active.is_(True),
-            TransferTemplate.recurrence_rule_id.isnot(None),
-        )
-        .first()
+    existing_template = active_recurring_transfer_template(
+        account.id, current_user.id,
     )
     if existing_template is not None:
-        return existing_template, {
+        return {
             "show_transfer_prompt": False,
             "source_accounts": [],
             "default_source_id": None,
@@ -525,53 +390,10 @@ def _resolve_transfer_prompt(account):
          if acct.account_type_id == checking_type_id),
         None,
     )
-    return None, {
+    return {
         "show_transfer_prompt": True,
         "source_accounts": source_accounts,
         "default_source_id": default_source_id,
-    }
-
-
-def _build_schedule_tab(planned_schedule, monthly_escrow, current_rate, params):
-    """Build the amortization-schedule tab's template context.
-
-    The planned schedule shows the user's trajectory with confirmed
-    actuals + projected payments.  Three index-parallel lists are
-    computed server-side (consumed via ``loop.index0``) so the schedule
-    template renders without inline Jinja arithmetic (MED-04 / E-16):
-    per-row total monthly outflow (P&I + escrow + extra), the ARM
-    display rate (storage-domain fraction times 100), and a continuous
-    payment number from origination so a mid-life loan's "#" column
-    keeps counting up instead of restarting at 1.
-
-    Returns:
-        dict of template vars: amortization_schedule, show_rate_column,
-        schedule_totals, schedule_row_totals, schedule_row_rates_pct,
-        schedule_row_numbers.
-    """
-    show_rate_column = bool(params.is_arm)
-    schedule_row_totals = [
-        round_money(row.payment + monthly_escrow + row.extra_payment)
-        for row in planned_schedule
-    ]
-    schedule_row_rates_pct = [
-        (row.interest_rate if row.interest_rate is not None else current_rate)
-        * Decimal("100")
-        for row in planned_schedule
-    ] if show_rate_column else None
-    schedule_row_numbers = [
-        payment_number(params.origination_date, row.payment_date)
-        for row in planned_schedule
-    ]
-    return {
-        "amortization_schedule": planned_schedule,
-        "show_rate_column": show_rate_column,
-        "schedule_totals": _compute_schedule_totals(
-            planned_schedule, monthly_escrow,
-        ),
-        "schedule_row_totals": schedule_row_totals,
-        "schedule_row_rates_pct": schedule_row_rates_pct,
-        "schedule_row_numbers": schedule_row_numbers,
     }
 
 
@@ -640,16 +462,11 @@ def dashboard(account_id):
     )
     summary = _build_planned_summary(ctx.state, planned_schedule, params)
 
-    # Sync the recurring transfer's recurrence end_date to the projected
-    # payoff (5.9-1) so shadow transactions are not generated beyond
-    # payoff.  Uses ``planned_schedule`` (the user's planned trajectory)
-    # so a neg-am user paying under the monthly interest keeps an open
-    # end_date even though the contractual forecast would say "paid off."
-    existing_template, prompt_context = _resolve_transfer_prompt(account)
-    if existing_template is not None and existing_template.recurrence_rule is not None:
-        _update_transfer_end_date(
-            existing_template, summary, planned_schedule, account.id,
-        )
+    # R-4: the recurring transfer's end_date is NO LONGER written here (a write
+    # on a GET).  It is synced to the projected payoff at every payoff-affecting
+    # mutation instead (:mod:`app.services.loan_recurrence_sync`), so this GET is
+    # read-only.
+    prompt_context = _resolve_transfer_prompt(account)
 
     context = {
         "account": account,
@@ -687,7 +504,7 @@ def dashboard(account_id):
         scenarios_main, scenarios_floor, len(ctx.loan.payments) > 0,
     ))
     context.update(prompt_context)
-    context.update(_build_schedule_tab(
+    context.update(build_schedule_context(
         planned_schedule, ctx.loan.monthly_escrow, ctx.current_rate, params,
     ))
     return render_template("loan/dashboard.html", **context)

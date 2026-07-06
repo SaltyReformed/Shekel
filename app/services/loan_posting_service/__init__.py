@@ -70,6 +70,13 @@ reader has moved (the final read-switch commit).
 """
 
 from ._anchors import sync_loan_anchor_corrections
+from ._display import (
+    LoanAnchorDrift,
+    LoanPaymentHistoryRow,
+    confirmed_loan_payment_history,
+    confirmed_loan_principal_in_year,
+    loan_balance_anchor_history,
+)
 from ._payments import (
     reverse_loan_payment_postings_for_shadow,
     sync_loan_payment_postings,
@@ -97,7 +104,9 @@ from ._walk import (
 
 __all__ = [
     "LoanAnchorCorrection",
+    "LoanAnchorDrift",
     "LoanLedgerWalk",
+    "LoanPaymentHistoryRow",
     "LoanPaymentSplit",
     "backfill_all_loan_postings",
     "compute_loan_payment_splits",
@@ -105,6 +114,9 @@ __all__ = [
     "confirmed_loan_balance_map",
     "confirmed_loan_history_rows",
     "confirmed_loan_interest_in_year",
+    "confirmed_loan_payment_history",
+    "confirmed_loan_principal_in_year",
+    "loan_balance_anchor_history",
     "resync_user_loan_postings",
     "reverse_loan_payment_postings_for_shadow",
     "sync_all_scenarios_or_duplicate",

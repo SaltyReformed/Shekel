@@ -27,7 +27,11 @@ from app.routes.loan._helpers import (
     _trueup_schema,
     _update_schema,
 )
-from app.services import anchor_service, loan_posting_service
+from app.services import (
+    anchor_service,
+    loan_posting_service,
+    loan_recurrence_sync,
+)
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _validate_collateral_link
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -169,6 +173,9 @@ def update_params(account_id):
     # re-sync every scenario's full genesis ledger UNCONDITIONALLY, not only on
     # the rate path.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    # R-4: a term / rate / payment-day edit moves the projected payoff, so
+    # re-bound the recurring payment's end_date to it before committing.
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")
@@ -302,6 +309,14 @@ def true_up_balance(account_id):
             "info",
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    # R-4: the true-up re-bases the balance, moving the projected payoff.
+    # ``apply_loan_anchor_true_up`` already committed the event + posting
+    # re-sync, so this sets the recurring payment's end_date and commits it in a
+    # follow-on transaction (self-healing: a failure here re-syncs at the next
+    # loan mutation).
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    db.session.commit()
 
     logger.info(
         "Loan trueup: account %d set to $%s as of %s",
