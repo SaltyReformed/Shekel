@@ -521,8 +521,8 @@ def add_escrow_line(
 
     The shared escrow-setup builder for tests that exercise app paths reading
     escrow (the loan-payment split, PITI, savings-dashboard PITI, the loan-card
-    breakdown).  Replaces the legacy single-``EscrowComponent`` insert with the
-    ``EscrowLine`` + ``EscrowComponentVersion`` pair the app now reads.  When
+    breakdown).  Inserts the ``EscrowLine`` + ``EscrowComponentVersion`` pair the
+    app reads (the supersession escrow model).  When
     ``effective_date`` is omitted it defaults to the loan's ``origination_date``,
     so the escrow is active for the whole loan life (the standing-charge case
     every escrow test intends); pass an explicit date to build a version that

@@ -16,11 +16,11 @@ from app.services.escrow_calculator import (
 
 
 def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
-    """Helper to create a mock escrow component.
+    """Helper to create a mock resolved escrow component (a display/sum row).
 
-    ``end_date=None`` mirrors a currently-active component (the effective-dated
-    model's "active" is exactly ``end_date IS NULL``); pass a date to mark the
-    component removed as of that date.
+    ``calculate_monthly_escrow`` and ``build_escrow_display`` take an already-
+    resolved set; ``end_date`` is retained only to feed the "no active filter"
+    tests a would-be-removed row and is ignored by both functions.
     """
     return SimpleNamespace(
         id=id,
@@ -52,11 +52,9 @@ class TestCalculateMonthlyEscrow:
     def test_sums_all_given_no_active_filter(self):
         """calculate_monthly_escrow sums EVERY component it is handed.
 
-        The effective-dating refactor moved active-state filtering to the
-        callers (``load_active_escrow_components`` for today, or
-        ``load_all_escrow_components`` + ``EscrowComponent.is_active_on`` for a
-        past payment's date); this function no longer gates on ``end_date``, so a
-        removed (``end_date``-set) component passed in IS summed.
+        Active-state resolution is ``resolve_active_lines``' job (it drops
+        removed/absent lines as of a date); this pure summation must NOT
+        re-filter, so a would-be-removed component passed in IS summed.
         4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
         """
         components = [
@@ -105,8 +103,8 @@ class TestCalculateMonthlyEscrow:
         reachable production state: the boundary rejects negative
         amounts twice -- ``EscrowComponentSchema.annual_amount``
         requires ``Range(min=0)`` (validation/loans.py) and the DB
-        enforces ``ck_escrow_components_nonneg_annual_amount``
-        (``annual_amount >= 0``, models/loan_features.py).
+        enforces ``ck_escrow_component_versions_nonneg_annual_amount``
+        (``annual_amount >= 0``, models/escrow_line.py).
         Sign-guarding is the boundary's job; the service stays a pure
         function of its inputs.
         """

@@ -125,8 +125,8 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
     $100/yr components display 8.33 + 8.33 = 16.66 against a 16.67 badge).
 
     Like :func:`calculate_monthly_escrow`, this does NOT filter by active state
-    -- the caller supplies the set to display (the currently-active components,
-    via :func:`app.services.loan_loaders.load_active_escrow_components`).
+    -- the caller supplies the set to display (today's active lines, via
+    :func:`resolve_active_lines`).
     Processing the identical set both functions receive keeps the rows-sum-to-
     badge invariant true for ANY input, rather than only when the caller happens
     to pre-filter removed components out (they both would otherwise diverge on a

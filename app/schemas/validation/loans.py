@@ -204,9 +204,9 @@ class EscrowComponentSchema(BaseSchema):
 
     E-28 / HIGH-06 / PA-02: ``inflation_rate`` is validated as a
     decimal fraction matching the DB CHECK on
-    ``escrow_components.inflation_rate``
+    ``escrow_component_versions.inflation_rate``
     (``IS NULL OR (>= 0 AND <= 1)``).  Nullable -- the user may omit
-    the field for an escrow component with no scheduled inflation.
+    the field for an escrow line with no scheduled inflation.
     """
 
     _PERCENT_FIELDS = ("inflation_rate",)

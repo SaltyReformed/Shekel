@@ -24,11 +24,10 @@ former mutable ``is_active`` boolean that could drift from state -- the same
 reason a loan records a dated :class:`~app.models.loan_anchor_event.LoanAnchorEvent`
 rather than mutating a balance column.
 
-See ``docs/design/escrow_line_identity_refactor.md`` for the full design.  This
-module is the Commit-1 EXPAND phase: the tables are created and backfilled
-alongside the legacy :class:`~app.models.loan_features.EscrowComponent` (still
-the live source until the Commit-2 reader cutover), so nothing reads these
-models yet and behaviour is unchanged.
+See ``docs/design/escrow_line_identity_refactor.md`` for the full design.  These
+models are the live escrow source: Commit 2 repointed every reader and writer
+onto them (via :func:`app.services.escrow_calculator.escrow_monthly_as_of`) and
+dropped the legacy name-keyed ``budget.escrow_components`` table.
 """
 
 from app.extensions import db
@@ -41,8 +40,8 @@ class EscrowLine(AccountScopedMixin, TimestampMixin, db.Model):
     The parent entity of the effective-dated escrow model.  Its ``id`` is the
     stable line identity that ties a line's versions together across a rename or
     an amount change (versions FK to it), replacing the mutable ``name`` string
-    the legacy :class:`~app.models.loan_features.EscrowComponent` used as its
-    identity key.  ``name`` here is display-only: a rename edits it in place and
+    the legacy name-keyed escrow model used as its identity key.  ``name`` here is
+    display-only: a rename edits it in place and
     cannot move a cent of any posted loan-payment split (the split reads a
     version's amount + date, never the name).
 
@@ -110,8 +109,8 @@ class EscrowComponentVersion(TimestampMixin, db.Model):
             "line_id", "effective_date",
             name="uq_escrow_component_versions_line_effective_date",
         ),
-        # Annual escrow amount is non-negative (a tombstone stores 0).  Mirrors
-        # ``EscrowComponent``'s storage-tier guard for raw-SQL writers.
+        # Annual escrow amount is non-negative (a tombstone stores 0).  The
+        # storage-tier guard for raw-SQL writers.
         db.CheckConstraint(
             "annual_amount >= 0",
             name="ck_escrow_component_versions_nonneg_annual_amount",

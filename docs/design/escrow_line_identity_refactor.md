@@ -463,7 +463,13 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
 2. **Reader cutover + CONTRACT:** `escrow_monthly_as_of` + loaders + split walk onto the shared
    function (parity: current data unchanged; the split oracle stays penny-exact), then DROP
    `escrow_components` (destructive migration, `Review:` line). `loan_payment_settings` (decision B)
-   and its `derive_from_loan` move land with the overpayment work (step 5), not here.
+   and its `derive_from_loan` move land with the overpayment work (step 5), not here. SHIPPED as
+   **two commits** (operator's decision, honouring the Sec. 11 principle that the old table is never
+   dropped in the same commit that repoints its readers): **2a** -- reader cutover with
+   `escrow_components` KEPT live-but-unused (commit `75593bcd`); **2b** -- the destructive DROP
+   migration `d7b2f9a4c1e6` (reconstruct-on-downgrade), model/loader/audit removal, and old-model
+   test cleanup. Real account-3 data verified byte-identical ($616.99 per split) and the migration
+   up/down/up round-trip ran clean on the dev DB.
 3. **Effective-date field + forward-only guard** (route + schema + the December-window test).
 4. **Date-aware cash** (`live_loan_transfer_amounts` per-shadow; the two other consumers; the Sec. 9
    invariant test).

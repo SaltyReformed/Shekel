@@ -59,7 +59,7 @@ def _load_dashboard_core_data(user_id):
 
 
 def _load_loan_params_and_escrow(accounts):
-    """Batch-load LoanParams and EscrowComponent maps for loan accounts.
+    """Batch-load LoanParams and EscrowLine maps for loan accounts.
 
     Amortizing loan types are metadata-driven via ``has_amortization``.
 
