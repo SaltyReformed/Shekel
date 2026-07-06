@@ -17,12 +17,15 @@ import re
 
 
 # ── Owner nav-items ─────────────────────────────────────────────────
-# The owner navbar ships 8 main-nav items (Dashboard, Budget, Recurring,
-# Accounts, Salary, Retirement, Analytics, Settings) plus 3 right-side
-# items (theme-toggle, display-name span, logout form button).  Total = 11
-# ``<li class="nav-item">`` rows inside the navbar.  The standalone
-# Transfers and Obligations items retired when both folded into the unified
-# Recurring surface (Loop B).
+# The owner navbar ships 7 destination items (Dashboard, Budget, Recurring,
+# Accounts, Salary, Retirement, Analytics) plus a drawer-only Settings item
+# (``d-md-none``; the md+ Settings affordance is the gear icon in the
+# utility cluster) and 3 utility rows (theme-toggle, Settings gear, user
+# dropdown holding the logout form).  Total = 11 ``<li class="nav-item">``
+# rows inside the navbar.  Composition per the Steel Ink rebuild
+# (docs/design/navbar_audit.md decision gate, 2026-07-06); the standalone
+# Transfers and Obligations items retired earlier when both folded into
+# the unified Recurring surface (Loop B).
 _OWNER_NAV_ITEM_COUNT = 11
 
 
@@ -82,11 +85,11 @@ class TestNavLinksCarryForward:
     def test_owner_nav_items_count(self, auth_client):
         """C23-3: the owner navbar renders exactly the expected nav-items.
 
-        Counts the main owner nav links (Dashboard, Budget, Recurring,
-        Accounts, Salary, Retirement, Analytics, Settings -- 8 entries)
-        plus the three right-side rows (theme-toggle, display-name span,
-        logout form).  Total = 11.  Drift in either direction means a nav
-        entry was dropped or an unintended one was added.
+        Counts the 7 destination links (Dashboard, Budget, Recurring,
+        Accounts, Salary, Retirement, Analytics), the drawer-only Settings
+        item, and the three utility rows (theme-toggle, Settings gear,
+        user dropdown).  Total = 11.  Drift in either direction means a
+        nav entry was dropped or an unintended one was added.
         """
         resp = auth_client.get("/")
         assert resp.status_code == 200

@@ -1,9 +1,11 @@
 {# Nav link macro (polyglot audit TPLA/TPL-08): renders one offcanvas nav
    item and evaluates its active predicate ONCE -- the hand-written items
    previously repeated each request.path predicate twice (class + aria),
-   which could silently drift.  ``active`` is the pre-evaluated boolean. #}
-{% macro nav_link(href, icon, label, active) -%}
-            <li class="nav-item">
+   which could silently drift.  ``active`` is the pre-evaluated boolean.
+   ``li_class`` adds responsive utilities to the row (the Settings item
+   renders in the drawer only; the gear icon covers md+). #}
+{% macro nav_link(href, icon, label, active, li_class='') -%}
+            <li class="nav-item{{ ' ' + li_class if li_class else '' }}">
               <a class="nav-link{{ ' active' if active else '' }}" href="{{ href }}"
                  {% if active %}aria-current="page"{% endif %}>
                 <i class="bi {{ icon }}"></i> {{ label }}
@@ -81,12 +83,15 @@
   {# --- Skip Navigation --- #}
   <a href="#main-content" class="visually-hidden-focusable skip-link">Skip to main content</a>
 
-  {# --- Navigation Bar --- #}
+  {# --- Navigation Bar (Steel Ink ink band; navbar_audit.md decision:
+     F tinted pill + tarnished-silver coin, 2026-07-06) --- #}
   {% if current_user.is_authenticated %}
-  <nav class="navbar navbar-expand-md navbar-dark sticky-top">
+  {% set nav_name = current_user.display_name or current_user.email %}
+  <nav class="navbar navbar-expand-md navbar-dark sticky-top shekel-navbar">
     <div class="container-fluid">
       <a class="navbar-brand" href="{{ url_for('companion.index') if current_user.role_id == COMPANION_ROLE_ID else url_for('dashboard.page') }}">
-        <img src="{{ url_for('static', filename='img/shekel_logo.png') }}" alt="Shekel" height="38" class="logo-img">
+        <img src="{{ url_for('static', filename='img/shekel_coin.png') }}" alt="" height="30" class="logo-img shekel-brand-coin">
+        Shekel
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas"
               aria-controls="mainOffcanvas" aria-expanded="false" aria-label="Toggle navigation">
@@ -108,6 +113,8 @@
           {# Full owner navigation #}
           {# Phase 7: Scenario selector will go here. When implemented, this slot will contain a dropdown showing the active scenario name with a switcher to change scenarios. It should be visible on all pages. #}
           <div class="d-none" id="scenario-selector-slot"></div>
+          {% set settings_active = request.path.startswith('/settings') or request.path == '/categories'
+                                   or request.path.startswith('/pay-periods') %}
           <ul class="navbar-nav me-auto">
             {{ nav_link(url_for('dashboard.page'), 'bi-speedometer2', 'Dashboard',
                         request.path == '/' or request.path == '/dashboard') }}
@@ -124,9 +131,11 @@
                         request.path.startswith('/retirement')) }}
             {{ nav_link(url_for('analytics.page'), 'bi-bar-chart-line', 'Analytics',
                         request.path.startswith('/analytics')) }}
+            {# Settings is demoted from the destination row: below md it is a
+               labelled drawer item, at md+ the gear icon in the utility
+               cluster (navbar_audit.md surfaces 5 and 7). #}
             {{ nav_link(url_for('settings.show'), 'bi-gear', 'Settings',
-                        request.path.startswith('/settings') or request.path == '/categories'
-                        or request.path.startswith('/pay-periods')) }}
+                        settings_active, li_class='d-md-none') }}
           </ul>
           {% else %}
           {# Companion navigation -- minimal #}
@@ -135,25 +144,53 @@
                         request.path.startswith('/companion')) }}
           </ul>
           {% endif %}
-          <ul class="navbar-nav">
+          <ul class="navbar-nav align-items-md-center">
+            {% if request.path.startswith('/grid') %}
+            {# The Ctrl+K palette exists only where a grid table renders
+               (command_palette.js guards on gridTable()), so the hint is
+               scoped to grid pages and desktop widths. #}
+            <li class="d-none d-md-flex align-items-center">
+              <span class="shekel-kbd-hint font-mono" title="Open the command palette">Ctrl K</span>
+            </li>
+            {% endif %}
             <li class="nav-item d-flex align-items-center">
-              <button id="theme-toggle" class="btn btn-sm btn-outline-secondary border-0"
+              <button id="theme-toggle" class="shekel-icon-btn"
                       title="Toggle theme" aria-label="Toggle light/dark theme">
                 <i class="bi bi-sun-fill"></i>
               </button>
             </li>
-            <li class="nav-item">
-              <span class="nav-link text-light-emphasis">
-                {{ current_user.display_name or current_user.email }}
-              </span>
+            {% if current_user.role_id != COMPANION_ROLE_ID %}
+            <li class="nav-item d-none d-md-flex align-items-center">
+              <a class="shekel-icon-btn{{ ' active' if settings_active else '' }}"
+                 href="{{ url_for('settings.show') }}" title="Settings" aria-label="Settings"
+                 {% if settings_active %}aria-current="page"{% endif %}>
+                <i class="bi bi-gear"></i>
+              </a>
             </li>
-            <li class="nav-item">
-              <form action="{{ url_for('auth.logout') }}" method="post" class="d-inline">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="nav-link btn btn-link">
-                  <i class="bi bi-box-arrow-right"></i> Logout
-                </button>
-              </form>
+            {% endif %}
+            <li class="shekel-util-divider d-none d-md-block" aria-hidden="true"></li>
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle shekel-user-menu" href="#" role="button"
+                 data-bs-toggle="dropdown" aria-expanded="false">
+                <span class="shekel-avatar" aria-hidden="true">{{ (nav_name.split()|map('first')|join(''))[:2]|upper }}</span>
+                {{ nav_name.split()[0] }}
+              </a>
+              <ul class="dropdown-menu dropdown-menu-end">
+                {# Full identity lives in the menu; the bar shows only the
+                   first name.  This is also the one authenticated surface
+                   that renders the complete display_name, which the XSS
+                   regression tests assert against. #}
+                <li><h6 class="dropdown-header">{{ nav_name }}</h6></li>
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                  <form action="{{ url_for('auth.logout') }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="dropdown-item">
+                      <i class="bi bi-box-arrow-right"></i> Logout
+                    </button>
+                  </form>
+                </li>
+              </ul>
             </li>
           </ul>
         </div>
