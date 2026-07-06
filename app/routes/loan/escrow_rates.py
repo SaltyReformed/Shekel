@@ -24,6 +24,7 @@ from app.routes.loan._helpers import (
     _load_loan_account,
     _rate_schema,
     _resolve_loan_state,
+    build_loan_band_chart,
 )
 from app.services import (
     escrow_calculator,
@@ -36,7 +37,7 @@ from app.utils.auth_helpers import require_owner
 logger = logging.getLogger(__name__)
 
 
-def _render_rate_history(account, params):
+def _render_rate_history(account, params, band_chart=None):
     """Re-query and render the rate-history partial for a loan account.
 
     The shared reload + render used by both the duplicate-submit
@@ -47,6 +48,13 @@ def _render_rate_history(account, params):
     Args:
         account: ORM :class:`Account` instance for the loan.
         params: ORM :class:`LoanParams` instance.
+        band_chart: The freshly recomputed band-chart dict
+            (:func:`._helpers.build_loan_band_chart`) on the SUCCESS path only,
+            so the partial can emit the hidden refresh carrier ``loan_detail.js``
+            reads to rebuild the now-visible balance band (a rate change
+            re-amortizes the loan).  ``None`` on the duplicate-submit path, where
+            nothing re-amortized -- the template then omits the carrier and the
+            band (and any active payoff preview) is left untouched.
 
     Returns:
         The rendered ``loan/_rate_history.html`` partial.
@@ -68,6 +76,7 @@ def _render_rate_history(account, params):
         params=params,
         rate_history=rate_history,
         current_rate=state.current_rate,
+        band_chart=band_chart,
         oob_swaps=True,
     )
 
@@ -155,7 +164,14 @@ def add_rate_change(account_id):
     loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
     db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
-    return _render_rate_history(account, params)
+    # The re-amortization moves the whole balance trajectory, but this HTMX swap
+    # replaces only the rate-history card (+ the OOB rate chip); the always-
+    # visible balance band would otherwise show the pre-change line until a full
+    # reload.  Recompute the band and hand it to the partial's refresh carrier so
+    # ``loan_detail.js`` rebuilds ``#loan-balance-chart`` from it on this swap.
+    return _render_rate_history(
+        account, params, build_loan_band_chart(account, params),
+    )
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])

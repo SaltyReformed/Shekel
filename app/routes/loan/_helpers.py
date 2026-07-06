@@ -33,6 +33,7 @@ from app.services import escrow_calculator, loan_resolver
 from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import (
     LoanContext,
+    confirmed_loan_view,
     load_loan_context,
     resolve_loan_seeded,
 )
@@ -277,8 +278,7 @@ def _balances_for_chart(rows, target_len):
         rows: Iterable of :class:`AmortizationRow`.  May be shorter
             than ``target_len``.
         target_len: Total number of data points the chart expects --
-            typically the length of the original (no-acceleration)
-            baseline.
+            the length of the longest series (:func:`_build_chart_series`).
 
     Returns:
         List of floats, length exactly ``target_len``.  Presentation
@@ -293,25 +293,35 @@ def _balances_for_chart(rows, target_len):
 def _build_chart_series(series_rows):
     """Build aligned Chart.js label + balance arrays for loan scenarios.
 
-    Every scenario shares the same x-axis: labels come from the FIRST
-    series (the original / longest contractual baseline), and every
-    series' balances are padded to that baseline's length with $0.00 via
+    Every series shares one x-axis: labels come from the LONGEST series,
+    and every series' balances are padded to that length with $0.00 via
     :func:`_balances_for_chart` so Chart.js plots equal-length arrays
-    against the shared labels.  Shared by the dashboard's three-series
-    chart (original / committed / floor) and the payoff calculator's
-    (original / committed / accelerated).
+    against the shared labels.  The longest series is the correct label
+    baseline because a payment plan slower than the contractual P&I (a
+    sub-P&I recurring transfer against a balance the contractual payment
+    would clear early) makes ``committed`` -- or the lever's
+    ``accelerated`` -- run more months than the contractual ``original``;
+    keying the labels off ``original`` alone would leave those extra (and
+    correct) tail points plotting past the last labelled tick.  A series
+    shorter than the longest pads with $0.00, the literal post-payoff
+    balance, so the padding never invents a value.  Shared by the band
+    chart (:func:`build_band_chart`) and the payoff lever's overlay
+    (:func:`accelerated_overlay`).
 
     Args:
-        series_rows: Insertion-ordered mapping of series name -> the
-            full :class:`AmortizationRow` list (history + forward,
-            already concatenated by the caller).  The FIRST entry is the
-            baseline whose length and dates define the x-axis.
+        series_rows: Mapping of series name -> the full
+            :class:`AmortizationRow` list (history + forward, already
+            concatenated by the caller).  Every series shares the same
+            monthly payment-date sequence from the same starting month, so
+            the longest series' dates label every shorter (padded) one; on
+            a length tie the first-inserted series wins (Python ``max``),
+            which keeps ``original`` the label baseline in the common case.
 
     Returns:
         Tuple of (chart_labels, balances) where ``balances`` is a dict
         mapping each series name to its padded float list.
     """
-    baseline_rows = next(iter(series_rows.values()))
+    baseline_rows = max(series_rows.values(), key=len)
     target_len = len(baseline_rows)
     chart_labels = [
         row.payment_date.strftime("%b %Y") for row in baseline_rows
@@ -332,10 +342,11 @@ def build_band_chart(scenarios, has_payments):
     payment plan, otherwise the pure contractual schedule -- which the client
     splits at the confirmed / projected boundary via
     :func:`ShekelChart.splitSegment` (``current_index``).  The line is padded to
-    the ORIGINAL contractual x-axis by :func:`_build_chart_series`, the same
-    baseline :func:`accelerated_overlay` uses, so a shorter (paid-sooner)
-    trajectory and the lever's preview align to identical labels and cannot
-    drift.
+    the LONGEST-series x-axis by :func:`_build_chart_series` (``original`` vs
+    ``committed``), the same baseline :func:`accelerated_overlay` reproduces, so
+    a shorter (paid-sooner) trajectory and the lever's preview align to identical
+    labels and cannot drift -- and a slower-than-contractual ``committed`` line
+    never runs past the last labelled tick.
 
     Args:
         scenarios: The baseline :class:`PayoffScenarios` (``extra_monthly`` 0).
@@ -368,8 +379,14 @@ def accelerated_overlay(scenarios):
     accelerated trajectory's FORWARD slice only, with the confirmed-history
     positions left ``None`` so the green line begins at Today and diverges from
     the committed dashed line rather than redrawing the shared solid history.
-    Padded to the SAME contractual x-axis as :func:`build_band_chart` (original
-    baseline first) so the overlay aligns to the band chart's labels exactly.
+    Padded to the SAME x-axis as :func:`build_band_chart` by passing the same
+    ``original`` and ``committed`` series into :func:`_build_chart_series`: the
+    band's labels span ``max(len(original), len(committed))``, and since
+    ``accelerated`` (committed plus extra) can never run longer than
+    ``committed``, including ``committed`` here makes the overlay's padded length
+    equal the band's label count exactly, so the overlay aligns to the band
+    chart's labels one-to-one even when a slower-than-contractual committed line
+    is the longest series.
 
     Args:
         scenarios: The lever's :class:`PayoffScenarios` (``extra_monthly`` the
@@ -383,10 +400,111 @@ def accelerated_overlay(scenarios):
     """
     _chart_labels, balances = _build_chart_series({
         "original": scenarios.history_rows + scenarios.original_forward,
+        "committed": scenarios.history_rows + scenarios.committed_forward,
         "accelerated": scenarios.history_rows + scenarios.accelerated_forward,
     })
     n_history = len(scenarios.history_rows)
     return [None] * n_history + balances["accelerated"][n_history:]
+
+
+def build_baseline_scenarios(loan_inputs, scenario_id, as_of):
+    """Run the baseline payoff-scenario composer call for the loan detail page.
+
+    One ``compute_payoff_scenarios`` call (``extra_monthly=0``) whose band
+    chart, payment breakdown, and life-of-loan summary all derive from the same
+    return value so they cannot diverge (the structural fix documented at
+    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    The returned scenario consumes ALL payments (confirmed + projected): its
+    ``history_rows + committed_forward`` slice IS the planned trajectory the band
+    chart, payment breakdown, and summary read, while ``original_forward``
+    supplies the contractual x-axis baseline.
+
+    Read switch: reads the genesis-ledger confirmed view ONCE via
+    :func:`loan_payment_service.confirmed_loan_view` and threads it into the
+    composer as ``confirmed_view``, so the chart / summary derive from the same
+    real owed balance AND ledger-derived confirmed history the loan card
+    (:func:`_resolve`) shows -- they cannot desync off-schedule.
+
+    Shared by the dashboard GET (which also reads the full scenario for the
+    summary / breakdown) and the ARM rate-change band producer
+    (:func:`build_loan_band_chart`), so the single composer call lives in exactly
+    one place.
+
+    Args:
+        loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
+            ALL payments.
+        scenario_id: The baseline scenario id (or ``None``) for the ledger
+            seed scope.
+        as_of: The replay/projection boundary (typically ``date.today()``).
+
+    Returns:
+        The baseline :class:`loan_resolver.PayoffScenarios`.
+    """
+    view = confirmed_loan_view(
+        loan_inputs.loan_params.account_id, scenario_id, as_of,
+    )
+    return loan_resolver.compute_payoff_scenarios(
+        loan_inputs=loan_inputs,
+        extra_monthly=Decimal("0.00"),
+        as_of=as_of,
+        confirmed_view=view,
+    )
+
+
+def _loan_inputs(params, route_ctx) -> loan_resolver.LoanInputs:
+    """Bundle a loan's resolver inputs from its params + loaded route context.
+
+    The single :class:`loan_resolver.LoanInputs` constructor for the loan ROUTE
+    surfaces (the dashboard GET and the band-chart producer), so the
+    (params, anchor facts, payments, rate changes) assembly lives in one place.
+
+    Args:
+        params: ORM :class:`LoanParams` instance (also the anchor-fact
+            synthesis source).
+        route_ctx: The :class:`_RouteLoanContext` from
+            :func:`_load_loan_context`; its ``loan`` carries the prepared
+            payments and rate changes.
+
+    Returns:
+        The :class:`loan_resolver.LoanInputs` bundle with ALL payments.
+    """
+    return loan_resolver.LoanInputs(
+        loan_params=params,
+        anchor_events=load_loan_anchor_facts(params),
+        payments=route_ctx.loan.payments,
+        rate_changes=route_ctx.loan.rate_changes,
+    )
+
+
+def build_loan_band_chart(account, params):
+    """Recompute the loan-detail band chart dict from the current loan state.
+
+    The band's balance-over-time chart is a function of the loan's committed
+    trajectory, so a mutation that RE-AMORTIZES the loan (an ARM rate change --
+    :func:`app.routes.loan.escrow_rates.add_rate_change`) leaves the band stale
+    until the chart is rebuilt.  This is the single producer both the dashboard
+    GET path and that HTMX rate route share (via :func:`build_baseline_scenarios`
+    + :func:`build_band_chart`), so the refreshed chart cannot diverge from the
+    initially-rendered one.  Ownership is verified by the caller before this runs
+    (``add_rate_change`` is ``require_owner``-gated), satisfying the resolver's
+    trust-the-caller contract.
+
+    Args:
+        account: ORM :class:`Account` instance for the loan.
+        params: ORM :class:`LoanParams` instance.
+
+    Returns:
+        The serializable band-chart dict (``labels`` / ``balance`` /
+        ``current_index``) -- identical in shape to the dashboard's initial
+        ``band_chart`` -- for the rate route to hand to ``loan_detail.js``.
+    """
+    ctx = _load_loan_context(account, params)
+    scenario = get_baseline_scenario(current_user.id)
+    scenario_id = scenario.id if scenario else None
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, ctx), scenario_id, date.today(),
+    )
+    return build_band_chart(scenarios, len(ctx.loan.payments) > 0)
 
 
 def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):

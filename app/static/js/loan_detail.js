@@ -25,6 +25,12 @@
  * preserve the active preview).  A target-date result carries no overlay, so it
  * clears the preview.
  *
+ * A successful ARM rate change re-amortizes the loan and swaps the rate-history
+ * card; that response carries the recomputed band series in
+ * ``#loan-band-refresh[data-chart]``.  This script overwrites the canvas's
+ * ``data-chart`` from it and rebuilds the base line, clearing any preview that
+ * was computed against the pre-change rate.
+ *
  * Alignment note: the overlay (recomputed per payoff POST) is plotted against
  * the band's labels, which are frozen from the page-load GET.  Both derive the
  * same contractual x-axis from the loan's params + confirmed history, so within
@@ -41,6 +47,8 @@
   var CANVAS_ID = "loan-balance-chart";
   var RESULTS_ID = "payoff-results";
   var OVERLAY_DATA_ID = "payoff-overlay-data";
+  var RATE_HISTORY_ID = "rate-history";
+  var BAND_REFRESH_ID = "loan-band-refresh";
 
   // The active extra-payment preview (forward-only accelerated balances), or
   // null when no preview is shown.
@@ -188,15 +196,9 @@
 
   /**
    * When the payoff lever swaps in a result, pick up (or clear) the accelerated
-   * overlay and redraw so the green preview reflects the latest run.  Ignores
-   * the escrow / rate HTMX swaps (different targets).
-   * @param {Event} evt - The htmx:afterSwap event.
+   * overlay and redraw so the green preview reflects the latest run.
    */
-  function onAfterSwap(evt) {
-    if (!evt.detail || !evt.detail.target ||
-        evt.detail.target.id !== RESULTS_ID) {
-      return;
-    }
+  function applyPayoffSwap() {
     var carrier = document.getElementById(OVERLAY_DATA_ID);
     if (carrier) {
       try {
@@ -213,6 +215,47 @@
       overlaySeries = null;
     }
     render();
+  }
+
+  /**
+   * After a successful ARM rate change re-amortizes the loan, adopt the fresh
+   * band series the rate route emits in #loan-band-refresh: overwrite the
+   * canvas's data-chart and rebuild.  Any active payoff preview -- its green
+   * overlay AND the results panel's metric chips -- was computed against the OLD
+   * rate, so both are cleared; the user re-runs the lever for a fresh one.  No
+   * carrier (a duplicate-submit re-render, or a paid-off loan with no canvas)
+   * leaves the band untouched.
+   */
+  function refreshBandBase() {
+    var carrier = document.getElementById(BAND_REFRESH_ID);
+    var canvas = document.getElementById(CANVAS_ID);
+    if (!carrier || !canvas) return;
+    var json = carrier.getAttribute("data-chart");
+    if (!json) return;
+    canvas.setAttribute("data-chart", json);
+    overlaySeries = null;
+    // Drop the now-stale what-if results so fresh-band + old-rate metrics never
+    // sit side by side (a figure and its caption never disagree).
+    var results = document.getElementById(RESULTS_ID);
+    if (results) results.innerHTML = "";
+    render();
+  }
+
+  /**
+   * Route htmx swaps that affect the band: the payoff lever refreshes the
+   * overlay; a successful rate change refreshes the base series.  Other swaps
+   * (escrow, a duplicate rate submit) target neither id and leave the chart
+   * untouched.
+   * @param {Event} evt - The htmx:afterSwap event.
+   */
+  function onAfterSwap(evt) {
+    var target = evt.detail && evt.detail.target;
+    if (!target) return;
+    if (target.id === RESULTS_ID) {
+      applyPayoffSwap();
+    } else if (target.id === RATE_HISTORY_ID) {
+      refreshBandBase();
+    }
   }
 
   function init() {

@@ -11,6 +11,17 @@
 {{ rate_chip(current_rate, params.is_arm, oob=true) }}
 {% endif %}
 
+{# Band-chart refresh carrier: emitted ONLY on a successful rate change (the
+   route passes the recomputed ``band_chart``), never on the inline dashboard
+   include (no ``oob_swaps``) nor the duplicate-submit re-render (``band_chart``
+   is None).  A rate change re-amortizes the loan, so loan_detail.js reads this
+   ``data-chart`` on the #rate-history swap and rebuilds the balance band from
+   it -- otherwise the always-visible band would keep the pre-change line until
+   a full reload. #}
+{% if oob_swaps and band_chart is defined and band_chart and band_chart.balance %}
+<div id="loan-band-refresh" data-chart='{{ band_chart|tojson }}' hidden></div>
+{% endif %}
+
 <div class="card-body p-0">
   {% if rate_history %}
   {# Desktop table (md+).  Mobile users see the card list below. #}

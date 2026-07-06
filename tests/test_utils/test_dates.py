@@ -17,11 +17,13 @@ from datetime import date, datetime, timezone
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
     attribution_date,
+    display_today,
     months_between,
     to_display_civil_date,
     to_display_date,
     to_display_tz,
 )
+from tests._test_helpers import freeze_today
 
 
 class TestMonthsBetween:
@@ -133,6 +135,48 @@ class TestDisplayTimezone:
     def test_display_date_none_passthrough(self):
         """A None instant (anchor never set) returns None, not an error."""
         assert to_display_date(None) is None
+
+
+class TestDisplayToday:
+    """Pin ``display_today`` -- the user's wall-clock 'today' in the display tz.
+
+    The presentation-layer "now" that civil-window surfaces (the analytics Taxes
+    tab, the loan YTD chips) select their year / month by, so they follow the
+    user's Eastern clock rather than the server's UTC day at the New Year (and
+    every late-evening) boundary.
+    """
+
+    def test_new_year_boundary_is_the_eastern_day(self, monkeypatch):
+        """Midnight UTC on Jan 1 is still Dec 31 in Eastern, so the year is 2026.
+
+        ``freeze_today`` sets ``datetime.now(utc)`` to 2027-01-01 00:00 UTC.
+        That instant is 7:00 PM EST on 2026-12-31, so ``display_today()`` is
+        Dec 31 2026 -- year 2026 -- even though ``date.today()`` (UTC) has
+        already rolled to 2027.  This is the exact skew the loan YTD chips must
+        follow to agree with the Taxes tab.
+        """
+        freeze_today(monkeypatch, date(2027, 1, 1), modules=["app.utils.dates"])
+        assert display_today() == date(2026, 12, 31)
+        assert display_today().year == 2026
+
+    def test_daytime_utc_is_the_same_eastern_day(self, monkeypatch):
+        """A mid-day UTC instant maps to the same calendar day in Eastern.
+
+        ``freeze_today`` freezes ``now`` at midnight UTC, but a manual
+        mid-afternoon stub proves the non-boundary case: 2026-06-12 18:00 UTC is
+        14:00 EDT, still June 12, so ``display_today()`` is 2026-06-12.
+        """
+        class _FixedDateTime(datetime):
+            """A datetime whose ``now`` is a fixed mid-day UTC instant."""
+
+            @classmethod
+            def now(cls, tz=None):
+                """Return 2026-06-12 18:00 in the requested tz (UTC by default)."""
+                fixed = datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc)
+                return fixed if tz is None else fixed.astimezone(tz)
+
+        monkeypatch.setattr("app.utils.dates.datetime", _FixedDateTime)
+        assert display_today() == date(2026, 6, 12)
 
 
 class TestToDisplayCivilDate:

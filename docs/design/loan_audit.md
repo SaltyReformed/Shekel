@@ -234,3 +234,42 @@ up. Re-verify symbol / line references before acting (CLAUDE.md rule 2).
    the analytics Taxes tab (the same Schedule-A figure). Only worth revisiting as part of a
    cross-cutting "display-tz current year" decision, not in isolation (which would make this surface
    disagree with the Taxes tab).
+
+### Deferred follow-ups -- RESOLVED (2026-07-06)
+
+All three fixed on `dev` (Opus). Full suite 7213 -> re-run green after the refinements;
+`pylint app/` 10.00/10; independent `code-reviewer` clean (no Critical/High/Medium). Each fix
+carries a revert-proof regression lock.
+
+1. **RESOLVED.** The rate route recomputes the band once (new `_helpers.build_loan_band_chart`, the
+   single band producer the dashboard GET now also feeds via the extracted
+   `build_baseline_scenarios`) and hands the fresh `chart_json` to `_render_rate_history`, which
+   emits a hidden `#loan-band-refresh` carrier ONLY on the success path
+   (`oob_swaps and band_chart.balance`). `loan_detail.js` reads it on the `#rate-history` swap,
+   overwrites the canvas `data-chart`, clears the now-stale payoff overlay AND the `#payoff-results`
+   panel (both computed against the old rate), and rebuilds. Duplicate-submit re-render carries no
+   carrier, so the band is left untouched. Locks: `test_rate_change_refreshes_band`,
+   `test_duplicate_rate_submit_omits_band_refresh`.
+
+2. **RESOLVED.** `_build_chart_series` keys labels off the LONGEST series (`max(..., key=len)`), not
+   the first. All slices share one monthly date sequence from the same start, and a shorter slice is
+   shorter only because it hit `$0` early, so padding it to the longest length with `$0.00` is the
+   literal post-payoff balance. `accelerated_overlay` now also passes `committed` into
+   `_build_chart_series`, so the overlay pads to the band's exact label count even when a
+   slower-than-contractual `committed` is longest (`accelerated <= committed` always). Actual
+   trigger is narrower than "any sub-PITI": it needs `committed_forward` LONGER than
+   `original_forward`, i.e. a trued-down balance the contractual P&I clears early PLUS a sub-P&I
+   recurring plan (both slices are capped at `remaining_months` by `project_forward`). Locks:
+   `TestBandChartLongestBaseline` (2 pure-function tests, exact arrays).
+
+3. **RESOLVED -- premise corrected, fixed per developer (2026-07-06).** The P2 "keep it" rationale
+   was FACTUALLY WRONG: the analytics Taxes tab derives its year from
+   `to_display_date(datetime.now(utc))` (`analytics.py:227`, display-tz), NOT `date.today().year`,
+   so the UTC year DISAGREED with the Taxes tab in the New Year window -- the opposite of the claim.
+   Fix: new `app/utils/dates.py:display_today()`; `_build_measured_context` sums the two YTD chips
+   in `display_today().year`. Also fixed the same-page sibling `_project_next_year_escrow` (was
+   `date.today().year + 1`) for consistency. Lock:
+   `test_ytd_chips_use_display_tz_year_at_new_year_boundary` (frozen at the UTC/Eastern year split)
+   plus `TestDisplayToday` unit tests. Adjacent DRY win the review surfaced: `_loan_inputs`
+   extracted and the two remaining inline `LoanInputs` constructions in `calculators.py` migrated
+   onto it.

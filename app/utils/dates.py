@@ -72,6 +72,29 @@ def to_display_date(value: datetime | None) -> date | None:
     return to_display_tz(value).date()
 
 
+def display_today() -> date:
+    """Return the user's wall-clock 'today' in :data:`DISPLAY_TIMEZONE`.
+
+    The calendar date it is right now on the user's clock, for surfaces that
+    select a civil WINDOW (a tax/calendar year, a "this month") by the user's
+    timezone rather than the server's UTC day.  Storage and the resolver's
+    replay boundary stay UTC (``date.today()``); this is the presentation-layer
+    "now".
+
+    It keeps a display-tz-attributed figure in the SAME civil year as the
+    analytics Taxes tab -- which already derives its year this way
+    (``app/routes/analytics.py``) -- around the New Year boundary, when UTC has
+    ticked to the next year but the user's Eastern clock has not.  The loan
+    page's YTD interest / principal chips are exactly such a figure: their
+    producer sums each payment by its display-tz civil paid date (the L9 rule),
+    so the year they are summed IN must be the display-tz year to match.
+
+    Returns:
+        The current calendar date in :data:`DISPLAY_TIMEZONE`.
+    """
+    return to_display_tz(datetime.now(timezone.utc)).date()
+
+
 def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
     """Return the display-timezone civil date of a settle instant, or ``fallback``.
 

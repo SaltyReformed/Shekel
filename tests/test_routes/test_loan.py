@@ -20,6 +20,8 @@ from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory, EscrowComponent
 from app.models.ref import AccountType
+from app.routes.loan._helpers import accelerated_overlay, build_band_chart
+from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
@@ -1077,6 +1079,78 @@ class TestRateHistory:
         )
         assert count == 2
 
+    def test_rate_change_refreshes_band(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A successful ARM rate change carries a fresh band series for the client.
+
+        loan_audit deferred follow-up #1: the band's balance line is always
+        visible now (not a hidden tab), but the rate POST swaps only the
+        rate-history card + the OOB rate chip.  Since a rate change RE-AMORTIZES
+        the loan, the route emits the recomputed band in a hidden
+        #loan-band-refresh carrier so loan_detail.js rebuilds #loan-balance-chart
+        from it.  A higher rate raises every forward balance, so the carried
+        series differs from the pre-change band -- proving the refresh is real,
+        not an echo.  Before the fix the rate route carried no band, so the band
+        stayed on the pre-change rate until a full reload.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        pre = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        )
+        assert pre is not None
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/rate",
+            data={"effective_date": "2026-04-01", "interest_rate": "9.500"},
+        )
+        assert resp.status_code == 200
+        # The rate response is the rate-history partial; its ONLY data-chart is
+        # the band-refresh carrier (the canvas itself is not re-rendered here).
+        refreshed = _parse_band_chart(resp.data.decode())
+        assert refreshed is not None, (
+            "A successful rate change must carry the recomputed band in "
+            "#loan-band-refresh so the always-visible band does not go stale."
+        )
+        # Well-formed + self-consistent (the follow-up #2 invariant survives).
+        assert len(refreshed["labels"]) == len(refreshed["balance"]) > 0
+        assert "current_index" in refreshed
+        # 9.500% re-amortizes the 6.500% loan: forward balances move, so the
+        # carried series is not the pre-change one.
+        assert refreshed["balance"] != pre["balance"]
+
+    def test_duplicate_rate_submit_omits_band_refresh(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A rejected duplicate rate submit carries no band-refresh carrier.
+
+        loan_audit deferred follow-up #1: the same-effective-date second submit
+        re-amortizes nothing (the composite unique rejects it), so the route
+        re-renders the rate history WITHOUT the band carrier -- loan_detail.js
+        then leaves the band (and any active payoff preview) untouched.  Only the
+        accepted first submit carries the refreshed band.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        params = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
+        params.is_arm = True
+        db.session.commit()
+
+        data = {"effective_date": "2026-04-01", "interest_rate": "7.000"}
+        r1 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        assert r1.status_code == 200
+        # The first (accepted) submit DOES carry the refreshed band.
+        assert _parse_band_chart(r1.data.decode()) is not None
+
+        r2 = auth_client.post(f"/accounts/{acct.id}/loan/rate", data=data)
+        assert r2.status_code == 200
+        # The duplicate re-render carries no band carrier (nothing re-amortized).
+        assert 'id="loan-band-refresh"' not in r2.data.decode()
+        assert _parse_band_chart(r2.data.decode()) is None
+
 
 # ── Payoff Calculator Tests ──────────────────────────────────────────
 
@@ -1499,6 +1573,110 @@ class TestPayoffChartShape:
             "extra_payment computation still contains a direct "
             "amortization_engine.calculate_summary call."
         )
+
+
+class TestBandChartLongestBaseline:
+    """loan_audit deferred follow-up #2: the band x-axis follows the LONGEST series.
+
+    A payment plan slower than the contractual P&I -- a sub-P&I recurring
+    transfer against a balance the contractual payment would clear early -- makes
+    the committed line (and the lever's accelerated overlay) run more months than
+    the contractual ``original`` baseline.  ``_build_chart_series`` keys its
+    labels off the LONGEST series, so the committed balance line never plots past
+    the last labelled tick, and ``accelerated_overlay`` includes ``committed`` in
+    its baseline so the overlay stays aligned to the band's labels one-to-one.
+
+    These are pure-function locks on ``build_band_chart`` / ``accelerated_overlay``:
+    the composer-level trigger (a trued-down balance plus a sustained sub-P&I
+    recurring plan) is expensive to fixture end-to-end, but the label-selection
+    defect lives entirely in the helper's row-list handling, so a hand-built
+    scenario where committed OUTRUNS original exercises it directly.
+    """
+
+    @staticmethod
+    def _forward(balances):
+        """Monthly forward rows from 2026-03-01, one per balance string."""
+        return [
+            SimpleNamespace(
+                payment_date=date(2026, 3 + i, 1),
+                remaining_balance=Decimal(bal),
+            )
+            for i, bal in enumerate(balances)
+        ]
+
+    def _scenarios(self):
+        """A scenarios stand-in where committed OUTRUNS original (sub-P&I plan).
+
+        Two confirmed history months (Jan/Feb 2026), then from March 2026:
+          * original pays off in 3 months (the contractual P&I over-amortizes a
+            trued-down balance),
+          * committed drags 5 months (the sub-P&I recurring plan),
+          * accelerated (committed + extra) lands at 4 months.
+        So the committed series (2 history + 5 forward = 7 points) is the longest;
+        original (5) and accelerated (6) are shorter.  ``build_band_chart`` /
+        ``accelerated_overlay`` read only ``payment_date`` / ``remaining_balance``
+        off each row and the four slice attributes off the scenarios, so a
+        SimpleNamespace stand-in is a faithful input.
+        """
+        history = [
+            SimpleNamespace(payment_date=date(2026, 1, 1),
+                            remaining_balance=Decimal("250000.00")),
+            SimpleNamespace(payment_date=date(2026, 2, 1),
+                            remaining_balance=Decimal("249000.00")),
+        ]
+        return SimpleNamespace(
+            history_rows=history,
+            original_forward=self._forward(
+                ["200000.00", "100000.00", "0.00"],
+            ),
+            committed_forward=self._forward(
+                ["240000.00", "230000.00", "220000.00",
+                 "210000.00", "200000.00"],
+            ),
+            accelerated_forward=self._forward(
+                ["235000.00", "220000.00", "205000.00", "0.00"],
+            ),
+        )
+
+    def test_band_labels_cover_the_committed_line(self):
+        """The band's balance line never runs past its labelled x-axis.
+
+        With committed (7 points) the longest series, labels are keyed off it, so
+        len(labels) == len(balance) == 2 history + 5 committed = 7, the line IS
+        the committed trajectory, and the confirmed/projected boundary is the 2
+        history rows.  Before the fix (labels keyed off ``original``, 5 points)
+        the 7-point committed line overran the 5 labels.
+        """
+        band = build_band_chart(self._scenarios(), has_payments=True)
+        assert len(band["labels"]) == len(band["balance"]) == 7
+        assert band["current_index"] == 2
+        # The line IS the committed trajectory (history + committed forward).
+        assert band["balance"] == [
+            250000.0, 249000.0,
+            240000.0, 230000.0, 220000.0, 210000.0, 200000.0,
+        ]
+        # Labels span the longest (committed) dates: Jan 2026 .. Jul 2026.
+        assert band["labels"][0] == "Jan 2026"
+        assert band["labels"][-1] == "Jul 2026"
+
+    def test_overlay_stays_aligned_to_the_band_labels(self):
+        """The accelerated overlay pads to the band's full label count.
+
+        ``accelerated_overlay`` includes ``committed`` in its baseline, so the
+        overlay is padded to the band's 7 labels even though accelerated pays off
+        at 6 points: the first 2 (history) are null, the accelerated forward's 4
+        balances follow, then one post-payoff $0.00 pad -- 7 total, matching the
+        band exactly.  Without including committed the overlay would pad to only 6
+        and land one x-position short of the committed line.
+        """
+        scenarios = self._scenarios()
+        band = build_band_chart(scenarios, has_payments=True)
+        overlay = accelerated_overlay(scenarios)
+        assert len(overlay) == len(band["labels"]) == 7
+        # No overlay over confirmed history.
+        assert overlay[:2] == [None, None]
+        # Accelerated forward (4 points) then a post-payoff $0.00 pad to 7.
+        assert overlay[2:] == [235000.0, 220000.0, 205000.0, 0.0, 0.0]
 
 
 # ── Account Creation Redirect Tests ──────────────────────────────────
@@ -5495,3 +5673,67 @@ class TestLoanDetailMeasuredSurfaces:
         assert html.count('id="total-payment-chip"') == 1
         assert html.count('id="escrow-badge"') == 1
         assert html.count('id="interest-rate-chip"') == 1
+
+    def test_ytd_chips_use_display_tz_year_at_new_year_boundary(
+        self, auth_client, seed_user, db, seed_periods, monkeypatch,
+    ):
+        """loan_audit deferred follow-up #3: YTD chips sum by the Eastern civil year.
+
+        The two YTD chips select their year from the user's display-tz clock
+        (matching the analytics Taxes tab + the L9 civil-date attribution), not
+        the backend UTC clock.  Frozen at 2027-01-01 00:00 UTC -- which is still
+        2026-12-31 in America/New_York -- ``display_today().year`` is 2026 while
+        ``date.today().year`` (UTC) is 2027.  A payment settled 2026-03-15 posts
+        its interest to civil year 2026, so the "Interest paid, YTD" chip must
+        show the 2026 figure (the Taxes-tab number), NOT the empty 2027 figure
+        the pre-fix UTC code would render.
+        """
+        loan = create_loan_with_trueup(
+            seed_user, db.session,
+            origination_principal=Decimal("250000.00"),
+            anchor_balance=Decimal("100000.00"),
+            anchor_date=date(2026, 1, 1),
+            rate=Decimal("0.06000"),
+            origination_date=date(2023, 6, 1),
+            name="Boundary Mortgage",
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan,
+            seed_periods[3], amount=Decimal("1000.00"),
+            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        scenario_id = seed_user["scenario"].id
+        # The measured facts: the 2026 (Eastern) year holds the payment's
+        # interest; the 2027 (UTC) year holds nothing.  The loan is backfilled,
+        # so the producer returns $0.00 (not None) for 2027 -- exactly the value
+        # the pre-fix UTC code would have rendered into the chip.
+        interest_2026 = confirmed_loan_interest_in_year(
+            loan.id, scenario_id, 2026,
+        )
+        interest_2027 = confirmed_loan_interest_in_year(
+            loan.id, scenario_id, 2027,
+        )
+        assert interest_2026 > Decimal("0.00")
+        assert interest_2027 == Decimal("0.00")
+
+        # Re-freeze onto the New Year boundary (the autouse fixture froze
+        # 2026-03-20): midnight UTC Jan 1 2027 is still Dec 31 2026 Eastern.
+        freeze_today(monkeypatch, date(2027, 1, 1))
+
+        html = auth_client.get(f"/accounts/{loan.id}/loan").data.decode()
+        match = re.search(
+            r'Interest paid, YTD</div>\s*'
+            r'<div class="pulse-chip__value font-mono">([^<]+)</div>',
+            html,
+        )
+        assert match is not None, (
+            "The 'Interest paid, YTD' chip did not render -- the display-tz "
+            "year should surface the 2026 payment's interest."
+        )
+        chip_value = match.group(1).strip()
+        # The chip shows the Eastern-year (2026) figure, formatted by the money
+        # macro ("$1,234.56"), NOT the $0.00 the UTC year (2027) would give.
+        assert chip_value == f"${interest_2026:,.2f}"
+        assert chip_value != "$0.00"

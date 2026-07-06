@@ -19,13 +19,13 @@ from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _load_loan_account,
     _load_loan_context,
+    _loan_inputs,
     _payoff_schema,
     _refinance_schema,
     accelerated_overlay,
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
-from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import confirmed_loan_view
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -111,12 +111,7 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
     """
     extra = Decimal(str(data.get("extra_monthly", "0")))
     scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=loan_resolver.LoanInputs(
-            loan_params=params,
-            anchor_events=load_loan_anchor_facts(params),
-            payments=ctx.loan.payments,
-            rate_changes=ctx.loan.rate_changes,
-        ),
+        loan_inputs=_loan_inputs(params, ctx),
         extra_monthly=extra,
         as_of=date.today(),
         confirmed_view=confirmed_view,
@@ -207,12 +202,7 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view):
     outlook = None
     if has_payments:
         outlook = loan_resolver.target_date_outlook(
-            loan_inputs=loan_resolver.LoanInputs(
-                loan_params=params,
-                anchor_events=load_loan_anchor_facts(params),
-                payments=ctx.loan.payments,
-                rate_changes=ctx.loan.rate_changes,
-            ),
+            loan_inputs=_loan_inputs(params, ctx),
             target_date=target_date,
             as_of=date.today(),
             confirmed_view=confirmed_view,
