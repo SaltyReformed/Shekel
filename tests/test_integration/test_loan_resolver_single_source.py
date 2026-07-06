@@ -229,21 +229,21 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
 
 
 def _loan_card_principal(auth_client, account_id):
-    """Extract the loan card's Current Principal from the dashboard HTML.
+    """Extract the loan detail band's owed balance from the dashboard HTML.
 
-    Parses the dashboard's "Current Principal" row -- the same span
-    the user sees -- and returns the dollar value as a Decimal.  This
-    is the *display* contract: anything the route sets but does not
-    render falls outside the lock.
+    Parses the band hero -- "Balance owed" (the Fable 5 rebuild's owed hero,
+    the same figure the old "Current Principal" row showed) -- and returns the
+    dollar value as a Decimal.  This is the *display* contract: anything the
+    route sets but does not render falls outside the lock.
     """
     resp = auth_client.get(f"/accounts/{account_id}/loan")
     assert resp.status_code == 200
     html = resp.data.decode()
     match = re.search(
-        r"Current Principal[\s\S]*?\$([\d,]+\.\d{2})", html,
+        r"Balance owed[\s\S]*?\$([\d,]+\.\d{2})", html,
     )
     assert match, (
-        "Did not find the Current Principal card on the loan dashboard. "
+        "Did not find the Balance owed hero on the loan dashboard. "
         f"HTML excerpt: {html[:500]}"
     )
     return Decimal(match.group(1).replace(",", ""))

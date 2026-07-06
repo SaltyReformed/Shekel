@@ -9,7 +9,6 @@ end_date sync (a deliberate write on a GET, R-4) also lives here because the
 dashboard is where the payoff date is computed with full payment context.
 """
 
-import dataclasses
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
 
@@ -26,15 +25,20 @@ from app.services.recurring_transfer_query import (
 )
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
-    _build_chart_series,
     _load_loan_account,
     _load_loan_context,
-    build_schedule_context,
+    build_band_chart,
 )
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import confirmed_loan_view
+from app.services.loan_posting_service import (
+    confirmed_loan_interest_in_year,
+    confirmed_loan_payment_history,
+    confirmed_loan_principal_in_year,
+    loan_balance_anchor_history,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 
@@ -184,65 +188,48 @@ def _compute_payment_breakdown(schedule, escrow_components):
     }
 
 
-def _build_dashboard_scenarios(loan_inputs, scenario_id, as_of):
-    """Run the main + floor payoff-scenario composer calls for the dashboard.
+def _build_dashboard_scenario(loan_inputs, scenario_id, as_of):
+    """Run the baseline payoff-scenario composer call for the dashboard.
 
-    Commit 5 of the amortization-engine split: two
-    ``compute_payoff_scenarios`` calls (replacing three direct
-    ``generate_schedule`` calls) whose chart series and summary derive
-    from the same return value so they cannot diverge (the structural
-    fix documented at
+    One ``compute_payoff_scenarios`` call (``extra_monthly=0``) whose band
+    chart, payment breakdown, and life-of-loan summary all derive from the same
+    return value so they cannot diverge (the structural fix documented at
     ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
+    The returned scenario consumes ALL payments (confirmed + projected): its
+    ``history_rows + committed_forward`` slice IS the planned trajectory the band
+    chart, payment breakdown, and summary read, while ``original_forward``
+    supplies the contractual x-axis baseline.
 
-    ``scenarios_main`` consumes ALL payments (confirmed + projected)
-    with ``extra_monthly=0``: its ``history_rows + committed_forward``
-    slice IS the planned trajectory the amortization tab, payment
-    breakdown, schedule totals, recurrence end_date update, and summary
-    all read.  ``scenarios_floor`` re-runs with the projected portion of
-    ``payments`` filtered out, so its ``committed_forward`` is "pure
-    contractual from balance_as_of" -- the floor's semantic of "where I
-    stand if I cancel all extras today."  Both share the same
-    ``anchor_events`` so a future trueup cannot drift between them.
+    (Loop B band rebuild: the "floor" confirmed-only scenario that fed the old
+    three-series chart is dropped -- the locked band anatomy plots only the
+    committed line plus the lever's accelerated preview -- so the dashboard now
+    composes a single scenario.)
 
     Read switch: reads the genesis-ledger confirmed view ONCE via
-    :func:`loan_payment_service.confirmed_loan_view` and threads it into BOTH
-    composer calls as ``confirmed_view``, so the chart / schedule tab /
-    summary all derive from the same real owed balance AND ledger-derived
-    confirmed history the loan card (:func:`._helpers._resolve`) shows --
-    they cannot desync off-schedule.
+    :func:`loan_payment_service.confirmed_loan_view` and threads it into the
+    composer as ``confirmed_view``, so the chart / summary derive from the same
+    real owed balance AND ledger-derived confirmed history the loan card
+    (:func:`._helpers._resolve`) shows -- they cannot desync off-schedule.
 
     Args:
         loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
-            ALL payments (the main scenario); the floor derives its
-            confirmed-only variant from it.
+            ALL payments.
         scenario_id: The baseline scenario id (or ``None``) for the ledger
             seed scope.
         as_of: The replay/projection boundary (typically ``date.today()``).
 
     Returns:
-        Tuple of (scenarios_main, scenarios_floor) PayoffScenarios.
+        The baseline :class:`PayoffScenarios`.
     """
     view = confirmed_loan_view(
         loan_inputs.loan_params.account_id, scenario_id, as_of,
     )
-    scenarios_main = loan_resolver.compute_payoff_scenarios(
+    return loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
         confirmed_view=view,
     )
-    confirmed_payments = [
-        p for p in (loan_inputs.payments or []) if p.is_confirmed
-    ]
-    scenarios_floor = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=dataclasses.replace(
-            loan_inputs, payments=confirmed_payments,
-        ),
-        extra_monthly=Decimal("0.00"),
-        as_of=as_of,
-        confirmed_view=view,
-    )
-    return scenarios_main, scenarios_floor
 
 
 def _build_planned_summary(state, planned_schedule, params):
@@ -314,38 +301,29 @@ def _build_payment_summary(state, summary, planned_schedule, escrow_components):
     }
 
 
-def _build_dashboard_chart_context(scenarios_main, scenarios_floor, has_payments):
-    """Build the dashboard's multi-scenario chart template context.
+def _build_band_context(scenarios, has_payments):
+    """Build the dashboard's band-chart template context.
 
-    Three series share the x-axis (see :func:`_build_chart_series`):
-    Original (history + original_forward, pure contractual) and
-    Committed (history + committed_forward, planned outlays) come from
-    the main scenario; Floor (history + committed_forward) comes from
-    the floor scenario (projections cancelled).  Committed and Floor
-    render empty when the loan has no payments (the JS overlays just
-    Original), preserving the pre-Commit-5 conditional behavior.
+    Wraps :func:`._helpers.build_band_chart` (one committed-or-contractual
+    balance line on the contractual x-axis, which the client splits at the
+    confirmed / projected boundary) and derives ``has_chart`` -- the band renders
+    the chart when the line has points, otherwise a "paid off" note.  The client
+    (``loan_detail.js``) reads the serialized ``band_chart`` dict from
+    ``data-chart`` and overlays the payoff lever's accelerated preview onto it.
+
+    Args:
+        scenarios: The baseline :class:`PayoffScenarios` from
+            :func:`_build_dashboard_scenario`.
+        has_payments: ``True`` when the loan has a recurring payment plan
+            (selects the committed line over the contractual original).
 
     Returns:
-        dict of template vars: chart_labels, chart_original,
-        chart_committed, chart_floor, has_payments.
+        dict of template vars: band_chart (the serializable dict), has_chart.
     """
-    chart_labels, balances = _build_chart_series({
-        "original": (
-            scenarios_main.history_rows + scenarios_main.original_forward
-        ),
-        "committed": (
-            scenarios_main.history_rows + scenarios_main.committed_forward
-        ),
-        "floor": (
-            scenarios_floor.history_rows + scenarios_floor.committed_forward
-        ),
-    })
+    band_chart = build_band_chart(scenarios, has_payments)
     return {
-        "chart_labels": chart_labels,
-        "chart_original": balances["original"],
-        "chart_committed": balances["committed"] if has_payments else [],
-        "chart_floor": balances["floor"] if has_payments else [],
-        "has_payments": has_payments,
+        "band_chart": band_chart,
+        "has_chart": bool(band_chart["balance"]),
     }
 
 
@@ -425,11 +403,51 @@ def _load_collateral_candidates(user_id):
     )
 
 
+def _build_measured_context(account_id, scenario_id, as_of):
+    """Build the loan detail page's ledger-MEASURED template context.
+
+    The Loop B rebuild surfaces the genesis ledger's real, paid facts the page
+    previously computed but never showed (docs/design/loan_audit.md): the
+    interest and principal actually PAID this calendar year (the two band chips
+    -- the interest figure is the same Schedule-A number the Taxes tab reports),
+    the confirmed payment-history rows (each real cash / principal / interest /
+    escrow split), and the balance-anchor drift scorecard (each opening /
+    true-up recorded balance vs the ledger's computed balance just before it).
+    Every producer returns ``None`` for an un-backfilled / unconfigured loan, and
+    the template hides the corresponding chip or section on ``None`` rather than
+    showing a misleading zero.
+
+    Args:
+        account_id: The loan account id.
+        scenario_id: The baseline scenario id (or ``None``).
+        as_of: The display boundary (``date.today()``); the history and anchor
+            producers exclude anything not confirmed by it.
+
+    Returns:
+        dict of template vars: interest_paid_ytd, principal_paid_ytd,
+        payment_history, balance_anchors.
+    """
+    return {
+        "interest_paid_ytd": confirmed_loan_interest_in_year(
+            account_id, scenario_id, as_of.year,
+        ),
+        "principal_paid_ytd": confirmed_loan_principal_in_year(
+            account_id, scenario_id, as_of.year,
+        ),
+        "payment_history": confirmed_loan_payment_history(
+            account_id, scenario_id, as_of,
+        ),
+        "balance_anchors": loan_balance_anchor_history(
+            account_id, scenario_id, as_of,
+        ),
+    }
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan")
 @login_required
 @require_owner
 def dashboard(account_id):
-    """Loan detail page with summary, escrow, rate history, and payoff calculator."""
+    """Loan detail page: the balance band, what-if levers, and the section cards."""
     account, params, account_type = _load_loan_account(account_id)
     if account is None:
         abort(404)
@@ -443,23 +461,21 @@ def dashboard(account_id):
 
     ctx = _load_loan_context(account, params)
     scenario = get_baseline_scenario(current_user.id)
+    scenario_id = scenario.id if scenario else None
+    today = date.today()
     loan_inputs = loan_resolver.LoanInputs(
         loan_params=params,
         anchor_events=load_loan_anchor_facts(params),
         payments=ctx.loan.payments,
         rate_changes=ctx.loan.rate_changes,
     )
-    scenarios_main, scenarios_floor = _build_dashboard_scenarios(
-        loan_inputs, scenario.id if scenario else None, date.today(),
-    )
+    scenarios = _build_dashboard_scenario(loan_inputs, scenario_id, today)
     # PLANNED-trajectory schedule: real confirmed history + projected /
     # contractual forward.  The loan card's current_balance and the
     # forward projection here both seed from the SAME genesis-ledger
     # balance (plan Section 8), so the card / debt card / net-worth
     # liability and the chart cannot diverge (the E-18 invariant).
-    planned_schedule = (
-        scenarios_main.history_rows + scenarios_main.committed_forward
-    )
+    planned_schedule = scenarios.history_rows + scenarios.committed_forward
     summary = _build_planned_summary(ctx.state, planned_schedule, params)
 
     # R-4: the recurring transfer's end_date is NO LONGER written here (a write
@@ -500,11 +516,7 @@ def dashboard(account_id):
     context.update(_build_payment_summary(
         ctx.state, summary, planned_schedule, ctx.loan.escrow_components,
     ))
-    context.update(_build_dashboard_chart_context(
-        scenarios_main, scenarios_floor, len(ctx.loan.payments) > 0,
-    ))
+    context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
+    context.update(_build_measured_context(account.id, scenario_id, today))
     context.update(prompt_context)
-    context.update(build_schedule_context(
-        planned_schedule, ctx.loan.monthly_escrow, ctx.current_rate, params,
-    ))
     return render_template("loan/dashboard.html", **context)

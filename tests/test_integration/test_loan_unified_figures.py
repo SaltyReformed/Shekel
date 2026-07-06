@@ -582,22 +582,21 @@ def test_arm_payoff_date_consistent_across_surfaces(
             f"Loan dashboard GET failed: {resp.status_code}"
         )
         # The dashboard renders the abbreviated month / year of the
-        # payoff date in the "Projected Payoff" card (template
-        # ``loan/dashboard.html`` line 147: ``%b %Y``).  For our ARM
-        # fixture (no payments, no extra) it must equal the
-        # resolver's life-of-loan endpoint.
+        # payoff date in the band's "Projected payoff" chip (template
+        # ``loan/dashboard.html``: ``%b %Y``).  For our ARM fixture (no
+        # payments, no extra) it must equal the resolver's life-of-loan
+        # endpoint.
         expected_month_year = resolver_payoff.strftime("%b %Y")
         html = resp.data.decode()
-        # Anchor the assertion to the "Projected Payoff" row so a
-        # different ``%b %Y`` token elsewhere on the page (e.g. an
-        # amortization schedule row) cannot mask a regression on the
-        # card.
+        # Anchor the assertion to the "Projected payoff" chip so a
+        # different ``%b %Y`` token elsewhere on the page cannot mask a
+        # regression on the chip.
         card_match = re.search(
-            r"Projected Payoff[\s\S]*?<span>([A-Za-z]{3} \d{4})</span>",
+            r"Projected payoff[\s\S]*?>([A-Za-z]{3} \d{4})<",
             html,
         )
         assert card_match, (
-            "Could not locate the Projected Payoff card on the loan "
+            "Could not locate the Projected payoff chip on the loan "
             f"dashboard; HTML excerpt: {html[:600]!r}"
         )
         card_text = card_match.group(1)

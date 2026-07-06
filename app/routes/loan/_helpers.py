@@ -323,6 +323,72 @@ def _build_chart_series(series_rows):
     return chart_labels, balances
 
 
+def build_band_chart(scenarios, has_payments):
+    """Serialize the loan-detail band chart: one balance line on the contractual axis.
+
+    The Fable 5 loan-detail band chart (docs/design/loan_audit.md, locked
+    anatomy) draws a SINGLE balance trajectory -- the committed plan (confirmed
+    history solid, projected forward dashed) when the loan has a recurring
+    payment plan, otherwise the pure contractual schedule -- which the client
+    splits at the confirmed / projected boundary via
+    :func:`ShekelChart.splitSegment` (``current_index``).  The line is padded to
+    the ORIGINAL contractual x-axis by :func:`_build_chart_series`, the same
+    baseline :func:`accelerated_overlay` uses, so a shorter (paid-sooner)
+    trajectory and the lever's preview align to identical labels and cannot
+    drift.
+
+    Args:
+        scenarios: The baseline :class:`PayoffScenarios` (``extra_monthly`` 0).
+        has_payments: ``True`` when the loan has a recurring payment plan;
+            selects the committed line, else the contractual original.
+
+    Returns:
+        dict with ``labels`` (list[str]), ``balance`` (list[float] padded to the
+        contractual length), and ``current_index`` (int -- the count of
+        confirmed history rows, i.e. the solid / dashed boundary).
+    """
+    chart_labels, balances = _build_chart_series({
+        "original": scenarios.history_rows + scenarios.original_forward,
+        "committed": scenarios.history_rows + scenarios.committed_forward,
+    })
+    return {
+        "labels": chart_labels,
+        "balance": (
+            balances["committed"] if has_payments else balances["original"]
+        ),
+        "current_index": len(scenarios.history_rows),
+    }
+
+
+def accelerated_overlay(scenarios):
+    """Forward-only accelerated balances for the band chart's payoff-lever preview.
+
+    The green dashed "pay off sooner" preview (docs/design/loan_audit.md, locked
+    anatomy) the band chart overlays when the extra-payment lever runs: the
+    accelerated trajectory's FORWARD slice only, with the confirmed-history
+    positions left ``None`` so the green line begins at Today and diverges from
+    the committed dashed line rather than redrawing the shared solid history.
+    Padded to the SAME contractual x-axis as :func:`build_band_chart` (original
+    baseline first) so the overlay aligns to the band chart's labels exactly.
+
+    Args:
+        scenarios: The lever's :class:`PayoffScenarios` (``extra_monthly`` the
+            requested extra).
+
+    Returns:
+        list of ``float | None`` whose length equals the band chart's balance
+        array: the first ``len(history_rows)`` entries are ``None`` (no overlay
+        over confirmed history), the rest are the accelerated forward balances
+        padded with post-payoff zeros.
+    """
+    _chart_labels, balances = _build_chart_series({
+        "original": scenarios.history_rows + scenarios.original_forward,
+        "accelerated": scenarios.history_rows + scenarios.accelerated_forward,
+    })
+    n_history = len(scenarios.history_rows)
+    return [None] * n_history + balances["accelerated"][n_history:]
+
+
 def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):
     """Sum payment, principal, interest, escrow, and extra from a schedule.
 

@@ -174,3 +174,63 @@ Rebuild in the account-detail band grammar, cockpit rules:
   anatomy, `loan.css` additions, chart via the chart_theme factory, both themes, shoot.py
   verification.
 - **P3 -- acceptance:** developer drive on the real mortgage; as-built record here.
+
+## Loop B P2 as-built (2026-07-05)
+
+P2 (the band-grammar visual rebuild) is BUILT and green on `dev`, UNCOMMITTED as of 2026-07-05
+(built by Opus, not a Fable session, per the developer's call). As-built matches the locked anatomy:
+
+- `app/templates/loan/dashboard.html` rebuilt into the band grammar; new
+  `app/templates/loan/_chips.html` macros (the band chips and their HTMX out-of-band swaps share one
+  definition so they cannot drift); new `app/static/css/loan.css` (tokens only, loaded after
+  `accounts.css`); new `app/static/js/loan_detail.js` (band chart via `ShekelChart.splitSegment` /
+  `todayMarkerPlugin`, plus the pay-off-sooner lever's green dashed accelerated overlay on
+  `htmx:afterSwap`).
+- `app/routes/loan/_helpers.py`: `build_band_chart(scenarios, has_payments)` and
+  `accelerated_overlay(scenarios)` (both reuse `_build_chart_series`; the overlay is forward-only
+  with leading nulls over confirmed history, padded to the same contractual x-axis so it cannot
+  drift from the committed line). `dashboard.py` context reshaped: measured chips plus the
+  payment-history and balance-anchor sections, a single band `chart_json`, the dead FLOOR scenario
+  and the schedule-tab context removed. `calculators._payoff_extra_payment_result` returns the
+  overlay instead of a canvas.
+- `_refinance.html` inlined into the dashboard and deleted; `payoff_chart.js` deleted.
+
+Gates: full suite 7206 passed; `pylint app/` 10.00/10; independent `code-reviewer` clean (no
+Critical/High, band/overlay serialization confirmed financially correct); both themes shot via
+`shoot.py` on the real prod-clone Mortgage (account id 3).
+
+### Deferred follow-ups (from the P2 adversarial review)
+
+All three PRE-DATE the rebuild (not P2 regressions); recorded here so a future session can pick them
+up. Re-verify symbol / line references before acting (CLAUDE.md rule 2).
+
+1. **Band chart goes stale after an ARM rate-change OOB swap.** A rate change re-amortizes the loan,
+   but `app/routes/loan/escrow_rates.py:add_rate_change` (via `_render_rate_history`) OOB-swaps only
+   the rate chip (`#interest-rate-chip`); nothing re-renders `#loan-balance-chart`, so the band line
+   reflects the pre-change rate until a full reload. The band is now always visible (not a hidden
+   tab), so this is more noticeable than before; the non-HTMX `update_params` / `true_up_balance`
+   forms reload the page and are fine. FIX DIRECTION: have the rate route additionally return fresh
+   band `chart_json` and have `loan_detail.js` rebuild `#loan-balance-chart` from it on that swap.
+
+2. **Chart series can exceed the labelled x-axis for a sub-PITI (underpayment) loan.**
+   `app/routes/loan/_helpers.py:_build_chart_series` takes its labels from the FIRST series
+   (`"original"`, the contractual baseline), and `_balances_for_chart` PADS shorter series up to
+   that length but never TRUNCATES longer ones. A recurring payment BELOW the contractual P&I makes
+   `committed_forward` (and the lever's `accelerated_forward`) longer than `original_forward`, so
+   the band balance / overlay exceed `len(labels)` and the tail points plot past the last labelled
+   tick. The values are correct; only the x-axis labelling falls short. Pre-existing (the old
+   three-series chart used the same `"original"`-as-baseline selection). FIX DIRECTION: choose the
+   LONGEST series as the label baseline, NOT a `[:target_len]` truncation band-aid (which would hide
+   the real underpayment tail). Ties to the P1 note that a deliberately sub-PITI custom recurring
+   payment gets a shorter initial shadow horizon.
+
+3. **YTD chips use a UTC-derived year against display-tz attribution (New Year boundary).**
+   `app/routes/loan/dashboard.py:_build_measured_context` passes `date.today().year` (backend UTC)
+   into `confirmed_loan_interest_in_year` / `confirmed_loan_principal_in_year`, which attribute each
+   payment by its America/New_York paid date. In the few hours around New Year when UTC and Eastern
+   differ in year, the "Interest / Principal paid, YTD" figure selects the wrong civil year relative
+   to the user's clock. KEPT DELIBERATELY at P2: `date.today().year` is the app-wide "current year"
+   convention (tax config, retirement, salary), and using it keeps the interest chip consistent with
+   the analytics Taxes tab (the same Schedule-A figure). Only worth revisiting as part of a
+   cross-cutting "display-tz current year" decision, not in isolation (which would make this surface
+   disagree with the Taxes tab).

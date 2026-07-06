@@ -1,17 +1,14 @@
 {# HTMX fragment: ARM rate change history #}
+{% from "loan/_chips.html" import rate_chip %}
 
-{# OOB swap: update the current interest rate on the Overview tab.
-   DH-#56: shows the resolver-derived current rate (the rate in effect
-   today after this change is recorded), not the retired
-   LoanParams.interest_rate column. #}
-{% if params is defined and params and current_rate is defined %}
-<div class="d-flex justify-content-between mb-2" id="interest-rate-display" hx-swap-oob="true">
-  <span class="text-muted">Interest Rate</span>
-  <span class="fw-bold text-accent">
-    {{ "%.3f"|format(current_rate|to_percent) }}%
-    {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
-  </span>
-</div>
+{# OOB swap: emitted ONLY when this partial is served as an HTMX response (the
+   rate route passes ``oob_swaps=True``), never when the dashboard includes it
+   inline -- otherwise the inline copy would duplicate the band's rate-chip id in
+   the initial DOM.  Shows the resolver-derived current rate in effect today
+   (DH-#56), via the same macro the band renders so the swapped-in chip cannot
+   drift. #}
+{% if oob_swaps and params is defined and params and current_rate is defined %}
+{{ rate_chip(current_rate, params.is_arm, oob=true) }}
 {% endif %}
 
 <div class="card-body p-0">

@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -24,6 +24,7 @@ from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service
 
 from tests._test_helpers import (
+    create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
     insert_origination_event,
@@ -198,7 +199,7 @@ class TestLoanDashboard:
         acct = create_fn(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert b"Loan Summary" in resp.data
+        assert b"Balance owed" in resp.data
 
     @pytest.mark.parametrize("payment_day,expected", [
         (1, "1st"), (2, "2nd"), (3, "3rd"),
@@ -281,11 +282,11 @@ class TestLoanDashboard:
         assert b'value="60"' in resp.data
 
     def test_dashboard_shows_payoff_calculator(self, auth_client, seed_user, db, seed_periods):
-        """Dashboard renders the payoff calculator tab for all loan types."""
+        """Dashboard renders the "pay off sooner" lever (with its slider) for all loan types."""
         acct = _create_auto_loan(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert b"Payoff Calculator" in resp.data
+        assert b"Pay off sooner" in resp.data
         assert b'data-slider-group="payoff"' in resp.data
 
     def test_dashboard_shows_icon_from_account_type(self, auth_client, seed_user, db, seed_periods):
@@ -838,7 +839,7 @@ class TestEscrow:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert 'id="total-payment-display"' in html
+        assert 'id="total-payment-chip"' in html
         assert 'hx-swap-oob="true"' in html
         assert "$400.00/mo" in html
 
@@ -1150,6 +1151,20 @@ def _parse_chart_array(html, attr):
     return _json.loads(match.group(1))
 
 
+def _parse_band_chart(html):
+    """Extract the loan detail band chart's ``data-chart`` JSON object.
+
+    The Fable 5 band renders a single ``{labels, balance, current_index}`` JSON
+    object on ``#loan-balance-chart`` (loan_detail.js splits the balance line at
+    ``current_index`` and overlays the payoff lever's preview).  Returns the
+    parsed dict, or ``None`` when absent (e.g. a paid-off loan renders no chart).
+
+    Args:
+        html: Rendered loan dashboard HTML.
+    """
+    return _parse_chart_array(html, "chart")
+
+
 def _label_to_month_tuple(label):
     """Convert a ``"%b %Y"`` chart label to a (year, month) tuple.
 
@@ -1204,183 +1219,150 @@ class TestPayoffChartShape:
         return acct
 
     def test_chart_lengths_equal(self, auth_client, seed_user, db, seed_periods):
-        """C4-1: chart_original / chart_committed / chart_accelerated equal length.
+        """C4-1: the payoff overlay aligns to the band chart's shared x-axis.
 
-        After the migration the route pads the shorter forward
-        slices with $0.00 so all three datasets render against the
-        same x-axis; this lets Chart.js plot all three lines
-        against the shared ``chart_labels`` without alignment
-        gymnastics on the JS side.
+        The band chart (labels + committed balance line) and the payoff lever's
+        accelerated overlay are both padded to the same contractual length, so
+        loan_detail.js overlays the green preview against one set of labels
+        without alignment gymnastics on the JS side.
         """
         acct = self._create_loan_with_historical_confirmed(
             seed_user, db.session, seed_periods,
+        )
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
         )
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "500"},
         )
         assert resp.status_code == 200
-        html = resp.data.decode()
+        overlay = _parse_chart_array(resp.data.decode(), "overlay")
+        assert band is not None
+        assert overlay is not None
+        assert len(band["labels"]) == len(band["balance"]) == len(overlay)
 
-        labels = _parse_chart_array(html, "labels")
-        original = _parse_chart_array(html, "original")
-        committed = _parse_chart_array(html, "committed")
-        accelerated = _parse_chart_array(html, "accelerated")
-        assert labels is not None
-        assert original is not None
-        assert committed is not None
-        assert accelerated is not None
-        assert len(original) == len(committed) == len(accelerated) == len(labels)
-
-    def test_accelerated_equals_committed_in_historical_region(
+    def test_accelerated_overlay_null_in_historical_region(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """C4-2: HTTP-level regression lock for the user's reported visual bug.
 
-        For every chart index whose label is STRICTLY before today's
-        month (i.e., the confirmed-payment months Jan/Feb 2026), the
-        Accelerated balance must equal the Committed balance.
-
-        Pre-Commit-4 the engine's ``extra_monthly`` semantics treated
-        origination-to-first-confirmed months as "no payment record"
-        and applied $500 of extra principal to each one, producing a
-        fictitious accelerated past that the chart rendered as
-        Accelerated diverging from Committed at month 1 (2023-07).
-        Post-Commit-4 the composer routes confirmed payments through
-        replay (which has no ``extra_monthly`` parameter) and
-        projected payments through ``monthly_override`` (which
-        suppresses extra for override months), making the bug
-        structurally impossible.
-
-        The boundary is strict (``<``) rather than ``<=`` because
-        replay returns rows ONLY for confirmed-payment months, so the
-        first forward row's label is the month after the last
-        confirmed payment.  With today on the 20th of a no-confirmed
-        month, today's month is the first forward row -- a
-        non-override forward month receives the extra, so its index
-        cannot satisfy ``accelerated == committed``.
+        The reported bug was $500 of extra principal applied to ghost historical
+        months, drawing an accelerated line diverging from committed back at
+        month 1 (2023-07).  The band-chart preview overlay now begins at Today
+        and never redraws the confirmed history: every overlay index before the
+        confirmed/projected boundary (the band's ``current_index``) is null, and
+        the boundary index is the first non-null forward point -- so extra can
+        never be attributed to a historical month.
         """
         acct = self._create_loan_with_historical_confirmed(
             seed_user, db.session, seed_periods,
+        )
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
         )
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "500"},
         )
         assert resp.status_code == 200
-        html = resp.data.decode()
+        overlay = _parse_chart_array(resp.data.decode(), "overlay")
+        assert band is not None and overlay is not None
 
-        labels = _parse_chart_array(html, "labels")
-        committed = _parse_chart_array(html, "committed")
-        accelerated = _parse_chart_array(html, "accelerated")
-        assert labels and committed and accelerated
-
-        historical_indices = [
-            i for i, lbl in enumerate(labels)
-            if _label_to_month_tuple(lbl) < self.TODAY_MONTH
-        ]
-        assert historical_indices, (
-            "Expected at least one chart label strictly before today's "
-            f"month {self.TODAY_MONTH}; got labels={labels[:5]!r}..."
+        current_index = band["current_index"]
+        assert current_index > 0, (
+            "This fixture has two confirmed payments, so the band's "
+            f"current_index must be > 0; got {current_index}"
         )
-        for i in historical_indices:
-            assert accelerated[i] == committed[i], (
-                f"Accelerated[{i}] ({accelerated[i]!r}) != "
-                f"Committed[{i}] ({committed[i]!r}) at label "
-                f"{labels[i]!r}; accelerated must track committed in "
-                "the historical region -- otherwise extra is being "
-                "applied to ghost historical months."
+        for i in range(current_index):
+            assert overlay[i] is None, (
+                f"Overlay[{i}] ({overlay[i]!r}) is not null in the confirmed "
+                "history region -- the preview must not redraw (or accelerate) "
+                "historical months."
             )
+        assert overlay[current_index] is not None, (
+            "The overlay must begin (non-null) at the confirmed/projected "
+            "boundary -- the first forward, accelerable month."
+        )
 
-    def test_accelerated_below_committed_post_today(
+    def test_accelerated_overlay_below_committed_post_today(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C4-3: Accelerated strictly below Committed for at least one post-today index.
+        """C4-3: the preview overlay drops strictly below the committed line.
 
-        With ``extra_monthly=500`` and no projected transfer
-        templates, every forward month after today has no
-        ``monthly_override`` and therefore receives the extra
-        principal payment -- so the running Accelerated balance
-        drops below the running Committed balance from the first
-        forward month onward.
+        With ``extra_monthly=500`` and no projected override, every forward
+        month receives the extra principal, so the accelerated overlay's balance
+        is strictly below the band's committed line for at least one post-today
+        index.
         """
         acct = self._create_loan_with_historical_confirmed(
             seed_user, db.session, seed_periods,
+        )
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
         )
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "500"},
         )
         assert resp.status_code == 200
-        html = resp.data.decode()
+        overlay = _parse_chart_array(resp.data.decode(), "overlay")
+        assert band is not None and overlay is not None
 
-        labels = _parse_chart_array(html, "labels")
-        committed = _parse_chart_array(html, "committed")
-        accelerated = _parse_chart_array(html, "accelerated")
-        assert labels and committed and accelerated
-
-        post_today_indices = [
-            i for i, lbl in enumerate(labels)
-            if _label_to_month_tuple(lbl) > self.TODAY_MONTH
-        ]
-        assert post_today_indices, (
-            "Expected at least one chart label strictly after "
-            f"today's month {self.TODAY_MONTH}; got "
-            f"labels={labels[-5:]!r}..."
-        )
+        committed = band["balance"]
+        forward = range(band["current_index"], len(committed))
         assert any(
-            accelerated[i] < committed[i] for i in post_today_indices
+            overlay[i] is not None and overlay[i] < committed[i]
+            for i in forward
         ), (
-            "Expected accelerated < committed strictly at some "
-            "post-today index; got accelerated == committed for "
-            "every forward index, which means extra_monthly was "
-            "ignored on the projection side."
+            "Expected the accelerated overlay strictly below the committed line "
+            "at some post-today index; extra_monthly was ignored on the "
+            "projection side."
         )
 
     def test_summary_consistent_with_chart(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C4-4: Displayed Months Saved value matches chart divergence count.
+        """C4-4: Displayed Months Saved matches the overlay-vs-committed divergence.
 
         The composer's ``months_saved`` is
         ``len(committed_forward) - len(accelerated_forward)``.
-        Single-source-of-truth means the rendered ``Months Saved``
-        label must equal the count of chart indices where
-        Accelerated paid off but Committed has not -- i.e. where
-        Accelerated has reached zero ahead of Committed.  Both
-        sides derive from the same forward slices, so they agree
-        by construction.
+        Single-source-of-truth means the rendered ``Months Saved`` label equals
+        the count of chart indices where the committed line still owes but the
+        accelerated overlay has already reached $0 -- both derive from the same
+        forward slices, so they agree by construction.
         """
         import re as _re  # pylint: disable=import-outside-toplevel
 
         acct = self._create_loan_with_historical_confirmed(
             seed_user, db.session, seed_periods,
         )
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        )
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "500"},
         )
         assert resp.status_code == 200
         html = resp.data.decode()
+        overlay = _parse_chart_array(html, "overlay")
+        assert band is not None and overlay is not None
+        committed = band["balance"]
 
-        committed = _parse_chart_array(html, "committed")
-        accelerated = _parse_chart_array(html, "accelerated")
-        assert committed and accelerated
-
-        # months_saved == count of trailing months where Accelerated
-        # is zero but Committed still has a non-zero balance.  Both
-        # series are padded with 0.0 after their own payoff, so the
-        # divergence count is exactly the difference in payoff
-        # month index.
+        # months_saved == count of months where Committed still owes but the
+        # accelerated overlay has already paid off (0.0).  Both series pad with
+        # 0.0 after their own payoff, so the count is exactly the difference in
+        # payoff month index; the overlay is null across the history region and
+        # so never counts there.
         chart_months_saved = sum(
             1 for i in range(len(committed))
-            if committed[i] > 0.0 and accelerated[i] == 0.0
+            if committed[i] > 0.0 and overlay[i] == 0.0
         )
 
-        # The template renders Months Saved as the first numeric
-        # value following the "Months Saved" label.  The negated
-        # class skips every non-digit character (including hyphens
-        # in HTML class names like ``fw-bold``) up to the integer.
+        # The template renders Months Saved as the first numeric value following
+        # the "Months Saved" label; the negated class skips every non-digit
+        # character (including hyphens in HTML class names) up to the integer.
         match = _re.search(
             r"Months Saved[^0-9]*(\d+)", html,
         )
@@ -1399,40 +1381,34 @@ class TestPayoffChartShape:
     def test_no_payment_history_chart_starts_at_origination(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C4-5: Loan with zero confirmed payments still renders the chart.
+        """C4-5: Loan with zero confirmed payments still renders a full band chart.
 
-        With no confirmed payments, ``history_rows`` is empty and
-        every chart series starts at the origination-adjacent first
-        contractual month.  ``has_payments`` is false so the
-        Committed series is rendered as an empty array by the
-        existing "committed only shown when payments exist"
-        convention (preserved across this commit); Original and
-        Accelerated overlay correctly from month 1.
+        With no confirmed payments, ``current_index`` is 0 (the whole line is
+        projection) and the band shows the contractual trajectory from the
+        origination-adjacent first month.  The overlay has no leading nulls
+        (there is no history to skip) and aligns to the same labels.
         """
         acct = _create_mortgage(seed_user, db.session)
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        )
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "500"},
         )
         assert resp.status_code == 200
-        html = resp.data.decode()
-
-        labels = _parse_chart_array(html, "labels")
-        original = _parse_chart_array(html, "original")
-        accelerated = _parse_chart_array(html, "accelerated")
-        committed = _parse_chart_array(html, "committed")
-        assert labels and original and accelerated
-        # No confirmed payments -> committed series rendered empty.
-        assert committed == []
-        # Original and accelerated still aligned to the same labels.
-        assert len(original) == len(accelerated) == len(labels)
+        overlay = _parse_chart_array(resp.data.decode(), "overlay")
+        assert band is not None and overlay is not None
+        # No confirmed payments -> no history split, no leading overlay nulls.
+        assert band["current_index"] == 0
+        assert len(band["balance"]) == len(band["labels"]) == len(overlay) > 0
+        assert overlay[0] is not None
         # First label is the month after origination (2023-07).
-        # _create_mortgage's user-trueup is dated one day after
-        # origination at $250k, but for fixed-rate loans replay
-        # runs from original_principal ($255k); with no confirmed
-        # payments the first row is the contractual projection
-        # from the very next month.
-        assert labels[0] == "Jul 2023"
+        # _create_mortgage's user-trueup is dated one day after origination at
+        # $250k, but for fixed-rate loans replay runs from original_principal
+        # ($255k); with no confirmed payments the first row is the contractual
+        # projection from the very next month.
+        assert band["labels"][0] == "Jul 2023"
 
     def test_target_date_mode_unchanged(
         self, auth_client, seed_user, db, seed_periods,
@@ -1897,7 +1873,7 @@ class TestLoanDashboardWithPayments:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Loan Summary" in html
+        assert "Balance owed" in html
 
     def test_dashboard_with_confirmed_payments(
         self, auth_client, seed_user, db, seed_periods,
@@ -1918,7 +1894,7 @@ class TestLoanDashboardWithPayments:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Loan Summary" in html
+        assert "Balance owed" in html
 
     def test_dashboard_with_projected_payments(
         self, auth_client, seed_user, db, seed_periods,
@@ -2022,7 +1998,7 @@ class TestLoanDashboardWithPayments:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Loan Summary" in html
+        assert "Balance owed" in html
 
 
 # ── Transfer Prompt Tests (Commit 5.1-3) ─────────────────────────
@@ -2354,7 +2330,7 @@ class TestARMRateHistoryIntegration:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Dashboard should render with the rate history visible.
-        assert "Loan Summary" in html
+        assert "Balance owed" in html
 
     def test_non_arm_dashboard_ignores_rate_history(
         self, auth_client, seed_user, db, seed_periods,
@@ -2379,7 +2355,7 @@ class TestARMRateHistoryIntegration:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Loan Summary" in html
+        assert "Balance owed" in html
         # Non-ARM: rate history section should NOT be visible.
         assert "Rate History" not in html or "Rate Change" not in html
 
@@ -2394,30 +2370,31 @@ class TestMultiScenarioVisualization:
     and display original, committed, floor, and accelerated scenarios.
     """
 
-    def test_dashboard_chart_original_only_no_payments(
+    def test_dashboard_chart_no_payments_shows_contractual(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Dashboard with no transfers: only original schedule in chart.
+        """Dashboard with no transfers: the band shows the contractual line.
 
-        data-original should be non-empty.  data-committed and
-        data-floor should be empty arrays.
+        With no payments there is no confirmed history, so the band's
+        ``current_index`` is 0 and the balance line is the pure contractual
+        projection (loan_detail.js draws it entirely as a dashed forward line).
         """
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "data-original=" in html
-        # No payments means committed and floor are empty.
-        assert "data-committed='[]'" in html
-        assert "data-floor='[]'" in html
+        band = _parse_band_chart(resp.data.decode())
+        assert band is not None
+        assert band["current_index"] == 0
+        assert len(band["balance"]) > 0
 
-    def test_dashboard_chart_with_committed_schedule(
+    def test_dashboard_chart_with_projected_payment(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Dashboard with projected transfers: data-committed populated.
+        """Dashboard with a projected transfer: band renders, no false history.
 
-        A projected transfer creates shadow transactions that the
-        dashboard should reflect in the committed schedule.
+        A projected (not-yet-confirmed) transfer forms a committed schedule but
+        no ledger-confirmed history, so the band's ``current_index`` stays 0 and
+        the balance line is present.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -2428,19 +2405,19 @@ class TestMultiScenarioVisualization:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "data-original=" in html
-        assert "data-committed=" in html
-        # Committed should not be empty.
-        assert "data-committed='[]'" not in html
+        band = _parse_band_chart(resp.data.decode())
+        assert band is not None
+        assert band["current_index"] == 0
+        assert len(band["balance"]) > 0
 
-    def test_dashboard_chart_with_floor(
+    def test_dashboard_chart_confirmed_payment_is_history(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Dashboard with confirmed transfers: data-floor populated.
+        """Dashboard with a confirmed transfer splits the band at the history boundary.
 
-        A confirmed (Paid) transfer establishes the floor -- the real
-        position if all extras were cancelled.
+        A confirmed (Paid) transfer becomes ledger-confirmed history, so the
+        band's ``current_index`` advances past 0 -- the solid (history) portion
+        of the balance line.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -2451,17 +2428,18 @@ class TestMultiScenarioVisualization:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        assert "data-floor=" in html
-        assert "data-floor='[]'" not in html
+        band = _parse_band_chart(resp.data.decode())
+        assert band is not None
+        assert band["current_index"] >= 1
 
     def test_payoff_results_committed_metrics(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Payoff calculator shows committed vs. original comparison.
+        """Payoff calculator shows the committed-plan-vs-original comparison.
 
-        When payments exist, the payoff results partial should show
-        how many months the committed plan saves vs. the original.
+        When payments exist, the payoff results partial reports how the current
+        committed plan compares to the original schedule and carries the
+        accelerated overlay for the band chart.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -2476,17 +2454,16 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Multi-scenario chart data should be present.
-        assert "data-original=" in html
-        assert "data-committed=" in html
+        assert "Current plan vs. original" in html
+        assert "data-overlay=" in html
 
-    def test_payoff_what_if_three_scenarios(
+    def test_payoff_what_if_overlay_and_metrics(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Payoff with extra: original + committed + accelerated.
+        """Payoff with extra renders the band overlay plus the saved-months metric.
 
-        With payments and extra_monthly > 0, all three chart datasets
-        should be present and the accelerated line should be shorter.
+        With payments and extra_monthly > 0, the result carries the accelerated
+        overlay (the green preview) and the Months Saved figure.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -2501,16 +2478,17 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "data-original=" in html
-        assert "data-accelerated=" in html
+        assert "data-overlay=" in html
         assert "Months Saved" in html
 
     def test_payoff_no_transfer_degrades(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Payoff with no transfers: committed is empty, original shown.
+        """Payoff with no transfers still renders the overlay, without the plan comparison.
 
-        When no payments exist, committed chart data should be empty.
+        With no payments the accelerated overlay still renders (from the
+        contractual baseline) but the committed-plan-vs-original comparison line
+        is omitted.
         """
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
@@ -2519,17 +2497,13 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "data-original=" in html
-        # No payments -> committed is empty.
-        assert "data-committed='[]'" in html
+        assert "data-overlay=" in html
+        assert "Current plan vs. original" not in html
 
     def test_payoff_what_if_zero(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """extra_monthly=0: accelerated matches committed.
-
-        Zero extra should not cause errors and should still render.
-        """
+        """extra_monthly=0 renders without error and still carries the overlay."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
@@ -2537,7 +2511,7 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "data-original=" in html
+        assert "data-overlay=" in html
 
     def test_payoff_target_date_still_works(
         self, auth_client, seed_user, db, seed_periods,
@@ -2554,13 +2528,13 @@ class TestMultiScenarioVisualization:
         )
         assert resp.status_code == 200
 
-    def test_dashboard_arm_original_excludes_rate_changes(
+    def test_dashboard_arm_band_renders(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """ARM loan: original schedule does NOT include rate changes.
+        """ARM loan: the band renders its contractual balance line and ARM tag.
 
-        The original schedule is the pure contractual baseline at the
-        initial rate.  Rate changes only affect committed and floor.
+        With no payments the band's balance line is the pure contractual
+        baseline (current_index 0); the rate chip carries the ARM tag.
         """
         acct = _create_loan_account(
             seed_user, db.session, "Mortgage", "ARM Mortgage",
@@ -2578,9 +2552,13 @@ class TestMultiScenarioVisualization:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Original and committed should both be present.
-        assert "data-original=" in html
-        assert "Loan Summary" in html
+        band = _parse_band_chart(html)
+        assert band is not None
+        assert band["current_index"] == 0
+        assert len(band["balance"]) > 0
+        # The rate chip carries the ARM tag.
+        assert "ARM" in html
+        assert "Balance owed" in html
 
 
 # ── Payment Breakdown Tests (Commit 5.14-1) ────────────────────────
@@ -2902,28 +2880,26 @@ def _create_loan_account_exact(seed_user, db_session, type_name, name,
 
 
 class TestAmortizationSchedule:
-    """Tests for the full amortization schedule tab on the loan dashboard.
+    """Tests for the full amortization schedule at the standalone /loan/schedule route.
 
     Verifies that the schedule table renders correctly with the right
     number of rows, confirmed/projected distinction, currency formatting,
-    totals row, and conditional Rate column for ARM loans.
+    totals row, and conditional Rate column for ARM loans.  (Loop B demoted
+    the schedule off the detail page into its own route; the table content is
+    unchanged.)
     """
 
-    def test_schedule_tab_exists(self, auth_client, seed_user, db, seed_periods):
-        """C-5.13-1: Dashboard with LoanParams shows the Amortization Schedule tab.
+    def test_schedule_route_renders(self, auth_client, seed_user, db, seed_periods):
+        """C-5.13-1: the standalone schedule route renders the full schedule.
 
-        GET the dashboard for a mortgage with params. Assert the tab
-        nav item and tab pane markup are both present in the HTML.
+        GET /loan/schedule for a mortgage with params.  Assert the page heading
+        and the month-by-month table are both present.
         """
         acct = _create_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Tab nav item exists.
         assert "Amortization Schedule" in html
-        # Tab pane exists.
-        assert 'id="tab-schedule"' in html
-        # Schedule table rendered (Month-by-Month header).
         assert "Month-by-Month Schedule" in html
 
     def test_schedule_has_correct_row_count(self, auth_client, seed_user, db, seed_periods):
@@ -2948,7 +2924,7 @@ class TestAmortizationSchedule:
         expected_count = 360
 
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Count data rows: each has exactly one Projected or Confirmed badge.
@@ -3008,7 +2984,7 @@ class TestAmortizationSchedule:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         confirmed = html.count('badge bg-success">Confirmed</span>')
@@ -3039,7 +3015,7 @@ class TestAmortizationSchedule:
         Last row: remaining_balance = $0.00
         """
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # First row: month 1, expected payment of $1,580.17.
@@ -3077,7 +3053,7 @@ class TestAmortizationSchedule:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # The first <td> of each schedule data row is the payment number;
@@ -3117,7 +3093,7 @@ class TestAmortizationSchedule:
             Decimal("5000.00"), Decimal("5000.00"),
             Decimal("0.06500"), 12, date(2026, 3, 1), 1,
         )
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         projected = html.count('badge bg-secondary">Projected</span>')
@@ -3179,7 +3155,7 @@ class TestAmortizationSchedule:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Schedule table exists with the payoff row.
@@ -3211,7 +3187,7 @@ class TestAmortizationSchedule:
         db.session.add(entry)
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Month-by-Month Schedule" in html
@@ -3229,7 +3205,7 @@ class TestAmortizationSchedule:
         360 times is noise, so the column is omitted.
         """
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert "Month-by-Month Schedule" in html
@@ -3245,7 +3221,7 @@ class TestAmortizationSchedule:
         values.
         """
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Footer row present.
@@ -3324,7 +3300,7 @@ class TestAmortizationSchedule:
         formatted_payment = f"${expected_payment:,.2f}"
 
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         assert formatted_interest in html, (
@@ -3362,7 +3338,7 @@ class TestAmortizationSchedule:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # No row carries extra, so the Extra column does not render.
@@ -3402,7 +3378,7 @@ class TestAmortizationSchedule:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         confirmed = html.count('badge bg-success">Confirmed</span>')
@@ -3420,7 +3396,7 @@ class TestAmortizationSchedule:
         schedule and validates the format.
         """
         acct = _create_fresh_mortgage(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         # Extract dollar amounts from the schedule.  The pattern
@@ -3475,29 +3451,31 @@ class TestDashboardPayoffConsistency:
         )
         db.session.commit()
 
-        # Dashboard: extract committed chart data.
+        # Dashboard: the band's balance line is the committed trajectory.
         dash_resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert dash_resp.status_code == 200
-        dash_html = dash_resp.data.decode()
-        dash_match = re.search(r"data-committed='(\[.*?\])'", dash_html)
-        assert dash_match, "Dashboard missing committed chart data"
-        dash_committed = dash_match.group(1)
+        band = _parse_band_chart(dash_resp.data.decode())
+        assert band is not None, "Dashboard missing band chart data"
 
-        # Payoff with 0 extra: extract committed chart data.
+        # Payoff with 0 extra: the accelerated overlay equals the committed
+        # trajectory (there is no extra to accelerate), forward-only.
         payoff_resp = auth_client.post(
             f"/accounts/{acct.id}/loan/payoff",
             data={"mode": "extra_payment", "extra_monthly": "0"},
         )
         assert payoff_resp.status_code == 200
-        payoff_html = payoff_resp.data.decode()
-        payoff_match = re.search(r"data-committed='(\[.*?\])'", payoff_html)
-        assert payoff_match, "Payoff missing committed chart data"
-        payoff_committed = payoff_match.group(1)
+        overlay = _parse_chart_array(payoff_resp.data.decode(), "overlay")
+        assert overlay is not None, "Payoff missing overlay chart data"
 
-        assert dash_committed == payoff_committed, (
-            "Dashboard and payoff calculator committed schedules differ -- "
+        # Both derive from _load_loan_context -> compute_payoff_scenarios, so the
+        # overlay's forward slice must byte-match the band's committed forward
+        # slice; the overlay is null across the confirmed-history region.
+        current_index = band["current_index"]
+        assert overlay[current_index:] == band["balance"][current_index:], (
+            "Dashboard band and payoff overlay forward slices differ -- "
             "data pipeline mismatch"
         )
+        assert all(v is None for v in overlay[:current_index])
 
     def test_payoff_with_payments_no_crash(
         self, auth_client, seed_user, db, seed_periods,
@@ -3648,41 +3626,29 @@ class TestDashboardChartComposer:
     that period land in the composer's replay window.
     """
 
-    def _parse_chart_array(self, html, key):
-        """Extract a chart data array as a list of floats."""
-        match = re.search(rf"data-{key}='(\[[^']*\])'", html)
-        assert match, f"Dashboard missing data-{key} chart array"
-        # The Jinja tojson filter emits a JSON literal; eval-safe parse.
-        import json  # pylint: disable=import-outside-toplevel
-        return json.loads(match.group(1))
-
     def test_dashboard_chart_values_unchanged(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-1: Dashboard chart arrays match composer-derived expected.
+        """C5-1: the band chart's committed line comes from the composer.
 
-        Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01,
-        one confirmed payment due Feb 1 2026 (seed_periods[2], the pay
-        period that CONTAINS 2/1 -- the loan's first contractual payment
-        and the replay window), one projected payment in May 2026
-        (seed_periods[9], forward window via monthly_override).
+        Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01, one
+        confirmed payment due Feb 1 2026 (seed_periods[2], the pay period that
+        CONTAINS 2/1 -- the loan's first contractual payment and the replay
+        window), one projected payment in May 2026 (seed_periods[9], forward
+        window via monthly_override).
 
-        seed_periods[2] (2026-01-30 .. 2026-02-12) is used rather than
-        [3] (2026-02-13 ..) because the schedule keys rows by the true
-        monthly DUE date: [2] contains 2/1 so its payment IS the Feb 1
-        payment; [3] contains no 1st, so its payment is due 3/1, which
-        would skip the 2/1 payment and yield a 359-row schedule.
+        seed_periods[2] (2026-01-30 .. 2026-02-12) is used rather than [3]
+        (2026-02-13 ..) because the schedule keys rows by the true monthly DUE
+        date: [2] contains 2/1 so its payment IS the Feb 1 payment; [3] contains
+        no 1st, so its payment is due 3/1, skipping the 2/1 payment.
 
-        Asserts the dashboard's data-original / data-committed /
-        data-floor arrays come from the composer:
-          * All three arrays have equal length (== len(original_rows)).
-          * Lengths equal term_months (360) -- one row per scheduled
-            month, no residue artifact (Commit 5 architectural fix).
-          * Original is monotonically non-increasing (pure contractual
-            never increases balance for a fixed-rate loan with no
-            rate change).
-          * The first array entry of each series matches a hand-
-            computed value derived from the composer's replay.
+        Asserts the band's balance line (the committed trajectory) is composer-
+        derived:
+          * Length equals term_months (360) -- one row per scheduled month, no
+            residue artifact (Commit 5 architectural fix).
+          * current_index is 1 (the single confirmed Feb 1 2026 history row).
+          * The line is monotonically non-increasing (positive amortization with
+            no overpayment) and ends at $0.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
@@ -3702,49 +3668,39 @@ class TestDashboardChartComposer:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        html = resp.data.decode()
+        band = _parse_band_chart(resp.data.decode())
+        assert band is not None
+        balance = band["balance"]
 
-        original = self._parse_chart_array(html, "original")
-        committed = self._parse_chart_array(html, "committed")
-        floor = self._parse_chart_array(html, "floor")
-
-        # All three series share history_rows and render against the
-        # same x-axis of Original (the longest baseline).
-        assert len(original) == len(committed) == len(floor)
-        # 360 months for a 30-yr mortgage with no overpayment (one row
-        # per scheduled month; the composer eliminates the pre-Commit-5
-        # residue artifact).
-        assert len(original) == 360, (
-            f"Expected 360 rows from composer, got {len(original)}"
+        # 360 months for a 30-yr mortgage with no overpayment (one row per
+        # scheduled month; the composer eliminates the pre-Commit-5 residue
+        # artifact).
+        assert len(balance) == 360, (
+            f"Expected 360 rows from the composer, got {len(balance)}"
         )
-        # Original is the pure contractual baseline -- balance never
-        # increases month-over-month (positive amortization).
-        for i in range(1, len(original)):
-            assert original[i] <= original[i - 1] + 0.01, (
-                f"Original balance increased at index {i}: "
-                f"{original[i - 1]} -> {original[i]}"
+        assert band["current_index"] == 1, (
+            f"Expected one confirmed history row, got {band['current_index']}"
+        )
+        # The committed line never increases month-over-month (positive
+        # amortization) and pays off at $0 at term.
+        for i in range(1, len(balance)):
+            assert balance[i] <= balance[i - 1] + 0.01, (
+                f"Committed balance increased at index {i}: "
+                f"{balance[i - 1]} -> {balance[i]}"
             )
-        # Series end at $0 (paid off at term).
-        assert original[-1] == 0.0
-        assert committed[-1] == 0.0
-        assert floor[-1] == 0.0
+        assert balance[-1] == 0.0
 
-    def test_amortization_tab_rows_unchanged(
+    def test_amortization_schedule_rows_unchanged(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-2: Amortization tab renders term_months rows for a full loan.
+        """C5-2: the schedule route renders term_months rows for a full loan.
 
-        Uses the same fixture as C5-1.  The amortization tab
-        renders ``planned_schedule = history_rows + committed_forward``
-        from the composer.  History contributes one row (the Feb 1 2026
-        confirmed payment); the forward slice contributes 359
-        contractual rows.  Total: 360 rows.
-
-        The confirmed payment is placed in seed_periods[2] (the pay
-        period containing 2/1, the loan's first payment) so the
-        due-date-keyed schedule starts at the Feb 1 payment and spans the
-        full 360-month term.  Re-pinned for Commit 5 (one row per
-        remaining_months, no residue artifact).
+        Uses the same fixture as C5-1.  The schedule renders
+        ``planned_schedule = history_rows + committed_forward`` from the
+        composer.  History contributes one row (the Feb 1 2026 confirmed
+        payment); the forward slice contributes 359 contractual rows.  Total:
+        360 rows.  Re-pinned for Commit 5 (one row per remaining_months, no
+        residue artifact) and the Loop B schedule demotion (its own route).
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
@@ -3759,7 +3715,7 @@ class TestDashboardChartComposer:
         )
         db.session.commit()
 
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
         confirmed = html.count('badge bg-success">Confirmed</span>')
@@ -3893,102 +3849,20 @@ class TestDashboardChartComposer:
             "migration incomplete"
         )
 
-    def test_floor_above_committed_with_projections(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """C5-6: Floor sits at-or-above Committed past today when projections exist.
-
-        Floor is "Committed with the projected portion of payments
-        filtered out."  When the loan has projected overpayments (or
-        any projected payments at all), Committed reduces the
-        balance further/faster than Floor in those months; therefore
-        Floor[i] >= Committed[i] for indices past today.
-
-        Fixture: confirmed payment at contractual ($1580.17) in
-        Feb 2026 PLUS projected OVERPAYMENT ($2080.17) in May 2026.
-        The projected overpayment is what creates the floor /
-        committed gap -- without it both series collapse (see C5-7).
-        """
-        acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2026, 1, 1),
-        )
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[3], Decimal("1580.17"),
-            status_enum=StatusEnum.DONE,
-        )
-        # Projected overpayment in May 2026 (after today).
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[9], Decimal("2080.17"),
-            status_enum=StatusEnum.PROJECTED,
-        )
-        db.session.commit()
-
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        committed = self._parse_chart_array(html, "committed")
-        floor = self._parse_chart_array(html, "floor")
-
-        assert len(committed) == len(floor)
-        # Floor is the projected-cancelled trajectory; with a
-        # projected OVERPAYMENT, Floor sits above Committed for
-        # every index past the May 2026 projection.
-        diffs_strictly_above = sum(
-            1 for c, f in zip(committed, floor) if f > c + 0.5
-        )
-        assert diffs_strictly_above > 0, (
-            "Floor never rises above Committed despite a projected "
-            "overpayment -- the projection was not cancelled in the "
-            "floor composer call"
-        )
-        # No index should have Floor below Committed (cancelling
-        # projections can only slow paydown, never speed it).
-        for i, (c, f) in enumerate(zip(committed, floor)):
-            assert f >= c - 0.5, (
-                f"Floor below Committed at index {i}: {f} < {c}"
-            )
-
-    def test_floor_equals_committed_when_no_projections(
-        self, auth_client, seed_user, db, seed_periods,
-    ):
-        """C5-7: Floor equals Committed when no projected payments exist.
-
-        With only confirmed payments, the floor composer call sees
-        the same payment list as the main composer call (filtering
-        projected payments removes nothing).  The two series are
-        byte-identical.
-        """
-        acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2026, 1, 1),
-        )
-        _create_transfer_to_loan(
-            seed_user, acct, seed_periods[3], Decimal("1580.17"),
-            status_enum=StatusEnum.DONE,
-        )
-        db.session.commit()
-
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert resp.status_code == 200
-        html = resp.data.decode()
-        committed = self._parse_chart_array(html, "committed")
-        floor = self._parse_chart_array(html, "floor")
-
-        assert committed == floor, (
-            "Floor and Committed must match when no projected payments "
-            "exist -- there is nothing to cancel"
-        )
-
     def test_arm_dashboard_chart_unchanged(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-8: ARM dashboard chart values from composer match expected.
+        """C5-8: ARM dashboard band chart values come from the composer.
 
-        Creates an ARM mortgage in its fixed-rate window and asserts
-        the dashboard's chart arrays come from the composer:
-          * Lengths agree (composer's single-source-of-truth lock).
-          * Original is monotonically non-increasing in the
-            fixed-rate window (the rate cannot rise yet).
-          * Final values reach $0.
+        Creates an ARM mortgage in its fixed-rate window with no payments, so
+        the band's balance line is the pure contractual baseline.  Asserts it is
+        composer-derived: non-empty, monotonically non-increasing in the
+        fixed-rate window (the rate cannot rise yet), and ending at $0.
+
+        (The former C5-6 / C5-7 "floor" route tests were retired with the Loop B
+        band rebuild: the locked band anatomy plots only the committed line plus
+        the lever's accelerated preview, so the dashboard no longer computes or
+        serializes a floor series.)
         """
         acct = _create_loan_account(
             seed_user, db.session, "Mortgage", "ARM 5/1",
@@ -4001,17 +3875,20 @@ class TestDashboardChartComposer:
         # composer's behavior is locked.
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        html = resp.data.decode()
-        original = self._parse_chart_array(html, "original")
+        band = _parse_band_chart(resp.data.decode())
+        assert band is not None
+        balance = band["balance"]
 
-        assert len(original) > 0
+        assert len(balance) > 0
+        # No confirmed payments -> the band line is the contractual baseline.
+        assert band["current_index"] == 0
         # Last entry reaches $0 (loan pays off at term boundary).
-        assert original[-1] == 0.0
-        # Original baseline is non-increasing (fixed-rate window).
-        for i in range(1, len(original)):
-            assert original[i] <= original[i - 1] + 0.01, (
-                f"ARM Original balance increased at index {i}: "
-                f"{original[i - 1]} -> {original[i]}"
+        assert balance[-1] == 0.0
+        # Non-increasing across the fixed-rate window.
+        for i in range(1, len(balance)):
+            assert balance[i] <= balance[i - 1] + 0.01, (
+                f"ARM band balance increased at index {i}: "
+                f"{balance[i - 1]} -> {balance[i]}"
             )
 
 
@@ -4159,7 +4036,7 @@ class TestRecurrenceEndDateUpdate:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert b"Loan Summary" in resp.data
+        assert b"Balance owed" in resp.data
 
     def test_end_date_set_on_params_edit(
         self, auth_client, seed_user, db, seed_periods,
@@ -4773,16 +4650,16 @@ class TestRefinanceCalculator:
         assert "Break-even" in html
         assert "31 months" in html
 
-    def test_refinance_tab_exists(
+    def test_refinance_lever_exists(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.10-15: Dashboard for loan with params includes Refinance tab."""
+        """C-5.10-15: the dashboard for a configured loan includes the Refinance lever."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Refinance Calculator" in html
-        assert "tab-refinance" in html
+        assert "Refinance" in html
+        assert 'name="new_rate"' in html
 
     def test_refinance_tab_hidden_no_params(
         self, auth_client, seed_user, db, seed_periods,
@@ -5097,14 +4974,6 @@ class TestLoanNavPills:
         assert resp.status_code == 200
         assert b"nav-tabs" not in resp.data
 
-    def test_loan_payoff_nested_pills(self, auth_client, seed_user, db, seed_periods):
-        """Payoff Calculator section contains a second nav-pills instance."""
-        acct = _create_auto_loan(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        html = resp.data.decode()
-        # Two nav-pills: primary navigation and nested payoff calculator.
-        assert html.count("nav-pills") >= 2
-
     def test_loan_uses_scroll_pills(self, auth_client, seed_user, db, seed_periods):
         """GET loan dashboard contains shekel-scroll-pills class."""
         acct = _create_auto_loan(seed_user, db.session)
@@ -5118,32 +4987,6 @@ class TestLoanNavPills:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         assert b"mobile-scroll-tabs" not in resp.data
-
-    def test_loan_tab_ids_preserved(self, auth_client, seed_user, db, seed_periods):
-        """All expected tab pane IDs are present in the loan dashboard."""
-        acct = _create_auto_loan(seed_user, db.session)
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        html = resp.data.decode()
-        expected_ids = [
-            'id="tab-overview"',
-            'id="tab-escrow"',
-            'id="tab-schedule"',
-            'id="tab-payoff"',
-            'id="tab-refinance"',
-        ]
-        for tab_id in expected_ids:
-            assert tab_id in html, f"Missing tab pane: {tab_id}"
-
-    def test_loan_tab_ids_arm_rate_history(self, auth_client, seed_user, db, seed_periods):
-        """ARM loan dashboard includes the rate-history tab pane."""
-        acct = _create_loan_account(
-            seed_user, db.session, "Auto Loan", "ARM Auto",
-            Decimal("20000.00"), Decimal("0.04500"), 60,
-            date(2025, 1, 1), 15, is_arm=True,
-        )
-        resp = auth_client.get(f"/accounts/{acct.id}/loan")
-        html = resp.data.decode()
-        assert 'id="tab-rates"' in html
 
     def test_loan_data_bs_toggle_pill(self, auth_client, seed_user, db, seed_periods):
         """All toggle attributes use pill, not tab."""
@@ -5578,3 +5421,77 @@ class TestLoanBalanceTrueUp:
 # budget.rate_history.interest_rate (ck_rate_history_valid_interest_rate),
 # already covered by tests/test_routes/test_c24_range_check_sweep.py::
 # TestRateHistoryCheck -- so no coverage is lost.
+
+
+class TestLoanDetailMeasuredSurfaces:
+    """The band's measured chips + the payment-history / balance-anchors sections.
+
+    Loop B surfaces the genesis ledger's real facts on the loan detail page: the
+    interest / principal actually paid this year (band chips), the confirmed
+    payment history, and the balance-anchor drift scorecard.  These end-to-end
+    (route wiring + template) assertions complement the exact-value producer
+    tests in ``tests/test_services/test_loan_display_producers.py``.
+    """
+
+    def test_measured_surfaces_render_with_confirmed_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A settled 2026 payment surfaces the YTD chips, history, and anchors.
+
+        Loan trued to $100,000 (origination $250,000 on 2023-06-01, a user
+        true-up on 2026-01-01); one $1,000 payment settled 2026-03-15 (before
+        the autouse-frozen today 2026-03-20) posts its real interest / principal
+        split to the ledger, so the two YTD chips, the payment-history row, and
+        the origination + true-up anchor rows all render.
+        """
+        loan = create_loan_with_trueup(
+            seed_user, db.session,
+            origination_principal=Decimal("250000.00"),
+            anchor_balance=Decimal("100000.00"),
+            anchor_date=date(2026, 1, 1),
+            rate=Decimal("0.06000"),
+            origination_date=date(2023, 6, 1),
+            name="Measured Mortgage",
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan,
+            seed_periods[3], amount=Decimal("1000.00"),
+            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{loan.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        # Measured YTD chips (the ledger's Schedule-A interest + principal
+        # sibling).
+        assert "Interest paid, YTD" in html
+        assert "Principal paid, YTD" in html
+        # Confirmed payment-history section with the one settled payment.
+        assert "Payment history" in html
+        assert "1 confirmed" in html
+        # Balance-anchor scorecard: the origination row plus the user true-up.
+        assert "Balance anchors" in html
+        assert "Origination" in html
+
+    def test_no_duplicate_oob_chip_ids_on_initial_load(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The band chips' OOB ids appear exactly once on the initial page load.
+
+        The escrow / rate-history partials emit their out-of-band chip copies
+        only when served as an HTMX response (``oob_swaps``), never when the
+        dashboard includes them inline -- so the initial DOM carries no duplicate
+        element ids (only the in-band chip and the escrow-header badge).
+        """
+        acct = _create_loan_account(
+            seed_user, db.session, "Mortgage", "Dup-ID Mortgage",
+            Decimal("200000.00"), Decimal("0.05000"), 360,
+            date(2024, 1, 1), 1, is_arm=True,
+        )
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert html.count('id="total-payment-chip"') == 1
+        assert html.count('id="escrow-badge"') == 1
+        assert html.count('id="interest-rate-chip"') == 1

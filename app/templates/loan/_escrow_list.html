@@ -1,21 +1,19 @@
-{# HTMX fragment: escrow component list + OOB payment summary updates #}
+{# HTMX fragment: escrow component list + OOB band-chip updates #}
 {% from "_money_macros.html" import money %}
+{% from "loan/_chips.html" import total_payment_chip, escrow_badge %}
 
-{# OOB swap: update the total monthly payment on the Overview tab #}
-{% if total_payment is defined and total_payment is not none %}
-<div class="d-flex justify-content-between mb-2" id="total-payment-display" hx-swap-oob="true">
-  <span class="text-muted">Total Monthly (with escrow)</span>
-  <span class="fw-bold font-mono text-accent">
-    {{ money(total_payment) }}
-  </span>
-</div>
+{# OOB swaps: emitted ONLY when this partial is served as an HTMX response (the
+   escrow routes pass ``oob_swaps=True``), never when the dashboard includes it
+   inline -- otherwise the inline copy would duplicate the band chip / escrow
+   badge ids in the initial DOM.  Same macros the band renders, so the swapped-in
+   markup can never drift from the in-band chip. #}
+{% if oob_swaps %}
+{% if total_payment is not none %}
+{{ total_payment_chip(total_payment, monthly_escrow, oob=true) }}
 {% endif %}
-
-{# OOB swap: update the monthly escrow badge in the Escrow tab header #}
-{% if monthly_escrow is defined and monthly_escrow is not none %}
-<span class="badge bg-secondary font-mono" id="escrow-badge" hx-swap-oob="true">
-  {{ money(monthly_escrow) }}/mo
-</span>
+{% if monthly_escrow is not none %}
+{{ escrow_badge(monthly_escrow, oob=true) }}
+{% endif %}
 {% endif %}
 <div class="card-body p-0">
   {% if escrow_components %}

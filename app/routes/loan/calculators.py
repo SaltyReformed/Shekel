@@ -17,11 +17,11 @@ from flask_login import current_user, login_required
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
-    _build_chart_series,
     _load_loan_account,
     _load_loan_context,
     _payoff_schema,
     _refinance_schema,
+    accelerated_overlay,
 )
 from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
@@ -83,15 +83,17 @@ def _build_payoff_summary(scenarios, state):
 def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
     """Render the extra-payment payoff scenario partial.
 
-    One ``compute_payoff_scenarios`` call drives both the chart series
-    and the summary metrics so they cannot diverge (the structural fix
-    for the "extra applied to ghost historical months" defect): replay
-    routes confirmed payments through history with no acceleration,
-    projection routes projected payments through ``monthly_override``,
-    and ``extra_monthly`` is applied only to forward non-override
-    months.  The three chart series (original / committed / accelerated)
-    share the x-axis via :func:`_build_chart_series`; committed renders
-    empty when the loan has no payments.
+    One ``compute_payoff_scenarios`` call drives both the band-chart
+    overlay and the summary metrics so they cannot diverge (the
+    structural fix for the "extra applied to ghost historical months"
+    defect): replay routes confirmed payments through history with no
+    acceleration, projection routes projected payments through
+    ``monthly_override``, and ``extra_monthly`` is applied only to
+    forward non-override months.  The accelerated forward slice becomes
+    the band chart's green dashed preview via
+    :func:`._helpers.accelerated_overlay` -- forward-only, aligned to the
+    band's contractual x-axis, so the client overlays it on the same
+    chart the dashboard drew.
 
     Args:
         params: ORM :class:`LoanParams` instance (also the anchor-fact
@@ -120,27 +122,15 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
         confirmed_view=confirmed_view,
     )
 
-    chart_labels, balances = _build_chart_series({
-        "original": scenarios.history_rows + scenarios.original_forward,
-        "committed": scenarios.history_rows + scenarios.committed_forward,
-        "accelerated": (
-            scenarios.history_rows + scenarios.accelerated_forward
-        ),
-    })
-    has_payments = len(ctx.loan.payments) > 0
     committed_months_saved, committed_interest_saved = (
         _payoff_committed_savings(scenarios)
     )
-
     return render_template(
         "loan/_payoff_results.html",
         mode="extra_payment",
         payoff_summary=_build_payoff_summary(scenarios, ctx.state),
-        chart_labels=chart_labels,
-        chart_original=balances["original"],
-        chart_committed=balances["committed"] if has_payments else [],
-        chart_accelerated=balances["accelerated"],
-        has_payments=has_payments,
+        overlay=accelerated_overlay(scenarios),
+        has_payments=len(ctx.loan.payments) > 0,
         committed_months_saved=committed_months_saved,
         committed_interest_saved=committed_interest_saved,
     )

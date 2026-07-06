@@ -68,6 +68,7 @@ def _render_rate_history(account, params):
         params=params,
         rate_history=rate_history,
         current_rate=state.current_rate,
+        oob_swaps=True,
     )
 
 
@@ -217,6 +218,7 @@ def add_escrow(account_id):
         ),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
+        oob_swaps=True,
     )
 
 
@@ -265,4 +267,5 @@ def delete_escrow(account_id, component_id):
         ),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
+        oob_swaps=True,
     )

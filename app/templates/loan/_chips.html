@@ -1,0 +1,33 @@
+{# Shared loan band-chip macros.
+
+   The rate and total-monthly chips live in the loan detail band AND are the
+   out-of-band (OOB) swap targets the escrow / rate-history HTMX partials update
+   after a mutation.  Defining each chip once here, rendered by both the band and
+   the OOB partial (``oob=true`` adds ``hx-swap-oob``), keeps the swapped-in
+   markup identical to the band chip so a swap can never leave a malformed chip
+   (principle: a figure and its caption never disagree; DRY across the two call
+   sites).  Money values are pre-computed in the route / service and passed in --
+   these macros only format. #}
+
+{% from "_money_macros.html" import money %}
+
+{%- macro rate_chip(current_rate, is_arm, oob=false) -%}
+<div class="pulse-chip" id="interest-rate-chip"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="pulse-chip__label">Rate</div>
+  <div class="pulse-chip__value font-mono">{{ "%.3f"|format(current_rate|to_percent) }}%{% if is_arm %}<span class="loan-chip-tag">ARM</span>{% endif %}</div>
+</div>
+{%- endmacro -%}
+
+{%- macro total_payment_chip(total_payment, monthly_escrow, oob=false) -%}
+{# Redundant with Monthly P&I when there is no escrow, so it is hidden until an
+   escrow component exists; the element stays present (hidden) so the escrow
+   partial's OOB swap can reveal it when the first component is added. #}
+<div class="pulse-chip" id="total-payment-chip"{% if oob %} hx-swap-oob="true"{% endif %}{% if monthly_escrow is none or monthly_escrow <= 0 %} hidden{% endif %}>
+  <div class="pulse-chip__label">Total /mo</div>
+  <div class="pulse-chip__value font-mono">{% if total_payment is not none %}{{ money(total_payment) }}{% else %}--{% endif %}</div>
+</div>
+{%- endmacro -%}
+
+{%- macro escrow_badge(monthly_escrow, oob=false) -%}
+<span class="badge bg-secondary font-mono" id="escrow-badge"{% if oob %} hx-swap-oob="true"{% endif %}>{{ money(monthly_escrow) }}/mo</span>
+{%- endmacro -%}
