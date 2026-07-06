@@ -123,9 +123,12 @@ _REF_TABLE_SEEDS = (
     # in ``budget.loan_anchor_events`` (CRIT-02 / E-18 / Commit 12).
     # ``origination`` is materialised once per loan from the immutable
     # LoanParams fields; ``user_trueup`` is appended by the dashboard
-    # balance-edit flow (Commit 16).  Same idempotent upsert semantics
-    # as the other reference tables.
-    ("LoanAnchorSource", ["origination", "user_trueup"]),
+    # balance-edit flow (Commit 16); ``tracking_start`` is the
+    # mid-life-import opening (its own migration inline-seeds it, the
+    # same dual-seed pattern as the posting refs, so a freshly upgraded
+    # DB resolves the enum before this idempotent reseed runs).  Same
+    # idempotent upsert semantics as the other reference tables.
+    ("LoanAnchorSource", ["origination", "user_trueup", "tracking_start"]),
     # ``EmployerContributionType`` / ``CompoundingFrequency`` (#38) --
     # the two logic-bearing enums promoted off free-string columns to
     # ref tables so the growth/interest engines branch on IDs.  Names

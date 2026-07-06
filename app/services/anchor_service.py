@@ -324,6 +324,73 @@ def apply_anchor_true_up(
     return AnchorTrueUpOutcome.COMMITTED
 
 
+def _append_loan_anchor_and_sync(
+    *,
+    account: Account,
+    anchor_balance: Decimal,
+    anchor_date: date,
+    source: LoanAnchorSourceEnum,
+) -> AnchorTrueUpOutcome:
+    """Append one :class:`LoanAnchorEvent` of ``source`` and re-sync the ledger.
+
+    The shared transactional core of :func:`apply_loan_anchor_true_up` (a
+    ``user_trueup`` balance assertion) and :func:`record_loan_tracking_start`
+    (the ``tracking_start`` opening of a mid-life-imported loan): the two differ
+    ONLY in the anchor source, so they must not drift on the append + re-sync +
+    idempotency handling.
+
+    Appends ONE row to the append-only :class:`LoanAnchorEvent` table, then
+    re-syncs the loan's genesis postings in EVERY scenario (the anchor is
+    per-account, not per-scenario) via
+    :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate` --
+    which re-runs the running-balance walk so payments re-split from the new
+    anchor.  The just-added event becomes visible to that walk because the sync's
+    first query autoflushes it (load-bearing -- must NOT run under
+    ``session.no_autoflush``).  A same-day partial-unique rejection
+    (``uq_loan_anchor_events_acct_date_bal_day``) surfaced by that flush is
+    translated into the idempotent ``DUPLICATE_SAME_DAY`` outcome; a non-anchor
+    ``IntegrityError`` propagates (the correct 500 disposition).
+
+    Args:
+        account: An attached :class:`Account` row for the loan.  Caller owns the
+            ownership check.
+        anchor_balance: The validated :class:`Decimal` balance to assert
+            (``>= 0`` enforced at the schema layer, backstopped by
+            ``ck_loan_anchor_events_balance_nonneg``).
+        anchor_date: The date the balance is asserted for.  Caller enforces the
+            source-appropriate bounds (see the two public wrappers).
+        source: The :class:`~app.enums.LoanAnchorSourceEnum` provenance --
+            ``USER_TRUEUP`` or ``TRACKING_START``.
+
+    Returns:
+        ``COMMITTED`` when the event was written and committed;
+        ``DUPLICATE_SAME_DAY`` when the same-day partial unique rejected an
+        identical INSERT.
+
+    Raises:
+        IntegrityError: When the surfaced ``IntegrityError`` is NOT the
+            same-day-uniqueness violation (a different constraint failed).
+    """
+    db.session.add(LoanAnchorEvent(
+        account_id=account.id,
+        anchor_date=anchor_date,
+        anchor_balance=anchor_balance,
+        source_id=ref_cache.loan_anchor_source_id(source),
+    ))
+    if not loan_posting_service.sync_all_scenarios_or_duplicate(
+        account.id, LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
+    ):
+        logger.info(
+            "Duplicate same-day loan anchor (%s) prevented for account %d "
+            "on %s (idempotent success)",
+            source.value, account.id, anchor_date,
+        )
+        return AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+
+    db.session.commit()
+    return AnchorTrueUpOutcome.COMMITTED
+
+
 def apply_loan_anchor_true_up(
     *,
     account: Account,
@@ -403,35 +470,61 @@ def apply_loan_anchor_true_up(
             propagates (Flask will surface as 500, which is the
             correct disposition for an unexpected DB-level failure).
     """
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=anchor_date,
+    return _append_loan_anchor_and_sync(
+        account=account,
         anchor_balance=anchor_balance,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.USER_TRUEUP,
-        ),
-    ))
+        anchor_date=anchor_date,
+        source=LoanAnchorSourceEnum.USER_TRUEUP,
+    )
 
-    # Build-Order Step 4: a balance true-up re-bases the confirmed-payment
-    # split in EVERY scenario (the anchor is per-account, not per-scenario) --
-    # payments now behind the new anchor reverse, later ones re-split from the
-    # new balance.  The shared helper runs that sync in the same transaction as
-    # the new event and translates a same-day duplicate (which its flush
-    # surfaces) into the idempotent DUPLICATE_SAME_DAY outcome; the sync touches
-    # only the loan's own ledgers, never Checking.  A non-anchor IntegrityError
-    # propagates from the helper (the correct 500 disposition).  The just-added
-    # event becomes visible to the re-split because the helper's first query
-    # autoflushes it -- load-bearing, so this must NOT run under
-    # ``session.no_autoflush``.
-    if not loan_posting_service.sync_all_scenarios_or_duplicate(
-        account.id, LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
-    ):
-        logger.info(
-            "Duplicate same-day loan anchor event prevented for "
-            "account %d on %s (idempotent success)",
-            account.id, anchor_date,
-        )
-        return AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
 
-    db.session.commit()
-    return AnchorTrueUpOutcome.COMMITTED
+def record_loan_tracking_start(
+    *,
+    account: Account,
+    anchor_balance: Decimal,
+    anchor_date: date,
+) -> AnchorTrueUpOutcome:
+    """Append a ``tracking_start`` opening :class:`LoanAnchorEvent` and commit.
+
+    The mid-life-import opening flow: the operator started tracking an
+    already-amortizing loan and asserts its real balance as of a date at/before
+    the first recorded payment.  Recorded through this chokepoint, the
+    ``tracking_start`` event becomes the loan's confirmed-ledger OPENING
+    (:func:`app.services.loan_loaders._opening_anchor_fact` synthesizes the
+    ``is_opening`` anchor from it in place of the origination), so the genesis
+    ledger opens at the recent known balance -- no fictional
+    origination-to-tracking-start plateau, and every recorded payment accrues
+    interest on the correct balance.  The origination fields on
+    :class:`LoanParams` are untouched; they still drive the amortization
+    schedule / projection.
+
+    Shares the append + all-scenario re-sync + same-day idempotency of
+    :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;
+    the only difference is the anchor source.  Like a true-up it never mutates
+    :class:`LoanParams`.
+
+    Args:
+        account: An attached :class:`Account` row for the loan.  Caller is
+            responsible for the ownership check and for confirming the account
+            carries ``has_amortization=True``.
+        anchor_balance: The validated :class:`Decimal` opening balance
+            (``>= 0`` at the schema layer).
+        anchor_date: The date the balance is asserted for.  Caller is
+            responsible for enforcing ``origination_date <= anchor_date``,
+            ``anchor_date <= today``, and that it is at/before the earliest
+            recorded payment so no payment is left pre-opening.
+
+    Returns:
+        ``COMMITTED`` on a new committed event; ``DUPLICATE_SAME_DAY`` on a
+        same-day identical INSERT (idempotent success).
+
+    Raises:
+        IntegrityError: When a surfaced ``IntegrityError`` is NOT the
+            same-day-uniqueness violation (a different constraint failed).
+    """
+    return _append_loan_anchor_and_sync(
+        account=account,
+        anchor_balance=anchor_balance,
+        anchor_date=anchor_date,
+        source=LoanAnchorSourceEnum.TRACKING_START,
+    )

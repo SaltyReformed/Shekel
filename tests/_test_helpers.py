@@ -394,6 +394,45 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     return event
 
 
+def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
+    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life opening).
+
+    Mirrors the production tracking-start path
+    (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
+    began tracking an already-amortizing loan and asserts its real balance as of a
+    date at/before the first recorded payment.  When present it becomes the loan's
+    confirmed-ledger OPENING (:func:`app.services.loan_loaders._opening_anchor_fact`
+    synthesizes the ``is_opening`` anchor from it in place of the origination), so
+    the genesis walk seeds from this balance/date instead of the origination.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already flushed.
+        anchor_balance: The asserted opening balance (Decimal).
+        anchor_date: The date the balance was asserted (at/before the first
+            recorded payment).
+
+    Returns:
+        The newly added :class:`LoanAnchorEvent` (added, not committed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as insert_trueup_event above.
+    from app import ref_cache
+    from app.enums import LoanAnchorSourceEnum
+    from app.extensions import db
+    from app.models.loan_anchor_event import LoanAnchorEvent
+
+    event = LoanAnchorEvent(
+        account_id=loan_params.account_id,
+        anchor_date=anchor_date,
+        anchor_balance=anchor_balance,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.TRACKING_START,
+        ),
+    )
+    db.session.add(event)
+    return event
+
+
 def create_loan_account(
     seed_user, db_session, name="Test Loan",
     principal=None, rate=None, term=24,

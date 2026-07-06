@@ -5178,6 +5178,92 @@ class TestLoanNavPills:
 # ── Loan Balance True-up (E-18 D-C / Commit 16) ──────────────────────
 
 
+class TestRecordTrackingStartRoute:
+    """POST /loan/tracking-start records a mid-life opening (a tracking_start event)."""
+
+    def _tracking_start_events(self, db_session, account):
+        """Return the account's tracking_start LoanAnchorEvents."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        from app.models.loan_anchor_event import (  # pylint: disable=import-outside-toplevel
+            LoanAnchorEvent,
+        )
+        src = ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.TRACKING_START,
+        )
+        return (
+            db_session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id, source_id=src)
+            .all()
+        )
+
+    def test_records_tracking_start_and_redirects(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A valid tracking-start POST appends one tracking_start event and redirects.
+
+        The auto-loan fixture originated 2025-01-01.  POSTing a $20,000 balance
+        as of 2025-06-01 (after origination, before any payment, before today)
+        appends exactly one tracking_start event with that balance / date and
+        redirects to the dashboard.
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+        assert self._tracking_start_events(db.session, acct) == []
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2025-06-01", "anchor_balance": "20000.00"},
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(f"/accounts/{acct.id}/loan")
+
+        db.session.expire_all()
+        events = self._tracking_start_events(db.session, acct)
+        assert len(events) == 1
+        assert events[0].anchor_balance == Decimal("20000.00")
+        assert events[0].anchor_date == date(2025, 6, 1)
+
+    def test_rejects_date_before_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A tracking-start dated before origination is rejected; no event written."""
+        acct = _create_auto_loan(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={"anchor_date": "2024-12-01", "anchor_balance": "20000.00"},
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert self._tracking_start_events(db.session, acct) == []
+
+    def test_rejects_date_on_or_after_first_payment(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A tracking-start dated after a recorded payment is rejected; no event.
+
+        With a settled payment in an early period (due well before the frozen
+        today of 2026-03-20), a tracking-start dated today would leave that
+        payment pre-opening, so the route rejects it and writes no event.
+        """
+        acct = _create_auto_loan(seed_user, db.session)
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("500.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/tracking-start",
+            data={
+                "anchor_date": date(2026, 3, 20).isoformat(),
+                "anchor_balance": "20000.00",
+            },
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert self._tracking_start_events(db.session, acct) == []
+
+
 class TestLoanBalanceTrueUp:
     """Tests for the dated balance true-up route (loan.true_up_balance).
 

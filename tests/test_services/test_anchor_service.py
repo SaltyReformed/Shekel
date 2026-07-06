@@ -32,13 +32,19 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import account_service, anchor_service, pay_period_service
+from app.services import (
+    account_service,
+    anchor_service,
+    loan_loaders,
+    pay_period_service,
+)
 from app.services.anchor_service import (
     ANCHOR_HISTORY_UNIQUE_INDEX,
     LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
     AnchorTrueUpOutcome,
     apply_anchor_true_up,
     apply_loan_anchor_true_up,
+    record_loan_tracking_start,
 )
 from tests._test_helpers import insert_origination_rate
 
@@ -741,6 +747,84 @@ class TestApplyLoanAnchorTrueUpCommitted:
                 .one()
             )
             assert params_after.current_principal == seed_principal
+
+
+class TestRecordLoanTrackingStart:
+    """The tracking-start opening flow appends a tracking_start event and re-syncs."""
+
+    def test_commits_appends_tracking_start_opening(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """record_loan_tracking_start appends one tracking_start event as the opening.
+
+        The fixture loan opens at $20,000 origination.  After a tracking-start of
+        $18,000 dated today:
+          * outcome is COMMITTED
+          * exactly one tracking_start event is appended (origination + tracking = 2)
+          * it carries the TRACKING_START source, balance, and date
+          * the opening synthesized for the genesis walk is now that tracking-start
+            (``is_tracking_start`` True, balance 18000) -- proving the walk will
+            seed from it, not the 20000 origination.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            db.session.commit()
+
+            outcome = record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=date.today(),
+            )
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+
+            db.session.expire_all()
+            events = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id)
+                .all()
+            )
+            assert len(events) == 2
+            tracking_source_id = ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.TRACKING_START,
+            )
+            tracking = next(
+                e for e in events if e.source_id == tracking_source_id
+            )
+            assert tracking.anchor_balance == Decimal("18000.00")
+            assert tracking.anchor_date == date.today()
+
+            params = (
+                db.session.query(LoanParams)
+                .filter_by(account_id=account.id)
+                .one()
+            )
+            opening = next(
+                fact for fact in loan_loaders.load_loan_anchor_facts(params)
+                if fact.is_opening
+            )
+            assert opening.is_tracking_start is True
+            assert opening.anchor_balance == Decimal("18000.00")
+
+    def test_double_call_same_returns_duplicate_same_day(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A same (date, balance) resubmit on the same UTC day is idempotent."""
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            db.session.commit()
+
+            first = record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=date.today(),
+            )
+            second = record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=date.today(),
+            )
+            assert first is AnchorTrueUpOutcome.COMMITTED
+            assert second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
 
 
 class TestApplyLoanAnchorTrueUpDuplicateSameDay:

@@ -168,6 +168,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     find_loan_ledger_account,
     freeze_today,
+    insert_tracking_start_event,
     ledger_net,
     load_migration_module,
     loan_correction_entries,
@@ -248,6 +249,30 @@ def _settle(user, loan, period, amount=Decimal("1000.00"), scenario=None):
         user, _db.session, user["account"], loan, period,
         amount=amount, scenario=scenario,
     )
+
+
+def _make_tracking_start_loan(
+    user, *, tracking_balance=_ANCHOR_BALANCE, tracking_date=_ANCHOR_DATE,
+    rate=_RATE, name="Tracking Loan",
+):
+    """A resolvable loan whose OPENING is a tracking-start (no true-up).
+
+    The mid-life-import shape: origination is $250,000 (2025-01-01) but the
+    confirmed ledger opens at *tracking_balance* as of *tracking_date* (default
+    the suite's $100,000 / 2026-01-10, before every payment period).  Both the
+    resolver and the genesis reader synthesize the opening from that tracking-start
+    (their shared ``load_loan_anchor_facts``), so the parallel run pits their
+    disjoint balance math against the SAME tracking-start anchor.
+    """
+    loan = create_loan_account(
+        user, _db.session, name=name, principal=_ORIGINATION_PRINCIPAL,
+        rate=rate, origination_date=_ORIGINATION_DATE, term=360,
+    )
+    insert_tracking_start_event(
+        loan_loaders.load_loan_params(loan.id), tracking_balance, tracking_date,
+    )
+    _db.session.commit()
+    return loan
 
 
 def _add_rate_change(loan, effective_date, rate):
@@ -718,6 +743,38 @@ class TestParallelRunAgainstResolver:
             ) == scheduled_pi - Decimal("500.00") - _ANCHOR_BALANCE
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            _assert_loan_reconciles(loan, scenario_id, _AS_OF)
+
+    def test_tracking_start_opening_matches_resolver(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A mid-life tracking-start loan: an on-schedule payment keeps ledger == resolver.
+
+        The opening is a tracking_start ($100,000 as of 2026-01-10), NOT the
+        $250,000 origination.  Both the genesis ledger reader and the independent
+        resolver seed from that tracking-start (their shared anchor facts), so an
+        on-schedule payment keeps the two disjoint balance paths locked to the
+        penny -- and the balance opens from $100,000, provably below the
+        origination principal.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_tracking_start_loan(seed_user)
+            scheduled_pi = loan_payment_service.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].monthly_payment
+
+            _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
+            db.session.commit()
+
+            ledger = _ledger_balance(loan.id, scenario_id)
+            resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
+            assert ledger == resolver, (
+                f"tracking-start ledger {ledger} != resolver {resolver}"
+            )
+            # Opened at the tracking-start 100000, so the balance is far below
+            # the 250000 origination -- proving the walk did NOT seed from it.
+            assert ledger < _ORIGINATION_PRINCIPAL
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_on_schedule_multi_payment_matches_resolver(

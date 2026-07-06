@@ -104,8 +104,11 @@ class LoanAnchorDrift:
         computed: The ledger's running balance JUST BEFORE this anchor's reset
             (the walk's ``owed_before``); ``0.00`` for the opening.
         drift: ``recorded - computed`` -- the correction the anchor booked.
-        is_opening: ``True`` for the origination opening, ``False`` for a user
-            true-up.
+        is_opening: ``True`` for the loan's opening (origination or a mid-life
+            tracking-start), ``False`` for a user true-up.
+        is_tracking_start: ``True`` when the opening was synthesized from a
+            ``tracking_start`` event (a mid-life import), so the display labels
+            it "Tracking start" rather than "Origination".  ``False`` otherwise.
     """
 
     anchor_date: date
@@ -113,6 +116,7 @@ class LoanAnchorDrift:
     computed: Decimal
     drift: Decimal
     is_opening: bool
+    is_tracking_start: bool
 
 
 def confirmed_loan_principal_in_year(
@@ -291,6 +295,7 @@ def loan_balance_anchor_history(
                 correction.anchor.anchor_balance - correction.owed_before
             ),
             is_opening=correction.anchor.is_opening,
+            is_tracking_start=correction.anchor.is_tracking_start,
         )
         for correction in corrections
     ]

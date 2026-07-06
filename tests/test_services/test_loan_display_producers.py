@@ -489,6 +489,7 @@ class TestLoanBalanceAnchorHistory:
                 computed=Decimal("0.00"),
                 drift=Decimal("250000.00"),
                 is_opening=True,
+                is_tracking_start=False,
             )]
 
     def test_opening_and_trueup_drift(self, app, db, seed_user):
@@ -513,6 +514,7 @@ class TestLoanBalanceAnchorHistory:
                     computed=Decimal("0.00"),
                     drift=Decimal("250000.00"),
                     is_opening=True,
+                    is_tracking_start=False,
                 ),
                 LoanAnchorDrift(
                     anchor_date=_ANCHOR_DATE,
@@ -520,6 +522,7 @@ class TestLoanBalanceAnchorHistory:
                     computed=Decimal("250000.00"),
                     drift=Decimal("-150000.00"),
                     is_opening=False,
+                    is_tracking_start=False,
                 ),
             ]
 

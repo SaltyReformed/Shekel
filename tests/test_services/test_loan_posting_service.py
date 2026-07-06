@@ -59,6 +59,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     find_loan_ledger_account,
     freeze_today,
+    insert_tracking_start_event,
     insert_trueup_event,
     ledger_accounts_for_account,
     ledger_net,
@@ -593,6 +594,106 @@ class TestComputeLoanPaymentSplits:
                 checking.id, seed_user["scenario"].id, _AS_OF,
             )
             assert splits == []
+
+
+# ---------------------------------------------------------------------------
+# tracking-start opening -- a mid-life loan opens at the recent balance
+# ---------------------------------------------------------------------------
+
+
+class TestTrackingStartOpening:
+    """A tracking-start event seeds the walk at the recent balance, not origination."""
+
+    def test_split_and_balance_open_from_tracking_start(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A mid-life loan opens at its tracking-start balance; the payment accrues on it.
+
+        Origination is $250,000 @ 6% (2025-01-01), but the operator started
+        tracking with a $100,000 balance as of 2026-01-05.  The single $1,000
+        payment therefore accrues interest on $100,000:
+
+          * interest = round(100000 * 0.06 / 12) = 500.00 (NOT origination's
+            250000 -> 1250.00, which is the pre-fix bug this pins against)
+          * principal = 1000 - 500 - 0 = 500.00
+          * confirmed balance opens at 100000 and amortizes to 100000 - 500 =
+            99500.00 (origination's 250000 never enters the ledger)
+          * Schedule-A interest for 2026 is the same 500.00.
+        """
+        # ``confirmed_loan_balance_at`` answers only ``as_of <= today``; freeze
+        # today after the payment period so the confirmed read is in range and
+        # the wiring's sync-as-of is deterministic across CI clocks.
+        as_of = date(2026, 6, 30)
+        freeze_today(monkeypatch, as_of)
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Mid-life Loan",
+                principal=_ORIGINATION_PRINCIPAL, rate=_RATE,
+                origination_date=_ORIGINATION_DATE, term=360,
+            )
+            insert_tracking_start_event(
+                _loan_params(loan), Decimal("100000.00"), date(2026, 1, 5),
+            )
+            db.session.commit()
+
+            # Explicit paid_at in 2026 so the Schedule-A year attribution does
+            # not depend on the wall clock (CI runs in any year).
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            splits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, scenario_id, as_of,
+            )
+            assert len(splits) == 1
+            split = splits[0]
+            assert split.interest == Decimal("500.00")
+            assert split.principal == Decimal("500.00")
+            assert split.escrow == Decimal("0.00")
+
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, as_of,
+            ) == Decimal("99500.00")
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("500.00")
+
+    def test_drift_scorecard_labels_the_tracking_start_opening(
+        self, app, db, seed_user,
+    ):
+        """The anchor drift scorecard marks the opening as a tracking-start.
+
+        A configured mid-life loan (no payments) shows exactly one drift row: the
+        tracking-start opening at its recorded balance, flagged
+        ``is_tracking_start`` so the display labels it "Tracking start" rather
+        than "Origination".
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Mid-life Loan 2",
+                principal=_ORIGINATION_PRINCIPAL, rate=_RATE,
+                origination_date=_ORIGINATION_DATE, term=360,
+            )
+            insert_tracking_start_event(
+                _loan_params(loan), Decimal("100000.00"), date(2026, 1, 5),
+            )
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            rows = loan_posting_service.loan_balance_anchor_history(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert len(rows) == 1
+            assert rows[0].is_opening is True
+            assert rows[0].is_tracking_start is True
+            assert rows[0].recorded == Decimal("100000.00")
+            assert rows[0].anchor_date == date(2026, 1, 5)
 
 
 # ---------------------------------------------------------------------------

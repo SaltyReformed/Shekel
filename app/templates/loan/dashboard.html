@@ -361,7 +361,11 @@
             <tr>
               <td>
                 {{ anchor.anchor_date.strftime('%b %-d, %Y') }}
-                {% if anchor.is_opening %}<span class="badge bg-secondary ms-1">Origination</span>{% endif %}
+                {% if anchor.is_opening %}
+                  <span class="badge bg-secondary ms-1">
+                    {% if anchor.is_tracking_start %}Tracking start{% else %}Origination{% endif %}
+                  </span>
+                {% endif %}
               </td>
               <td class="text-end font-mono">{{ money(anchor.recorded) }}</td>
               <td class="text-end font-mono">
@@ -483,6 +487,44 @@
           </div>
           <button type="submit" class="btn btn-outline-primary btn-sm mt-2">
             <i class="bi bi-check-lg"></i> Record balance
+          </button>
+        </form>
+        <hr>
+        {# Tracking start (mid-life import).  For a loan you began tracking after
+           origination: records the real opening balance as of a date at/before
+           your first recorded payment, so the confirmed ledger opens there
+           instead of the full origination amount (no fictional plateau, and
+           recorded payments accrue interest on the correct balance). #}
+        <form method="POST" action="{{ url_for('loan.record_tracking_start', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label class="form-label mb-1"><i class="bi bi-flag"></i> Tracking start</label>
+          <p class="text-muted small mb-2">
+            Started tracking this loan mid-life? Record the lender's balance as
+            of a date on or before your first recorded payment. The confirmed
+            ledger opens from here instead of the original loan amount.
+          </p>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-6">
+              <label for="tracking_start_date" class="form-label">As of date</label>
+              <input type="date" class="form-control form-control-sm"
+                     id="tracking_start_date" name="anchor_date"
+                     min="{{ params.origination_date.isoformat() }}"
+                     max="{{ today_iso }}"
+                     required>
+            </div>
+            <div class="col-sm-6">
+              <label for="tracking_start_balance" class="form-label">Balance</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control"
+                       id="tracking_start_balance" name="anchor_balance"
+                       step="0.01" min="0"
+                       required>
+              </div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">
+            <i class="bi bi-flag"></i> Record tracking start
           </button>
         </form>
       </div>

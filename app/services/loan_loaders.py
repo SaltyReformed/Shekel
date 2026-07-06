@@ -80,11 +80,19 @@ class LoanAnchorFact:
             the opening).
         anchor_balance: The asserted balance owed (the original principal for
             the opening), cent-quantized ``Decimal``.
-        is_opening: ``True`` for the synthesized origination anchor, ``False``
-            for a user true-up -- drives the OPENING vs TRUEUP posting kinds.
+        is_opening: ``True`` for the loan's single opening anchor (the
+            synthesized origination, or the ``tracking_start`` event when a
+            mid-life import recorded one -- see
+            :func:`_opening_anchor_fact`), ``False`` for a user true-up --
+            drives the OPENING vs TRUEUP posting kinds.
         created_at: The assertion's creation instant (the latest-anchor
             tie-break); the synthesized origination uses the earliest
             possible UTC instant so any same-day true-up wins.
+        is_tracking_start: ``True`` only for an ``is_opening`` fact synthesized
+            from a ``tracking_start`` event (a mid-life import), ``False`` for
+            the origination opening and every true-up.  Display provenance only
+            (the drift scorecard labels the opening row); the balance math never
+            branches on it.
     """
 
     account_id: int
@@ -92,45 +100,106 @@ class LoanAnchorFact:
     anchor_balance: Decimal
     is_opening: bool
     created_at: datetime
+    is_tracking_start: bool = False
+
+
+def _opening_anchor_fact(
+    params: LoanParams,
+    tracking_start_events: list[LoanAnchorEvent],
+) -> LoanAnchorFact:
+    """Return a loan's single ``is_opening`` fact -- tracking-start, else origination.
+
+    The genesis ledger opens at exactly one anchor.  For a mid-life-imported loan
+    that recorded a ``tracking_start`` event (the operator's real balance as of a
+    date at/before the first recorded payment), the opening is synthesized from
+    that event -- so the confirmed ledger opens at the recent known balance and
+    there is no fictional origination-to-tracking-start plateau, and recorded
+    payments accrue interest on the correct balance.  For every other loan the
+    opening is synthesized from the immutable :class:`LoanParams`
+    (``origination_date`` / ``original_principal``) exactly as before -- a
+    complete-data or single-origination loan is byte-identical.
+
+    When more than one ``tracking_start`` event exists (an operator correction --
+    the table is append-only), the LATEST by ``created_at`` wins (the most
+    recently asserted genesis supersedes earlier ones, mirroring how a correcting
+    true-up supersedes an earlier one).  The opening fact always carries
+    :data:`_ORIGINATION_CREATED_AT` (the earliest instant) for the
+    ``(anchor_date, created_at)`` latest-anchor tie-break, so a true-up asserted
+    on the very opening date still outranks it -- the same rule the synthesized
+    origination uses.
+
+    Args:
+        params: The loan's :class:`LoanParams` row (the account id and the
+            immutable origination fields the fallback opening uses).
+        tracking_start_events: The loan's ``tracking_start``
+            :class:`LoanAnchorEvent` rows (possibly empty).
+
+    Returns:
+        The single opening :class:`LoanAnchorFact` (``is_opening=True``).
+    """
+    is_tracking_start = bool(tracking_start_events)
+    if is_tracking_start:
+        latest = max(tracking_start_events, key=lambda event: event.created_at)
+        anchor_date = latest.anchor_date
+        anchor_balance = Decimal(str(latest.anchor_balance))
+    else:
+        anchor_date = params.origination_date
+        anchor_balance = Decimal(str(params.original_principal))
+    return LoanAnchorFact(
+        account_id=params.account_id,
+        anchor_date=anchor_date,
+        anchor_balance=anchor_balance,
+        is_opening=True,
+        created_at=_ORIGINATION_CREATED_AT,
+        is_tracking_start=is_tracking_start,
+    )
 
 
 def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
-    """Return a loan's anchor facts: the synthesized origination + true-ups.
+    """Return a loan's anchor facts: the opening + true-ups.
 
     The one anchor loader every consumer shares (the genesis walk and every
     resolver-input builder), so no two sites can disagree on what a loan's
-    anchors are.  The origination anchor is synthesized from the immutable
-    *params* (never read from a stored row -- see :class:`LoanAnchorFact`);
-    the user true-ups are the loan's ``user_trueup``
-    :class:`LoanAnchorEvent` rows, in no guaranteed order (consumers sort by
-    ``(anchor_date, created_at)`` where order matters).
+    anchors are.  The single ``is_opening`` anchor is synthesized by
+    :func:`_opening_anchor_fact` -- from the loan's ``tracking_start`` event when
+    one exists (a mid-life import), else from the immutable *params* (the
+    origination, never read from a stored row -- see :class:`LoanAnchorFact`).
+    The user true-ups are the loan's ``user_trueup`` :class:`LoanAnchorEvent`
+    rows, in no guaranteed order (consumers sort by ``(anchor_date, created_at)``
+    where order matters).
 
     Args:
         params: The loan's :class:`LoanParams` row (supplies the account id
             and the immutable origination fields).
 
     Returns:
-        The :class:`LoanAnchorFact` list -- always non-empty (the origination
+        The :class:`LoanAnchorFact` list -- always non-empty (the opening
         fact is always first), so a configured loan is always resolvable.
     """
     trueup_source_id = ref_cache.loan_anchor_source_id(
         LoanAnchorSourceEnum.USER_TRUEUP,
     )
-    trueup_events = (
+    tracking_start_source_id = ref_cache.loan_anchor_source_id(
+        LoanAnchorSourceEnum.TRACKING_START,
+    )
+    events = (
         db.session.query(LoanAnchorEvent)
         .filter(
             LoanAnchorEvent.account_id == params.account_id,
-            LoanAnchorEvent.source_id == trueup_source_id,
+            LoanAnchorEvent.source_id.in_(
+                [trueup_source_id, tracking_start_source_id],
+            ),
         )
         .all()
     )
-    facts = [LoanAnchorFact(
-        account_id=params.account_id,
-        anchor_date=params.origination_date,
-        anchor_balance=Decimal(str(params.original_principal)),
-        is_opening=True,
-        created_at=_ORIGINATION_CREATED_AT,
-    )]
+    trueup_events = [
+        event for event in events if event.source_id == trueup_source_id
+    ]
+    tracking_start_events = [
+        event for event in events if event.source_id == tracking_start_source_id
+    ]
+
+    facts = [_opening_anchor_fact(params, tracking_start_events)]
     facts.extend(
         LoanAnchorFact(
             account_id=event.account_id,
@@ -383,6 +452,44 @@ def load_all_escrow_components(account_id: int) -> list:
     )
 
 
+def _settled_payment_due_dates(
+    account_id: int, scenario_id: int,
+) -> list[date]:
+    """Return the monthly due dates of a loan's SETTLED payments (shared derivation).
+
+    The single settled-payment-due-date derivation that both
+    :func:`load_settled_payment_due_months` (the year-end tax exclusion set) and
+    :func:`earliest_settled_payment_due_date` (the tracking-start guard) build on,
+    so the two provably agree with each other -- and with the genesis walk's own
+    settled-shadow set -- on WHICH payments are settled and on each one's due date.
+    The settled shadow income (the shared
+    :func:`query_shadow_income` predicate narrowed to the settled statuses), each
+    dated by :func:`app.services.rate_period_engine.monthly_due_date` on its
+    pay-period start.
+
+    Args:
+        account_id: The loan account whose settled payments to scan.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        The settled payments' due dates (unordered), or ``[]`` for an unconfigured
+        loan (no :class:`LoanParams`, hence no ``payment_day``) or one with no
+        settled payment.
+    """
+    params = load_loan_params(account_id)
+    if params is None:
+        return []
+    settled_shadows = (
+        query_shadow_income(account_id, scenario_id)
+        .filter(Transaction.status_id.in_(settled_status_ids()))
+        .all()
+    )
+    return [
+        monthly_due_date(shadow.pay_period.start_date, params.payment_day)
+        for shadow in settled_shadows
+    ]
+
+
 def load_settled_payment_due_months(
     account_id: int, scenario_id: int,
 ) -> set[tuple[int, int]]:
@@ -422,21 +529,44 @@ def load_settled_payment_due_months(
         from, and no split correction can exist either) or one with no settled
         payment.
     """
-    params = load_loan_params(account_id)
-    if params is None:
-        return set()
-    settled_shadows = (
-        query_shadow_income(account_id, scenario_id)
-        .filter(Transaction.status_id.in_(settled_status_ids()))
-        .all()
-    )
     return {
         (due.year, due.month)
-        for due in (
-            monthly_due_date(shadow.pay_period.start_date, params.payment_day)
-            for shadow in settled_shadows
-        )
+        for due in _settled_payment_due_dates(account_id, scenario_id)
     }
+
+
+def earliest_settled_payment_due_date(
+    account_id: int, scenario_id: int,
+) -> date | None:
+    """Return the earliest settled payment's monthly due date, or ``None``.
+
+    The lower bound the tracking-start opening flow validates against: a
+    ``tracking_start`` opening must sort BEFORE every recorded payment in the
+    genesis walk (which orders a payment before an anchor on an equal date), or
+    the earliest payment would be subsumed by the opening's reset and dropped.
+    The route rejects a tracking-start whose date is not strictly earlier than
+    this.  Shares :func:`_settled_payment_due_dates` with
+    :func:`load_settled_payment_due_months`, so the guard, the tax exclusion, and
+    the walk provably agree on each payment's date.
+
+    NOTE: point-in-time -- this scans only payments settled at record time.  A
+    payment recorded LATER with a due date before the tracking-start would be
+    subsumed by the walk; that requires contradictory operator input (a payment
+    predating when they began tracking) and is the same structural property the
+    origination opening already carries.
+
+    Args:
+        account_id: The loan account whose settled payments to scan.
+        scenario_id: The budget scenario to scope to (the baseline, where the
+            recorded payments live).
+
+    Returns:
+        The earliest ``monthly_due_date`` over the loan's settled income
+        shadows, or ``None`` when the loan is unconfigured (no
+        :class:`LoanParams`) or has no settled payment.
+    """
+    due_dates = _settled_payment_due_dates(account_id, scenario_id)
+    return min(due_dates) if due_dates else None
 
 
 def query_shadow_income(account_id: int, scenario_id: int):
