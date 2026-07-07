@@ -2,25 +2,30 @@
 Shekel Budget App -- Loan route package: escrow + rate-history management.
 
 The HTMX partial routes that add a rate-history entry and add / remove escrow
-components.  The escrow routes share the out-of-band payment-summary tail
-(recomputing monthly escrow + total payment for the OOB swap); co-locating
-them keeps that parallel code intra-file (R0801 is cross-file only).
+lines.  Both escrow routes rebuild the escrow list through the shared
+:func:`_render_escrow_list` tail (resolve today's active lines, recompute monthly
+escrow + total payment, emit the OOB payment-summary swap), so that parallel
+render lives in exactly one place.
 """
 
 import logging
 from datetime import date
 
 from flask import flash, render_template, request
-from flask_login import login_required
+from flask_login import current_user, login_required
 
 from app.extensions import db
-from app.models.loan_features import EscrowComponent, RateHistory
-from app.models.loan_params import LoanParams
+from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+from app.models.loan_features import RateHistory
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _RATE_HISTORY_UNIQUE_CONSTRAINT,
     _compute_total_payment,
+    _escrow_merge_schema,
+    _escrow_rename_schema,
     _escrow_schema,
+    _escrow_version_schema,
+    _forward_boundary,
     _load_loan_account,
     _rate_schema,
     _resolve_loan_state,
@@ -32,7 +37,9 @@ from app.services import (
     loan_posting_service,
     loan_recurrence_sync,
 )
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
+from app.utils.money import ZERO
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +181,186 @@ def add_rate_change(account_id):
     )
 
 
+def _active_line_with_name(account_id, name):
+    """Return the account's ACTIVE escrow line with ``name``, or None.
+
+    Decision C (route-enforced active-name uniqueness): a line is active iff its
+    latest version -- greatest ``effective_date`` -- is not a removal tombstone.
+    That predicate depends on a line's child versions, so it cannot be a raw
+    partial unique index; the ``ix_escrow_lines_account_name`` index serves this
+    lookup.  A line whose latest version is a tombstone is removed, so its name
+    is free to reuse under a new line.
+
+    Args:
+        account_id: The loan account to search.
+        name: The candidate escrow line name.
+
+    Returns:
+        The matching active :class:`~app.models.escrow_line.EscrowLine`, or
+        ``None`` when no active line carries that name.
+    """
+    for line in loan_loaders.load_escrow_lines(account_id):
+        if line.name != name:
+            continue
+        latest = max(
+            line.versions, key=lambda v: v.effective_date, default=None,
+        )
+        if latest is not None and not latest.is_removed:
+            return line
+    return None
+
+
+def _baseline_scenario_id():
+    """Return the current user's baseline scenario id, or ``None``.
+
+    The scenario the loan's recorded payments live in -- the scope the
+    forward-only guard resolves the latest settled payment against.  ``None`` when
+    the user has no baseline scenario, in which case there are no recorded payments
+    and the guard has no boundary.
+    """
+    scenario = get_baseline_scenario(current_user.id)
+    return scenario.id if scenario else None
+
+
+def _reject_effective_date(effective_date, params, boundary):
+    """Return an actionable error message if an escrow effective date is out of bounds.
+
+    Two bounds protect the ledger, mirroring the rate-history and tracking-start
+    guards:
+
+    * It cannot predate the loan's origination -- a version before the loan existed
+      is meaningless (skipped when ``params`` is ``None``, an unconfigured loan).
+    * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's
+      pay-period start, :func:`_forward_boundary`), or it would retroactively move
+      an already-settled payment's escrow split and desync it from the cash frozen
+      at settlement (spec Sec. 4.2).
+
+    Args:
+        effective_date: The candidate version effective date.
+        params: The loan's :class:`LoanParams`, or ``None`` when unconfigured.
+        boundary: The forward-only boundary from :func:`_forward_boundary`.
+
+    Returns:
+        An actionable error string naming the violated boundary, or ``None`` when
+        the date is allowed.
+    """
+    if params is not None and effective_date < params.origination_date:
+        return (
+            "An escrow effective date cannot be before the loan's origination "
+            f"date ({params.origination_date.isoformat()})."
+        )
+    if boundary is not None and effective_date <= boundary:
+        return (
+            "An escrow change must take effect after your latest recorded payment "
+            f"(pay period starting {boundary.strftime('%b %-d, %Y')})."
+        )
+    return None
+
+
+def _add_version(line, effective_date, annual_amount, inflation_rate):
+    """Add a version to an existing line, or return an error on a same-date collision.
+
+    Rejects a second version on a date the line already carries -- the
+    ``(line_id, effective_date)`` unique forbids it -- with a guide-to-edit message
+    (mirroring the rate-history same-date rejection), since a same-date correction
+    edits the existing version rather than appending a duplicate.  Otherwise stages
+    the new version (the caller commits).
+
+    Args:
+        line: The :class:`~app.models.escrow_line.EscrowLine` to amend.
+        effective_date: The new version's effective date.
+        annual_amount: The new version's stored annual amount.
+        inflation_rate: The new version's decimal-fraction inflation rate, or None.
+
+    Returns:
+        ``None`` on success, or an error string on a same-date collision.
+    """
+    if any(v.effective_date == effective_date for v in line.versions):
+        return (
+            f"This line already has a version effective "
+            f"{effective_date.isoformat()}. Edit that version instead."
+        )
+    db.session.add(EscrowComponentVersion(
+        line_id=line.id, effective_date=effective_date,
+        annual_amount=annual_amount, inflation_rate=inflation_rate,
+    ))
+    return None
+
+
+def _tombstone_line_today(line):
+    """Mark an escrow line removed as of today (idempotent).
+
+    Appends a removal tombstone version (``is_removed``, $0) at today's date, so
+    the line resolves to 0 from today forward while its history stays intact --
+    the supersession analogue of the old ``end_date`` stamp.  No-op when the line
+    already resolves to inactive today (a repeat delete).  When a version already
+    exists AT today (a same-day add or amount change), that version is converted
+    to the tombstone in place rather than appending a second: the
+    ``(line_id, effective_date)`` unique forbids two versions on one date, and a
+    line added and removed the same day never contributed (matching the legacy
+    zero-length range).
+
+    Args:
+        line: The :class:`~app.models.escrow_line.EscrowLine` to remove.
+    """
+    if not escrow_calculator.resolve_active_lines([line], date.today()):
+        return  # already inactive as of today
+    today_version = next(
+        (v for v in line.versions if v.effective_date == date.today()), None,
+    )
+    if today_version is not None:
+        today_version.is_removed = True
+        today_version.annual_amount = ZERO
+        return
+    db.session.add(EscrowComponentVersion(
+        line_id=line.id, effective_date=date.today(),
+        annual_amount=ZERO, is_removed=True,
+    ))
+
+
+def _render_escrow_list(account, params):
+    """Reload the escrow lines and render the card partial with the OOB tail.
+
+    The shared reload every escrow mutation ends on: load the account's lines,
+    resolve them to today's active set for the monthly-escrow badge + total
+    payment, build the version-drawer card model
+    (:func:`~app.services.escrow_calculator.build_escrow_card`, keyed by the
+    forward-only boundary so each version row's edit / delete controls reflect the
+    guard), and emit the out-of-band payment-summary swap -- so that render logic
+    lives in one place and the swapped card is byte-identical to the inline one.
+
+    Args:
+        account: ORM :class:`~app.models.account.Account` for the loan.
+        params: ORM :class:`~app.models.loan_params.LoanParams`, or None.
+
+    Returns:
+        The rendered ``loan/_escrow_list.html`` partial.
+    """
+    today = date.today()
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+    escrow_lines = loan_loaders.load_escrow_lines(account.id)
+    resolved = escrow_calculator.resolve_active_lines(escrow_lines, today)
+    monthly_escrow = escrow_calculator.calculate_monthly_escrow(resolved)
+    total_payment = _compute_total_payment(account, params, resolved)
+    return render_template(
+        "loan/_escrow_list.html",
+        account=account,
+        escrow_components=escrow_calculator.build_escrow_card(
+            escrow_lines, today, boundary,
+        ),
+        merge_candidates=escrow_calculator.build_merge_candidates(escrow_lines),
+        monthly_escrow=monthly_escrow,
+        total_payment=total_payment,
+        today_iso=today.isoformat(),
+        oob_swaps=True,
+    )
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
 @require_owner
 def add_escrow(account_id):
-    """Add an escrow component (HTMX)."""
+    """Add an escrow line (HTMX): a new line plus its opening dated version."""
     account, params, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
@@ -189,99 +371,403 @@ def add_escrow(account_id):
 
     data = _escrow_schema.load(request.form)
 
-    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load``
-    # converted the form percent to the storage-domain fraction
-    # before validation, so ``data["inflation_rate"]`` is stored
-    # verbatim.
+    # E-28 / HIGH-06 (Commit 24): the schema's ``@pre_load`` converted the form
+    # percent to the storage-domain fraction before validation, so
+    # ``data["inflation_rate"]`` is stored verbatim.
 
-    # Check for a duplicate name among the CURRENTLY-ACTIVE components; a
-    # component removed earlier (``end_date`` set) may be re-added under the
-    # same name, so a historical version must not block the add.  The partial
-    # unique ``uq_escrow_components_account_name_active`` is the DB backstop.
-    existing = (
-        db.session.query(EscrowComponent)
-        .filter(
-            EscrowComponent.account_id == account.id,
-            EscrowComponent.name == data["name"],
-            EscrowComponent.end_date.is_(None),
-        )
-        .first()
-    )
-    if existing:
+    # Reject a duplicate ACTIVE line name (decision C); a removed line's name is
+    # reusable, so only an active collision blocks the add.
+    if _active_line_with_name(account.id, data["name"]) is not None:
         return "An escrow component with that name already exists.", 400
 
-    # ``effective_date`` is omitted -- the column's CURRENT_DATE server default
-    # takes effect today, opening the component's active range.
-    comp = EscrowComponent(account_id=account.id, **data)
-    db.session.add(comp)
+    # Effective date defaults to today (the common case unchanged); a supplied
+    # date schedules the opening version forward.  A back-dated opening would let
+    # the new line contribute escrow to an already-settled payment (its split
+    # resolves escrow on each payment's period start), so the forward-only guard
+    # applies to a NEW line too, not only to an amend.
+    effective_date = data.get("effective_date") or date.today()
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+    guard_error = _reject_effective_date(effective_date, params, boundary)
+    if guard_error is not None:
+        return guard_error, 400
+
+    line = EscrowLine(account_id=account.id, name=data["name"])
+    db.session.add(line)
+    db.session.flush()  # assign line.id for the version FK
+    db.session.add(EscrowComponentVersion(
+        line_id=line.id,
+        effective_date=effective_date,
+        annual_amount=data["annual_amount"],
+        inflation_rate=data.get("inflation_rate"),
+    ))
     db.session.commit()
 
-    logger.info("Added escrow component '%s' to loan %d", data["name"], account.id)
-
-    escrow_components = loan_loaders.load_active_escrow_components(
-        account.id,
-    )
-
-    # Compute updated payment summary for OOB swap.
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
-    total_payment = _compute_total_payment(account, params, escrow_components)
-
-    return render_template(
-        "loan/_escrow_list.html",
-        account=account,
-        escrow_components=escrow_calculator.build_escrow_display(
-            escrow_components,
-        ),
-        monthly_escrow=monthly_escrow,
-        total_payment=total_payment,
-        oob_swaps=True,
-    )
+    logger.info("Added escrow line '%s' to loan %d", data["name"], account.id)
+    return _render_escrow_list(account, params)
 
 
 @loan_bp.route(
-    "/accounts/<int:account_id>/loan/escrow/<int:component_id>/delete",
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/delete",
     methods=["POST"],
 )
 @login_required
 @require_owner
-def delete_escrow(account_id, component_id):
-    """Remove an escrow component (HTMX)."""
-    account, _, _account_type = _load_loan_account(account_id)
+def delete_escrow(account_id, line_id):
+    """Remove an escrow line (HTMX): append a removal tombstone as of today.
+
+    The tombstone's effective date is today, so it too must clear the forward-only
+    boundary: when an EARLY-settled payment (settled before its pay period begins)
+    puts the boundary on/after today, a removal-as-of-today would zero the line for
+    that already-settled payment and desync its split from the frozen cash.  Guard
+    on today via the shared :func:`_reject_effective_date`; the operator can
+    schedule the removal after the boundary once it passes.
+    """
+    account, params, _account_type = _load_loan_account(account_id)
     if account is None:
         return "Account not found", 404
 
-    comp = db.session.get(EscrowComponent, component_id)
-    if comp is None or comp.account_id != account.id:
+    line = _owned_line(account, line_id)
+    if line is None:
         return "Component not found", 404
 
-    # Close the component's active range as of today (replaces the old
-    # ``is_active = False``); the row survives as history.  Guarded so a repeat
-    # delete does not move an already-set ``end_date`` (idempotent).
-    if comp.end_date is None:
-        comp.end_date = date.today()
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+    guard_error = _reject_effective_date(date.today(), params, boundary)
+    if guard_error is not None:
+        return guard_error, 400
+
+    _tombstone_line_today(line)
     db.session.commit()
-    logger.info("Deactivated escrow component %d from loan %d", component_id, account.id)
+    logger.info("Removed escrow line %d from loan %d", line_id, account.id)
+    return _render_escrow_list(account, params)
 
-    escrow_components = loan_loaders.load_active_escrow_components(
-        account.id,
-    )
 
-    # Compute updated payment summary for OOB swap.
-    params = (
-        db.session.query(LoanParams)
-        .filter_by(account_id=account.id)
-        .first()
-    )
-    monthly_escrow = escrow_calculator.calculate_monthly_escrow(escrow_components)
-    total_payment = _compute_total_payment(account, params, escrow_components)
+def _owned_line(account, line_id):
+    """Return the account's escrow line ``line_id``, or None (404 for not-yours).
 
-    return render_template(
-        "loan/_escrow_list.html",
-        account=account,
-        escrow_components=escrow_calculator.build_escrow_display(
-            escrow_components,
-        ),
-        monthly_escrow=monthly_escrow,
-        total_payment=total_payment,
-        oob_swaps=True,
+    The shared ownership lookup for the per-line escrow routes: 404 for both a
+    missing line and another user's line (no existence oracle), matching the
+    security response rule.
+    """
+    line = db.session.get(EscrowLine, line_id)
+    if line is None or line.account_id != account.id:
+        return None
+    return line
+
+
+def _owned_version(account, version_id):
+    """Return the account's escrow version ``version_id``, or None (404 for not-yours).
+
+    Resolves ownership through the version's parent line
+    (``version.line.account_id``); 404 for both a missing version and another
+    user's, as with :func:`_owned_line`.
+    """
+    version = db.session.get(EscrowComponentVersion, version_id)
+    if version is None or version.line.account_id != account.id:
+        return None
+    return version
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/version",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def add_escrow_version(account_id, line_id):
+    """Schedule a change to an existing escrow line (HTMX): add a dated version.
+
+    The per-line "schedule a change" action: append a new effective-dated version
+    under the line so a future analysis letter ("$X effective Jan 1") is recorded
+    now, without waiting for the date to arrive.  The forward-only guard keeps the
+    date strictly after the latest settled payment (so it cannot move a settled
+    split), and a same-date collision is guided to the edit action.
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    line = _owned_line(account, line_id)
+    if line is None:
+        return "Component not found", 404
+
+    errors = _escrow_version_schema.validate(request.form)
+    if errors:
+        return "Please correct the highlighted errors and try again.", 400
+    data = _escrow_version_schema.load(request.form)
+
+    effective_date = data.get("effective_date") or date.today()
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+    guard_error = _reject_effective_date(effective_date, params, boundary)
+    if guard_error is not None:
+        return guard_error, 400
+
+    collision = _add_version(
+        line, effective_date, data["annual_amount"], data.get("inflation_rate"),
     )
+    if collision is not None:
+        return collision, 400
+    db.session.commit()
+    logger.info(
+        "Scheduled escrow change on line %d (loan %d) effective %s",
+        line_id, account.id, effective_date.isoformat(),
+    )
+    return _render_escrow_list(account, params)
+
+
+def _reject_version_edit(version, params, boundary, new_date):
+    """Return an error message if an escrow-version edit is disallowed, else None.
+
+    Collects the edit guards so the route stays a flat guard-clause chain:
+
+    * a removal tombstone is not amount-editable (delete it and reschedule);
+    * a version whose CURRENT date is at or before ``boundary`` underpins a settled
+      split and is read-only (correct a wrong past figure with a loan true-up, spec
+      Sec. 4.3);
+    * the NEW date must clear both effective-date bounds
+      (:func:`_reject_effective_date`);
+    * moving onto a date another version already holds is a same-date collision.
+
+    Args:
+        version: The :class:`~app.models.escrow_line.EscrowComponentVersion`.
+        params: The loan's :class:`LoanParams`, or ``None``.
+        boundary: The forward-only boundary (:func:`_forward_boundary`).
+        new_date: The proposed new effective date.
+
+    Returns:
+        An error string, or ``None`` when the edit is allowed.
+    """
+    if version.is_removed:
+        return "A scheduled removal can't be edited; delete it and reschedule."
+    if boundary is not None and version.effective_date <= boundary:
+        return (
+            "This escrow version affects a settled payment and can't be edited. "
+            "Schedule a new change instead."
+        )
+    date_error = _reject_effective_date(new_date, params, boundary)
+    if date_error is not None:
+        return date_error
+    if new_date != version.effective_date and any(
+        v.effective_date == new_date and v.id != version.id
+        for v in version.line.versions
+    ):
+        return (
+            f"This line already has a version effective {new_date.isoformat()}. "
+            "Edit that version instead."
+        )
+    return None
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/version/<int:version_id>/edit",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def edit_escrow_version(account_id, version_id):
+    """Edit a not-yet-settled escrow version (HTMX): amount / effective date / inflation.
+
+    Only a version STRICTLY AFTER the latest settled payment is editable; the edit
+    guards live in :func:`_reject_version_edit`.  On success the version's amount,
+    effective date, and inflation are updated in place (a same-date correction, not
+    a new version), and the escrow card re-renders.
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    version = _owned_version(account, version_id)
+    if version is None:
+        return "Component not found", 404
+
+    errors = _escrow_version_schema.validate(request.form)
+    if errors:
+        return "Please correct the highlighted errors and try again.", 400
+    data = _escrow_version_schema.load(request.form)
+    new_date = data.get("effective_date") or version.effective_date
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+
+    reject = _reject_version_edit(version, params, boundary, new_date)
+    if reject is not None:
+        return reject, 400
+
+    version.effective_date = new_date
+    version.annual_amount = data["annual_amount"]
+    version.inflation_rate = data.get("inflation_rate")
+    db.session.commit()
+    logger.info(
+        "Edited escrow version %d (loan %d) -> %s effective %s",
+        version_id, account.id, data["annual_amount"], new_date.isoformat(),
+    )
+    return _render_escrow_list(account, params)
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/version/<int:version_id>/delete",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def delete_escrow_version(account_id, version_id):
+    """Delete a SCHEDULED escrow version (HTMX): undo a queued future change.
+
+    Hard-deletes a single scheduled (future-dated) version so a mis-entered change
+    (wrong amount or date) can be undone.  Two guards, both enforced server-side
+    (the hidden delete button is only an affordance):
+
+    * The version must be STRICTLY AFTER the forward-only boundary (the latest
+      settled payment's pay-period start).  This is NOT implied by "after today":
+      an EARLY-settled payment (settled before its pay period begins) puts the
+      boundary in the FUTURE, so a version in the ``today < date <= boundary`` gap
+      is at/before a settled payment's start and deleting it would move that
+      settled payment's escrow split off the cash frozen at settlement.
+    * It must be a scheduled (future) change -- a current / past amount is
+      corrected by editing it, and a whole line is removed via the line's Remove.
+
+    If removing it leaves the line with no versions (an upcoming-only line whose
+    sole scheduled version this was), the now-empty line is dropped so it does not
+    linger invisibly.
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    version = _owned_version(account, version_id)
+    if version is None:
+        return "Component not found", 404
+
+    boundary = _forward_boundary(account.id, _baseline_scenario_id())
+    if boundary is not None and version.effective_date <= boundary:
+        return (
+            "This escrow version affects a settled payment and can't be deleted."
+        ), 400
+    if version.effective_date <= date.today():
+        return (
+            "Only a scheduled future change can be deleted. Edit a current amount, "
+            "or remove the whole line."
+        ), 400
+
+    line = version.line
+    db.session.delete(version)
+    db.session.flush()
+    remaining = (
+        db.session.query(EscrowComponentVersion)
+        .filter_by(line_id=line.id).count()
+    )
+    if remaining == 0:
+        db.session.delete(line)
+    db.session.commit()
+    logger.info("Deleted scheduled escrow version %d from loan %d", version_id, account.id)
+    return _render_escrow_list(account, params)
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/rename",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def rename_escrow_line(account_id, line_id):
+    """Rename an escrow line's display label in place (HTMX).
+
+    Display-only: the label is edited on the line, which provably cannot move a
+    cent of any posted split (the split reads a version's amount + date, never the
+    name).  A rename onto another ACTIVE line's name is rejected (decision C) -- the
+    same active-name uniqueness the add enforces; renaming a line to its own current
+    name is a no-op and allowed.
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    line = _owned_line(account, line_id)
+    if line is None:
+        return "Component not found", 404
+
+    errors = _escrow_rename_schema.validate(request.form)
+    if errors:
+        return "Please correct the highlighted errors and try again.", 400
+    data = _escrow_rename_schema.load(request.form)
+
+    existing = _active_line_with_name(account.id, data["name"])
+    if existing is not None and existing.id != line.id:
+        return "An escrow component with that name already exists.", 400
+
+    line.name = data["name"]
+    db.session.commit()
+    logger.info(
+        "Renamed escrow line %d (loan %d) to '%s'", line_id, account.id, data["name"],
+    )
+    return _render_escrow_list(account, params)
+
+
+def _resolve_merge_source(account, target):
+    """Validate the merge form and resolve the source line, or return an error.
+
+    Consolidates the merge route's input guards so it stays a flat guard-clause
+    chain: schema validation, source-line ownership (404 for a missing / another
+    user's line, per the security-response rule), and the self-merge rejection.
+
+    Args:
+        account: The owning :class:`~app.models.account.Account`.
+        target: The surviving :class:`~app.models.escrow_line.EscrowLine` (the
+            route's URL line), so a merge into itself can be rejected.
+
+    Returns:
+        ``(source_line, None)`` on success, or ``(None, (message, status))`` when a
+        guard fails.
+    """
+    errors = _escrow_merge_schema.validate(request.form)
+    if errors:
+        return None, ("Please correct the highlighted errors and try again.", 400)
+    data = _escrow_merge_schema.load(request.form)
+    source = _owned_line(account, data["source_line_id"])
+    if source is None:
+        return None, ("Component not found", 404)
+    if source.id == target.id:
+        return None, ("A line can't be merged into itself.", 400)
+    return source, None
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/merge",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def merge_escrow_line(account_id, line_id):
+    """Merge another escrow line's history INTO this one (HTMX).
+
+    Reunifies a line whose history split across two lines -- a legacy backfill (one
+    line per historical name) or a Remove+Add: the drawer's line (``line_id``) is
+    the surviving TARGET, and the posted ``source_line_id`` line is folded in and
+    deleted.  Ownership of BOTH lines is checked (404 for a missing or another
+    user's line).  The merge is allowed only when it preserves the escrow resolved
+    on every date (:func:`~app.services.escrow_calculator.plan_escrow_line_merge`),
+    so it can neither move a settled split nor drop a concurrent charge; it is
+    rejected otherwise with an actionable message.  No posting reconcile is needed
+    because escrow-per-date is unchanged and the split stores the escrow amount,
+    not a line id (see the planner).
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    target = _owned_line(account, line_id)
+    if target is None:
+        return "Component not found", 404
+
+    source, error = _resolve_merge_source(account, target)
+    if error is not None:
+        return error
+    plan = escrow_calculator.plan_escrow_line_merge(source, target)
+    if plan.error is not None:
+        return plan.error, 400
+
+    # Repoint the surviving source versions onto the target and flush so their new
+    # line_id persists BEFORE the source line is deleted; deleting the source then
+    # cascade-removes exactly the versions the target already covers on the same
+    # date (``plan.versions_to_drop``), leaving escrow-per-date unchanged.
+    for version in plan.versions_to_move:
+        version.line = target
+    db.session.flush()
+    db.session.delete(source)
+    db.session.commit()
+    logger.info(
+        "Merged escrow line %d into %d (loan %d)", source.id, target.id, account.id,
+    )
+    return _render_escrow_list(account, params)

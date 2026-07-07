@@ -256,8 +256,9 @@ def create_contribution_transfer(account_id):
     db.session.add(rule)
     db.session.flush()
 
-    # Create transfer template via the shared builder (contributions do
-    # not set derive_from_loan; loan-payment transfers do).
+    # Create transfer template via the shared builder (a contribution gets
+    # no loan_payment_settings row, so every reader defaults it to non-derive;
+    # only loan-payment transfers attach a settings row).
     template_name = f"{source_account.name} -> {account.name} Contribution"
     template = build_recurring_transfer_template(
         source_account=source_account,

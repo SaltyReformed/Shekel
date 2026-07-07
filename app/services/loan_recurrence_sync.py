@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import Account
-from app.services.loan_payment_service import resolve_account_loan
+from app.services.loan_resolution import resolve_account_loan
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )

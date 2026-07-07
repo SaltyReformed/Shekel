@@ -345,6 +345,7 @@ def compute_payoff_scenarios(
     extra_monthly: Decimal,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
+    extra_principal: Decimal = ZERO_MONEY,
 ) -> PayoffScenarios:
     """Single source of truth for the Payoff Calculator's three scenarios.
 
@@ -352,20 +353,38 @@ def compute_payoff_scenarios(
     deterministic-past slice plus the starting state, then calls
     :func:`project_forward` THREE times from the same starting
     ``(balance, date, remaining_months, rate)`` tuple, differing only
-    in ``monthly_override`` and ``extra_monthly``.  The chart series
+    in ``monthly_override`` and the extra applied.  The chart series
     (Original / Committed / Accelerated) and the summary metrics
     (months_saved, interest_saved, payoff dates, life-of-remaining-
     loan interest) all derive from the single return value, so chart
     and summary cannot diverge.
+
+    Two extras (step 5).  ``extra_principal`` is the loan's STANDING
+    overpayment (from ``loan_payment_settings``): it is part of the real plan,
+    so it accelerates the COMMITTED and ACCELERATED slices (every forward month,
+    override and contractual alike -- the engine no longer exempts override
+    months).  ``extra_monthly`` is the payoff lever's ADDITIONAL what-if extra,
+    previewed on top in the ACCELERATED slice only.  ``original_forward`` stays
+    the pure contractual reference (no override, no extra), so committed-vs-
+    original quantifies the whole plan (standing extra included) and
+    accelerated-vs-committed quantifies just the lever.
 
     Routes projected payments forward through ``monthly_override``
     instead of relying on the engine's "apply extra when no payment
     record exists" convention -- the architectural fix for the
     "extra applied to ghost historical months" bug documented at
     ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
-    Override months never receive ``extra_monthly``; non-override
-    months always do (when extra is non-zero).  This makes the buggy
-    parameter combination structurally inexpressible.
+    The forward slices are all after the replay boundary, so no extra ever
+    lands on a historical month.  The extra flows through PROJECTED override
+    amounts, which are base-only (the standing extra is a live parameter, never
+    baked into a projected shadow's stored amount), so there is no double-count
+    on them.  ONE narrow edge is exempt from that guarantee: a CONFIRMED payment
+    whose pay-period start is after ``as_of`` is routed to the override
+    (:func:`_build_monthly_override`) carrying its FROZEN actual (base + the
+    standing extra frozen at settlement), so for a loan with a standing extra
+    that one month's forward chart double-applies it.  It is display-only (the
+    ledger balance is authoritative) and requires marking a future-period
+    payment settled -- the rare data-hygiene case the override routing names.
 
     Algorithm:
 
@@ -402,9 +421,9 @@ def compute_payoff_scenarios(
             from everything else (override) internally; the full
             rate-period terms feed governs the forward slices month by
             month.
-        extra_monthly: Additional principal payment applied to every
-            non-override month in the accelerated scenario.  ``0``
-            collapses the accelerated slice to the committed slice
+        extra_monthly: The payoff lever's ADDITIONAL what-if extra, applied to
+            every month of the ACCELERATED scenario on top of the standing
+            ``extra_principal``.  ``0`` collapses accelerated to committed
             (``months_saved == 0``, ``interest_saved == 0``).
         as_of: Evaluation date.  The replay/projection boundary.
             Typically ``date.today()`` from the route.
@@ -416,6 +435,11 @@ def compute_payoff_scenarios(
             it once (via ``loan_payment_service.confirmed_loan_view``) so the
             chart / summary / table all derive from the same real owed
             balance and actual history the loan card shows.
+        extra_principal: The loan's STANDING monthly overpayment (from
+            ``loan_payment_settings``; ``0.00`` when none).  Part of the real
+            plan, so it accelerates BOTH the committed and accelerated slices
+            (never the pure-contractual original).  The accelerated slice adds
+            ``extra_monthly`` on top of it.
 
     Returns:
         A :class:`PayoffScenarios` with the three forward slices and
@@ -427,11 +451,11 @@ def compute_payoff_scenarios(
     """
     prep = _build_forward_inputs(loan_inputs, as_of, confirmed_view)
 
-    # All three forward slices share starting state; only override
-    # presence and extra_monthly vary.  The architectural plan's
-    # critical regression-prevention property -- chart and summary
-    # cannot diverge -- is enforced HERE by funnelling all three
-    # through the same primitive call shape.
+    # All three forward slices share starting state; only override presence and
+    # the extra applied vary.  Original is the pure contractual reference (no
+    # extra); committed carries the standing extra_principal (the real plan);
+    # accelerated adds the lever's extra_monthly on top.  Funnelling all three
+    # through one primitive call shape keeps chart and summary in lockstep.
     original_forward = project_forward(
         prep.projection_inputs,
         monthly_override=None,
@@ -440,12 +464,12 @@ def compute_payoff_scenarios(
     committed_forward = project_forward(
         prep.projection_inputs,
         monthly_override=prep.monthly_override,
-        extra_monthly=ZERO_MONEY,
+        extra_monthly=extra_principal,
     )
     accelerated_forward = project_forward(
         prep.projection_inputs,
         monthly_override=prep.monthly_override,
-        extra_monthly=extra_monthly,
+        extra_monthly=extra_principal + extra_monthly,
     )
 
     # Summary metrics derive from the same forward slices the chart
@@ -516,6 +540,7 @@ def target_date_outlook(
     target_date: date,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
+    extra_principal: Decimal = ZERO_MONEY,
 ) -> TargetDateOutlook:
     """Answer "when does my plan pay off, and what extra hits my target?".
 
@@ -530,6 +555,11 @@ def target_date_outlook(
     delegates the search to
     :func:`amortization_engine.required_extra_for_projection`.
 
+    Step 5: the loan's STANDING ``extra_principal`` is part of the committed
+    plan, so it drives ``committed_payoff_date`` and is netted out of
+    ``required_extra`` -- the returned figure is the extra needed ON TOP of the
+    standing overpayment, not counting it twice.
+
     Args:
         loan_inputs: The loan's loaded :class:`LoanInputs` bundle
             (``anchor_events`` must be non-empty, the Commit-12
@@ -542,6 +572,8 @@ def target_date_outlook(
             :func:`_build_forward_inputs` so the required-extra search runs
             against the real owed balance -- the same balance the loan card
             and the payoff calculator's other results show.
+        extra_principal: The loan's standing monthly overpayment (``0.00`` when
+            none); part of the committed plan, netted out of ``required_extra``.
 
     Returns:
         A :class:`TargetDateOutlook`; see its attribute docs for the
@@ -556,16 +588,24 @@ def target_date_outlook(
     committed_forward = project_forward(
         prep.projection_inputs,
         monthly_override=prep.monthly_override,
-        extra_monthly=ZERO_MONEY,
+        extra_monthly=extra_principal,
     )
     committed_payoff_date = (
         committed_forward[-1].payment_date if committed_forward else None
     )
 
-    required_extra = required_extra_for_projection(
+    # The search finds the TOTAL extra to hit the target (applied to every
+    # forward month); the standing extra_principal is part of that total, so the
+    # extra the user must ADD on top of their plan is the difference (never
+    # negative -- a plan that already hits the target needs no more).
+    total_required = required_extra_for_projection(
         prep.projection_inputs,
         target_date,
         monthly_override=prep.monthly_override,
+    )
+    required_extra = (
+        None if total_required is None
+        else max(ZERO_MONEY, total_required - extra_principal)
     )
     return TargetDateOutlook(
         committed_payoff_date=committed_payoff_date,

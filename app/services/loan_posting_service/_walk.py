@@ -372,7 +372,7 @@ def _merge_anchor_and_payment_events(
 def _replay_events(
     events: list[tuple[bool, object]],
     periods: list,
-    escrow_components: list,
+    escrow_lines: list,
 ) -> tuple[list[LoanPaymentSplit], list[LoanAnchorCorrection]]:
     """Walk a merged event stream into its splits and anchor corrections.
 
@@ -386,8 +386,9 @@ def _replay_events(
     Args:
         events: The merged ``(is_anchor, item)`` stream in walk order.
         periods: The loan's rate periods (governs each payment's interest rate).
-        escrow_components: Every escrow version (active + removed); each payment
-            sums the versions in effect on its pay-period start.
+        escrow_lines: The loan's escrow lines with their full version history;
+            each payment resolves the escrow in effect on its pay-period start
+            via :func:`~app.services.escrow_calculator.escrow_monthly_as_of`.
 
     Returns:
         ``(payment_splits, anchor_corrections)``, both chronological.
@@ -402,10 +403,9 @@ def _replay_events(
             )
             balance = item.anchor_balance
             continue
-        payment_escrow = escrow_calculator.calculate_monthly_escrow([
-            comp for comp in escrow_components
-            if comp.is_active_on(item.pay_period.start_date)
-        ])
+        payment_escrow = escrow_calculator.escrow_monthly_as_of(
+            escrow_lines, item.pay_period.start_date,
+        )
         split, balance = _split_one_payment(
             item, balance, periods, payment_escrow,
         )
@@ -477,19 +477,18 @@ def walk_loan_ledger(
     periods = loan_resolver.resolve_periods(
         params, loan_loaders.load_rate_changes(loan_account_id),
     )
-    # EVERY escrow version (active + removed), loaded once; each payment's
-    # escrow is summed over the versions in effect ON that payment's date, so a
+    # Every escrow LINE with its full version history, loaded once; each
+    # payment's escrow is resolved (greatest effective_date <= that payment's
+    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
     # since-removed version still applies to a historical payment and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
-    escrow_components = loan_loaders.load_all_escrow_components(
-        loan_account_id,
-    )
+    escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
     shadows = _settled_income_shadows(loan_account_id, scenario_id)
     events = _merge_anchor_and_payment_events(
         anchor_facts, shadows, params.payment_day, as_of,
     )
     payment_splits, anchor_corrections = _replay_events(
-        events, periods, escrow_components,
+        events, periods, escrow_lines,
     )
     return LoanLedgerWalk(payment_splits, anchor_corrections)
 

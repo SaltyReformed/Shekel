@@ -41,7 +41,8 @@ from app.enums import (
 )
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.escrow_line import EscrowComponentVersion
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -54,6 +55,7 @@ from app.services import (
     transfer_service,
 )
 from tests._test_helpers import (
+    add_escrow_line,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -338,29 +340,29 @@ class TestComputeLoanPaymentSplits:
         """Each payment's escrow is the version in effect ON its date, and a
         LATER escrow change never re-splits an already-past payment.
 
-        Two escrow versions: $1,200/yr ($100.00/mo) from origination until
-        2026-03-01, then $2,400/yr ($200.00/mo).  P1's pay-period start
-        (2026-01-16) is in the first version -> escrow 100.00; the later
-        payment's start (2026-03-13) is in the second -> escrow 200.00.  Then a
-        THIRD version ($3,600/yr) effective 2026-06-01 (the second closed there)
-        must leave BOTH earlier splits unchanged -- proving the split is
-        immutable for a past date, the whole point of effective-dating escrow
-        (the pre-fix code recomputed every payment at the current escrow, so the
-        third change would have retroactively moved both to $300.00).
+        One escrow line, two effective-dated versions (supersession, no
+        end_date): $1,200/yr ($100.00/mo) from origination, superseded by
+        $2,400/yr ($200.00/mo) on 2026-03-01.  P1's pay-period start
+        (2026-01-16) resolves to the first version -> escrow 100.00; the later
+        payment's start (2026-03-13) resolves to the second -> escrow 200.00.
+        Then a THIRD version ($3,600/yr) effective 2026-06-01 supersedes the
+        second FROM that date only, so it must leave BOTH earlier splits
+        unchanged -- proving the split is immutable for a past date, the whole
+        point of effective-dating escrow (the pre-fix code recomputed every
+        payment at the current escrow, so the third change would have
+        retroactively moved both to $300.00).
         """
         with app.app_context():
             loan = _make_loan(seed_user)  # no escrow via the helper
-            # V1: $100/mo from origination, removed 2026-03-01.
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
-                annual_amount=Decimal("1200.00"),
-                effective_date=_ORIGINATION_DATE, end_date=date(2026, 3, 1),
-            ))
-            # V2: $200/mo from 2026-03-01 (open).
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
+            # V1: $100/mo from origination.
+            line_id = add_escrow_line(
+                db.session, loan.id, "Escrow", Decimal("1200.00"),
+                effective_date=_ORIGINATION_DATE,
+            ).line_id
+            # V2: $200/mo from 2026-03-01 (supersedes V1 from that date).
+            db.session.add(EscrowComponentVersion(
+                line_id=line_id, effective_date=date(2026, 3, 1),
                 annual_amount=Decimal("2400.00"),
-                effective_date=date(2026, 3, 1),
             ))
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
@@ -379,20 +381,12 @@ class TestComputeLoanPaymentSplits:
                 Decimal("100.00"), Decimal("200.00"),
             ]
 
-            # A future escrow change: close V2 at 2026-06-01 (flush first so the
-            # active-name partial unique frees), then add a $300/mo V3.  Neither
-            # past payment's date falls in V3's range, so both splits must hold.
-            v2 = (
-                db.session.query(EscrowComponent)
-                .filter_by(account_id=loan.id, annual_amount=Decimal("2400.00"))
-                .one()
-            )
-            v2.end_date = date(2026, 6, 1)
-            db.session.flush()
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
+            # A future escrow change: a THIRD version at 2026-06-01 supersedes
+            # V2 from that date only.  Neither past payment is on/after it, so
+            # both splits must hold (supersession never re-splits a past date).
+            db.session.add(EscrowComponentVersion(
+                line_id=line_id, effective_date=date(2026, 6, 1),
                 annual_amount=Decimal("3600.00"),
-                effective_date=date(2026, 6, 1),
             ))
             db.session.commit()
 

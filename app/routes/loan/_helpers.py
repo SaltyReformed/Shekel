@@ -21,22 +21,30 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import (
     EscrowComponentSchema,
+    EscrowLineMergeSchema,
+    EscrowLineRenameSchema,
+    EscrowVersionSchema,
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
     LoanParamsUpdateSchema,
+    LoanPaymentExtraSchema,
     LoanPaymentTransferSchema,
     PayoffCalculatorSchema,
     RateChangeSchema,
     RefinanceSchema,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.loan_loaders import load_loan_anchor_facts
+from app.services.loan_loaders import (
+    latest_settled_payment_period_start,
+    load_loan_anchor_facts,
+)
+from app.services.recurring_transfer_query import loan_standing_extra
 from app.services.loan_payment_service import (
     LoanContext,
     confirmed_loan_view,
     load_loan_context,
-    resolve_loan_seeded,
 )
+from app.services.loan_resolution import resolve_loan_seeded
 from app.services.loan_resolver import LoanState
 from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario
@@ -68,9 +76,13 @@ _update_schema = LoanParamsUpdateSchema()
 _trueup_schema = LoanAnchorTrueupSchema()
 _rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
+_escrow_version_schema = EscrowVersionSchema()
+_escrow_rename_schema = EscrowLineRenameSchema()
+_escrow_merge_schema = EscrowLineMergeSchema()
 _payoff_schema = PayoffCalculatorSchema()
 _refinance_schema = RefinanceSchema()
 _transfer_schema = LoanPaymentTransferSchema()
+_payment_extra_schema = LoanPaymentExtraSchema()
 
 
 def _load_loan_account(account_id):
@@ -255,7 +267,8 @@ def _compute_total_payment(account, params, escrow_components):
         account: ORM :class:`Account` instance for the loan account.
             Required to load anchor events for the resolver.
         params: ORM :class:`LoanParams` instance, or None.
-        escrow_components: Iterable of :class:`EscrowComponent`.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
     """
     if params is None:
         return None
@@ -263,6 +276,30 @@ def _compute_total_payment(account, params, escrow_components):
     return escrow_calculator.calculate_total_payment(
         state.monthly_payment, escrow_components,
     )
+
+
+def _forward_boundary(account_id, scenario_id):
+    """Return the escrow forward-only guard boundary for a loan, or ``None``.
+
+    The latest settled payment's pay-period start
+    (:func:`~app.services.loan_loaders.latest_settled_payment_period_start`) -- the
+    exact date the genesis split resolves each payment's escrow at, so a new or
+    edited escrow version strictly after it cannot move any settled payment's split.
+    ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
+    has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
+    and mark each drawer row editable / deletable) and the loan dashboard GET (which
+    builds the same drawer inline), so both derive the boundary one way.
+
+    Args:
+        account_id: The loan account whose settled payments bound the guard.
+        scenario_id: The baseline scenario id, or ``None``.
+
+    Returns:
+        The boundary date, or ``None`` when nothing is settled.
+    """
+    if scenario_id is None:
+        return None
+    return latest_settled_payment_period_start(account_id, scenario_id)
 
 
 def _balances_for_chart(rows, target_len):
@@ -407,17 +444,23 @@ def accelerated_overlay(scenarios):
     return [None] * n_history + balances["accelerated"][n_history:]
 
 
-def build_baseline_scenarios(loan_inputs, scenario_id, as_of):
+def build_baseline_scenarios(
+    loan_inputs, scenario_id, as_of, extra_principal=Decimal("0.00"),
+):
     """Run the baseline payoff-scenario composer call for the loan detail page.
 
-    One ``compute_payoff_scenarios`` call (``extra_monthly=0``) whose band
-    chart, payment breakdown, and life-of-loan summary all derive from the same
-    return value so they cannot diverge (the structural fix documented at
+    One ``compute_payoff_scenarios`` call (no what-if lever, ``extra_monthly=0``)
+    whose band chart, payment breakdown, and life-of-loan summary all derive
+    from the same return value so they cannot diverge (the structural fix
+    documented at
     ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
     The returned scenario consumes ALL payments (confirmed + projected): its
     ``history_rows + committed_forward`` slice IS the planned trajectory the band
     chart, payment breakdown, and summary read, while ``original_forward``
-    supplies the contractual x-axis baseline.
+    supplies the contractual x-axis baseline.  The loan's STANDING
+    ``extra_principal`` (step 5) is threaded so ``committed_forward`` -- the
+    planned trajectory -- reflects the overpayment, accelerating the band chart
+    and the projected payoff exactly as the cash debit does.
 
     Read switch: reads the genesis-ledger confirmed view ONCE via
     :func:`loan_payment_service.confirmed_loan_view` and threads it into the
@@ -436,6 +479,8 @@ def build_baseline_scenarios(loan_inputs, scenario_id, as_of):
         scenario_id: The baseline scenario id (or ``None``) for the ledger
             seed scope.
         as_of: The replay/projection boundary (typically ``date.today()``).
+        extra_principal: The loan's standing monthly overpayment (``0.00`` when
+            none), threaded into the committed trajectory.
 
     Returns:
         The baseline :class:`loan_resolver.PayoffScenarios`.
@@ -448,6 +493,7 @@ def build_baseline_scenarios(loan_inputs, scenario_id, as_of):
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
         confirmed_view=view,
+        extra_principal=extra_principal,
     )
 
 
@@ -503,6 +549,7 @@ def build_loan_band_chart(account, params):
     scenario_id = scenario.id if scenario else None
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx), scenario_id, date.today(),
+        loan_standing_extra(account.id, current_user.id),
     )
     return build_band_chart(scenarios, len(ctx.loan.payments) > 0)
 

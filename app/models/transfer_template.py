@@ -74,18 +74,10 @@ class TransferTemplate(
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
-    # When TRUE, this template's recurring transfers are a loan payment
-    # whose cash amount (P&I + escrow/components) is derived LIVE from
-    # the destination loan account on every balance render, so it tracks
-    # the loan's monthly payment after an escrow or rate change rather
-    # than staying frozen at ``default_amount`` (E-18 loan model).  Set by
-    # ``app.routes.loan.payment_transfer.create_payment_transfer`` for new
-    # loan-payment transfers; FALSE for every other template and pre-existing
-    # rows, so the live-derive override is dormant unless enabled.
-    derive_from_loan = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
+    # The live-derive flag + the standing overpayment live in the 1:1
+    # ``loan_payment_settings`` row (decision B), reached via ``settings`` below;
+    # a template with no settings row is not a loan payment.  The old
+    # ``derive_from_loan`` column was dropped by migration ``c1a4f7b9e2d3``.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
@@ -99,6 +91,15 @@ class TransferTemplate(
     category = db.relationship("Category", lazy="joined")
     transfers = db.relationship(
         "Transfer", back_populates="template", lazy="select"
+    )
+    # 1:1 loan-payment settings (decision B): present only for recurring loan
+    # payments, holding ``derive_from_loan`` + ``extra_principal``.  ``None`` for
+    # every other template (investment contribution, generic transfer); readers
+    # default the settings when the row is absent.  ``delete-orphan`` disposes
+    # the row with the template (the DB FK is ON DELETE CASCADE too).
+    settings = db.relationship(
+        "LoanPaymentSettings", uselist=False, back_populates="template",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self):

@@ -25,6 +25,7 @@ from app.services.recurring_transfer_query import (
 )
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
+    _forward_boundary,
     _load_loan_account,
     _load_loan_context,
     _loan_inputs,
@@ -102,13 +103,20 @@ def _distribute_payment_percentages(parts, total_payment):
 def _project_next_year_escrow(escrow_components, escrow_portion):
     """Project next year's monthly escrow when a component inflates.
 
-    O-3: if any component carries a non-null ``inflation_rate`` and the
-    current escrow portion is positive, compute the Jan-1-next-year
-    monthly escrow so the dashboard can show the user the projected
-    change.
+    O-3: if any active line carries a positive ``inflation_rate`` and the current
+    escrow portion is positive, compound today's escrow forward one whole annual
+    step (:func:`~app.services.escrow_calculator.project_monthly_escrow`) so the
+    dashboard can flag the likely increase.  A forward DISPLAY estimate only --
+    recorded escrow is exact.
+
+    The projection is one annual step from today (spec Sec. 8), matching the
+    per-year meaning of ``inflation_rate`` -- NOT an elapsed span since a
+    version's insert timestamp -- so the note is stable regardless of when the
+    version was recorded or when the page is viewed.
 
     Args:
-        escrow_components: List of active EscrowComponent objects.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
         escrow_portion: Decimal current monthly escrow.
 
     Returns:
@@ -116,18 +124,14 @@ def _project_next_year_escrow(escrow_components, escrow_portion):
         portion, otherwise None (no note shown).
     """
     has_inflation = any(
-        getattr(c, "inflation_rate", None)
+        c.inflation_rate is not None and c.inflation_rate > 0
         for c in escrow_components
     )
     if not has_inflation or escrow_portion <= Decimal("0.00"):
         return None
 
-    # "Next year" is the user's next civil year (display-tz), so the note stays
-    # consistent with the YTD chips and never jumps two years out in the New Year
-    # window where the backend-UTC year has ticked over but Eastern has not.
-    next_year_date = date(display_today().year + 1, 1, 1)
-    next_year_escrow = escrow_calculator.calculate_monthly_escrow(
-        escrow_components, as_of_date=next_year_date,
+    next_year_escrow = escrow_calculator.project_monthly_escrow(
+        escrow_components, 1,
     )
     # Only show the note if next year differs from current.
     if next_year_escrow == escrow_portion:
@@ -147,7 +151,8 @@ def _compute_payment_breakdown(schedule, escrow_components):
 
     Args:
         schedule: List of AmortizationRow objects (committed schedule).
-        escrow_components: List of active EscrowComponent objects.
+        escrow_components: Today's active escrow lines, resolved
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
 
     Returns:
         dict with breakdown data, or None if no schedule data.
@@ -243,7 +248,10 @@ def _build_payment_summary(state, summary, planned_schedule, escrow_components):
 
     Returns:
         dict of template vars: current_principal_display, total_payment,
-        payment_breakdown, escrow_components (display list).
+        payment_breakdown.  The escrow card display model
+        (``escrow_components``) is built separately in the route via
+        :func:`app.services.escrow_calculator.build_escrow_card`, which needs the
+        raw lines + the forward-only boundary rather than the resolved-today set.
     """
     return {
         # E-18 / Commit 15: resolver-derived; equals the /savings debt
@@ -254,9 +262,6 @@ def _build_payment_summary(state, summary, planned_schedule, escrow_components):
         ),
         "payment_breakdown": _compute_payment_breakdown(
             planned_schedule, escrow_components,
-        ),
-        "escrow_components": escrow_calculator.build_escrow_display(
-            escrow_components,
         ),
     }
 
@@ -293,20 +298,32 @@ def _resolve_transfer_prompt(account):
     The prompt shows when LoanParams exist but no active recurring
     transfer template targets this account.  When shown, the eligible
     source accounts (active, non-amortizing, excluding this account) and
-    the default source (the checking account, if any) are loaded.
+    the default source (the checking account, if any) are loaded.  When a
+    recurring payment DOES exist, ``has_recurring_payment`` gates the
+    extra-principal edit control and ``recurring_payment_extra`` prefills it
+    from the payment's ``loan_payment_settings`` (0.00 when it has no settings
+    row -- a legacy manual payment).
 
     Returns:
         ``prompt_context`` -- a dict of template vars: show_transfer_prompt,
-        source_accounts, default_source_id.
+        source_accounts, default_source_id, has_recurring_payment,
+        recurring_payment_extra.
     """
     existing_template = active_recurring_transfer_template(
         account.id, current_user.id,
     )
     if existing_template is not None:
+        settings = existing_template.settings
+        extra = (
+            Decimal(str(settings.extra_principal))
+            if settings is not None else Decimal("0.00")
+        )
         return {
             "show_transfer_prompt": False,
             "source_accounts": [],
             "default_source_id": None,
+            "has_recurring_payment": True,
+            "recurring_payment_extra": extra,
         }
 
     source_accounts = (
@@ -332,6 +349,8 @@ def _resolve_transfer_prompt(account):
         "show_transfer_prompt": True,
         "source_accounts": source_accounts,
         "default_source_id": default_source_id,
+        "has_recurring_payment": False,
+        "recurring_payment_extra": Decimal("0.00"),
     }
 
 
@@ -430,8 +449,15 @@ def dashboard(account_id):
     scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
     today = date.today()
+    # Resolve the recurring-payment state first: it carries the standing
+    # extra_principal the committed trajectory must reflect (step 5), so the
+    # band chart / payoff summary accelerate exactly as the cash debit does.
+    # R-4: the recurring transfer's end_date is NOT written here (that would be a
+    # write on a GET); it is synced at every payoff-affecting mutation instead.
+    prompt_context = _resolve_transfer_prompt(account)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx), scenario_id, today,
+        prompt_context["recurring_payment_extra"],
     )
     # PLANNED-trajectory schedule: real confirmed history + projected /
     # contractual forward.  The loan card's current_balance and the
@@ -440,12 +466,6 @@ def dashboard(account_id):
     # liability and the chart cannot diverge (the E-18 invariant).
     planned_schedule = scenarios.history_rows + scenarios.committed_forward
     summary = _build_planned_summary(ctx.state, planned_schedule, params)
-
-    # R-4: the recurring transfer's end_date is NO LONGER written here (a write
-    # on a GET).  It is synced to the projected payoff at every payoff-affecting
-    # mutation instead (:mod:`app.services.loan_recurrence_sync`), so this GET is
-    # read-only.
-    prompt_context = _resolve_transfer_prompt(account)
 
     context = {
         "account": account,
@@ -479,6 +499,18 @@ def dashboard(account_id):
     context.update(_build_payment_summary(
         ctx.state, summary, planned_schedule, ctx.loan.escrow_components,
     ))
+    # Escrow card: the version-drawer model, built off the raw lines
+    # (``ctx.loan.escrow_lines``, loaded with the same context) and keyed by the
+    # forward-only boundary so each drawer row's edit / delete controls match the
+    # HTMX routes' guard.  Same builder the escrow routes re-render on a swap.
+    context["escrow_components"] = escrow_calculator.build_escrow_card(
+        ctx.loan.escrow_lines, today, _forward_boundary(account.id, scenario_id),
+    )
+    # Merge candidates: every escrow line (incl. hidden removed ones) offered as a
+    # source in each drawer, so a rename-split history can be reunified.
+    context["merge_candidates"] = escrow_calculator.build_merge_candidates(
+        ctx.loan.escrow_lines,
+    )
     context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.

@@ -2,23 +2,29 @@
 Tests for the escrow calculator service.
 """
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.escrow_calculator import (
+    build_escrow_card,
     build_escrow_display,
+    build_merge_candidates,
     calculate_monthly_escrow,
     calculate_total_payment,
+    escrow_monthly_as_of,
+    plan_escrow_line_merge,
+    project_monthly_escrow,
+    resolve_active_lines,
 )
 
 
-def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
-    """Helper to create a mock escrow component.
+def _comp(name, annual, inflation=None, end_date=None, id=1):
+    """Helper to create a mock resolved escrow component (a display/sum row).
 
-    ``end_date=None`` mirrors a currently-active component (the effective-dated
-    model's "active" is exactly ``end_date IS NULL``); pass a date to mark the
-    component removed as of that date.
+    ``calculate_monthly_escrow`` / ``project_monthly_escrow`` / ``build_escrow_display``
+    take an already-resolved set; ``end_date`` is retained only to feed the "no
+    active filter" test a would-be-removed row and is ignored by all three.
     """
     return SimpleNamespace(
         id=id,
@@ -26,7 +32,6 @@ def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
         annual_amount=Decimal(str(annual)),
         inflation_rate=Decimal(str(inflation)) if inflation else None,
         end_date=end_date,
-        created_at=created_at,
     )
 
 
@@ -50,11 +55,9 @@ class TestCalculateMonthlyEscrow:
     def test_sums_all_given_no_active_filter(self):
         """calculate_monthly_escrow sums EVERY component it is handed.
 
-        The effective-dating refactor moved active-state filtering to the
-        callers (``load_active_escrow_components`` for today, or
-        ``load_all_escrow_components`` + ``EscrowComponent.is_active_on`` for a
-        past payment's date); this function no longer gates on ``end_date``, so a
-        removed (``end_date``-set) component passed in IS summed.
+        Active-state resolution is ``resolve_active_lines``' job (it drops
+        removed/absent lines as of a date); this pure summation must NOT
+        re-filter, so a would-be-removed component passed in IS summed.
         4800/12 + 1200/12 = 400.00 + 100.00 = 500.00.
         """
         components = [
@@ -64,23 +67,15 @@ class TestCalculateMonthlyEscrow:
         result = calculate_monthly_escrow(components)
         assert result == Decimal("500.00")
 
-    def test_with_inflation(self):
-        """Inflation applied with month-aware elapsed years (M-05)."""
-        components = [
-            _comp("Property Tax", "4800", inflation="0.03",
-                  created_at=datetime(2024, 1, 1)),
-        ]
-        # 29 months elapsed (Jan 2024 to Jun 2026) = 29/12 ≈ 2.4167 years
-        # 4800 * 1.03^(29/12) / 12 ≈ 429.62
-        result = calculate_monthly_escrow(components, as_of_date=date(2026, 6, 1))
-        assert result == Decimal("429.62")
+    def test_no_inflation_applied_here(self):
+        """calculate_monthly_escrow never inflates -- it is the exact sum.
 
-    def test_no_inflation_without_date(self):
-        """No as_of_date → no inflation applied."""
-        components = [
-            _comp("Property Tax", "4800", inflation="0.03",
-                  created_at=datetime(2024, 1, 1)),
-        ]
+        Inflation is a forward-projection display concern (spec Sec. 8) that
+        lives in ``project_monthly_escrow``; the pure sum ignores an
+        ``inflation_rate`` entirely, so a line carrying a rate still contributes
+        its exact ``annual / 12``.  4800 / 12 = 400.00.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
         result = calculate_monthly_escrow(components)
         assert result == Decimal("400.00")
 
@@ -103,8 +98,8 @@ class TestCalculateMonthlyEscrow:
         reachable production state: the boundary rejects negative
         amounts twice -- ``EscrowComponentSchema.annual_amount``
         requires ``Range(min=0)`` (validation/loans.py) and the DB
-        enforces ``ck_escrow_components_nonneg_annual_amount``
-        (``annual_amount >= 0``, models/loan_features.py).
+        enforces ``ck_escrow_component_versions_nonneg_annual_amount``
+        (``annual_amount >= 0``, models/escrow_line.py).
         Sign-guarding is the boundary's job; the service stays a pure
         function of its inputs.
         """
@@ -136,6 +131,76 @@ class TestCalculateMonthlyEscrow:
         assert calculate_monthly_escrow([comp3]) == Decimal("50.00")
         assert combined == Decimal("350.00")
         assert combined == individual_sum
+
+
+class TestProjectMonthlyEscrow:
+    """Tests for the forward inflation projection (the "next year" note)."""
+
+    def test_one_annual_step(self):
+        """One year forward compounds each rate by exactly (1 + rate).
+
+        4800 * 1.03 = 4944.00 annual -> 4944.00 / 12 = 412.00 monthly.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("412.00")
+
+    def test_real_mortgage_worked_example(self):
+        """The operator's worked case: $7,403.88/yr @ 3% -> ~$635.50/mo next year.
+
+        7403.88 * 1.03 = 7625.9964 annual -> / 12 = 635.4997 -> $635.50 (the
+        sum-then-round boundary, matching the decision preview).
+        """
+        components = [_comp("Tax and Insurance", "7403.88", inflation="0.03")]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("635.50")
+
+    def test_zero_years_equals_today(self):
+        """Projecting zero annual steps returns today's exact figure.
+
+        (1 + rate) ** 0 == 1, so 4800 / 12 = 400.00 -- identical to
+        ``calculate_monthly_escrow`` with no projection.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        assert project_monthly_escrow(components, 0) == Decimal("400.00")
+        assert project_monthly_escrow(components, 0) == calculate_monthly_escrow(
+            components,
+        )
+
+    def test_no_rate_carried_unchanged(self):
+        """A line with no inflation_rate is unaffected by any horizon.
+
+        2400 / 12 = 200.00 at year 1 and year 5 alike -- no rate, no growth.
+        """
+        components = [_comp("Insurance", "2400")]
+        assert project_monthly_escrow(components, 1) == Decimal("200.00")
+        assert project_monthly_escrow(components, 5) == Decimal("200.00")
+
+    def test_compounds_over_multiple_years(self):
+        """Multiple annual steps compound: (1 + rate) ** years.
+
+        4800 * 1.03^2 = 4800 * 1.0609 = 5092.32 annual -> / 12 = 424.36 monthly.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        result = project_monthly_escrow(components, 2)
+        assert result == Decimal("424.36")
+
+    def test_multi_line_only_inflates_rated_lines(self):
+        """A mixed set inflates only the rated line, summed sum-then-round.
+
+        Tax 4800 @ 3% -> 4944.00; Insurance 2400 no rate -> 2400.00.
+        (4944.00 + 2400.00) / 12 = 7344.00 / 12 = 612.00.
+        """
+        components = [
+            _comp("Property Tax", "4800", inflation="0.03", id=1),
+            _comp("Insurance", "2400", id=2),
+        ]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("612.00")
+
+    def test_empty_set(self):
+        """No components -> $0.00 projected."""
+        assert project_monthly_escrow([], 1) == Decimal("0.00")
 
 
 class TestCalculateTotalPayment:
@@ -329,3 +394,407 @@ class TestEscrowDisplayCentAllocation:
         for row in rows:
             exact = row.annual_amount / Decimal("12")
             assert abs(row.monthly_amount - exact) < Decimal("0.01")
+
+
+def _ver(effective_date, annual, *, is_removed=False, inflation=None, id=0):
+    """Build a mock escrow version (supersession model)."""
+    return SimpleNamespace(
+        id=id,
+        effective_date=effective_date,
+        annual_amount=Decimal(str(annual)),
+        is_removed=is_removed,
+        inflation_rate=Decimal(str(inflation)) if inflation is not None else None,
+        created_at=None,
+    )
+
+
+def _line(line_id, name, versions):
+    """Build a mock escrow line carrying its versions."""
+    return SimpleNamespace(id=line_id, name=name, versions=versions)
+
+
+class TestEscrowMonthlyAsOf:
+    """The date-keyed supersession resolver + sum (the DRY heart)."""
+
+    def test_single_version_resolves_annual_over_twelve(self):
+        """One line, one version -> annual / 12 as of any date on/after it.
+
+        1200 / 12 = 100.00 (exact).
+        """
+        line = _line(1, "Escrow", [_ver(date(2020, 1, 1), "1200")])
+        assert escrow_monthly_as_of([line], date(2026, 6, 1)) == Decimal("100.00")
+
+    def test_supersession_greatest_effective_le_date(self):
+        """As-of resolves to the greatest effective_date <= D version.
+
+        v1 $1,200/yr from 2020-01-01, v2 $2,400/yr from 2026-03-01.
+        As of 2026-02-01 -> v1 1200/12 = 100.00; as of the boundary
+        2026-03-01 -> v2 2400/12 = 200.00 (effective_date is inclusive).
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 3, 1), "2400"),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 2, 1)) == Decimal("100.00")
+        assert escrow_monthly_as_of([line], date(2026, 3, 1)) == Decimal("200.00")
+
+    def test_ordering_independent(self):
+        """Version order within a line does not change the resolution.
+
+        Same two versions listed newest-first; as of 2026-02-01 still
+        resolves to v1 -> 100.00.
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2026, 3, 1), "2400"),
+            _ver(date(2020, 1, 1), "1200"),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 2, 1)) == Decimal("100.00")
+
+    def test_tombstone_contributes_zero(self):
+        """A line whose in-effect version is a removal tombstone contributes 0.
+
+        v1 $1,200/yr from 2020, tombstone from 2026-01-01.  As of 2026-06-01
+        the tombstone is in effect -> 0.00; as of 2025-06-01 -> v1 100.00.
+        """
+        line = _line(1, "Escrow", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 1, 1), "0", is_removed=True),
+        ])
+        assert escrow_monthly_as_of([line], date(2026, 6, 1)) == Decimal("0.00")
+        assert escrow_monthly_as_of([line], date(2025, 6, 1)) == Decimal("100.00")
+
+    def test_no_version_on_or_before_date_contributes_zero(self):
+        """A line whose earliest version starts after D contributes 0 on D.
+
+        Only version effective 2026-03-01; as of 2026-01-01 no version is
+        on/before D -> line contributes 0.00.
+        """
+        line = _line(1, "Escrow", [_ver(date(2026, 3, 1), "2400")])
+        assert escrow_monthly_as_of([line], date(2026, 1, 1)) == Decimal("0.00")
+
+    def test_multi_line_sum_then_round(self):
+        """Two $100/yr lines sum full-precision then round once -> 16.67.
+
+        100/12 = 8.3333...; full-precision sum 16.6666... -> round_money 16.67
+        (preserves calculate_monthly_escrow's E-26 sum-then-round boundary).
+        """
+        lines = [
+            _line(1, "Tax", [_ver(date(2020, 1, 1), "100")]),
+            _line(2, "Ins", [_ver(date(2020, 1, 1), "100")]),
+        ]
+        assert escrow_monthly_as_of(lines, date(2026, 1, 1)) == Decimal("16.67")
+
+    def test_empty_lines(self):
+        """No lines -> $0.00."""
+        assert escrow_monthly_as_of([], date(2026, 1, 1)) == Decimal("0.00")
+
+
+class TestResolveActiveLines:
+    """The shared resolver feeding both the display and the monthly total."""
+
+    def test_carries_line_identity_and_version_fields(self):
+        """A resolved row carries the LINE id/name and the version's amount/rate.
+
+        id/name are the line's (the delete/edit target); annual_amount and
+        inflation_rate come from the in-effect version (v2 as of 2026-06-01).
+        """
+        line = _line(7, "Property Tax", [
+            _ver(date(2020, 1, 1), "1200"),
+            _ver(date(2026, 3, 1), "2400", inflation="0.03"),
+        ])
+        rows = resolve_active_lines([line], date(2026, 6, 1))
+        assert len(rows) == 1
+        assert rows[0].id == line.id == 7
+        # The row carries the LINE's display name (compared to the input line,
+        # not a literal -- the name is display text, not ref-table key logic).
+        assert rows[0].name == line.name
+        assert rows[0].annual_amount == Decimal("2400.00")
+        assert rows[0].inflation_rate == Decimal("0.03")
+
+    def test_drops_removed_and_absent_lines_preserves_order(self):
+        """Tombstoned or not-yet-effective lines drop; survivors keep input order.
+
+        id 1 active, id 2 tombstoned as of D, id 3 not yet effective.  Only id 1
+        survives.
+        """
+        lines = [
+            _line(1, "A", [_ver(date(2020, 1, 1), "1200")]),
+            _line(2, "B", [_ver(date(2026, 1, 1), "0", is_removed=True)]),
+            _line(3, "C", [_ver(date(2027, 1, 1), "2400")]),
+        ]
+        rows = resolve_active_lines(lines, date(2026, 6, 1))
+        assert [r.id for r in rows] == [1]
+
+    def test_monthly_as_of_equals_calculate_over_resolved(self):
+        """escrow_monthly_as_of == calculate_monthly_escrow(resolve_active_lines).
+
+        Pins the delegation so the two "today's escrow" paths (LoanContext's
+        field and the as-of wrapper) can never diverge.  7200/12 + 2400/12 =
+        600.00 + 200.00 = 800.00.
+        """
+        lines = [
+            _line(1, "Tax", [_ver(date(2020, 1, 1), "7200")]),
+            _line(2, "Ins", [_ver(date(2020, 1, 1), "2400")]),
+        ]
+        as_of = date(2026, 1, 1)
+        assert escrow_monthly_as_of(lines, as_of) == calculate_monthly_escrow(
+            resolve_active_lines(lines, as_of),
+        )
+        assert escrow_monthly_as_of(lines, as_of) == Decimal("800.00")
+
+
+class TestBuildEscrowCard:
+    """The escrow-card display model: active summaries + version drawers."""
+
+    def test_active_line_one_version_no_boundary(self):
+        """One active line, one version, no settled boundary -> current, no scheduled.
+
+        With ``forward_boundary=None`` (no settled payment) the only version is
+        editable but NOT deletable (a line's sole version is removed via the line,
+        not deleted).  1200/12 = 100.00.
+        """
+        line = _line(1, "Escrow", [_ver(date(2020, 1, 1), "1200", id=10)])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.summary.name == "Escrow"
+        assert card.summary.monthly_amount == Decimal("100.00")
+        assert card.has_scheduled is False
+        assert len(card.versions) == 1
+        row = card.versions[0]
+        assert row.id == 10
+        assert row.status_key == "current"
+        assert row.status_label == "Current"
+        assert row.is_editable is True   # nothing settled -> not frozen
+        assert row.is_deletable is False  # sole version
+
+    def test_scheduled_future_version_flags_and_editability(self):
+        """A future version -> has_scheduled, scheduled row editable + deletable.
+
+        Boundary = 2026-01-15 (a settled payment's period start).  The 2026-08-01
+        version is strictly after it, so it is editable AND deletable (two
+        versions).  The origination version (2018-12-01 <= boundary) is frozen.
+        """
+        line = _line(1, "Tax", [
+            _ver(date(2018, 12, 1), "7403.88", id=1),
+            _ver(date(2026, 8, 1), "8003.88", id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), date(2026, 1, 15))
+        card = cards[0]
+        assert card.has_scheduled is True
+        # Ascending by effective_date: origination first, scheduled second.
+        current_row, scheduled_row = card.versions
+        assert current_row.status_key == "current"
+        assert current_row.is_editable is False   # frozen (<= boundary)
+        assert current_row.is_deletable is False
+        assert scheduled_row.status_key == "scheduled"
+        assert scheduled_row.status_label == "Scheduled"
+        assert scheduled_row.is_editable is True
+        assert scheduled_row.is_deletable is True
+        # 8003.88 / 12 = 666.99 (exact).
+        assert scheduled_row.monthly_amount == Decimal("666.99")
+
+    def test_current_row_monthly_matches_summary_allocation(self):
+        """The drawer's current row uses the summary's cent-allocated monthly.
+
+        Two $100/yr lines allocate to 8.34 + 8.33 = 16.67 (badge), not 8.33 each
+        (the leftover cent goes to the first by the stable largest-remainder rule).
+        Each line's current version row must show the SAME monthly the summary
+        shows, not a bare round(100/12)=8.33, so the drawer and summary never
+        disagree.
+        """
+        lines = [
+            _line(1, "A", [_ver(date(2020, 1, 1), "100", id=1)]),
+            _line(2, "B", [_ver(date(2020, 1, 1), "100", id=2)]),
+        ]
+        cards = build_escrow_card(lines, date(2026, 6, 1), None)
+        summary_monthlies = [c.summary.monthly_amount for c in cards]
+        assert summary_monthlies == [Decimal("8.34"), Decimal("8.33")]
+        assert sum(summary_monthlies) == Decimal("16.67")
+        for card in cards:
+            assert card.versions[0].monthly_amount == card.summary.monthly_amount
+
+    def test_removed_line_absent_from_card(self):
+        """A line whose in-effect version is a tombstone gets no card at all."""
+        line = _line(1, "PMI", [
+            _ver(date(2020, 1, 1), "1200", id=1),
+            _ver(date(2024, 1, 1), "0", is_removed=True, id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 0
+
+    def test_upcoming_only_line_still_shown(self):
+        """A line whose only version is in the FUTURE is still shown (no vanish).
+
+        A new line added with a future effective date has no in-effect-today
+        version, so it must not silently disappear: its summary comes off the
+        earliest upcoming version, monthly = 6000/12 = 500.00, has_scheduled True,
+        and its sole row is 'Scheduled'.
+        """
+        line = _line(1, "Future Charge", [_ver(date(2026, 12, 1), "6000", id=1)])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.summary.name == "Future Charge"
+        assert card.summary.monthly_amount == Decimal("500.00")
+        assert card.has_scheduled is True
+        assert card.versions[0].status_key == "scheduled"
+
+    def test_future_boundary_freezes_gap_version(self):
+        """A version in (today, future boundary] is frozen: not editable, not deletable.
+
+        An early-settled payment puts the boundary in the FUTURE (2026-03-27) while
+        today is 2026-03-20.  A version effective 2026-03-25 is 'scheduled' (after
+        today) yet underpins that settled split (on/before the boundary), so the
+        display must offer neither edit nor delete -- the display side of the guard
+        the delete routes enforce server-side.
+        """
+        line = _line(1, "Tax", [
+            _ver(date(2020, 1, 1), "3600", id=1),
+            _ver(date(2026, 3, 25), "4800", id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 3, 20), date(2026, 3, 27))
+        gap_row = cards[0].versions[1]
+        assert gap_row.effective_date == date(2026, 3, 25)
+        assert gap_row.status_key == "scheduled"
+        assert gap_row.is_editable is False
+        assert gap_row.is_deletable is False
+
+    def test_line_with_only_future_tombstone_absent(self):
+        """A line whose only versions are removed / a future tombstone is omitted."""
+        line = _line(1, "Gone", [
+            _ver(date(2020, 1, 1), "0", is_removed=True, id=1),
+            _ver(date(2027, 1, 1), "0", is_removed=True, id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 0
+
+    def test_scheduled_removal_status_and_past_version(self):
+        """A future tombstone reads 'Scheduled removal'; a superseded one is 'Past'.
+
+        Line: origination (current), a superseded past version, and a future
+        removal tombstone.  as-of 2026-06-01 with no boundary.
+        """
+        line = _line(1, "Ins", [
+            _ver(date(2018, 12, 1), "1200", id=1),
+            _ver(date(2020, 1, 1), "1400", id=2),
+            _ver(date(2027, 1, 1), "0", is_removed=True, id=3),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        card = cards[0]
+        past_row, current_row, future_row = card.versions
+        assert past_row.status_key == "past"
+        assert past_row.status_label == "Past"
+        assert current_row.status_key == "current"
+        assert future_row.status_key == "scheduled"
+        assert future_row.status_label == "Scheduled removal"
+        assert future_row.is_removed is True
+        assert future_row.is_editable is False   # tombstones are not amount-editable
+        assert future_row.is_deletable is True    # but a scheduled removal can be undone
+
+
+class TestPlanEscrowLineMerge:
+    """Tests for the pure merge planner (reunify a split line's history)."""
+
+    def test_reunifies_rename_split(self):
+        """The account-3 shape: a removed old line + an active new line -> one line.
+
+        Source "Old" is active from 2018 ($7,403.88/yr) then a removal tombstone on
+        2026-07-06; target "New" is $7,408.00/yr from 2026-07-06.  The plan moves the
+        2018 version onto the target and DROPS the source's tombstone (superseded by
+        the target's real version on the same date); no error.
+        """
+        orig = _ver(date(2018, 12, 1), "7403.88", id=1)
+        tomb = _ver(date(2026, 7, 6), "0.00", is_removed=True, id=2)
+        new = _ver(date(2026, 7, 6), "7408.00", id=3)
+        source = _line(1, "Old", [orig, tomb])
+        target = _line(2, "New", [new])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is None
+        assert plan.versions_to_move == [orig]
+        assert plan.versions_to_drop == [tomb]
+
+    def test_disjoint_split_moves_every_version(self):
+        """A cleanly tiled split (removed before the target begins) moves all versions.
+
+        Source is $6,000/yr from 2019, removed (tombstone) 2021-01-01; target begins
+        2021-06-01.  No date collides, so both source versions move and none drop --
+        the merged line's history shows $500, then removed, then the target's amount,
+        which resolves identically on every date.
+        """
+        v1 = _ver(date(2019, 1, 1), "6000.00", id=1)
+        tomb = _ver(date(2021, 1, 1), "0.00", is_removed=True, id=2)
+        new = _ver(date(2021, 6, 1), "7200.00", id=3)
+        source = _line(1, "Old", [v1, tomb])
+        target = _line(2, "New", [new])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is None
+        assert plan.versions_to_move == [v1, tomb]
+        assert plan.versions_to_drop == []
+
+    def test_rejects_time_overlap(self):
+        """Two concurrent (overlapping) real lines are rejected, not silently merged.
+
+        Source $6,000/yr from 2020 (never removed) and target $7,200/yr from 2021
+        both resolve to a real amount on every date from 2021 on ($500 + $600 =
+        $1,100/mo), so merging would drop a charge to $600/mo.  The planner returns
+        an error and moves nothing.
+        """
+        source = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00", id=1)])
+        target = _line(2, "Insurance", [_ver(date(2021, 1, 1), "7200.00", id=2)])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is not None
+        assert "overlap" in plan.error.lower()
+        assert plan.versions_to_move == []
+        assert plan.versions_to_drop == []
+
+    def test_rejects_same_date_duplicate(self):
+        """Two lines with a real version on the same date are a duplicate, not a split.
+
+        Both carry $6,000/yr from 2020-01-01, so on that date they sum to $1,000/mo;
+        merging (dropping the source's) would halve escrow to $500/mo, so it is
+        rejected -- the operator removes the duplicate line instead.
+        """
+        source = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00", id=1)])
+        target = _line(2, "Tax copy", [_ver(date(2020, 1, 1), "6000.00", id=2)])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is not None
+
+
+class TestBuildMergeCandidates:
+    """Tests for the merge-source candidate labels (incl. hidden removed lines)."""
+
+    def test_labels_carry_span_and_removed_marker(self):
+        """Each candidate labels its line with the effective span and removed state.
+
+        A single-version active line reads ``name (Mon Year)``; a multi-version
+        removed line reads ``name (first - last, removed)`` so a hidden predecessor
+        is identifiable.
+        """
+        active = _line(2, "Tax and Insurance", [_ver(date(2026, 7, 6), "7408.00")])
+        removed = _line(1, "Old Tax", [
+            _ver(date(2018, 12, 1), "7403.88"),
+            _ver(date(2026, 7, 6), "0.00", is_removed=True),
+        ])
+
+        labels = {c.id: c.label for c in build_merge_candidates([removed, active])}
+
+        assert labels[2] == "Tax and Insurance (Jul 2026)"
+        assert labels[1] == "Old Tax (Dec 2018 - Jul 2026, removed)"
+
+    def test_skips_line_with_no_versions(self):
+        """A versionless line (defensive) is skipped, not labelled."""
+        empty = _line(3, "Empty", [])
+        real = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00")])
+
+        candidates = build_merge_candidates([empty, real])
+
+        assert [c.id for c in candidates] == [1]

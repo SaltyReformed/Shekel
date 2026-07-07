@@ -12,9 +12,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
@@ -56,7 +56,7 @@ class _AccountParams:
     interest_params_map: dict[int, InterestParams]
     investment_params_map: dict[int, InvestmentParams]
     loan_params_map: dict[int, LoanParams]
-    escrow_map: dict[int, list[EscrowComponent]]
+    escrow_map: dict[int, list[EscrowLine]]
 
 
 @dataclass(frozen=True)

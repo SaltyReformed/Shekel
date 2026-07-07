@@ -38,14 +38,18 @@ from decimal import Decimal
 from pathlib import Path
 
 from app import ref_cache
-from app.enums import LoanAnchorSourceEnum
+from app.enums import LoanAnchorSourceEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
+from app.models.loan_payment_settings import LoanPaymentSettings
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
+from app.models.transfer_template import TransferTemplate
 from app.services import (
     account_service,
     loan_payment_service,
+    loan_resolution,
     loan_resolver,
     year_end_summary_service,
 )
@@ -603,6 +607,149 @@ def test_arm_payoff_date_consistent_across_surfaces(
         assert card_text == expected_month_year, (
             f"Projected Payoff card displayed {card_text!r}, "
             f"expected resolver's payoff_date {expected_month_year!r}."
+        )
+
+
+def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
+    """Attach a derive-from-loan recurring payment carrying a standing extra.
+
+    The single loan-level ``extra_principal`` the committed trajectory must
+    reflect (step 5 / step 8): a monthly recurring transfer INTO the loan whose
+    1:1 ``loan_payment_settings`` row carries ``derive_from_loan`` plus the
+    standing overpayment.  :func:`recurring_transfer_query.loan_standing_extra`
+    reads it, so the resolver seam picks it up once step 8 threads it through
+    ``resolve_loan_seeded``.
+    """
+    user = seed_user["user"]
+    rule = RecurrenceRule(
+        user_id=user.id,
+        pattern_id=ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.MONTHLY,
+        ),
+        day_of_month=1,
+    )
+    db.session.add(rule)
+    db.session.flush()
+    template = TransferTemplate(
+        user_id=user.id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=loan_account.id,
+        recurrence_rule_id=rule.id,
+        name="Mortgage Payment",
+        default_amount=Decimal("1.00"),
+    )
+    template.settings = LoanPaymentSettings(
+        derive_from_loan=True, extra_principal=extra,
+    )
+    db.session.add(template)
+    db.session.commit()
+
+
+def test_standing_extra_payoff_consistent_across_surfaces(
+    app, seed_user, seed_periods,
+):
+    """Step 8: a loan with a standing extra shows ONE payoff on every surface.
+
+    The step-8 seam fix (Section 16 of
+    ``docs/design/escrow_line_identity_refactor.md``).  Before it, the summary
+    surfaces (net worth / year-end / /savings / debt-strategy) resolved a loan
+    through ``resolve_loan``, which projected the CONTRACTUAL schedule -- it
+    stripped payments to confirmed-only and ignored the standing
+    ``extra_principal`` -- while the loan detail page read the COMMITTED
+    (plan-aware) trajectory.  So a loan paying a standing extra showed one payoff
+    on the detail page and a later one everywhere else; and because the cash leg
+    of the payment ALREADY debits the extra from checking, the contractual
+    liability made projected net worth wrong.
+
+    This pins the fix: the summary seam (``resolve_account_loan``) and the
+    year-end debt aggregation must report the SAME payoff and life-of-loan
+    interest as the committed detail trajectory.  The sibling
+    ``test_arm_payoff_date_consistent_across_surfaces`` locks the no-payment case
+    (contractual == committed); this locks the with-standing-extra case (they
+    differ), so the invariant cannot be satisfied vacuously.  Because the
+    schedule is what carries the extra into the loan's forward balance, asserting
+    the summary schedule IS the committed schedule is exactly what restores
+    net-worth consistency: the liability leg now falls by the same extra the cash
+    leg already debits.
+    """
+    with app.app_context():
+        account, loan_params = _create_fixed_loan(
+            seed_user, seed_periods[0].id,
+        )
+        extra = Decimal("500.00")
+        _add_recurring_payment_with_extra(seed_user, account, extra)
+        scenario_id = seed_user["scenario"].id
+        today = date.today()
+
+        ctx = loan_payment_service.load_loan_context(
+            account.id, scenario_id, loan_params,
+        )
+        anchor_events = (
+            db.session.query(LoanAnchorEvent)
+            .filter_by(account_id=account.id)
+            .all()
+        )
+        # The committed (plan-aware) reference: the loan detail page's producer,
+        # honoring the standing extra the operator committed to.  resolve_loan
+        # composes ``state.schedule = history_rows + committed_forward`` and
+        # derives payoff / total_interest from it
+        # (``app/services/loan_resolver/_state.py``), so build the reference the
+        # same way, to the cent.
+        committed = loan_resolver.compute_payoff_scenarios(
+            loan_inputs=loan_resolver.LoanInputs(
+                loan_params, anchor_events, ctx.payments, ctx.rate_changes,
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=today,
+            confirmed_view=loan_payment_service.confirmed_loan_view(
+                account.id, scenario_id, today,
+            ),
+            extra_principal=extra,
+        )
+        ref_schedule = (
+            list(committed.history_rows) + list(committed.committed_forward)
+        )
+        ref_payoff = ref_schedule[-1].payment_date
+        ref_total_interest = round_money(
+            sum((row.interest for row in ref_schedule), Decimal("0.00")),
+        )
+
+        # Guard against a vacuous pass: the standing extra must genuinely
+        # accelerate payoff versus the pure-contractual original (extra-free).
+        contractual_payoff = committed.original_forward[-1].payment_date
+        assert ref_payoff < contractual_payoff, (
+            "Standing extra did not accelerate payoff; the test would be "
+            "vacuous (contractual == committed)."
+        )
+
+        # Summary seam: net worth, year-end, and debt-strategy all resolve a
+        # debt account through resolve_account_loan.
+        resolved = loan_resolution.resolve_account_loan(
+            account.id, scenario_id, today,
+        )
+        assert resolved is not None
+        _params, state = resolved
+        assert state.payoff_date == ref_payoff, (
+            f"Summary-surface payoff {state.payoff_date} != committed detail "
+            f"payoff {ref_payoff}: the resolver seam still ignores the standing "
+            "extra (contractual)."
+        )
+        assert state.total_interest == ref_total_interest, (
+            f"Summary-surface life-of-loan interest {state.total_interest} != "
+            f"committed {ref_total_interest}: the seam ignores the extra."
+        )
+
+        # Year-end / net-worth debt aggregation reads the same seam
+        # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
+        debt_schedules = (
+            year_end_summary_service._balances._generate_debt_schedules(
+                [account], scenario_id,
+            )
+        )
+        ye_schedule = debt_schedules[account.id].schedule
+        assert ye_schedule[-1].payment_date == ref_payoff, (
+            f"Year-end debt schedule payoff {ye_schedule[-1].payment_date} != "
+            f"committed {ref_payoff}."
         )
 
 

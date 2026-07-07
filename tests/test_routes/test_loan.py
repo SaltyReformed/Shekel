@@ -17,15 +17,17 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_params import LoanParams
-from app.models.loan_features import RateHistory, EscrowComponent
+from app.models.loan_features import RateHistory
 from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service
+from app.services import account_service, escrow_calculator, loan_loaders
 
 from tests._test_helpers import (
+    add_escrow_line,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
@@ -772,7 +774,7 @@ class TestEscrow:
     """Tests for escrow component management."""
 
     def test_escrow_add(self, auth_client, seed_user, db, seed_periods):
-        """POST escrow creates component with percentage-to-decimal conversion."""
+        """POST escrow creates a line + opening version, percent -> decimal."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow",
@@ -781,16 +783,236 @@ class TestEscrow:
         assert resp.status_code == 200
         assert b"Property Tax" in resp.data
 
-        comp = db.session.query(EscrowComponent).filter_by(account_id=acct.id).first()
-        assert comp is not None
-        assert comp.inflation_rate == Decimal("0.03")
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="Property Tax").one()
+        )
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line.id).one()
+        )
+        assert version.annual_amount == Decimal("4800.00")
+        # 3% form percent stored as the 0.03 decimal fraction.
+        assert version.inflation_rate == Decimal("0.03")
+        assert version.is_removed is False
+
+    def test_dashboard_next_year_escrow_note_is_one_annual_step(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The loan card projects next-year escrow one full annual step from today.
+
+        An escrow line of $4,800/yr ($400.00/mo) at a 3% rate shows a "next year"
+        note of 4800 * 1.03 / 12 = $412.00/mo -- one annual step (spec Sec. 8),
+        NOT the old elapsed-span-since-created_at figure (which on a same-day-
+        seeded line rounded to roughly $406).  The projection takes no date
+        argument, so this figure is viewing-date independent by construction.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        add_escrow_line(
+            db.session, acct.id, "Property Tax", Decimal("4800.00"),
+            inflation_rate=Decimal("0.03"),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"may increase" in resp.data
+        # Current escrow $400.00/mo is projected to $412.00/mo next year.
+        assert b"$412.00" in resp.data
+
+    def _build_split_escrow(self, db, account_id, boundary):
+        """Seed the account-3 rename-split: removed "Old Tax" + active "New Tax".
+
+        "Old Tax" is $6,000/yr ($500.00/mo) from the loan's origination, tombstoned
+        on ``boundary``; "New Tax" is $7,200/yr ($600.00/mo) from ``boundary``.  The
+        two tile the timeline (no overlap), so escrow resolves to $500 before the
+        boundary and $600 on/after it.  Returns ``(old_line, new_line)``.
+        """
+        old = add_escrow_line(db.session, account_id, "Old Tax", Decimal("6000.00")).line
+        db.session.add(EscrowComponentVersion(
+            line_id=old.id, effective_date=boundary,
+            annual_amount=Decimal("0.00"), is_removed=True,
+        ))
+        add_escrow_line(
+            db.session, account_id, "New Tax", Decimal("7200.00"),
+            effective_date=boundary,
+        )
+        db.session.commit()
+        new = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=account_id, name="New Tax").one()
+        )
+        return old, new
+
+    def test_merge_reunifies_split_line(self, auth_client, seed_user, db, seed_periods):
+        """POST merge folds a removed line's history into the active line, escrow intact.
+
+        Merging "Old Tax" into "New Tax" leaves only the new line, carrying BOTH
+        versions, and the escrow resolved on every date is unchanged ($500 before
+        the boundary, $600 on/after) -- so no settled split can move, since the split
+        reads escrow solely via escrow_monthly_as_of.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        boundary = date(2026, 3, 1)
+        old, new = self._build_split_escrow(db, acct.id, boundary)
+
+        # The removed predecessor is hidden from the card but offered as a merge
+        # source in the active line's drawer (labelled by its span + removed state).
+        page = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert b"Merge in" in page.data
+        assert b"Old Tax (Jun 2023 - Mar 2026, removed)" in page.data
+
+        lines_before = loan_loaders.load_escrow_lines(acct.id)
+        before_early = escrow_calculator.escrow_monthly_as_of(
+            lines_before, date(2026, 1, 1),
+        )
+        before_late = escrow_calculator.escrow_monthly_as_of(
+            lines_before, date(2026, 4, 1),
+        )
+        assert before_early == Decimal("500.00")
+        assert before_late == Decimal("600.00")
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{new.id}/merge",
+            data={"source_line_id": old.id},
+        )
+        assert resp.status_code == 200
+
+        # Only the merged line survives, carrying both versions in date order.
+        remaining = db.session.query(EscrowLine).filter_by(account_id=acct.id).all()
+        assert [line.id for line in remaining] == [new.id]
+        assert db.session.get(EscrowLine, old.id) is None
+        versions = sorted(
+            db.session.query(EscrowComponentVersion).filter_by(line_id=new.id).all(),
+            key=lambda v: v.effective_date,
+        )
+        assert [(v.effective_date, v.annual_amount) for v in versions] == [
+            (date(2023, 6, 1), Decimal("6000.00")),
+            (boundary, Decimal("7200.00")),
+        ]
+        # Escrow-per-date is unchanged, so no derived split moves.
+        lines_after = loan_loaders.load_escrow_lines(acct.id)
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines_after, date(2026, 1, 1),
+        ) == before_early
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines_after, date(2026, 4, 1),
+        ) == before_late
+
+    def test_merge_rejects_overlap(self, auth_client, seed_user, db, seed_periods):
+        """POST merge on two concurrent lines returns 400; both lines survive.
+
+        "Tax" ($6,000/yr from origination) and "Insurance" ($7,200/yr from 2024)
+        overlap in time, so merging would drop a charge.  The route rejects it with
+        an actionable message and leaves both lines intact.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        tax = add_escrow_line(db.session, acct.id, "Tax", Decimal("6000.00")).line
+        ins = add_escrow_line(
+            db.session, acct.id, "Insurance", Decimal("7200.00"),
+            effective_date=date(2024, 1, 1),
+        ).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{ins.id}/merge",
+            data={"source_line_id": tax.id},
+        )
+        assert resp.status_code == 400
+        assert b"overlap" in resp.data.lower()
+        assert db.session.get(EscrowLine, tax.id) is not None
+        assert db.session.get(EscrowLine, ins.id) is not None
+
+    def test_merge_source_idor(
+        self, auth_client, seed_user, second_user, db, seed_periods,
+    ):
+        """Merging in a source line owned by another user returns 404, merges nothing."""
+        mine = _create_mortgage(seed_user, db.session)
+        target = add_escrow_line(db.session, mine.id, "My Tax", Decimal("6000.00")).line
+        other = _create_other_loan(second_user, db.session)
+        foreign = add_escrow_line(
+            db.session, other.id, "Foreign Tax", Decimal("6000.00"),
+        ).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/{target.id}/merge",
+            data={"source_line_id": foreign.id},
+        )
+        assert resp.status_code == 404
+        assert db.session.get(EscrowLine, target.id) is not None
+        assert db.session.get(EscrowLine, foreign.id) is not None
+
+    def test_merge_into_self_rejected(self, auth_client, seed_user, db, seed_periods):
+        """Merging a line into itself returns 400 and changes nothing."""
+        acct = _create_mortgage(seed_user, db.session)
+        line = add_escrow_line(db.session, acct.id, "Tax", Decimal("6000.00")).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line.id}/merge",
+            data={"source_line_id": line.id},
+        )
+        assert resp.status_code == 400
+        assert db.session.get(EscrowLine, line.id) is not None
+        assert db.session.query(EscrowComponentVersion).filter_by(
+            line_id=line.id,
+        ).count() == 1
+
+    def test_merge_preserves_settled_payment_split(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A settled payment's posted split survives merging its escrow line.
+
+        The safety proof that merge needs no posting reconcile: a payment settled in
+        period 0 (2026-01-02, before the 2026-03-01 boundary) posts a split whose
+        escrow leg is "Old Tax" $6,000/yr = $500.00/mo.  After merging "Old Tax" into
+        "New Tax" -- which the route does NOT reconcile -- the posted principal /
+        interest / escrow are byte-identical, and a later reconcile re-derives the
+        SAME split from the merged line (escrow-per-date is preserved).
+        """
+        from app.services.loan_posting_service import (  # pylint: disable=import-outside-toplevel
+            backfill_all_loan_postings,
+            confirmed_loan_payment_history,
+        )
+        acct = _create_mortgage(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        old, new = self._build_split_escrow(db, acct.id, date(2026, 3, 1))
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("2000.00"),
+        )
+        db.session.commit()
+        backfill_all_loan_postings()
+        db.session.commit()
+
+        before = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert len(before) == 1
+        assert before[0].escrow == Decimal("500.00")  # Old Tax: 6000 / 12
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{new.id}/merge",
+            data={"source_line_id": old.id},
+        )
+        assert resp.status_code == 200
+
+        # The posted split is byte-identical -- the merge ran no reconcile ...
+        after = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert after[0].escrow == before[0].escrow
+        assert after[0].principal == before[0].principal
+        assert after[0].interest == before[0].interest
+        # ... and a later reconcile re-derives the SAME split from the merged line.
+        backfill_all_loan_postings()
+        db.session.commit()
+        reconciled = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert reconciled[0].escrow == before[0].escrow
+        assert reconciled[0].principal == before[0].principal
+        assert reconciled[0].interest == before[0].interest
 
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
-        """Duplicate escrow name returns 400."""
+        """Duplicate ACTIVE line name returns 400."""
         acct = _create_mortgage(seed_user, db.session)
-        db.session.add(EscrowComponent(
-            account_id=acct.id, name="Insurance", annual_amount=Decimal("2400.00"),
-        ))
+        add_escrow_line(db.session, acct.id, "Insurance", Decimal("2400.00"))
         db.session.commit()
 
         resp = auth_client.post(
@@ -801,36 +1023,96 @@ class TestEscrow:
         assert b"already exists" in resp.data
 
     def test_escrow_delete(self, auth_client, seed_user, db, seed_periods):
-        """POST delete closes the component's active range (stamps end_date)."""
+        """POST delete appends a removal tombstone; the line resolves inactive."""
         acct = _create_mortgage(seed_user, db.session)
-        comp = EscrowComponent(
-            account_id=acct.id, name="Old Insurance", annual_amount=Decimal("1200.00"),
-        )
-        db.session.add(comp)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Old Insurance", Decimal("1200.00"),
+        ).line_id
         db.session.commit()
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{comp.id}/delete")
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
         assert resp.status_code == 200
-        db.session.refresh(comp)
-        # Removal stamps end_date (the effective-dated "removed" marker that
-        # replaced is_active=False); the row survives as history.
-        assert comp.end_date is not None
+        db.session.expire_all()
+        # Removal appends an is_removed tombstone (supersession) at today, so the
+        # line's latest version is that tombstone and it contributes nothing now.
+        line = db.session.get(EscrowLine, line_id)
+        latest = max(line.versions, key=lambda v: v.effective_date)
+        assert latest.is_removed is True
 
     def test_escrow_delete_idor(self, auth_client, second_user, db, seed_periods):
         """DELETE another user's escrow returns 404 and leaves it active."""
         other = _create_other_loan(second_user, db.session, "Mortgage")
-        comp = EscrowComponent(
-            account_id=other.id, name="Tax", annual_amount=Decimal("3000.00"),
-        )
-        db.session.add(comp)
+        line_id = add_escrow_line(
+            db.session, other.id, "Tax", Decimal("3000.00"),
+        ).line_id
         db.session.commit()
 
-        resp = auth_client.post(f"/accounts/{other.id}/loan/escrow/{comp.id}/delete")
+        resp = auth_client.post(f"/accounts/{other.id}/loan/escrow/{line_id}/delete")
         assert resp.status_code == 404
 
         db.session.expire_all()
-        after = db.session.get(EscrowComponent, comp.id)
-        assert after.end_date is None
+        # No tombstone appended: the line's only version is the original, active.
+        line = db.session.get(EscrowLine, line_id)
+        latest = max(line.versions, key=lambda v: v.effective_date)
+        assert latest.is_removed is False
+
+    def test_escrow_delete_same_day_add_converts_in_place(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Add then delete the SAME day converts the today-version in place.
+
+        The route add opens the line's version AT today, so a same-day delete
+        cannot append a second tombstone at today (the
+        ``uq_escrow_component_versions_line_effective_date`` unique forbids two
+        versions on one date).  It must convert that version in place --
+        ``is_removed`` True, ``annual_amount`` 0.00 (satisfying the
+        tombstone-zero CHECK) -- leaving exactly one version and an inactive line.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        # Add via the route so the opening version is effective TODAY.
+        add = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={"name": "PMI", "annual_amount": "1200.00"},
+        )
+        assert add.status_code == 200
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="PMI").one()
+        )
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line.id}/delete")
+        assert resp.status_code == 200
+        db.session.expire_all()
+        line = db.session.get(EscrowLine, line.id)
+        # Converted in place: still ONE version, now a zero-amount tombstone.
+        assert len(line.versions) == 1
+        assert line.versions[0].is_removed is True
+        assert line.versions[0].annual_amount == Decimal("0.00")
+
+    def test_escrow_delete_twice_is_idempotent(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A repeat delete is a no-op: still exactly one tombstone, no 500.
+
+        After the first delete the line resolves inactive today, so the second
+        delete's resolve-active-today guard short-circuits before appending
+        another tombstone (a double-click must not stack tombstones or error).
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Old Insurance", Decimal("1200.00"),
+        ).line_id
+        db.session.commit()
+
+        first = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
+        second = auth_client.post(f"/accounts/{acct.id}/loan/escrow/{line_id}/delete")
+        assert first.status_code == 200
+        assert second.status_code == 200
+        db.session.expire_all()
+        line = db.session.get(EscrowLine, line_id)
+        # Exactly one tombstone appended (the origination version + one tombstone).
+        tombstones = [v for v in line.versions if v.is_removed]
+        assert len(tombstones) == 1
 
     def test_escrow_oob_payment_update(self, auth_client, seed_user, db, seed_periods):
         """Adding escrow returns OOB fragments for payment summary."""
@@ -844,6 +1126,511 @@ class TestEscrow:
         assert 'id="total-payment-chip"' in html
         assert 'hx-swap-oob="true"' in html
         assert "$400.00/mo" in html
+
+    # ── Effective-date field + forward-only guard ────────────────────
+
+    def test_escrow_add_with_effective_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST add with an explicit effective_date opens the version at that date."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={
+                "name": "Property Tax", "annual_amount": "7200.00",
+                "effective_date": "2026-02-01",
+            },
+        )
+        assert resp.status_code == 200
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="Property Tax").one()
+        )
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line.id).one()
+        )
+        assert version.effective_date == date(2026, 2, 1)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_escrow_add_rejects_before_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An effective date before origination (2023-06-01) is rejected; no line."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={
+                "name": "Tax", "annual_amount": "1200.00",
+                "effective_date": "2023-05-01",
+            },
+        )
+        assert resp.status_code == 400
+        assert b"origination" in resp.data
+        assert (
+            db.session.query(EscrowLine).filter_by(account_id=acct.id).count() == 0
+        )
+
+    def test_forward_guard_rejects_on_or_before_latest_settled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Add-version on/before the latest settled payment's period start is rejected.
+
+        A settled payment in seed_periods[0] (start 2026-01-02) freezes the escrow
+        the split at that date reads.  A version effective 2026-01-02 (== the start)
+        would move that settled split, so it is rejected; 2026-01-03 (strictly
+        after) is allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[0].start_date == date(2026, 1, 2)
+
+        on_boundary = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-02"},
+        )
+        assert on_boundary.status_code == 400
+        assert b"latest recorded payment" in on_boundary.data
+
+        after = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+        )
+        assert after.status_code == 200
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id, effective_date=date(2026, 1, 3)).count() == 1
+        )
+
+    def test_forward_guard_boundary_is_latest_settled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The guard boundary is the LATEST settled payment's start, not the earliest.
+
+        Two settled payments: seed_periods[0] (start 2026-01-02) and seed_periods[2]
+        (start 2026-01-30).  The boundary is the LATER start (2026-01-30), so a
+        version effective 2026-01-16 -- after the first payment but on/before the
+        second -- is STILL rejected (a min-based guard would wrongly allow it, the
+        exact bug this correction avoids); only strictly after 2026-01-30 is allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[2], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[2].start_date == date(2026, 1, 30)
+
+        between = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-16"},
+        )
+        assert between.status_code == 400
+
+        after = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-31"},
+        )
+        assert after.status_code == 200
+
+    # ── Version drawer CRUD: schedule / edit / delete a version ───────
+
+    def test_add_version_schedules_change(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST add-version appends a future-dated version under the existing line."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7403.88"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8003.88", "effective_date": "2026-08-01"},
+        )
+        assert resp.status_code == 200
+        versions = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id)
+            .order_by(EscrowComponentVersion.effective_date).all()
+        )
+        assert len(versions) == 2
+        assert versions[1].effective_date == date(2026, 8, 1)
+        assert versions[1].annual_amount == Decimal("8003.88")
+
+    def test_add_version_duplicate_date_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A second version on a date the line already carries is rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        # add_escrow_line opens the version at origination (2023-06-01).
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2023-06-01"},
+        )
+        assert resp.status_code == 400
+        assert b"already has a version" in resp.data
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id).count() == 1
+        )
+
+    def _line_with_scheduled(self, db, account_id):
+        """Build a line with an origination version + a scheduled 2026-08-01 version.
+
+        Returns ``(line_id, scheduled_version)`` for the edit / delete tests.
+        """
+        v1 = add_escrow_line(db.session, account_id, "Tax", Decimal("7200.00"))
+        db.session.add(EscrowComponentVersion(
+            line_id=v1.line_id, effective_date=date(2026, 8, 1),
+            annual_amount=Decimal("8003.88"),
+        ))
+        db.session.commit()
+        sched = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=v1.line_id, effective_date=date(2026, 8, 1)).one()
+        )
+        return v1.line_id, sched
+
+    def test_edit_version_updates_scheduled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Editing a scheduled (unfrozen) version updates amount + date in place."""
+        acct = _create_mortgage(seed_user, db.session)
+        _line_id, sched = self._line_with_scheduled(db, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{sched.id}/edit",
+            data={"annual_amount": "8500.00", "effective_date": "2026-09-01"},
+        )
+        assert resp.status_code == 200
+        db.session.refresh(sched)
+        assert sched.annual_amount == Decimal("8500.00")
+        assert sched.effective_date == date(2026, 9, 1)
+
+    def test_edit_version_frozen_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A version at/before the latest settled payment is frozen -- edit rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(db.session, acct.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        # The origination version (2023-06-01) is <= the settled payment's period
+        # start (2026-01-02), so it underpins that settled split and is read-only.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2023-06-01"},
+        )
+        assert resp.status_code == 400
+        assert b"settled payment" in resp.data
+        db.session.refresh(version)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_delete_version_removes_scheduled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Deleting a scheduled (unfrozen, non-sole) version removes just that one."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id, sched = self._line_with_scheduled(db, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{sched.id}/delete",
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowComponentVersion, sched.id) is None
+        # The origination version survives.
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id).count() == 1
+        )
+
+    def test_delete_version_current_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A current (non-scheduled) version can't be per-version deleted.
+
+        The origination version (2023-06-01) is on/before today, so it is not a
+        scheduled future change; the route rejects the delete (edit it, or remove
+        the whole line, instead).
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(db.session, acct.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"scheduled future change" in resp.data
+        assert db.session.get(EscrowComponentVersion, version.id) is not None
+
+    def test_delete_upcoming_only_scheduled_drops_line(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Deleting an upcoming-only line's sole scheduled version removes the line.
+
+        A line added with a FUTURE effective date (2026-12-01, after the frozen
+        today of 2026-03-20) has no current version; deleting that sole scheduled
+        version leaves the line empty, so the orphan line is dropped too.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(
+            db.session, acct.id, "Future", Decimal("6000.00"),
+            effective_date=date(2026, 12, 1),
+        )
+        line_id = version.line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/delete",
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowComponentVersion, version.id) is None
+        assert db.session.get(EscrowLine, line_id) is None
+
+    # ── Rename in place ──────────────────────────────────────────────
+
+    def test_rename_line_updates_name(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming a line updates its label; the version amount is untouched."""
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(
+            db.session, acct.id, "Property Tax & Insurance", Decimal("7200.00"),
+        )
+        line_id = version.line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Tax and Insurance"},
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowLine, line_id).name == "Tax and Insurance"
+        # Rename is display-only: the version amount does not move.
+        db.session.refresh(version)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_rename_duplicate_active_name_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming onto another ACTIVE line's name is rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        add_escrow_line(db.session, acct.id, "Insurance", Decimal("1200.00"))
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Insurance"},
+        )
+        assert resp.status_code == 400
+        assert b"already exists" in resp.data
+        assert db.session.get(EscrowLine, line_id).name == "Tax"
+
+    def test_rename_to_same_name_allowed(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming a line to its own current name is a no-op, allowed."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Tax"},
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowLine, line_id).name == "Tax"
+
+    def test_dashboard_escrow_drawer_renders(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The dashboard GET renders the escrow card: summary, scheduled badge, drawer.
+
+        A line with an origination version (current) + a 2026-08-01 version
+        (scheduled) must render the summary amount, the 'Scheduled' badge, the
+        collapsible drawer, both status labels, the inline edit inputs for the
+        scheduled row, and the schedule-a-change form -- proving the version-drawer
+        template renders inline exactly as the HTMX routes re-render it.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        v1 = add_escrow_line(db.session, acct.id, "Property Tax", Decimal("7200.00"))
+        db.session.add(EscrowComponentVersion(
+            line_id=v1.line_id, effective_date=date(2026, 8, 1),
+            annual_amount=Decimal("8003.88"),
+        ))
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Property Tax" in html
+        # Collapsed summary flags a queued change.
+        assert "Scheduled" in html
+        assert f'id="escrow-drawer-{v1.line_id}"' in html
+        # Status labels for the two versions.
+        assert "Current" in html
+        # The scheduled version renders as an inline edit form (its amount input).
+        assert 'name="annual_amount"' in html
+        assert "Schedule a change" in html
+        # The rejected-change error surface is present (hidden until a 4xx).
+        assert 'id="escrow-error"' in html
+
+    def test_version_routes_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """Another user's escrow version routes return 404 (no existence oracle)."""
+        other = _create_other_loan(second_user, db.session, "Mortgage")
+        version = add_escrow_line(db.session, other.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        edit = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/version/{version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2026-08-01"},
+        )
+        delete = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/version/{version.id}/delete",
+        )
+        rename = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/{version.line_id}/rename",
+            data={"name": "Hacked"},
+        )
+        assert edit.status_code == 404
+        assert delete.status_code == 404
+        assert rename.status_code == 404
+
+    def test_version_edit_cross_account_version_id_is_404(
+        self, auth_client, seed_user, second_user, db, seed_periods,
+    ):
+        """Passing MY account_id with another user's version_id returns 404.
+
+        The subtler IDOR that ``_owned_version`` exists for: ``@require_owner``
+        passes (I own the URL account), but the version belongs to the victim's
+        line, so the account-mismatch check must still 404 -- no cross-account
+        version edit / delete.
+        """
+        mine = _create_mortgage(seed_user, db.session)
+        victim = _create_other_loan(second_user, db.session, "Mortgage")
+        victim_version = add_escrow_line(
+            db.session, victim.id, "Tax", Decimal("7200.00"),
+        )
+        db.session.commit()
+        edit = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/version/{victim_version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2026-08-01"},
+        )
+        delete = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/version/{victim_version.id}/delete",
+        )
+        assert edit.status_code == 404
+        assert delete.status_code == 404
+        db.session.refresh(victim_version)
+        assert victim_version.annual_amount == Decimal("7200.00")
+
+    # ── Early-settle regime: boundary can be in the FUTURE ────────────
+
+    def test_delete_version_blocked_by_early_settle_boundary(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A version in (today, boundary] can't be deleted when a payment is paid ahead.
+
+        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27.  Settling a
+        payment for period[6] BEFORE its period begins (an early-settle) puts the
+        boundary at 2026-03-27, in the FUTURE.  A version effective 2026-03-25
+        (after today, but on/before the boundary) underpins that settled payment's
+        escrow split, so deleting it must be rejected even though it is "after
+        today" -- the exact bypass the ``> today``-only guard allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        origin = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
+        # Schedule a version at 2026-03-25 (allowed now: no settled payment yet).
+        gap_version = EscrowComponentVersion(
+            line_id=origin.line_id, effective_date=date(2026, 3, 25),
+            annual_amount=Decimal("4800.00"),
+        )
+        db.session.add(gap_version)
+        db.session.commit()
+        # Early-settle period[6] (starts 2026-03-27, after today) -> boundary future.
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[6], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[6].start_date == date(2026, 3, 27)
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        escrow_at_settled_start = escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        )
+        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of 2026-03-27).
+        assert escrow_at_settled_start == Decimal("400.00")
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{gap_version.id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"settled payment" in resp.data
+        # The version survives and the settled payment's escrow is unmoved.
+        assert db.session.get(EscrowComponentVersion, gap_version.id) is not None
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        ) == Decimal("400.00")
+
+    def test_delete_line_blocked_by_early_settle_boundary(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Line remove (tombstone as of today) is blocked while a payment is paid ahead.
+
+        The removal tombstone lands at today (2026-03-20); with an early-settled
+        payment for period[6] (starts 2026-03-27) the boundary is 2026-03-27, so a
+        tombstone at today is on/before the boundary and would zero the line for
+        that settled payment.  The route must reject the removal.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[6], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line.line_id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"latest recorded payment" in resp.data
+        # No tombstone appended: the line's only version is still the original.
+        db.session.expire_all()
+        reloaded = db.session.get(EscrowLine, line.line_id)
+        assert all(not v.is_removed for v in reloaded.versions)
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        # 3600 / 12 = 300.00, unchanged for the early-settled payment.
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        ) == Decimal("300.00")
 
 
 # ── Rate History Tests ───────────────────────────────────────────────
@@ -1816,7 +2603,7 @@ class TestLoanNegativePaths:
         )
         assert resp.status_code == 404
 
-        count = db.session.query(EscrowComponent).filter_by(account_id=other.id).count()
+        count = db.session.query(EscrowLine).filter_by(account_id=other.id).count()
         assert count == 0
 
 
@@ -2306,10 +3093,11 @@ class TestTransferPrompt:
         assert tpl.default_amount > 0
         # No "amount" override was posted, so the route defaults to the
         # full monthly payment and opts into live derivation: the loan-only
-        # derive_from_loan flag must be set on the template.  The shared
-        # builder leaves it at the model default (False); the loan route
-        # sets it explicitly on the returned row.
-        assert tpl.derive_from_loan is True
+        # derive_from_loan flag lives in the 1:1 loan_payment_settings row
+        # (decision B), which the loan route creates on the template (a
+        # generic transfer / investment contribution gets no settings row).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
 
         rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
         assert rule is not None
@@ -2433,6 +3221,157 @@ class TestTransferPrompt:
         )
         assert tpl is not None
         assert tpl.default_amount == Decimal("2000.00")
+        # Manual mode (typed amount) still gets a loan_payment_settings row,
+        # but with derive_from_loan False -- the cash stays the typed base
+        # (decision B / decision D).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is False
+
+    def test_create_transfer_with_extra_principal(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Creating a payment with an extra stores it on settings, not the base.
+
+        The standing extra rides the settings row (spec Sec. 6.3); the
+        ``default_amount`` stays the derived base (P&I + escrow), NOT base +
+        extra -- the extra is applied live, never baked in.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "100.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("100.00")
+        # The base is the derived P&I + escrow, NOT base + extra.
+        assert tpl.default_amount > Decimal("100.00")
+
+    def test_update_payment_settings_changes_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The payment-settings route updates the standing extra in place.
+
+        No shadow regeneration is needed (the extra is a live parameter): the
+        settings row's ``extra_principal`` is set to the new value.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl.settings.extra_principal == Decimal("150.00")
+
+    def test_update_payment_settings_no_recurring_payment_warns(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Editing the extra on a loan with no recurring payment warns, no 500."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"no recurring payment" in resp.data.lower()
+
+    def test_update_payment_settings_rejects_negative_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A negative extra is rejected (danger flash) and never mutates settings."""
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "50.00",
+            },
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "-5.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"valid extra principal" in resp.data.lower()
+        # The original extra is untouched.
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl.settings.extra_principal == Decimal("50.00")
+
+    def test_update_payment_settings_idor(
+        self, second_auth_client, seed_user, db, seed_periods,
+    ):
+        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found)."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = second_auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+
+    def test_dashboard_shows_extra_control_when_payment_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The extra-principal edit control renders once a recurring payment exists.
+
+        Prefilled from the payment's stored extra ($125.00), posting to the
+        payment-settings route.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "125.00",
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f"/accounts/{acct.id}/loan/payment-settings" in html
+        assert 'value="125.00"' in html
 
     def test_source_accounts_exclude_debt_account(
         self, auth_client, seed_user, db, seed_periods,
@@ -2744,16 +3683,16 @@ class TestMultiScenarioVisualization:
 
 def _add_escrow(db_session, account_id, name, annual_amount,
                 inflation_rate=None):
-    """Helper to add an escrow component to a loan account."""
-    comp = EscrowComponent(
-        account_id=account_id,
-        name=name,
-        annual_amount=annual_amount,
+    """Add an escrow line (with one origination-dated version) to a loan.
+
+    Thin wrapper over the shared :func:`tests._test_helpers.add_escrow_line`;
+    the version defaults to the loan's origination date, so the escrow is active
+    for the current-period breakdown these tests read.
+    """
+    return add_escrow_line(
+        db_session, account_id, name, annual_amount,
         inflation_rate=inflation_rate,
     )
-    db_session.add(comp)
-    db_session.flush()
-    return comp
 
 
 class TestPaymentBreakdown:
@@ -4935,29 +5874,33 @@ class TestRefinanceCalculator:
 
 
 class TestRefinanceForwardOnlyBaseline:
-    """The refinance comparison measures the CURRENT loan forward-only.
+    """The refinance comparison measures the CURRENT loan contractual + forward-only.
 
-    The refinance side is inherently forward-only (a brand-new loan from
-    today), so the current side must be too: "Remaining Term" counts the
-    payments still ahead and "Total Interest" the interest still to be
-    paid.  Before this rule the builder used whole-schedule aggregates
-    (``len(state.schedule)`` / ``state.total_interest``), which counted
-    sunk history months and sunk interest against the from-today
-    refinance -- and the history read switch made the confirmed slice the
-    loan's FULL recorded history, inflating both on exactly the trued-up
-    loans the arc targets.
+    The refinance side is inherently forward-only (a brand-new loan from today),
+    so the current side must be too: "Remaining Term" counts the payments still
+    ahead and "Total Interest" the interest still to be paid.  And since the
+    resolver seam went plan-aware (step 8,
+    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), the current side
+    reads the pure-contractual ``scenarios.original_forward`` slice -- a
+    like-for-like minimum-vs-minimum comparison -- NOT the committed
+    ``state.schedule`` (which now reflects the loan's standing extra).  Before
+    these rules the builder used whole-schedule aggregates, counting sunk history
+    against a from-today refinance.
     """
 
-    def test_confirmed_rows_are_excluded_from_the_current_baseline(self):
-        """History rows never inflate remaining term or remaining interest.
+    def test_current_side_reads_contractual_original_forward(self):
+        """The current side derives from ``original_forward``, not ``state.schedule``.
 
-        A synthetic state with 2 CONFIRMED rows (interest 500.00 + 497.50,
-        sunk) and 2 FORWARD rows (interest 400.00 + 300.00, still owed):
-        the comparison's current side must read 2 remaining months and
-        700.00 remaining interest -- NOT the whole-schedule 4 months /
-        1,697.50 -- and both the term delta and the interest savings must
-        derive from the forward-only figures (savings = 700.00 minus the
-        refi's own projected interest; term_diff = 12 - 2).
+        Step 8 (Sec. 16): the current baseline is the pure-CONTRACTUAL forward
+        remainder read from ``scenarios.original_forward``, like-for-like against
+        a from-today minimum-payment refi -- not the committed ``state.schedule``
+        (plan-aware since the resolver seam).  Here ``original_forward`` is 2
+        contractual rows (interest 400.00 + 300.00 = 700.00, payoff Apr 2026)
+        while the committed ``state.schedule`` forward is a single faster-paydown
+        row (interest 250.00): the current side must report 2 remaining months /
+        700.00 / Apr-2026 from ``original_forward``, NOT 1 / 250.00 from the
+        committed schedule.  "Forward-only" is now structural too --
+        ``original_forward`` carries no confirmed rows.
         """
         # Pylint: ``import-outside-toplevel`` -- route-private helper under
         # test; imported here so the module import stays route-surface only.
@@ -4967,32 +5910,53 @@ class TestRefinanceForwardOnlyBaseline:
         from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
             AmortizationRow,
         )
-        from app.services.loan_resolver import LoanState  # pylint: disable=import-outside-toplevel
+        from app.services.loan_resolver import (  # pylint: disable=import-outside-toplevel
+            LoanState,
+            PayoffScenarios,
+        )
 
-        def _row(month, day, interest, balance, confirmed):
+        def _row(month, interest, balance, confirmed):
             return AmortizationRow(
-                month=month, payment_date=date(2026, month, day),
+                month=month, payment_date=date(2026, month, 1),
                 payment=Decimal("1000.00"), principal=Decimal("500.00"),
                 interest=interest, extra_payment=Decimal("0.00"),
                 remaining_balance=balance, is_confirmed=confirmed,
                 interest_rate=Decimal("0.06"),
             )
 
-        schedule = [
-            _row(1, 1, Decimal("500.00"), Decimal("99500.00"), True),
-            _row(2, 1, Decimal("497.50"), Decimal("99000.00"), True),
-            _row(3, 1, Decimal("400.00"), Decimal("98500.00"), False),
-            _row(4, 1, Decimal("300.00"), Decimal("98000.00"), False),
+        # Contractual forward -- the current side must read THIS: 2 rows.
+        original_forward = [
+            _row(3, Decimal("400.00"), Decimal("98500.00"), False),
+            _row(4, Decimal("300.00"), Decimal("98000.00"), False),
         ]
+        # Committed forward (the plan, faster): a single row.  ``state.schedule``
+        # is confirmed history + this -- the current side must NOT read it.
+        committed_forward = [
+            _row(3, Decimal("250.00"), Decimal("98000.00"), False),
+        ]
+        confirmed = [
+            _row(1, Decimal("500.00"), Decimal("99500.00"), True),
+            _row(2, Decimal("497.50"), Decimal("99000.00"), True),
+        ]
+        scenarios = PayoffScenarios(
+            history_rows=confirmed,
+            original_forward=original_forward,
+            committed_forward=committed_forward,
+            accelerated_forward=committed_forward,
+            months_saved=0,
+            interest_saved=Decimal("0.00"),
+            payoff_date_committed=date(2026, 3, 1),
+            payoff_date_accelerated=date(2026, 3, 1),
+            total_interest_committed=Decimal("250.00"),
+            total_interest_accelerated=Decimal("250.00"),
+        )
         state = LoanState(
             current_balance=Decimal("99000.00"),
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
-            schedule=schedule,
-            payoff_date=date(2026, 4, 1),
-            # Whole-schedule sum (500 + 497.50 + 400 + 300) -- the figure
-            # the current side must NOT read.
-            total_interest=Decimal("1697.50"),
+            schedule=confirmed + committed_forward,
+            payoff_date=date(2026, 3, 1),
+            total_interest=Decimal("1247.50"),
         )
         params = SimpleNamespace(payment_day=1)
         data = {
@@ -5002,19 +5966,23 @@ class TestRefinanceForwardOnlyBaseline:
             "new_rate": Decimal("0.05"),
         }
 
-        comparison = _build_refinance_comparison(state, data, params)
+        comparison = _build_refinance_comparison(
+            state, scenarios, data, params,
+        )
 
-        # Forward-only: 2 remaining months, 400 + 300 = 700.00 remaining
-        # interest; savings and term delta derive from the same figures.
+        # Current side reads the CONTRACTUAL original_forward: 2 months,
+        # 400 + 300 = 700.00, payoff Apr 2026.
         assert comparison["current_remaining_months"] == 2
         assert comparison["current_total_interest"] == Decimal("700.00")
+        assert comparison["current_payoff"] == date(2026, 4, 1)
         assert comparison["term_diff"] == 10
         assert comparison["interest_savings"] == (
             Decimal("700.00") - comparison["refi_total_interest"]
         )
-        # Non-vacuity: the whole-schedule aggregates differ, so the
-        # forward-only rule is doing real work here.
-        assert comparison["current_remaining_months"] != len(state.schedule)
+        # Non-vacuity: the committed schedule (1 month / 250.00) and the
+        # whole-schedule total (1,247.50) both differ, so the current side is
+        # provably reading original_forward, not state.schedule.
+        assert comparison["current_remaining_months"] != len(committed_forward)
         assert comparison["current_total_interest"] != state.total_interest
 
 

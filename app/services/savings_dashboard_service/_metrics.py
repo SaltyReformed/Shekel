@@ -381,7 +381,7 @@ def _accumulate_loan_debt(
     Args:
         loan_ads: Per-account dicts that carry a ``loan_params`` key
             (the loan subset of ``_compute_account_projections`` output).
-        escrow_map: Dict mapping account_id to list of EscrowComponent.
+        escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
 
     Returns:
         ``(total_debt, total_monthly, weighted_rate_sum, payoff_dates)``
@@ -409,9 +409,12 @@ def _accumulate_loan_debt(
         rate = ad["current_rate"]
         monthly_pi = ad["monthly_payment"]
 
-        # Include escrow (property tax, insurance) for PITI total.
-        components = escrow_map.get(ad["account"].id, [])
-        monthly_escrow = escrow_calculator.calculate_monthly_escrow(components)
+        # Include escrow (property tax, insurance) for PITI total, resolved to
+        # today's active version per line via the shared as-of function.
+        lines = escrow_map.get(ad["account"].id, [])
+        monthly_escrow = escrow_calculator.escrow_monthly_as_of(
+            lines, date.today(),
+        )
         monthly_total = round_money(monthly_pi + monthly_escrow)
 
         total_debt += principal
@@ -441,7 +444,7 @@ def _compute_debt_summary(
     Args:
         account_data: List of per-account dicts from
             _compute_account_projections.
-        escrow_map: Dict mapping account_id to list of EscrowComponent.
+        escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
 
     Returns:
         Dict with keys: total_debt, total_monthly_payments,

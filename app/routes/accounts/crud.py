@@ -37,9 +37,10 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
@@ -691,7 +692,11 @@ def hard_delete_account(account_id):
     db.session.query(AssetAppreciationParams).filter_by(
         account_id=account_id,
     ).delete()
-    db.session.query(EscrowComponent).filter_by(account_id=account_id).delete()
+    # Escrow lines cascade their versions at the DB tier (ondelete=CASCADE on
+    # ``line_id``); the bulk delete here clears the parent lines whose
+    # ``Account.escrow_lines`` relationship would otherwise have the unit of work
+    # attempt a NOT-NULL-violating SET NULL before the account delete.
+    db.session.query(EscrowLine).filter_by(account_id=account_id).delete()
     db.session.query(RateHistory).filter_by(account_id=account_id).delete()
     db.session.query(SavingsGoal).filter_by(account_id=account_id).delete()
 

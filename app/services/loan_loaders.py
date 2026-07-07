@@ -3,7 +3,8 @@ Shekel Budget App -- Loan Data Loaders (the loan services' leaf layer)
 
 The pure data-loading functions every loan consumer shares: the
 :class:`LoanParams` / :class:`LoanAnchorEvent` / :class:`RateHistory` /
-:class:`EscrowComponent` row loaders and the shadow-income query builder.
+:class:`~app.models.escrow_line.EscrowLine` row loaders and the shadow-income
+query builder.
 Extracted from :mod:`app.services.loan_payment_service` (the read switch's
 final arc) so the loan POSTING package and the loan PAYMENT service both
 depend on one leaf module instead of on each other: the posting package's
@@ -26,14 +27,15 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.escrow_line import EscrowLine
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
@@ -390,64 +392,64 @@ def load_loan_account_ids_for_user(user_id: int) -> list[int]:
     return [account_id for (account_id,) in rows]
 
 
-def load_active_escrow_components(account_id: int) -> list:
-    """Load a loan account's CURRENTLY-active escrow components, ordered by name.
+def load_escrow_lines(account_id: int) -> list:
+    """Load a loan account's escrow LINES with every version, ordered by name.
 
-    The "what escrow does this loan carry TODAY" loader -- used by
-    :func:`app.services.loan_payment_service.load_loan_context` (the resolver /
-    projection path) and the escrow display / recurring-cash surfaces, so the
-    monthly-escrow figure each feeds
-    to :func:`app.services.escrow_calculator.calculate_monthly_escrow` is summed
-    over the IDENTICAL currently-active set.  Removed components (``end_date``
-    set) are excluded -- "currently active" is exactly ``end_date IS NULL`` under
-    the effective-dated model.  For the escrow active on a PAST payment's date
-    (the loan-payment split), load every version with
-    :func:`load_all_escrow_components` and filter each date with
-    :meth:`~app.models.loan_features.EscrowComponent.is_active_on`.
+    The single escrow read for the supersession model: one query returns each
+    :class:`~app.models.escrow_line.EscrowLine` with its
+    :class:`~app.models.escrow_line.EscrowComponentVersion` history eager-loaded
+    (``selectinload`` -- one extra query for all lines, not one per line), so a
+    caller resolves "escrow as of date D" purely in memory via
+    :func:`app.services.escrow_calculator.escrow_monthly_as_of` /
+    :func:`~app.services.escrow_calculator.resolve_active_lines`.  It serves BOTH
+    the loan-payment split (which resolves each historical payment's date against
+    the same rows, so a since-removed version still applies to a past payment) and
+    the today's-escrow display / cash surfaces (which resolve on today) -- one
+    loader, one source of truth, no separate active/all split.
 
     Args:
-        account_id: The loan account whose escrow components to load.
+        account_id: The loan account whose escrow lines to load.
 
     Returns:
-        The currently-active (``end_date IS NULL``)
-        :class:`~app.models.loan_features.EscrowComponent` rows, ascending by
-        name (the order is irrelevant to the order-independent monthly sum, but
-        kept stable for display callers).
+        The account's :class:`~app.models.escrow_line.EscrowLine` rows, ascending
+        by ``name`` (stable order for the display cent-allocation), each with
+        ``versions`` populated.  Empty when the account carries no escrow.
     """
     return (
-        db.session.query(EscrowComponent)
-        .filter(
-            EscrowComponent.account_id == account_id,
-            EscrowComponent.end_date.is_(None),
-        )
-        .order_by(EscrowComponent.name)
+        db.session.query(EscrowLine)
+        .options(selectinload(EscrowLine.versions))
+        .filter(EscrowLine.account_id == account_id)
+        .order_by(EscrowLine.name)
         .all()
     )
 
 
-def load_all_escrow_components(account_id: int) -> list:
-    """Load EVERY escrow component version for a loan (active AND removed).
+def _settled_income_shadows(
+    account_id: int, scenario_id: int,
+) -> list[Transaction]:
+    """Return a loan's SETTLED shadow-income rows (the shared settled-payment set).
 
-    The loan-payment split
-    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) needs
-    the escrow in effect on each HISTORICAL payment's date, which may be a
-    version since removed, so it loads the full effective-dated history here and
-    filters each payment's date in memory with
-    :meth:`~app.models.loan_features.EscrowComponent.is_active_on` -- one query
-    for the whole walk rather than one per payment.  Unlike
-    :func:`load_active_escrow_components` this does NOT filter by ``end_date``.
+    The single "which payments are settled" derivation that every settled-payment
+    guard builds on: the shared :func:`query_shadow_income` predicate narrowed to
+    the settled statuses.  Both :func:`_settled_payment_due_dates` (mapping each to
+    its monthly due date for the anchor-ordering guards) and
+    :func:`latest_settled_payment_period_start` (taking the greatest pay-period
+    start for the escrow forward-only guard) read this ONE set, so they -- and the
+    genesis walk's own settled-shadow set -- can never disagree on WHICH payments
+    are settled.  ``pay_period`` is eager-loaded by :func:`query_shadow_income`, so
+    callers read each shadow's period without an N+1.
 
     Args:
-        account_id: The loan account whose full escrow history to load.
+        account_id: The loan account whose settled payments to scan.
+        scenario_id: The budget scenario to scope to.
 
     Returns:
-        Every :class:`~app.models.loan_features.EscrowComponent` row for the
-        account (active and removed), unordered -- the caller filters by date and
-        the monthly sum is order-independent.
+        The account's settled shadow-income :class:`Transaction` rows (unordered),
+        or ``[]`` when the loan has no settled payment.
     """
     return (
-        db.session.query(EscrowComponent)
-        .filter(EscrowComponent.account_id == account_id)
+        query_shadow_income(account_id, scenario_id)
+        .filter(Transaction.status_id.in_(settled_status_ids()))
         .all()
     )
 
@@ -462,8 +464,7 @@ def _settled_payment_due_dates(
     :func:`earliest_settled_payment_due_date` (the tracking-start guard) build on,
     so the two provably agree with each other -- and with the genesis walk's own
     settled-shadow set -- on WHICH payments are settled and on each one's due date.
-    The settled shadow income (the shared
-    :func:`query_shadow_income` predicate narrowed to the settled statuses), each
+    The settled shadow set comes from :func:`_settled_income_shadows`; each is
     dated by :func:`app.services.rate_period_engine.monthly_due_date` on its
     pay-period start.
 
@@ -479,14 +480,9 @@ def _settled_payment_due_dates(
     params = load_loan_params(account_id)
     if params is None:
         return []
-    settled_shadows = (
-        query_shadow_income(account_id, scenario_id)
-        .filter(Transaction.status_id.in_(settled_status_ids()))
-        .all()
-    )
     return [
         monthly_due_date(shadow.pay_period.start_date, params.payment_day)
-        for shadow in settled_shadows
+        for shadow in _settled_income_shadows(account_id, scenario_id)
     ]
 
 
@@ -567,6 +563,51 @@ def earliest_settled_payment_due_date(
     """
     due_dates = _settled_payment_due_dates(account_id, scenario_id)
     return min(due_dates) if due_dates else None
+
+
+def latest_settled_payment_period_start(
+    account_id: int, scenario_id: int,
+) -> date | None:
+    """Return the latest settled payment's pay-period START date, or ``None``.
+
+    The forward-only boundary the escrow effective-date guard validates against: a
+    new or edited escrow version must take effect STRICTLY AFTER this date, or it
+    would retroactively change an already-settled payment's escrow split and desync
+    it from the cash frozen at settlement.  A version at ``effective_date > this``
+    cannot be the greatest ``effective_date <= start`` for any settled payment, so
+    no settled split moves.
+
+    Keys on ``pay_period.start_date`` -- the EXACT date the genesis split
+    (:func:`app.services.loan_posting_service._walk._replay_events`) and the
+    settle-time cash freeze
+    (:func:`app.services.loan_payment_service._shadow_live_amount`) resolve each
+    payment's escrow at -- NOT the monthly due date
+    :func:`_settled_payment_due_dates` derives for the anchor-ordering guards
+    (those compare against the walk's anchor-vs-payment due-date sort; escrow
+    resolves on the period start, so the boundary differs).  Shares
+    :func:`_settled_income_shadows` with those, so the escrow guard and the split
+    walk provably agree on which payments are settled.
+
+    NOTE: point-in-time -- scans only payments settled at call time, mirroring
+    :func:`earliest_settled_payment_due_date`.  A payment settled LATER against an
+    earlier period is the same structural property the tracking-start guard
+    carries; a settled payment's escrow is additionally frozen by capture-on-settle
+    (:func:`app.services.loan_payment_service.live_loan_payment_amount`).
+
+    Args:
+        account_id: The loan account whose settled payments to scan.
+        scenario_id: The budget scenario to scope to (the baseline, where the
+            recorded payments live).
+
+    Returns:
+        The greatest ``pay_period.start_date`` over the loan's settled income
+        shadows, or ``None`` when the loan has no settled payment.
+    """
+    starts = [
+        shadow.pay_period.start_date
+        for shadow in _settled_income_shadows(account_id, scenario_id)
+    ]
+    return max(starts) if starts else None
 
 
 def query_shadow_income(account_id: int, scenario_id: int):

@@ -36,7 +36,7 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services.loan_payment_service import resolve_account_loan
+from app.services.loan_resolution import resolve_account_loan
 from app.services.scenario_resolver import get_baseline_scenario
 
 logger = logging.getLogger(__name__)

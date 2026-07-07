@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.services.loan_payment_service import resolve_account_loan
+from app.services.loan_resolution import resolve_account_loan
 
 ZERO = Decimal("0")
 # LTV is a display ratio (debt / value), not a money amount; four-place
