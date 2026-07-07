@@ -42,8 +42,8 @@ from app.services.loan_payment_service import (
     LoanContext,
     confirmed_loan_view,
     load_loan_context,
-    resolve_loan_seeded,
 )
+from app.services.loan_resolution import resolve_loan_seeded
 from app.services.loan_resolver import LoanState
 from app.services.rate_period_engine import payment_number
 from app.services.scenario_resolver import get_baseline_scenario

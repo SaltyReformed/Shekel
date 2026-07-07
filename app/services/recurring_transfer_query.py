@@ -14,6 +14,7 @@ from decimal import Decimal
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.transfer_template import TransferTemplate
 
 
@@ -72,3 +73,27 @@ def loan_standing_extra(account_id: int, user_id: int) -> Decimal:
     if template is None or template.settings is None:
         return Decimal("0.00")
     return Decimal(str(template.settings.extra_principal))
+
+
+def loan_standing_extra_for_account(account_id: int) -> Decimal:
+    """Return a loan's standing overpayment, resolving the owner from the account.
+
+    The account-scoped form of :func:`loan_standing_extra` for callers that hold
+    only ``account_id`` -- the resolver read switch
+    (:func:`app.services.loan_payment_service.resolve_loan_seeded`), which loads
+    it once and injects it into every summary-surface resolve so the seam cannot
+    drift back to the contractual (extra-free) trajectory.  Derives the owning
+    user from the account (one PK lookup) then reads the active recurring
+    payment's ``extra_principal``.  ``Decimal("0.00")`` when the account does not
+    exist or has no recurring loan payment.
+
+    Args:
+        account_id: The loan account whose standing extra to read.
+
+    Returns:
+        The standing ``extra_principal`` ``Decimal``, or ``Decimal("0.00")``.
+    """
+    account = db.session.get(Account, account_id)
+    if account is None:
+        return Decimal("0.00")
+    return loan_standing_extra(account_id, account.user_id)

@@ -50,7 +50,7 @@ from app.services.account_projection import (
     compute_loan_period_balance_map,
     splice_confirmed_and_projected_loan_balances,
 )
-from app.services.loan_payment_service import resolve_account_loan
+from app.services.loan_resolution import resolve_account_loan
 from app.utils.balance_predicates import account_period_scope_clause
 
 ZERO = Decimal("0")

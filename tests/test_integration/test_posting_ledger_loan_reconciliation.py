@@ -153,6 +153,7 @@ from app.services import (
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
+    loan_resolution,
     loan_resolver,
     pay_period_service,
     posting_service,
@@ -721,7 +722,7 @@ class TestParallelRunAgainstResolver:
             loan = _make_loan(seed_user)
             # The resolver's scheduled monthly P&I; paying exactly it is
             # on-schedule (the loan carries no escrow, so cash == P&I).
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -760,7 +761,7 @@ class TestParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_tracking_start_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -791,7 +792,7 @@ class TestParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -1285,7 +1286,7 @@ class TestBackfillEqualsGoForward:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
             _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
@@ -1476,7 +1477,7 @@ class TestOracleIsNotVacuous:
             loan = _make_loan(seed_user)
             # The honest scheduled P&I, read BEFORE injecting: paying exactly it
             # is on-schedule, so absent the bug ledger == resolver to the penny.
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -1530,10 +1531,12 @@ class TestOracleIsNotVacuous:
 # module allows.  ``loan_loaders`` and the ``loan_resolver`` package are pure
 # resolver-support modules with no legitimate ledger read, so they are fenced at
 # FILE granularity.  ``loan_payment_service`` is different: :func:`_resolver_balance`
-# runs through its ``load_loan_context`` loader, but the module ALSO holds the read-
-# switch functions that read the ledger by design (``confirmed_loan_view`` /
-# ``resolve_loan_seeded`` / ``resolve_account_loan``).  A file-granularity fence
-# would flag those legitimate reads, so that mixed module is fenced at FUNCTION
+# runs through its ``load_loan_context`` loader, but the module ALSO holds a read-
+# switch function that reads the ledger by design (``confirmed_loan_view``; the
+# seeding wrappers ``resolve_loan_seeded`` / ``resolve_account_loan`` moved to
+# ``loan_resolution``, which reads the ledger only THROUGH ``confirmed_loan_view`` and
+# so imports no ledger token itself -- it needs no fencing here).  A file-granularity
+# fence would flag that legitimate read, so that mixed module is fenced at FUNCTION
 # granularity instead -- every function except the read-switch allowlist must stay
 # ledger-free (2026-07-02 follow-up review M-1: without this, wiring the ledger into
 # ``load_loan_context`` or its sibling loaders would taint the reference uncaught).
@@ -1596,8 +1599,6 @@ _LEDGER_MODEL_CLASS_NAMES = ("Posting", "JournalEntry", "LedgerAccount")
 # polarity): a ledger read wired into a resolver-feeding loader fails the fence.
 _LEDGER_READ_SWITCH_FUNCTIONS = frozenset({
     "confirmed_loan_view",
-    "resolve_loan_seeded",
-    "resolve_account_loan",
 })
 
 
@@ -1807,10 +1808,12 @@ class TestResolverIsLedgerFree:
         assert "def load_loan_context" in feeding
         assert "def get_payment_history" in feeding
         assert "def prepare_payments_for_engine" in feeding
-        # The read-switch functions (permitted to read the ledger) are held out.
+        # The read-switch reader (permitted to read the ledger) is held out; the
+        # seeding wrappers moved to ``loan_resolution`` (see the module comment).
         assert "def confirmed_loan_view" not in feeding
-        assert "def resolve_loan_seeded" not in feeding
-        assert "def resolve_account_loan" not in feeding
+        assert "def resolve_loan_seeded" not in inspect.getsource(
+            loan_payment_service
+        )
         # The module really does read the ledger somewhere, so the fence has a
         # genuine target: the whole module trips it; the feeding remainder does not.
         assert _ledger_imports_in_source(
@@ -1983,7 +1986,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2026,7 +2029,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2090,7 +2093,7 @@ class TestReaderParallelRunAgainstResolver:
             freeze_today(monkeypatch, frozen)
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            monthly_pi = loan_payment_service.resolve_account_loan(
+            monthly_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, frozen,
             )[1].monthly_payment
 
@@ -2152,7 +2155,7 @@ class TestReaderParallelRunAgainstResolver:
             short_loan = _make_loan(seed_user, name="Short Loan")
             # Identical params -> identical scheduled P&I (rate-period level
             # payment, balance-independent), so one figure governs both deltas.
-            monthly_pi = loan_payment_service.resolve_account_loan(
+            monthly_pi = loan_resolution.resolve_account_loan(
                 extra_loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2280,7 +2283,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             loan, ctx, checking, periods = _seed_boundary_loan(bare_user)
             scenario_id = ctx["scenario"].id
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2335,7 +2338,7 @@ class TestReaderParallelRunAgainstResolver:
             db.session.commit()
 
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, baseline.id, _AS_OF,
             )[1].monthly_payment
             # Baseline: one on-schedule payment.  What-if: two (a second period).
@@ -2414,7 +2417,7 @@ class TestReaderParallelRunAgainstResolver:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user, name="Collision Loan")
             params = loan_loaders.load_loan_params(loan.id)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2515,7 +2518,7 @@ class TestReadSwitchProductionPath:
             short_loan = _make_loan(seed_user, name="Short Prod Loan")
             # Identical params -> one scheduled P&I (balance-independent) governs
             # both deltas; reading it does not perturb the balance being tested.
-            monthly_pi = loan_payment_service.resolve_account_loan(
+            monthly_pi = loan_resolution.resolve_account_loan(
                 extra_loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
@@ -2528,10 +2531,10 @@ class TestReadSwitchProductionPath:
             db.session.commit()
 
             # The production read path every displayed loan balance flows through.
-            extra_production = loan_payment_service.resolve_account_loan(
+            extra_production = loan_resolution.resolve_account_loan(
                 extra_loan.id, scenario_id, _AS_OF,
             )[1].current_balance
-            short_production = loan_payment_service.resolve_account_loan(
+            short_production = loan_resolution.resolve_account_loan(
                 short_loan.id, scenario_id, _AS_OF,
             )[1].current_balance
 
@@ -2575,7 +2578,7 @@ class TestReadSwitchProductionPath:
             )
             db.session.commit()
 
-            _params, state = loan_payment_service.resolve_account_loan(
+            _params, state = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )
             confirmed_rows = [r for r in state.schedule if r.is_confirmed]
@@ -2622,14 +2625,14 @@ class TestReadSwitchProductionPath:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_payment_service.resolve_account_loan(
+            scheduled_pi = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].monthly_payment
 
             _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
             db.session.commit()
 
-            production = loan_payment_service.resolve_account_loan(
+            production = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].current_balance
             assert production == _resolver_balance(loan.id, scenario_id, _AS_OF)

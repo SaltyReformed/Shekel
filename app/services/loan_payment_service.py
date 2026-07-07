@@ -6,8 +6,10 @@ to PaymentRecord instances for the amortization engine.  Also provides
 payment preparation utilities (escrow subtraction, biweekly
 redistribution), a unified data-loading function (load_loan_context)
 shared by all consumers of amortization schedules, and the read-switch
-seam (confirmed_loan_view / resolve_loan_seeded / resolve_account_loan)
-that seeds the resolver from the genesis posting ledger.
+ledger-view builder (confirmed_loan_view).  The resolver-seeding wrappers that
+read that view -- resolve_loan_seeded / resolve_account_loan -- live in
+app.services.loan_resolution (they compose these loaders with the pure
+resolver); this module does not import that one, so there is no cycle.
 
 Shadow income transactions represent payments received by a debt
 account via transfers.  When a user transfers money from checking to
@@ -531,92 +533,6 @@ def confirmed_loan_view(
     return loan_resolver.ConfirmedLedgerView(
         balance=balance, history_rows=history_rows,
     )
-
-
-def resolve_loan_seeded(
-    loan_inputs: "loan_resolver.LoanInputs",
-    account_id: int,
-    scenario_id: int | None,
-    as_of: date,
-) -> "loan_resolver.LoanState":
-    """Resolve a loan with its genesis-ledger confirmed view threaded in.
-
-    The single injection helper the read switch routes the three db-facing
-    loaders through -- :func:`resolve_account_loan`, the loan route's
-    ``_resolve``, and the savings dashboard's ``_compute_loan_account`` -- so
-    they cannot drift on HOW the ledger feeds the resolver: read the
-    confirmed view once via :func:`confirmed_loan_view`, then run the pure
-    resolver with it threaded as ``confirmed_view`` (its balance overrides
-    BOTH the headline balance and the forward projection seed, and its
-    ledger-derived rows become the schedule's confirmed slice, so none can
-    desync off-schedule).
-
-    When the ledger cannot answer (``confirmed_loan_view`` returns ``None``),
-    the resolver falls back to its anchor replay -- the pre-switch behaviour --
-    so this is safe for any loan the ledger has not opened.
-
-    Args:
-        loan_inputs: The loan's loaded :class:`LoanInputs` bundle.  The caller
-            builds it, since the three loaders each load slightly different
-            surrounding data (the route also needs the context, the savings
-            tile the paid-off probe).
-        account_id: The loan account, already owner-checked by the caller.
-        scenario_id: The baseline scenario id, or ``None``.
-        as_of: The evaluation date; typically ``date.today()``.
-
-    Returns:
-        The resolved :class:`~app.services.loan_resolver.LoanState`.
-    """
-    view = confirmed_loan_view(account_id, scenario_id, as_of)
-    return loan_resolver.resolve_loan(
-        loan_inputs, as_of, confirmed_view=view,
-    )
-
-
-def resolve_account_loan(
-    account_id: int, scenario_id: int, today: date
-) -> "tuple[LoanParams, loan_resolver.LoanState] | None":
-    """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
-
-    The per-account "load LoanParams (skip if unconfigured), load anchor
-    events + context, run the resolver" preamble shared by the debt-strategy
-    route and the year-end schedule generation.  Centralizing it keeps the
-    two consumers from drifting on HOW a loan account is resolved (which
-    inputs feed :func:`loan_resolver.resolve_loan`, in what order).  Since the
-    read switch (plan Section 8) it resolves through :func:`resolve_loan_seeded`
-    so its ``current_balance`` is the genesis-ledger confirmed balance (falling
-    back to the anchor replay when the ledger has not opened the loan).
-
-    Returns ``None`` when the account has no ``LoanParams`` row (it is not a
-    configured loan); the caller skips it.  A configured loan is always
-    resolvable -- its origination anchor fact is synthesized from the
-    immutable params -- so there is no anchor-based short-circuit here or
-    in :func:`_resolve_loan_pi` (the two differ only in what they
-    return).
-
-    Args:
-        account_id: The debt account to resolve.
-        scenario_id: The active budget scenario (for payment history and the
-            ledger seed scope).
-        today: The as-of date passed through to the resolver.
-
-    Returns:
-        ``(params, state)`` -- the loaded :class:`LoanParams` and the
-        resolved :class:`~app.services.loan_resolver.LoanState` -- or
-        ``None`` if the account has no ``LoanParams``.
-    """
-    params = load_loan_params(account_id)
-    if params is None:
-        return None
-    anchor_facts = load_loan_anchor_facts(params)
-    ctx = load_loan_context(account_id, scenario_id, params)
-    state = resolve_loan_seeded(
-        loan_resolver.LoanInputs(
-            params, anchor_facts, ctx.payments, ctx.rate_changes,
-        ),
-        account_id, scenario_id, today,
-    )
-    return params, state
 
 
 def _resolve_loan_pi(

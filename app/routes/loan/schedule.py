@@ -5,8 +5,10 @@ The full month-by-month amortization schedule, demoted off the loan detail page
 (the Loop B rebuild: the schedule is a statement table the developer reaches
 occasionally, not the page's centre of gravity) into its own route linked from
 the detail page's footer.  Renders the same planned trajectory the loan card
-carries -- confirmed actuals from the genesis ledger plus projected contractual
-payments (``LoanState.schedule``) -- so the table cannot diverge from the card.
+carries -- confirmed actuals from the genesis ledger plus the plan-aware
+projected payments (``LoanState.schedule`` -- the committed trajectory
+reflecting recurring payments and any standing extra since the step-8 seam fix)
+-- so the table cannot diverge from the card.
 """
 
 from flask import render_template

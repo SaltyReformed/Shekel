@@ -5661,29 +5661,33 @@ class TestRefinanceCalculator:
 
 
 class TestRefinanceForwardOnlyBaseline:
-    """The refinance comparison measures the CURRENT loan forward-only.
+    """The refinance comparison measures the CURRENT loan contractual + forward-only.
 
-    The refinance side is inherently forward-only (a brand-new loan from
-    today), so the current side must be too: "Remaining Term" counts the
-    payments still ahead and "Total Interest" the interest still to be
-    paid.  Before this rule the builder used whole-schedule aggregates
-    (``len(state.schedule)`` / ``state.total_interest``), which counted
-    sunk history months and sunk interest against the from-today
-    refinance -- and the history read switch made the confirmed slice the
-    loan's FULL recorded history, inflating both on exactly the trued-up
-    loans the arc targets.
+    The refinance side is inherently forward-only (a brand-new loan from today),
+    so the current side must be too: "Remaining Term" counts the payments still
+    ahead and "Total Interest" the interest still to be paid.  And since the
+    resolver seam went plan-aware (step 8,
+    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), the current side
+    reads the pure-contractual ``scenarios.original_forward`` slice -- a
+    like-for-like minimum-vs-minimum comparison -- NOT the committed
+    ``state.schedule`` (which now reflects the loan's standing extra).  Before
+    these rules the builder used whole-schedule aggregates, counting sunk history
+    against a from-today refinance.
     """
 
-    def test_confirmed_rows_are_excluded_from_the_current_baseline(self):
-        """History rows never inflate remaining term or remaining interest.
+    def test_current_side_reads_contractual_original_forward(self):
+        """The current side derives from ``original_forward``, not ``state.schedule``.
 
-        A synthetic state with 2 CONFIRMED rows (interest 500.00 + 497.50,
-        sunk) and 2 FORWARD rows (interest 400.00 + 300.00, still owed):
-        the comparison's current side must read 2 remaining months and
-        700.00 remaining interest -- NOT the whole-schedule 4 months /
-        1,697.50 -- and both the term delta and the interest savings must
-        derive from the forward-only figures (savings = 700.00 minus the
-        refi's own projected interest; term_diff = 12 - 2).
+        Step 8 (Sec. 16): the current baseline is the pure-CONTRACTUAL forward
+        remainder read from ``scenarios.original_forward``, like-for-like against
+        a from-today minimum-payment refi -- not the committed ``state.schedule``
+        (plan-aware since the resolver seam).  Here ``original_forward`` is 2
+        contractual rows (interest 400.00 + 300.00 = 700.00, payoff Apr 2026)
+        while the committed ``state.schedule`` forward is a single faster-paydown
+        row (interest 250.00): the current side must report 2 remaining months /
+        700.00 / Apr-2026 from ``original_forward``, NOT 1 / 250.00 from the
+        committed schedule.  "Forward-only" is now structural too --
+        ``original_forward`` carries no confirmed rows.
         """
         # Pylint: ``import-outside-toplevel`` -- route-private helper under
         # test; imported here so the module import stays route-surface only.
@@ -5693,32 +5697,53 @@ class TestRefinanceForwardOnlyBaseline:
         from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
             AmortizationRow,
         )
-        from app.services.loan_resolver import LoanState  # pylint: disable=import-outside-toplevel
+        from app.services.loan_resolver import (  # pylint: disable=import-outside-toplevel
+            LoanState,
+            PayoffScenarios,
+        )
 
-        def _row(month, day, interest, balance, confirmed):
+        def _row(month, interest, balance, confirmed):
             return AmortizationRow(
-                month=month, payment_date=date(2026, month, day),
+                month=month, payment_date=date(2026, month, 1),
                 payment=Decimal("1000.00"), principal=Decimal("500.00"),
                 interest=interest, extra_payment=Decimal("0.00"),
                 remaining_balance=balance, is_confirmed=confirmed,
                 interest_rate=Decimal("0.06"),
             )
 
-        schedule = [
-            _row(1, 1, Decimal("500.00"), Decimal("99500.00"), True),
-            _row(2, 1, Decimal("497.50"), Decimal("99000.00"), True),
-            _row(3, 1, Decimal("400.00"), Decimal("98500.00"), False),
-            _row(4, 1, Decimal("300.00"), Decimal("98000.00"), False),
+        # Contractual forward -- the current side must read THIS: 2 rows.
+        original_forward = [
+            _row(3, Decimal("400.00"), Decimal("98500.00"), False),
+            _row(4, Decimal("300.00"), Decimal("98000.00"), False),
         ]
+        # Committed forward (the plan, faster): a single row.  ``state.schedule``
+        # is confirmed history + this -- the current side must NOT read it.
+        committed_forward = [
+            _row(3, Decimal("250.00"), Decimal("98000.00"), False),
+        ]
+        confirmed = [
+            _row(1, Decimal("500.00"), Decimal("99500.00"), True),
+            _row(2, Decimal("497.50"), Decimal("99000.00"), True),
+        ]
+        scenarios = PayoffScenarios(
+            history_rows=confirmed,
+            original_forward=original_forward,
+            committed_forward=committed_forward,
+            accelerated_forward=committed_forward,
+            months_saved=0,
+            interest_saved=Decimal("0.00"),
+            payoff_date_committed=date(2026, 3, 1),
+            payoff_date_accelerated=date(2026, 3, 1),
+            total_interest_committed=Decimal("250.00"),
+            total_interest_accelerated=Decimal("250.00"),
+        )
         state = LoanState(
             current_balance=Decimal("99000.00"),
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
-            schedule=schedule,
-            payoff_date=date(2026, 4, 1),
-            # Whole-schedule sum (500 + 497.50 + 400 + 300) -- the figure
-            # the current side must NOT read.
-            total_interest=Decimal("1697.50"),
+            schedule=confirmed + committed_forward,
+            payoff_date=date(2026, 3, 1),
+            total_interest=Decimal("1247.50"),
         )
         params = SimpleNamespace(payment_day=1)
         data = {
@@ -5728,19 +5753,23 @@ class TestRefinanceForwardOnlyBaseline:
             "new_rate": Decimal("0.05"),
         }
 
-        comparison = _build_refinance_comparison(state, data, params)
+        comparison = _build_refinance_comparison(
+            state, scenarios, data, params,
+        )
 
-        # Forward-only: 2 remaining months, 400 + 300 = 700.00 remaining
-        # interest; savings and term delta derive from the same figures.
+        # Current side reads the CONTRACTUAL original_forward: 2 months,
+        # 400 + 300 = 700.00, payoff Apr 2026.
         assert comparison["current_remaining_months"] == 2
         assert comparison["current_total_interest"] == Decimal("700.00")
+        assert comparison["current_payoff"] == date(2026, 4, 1)
         assert comparison["term_diff"] == 10
         assert comparison["interest_savings"] == (
             Decimal("700.00") - comparison["refi_total_interest"]
         )
-        # Non-vacuity: the whole-schedule aggregates differ, so the
-        # forward-only rule is doing real work here.
-        assert comparison["current_remaining_months"] != len(state.schedule)
+        # Non-vacuity: the committed schedule (1 month / 250.00) and the
+        # whole-schedule total (1,247.50) both differ, so the current side is
+        # provably reading original_forward, not state.schedule.
+        assert comparison["current_remaining_months"] != len(committed_forward)
         assert comparison["current_total_interest"] != state.total_interest
 
 

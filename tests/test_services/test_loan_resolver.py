@@ -356,6 +356,59 @@ def test_projected_payment_not_replayed():
     assert state.current_balance == Decimal("300000.00")
 
 
+def test_projected_overpayment_routes_into_the_forward_schedule():
+    """Step 8 (part a): a projected OVERPAYMENT rides the resolver's schedule.
+
+    The seam fix stopped ``resolve_loan`` stripping payments to confirmed-only,
+    so a projected recurring payment above contractual now routes forward through
+    ``monthly_override`` and appears in ``LoanState.schedule`` -- the committed
+    (plan-aware) trajectory every summary surface reads.  Before the fix the
+    resolver ignored projected payments and its schedule was pure contractual.
+
+    Setup: $300k / 6% / 360mo, contractual P&I $1,798.65.  A single PROJECTED
+    payment of $2,500.00 due 2026-03-01 (overpaying by $701.35): the March
+    forward row must carry the $2,500 outlay, while WITHOUT it that row is the
+    contractual $1,798.65.  The projected payment still never reduces the
+    balance (a future commitment, not history), so ``current_balance`` stays at
+    the origination anchor (the C13-4 invariant holds alongside part a).
+    """
+    params = FakeLoanParams(
+        origination_date=date(2026, 1, 1),
+        term_months=360,
+        original_principal=Decimal("300000.00"),
+        interest_rate=Decimal("0.06"),
+        payment_day=1,
+    )
+    anchor = _origination_anchor(params)
+    projected_overpay = PaymentRecord(
+        payment_date=date(2026, 3, 1),
+        amount=Decimal("2500.00"),
+        is_confirmed=False,
+    )
+
+    planned = resolve_loan(
+        LoanInputs(params, [anchor], [projected_overpay], _rate_feed(params)),
+        date(2026, 1, 15),
+    )
+    contractual = resolve_loan(
+        LoanInputs(params, [anchor], [], _rate_feed(params)),
+        date(2026, 1, 15),
+    )
+
+    def _march(state):
+        return next(
+            row for row in state.schedule
+            if row.payment_date == date(2026, 3, 1)
+        )
+
+    # The projected outlay rides the March forward row; without it, contractual.
+    assert _march(planned).payment == Decimal("2500.00")
+    assert _march(contractual).payment == Decimal("1798.65")
+    # A projected payment never reduces the balance -- it stays the origination
+    # anchor (C13-4 invariant), even though it now shapes the forward schedule.
+    assert planned.current_balance == Decimal("300000.00")
+
+
 # -- C13-5 -- fixed-rate, three confirmed payments --------------------------
 
 

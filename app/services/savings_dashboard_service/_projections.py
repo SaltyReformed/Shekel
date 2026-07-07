@@ -20,10 +20,8 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.loan_loaders import load_loan_anchor_facts
-from app.services.loan_payment_service import (
-    load_loan_context,
-    resolve_loan_seeded,
-)
+from app.services.loan_payment_service import load_loan_context
+from app.services.loan_resolution import resolve_loan_seeded
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
 

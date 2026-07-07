@@ -362,29 +362,34 @@ def _refinance_break_even(closing_costs, monthly_savings):
     )
 
 
-def _build_refinance_comparison(state, data, params):
+def _build_refinance_comparison(state, scenarios, data, params):
     """Build the refinance side-by-side comparison from validated form data.
 
-    Compares the current committed trajectory (resolver ``state`` --
-    same dollar figures as the loan card, E-18 / Commit 15) against a
-    hypothetical refinance.  The refinance principal defaults to the
-    current real balance + closing costs; the user may override for
-    cash-out refinances.  The principal delta and its absolute magnitude
-    are pre-computed server-side (MED-04 / E-16) so the template renders
-    without inline arithmetic.
+    Compares the current loan's CONTRACTUAL forward trajectory against a
+    hypothetical refinance.  Since the resolver seam went plan-aware (step 8,
+    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), ``state.schedule``
+    reflects the loan's standing extra; a refinance comparison must instead be
+    like-for-like -- minimum-payment current vs minimum-payment refi -- because a
+    borrower could pay the same extra on either loan.  So the current side reads
+    the pure-contractual ``scenarios.original_forward`` slice (override- and
+    extra-free), while ``state`` still supplies the current monthly P&I and real
+    balance (both independent of committed-vs-contractual).  The refinance
+    principal defaults to the current real balance + closing costs; the user may
+    override for cash-out refinances.  The principal delta and its absolute
+    magnitude are pre-computed server-side (MED-04 / E-16).
 
-    The current side is measured FORWARD-ONLY -- the non-confirmed slice
-    of ``state.schedule`` -- because the refinance side is inherently
-    forward-only (a brand-new loan from today): "Remaining Term" is the
-    count of payments still ahead, and "Total Interest" the interest
-    still to be paid.  Counting confirmed history rows here would weigh
-    sunk months / sunk interest against a from-today refinance -- already
-    skewed when the schedule carried post-anchor history, and badly so
-    once the history read switch made the confirmed slice the loan's
-    FULL recorded history.
+    The current side is measured FORWARD-ONLY -- ``original_forward`` is already
+    the from-today contractual remainder -- because the refinance side is
+    inherently forward-only (a brand-new loan from today): "Remaining Term" is
+    the count of payments still ahead, and "Total Interest" the interest still to
+    be paid.  Counting sunk history rows would skew the comparison against a
+    from-today refinance.
 
     Args:
-        state: Resolver :class:`LoanState` for the current loan.
+        state: Resolver :class:`LoanState` for the current loan (its monthly
+            payment and current balance; the plan-aware schedule is NOT read).
+        scenarios: The loan's :class:`loan_resolver.PayoffScenarios`; its
+            ``original_forward`` slice is the contractual current-side baseline.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
             is already the storage-domain fraction (schema ``@pre_load``).
         params: ORM :class:`LoanParams` instance (payment_day source).
@@ -393,35 +398,38 @@ def _build_refinance_comparison(state, data, params):
         dict of comparison fields consumed by
         ``loan/_refinance_results.html``.
     """
-    current_real_principal = state.current_balance
     closing_costs = data["closing_costs"]
     if data["new_principal"] is not None:
         refi_principal = data["new_principal"]
     else:
-        refi_principal = current_real_principal + closing_costs
+        refi_principal = state.current_balance + closing_costs
     refi_term = data["new_term_months"]
 
     refi_monthly, refi_total_interest, refi_payoff = _project_refinance(
         refi_principal, data["new_rate"], refi_term, params.payment_day,
     )
 
-    # Forward-only baseline: what is still AHEAD on the current loan (the
-    # like-for-like basis against a from-today refinance; see the docstring).
-    forward_rows = [row for row in state.schedule if not row.is_confirmed]
+    # Forward-only CONTRACTUAL baseline: what is still ahead on the current loan
+    # at the minimum payment (the like-for-like basis against a from-today
+    # refinance; see the docstring).  ``original_forward`` is already forward-only.
+    forward_rows = scenarios.original_forward
     current_remaining_interest = round_money(sum(
         (row.interest for row in forward_rows), Decimal("0.00"),
     ))
 
     monthly_savings = state.monthly_payment - refi_monthly
     break_even_months = _refinance_break_even(closing_costs, monthly_savings)
-    principal_diff = refi_principal - current_real_principal
+    principal_diff = refi_principal - state.current_balance
 
     return {
         "current_monthly": state.monthly_payment,
         "current_total_interest": current_remaining_interest,
-        "current_payoff": state.payoff_date,
+        "current_payoff": (
+            forward_rows[-1].payment_date if forward_rows
+            else state.payoff_date
+        ),
         "current_remaining_months": len(forward_rows),
-        "current_principal": current_real_principal,
+        "current_principal": state.current_balance,
         "refi_monthly": refi_monthly,
         "refi_total_interest": refi_total_interest,
         "refi_payoff": refi_payoff,
@@ -446,18 +454,19 @@ def _build_refinance_comparison(state, data, params):
 def refinance_calculate(account_id):
     """Compute refinance what-if comparison scenario (HTMX).
 
-    Compares the current committed loan trajectory against a
+    Compares the current loan's CONTRACTUAL forward trajectory against a
     hypothetical refinance with user-specified rate, term, closing
     costs, and optional principal override.  Returns a side-by-side
     comparison partial with monthly savings, interest savings, and
     break-even calculation.
 
-    The "current" baseline uses the committed schedule (with actual
-    payments) if a recurring transfer exists, otherwise the
-    contractual schedule.  This ensures the comparison reflects the
-    user's real trajectory, not just the original loan terms.
+    The "current" baseline is deliberately contractual
+    (``scenarios.original_forward``), NOT the plan-aware committed schedule the
+    resolver seam now produces (step 8, Sec. 16): a refinance is a like-for-like
+    minimum-vs-minimum comparison, since any standing extra could be paid on
+    either loan.  See :func:`_build_refinance_comparison`.
 
-    The refinance principal defaults to current_real_principal +
+    The refinance principal defaults to the current real balance +
     closing_costs.  The user may override for cash-out refinances.
     """
     account, params, _account_type = _load_loan_account(account_id)
@@ -492,7 +501,25 @@ def refinance_calculate(account_id):
             ),
         )
 
-    comparison = _build_refinance_comparison(state, data, params)
+    # Contractual current-side baseline (step 8 / Sec. 16): a like-for-like
+    # comparison holds any standing extra constant on both sides, so the current
+    # side reads the pure-contractual ``original_forward`` slice -- NOT the
+    # committed ``state.schedule`` (plan-aware since the resolver seam) -- against
+    # a from-today minimum-payment refi.  ``original_forward`` is override- and
+    # extra-free regardless of inputs; the confirmed view seeds it from the real
+    # owed balance the loan card shows.
+    scenario = get_baseline_scenario(current_user.id)
+    view = confirmed_loan_view(
+        account_id, scenario.id if scenario else None, date.today(),
+    )
+    scenarios = loan_resolver.compute_payoff_scenarios(
+        loan_inputs=_loan_inputs(params, ctx),
+        extra_monthly=Decimal("0.00"),
+        as_of=date.today(),
+        confirmed_view=view,
+    )
+
+    comparison = _build_refinance_comparison(state, scenarios, data, params)
     return render_template(
         "loan/_refinance_results.html",
         comparison=comparison,
