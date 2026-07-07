@@ -796,6 +796,30 @@ class TestEscrow:
         assert version.inflation_rate == Decimal("0.03")
         assert version.is_removed is False
 
+    def test_dashboard_next_year_escrow_note_is_one_annual_step(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The loan card projects next-year escrow one full annual step from today.
+
+        An escrow line of $4,800/yr ($400.00/mo) at a 3% rate shows a "next year"
+        note of 4800 * 1.03 / 12 = $412.00/mo -- one annual step (spec Sec. 8),
+        NOT the old elapsed-span-since-created_at figure (which on a same-day-
+        seeded line rounded to roughly $406).  The projection takes no date
+        argument, so this figure is viewing-date independent by construction.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        add_escrow_line(
+            db.session, acct.id, "Property Tax", Decimal("4800.00"),
+            inflation_rate=Decimal("0.03"),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"may increase" in resp.data
+        # Current escrow $400.00/mo is projected to $412.00/mo next year.
+        assert b"$412.00" in resp.data
+
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
         """Duplicate ACTIVE line name returns 400."""
         acct = _create_mortgage(seed_user, db.session)

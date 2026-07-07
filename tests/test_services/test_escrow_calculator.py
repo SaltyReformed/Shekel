@@ -2,7 +2,7 @@
 Tests for the escrow calculator service.
 """
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -12,16 +12,17 @@ from app.services.escrow_calculator import (
     calculate_monthly_escrow,
     calculate_total_payment,
     escrow_monthly_as_of,
+    project_monthly_escrow,
     resolve_active_lines,
 )
 
 
-def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
+def _comp(name, annual, inflation=None, end_date=None, id=1):
     """Helper to create a mock resolved escrow component (a display/sum row).
 
-    ``calculate_monthly_escrow`` and ``build_escrow_display`` take an already-
-    resolved set; ``end_date`` is retained only to feed the "no active filter"
-    tests a would-be-removed row and is ignored by both functions.
+    ``calculate_monthly_escrow`` / ``project_monthly_escrow`` / ``build_escrow_display``
+    take an already-resolved set; ``end_date`` is retained only to feed the "no
+    active filter" test a would-be-removed row and is ignored by all three.
     """
     return SimpleNamespace(
         id=id,
@@ -29,7 +30,6 @@ def _comp(name, annual, inflation=None, end_date=None, created_at=None, id=1):
         annual_amount=Decimal(str(annual)),
         inflation_rate=Decimal(str(inflation)) if inflation else None,
         end_date=end_date,
-        created_at=created_at,
     )
 
 
@@ -65,23 +65,15 @@ class TestCalculateMonthlyEscrow:
         result = calculate_monthly_escrow(components)
         assert result == Decimal("500.00")
 
-    def test_with_inflation(self):
-        """Inflation applied with month-aware elapsed years (M-05)."""
-        components = [
-            _comp("Property Tax", "4800", inflation="0.03",
-                  created_at=datetime(2024, 1, 1)),
-        ]
-        # 29 months elapsed (Jan 2024 to Jun 2026) = 29/12 ≈ 2.4167 years
-        # 4800 * 1.03^(29/12) / 12 ≈ 429.62
-        result = calculate_monthly_escrow(components, as_of_date=date(2026, 6, 1))
-        assert result == Decimal("429.62")
+    def test_no_inflation_applied_here(self):
+        """calculate_monthly_escrow never inflates -- it is the exact sum.
 
-    def test_no_inflation_without_date(self):
-        """No as_of_date → no inflation applied."""
-        components = [
-            _comp("Property Tax", "4800", inflation="0.03",
-                  created_at=datetime(2024, 1, 1)),
-        ]
+        Inflation is a forward-projection display concern (spec Sec. 8) that
+        lives in ``project_monthly_escrow``; the pure sum ignores an
+        ``inflation_rate`` entirely, so a line carrying a rate still contributes
+        its exact ``annual / 12``.  4800 / 12 = 400.00.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
         result = calculate_monthly_escrow(components)
         assert result == Decimal("400.00")
 
@@ -137,6 +129,76 @@ class TestCalculateMonthlyEscrow:
         assert calculate_monthly_escrow([comp3]) == Decimal("50.00")
         assert combined == Decimal("350.00")
         assert combined == individual_sum
+
+
+class TestProjectMonthlyEscrow:
+    """Tests for the forward inflation projection (the "next year" note)."""
+
+    def test_one_annual_step(self):
+        """One year forward compounds each rate by exactly (1 + rate).
+
+        4800 * 1.03 = 4944.00 annual -> 4944.00 / 12 = 412.00 monthly.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("412.00")
+
+    def test_real_mortgage_worked_example(self):
+        """The operator's worked case: $7,403.88/yr @ 3% -> ~$635.50/mo next year.
+
+        7403.88 * 1.03 = 7625.9964 annual -> / 12 = 635.4997 -> $635.50 (the
+        sum-then-round boundary, matching the decision preview).
+        """
+        components = [_comp("Tax and Insurance", "7403.88", inflation="0.03")]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("635.50")
+
+    def test_zero_years_equals_today(self):
+        """Projecting zero annual steps returns today's exact figure.
+
+        (1 + rate) ** 0 == 1, so 4800 / 12 = 400.00 -- identical to
+        ``calculate_monthly_escrow`` with no projection.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        assert project_monthly_escrow(components, 0) == Decimal("400.00")
+        assert project_monthly_escrow(components, 0) == calculate_monthly_escrow(
+            components,
+        )
+
+    def test_no_rate_carried_unchanged(self):
+        """A line with no inflation_rate is unaffected by any horizon.
+
+        2400 / 12 = 200.00 at year 1 and year 5 alike -- no rate, no growth.
+        """
+        components = [_comp("Insurance", "2400")]
+        assert project_monthly_escrow(components, 1) == Decimal("200.00")
+        assert project_monthly_escrow(components, 5) == Decimal("200.00")
+
+    def test_compounds_over_multiple_years(self):
+        """Multiple annual steps compound: (1 + rate) ** years.
+
+        4800 * 1.03^2 = 4800 * 1.0609 = 5092.32 annual -> / 12 = 424.36 monthly.
+        """
+        components = [_comp("Property Tax", "4800", inflation="0.03")]
+        result = project_monthly_escrow(components, 2)
+        assert result == Decimal("424.36")
+
+    def test_multi_line_only_inflates_rated_lines(self):
+        """A mixed set inflates only the rated line, summed sum-then-round.
+
+        Tax 4800 @ 3% -> 4944.00; Insurance 2400 no rate -> 2400.00.
+        (4944.00 + 2400.00) / 12 = 7344.00 / 12 = 612.00.
+        """
+        components = [
+            _comp("Property Tax", "4800", inflation="0.03", id=1),
+            _comp("Insurance", "2400", id=2),
+        ]
+        result = project_monthly_escrow(components, 1)
+        assert result == Decimal("612.00")
+
+    def test_empty_set(self):
+        """No components -> $0.00 projected."""
+        assert project_monthly_escrow([], 1) == Decimal("0.00")
 
 
 class TestCalculateTotalPayment:

@@ -6,10 +6,9 @@ No database access -- operates only on values passed in.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
-from app.utils.dates import months_between
 from app.utils.money import (
     CENTS,
     MONTHS_PER_YEAR,
@@ -113,22 +112,22 @@ class ResolvedEscrowLine:
     does this line carry on date D."  ``id`` is the LINE's stable identity (not a
     version id): it is the target of the escrow tab's delete/edit control, so a
     rename or amount change never breaks the link.  ``annual_amount`` /
-    ``inflation_rate`` come from the resolved version; ``created_at`` is that
-    version's insert timestamp, carried solely for the forward-inflation display
-    projection (:func:`calculate_monthly_escrow`'s ``as_of_date`` branch) so a
-    resolved line drives the same "next year" note the legacy component did.
+    ``inflation_rate`` come from the resolved version; ``inflation_rate`` drives
+    the forward "next year" display projection (:func:`project_monthly_escrow`),
+    which compounds it in whole annual steps from today -- never from a version's
+    insert timestamp.
 
-    Exposes exactly the attributes :func:`calculate_monthly_escrow` and
-    :func:`build_escrow_display` read (``id``, ``name``, ``annual_amount``,
-    ``inflation_rate``, ``created_at``), so the resolved set is a drop-in for the
-    component list those functions took under the legacy model.
+    Exposes exactly the attributes :func:`calculate_monthly_escrow`,
+    :func:`project_monthly_escrow`, and :func:`build_escrow_display` read
+    (``id``, ``name``, ``annual_amount``, ``inflation_rate``), so the resolved
+    set is a drop-in for the component list those functions took under the legacy
+    model.
     """
 
     id: int
     name: str
     annual_amount: Decimal
     inflation_rate: Decimal | None
-    created_at: datetime | None
 
 
 def _allocate_monthly_amounts(annuals: list[Decimal]) -> list[Decimal]:
@@ -141,8 +140,8 @@ def _allocate_monthly_amounts(annuals: list[Decimal]) -> list[Decimal]:
     by input order; Python's sort is stable).  The result is per-row
     display values that each lie within one cent of the exact
     ``annual / 12`` AND sum exactly to the same total
-    :func:`calculate_monthly_escrow` computes without ``as_of_date``
-    -- so the escrow tab's rows always add up to its badge.  The
+    :func:`calculate_monthly_escrow` computes -- so the escrow tab's
+    rows always add up to its badge.  The
     aggregate's own sum-then-round rule (the E-26 boundary rounding
     feeding the loan payment) is untouched; only the per-row display
     split changes.
@@ -411,7 +410,7 @@ def build_escrow_card(
     return cards
 
 
-def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -> Decimal:
+def calculate_monthly_escrow(components: list) -> Decimal:
     """Sum the given escrow components' annual amounts / 12.
 
     The pure summation primitive: the caller supplies the component set already
@@ -420,44 +419,56 @@ def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -
     version on a date), and :func:`escrow_monthly_as_of` is the date-keyed wrapper
     that pairs the two -- the split reads it per payment date, the display / cash
     surfaces on today.  This function no longer filters by active state itself; it
-    sums exactly the components handed to it.
+    sums exactly the components handed to it.  Inflation is NOT applied here --
+    recorded past/present escrow is exact; the forward-projection escalation lives
+    in :func:`project_monthly_escrow` (a display concern only), so the loan-payment
+    split never touches inflation by construction.
 
     Args:
-        components: List of objects with .annual_amount, and optionally
-                    .inflation_rate, .created_at.
-        as_of_date: If provided, applies inflation from component
-                    created_at to as_of_date (a FORWARD-projection escalation
-                    only; recorded past/present escrow is exact, so the loan
-                    split never passes this).
+        components: List of objects with ``.annual_amount``.
 
     Returns:
         Monthly escrow amount rounded to 2 decimal places.
     """
-    total = Decimal("0.00")
+    total = ZERO
+    for comp in components:
+        total += Decimal(str(comp.annual_amount)) / MONTHS_PER_YEAR
+    return round_money(total)
 
+
+def project_monthly_escrow(components: list, years: int) -> Decimal:
+    """Project a resolved escrow set forward by whole annual steps (display only).
+
+    The forward-projection counterpart to :func:`calculate_monthly_escrow`: each
+    component's stored annual amount is compounded by its ``inflation_rate`` over
+    ``years`` whole annual steps (a component with no rate is carried unchanged),
+    then summed as ``annual / 12`` with the same sum-then-round boundary (E-26).
+    A forward DISPLAY estimate ONLY -- recorded past/present escrow is exact and
+    the loan-payment split never calls this; it drives the loan card's "next year"
+    escrow note (:func:`app.routes.loan.dashboard._project_next_year_escrow`).
+
+    Compounding is keyed to a whole number of annual steps from today, NOT to the
+    elapsed span since a version's ``created_at`` (a technical insert timestamp
+    the old inflation math read): the estimate is stable regardless of when the
+    version was recorded or when the page is viewed, and matches the per-year
+    meaning of ``inflation_rate`` (spec Sec. 8).
+
+    Args:
+        components: The resolved-today escrow set (:func:`resolve_active_lines`),
+            each with ``.annual_amount`` and optional ``.inflation_rate``.
+        years: The whole number of annual steps to project forward (``1`` for the
+            next-year note); ``0`` returns today's figure unchanged.
+
+    Returns:
+        The projected monthly escrow total, rounded to cents.
+    """
+    total = ZERO
     for comp in components:
         annual = Decimal(str(comp.annual_amount))
-
-        # Apply inflation if both as_of_date and inflation_rate are present.
-        if as_of_date and hasattr(comp, "inflation_rate") and comp.inflation_rate:
-            rate = Decimal(str(comp.inflation_rate))
-            created = getattr(comp, "created_at", None)
-            if created:
-                if hasattr(created, "date"):
-                    created = created.date()
-                # Month-aware elapsed calculation prevents inflating
-                # a full year for a component created late in the
-                # previous calendar year (M-05).
-                months_elapsed = months_between(created, as_of_date)
-                years_elapsed = max(
-                    months_elapsed / MONTHS_PER_YEAR, Decimal("0")
-                )
-                if years_elapsed > 0:
-                    annual = annual * (1 + rate) ** years_elapsed
-
-        monthly = annual / MONTHS_PER_YEAR
-        total += monthly
-
+        rate = getattr(comp, "inflation_rate", None)
+        if rate is not None:
+            annual = annual * (1 + Decimal(str(rate))) ** years
+        total += annual / MONTHS_PER_YEAR
     return round_money(total)
 
 
@@ -522,7 +533,6 @@ def resolve_active_lines(lines: list, on_date: date) -> list[ResolvedEscrowLine]
             inflation_rate=(
                 Decimal(str(inflation)) if inflation is not None else None
             ),
-            created_at=getattr(version, "created_at", None),
         ))
     return resolved
 
@@ -538,8 +548,7 @@ def escrow_monthly_as_of(lines: list, on_date: date) -> Decimal:
     on today, so the escrow built into a payment's cash and the escrow its split
     subtracts are the same figure by construction, never by coincidence.  No
     inflation is applied -- recorded past/present escrow is exact; inflation is a
-    forward-projection display concern only (:func:`calculate_monthly_escrow`'s
-    ``as_of_date`` branch).
+    forward-projection display concern only (:func:`project_monthly_escrow`).
 
     Args:
         lines: :class:`~app.models.escrow_line.EscrowLine` objects with their
@@ -553,20 +562,15 @@ def escrow_monthly_as_of(lines: list, on_date: date) -> Decimal:
     return calculate_monthly_escrow(resolve_active_lines(lines, on_date))
 
 
-def calculate_total_payment(
-    monthly_pi: Decimal,
-    components: list,
-    as_of_date: date | None = None,
-) -> Decimal:
+def calculate_total_payment(monthly_pi: Decimal, components: list) -> Decimal:
     """P&I + monthly escrow = total monthly payment.
 
     Args:
         monthly_pi: Monthly principal & interest payment.
-        components: Escrow components for the account.
-        as_of_date: Optional date for inflation adjustment.
+        components: Escrow components for the account (the resolved-today set).
 
     Returns:
         Total monthly payment (P&I + escrow).
     """
-    escrow = calculate_monthly_escrow(components, as_of_date)
+    escrow = calculate_monthly_escrow(components)
     return round_money(monthly_pi + escrow)

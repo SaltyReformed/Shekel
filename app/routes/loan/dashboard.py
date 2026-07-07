@@ -103,10 +103,16 @@ def _distribute_payment_percentages(parts, total_payment):
 def _project_next_year_escrow(escrow_components, escrow_portion):
     """Project next year's monthly escrow when a component inflates.
 
-    O-3: if any component carries a non-null ``inflation_rate`` and the
-    current escrow portion is positive, compute the Jan-1-next-year
-    monthly escrow so the dashboard can show the user the projected
-    change.
+    O-3: if any active line carries a positive ``inflation_rate`` and the current
+    escrow portion is positive, compound today's escrow forward one whole annual
+    step (:func:`~app.services.escrow_calculator.project_monthly_escrow`) so the
+    dashboard can flag the likely increase.  A forward DISPLAY estimate only --
+    recorded escrow is exact.
+
+    The projection is one annual step from today (spec Sec. 8), matching the
+    per-year meaning of ``inflation_rate`` -- NOT an elapsed span since a
+    version's insert timestamp -- so the note is stable regardless of when the
+    version was recorded or when the page is viewed.
 
     Args:
         escrow_components: Today's active escrow lines, resolved
@@ -118,18 +124,14 @@ def _project_next_year_escrow(escrow_components, escrow_portion):
         portion, otherwise None (no note shown).
     """
     has_inflation = any(
-        getattr(c, "inflation_rate", None)
+        c.inflation_rate is not None and c.inflation_rate > 0
         for c in escrow_components
     )
     if not has_inflation or escrow_portion <= Decimal("0.00"):
         return None
 
-    # "Next year" is the user's next civil year (display-tz), so the note stays
-    # consistent with the YTD chips and never jumps two years out in the New Year
-    # window where the backend-UTC year has ticked over but Eastern has not.
-    next_year_date = date(display_today().year + 1, 1, 1)
-    next_year_escrow = escrow_calculator.calculate_monthly_escrow(
-        escrow_components, as_of_date=next_year_date,
+    next_year_escrow = escrow_calculator.project_monthly_escrow(
+        escrow_components, 1,
     )
     # Only show the note if next year differs from current.
     if next_year_escrow == escrow_portion:
