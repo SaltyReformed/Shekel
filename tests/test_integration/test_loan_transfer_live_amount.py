@@ -19,6 +19,7 @@ from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_params import LoanParams
+from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
@@ -99,8 +100,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         name="Live Mortgage Payment",
         # Deliberately stale stored amount -- the live override must win.
         default_amount=Decimal("1.00"),
-        derive_from_loan=True,
     )
+    # derive_from_loan moved off transfer_templates into the 1:1
+    # loan_payment_settings row (decision B); attach it via the relationship.
+    template.settings = LoanPaymentSettings(derive_from_loan=True)
     db.session.add(template)
     db.session.flush()
 
@@ -193,7 +196,7 @@ def test_non_derived_transfer_has_no_live_override(
         loan, _escrow, scenario_id, template, _rule, _periods = (
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
-        template.derive_from_loan = False
+        template.settings.derive_from_loan = False
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, seed_periods, scenario_id,

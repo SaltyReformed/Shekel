@@ -74,14 +74,15 @@ class TransferTemplate(
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
-    # When TRUE, this template's recurring transfers are a loan payment
-    # whose cash amount (P&I + escrow/components) is derived LIVE from
-    # the destination loan account on every balance render, so it tracks
-    # the loan's monthly payment after an escrow or rate change rather
-    # than staying frozen at ``default_amount`` (E-18 loan model).  Set by
-    # ``app.routes.loan.payment_transfer.create_payment_transfer`` for new
-    # loan-payment transfers; FALSE for every other template and pre-existing
-    # rows, so the live-derive override is dormant unless enabled.
+    # RETIRED (decision B): the live-derive flag moved to the 1:1
+    # ``loan_payment_settings`` row (see :class:`LoanPaymentSettings` +
+    # ``settings`` below).  The reader cutover repointed every consumer onto the
+    # settings table, so this column is no longer read OR written; it is kept
+    # only as the EXPAND migration's backfill source and is dropped by the
+    # CONTRACT migration.  It is not dual-written during that window because the
+    # whole feature branch ships as one unit (5a..5d together), so no deploy
+    # runs the expand phase without the drop -- the escrow 2a/2b precedent on
+    # this branch.
     derive_from_loan = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
@@ -99,6 +100,15 @@ class TransferTemplate(
     category = db.relationship("Category", lazy="joined")
     transfers = db.relationship(
         "Transfer", back_populates="template", lazy="select"
+    )
+    # 1:1 loan-payment settings (decision B): present only for recurring loan
+    # payments, holding ``derive_from_loan`` + ``extra_principal``.  ``None`` for
+    # every other template (investment contribution, generic transfer); readers
+    # default the settings when the row is absent.  ``delete-orphan`` disposes
+    # the row with the template (the DB FK is ON DELETE CASCADE too).
+    settings = db.relationship(
+        "LoanPaymentSettings", uselist=False, back_populates="template",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self):

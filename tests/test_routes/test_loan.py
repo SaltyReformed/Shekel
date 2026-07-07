@@ -2880,10 +2880,11 @@ class TestTransferPrompt:
         assert tpl.default_amount > 0
         # No "amount" override was posted, so the route defaults to the
         # full monthly payment and opts into live derivation: the loan-only
-        # derive_from_loan flag must be set on the template.  The shared
-        # builder leaves it at the model default (False); the loan route
-        # sets it explicitly on the returned row.
-        assert tpl.derive_from_loan is True
+        # derive_from_loan flag lives in the 1:1 loan_payment_settings row
+        # (decision B), which the loan route creates on the template (a
+        # generic transfer / investment contribution gets no settings row).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
 
         rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
         assert rule is not None
@@ -3007,6 +3008,11 @@ class TestTransferPrompt:
         )
         assert tpl is not None
         assert tpl.default_amount == Decimal("2000.00")
+        # Manual mode (typed amount) still gets a loan_payment_settings row,
+        # but with derive_from_loan False -- the cash stays the typed base
+        # (decision B / decision D).
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is False
 
     def test_source_accounts_exclude_debt_account(
         self, auth_client, seed_user, db, seed_periods,

@@ -16,6 +16,7 @@ from flask_login import current_user, login_required
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
+from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
@@ -130,11 +131,14 @@ def create_payment_transfer(account_id):
         name=template_name,
         default_amount=transfer_amount,
     )
-    # Loan-payment transfers set derive_from_loan so the projected cash
-    # debit tracks the live monthly payment after an escrow or rate
-    # change.  The shared builder leaves it at the model default (False)
-    # for every other transfer, so this loan-only flag is set here.
-    template.derive_from_loan = derive_from_loan
+    # Loan-payment transfers carry their loan-payment settings in a 1:1
+    # ``loan_payment_settings`` row (decision B) rather than a column on the
+    # generic template: ``derive_from_loan`` opts the projected cash debit into
+    # live derivation so it tracks the loan's monthly payment after an escrow or
+    # rate change.  Attached via the relationship so it flushes with the template
+    # (the shared builder leaves generic / investment transfers with no settings
+    # row, which every reader defaults to non-derive).
+    template.settings = LoanPaymentSettings(derive_from_loan=derive_from_loan)
 
     namedup_redirect = flush_template_or_namedup_redirect(
         redirect=RedirectTarget("loan.dashboard", {"account_id": account_id}),

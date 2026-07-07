@@ -42,6 +42,7 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_loaders import (
@@ -688,6 +689,33 @@ def _shadow_live_amount(
     return round_money(monthly_pi + escrow)
 
 
+def _loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
+    """Return ``(derive_from_loan, extra_principal)`` for a transfer template.
+
+    The single accessor for a recurring transfer's loan-payment settings
+    (:class:`~app.models.loan_payment_settings.LoanPaymentSettings`, decision B),
+    which live in a 1:1 table rather than on the generic template.  A template
+    with NO settings row is not a loan payment: ``derive_from_loan`` defaults
+    ``False`` and ``extra_principal`` ``Decimal("0.00")``, so the live-derive and
+    overpayment machinery stays dormant for every investment contribution and
+    generic transfer.  The ``settings`` relationship must already be loaded by
+    the caller (the readers ``joinedload`` it) so this stays a pure in-memory
+    read with no N+1.
+
+    Args:
+        template: The :class:`~app.models.transfer_template.TransferTemplate`
+            whose loan-payment settings to read.
+
+    Returns:
+        ``(derive_from_loan, extra_principal)`` -- the settings row's values, or
+        ``(False, Decimal("0.00"))`` when the template has no settings row.
+    """
+    settings = template.settings
+    if settings is None:
+        return False, Decimal("0.00")
+    return settings.derive_from_loan, Decimal(str(settings.extra_principal))
+
+
 def live_loan_payment_amount(
     shadow: Transaction, scenario_id: int,
 ) -> Decimal | None:
@@ -739,15 +767,16 @@ def live_loan_payment_amount(
         return None
     transfer = (
         db.session.query(Transfer)
-        .options(joinedload(Transfer.template))
+        .options(
+            joinedload(Transfer.template).joinedload(TransferTemplate.settings),
+        )
         .filter(Transfer.id == shadow.transfer_id)
         .first()
     )
-    if (
-        transfer is None
-        or transfer.template is None
-        or not transfer.template.derive_from_loan
-    ):
+    if transfer is None or transfer.template is None:
+        return None
+    derive_from_loan, _extra = _loan_payment_config(transfer.template)
+    if not derive_from_loan:
         return None
     monthly_pi = _resolve_loan_pi(
         transfer.to_account_id, scenario_id, date.today(),
@@ -818,14 +847,17 @@ def live_loan_transfer_amounts(
     transfer_ids = {txn.transfer_id for txn in candidates}
     transfers = (
         db.session.query(Transfer)
-        .options(joinedload(Transfer.template))
+        .options(
+            joinedload(Transfer.template).joinedload(TransferTemplate.settings),
+        )
         .filter(Transfer.id.in_(transfer_ids))
         .all()
     )
     loan_by_transfer = {
         xfer.id: xfer.to_account_id
         for xfer in transfers
-        if xfer.template is not None and xfer.template.derive_from_loan
+        if xfer.template is not None
+        and _loan_payment_config(xfer.template)[0]
     }
     if not loan_by_transfer:
         return {}
