@@ -1,12 +1,13 @@
 # Escrow config redesign: line identity, effective dates, date-aware cash, overpayment
 
-Status: IN PROGRESS -- steps 1, 2a, 2b, 4, 3, 5, and 8 SHIPPED to branch
-`feat/escrow-config-redesign`; steps 6-7 remain (Section 14). Step 8 (the resolver-seam fix that
-resolved the step-5 review's one open finding, cross-surface payoff consistency) SHIPPED 2026-07-07
-(Section 16). Written 2026-07-06. **Supersedes** the earlier "escrow line identity refactor"
-proposal that this file used to hold (see git history) -- an adversarial review of that proposal in
-a fresh session expanded the scope from "add a `line_id` column" to the full, correct redesign
-below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
+Status: COMPLETE on branch `feat/escrow-config-redesign` -- ALL steps (1, 2a, 2b, 4, 3, 5, 8, 7, 6)
+SHIPPED; ready for the PR to `dev`. Steps 7 (inflation fix, commit `83be140c`) and 6 (merge tool,
+commit `b7bfe00b`) shipped 2026-07-07 (Section 17); step 8 (the resolver-seam fix that resolved the
+step-5 review's one open finding, cross-surface payoff consistency) shipped 2026-07-07 (Section 16).
+Written 2026-07-06. **Supersedes** the earlier "escrow line identity refactor" proposal that this
+file used to hold (see git history) -- an adversarial review of that proposal in a fresh session
+expanded the scope from "add a `line_id` column" to the full, correct redesign below.
+**Decisions A-D approved by the operator 2026-07-06 (Section 12).**
 
 ## 0. Why this exists (plain language, no jargon)
 
@@ -514,9 +515,15 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
    target-date calculator. cash==split-with-extra was proven to the cent; each commit was
    adversarially reviewed (5c fixed one Medium; 5d deferred one High, see Section 16, and addressed
    two Low). The one open follow-up is now planned as step 8 (Section 16).
-6. **Merge** (the operator action that rejoins a line history split in two; merge reconcile). Rename
-   in place already shipped in step 3.
-7. **Inflation fix** + docs + `/update-docs`. Full suite is the final gate.
+6. **Merge (the operator action that rejoins a line history split in two). SHIPPED** (commit
+   `b7bfe00b`, 2026-07-07; Section 17). Rename in place already shipped in step 3. As built: an
+   invariant-checked planner (escrow-per-date byte-identical before/after) REPLACES the "repoint +
+   reconcile" sketched here -- no reconcile is needed and it is strictly safer. Detail in Section
+   17.
+7. **Inflation fix. SHIPPED** (commit `83be140c`, 2026-07-07; Section 17). Projects one full annual
+   step from **today** (operator decision), not the spec's literal "to next Jan 1"; `created_at` is
+   removed from the inflation math entirely. Detail in Section 17. (`/update-docs` remains, to run
+   after the PR to `dev`; the full suite is the final gate before the PR.)
 8. **Plan-aware forward trajectory (resolver-seam fix). SHIPPED** (commit `a6ff83b6`, 2026-07-07).
    Detailed in Section 16. Made `LoanState` carry the committed (plan) trajectory so net worth,
    `/savings`, the schedule page, year-end, and the recurrence-`end_date` writer all reflect the
@@ -738,6 +745,79 @@ the working order; the plan doc is `21974f0b`.
   projected postings must be generated from *some* trajectory, so the committed-vs-contractual
   choice still has to be made. Step 8 is the right next move regardless and is compatible with a
   later Level 2.
+
+## 17. Steps 6 & 7: merge tool and inflation fix (as built)
+
+**Status: both SHIPPED to branch `feat/escrow-config-redesign` 2026-07-07.** These were the last two
+steps; the redesign is complete pending the PR to `dev`. Each was implemented, targeted-tested, held
+to `pylint app/` 10.00, and adversarially reviewed in a fresh subagent before commit. On the
+operator's real data neither fixes a live break -- account 3 carries no inflation rate (step 7 is a
+latent-bug fix) and its split history reconciles correctly across the two lines (step 6 is a
+history-reunification convenience) -- but both complete the model correctly and were the operator's
+explicit choice to build.
+
+### 17.1 Step 7 -- domain-dated escrow inflation projection (commit `83be140c`)
+
+The loan card's "Escrow may increase to ~$X/month next year" note
+(`dashboard._project_next_year_escrow`) compounded inflation off each version's `created_at`, a
+technical insert timestamp: the expand backfill wrote `now()`, and a same-day version edit resets
+it, so the projection base was arbitrary (and an old line could show a spurious multi-year jump).
+Fixed per Sec. 8, with one operator decision that DEVIATES from Sec. 8's literal wording:
+
+- **Projection semantic (operator decision 2026-07-07): ONE full annual step from today** --
+  `amount * (1 + rate)` -- NOT the spec's literal "compound to next civil Jan 1." Rationale: the
+  Jan-1 target makes the projected figure depend on the month you view it in (it shrinks toward zero
+  change as the year passes); one annual step is stable regardless of viewing date and matches the
+  per-year meaning of `inflation_rate`. Worked: $7,403.88/yr @ 3% -> $7,626.00/yr -> ~$635.50/mo,
+  the same whether viewed in January or November.
+- **DRY separation.** `escrow_calculator.calculate_monthly_escrow` lost its `as_of_date` param and
+  inflation branch -- it is now a pure sum, so the loan-payment split can never leak inflation
+  *by construction*. A new `project_monthly_escrow(components, years)` owns the forward compounding
+  (whole annual steps, sum-then-round E-26 preserved). `calculate_total_payment` lost its
+  never-passed `as_of_date`; `ResolvedEscrowLine` lost `created_at` (its only consumer was the old
+  branch).
+- **Blast radius:** `escrow_calculator.py` + `dashboard.py` only; read-path, no migration. The note
+  is dormant on real data (no inflation rate set), so this corrects the math for any line that ever
+  sets one. Adversarial review CONFIRMED clean (fixed one stale docstring it caught).
+
+### 17.2 Step 6 -- merge tool (commit `b7bfe00b`)
+
+Reunifies a line whose history split across two DB lines -- a legacy rename-split backfill (one line
+per historical name) or an operator Remove+Add. The mortgage carries exactly this shape on the dev
+prod-clone (an origination line tombstoned 2026-07-06 plus a new-name line from that date), so the
+capability the earlier proposal lacked is real, not hypothetical.
+
+- **Correctness by construction, not by reconcile (deviation from Sec. 7, and the reason it is
+  safe).** `escrow_calculator.plan_escrow_line_merge(source, target)` builds the unified version set
+  (every target version kept; each source version the target lacks on that date is moved; a
+  same-date collision keeps the target's and drops the source's) and then VERIFIES via
+  `_escrow_unchanged_by_merge` that `escrow_monthly_as_of` is byte-identical before (the two lines
+  summed) and after (the single merged line) at every date in the union of both lines' effective
+  dates. Escrow is a right-continuous step function whose only breakpoints are effective dates, and
+  both sides share that breakpoint set, so agreement there is agreement on EVERY calendar date. When
+  a date would change, the lines genuinely overlap (two concurrent charges, not one renamed line)
+  and the merge is REJECTED -- so it can neither move a settled payment's split nor silently drop a
+  real charge. The forward-only guard is subsumed (preserving escrow on every date preserves it on
+  settled dates too).
+- **No posting reconcile (the Sec. 7 "merge reconcile" is retired).** Because escrow-per-date is
+  preserved AND the split stores the escrow *amount* -- never a line id (the only FK to
+  `escrow_lines` is `escrow_component_versions.line_id`; verified) -- existing postings stay
+  byte-identical and a later reconcile re-derives the same. The spec's "repoint then re-derive" was
+  actually LESS safe: it would move a settled split if the merge changed escrow. A test settles a
+  payment, merges, and asserts the posted principal/interest/escrow are byte-identical with no
+  reconcile, then identical again after one.
+- **Mechanics.** The route repoints surviving versions (`version.line = target`), flushes to persist
+  the new `line_id`, then deletes the source so its `all, delete-orphan` cascade removes exactly the
+  collided drops (no explicit per-version delete -> no double-delete). Ownership is checked for BOTH
+  the URL target and the posted `source_line_id` (404 for foreign/missing). The drawer offers a
+  "Merge in" control listing the account's other lines -- including hidden fully-removed
+  predecessors, labelled by effective span + removed state -- as sources, so a hidden split line is
+  reachable without un-hiding removed lines from the card.
+- **Adversarial review** found no critical/high/medium, independently verified the boundary-date
+  invariant is complete (and noted it additionally forces version-identity, so
+  `project_monthly_escrow`'s raw-amount/inflation reads are preserved too), and confirmed the
+  no-reconcile and IDOR posture. Its 3 Low notes (a docstring IFF overclaim, a cosmetic blank line,
+  a rejection-message wording) were addressed.
 
 ## 15. Related
 
