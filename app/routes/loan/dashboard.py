@@ -447,8 +447,15 @@ def dashboard(account_id):
     scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
     today = date.today()
+    # Resolve the recurring-payment state first: it carries the standing
+    # extra_principal the committed trajectory must reflect (step 5), so the
+    # band chart / payoff summary accelerate exactly as the cash debit does.
+    # R-4: the recurring transfer's end_date is NOT written here (that would be a
+    # write on a GET); it is synced at every payoff-affecting mutation instead.
+    prompt_context = _resolve_transfer_prompt(account)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx), scenario_id, today,
+        prompt_context["recurring_payment_extra"],
     )
     # PLANNED-trajectory schedule: real confirmed history + projected /
     # contractual forward.  The loan card's current_balance and the
@@ -457,12 +464,6 @@ def dashboard(account_id):
     # liability and the chart cannot diverge (the E-18 invariant).
     planned_schedule = scenarios.history_rows + scenarios.committed_forward
     summary = _build_planned_summary(ctx.state, planned_schedule, params)
-
-    # R-4: the recurring transfer's end_date is NO LONGER written here (a write
-    # on a GET).  It is synced to the projected payoff at every payoff-affecting
-    # mutation instead (:mod:`app.services.loan_recurrence_sync`), so this GET is
-    # read-only.
-    prompt_context = _resolve_transfer_prompt(account)
 
     context = {
         "account": account,

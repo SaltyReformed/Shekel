@@ -436,6 +436,38 @@ def test_settled_loan_payment_freeze_is_one_shot(
         )
 
 
+def test_loan_standing_extra_reads_the_recurring_payment_setting(
+    app, db, seed_user, seed_periods,
+):
+    """loan_standing_extra returns the active recurring payment's extra (else 0).
+
+    The single loan-level figure the payoff projection threads (step 5): 0.00
+    before an extra is set, the settings value after, and 0.00 for an account
+    with no recurring payment (the checking source).
+    """
+    from app.services.recurring_transfer_query import (  # pylint: disable=import-outside-toplevel
+        loan_standing_extra,
+    )
+
+    with app.app_context():
+        loan, _escrow, _scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        db.session.commit()
+        user_id = seed_user["user"].id
+
+        assert loan_standing_extra(loan.id, user_id) == Decimal("0.00")
+
+        template.settings.extra_principal = Decimal("250.00")
+        db.session.commit()
+        assert loan_standing_extra(loan.id, user_id) == Decimal("250.00")
+
+        # An account with no recurring payment into it resolves to 0.00.
+        assert loan_standing_extra(
+            seed_user["account"].id, user_id,
+        ) == Decimal("0.00")
+
+
 # ── Overpayment (step 5): the standing extra rides both modes' cash ──────────
 
 

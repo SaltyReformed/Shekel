@@ -1508,15 +1508,14 @@ class TestComputePayoffScenarios:
         # contractual.
         assert scenarios.committed_forward[0].payment == Decimal("1798.65")
 
-    def test_accelerated_honors_projections_and_extra(self):
-        """C3-7: override months ignore extra; non-override months take it.
+    def test_accelerated_applies_extra_to_projections_and_contractual(self):
+        """C3-7: the lever's extra accelerates EVERY accelerated forward month.
 
-        The critical regression-prevention assertion.  June 2026
-        (override $2000): payment=$2000, extra=$0 -- the architectural
-        plan's load-bearing distinction from the pre-fix engine's
-        "apply extra when no PaymentRecord exists" semantics.  July
-        2026 (no override): payment=$1798.65 contractual,
-        extra=$500.00.
+        Behavior change ratified by the operator (Q3, 2026-07-07): a recurring
+        plan's OVERRIDE months no longer swallow the extra.  June 2026 (override
+        $2000): payment=$2000 base, extra=$500.  July 2026 (no override):
+        payment=$1798.65 contractual, extra=$500.  Both accelerate -- the
+        override amount is the month's base and the extra rides on top.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1542,9 +1541,77 @@ class TestComputePayoffScenarios:
             if row.payment_date == date(2026, 7, 1)
         ][0]
         assert june.payment == Decimal("2000.00")
-        assert june.extra_payment == Decimal("0.00")
+        assert june.extra_payment == Decimal("500.00")
         assert july.payment == Decimal("1798.65")
         assert july.extra_payment == Decimal("500.00")
+
+    def test_standing_extra_principal_accelerates_committed(self):
+        """Step 5: a standing extra_principal accelerates the COMMITTED slice.
+
+        With ``extra_principal=$500`` and no projected override, every committed
+        forward row carries ``extra_payment=$500`` and the committed slice pays
+        off sooner than the pure-contractual original (which carries no extra).
+        This is the operator-facing deliverable: the band chart / payoff summary
+        reflect the standing overpayment, exactly as the cash debit does.
+        """
+        params = _fixed_rate_300k_params()
+        anchor = _origination_anchor(params)
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=_four_contractual_payments_jan_to_apr_2026(),
+                rate_changes=_rate_feed(params),
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+            extra_principal=Decimal("500.00"),
+        )
+        # The standing extra rides every committed forward row.
+        for row in scenarios.committed_forward[:-1]:
+            assert row.extra_payment == Decimal("500.00")
+        # Committed (with the standing extra) pays off before the contractual
+        # original (no extra), and the original stays extra-free.
+        assert len(scenarios.committed_forward) < len(scenarios.original_forward)
+        assert scenarios.original_forward[0].extra_payment == Decimal("0.00")
+
+    def test_standing_extra_and_lever_stack_on_override_month(self):
+        """Step 5: committed carries the standing extra; accelerated adds the lever.
+
+        June 2026 is an override month ($2,000 planned).  With standing
+        ``extra_principal=$300`` and the lever's ``extra_monthly=$200``:
+          committed June: payment $2,000 base, extra_payment $300 (standing);
+          accelerated June: payment $2,000 base, extra_payment $500 (300 + 200).
+        The two extras stack on the override month with no double-count.
+        """
+        params = _fixed_rate_300k_params()
+        anchor = _origination_anchor(params)
+        payments = _four_contractual_payments_jan_to_apr_2026() + [
+            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+        ]
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=LoanInputs(
+                loan_params=params,
+                anchor_events=[anchor],
+                payments=payments,
+                rate_changes=_rate_feed(params),
+            ),
+            extra_monthly=Decimal("200.00"),
+            as_of=self.AS_OF,
+            extra_principal=Decimal("300.00"),
+        )
+        june_committed = next(
+            row for row in scenarios.committed_forward
+            if row.payment_date == date(2026, 6, 1)
+        )
+        june_accelerated = next(
+            row for row in scenarios.accelerated_forward
+            if row.payment_date == date(2026, 6, 1)
+        )
+        assert june_committed.payment == Decimal("2000.00")
+        assert june_committed.extra_payment == Decimal("300.00")
+        assert june_accelerated.payment == Decimal("2000.00")
+        assert june_accelerated.extra_payment == Decimal("500.00")
 
     def test_months_saved_metric(self):
         """C3-8: months_saved = len(committed) - len(accelerated).
@@ -1928,9 +1995,10 @@ class TestComputePayoffScenarios:
         as_of=2026-05-21).  Assertions:
 
         * History has one row (Jan 2026 only).
-        * Aug 2026 row in committed/accelerated uses $2500.00 as
-          the total payment with ``extra_payment == 0`` (override
-          semantics suppress extra).
+        * Aug 2026 (override $2,500) uses $2,500 as the BASE payment in both
+          committed and accelerated.  Committed carries no standing extra here
+          (extra_payment == 0); accelerated adds the lever's $500 on top
+          (extra_payment == 500 -- step 5: the lever reaches override months).
         * July 2026 (no override) in accelerated has
           extra_payment == $500.
         """
@@ -1967,7 +2035,7 @@ class TestComputePayoffScenarios:
         assert aug_committed.payment == Decimal("2500.00")
         assert aug_committed.extra_payment == Decimal("0.00")
         assert aug_accelerated.payment == Decimal("2500.00")
-        assert aug_accelerated.extra_payment == Decimal("0.00")
+        assert aug_accelerated.extra_payment == Decimal("500.00")
 
         # Jul 2026 (no override) in accelerated has extra=$500.
         jul_accelerated = next(

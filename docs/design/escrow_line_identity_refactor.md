@@ -1,10 +1,11 @@
 # Escrow config redesign: line identity, effective dates, date-aware cash, overpayment
 
-Status: IN PROGRESS -- steps 1, 2a, 2b, 4, and 3 SHIPPED to branch `feat/escrow-config-redesign`;
-steps 5-7 remain (Section 14). Written 2026-07-06. **Supersedes** the earlier "escrow line identity
-refactor" proposal that this file used to hold (see git history) -- an adversarial review of that
-proposal in a fresh session expanded the scope from "add a `line_id` column" to the full, correct
-redesign below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
+Status: IN PROGRESS -- steps 1, 2a, 2b, 4, 3, and 5 SHIPPED to branch `feat/escrow-config-redesign`;
+steps 6-7 remain (Section 14). One open follow-up from the step-5 review (cross-surface payoff
+consistency) is DEFERRED -- see Section 16. Written 2026-07-06. **Supersedes** the earlier "escrow
+line identity refactor" proposal that this file used to hold (see git history) -- an adversarial
+review of that proposal in a fresh session expanded the scope from "add a `line_id` column" to the
+full, correct redesign below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
 
 ## 0. Why this exists (plain language, no jargon)
 
@@ -501,9 +502,71 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
    per-shadow via `_shadow_live_amount`; `prepare_payments_for_engine` per-payment as-of; plus
    capture-on-settle (Option A) freezing the live payment-date amount at settlement.
 5. **Overpayment** (`extra_principal` home per decision B; both modes; projection threading).
+   SHIPPED as **four commits**. **5a** (`d2e07f90`): the `budget.loan_payment_settings` table (1:1,
+   carrying `derive_from_loan` and `extra_principal`), the `derive_from_loan` reader cutover, and
+   the expand migration. **5b** (`954a8fa6`): dropping the old `transfer_templates.derive_from_loan`
+   column. **5c** (`cb8a5ba8`): the standing extra into the LIVE cash (both modes),
+   capture-on-settle, the create/edit routes, and the dashboard control. **5d**: the projection,
+   where `project_forward` applies the extra to override months too (operator Q3 ratification),
+   `compute_payoff_scenarios` and `target_date_outlook` gain an `extra_principal` parameter,
+   threaded via `loan_standing_extra` into the dashboard band chart, the payoff lever, and the
+   target-date calculator. cash==split-with-extra was proven to the cent; each commit was
+   adversarially reviewed (5c fixed one Medium; 5d deferred one High, see Section 16, and addressed
+   two Low). One open follow-up remains: Section 16.
 6. **Merge** (the operator action that rejoins a line history split in two; merge reconcile). Rename
    in place already shipped in step 3.
 7. **Inflation fix** + docs + `/update-docs`. Full suite is the final gate.
+
+## 16. OPEN FOLLOW-UP: cross-surface payoff consistency (H1, 5d adversarial review)
+
+**Status: DEFERRED to a fresh session by operator decision 2026-07-07.** Step 5 (5d) was shipped
+as-is; this is the one open finding to handle next.
+
+**Symptom.** After 5d, the loan **detail** page's "Projected payoff" and "Total interest (life of
+loan)" reflect the standing `extra_principal` (via `_helpers.build_baseline_scenarios` ->
+`compute_payoff_scenarios(extra_principal=...)`). Three OTHER surfaces show a different (later)
+payoff and do NOT reflect the extra:
+
+- `/savings` debt tile -- `savings_dashboard_service/_projections.py`
+  (`payoff_date=state.payoff_date`).
+- Year-end net-worth / debt-progress / mortgage-interest --
+  `net_worth_kernel.py::generate_debt_schedules` -> `loan_payment_service.resolve_account_loan` ->
+  `resolve_loan` (uses `state.schedule`).
+- Refinance "current" side -- `routes/loan/calculators.py::_build_refinance_comparison`
+  (`current_payoff=state.payoff_date`, plus the forward-row interest / remaining-months).
+
+**Root (PRE-EXISTING, not introduced by 5d).** All three read `resolve_loan`, which projects the
+**contractual** schedule: it filters to CONFIRMED payments only (`loan_resolver/_state.py:206-210`)
+and never routes projected recurring payments into the forward projection. So they have ALWAYS shown
+the contractual payoff; for any loan whose recurring payment overpays (a higher manual amount, OR
+now a standing extra) they already diverge from the plan-aware detail page. The standing-extra
+feature makes this pre-existing gap COMMONLY visible (set a $250 extra -> detail says "2044",
+`/savings` says "2049").
+
+**Not a broken test.** The pinned invariant `test_arm_payoff_date_consistent_across_surfaces`
+(`tests/test_integration/test_loan_unified_figures.py`) is scoped to a NO-PAYMENT loan, where
+contractual == plan-aware, so all surfaces agree -- and it still passes (full suite green, 7291).
+Threading the extra into `resolve_loan` would NOT reconcile the surfaces (that path is contractual,
+so it would show "contractual + extra", still != the plan-aware detail number).
+
+**Proposed fix (the "one set of numbers" premise).** Make the three summary surfaces plan-aware AND
+extra-aware, so every surface shows the same accelerated payoff. This changes how those surfaces
+compute payoff (use the committed-plan projection including the standing extra, not `resolve_loan`'s
+contractual `state.payoff_date`), touching the shared resolver seam; it deserves its own focused
+commit, and the invariant test should be extended to a with-recurring-payment + standing-extra case.
+Decide deliberately: contractual summaries may be an intentional conservative baseline, in which
+case document that split instead.
+
+**Low findings from the same review (already addressed in 5d, noted here):**
+
+- **L1** -- a CONFIRMED payment dated after `as_of` is routed to the forward override carrying its
+  FROZEN actual (base + standing extra, frozen at settlement), so for a loan with a standing extra
+  that one month's forward chart double-applies the extra. Display-only (the ledger balance is
+  authoritative) and requires marking a future-period payment settled (the rare data-hygiene case).
+  Documented as a carve-out in `compute_payoff_scenarios`.
+- **L2** -- the "override suppresses the searched extra" docstrings in
+  `amortization_engine/_payoff.py` (`_search_extra_for_payoff` / `required_extra_for_projection`)
+  were updated to the step-5 behavior (the searched extra now applies to every forward month).
 
 ## 15. Related
 

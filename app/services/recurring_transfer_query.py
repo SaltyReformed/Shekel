@@ -9,6 +9,10 @@ to the projected payoff.  Centralising it keeps those surfaces from drifting on
 what counts as an account's recurring funding transfer.
 """
 
+from decimal import Decimal
+
+from sqlalchemy.orm import joinedload
+
 from app.extensions import db
 from app.models.transfer_template import TransferTemplate
 
@@ -23,6 +27,9 @@ def active_recurring_transfer_template(
     (``recurrence_rule_id`` set).  Only the FIRST is returned: more than one
     recurring transfer into a single account is a user misconfiguration, not a
     modeled case.  ``None`` when the account has no recurring funding transfer.
+    The 1:1 ``settings`` row is eager-loaded, since the loan callers read its
+    ``extra_principal`` right after (the prompt prefill and
+    :func:`loan_standing_extra`).
 
     Args:
         account_id: The destination account (a loan or investment account).
@@ -34,6 +41,7 @@ def active_recurring_transfer_template(
     """
     return (
         db.session.query(TransferTemplate)
+        .options(joinedload(TransferTemplate.settings))
         .filter(
             TransferTemplate.user_id == user_id,
             TransferTemplate.to_account_id == account_id,
@@ -42,3 +50,25 @@ def active_recurring_transfer_template(
         )
         .first()
     )
+
+
+def loan_standing_extra(account_id: int, user_id: int) -> Decimal:
+    """Return a loan's standing monthly overpayment (``0.00`` when none).
+
+    The ``extra_principal`` on the loan's active recurring payment's
+    ``loan_payment_settings`` row -- the single loan-level figure the payoff
+    projection threads so the committed trajectory and payoff date reflect the
+    real plan (step 5).  ``Decimal("0.00")`` when the loan has no recurring
+    payment, or one with no settings row (a legacy manual payment).
+
+    Args:
+        account_id: The loan account whose standing extra to read.
+        user_id: The owning user (scopes the lookup).
+
+    Returns:
+        The standing ``extra_principal`` ``Decimal``, or ``Decimal("0.00")``.
+    """
+    template = active_recurring_transfer_template(account_id, user_id)
+    if template is None or template.settings is None:
+        return Decimal("0.00")
+    return Decimal(str(template.settings.extra_principal))

@@ -1039,10 +1039,11 @@ class TestProjectForward:
       - ``extra_monthly`` lives only on this surface;
       - ``monthly_override`` routes the user's planned payments
         through a forward-only channel;
-      - override months never receive ``extra_monthly`` (C2-4 -- the
-        architectural plan's "critical regression-prevention
-        assertion": override + extra cannot interact to silently
-        suppress or double-apply acceleration);
+      - ``extra_monthly`` applies to EVERY forward month, override and
+        contractual alike (C2-4 -- step 5: a standing overpayment must
+        accelerate the whole loan, and a recurring plan makes every near
+        month an override month; no double-count because the standing
+        extra is never baked into the override amount);
       - negative amortization, overpayment cap, and ARM rate-change
         re-amortization all mirror ``generate_schedule``'s existing
         behavior on the projection side;
@@ -1194,31 +1195,29 @@ class TestProjectForward:
         for row in rows[:-1]:
             assert row.extra_payment == Decimal("500.00")
 
-    # ── C2-4: override + extra -- the regression-prevention lock ──
+    # ── C2-4: override + extra -- the standing extra rides override months ──
 
-    def test_override_plus_extra_extra_not_added_to_override_months(self):
-        """C2-4: when both an override and ``extra_monthly`` are
-        present, the override month uses the override as the total
-        payment and ``extra_payment == 0``; non-override months use
-        contractual + extra.
+    def test_override_plus_extra_applies_extra_to_override_months(self):
+        """C2-4: ``extra_monthly`` is applied to an override month too (step 5).
 
-        CRITICAL: this is the primitive-level regression lock that
-        makes the architectural bug structurally impossible.  In the
-        old ``generate_schedule`` flow a projected payment record
-        would suppress ``extra_monthly`` silently (the gate was "any
-        record present") -- now override and extra are independent
-        parameters of ``project_forward``, and the override path
-        unconditionally sets ``extra = $0.00``.
+        Behavior change ratified by the operator (Q3, 2026-07-07): a standing
+        overpayment (and the payoff lever's additional extra) must accelerate
+        every forward month.  A recurring payment plan makes every near month an
+        OVERRIDE month, so the pre-step-5 rule "override months ignore extra"
+        made the standing extra a no-op for exactly the loans that have one.  The
+        override amount is the month's BASE payment; ``extra_monthly`` is applied
+        on top.  There is no double-count: the standing extra is a live parameter
+        (``loan_payment_service``) and is never baked into the override amount.
 
-        Hand arithmetic for June 2026 (the override month, $2000):
-          balance before June = $295,748.32 (after four
-          contractual+$500-extra rows preceding); this is mechanical
-          to compute and not re-derived in the assertion -- the test
-          asserts the SHAPE of the result (payment == override,
-          extra == 0).
-        Hand arithmetic for July 2026 (no override, extra applies):
-          July payment = $1,798.65 contractual
-          July extra_payment = $500.00
+        Hand arithmetic for June 2026 (override $2,000 + $500 extra), balance
+        entering June $296,781.36 (after four contractual+$500-extra rows):
+          interest   = 296,781.36 * 0.005 = 1,483.91
+          principal  = 2,000.00 - 1,483.91 = 516.09  (the BASE split)
+          extra      = 500.00
+          balance    = 296,781.36 - 516.09 - 500.00 = 295,765.27
+        The row reports ``payment`` = the $2,000 base and ``extra_payment`` =
+        $500 separately.  July 2026 (no override): $1,798.65 contractual +
+        $500 extra, exactly as before.
         """
         rows = project_forward(
             ProjectionInputs(
@@ -1234,14 +1233,17 @@ class TestProjectForward:
             extra_monthly=Decimal("500.00"),
         )
         june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
+        # The load-bearing assertion: the extra IS applied to the override
+        # month now (reported separately from the base payment).
         assert june.payment == Decimal("2000.00")
-        # The load-bearing assertion: extra is NEVER added to an
-        # override month, even when ``extra_monthly`` is set.
-        assert june.extra_payment == Decimal("0.00")
+        assert june.interest == Decimal("1483.91")
+        assert june.principal == Decimal("516.09")
+        assert june.extra_payment == Decimal("500.00")
+        assert june.remaining_balance == Decimal("295765.27")
         july = next(r for r in rows if r.payment_date == date(2026, 7, 1))
         assert july.payment == self.CONTRACTUAL_PAYMENT
         assert july.extra_payment == Decimal("500.00")
-        # Every override-less month past the override carries extra.
+        # Every month past the override still carries extra.
         post_override = [
             r for r in rows
             if r.payment_date > date(2026, 6, 1) and r != rows[-1]

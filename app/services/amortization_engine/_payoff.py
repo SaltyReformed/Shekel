@@ -93,10 +93,11 @@ def _search_extra_for_payoff(
         upper_bound: The initial high bracket -- the current principal
             (paying it all off immediately is the trivial upper bound).
         monthly_override: Optional ``(year, month) -> Decimal``
-            planned-outlay map.  Override months replace contractual
-            AND suppress the searched ``extra_monthly``, so the search
-            finds the extra needed on NON-override months on top of
-            the user's plan (F-27).
+            planned-outlay map.  Override months replace the contractual
+            BASE payment; the searched ``extra_monthly`` still applies on
+            top of EVERY forward month (override and contractual alike,
+            post step 5), so the search finds the per-month extra needed
+            on top of the user's planned outlay (F-27).
 
     Returns:
         The Decimal extra-monthly payment, rounded to cents, that
@@ -150,10 +151,12 @@ def required_extra_for_projection(
         target_date: The desired payoff date.
         monthly_override: Optional ``(year, month) -> Decimal``
             planned-outlay map, honored by the baseline run and the
-            search alike, so the returned extra is the amount needed
-            ON TOP of the user's committed plan (in-window; beyond the
-            plan's horizon months revert to contractual, the committed-
-            scenario convention).
+            search alike.  The searched extra applies to every forward
+            month (post step 5: override months no longer suppress it),
+            so the returned extra is the per-month amount needed ON TOP of
+            the user's committed plan (in-window; beyond the plan's
+            horizon months revert to contractual, the committed-scenario
+            convention).
 
     Returns:
         ``None`` if ``target_date`` is in the past.  ``Decimal("0.00")``
