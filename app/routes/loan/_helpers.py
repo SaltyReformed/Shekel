@@ -21,6 +21,8 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import (
     EscrowComponentSchema,
+    EscrowLineRenameSchema,
+    EscrowVersionSchema,
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
     LoanParamsUpdateSchema,
@@ -30,7 +32,10 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import escrow_calculator, loan_resolver
-from app.services.loan_loaders import load_loan_anchor_facts
+from app.services.loan_loaders import (
+    latest_settled_payment_period_start,
+    load_loan_anchor_facts,
+)
 from app.services.loan_payment_service import (
     LoanContext,
     confirmed_loan_view,
@@ -68,6 +73,8 @@ _update_schema = LoanParamsUpdateSchema()
 _trueup_schema = LoanAnchorTrueupSchema()
 _rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
+_escrow_version_schema = EscrowVersionSchema()
+_escrow_rename_schema = EscrowLineRenameSchema()
 _payoff_schema = PayoffCalculatorSchema()
 _refinance_schema = RefinanceSchema()
 _transfer_schema = LoanPaymentTransferSchema()
@@ -264,6 +271,30 @@ def _compute_total_payment(account, params, escrow_components):
     return escrow_calculator.calculate_total_payment(
         state.monthly_payment, escrow_components,
     )
+
+
+def _forward_boundary(account_id, scenario_id):
+    """Return the escrow forward-only guard boundary for a loan, or ``None``.
+
+    The latest settled payment's pay-period start
+    (:func:`~app.services.loan_loaders.latest_settled_payment_period_start`) -- the
+    exact date the genesis split resolves each payment's escrow at, so a new or
+    edited escrow version strictly after it cannot move any settled payment's split.
+    ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
+    has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
+    and mark each drawer row editable / deletable) and the loan dashboard GET (which
+    builds the same drawer inline), so both derive the boundary one way.
+
+    Args:
+        account_id: The loan account whose settled payments bound the guard.
+        scenario_id: The baseline scenario id, or ``None``.
+
+    Returns:
+        The boundary date, or ``None`` when nothing is settled.
+    """
+    if scenario_id is None:
+        return None
+    return latest_settled_payment_period_start(account_id, scenario_id)
 
 
 def _balances_for_chart(rows, target_len):

@@ -83,6 +83,12 @@ class LoanContext:
         rate_history: RateHistory ORM objects for rate display.  Carries
             the origination row for every loan plus any ARM adjustments;
             the loan dashboard shows the table only for ARM loans.
+        escrow_lines: The account's escrow LINES with their full version
+            history (:class:`~app.models.escrow_line.EscrowLine`), the raw
+            source ``escrow_components`` is resolved from.  Kept so the loan
+            dashboard builds the escrow card's version drawer
+            (:func:`app.services.escrow_calculator.build_escrow_card`) off the
+            same load, rather than re-querying the lines.
     """
 
     payments: list[PaymentRecord]
@@ -91,6 +97,7 @@ class LoanContext:
     monthly_escrow: Decimal
     contractual_pi: Decimal
     rate_history: list = field(default_factory=list)  # list[RateHistory]
+    escrow_lines: list = field(default_factory=list)  # list[EscrowLine]
 
 
 def load_loan_context(
@@ -178,6 +185,7 @@ def load_loan_context(
         monthly_escrow=monthly_escrow,
         contractual_pi=contractual_pi,
         rate_history=rate_history_records,
+        escrow_lines=escrow_lines,
     )
 
 

@@ -7,6 +7,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services.escrow_calculator import (
+    build_escrow_card,
     build_escrow_display,
     calculate_monthly_escrow,
     calculate_total_payment,
@@ -331,9 +332,10 @@ class TestEscrowDisplayCentAllocation:
             assert abs(row.monthly_amount - exact) < Decimal("0.01")
 
 
-def _ver(effective_date, annual, *, is_removed=False, inflation=None):
+def _ver(effective_date, annual, *, is_removed=False, inflation=None, id=0):
     """Build a mock escrow version (supersession model)."""
     return SimpleNamespace(
+        id=id,
         effective_date=effective_date,
         annual_amount=Decimal(str(annual)),
         is_removed=is_removed,
@@ -475,3 +477,153 @@ class TestResolveActiveLines:
             resolve_active_lines(lines, as_of),
         )
         assert escrow_monthly_as_of(lines, as_of) == Decimal("800.00")
+
+
+class TestBuildEscrowCard:
+    """The escrow-card display model: active summaries + version drawers."""
+
+    def test_active_line_one_version_no_boundary(self):
+        """One active line, one version, no settled boundary -> current, no scheduled.
+
+        With ``forward_boundary=None`` (no settled payment) the only version is
+        editable but NOT deletable (a line's sole version is removed via the line,
+        not deleted).  1200/12 = 100.00.
+        """
+        line = _line(1, "Escrow", [_ver(date(2020, 1, 1), "1200", id=10)])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.summary.name == "Escrow"
+        assert card.summary.monthly_amount == Decimal("100.00")
+        assert card.has_scheduled is False
+        assert len(card.versions) == 1
+        row = card.versions[0]
+        assert row.id == 10
+        assert row.status_key == "current"
+        assert row.status_label == "Current"
+        assert row.is_editable is True   # nothing settled -> not frozen
+        assert row.is_deletable is False  # sole version
+
+    def test_scheduled_future_version_flags_and_editability(self):
+        """A future version -> has_scheduled, scheduled row editable + deletable.
+
+        Boundary = 2026-01-15 (a settled payment's period start).  The 2026-08-01
+        version is strictly after it, so it is editable AND deletable (two
+        versions).  The origination version (2018-12-01 <= boundary) is frozen.
+        """
+        line = _line(1, "Tax", [
+            _ver(date(2018, 12, 1), "7403.88", id=1),
+            _ver(date(2026, 8, 1), "8003.88", id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), date(2026, 1, 15))
+        card = cards[0]
+        assert card.has_scheduled is True
+        # Ascending by effective_date: origination first, scheduled second.
+        current_row, scheduled_row = card.versions
+        assert current_row.status_key == "current"
+        assert current_row.is_editable is False   # frozen (<= boundary)
+        assert current_row.is_deletable is False
+        assert scheduled_row.status_key == "scheduled"
+        assert scheduled_row.status_label == "Scheduled"
+        assert scheduled_row.is_editable is True
+        assert scheduled_row.is_deletable is True
+        # 8003.88 / 12 = 666.99 (exact).
+        assert scheduled_row.monthly_amount == Decimal("666.99")
+
+    def test_current_row_monthly_matches_summary_allocation(self):
+        """The drawer's current row uses the summary's cent-allocated monthly.
+
+        Two $100/yr lines allocate to 8.34 + 8.33 = 16.67 (badge), not 8.33 each
+        (the leftover cent goes to the first by the stable largest-remainder rule).
+        Each line's current version row must show the SAME monthly the summary
+        shows, not a bare round(100/12)=8.33, so the drawer and summary never
+        disagree.
+        """
+        lines = [
+            _line(1, "A", [_ver(date(2020, 1, 1), "100", id=1)]),
+            _line(2, "B", [_ver(date(2020, 1, 1), "100", id=2)]),
+        ]
+        cards = build_escrow_card(lines, date(2026, 6, 1), None)
+        summary_monthlies = [c.summary.monthly_amount for c in cards]
+        assert summary_monthlies == [Decimal("8.34"), Decimal("8.33")]
+        assert sum(summary_monthlies) == Decimal("16.67")
+        for card in cards:
+            assert card.versions[0].monthly_amount == card.summary.monthly_amount
+
+    def test_removed_line_absent_from_card(self):
+        """A line whose in-effect version is a tombstone gets no card at all."""
+        line = _line(1, "PMI", [
+            _ver(date(2020, 1, 1), "1200", id=1),
+            _ver(date(2024, 1, 1), "0", is_removed=True, id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 0
+
+    def test_upcoming_only_line_still_shown(self):
+        """A line whose only version is in the FUTURE is still shown (no vanish).
+
+        A new line added with a future effective date has no in-effect-today
+        version, so it must not silently disappear: its summary comes off the
+        earliest upcoming version, monthly = 6000/12 = 500.00, has_scheduled True,
+        and its sole row is 'Scheduled'.
+        """
+        line = _line(1, "Future Charge", [_ver(date(2026, 12, 1), "6000", id=1)])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.summary.name == "Future Charge"
+        assert card.summary.monthly_amount == Decimal("500.00")
+        assert card.has_scheduled is True
+        assert card.versions[0].status_key == "scheduled"
+
+    def test_future_boundary_freezes_gap_version(self):
+        """A version in (today, future boundary] is frozen: not editable, not deletable.
+
+        An early-settled payment puts the boundary in the FUTURE (2026-03-27) while
+        today is 2026-03-20.  A version effective 2026-03-25 is 'scheduled' (after
+        today) yet underpins that settled split (on/before the boundary), so the
+        display must offer neither edit nor delete -- the display side of the guard
+        the delete routes enforce server-side.
+        """
+        line = _line(1, "Tax", [
+            _ver(date(2020, 1, 1), "3600", id=1),
+            _ver(date(2026, 3, 25), "4800", id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 3, 20), date(2026, 3, 27))
+        gap_row = cards[0].versions[1]
+        assert gap_row.effective_date == date(2026, 3, 25)
+        assert gap_row.status_key == "scheduled"
+        assert gap_row.is_editable is False
+        assert gap_row.is_deletable is False
+
+    def test_line_with_only_future_tombstone_absent(self):
+        """A line whose only versions are removed / a future tombstone is omitted."""
+        line = _line(1, "Gone", [
+            _ver(date(2020, 1, 1), "0", is_removed=True, id=1),
+            _ver(date(2027, 1, 1), "0", is_removed=True, id=2),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        assert len(cards) == 0
+
+    def test_scheduled_removal_status_and_past_version(self):
+        """A future tombstone reads 'Scheduled removal'; a superseded one is 'Past'.
+
+        Line: origination (current), a superseded past version, and a future
+        removal tombstone.  as-of 2026-06-01 with no boundary.
+        """
+        line = _line(1, "Ins", [
+            _ver(date(2018, 12, 1), "1200", id=1),
+            _ver(date(2020, 1, 1), "1400", id=2),
+            _ver(date(2027, 1, 1), "0", is_removed=True, id=3),
+        ])
+        cards = build_escrow_card([line], date(2026, 6, 1), None)
+        card = cards[0]
+        past_row, current_row, future_row = card.versions
+        assert past_row.status_key == "past"
+        assert past_row.status_label == "Past"
+        assert current_row.status_key == "current"
+        assert future_row.status_key == "scheduled"
+        assert future_row.status_label == "Scheduled removal"
+        assert future_row.is_removed is True
+        assert future_row.is_editable is False   # tombstones are not amount-editable
+        assert future_row.is_deletable is True    # but a scheduled removal can be undone

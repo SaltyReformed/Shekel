@@ -200,13 +200,26 @@ class RateChangeSchema(BaseSchema):
 
 
 class EscrowComponentSchema(BaseSchema):
-    """Validates POST data for creating/updating an escrow component.
+    """Validates POST data for creating / amending an escrow line version.
+
+    Serves every escrow write: the add-line form, the per-line
+    "schedule a change" (add-version) form, and the version edit form.
+    ``name`` is required for the add-line form (rename has its own
+    :class:`EscrowLineRenameSchema`) and ignored by the add-version /
+    edit routes, which key on the line / version id.
 
     E-28 / HIGH-06 / PA-02: ``inflation_rate`` is validated as a
     decimal fraction matching the DB CHECK on
     ``escrow_component_versions.inflation_rate``
     (``IS NULL OR (>= 0 AND <= 1)``).  Nullable -- the user may omit
     the field for an escrow line with no scheduled inflation.
+
+    ``effective_date`` is OPTIONAL and defaults to today in the route
+    when absent (spec Sec. 4.1: "defaulting to today, so the common case
+    is unchanged"); a supplied date lets the operator schedule a change
+    on a future date.  The route enforces the forward-only guard (the
+    date must fall strictly after the latest settled payment's pay-period
+    start), which the schema cannot -- it has no access to the loan.
     """
 
     _PERCENT_FIELDS = ("inflation_rate",)
@@ -226,6 +239,34 @@ class EscrowComponentSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
+    effective_date = fields.Date(load_default=None)
+
+
+class EscrowVersionSchema(EscrowComponentSchema):
+    """Validates POST data for amending an existing escrow line (add / edit version).
+
+    The add-version and edit-version routes key on the line / version id
+    and never set the display label, so ``name`` is not required here --
+    otherwise identical to :class:`EscrowComponentSchema` (annual amount,
+    optional inflation, optional effective date defaulting to today).
+    """
+
+    name = fields.String(
+        required=False, allow_none=True,
+        validate=validate.Length(min=1, max=100),
+    )
+
+
+class EscrowLineRenameSchema(BaseSchema):
+    """Validates POST data for renaming an escrow line (display label only).
+
+    A rename edits ``escrow_lines.name`` in place; it is display-only and
+    cannot move a cent of any posted loan-payment split (the split reads a
+    version's amount + effective date, never the line name).  The route
+    still rejects a rename onto another ACTIVE line's name (decision C).
+    """
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=100))
 
 
 

@@ -1,10 +1,10 @@
 # Escrow config redesign: line identity, effective dates, date-aware cash, overpayment
 
-Status: BUILDABLE SPEC (proposed, not started). Written 2026-07-06. **Supersedes** the earlier
-"escrow line identity refactor" proposal that this file used to hold (see git history) -- an
-adversarial review of that proposal in a fresh session expanded the scope from "add a `line_id`
-column" to the full, correct redesign below. **Decisions A-D approved by the operator 2026-07-06
-(Section 12); the design is locked and ready to build** per the Section 14 sequence.
+Status: IN PROGRESS -- steps 1, 2a, 2b, 4, and 3 SHIPPED to branch `feat/escrow-config-redesign`;
+steps 5-7 remain (Section 14). Written 2026-07-06. **Supersedes** the earlier "escrow line identity
+refactor" proposal that this file used to hold (see git history) -- an adversarial review of that
+proposal in a fresh session expanded the scope from "add a `line_id` column" to the full, correct
+redesign below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
 
 ## 0. Why this exists (plain language, no jargon)
 
@@ -160,13 +160,24 @@ is unchanged). Entering "new amount, effective Jan 1" on Nov 15 writes a version
 An effective date that precedes an already-settled payment would retroactively change that payment's
 `escrow_monthly_as_of`, desyncing it from the cash that already froze at settlement (Sec. 5.2). So:
 
-> **Guard:** a new or edited escrow version's `effective_date` must be strictly after the pay-period
-> start of the loan's latest **settled** payment.
+> **Guard:** a new, edited, OR deleted escrow version's `effective_date` must be strictly after the
+> pay-period start of the loan's latest **settled** payment.
 
-This mirrors the existing tracking-start guard exactly
-(`loan_loaders.earliest_settled_payment_due_date`, `loan_loaders.py:538-569`) -- reuse that
-derivation (`_settled_payment_due_dates`) rather than re-spelling "which payments are settled." The
-route rejects a violating effective date with an actionable message naming the boundary date.
+**As built (correction to the original wording).** The boundary is the greatest
+`pay_period.start_date` over settled payments -- `loan_loaders.latest_settled_payment_period_start`,
+which shares the settled-shadow set (`_settled_income_shadows`) with the tracking-start guard so
+both agree on "which payments are settled." It keys on the pay-period **start**, NOT the monthly
+**due** date `_settled_payment_due_dates` derives: the split (`_walk._replay_events`) and the
+settle-time cash freeze (`loan_payment_service._shadow_live_amount`) both resolve escrow at
+`pay_period.start_date`, so that is the precise boundary; guarding on the due date would be
+over-conservative. The guard applies uniformly to add-line, add-version, edit (both the version's
+current and new date), delete-version, AND the line-level remove (its tombstone lands at today, so
+today must clear the boundary). **The boundary can be in the FUTURE** -- an EARLY-settled payment
+(settled before its pay period begins) puts it after today; an adversarial review caught that the
+two delete paths originally guarded only on "today" and could corrupt a paid-ahead payment's split.
+The route rejects a violating date with an actionable message naming the boundary; the escrow card
+surfaces it (a 4xx does not HTMX-swap, so `escrow_card.js` projects the message into
+`#escrow-error`).
 
 ### 4.3 Past corrections go through the existing loan true-up, NOT retroactive escrow
 
@@ -470,11 +481,28 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
    migration `d7b2f9a4c1e6` (reconstruct-on-downgrade), model/loader/audit removal, and old-model
    test cleanup. Real account-3 data verified byte-identical ($616.99 per split) and the migration
    up/down/up round-trip ran clean on the dev DB.
-3. **Effective-date field + forward-only guard** (route + schema + the December-window test).
-4. **Date-aware cash** (`live_loan_transfer_amounts` per-shadow; the two other consumers; the Sec. 9
-   invariant test).
+3. **Effective-date field + forward-only guard + version drawer.** SHIPPED (commit
+   `feat(escrow): effective-date field + version drawer with forward-only guard`). Built the
+   operator-facing effective-date field, the forward-only guard (Sec. 4.2 as-built:
+   `latest_settled_payment_period_start`, keyed on the pay-period start, boundary-can-be-future,
+   applied to every write path incl. both deletes and the line remove), and -- per the operator's
+   scope choice -- the loan-detail escrow card rebuilt into a per-line **version-history drawer**:
+   `escrow_calculator.build_escrow_card` (reuses `resolve_active_lines` + `build_escrow_display`, so
+   the cent-allocation invariant holds; shows not-yet-active lines so a scheduled line never
+   silently vanishes; drops an orphaned empty line), routes `add_escrow_version` /
+   `edit_escrow_version` / `delete_escrow_version` (scheduled-only) / `rename_escrow_line`
+   (rename-in-place pulled forward from step 6; provably cannot move a split), Bootstrap-collapse
+   drawer (CSP-safe), and `escrow_card.js` for guard-message surfacing. Additive -- no migration.
+   ~27 tests (guard incl. max-not-min and the early-settle `boundary > today` regime on both delete
+   paths, all CRUD, cross-account version IDOR, drawer display, upcoming-line + orphan cleanup);
+   pylint 10.00; full suite green; adversarial reviewer CONFIRMED-FIXED (it caught the early-settle
+   delete-guard gap, which was then closed).
+4. **Date-aware cash.** SHIPPED (commit `05ecd956`, prior session): `live_loan_transfer_amounts`
+   per-shadow via `_shadow_live_amount`; `prepare_payments_for_engine` per-payment as-of; plus
+   capture-on-settle (Option A) freezing the live payment-date amount at settlement.
 5. **Overpayment** (`extra_principal` home per decision B; both modes; projection threading).
-6. **Rename in place + merge** (immutability test; merge reconcile).
+6. **Merge** (the operator action that rejoins a line history split in two; merge reconcile). Rename
+   in place already shipped in step 3.
 7. **Inflation fix** + docs + `/update-docs`. Full suite is the final gate.
 
 ## 15. Related

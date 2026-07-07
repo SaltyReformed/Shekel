@@ -49,6 +49,62 @@ class EscrowComponentDisplay:
 
 
 @dataclass(frozen=True)
+class EscrowVersionDisplay:  # pylint: disable=too-many-instance-attributes
+    """One version row in an escrow line's history drawer.
+
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed because this is a
+    cohesive display row: every field is one precomputed cell / control-state of a
+    single version's drawer row, read side-by-side by the template, mirroring the
+    other display DTOs here (:class:`EscrowComponentDisplay`).  Nesting them would
+    fragment one row for no design gain.
+
+    The supersession model exposes a line's whole timeline; this DTO is one row of
+    it, precomputed so the drawer template renders without arithmetic or
+    string-status comparisons (the "templates display, never compute" constraint).
+    ``id`` is the VERSION id (the target of the per-version edit / delete controls,
+    distinct from the summary's LINE id).  ``monthly_amount`` is the current
+    version's cent-allocated summary monthly (so the drawer's current row matches
+    the badge) and ``annual / 12`` rounded for every other row.  ``status_key`` is
+    a CSS-modifier token (``current`` / ``scheduled`` / ``past``) interpolated into
+    the row class, and ``status_label`` its human caption -- neither is compared in
+    the template.  ``is_editable`` / ``is_deletable`` are the forward-only guard's
+    verdict for this row: a version at or before the latest settled payment's
+    pay-period start is frozen (editing / deleting it would move a settled split),
+    and a line's only version cannot be deleted (use the line-level remove).
+    """
+
+    id: int
+    effective_date: date
+    annual_amount: Decimal
+    monthly_amount: Decimal
+    inflation_rate_pct: Decimal | None
+    is_removed: bool
+    status_key: str
+    status_label: str
+    is_editable: bool
+    is_deletable: bool
+
+
+@dataclass(frozen=True)
+class EscrowLineDisplay:
+    """One escrow line on the loan card: its current-state summary + version drawer.
+
+    Composes the existing per-line summary (:class:`EscrowComponentDisplay`, the
+    line's in-effect-today amount with the cent-allocated monthly that sums to the
+    escrow badge) with the full version history the drawer expands to
+    (:class:`EscrowVersionDisplay`) and ``has_scheduled`` -- whether a future-dated
+    version exists, so the collapsed summary can flag a queued change the
+    today-only amount would otherwise hide.  Only ACTIVE lines (their in-effect
+    version is not a removal tombstone) get a card; a fully-removed line is absent,
+    exactly as the pre-drawer list showed.
+    """
+
+    summary: "EscrowComponentDisplay"
+    versions: list["EscrowVersionDisplay"]
+    has_scheduled: bool
+
+
+@dataclass(frozen=True)
 class ResolvedEscrowLine:
     """An escrow line resolved to the version in effect on a given date.
 
@@ -159,6 +215,200 @@ def build_escrow_display(components: list) -> list[EscrowComponentDisplay]:
             inflation_rate_pct=inflation_pct,
         ))
     return rows
+
+
+def _after_forward_boundary(effective_date: date, boundary: date | None) -> bool:
+    """Whether an escrow version at ``effective_date`` clears the forward-only guard.
+
+    ``True`` when the version takes effect strictly after ``boundary`` -- the latest
+    settled payment's pay-period start
+    (:func:`app.services.loan_loaders.latest_settled_payment_period_start`) -- so
+    editing or deleting it cannot move an already-settled payment's escrow split.
+    ``boundary is None`` (the loan has no settled payment) means nothing is frozen,
+    so every version clears.
+
+    Args:
+        effective_date: The version's effective date.
+        boundary: The latest settled payment's pay-period start, or ``None``.
+
+    Returns:
+        ``True`` when the version is safe to edit / delete, ``False`` when frozen.
+    """
+    return boundary is None or effective_date > boundary
+
+
+def _version_status(version, current_id: int | None, on_date: date) -> tuple[str, str]:
+    """Classify one escrow version for the drawer: ``(css_key, human_label)``.
+
+    A future-dated version is ``scheduled`` (a queued change, or a queued removal
+    when it is a tombstone); the in-effect-today version (``version.id ==
+    current_id``) is ``current``; anything else on/before today is a superseded
+    ``past`` version (a past removal when it is a tombstone).  The key is a CSS
+    modifier token and the label its caption, both precomputed so the template
+    never compares a status string.
+
+    Args:
+        version: The :class:`~app.models.escrow_line.EscrowComponentVersion`.
+        current_id: The id of the line's in-effect-today version, or ``None``.
+        on_date: Today (the resolution date the ``scheduled`` cutoff uses).
+
+    Returns:
+        ``(status_key, status_label)`` for the version.
+    """
+    if version.effective_date > on_date:
+        return ("scheduled", "Scheduled removal" if version.is_removed else "Scheduled")
+    if version.id == current_id:
+        return ("current", "Current")
+    return ("past", "Removed" if version.is_removed else "Past")
+
+
+def _build_version_rows(
+    line, on_date: date, boundary: date | None, current_monthly: Decimal,
+) -> list[EscrowVersionDisplay]:
+    """Build one escrow line's full version-history rows for the drawer (ascending).
+
+    Every version of the line, oldest first, each precomputed into an
+    :class:`EscrowVersionDisplay`: the in-effect-today version carries the summary's
+    cent-allocated ``current_monthly`` (so the drawer's current row matches the
+    badge) and every other row a plain ``annual / 12``; ``is_editable`` /
+    ``is_deletable`` apply the forward-only guard
+    (:func:`_after_forward_boundary`) -- a frozen (settled-affecting) version is
+    read-only, a removal tombstone is not amount-editable, and a line's only version
+    cannot be deleted (the line-level remove handles that).
+
+    Args:
+        line: The :class:`~app.models.escrow_line.EscrowLine` with ``versions``.
+        on_date: Today, for status classification.
+        boundary: The forward-only guard boundary (latest settled pay-period start).
+        current_monthly: The summary's cent-allocated monthly for the current row.
+
+    Returns:
+        The line's version rows, ascending by ``effective_date``.
+    """
+    current = _version_as_of(line.versions, on_date)
+    current_id = current.id if current is not None else None
+    rows: list[EscrowVersionDisplay] = []
+    for version in sorted(line.versions, key=lambda v: v.effective_date):
+        annual = Decimal(str(version.annual_amount))
+        monthly = (
+            current_monthly if version.id == current_id
+            else round_money(annual / MONTHS_PER_YEAR)
+        )
+        inflation_pct = (
+            Decimal(str(version.inflation_rate)) * Decimal("100")
+            if version.inflation_rate is not None else None
+        )
+        status_key, status_label = _version_status(version, current_id, on_date)
+        after = _after_forward_boundary(version.effective_date, boundary)
+        is_scheduled = version.effective_date > on_date
+        rows.append(EscrowVersionDisplay(
+            id=version.id,
+            effective_date=version.effective_date,
+            annual_amount=annual,
+            monthly_amount=monthly,
+            inflation_rate_pct=inflation_pct,
+            is_removed=version.is_removed,
+            status_key=status_key,
+            status_label=status_label,
+            # An unfrozen, non-tombstone version is editable in place; only a
+            # SCHEDULED (future) version is per-version deletable -- a current /
+            # past amount is corrected by editing it or removing the whole line.
+            is_editable=after and not version.is_removed,
+            is_deletable=after and is_scheduled,
+        ))
+    return rows
+
+
+def _upcoming_summary(line, on_date: date) -> "EscrowComponentDisplay | None":
+    """Summary for a line that is NOT active today but has an upcoming version.
+
+    A line whose earliest non-removed version is still in the future (e.g. a new
+    line added with a future effective date, or one whose current version was
+    edited / deleted forward) has no in-effect-today amount, so
+    :func:`resolve_active_lines` drops it.  Surfacing it here off its earliest
+    upcoming version keeps it VISIBLE on the card (as a "Scheduled" line) rather
+    than silently vanishing after the operator schedules it -- the invisible-change
+    trap the drawer exists to avoid.  Its monthly is a plain ``annual / 12`` (it is
+    not part of today's badge, which counts only active lines), so no
+    cent-allocation applies.
+
+    Args:
+        line: The :class:`~app.models.escrow_line.EscrowLine`.
+        on_date: Today.
+
+    Returns:
+        An :class:`EscrowComponentDisplay` from the earliest upcoming non-removed
+        version, or ``None`` when the line has no upcoming non-removed version
+        (fully removed, or empty).
+    """
+    upcoming = [
+        version for version in line.versions
+        if version.effective_date > on_date and not version.is_removed
+    ]
+    if not upcoming:
+        return None
+    version = min(upcoming, key=lambda v: v.effective_date)
+    annual = Decimal(str(version.annual_amount))
+    inflation = (
+        Decimal(str(version.inflation_rate))
+        if version.inflation_rate is not None else None
+    )
+    return EscrowComponentDisplay(
+        id=line.id,
+        name=line.name,
+        annual_amount=annual,
+        monthly_amount=round_money(annual / MONTHS_PER_YEAR),
+        inflation_rate=inflation,
+        inflation_rate_pct=(
+            inflation * Decimal("100") if inflation is not None else None
+        ),
+    )
+
+
+def build_escrow_card(
+    lines: list, on_date: date, forward_boundary: date | None,
+) -> list[EscrowLineDisplay]:
+    """Build the loan escrow card: each visible line's summary + version drawer.
+
+    The single escrow-card display builder both the loan-dashboard GET and the
+    escrow HTMX routes render, so the inline card and every post-mutation swap are
+    byte-identical.  A line is shown when it has ANY non-removed version -- active
+    TODAY (summary from :func:`resolve_active_lines` -> :func:`build_escrow_display`,
+    preserving its cent-allocated rows-sum-to-badge invariant) OR only UPCOMING
+    (:func:`_upcoming_summary`, so a future-dated line never silently vanishes).
+    Each card layers the line's full version history
+    (:func:`_build_version_rows`) plus ``has_scheduled``.  A fully-removed line (its
+    in-effect version is a tombstone and it has no upcoming real version) is
+    omitted, exactly as the pre-drawer list behaved.
+
+    Args:
+        lines: The account's :class:`~app.models.escrow_line.EscrowLine` rows with
+            their ``versions`` loaded (:func:`app.services.loan_loaders.load_escrow_lines`).
+        on_date: Today -- the date the summary and the ``current`` / ``scheduled``
+            status split resolve against.
+        forward_boundary: The forward-only guard boundary -- the latest settled
+            payment's pay-period start, or ``None`` when nothing is settled -- that
+            decides each version row's ``is_editable`` / ``is_deletable``.
+
+    Returns:
+        One :class:`EscrowLineDisplay` per visible line, in the loader's name order.
+    """
+    active = {s.id: s for s in build_escrow_display(resolve_active_lines(lines, on_date))}
+    cards: list[EscrowLineDisplay] = []
+    for line in lines:
+        summary = active.get(line.id) or _upcoming_summary(line, on_date)
+        if summary is None:
+            continue
+        cards.append(EscrowLineDisplay(
+            summary=summary,
+            versions=_build_version_rows(
+                line, on_date, forward_boundary, summary.monthly_amount,
+            ),
+            has_scheduled=any(
+                version.effective_date > on_date for version in line.versions
+            ),
+        ))
+    return cards
 
 
 def calculate_monthly_escrow(components: list, as_of_date: date | None = None) -> Decimal:

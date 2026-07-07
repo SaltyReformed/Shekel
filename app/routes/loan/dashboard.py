@@ -25,6 +25,7 @@ from app.services.recurring_transfer_query import (
 )
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
+    _forward_boundary,
     _load_loan_account,
     _load_loan_context,
     _loan_inputs,
@@ -245,7 +246,10 @@ def _build_payment_summary(state, summary, planned_schedule, escrow_components):
 
     Returns:
         dict of template vars: current_principal_display, total_payment,
-        payment_breakdown, escrow_components (display list).
+        payment_breakdown.  The escrow card display model
+        (``escrow_components``) is built separately in the route via
+        :func:`app.services.escrow_calculator.build_escrow_card`, which needs the
+        raw lines + the forward-only boundary rather than the resolved-today set.
     """
     return {
         # E-18 / Commit 15: resolver-derived; equals the /savings debt
@@ -256,9 +260,6 @@ def _build_payment_summary(state, summary, planned_schedule, escrow_components):
         ),
         "payment_breakdown": _compute_payment_breakdown(
             planned_schedule, escrow_components,
-        ),
-        "escrow_components": escrow_calculator.build_escrow_display(
-            escrow_components,
         ),
     }
 
@@ -481,6 +482,13 @@ def dashboard(account_id):
     context.update(_build_payment_summary(
         ctx.state, summary, planned_schedule, ctx.loan.escrow_components,
     ))
+    # Escrow card: the version-drawer model, built off the raw lines
+    # (``ctx.loan.escrow_lines``, loaded with the same context) and keyed by the
+    # forward-only boundary so each drawer row's edit / delete controls match the
+    # HTMX routes' guard.  Same builder the escrow routes re-render on a swap.
+    context["escrow_components"] = escrow_calculator.build_escrow_card(
+        ctx.loan.escrow_lines, today, _forward_boundary(account.id, scenario_id),
+    )
     context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.

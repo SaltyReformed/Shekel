@@ -24,7 +24,7 @@ from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service
+from app.services import account_service, escrow_calculator, loan_loaders
 
 from tests._test_helpers import (
     add_escrow_line,
@@ -913,6 +913,511 @@ class TestEscrow:
         assert 'id="total-payment-chip"' in html
         assert 'hx-swap-oob="true"' in html
         assert "$400.00/mo" in html
+
+    # ── Effective-date field + forward-only guard ────────────────────
+
+    def test_escrow_add_with_effective_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST add with an explicit effective_date opens the version at that date."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={
+                "name": "Property Tax", "annual_amount": "7200.00",
+                "effective_date": "2026-02-01",
+            },
+        )
+        assert resp.status_code == 200
+        line = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=acct.id, name="Property Tax").one()
+        )
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line.id).one()
+        )
+        assert version.effective_date == date(2026, 2, 1)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_escrow_add_rejects_before_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An effective date before origination (2023-06-01) is rejected; no line."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow",
+            data={
+                "name": "Tax", "annual_amount": "1200.00",
+                "effective_date": "2023-05-01",
+            },
+        )
+        assert resp.status_code == 400
+        assert b"origination" in resp.data
+        assert (
+            db.session.query(EscrowLine).filter_by(account_id=acct.id).count() == 0
+        )
+
+    def test_forward_guard_rejects_on_or_before_latest_settled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Add-version on/before the latest settled payment's period start is rejected.
+
+        A settled payment in seed_periods[0] (start 2026-01-02) freezes the escrow
+        the split at that date reads.  A version effective 2026-01-02 (== the start)
+        would move that settled split, so it is rejected; 2026-01-03 (strictly
+        after) is allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[0].start_date == date(2026, 1, 2)
+
+        on_boundary = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-02"},
+        )
+        assert on_boundary.status_code == 400
+        assert b"latest recorded payment" in on_boundary.data
+
+        after = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+        )
+        assert after.status_code == 200
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id, effective_date=date(2026, 1, 3)).count() == 1
+        )
+
+    def test_forward_guard_boundary_is_latest_settled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The guard boundary is the LATEST settled payment's start, not the earliest.
+
+        Two settled payments: seed_periods[0] (start 2026-01-02) and seed_periods[2]
+        (start 2026-01-30).  The boundary is the LATER start (2026-01-30), so a
+        version effective 2026-01-16 -- after the first payment but on/before the
+        second -- is STILL rejected (a min-based guard would wrongly allow it, the
+        exact bug this correction avoids); only strictly after 2026-01-30 is allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[2], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[2].start_date == date(2026, 1, 30)
+
+        between = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-16"},
+        )
+        assert between.status_code == 400
+
+        after = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-31"},
+        )
+        assert after.status_code == 200
+
+    # ── Version drawer CRUD: schedule / edit / delete a version ───────
+
+    def test_add_version_schedules_change(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """POST add-version appends a future-dated version under the existing line."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7403.88"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8003.88", "effective_date": "2026-08-01"},
+        )
+        assert resp.status_code == 200
+        versions = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id)
+            .order_by(EscrowComponentVersion.effective_date).all()
+        )
+        assert len(versions) == 2
+        assert versions[1].effective_date == date(2026, 8, 1)
+        assert versions[1].annual_amount == Decimal("8003.88")
+
+    def test_add_version_duplicate_date_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A second version on a date the line already carries is rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        # add_escrow_line opens the version at origination (2023-06-01).
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2023-06-01"},
+        )
+        assert resp.status_code == 400
+        assert b"already has a version" in resp.data
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id).count() == 1
+        )
+
+    def _line_with_scheduled(self, db, account_id):
+        """Build a line with an origination version + a scheduled 2026-08-01 version.
+
+        Returns ``(line_id, scheduled_version)`` for the edit / delete tests.
+        """
+        v1 = add_escrow_line(db.session, account_id, "Tax", Decimal("7200.00"))
+        db.session.add(EscrowComponentVersion(
+            line_id=v1.line_id, effective_date=date(2026, 8, 1),
+            annual_amount=Decimal("8003.88"),
+        ))
+        db.session.commit()
+        sched = (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=v1.line_id, effective_date=date(2026, 8, 1)).one()
+        )
+        return v1.line_id, sched
+
+    def test_edit_version_updates_scheduled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Editing a scheduled (unfrozen) version updates amount + date in place."""
+        acct = _create_mortgage(seed_user, db.session)
+        _line_id, sched = self._line_with_scheduled(db, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{sched.id}/edit",
+            data={"annual_amount": "8500.00", "effective_date": "2026-09-01"},
+        )
+        assert resp.status_code == 200
+        db.session.refresh(sched)
+        assert sched.annual_amount == Decimal("8500.00")
+        assert sched.effective_date == date(2026, 9, 1)
+
+    def test_edit_version_frozen_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A version at/before the latest settled payment is frozen -- edit rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(db.session, acct.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        # The origination version (2023-06-01) is <= the settled payment's period
+        # start (2026-01-02), so it underpins that settled split and is read-only.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2023-06-01"},
+        )
+        assert resp.status_code == 400
+        assert b"settled payment" in resp.data
+        db.session.refresh(version)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_delete_version_removes_scheduled(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Deleting a scheduled (unfrozen, non-sole) version removes just that one."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id, sched = self._line_with_scheduled(db, acct.id)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{sched.id}/delete",
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowComponentVersion, sched.id) is None
+        # The origination version survives.
+        assert (
+            db.session.query(EscrowComponentVersion)
+            .filter_by(line_id=line_id).count() == 1
+        )
+
+    def test_delete_version_current_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A current (non-scheduled) version can't be per-version deleted.
+
+        The origination version (2023-06-01) is on/before today, so it is not a
+        scheduled future change; the route rejects the delete (edit it, or remove
+        the whole line, instead).
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(db.session, acct.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"scheduled future change" in resp.data
+        assert db.session.get(EscrowComponentVersion, version.id) is not None
+
+    def test_delete_upcoming_only_scheduled_drops_line(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Deleting an upcoming-only line's sole scheduled version removes the line.
+
+        A line added with a FUTURE effective date (2026-12-01, after the frozen
+        today of 2026-03-20) has no current version; deleting that sole scheduled
+        version leaves the line empty, so the orphan line is dropped too.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(
+            db.session, acct.id, "Future", Decimal("6000.00"),
+            effective_date=date(2026, 12, 1),
+        )
+        line_id = version.line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{version.id}/delete",
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowComponentVersion, version.id) is None
+        assert db.session.get(EscrowLine, line_id) is None
+
+    # ── Rename in place ──────────────────────────────────────────────
+
+    def test_rename_line_updates_name(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming a line updates its label; the version amount is untouched."""
+        acct = _create_mortgage(seed_user, db.session)
+        version = add_escrow_line(
+            db.session, acct.id, "Property Tax & Insurance", Decimal("7200.00"),
+        )
+        line_id = version.line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Tax and Insurance"},
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowLine, line_id).name == "Tax and Insurance"
+        # Rename is display-only: the version amount does not move.
+        db.session.refresh(version)
+        assert version.annual_amount == Decimal("7200.00")
+
+    def test_rename_duplicate_active_name_rejected(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming onto another ACTIVE line's name is rejected."""
+        acct = _create_mortgage(seed_user, db.session)
+        add_escrow_line(db.session, acct.id, "Insurance", Decimal("1200.00"))
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Insurance"},
+        )
+        assert resp.status_code == 400
+        assert b"already exists" in resp.data
+        assert db.session.get(EscrowLine, line_id).name == "Tax"
+
+    def test_rename_to_same_name_allowed(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Renaming a line to its own current name is a no-op, allowed."""
+        acct = _create_mortgage(seed_user, db.session)
+        line_id = add_escrow_line(
+            db.session, acct.id, "Tax", Decimal("7200.00"),
+        ).line_id
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/rename",
+            data={"name": "Tax"},
+        )
+        assert resp.status_code == 200
+        assert db.session.get(EscrowLine, line_id).name == "Tax"
+
+    def test_dashboard_escrow_drawer_renders(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The dashboard GET renders the escrow card: summary, scheduled badge, drawer.
+
+        A line with an origination version (current) + a 2026-08-01 version
+        (scheduled) must render the summary amount, the 'Scheduled' badge, the
+        collapsible drawer, both status labels, the inline edit inputs for the
+        scheduled row, and the schedule-a-change form -- proving the version-drawer
+        template renders inline exactly as the HTMX routes re-render it.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        v1 = add_escrow_line(db.session, acct.id, "Property Tax", Decimal("7200.00"))
+        db.session.add(EscrowComponentVersion(
+            line_id=v1.line_id, effective_date=date(2026, 8, 1),
+            annual_amount=Decimal("8003.88"),
+        ))
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Property Tax" in html
+        # Collapsed summary flags a queued change.
+        assert "Scheduled" in html
+        assert f'id="escrow-drawer-{v1.line_id}"' in html
+        # Status labels for the two versions.
+        assert "Current" in html
+        # The scheduled version renders as an inline edit form (its amount input).
+        assert 'name="annual_amount"' in html
+        assert "Schedule a change" in html
+        # The rejected-change error surface is present (hidden until a 4xx).
+        assert 'id="escrow-error"' in html
+
+    def test_version_routes_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """Another user's escrow version routes return 404 (no existence oracle)."""
+        other = _create_other_loan(second_user, db.session, "Mortgage")
+        version = add_escrow_line(db.session, other.id, "Tax", Decimal("7200.00"))
+        db.session.commit()
+        edit = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/version/{version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2026-08-01"},
+        )
+        delete = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/version/{version.id}/delete",
+        )
+        rename = auth_client.post(
+            f"/accounts/{other.id}/loan/escrow/{version.line_id}/rename",
+            data={"name": "Hacked"},
+        )
+        assert edit.status_code == 404
+        assert delete.status_code == 404
+        assert rename.status_code == 404
+
+    def test_version_edit_cross_account_version_id_is_404(
+        self, auth_client, seed_user, second_user, db, seed_periods,
+    ):
+        """Passing MY account_id with another user's version_id returns 404.
+
+        The subtler IDOR that ``_owned_version`` exists for: ``@require_owner``
+        passes (I own the URL account), but the version belongs to the victim's
+        line, so the account-mismatch check must still 404 -- no cross-account
+        version edit / delete.
+        """
+        mine = _create_mortgage(seed_user, db.session)
+        victim = _create_other_loan(second_user, db.session, "Mortgage")
+        victim_version = add_escrow_line(
+            db.session, victim.id, "Tax", Decimal("7200.00"),
+        )
+        db.session.commit()
+        edit = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/version/{victim_version.id}/edit",
+            data={"annual_amount": "9000.00", "effective_date": "2026-08-01"},
+        )
+        delete = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/version/{victim_version.id}/delete",
+        )
+        assert edit.status_code == 404
+        assert delete.status_code == 404
+        db.session.refresh(victim_version)
+        assert victim_version.annual_amount == Decimal("7200.00")
+
+    # ── Early-settle regime: boundary can be in the FUTURE ────────────
+
+    def test_delete_version_blocked_by_early_settle_boundary(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A version in (today, boundary] can't be deleted when a payment is paid ahead.
+
+        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27.  Settling a
+        payment for period[6] BEFORE its period begins (an early-settle) puts the
+        boundary at 2026-03-27, in the FUTURE.  A version effective 2026-03-25
+        (after today, but on/before the boundary) underpins that settled payment's
+        escrow split, so deleting it must be rejected even though it is "after
+        today" -- the exact bypass the ``> today``-only guard allowed.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        origin = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
+        # Schedule a version at 2026-03-25 (allowed now: no settled payment yet).
+        gap_version = EscrowComponentVersion(
+            line_id=origin.line_id, effective_date=date(2026, 3, 25),
+            annual_amount=Decimal("4800.00"),
+        )
+        db.session.add(gap_version)
+        db.session.commit()
+        # Early-settle period[6] (starts 2026-03-27, after today) -> boundary future.
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[6], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+        assert seed_periods[6].start_date == date(2026, 3, 27)
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        escrow_at_settled_start = escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        )
+        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of 2026-03-27).
+        assert escrow_at_settled_start == Decimal("400.00")
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/version/{gap_version.id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"settled payment" in resp.data
+        # The version survives and the settled payment's escrow is unmoved.
+        assert db.session.get(EscrowComponentVersion, gap_version.id) is not None
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        ) == Decimal("400.00")
+
+    def test_delete_line_blocked_by_early_settle_boundary(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Line remove (tombstone as of today) is blocked while a payment is paid ahead.
+
+        The removal tombstone lands at today (2026-03-20); with an early-settled
+        payment for period[6] (starts 2026-03-27) the boundary is 2026-03-27, so a
+        tombstone at today is on/before the boundary and would zero the line for
+        that settled payment.  The route must reject the removal.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        line = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[6], amount=Decimal("1500.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line.line_id}/delete",
+        )
+        assert resp.status_code == 400
+        assert b"latest recorded payment" in resp.data
+        # No tombstone appended: the line's only version is still the original.
+        db.session.expire_all()
+        reloaded = db.session.get(EscrowLine, line.line_id)
+        assert all(not v.is_removed for v in reloaded.versions)
+        lines = loan_loaders.load_escrow_lines(acct.id)
+        # 3600 / 12 = 300.00, unchanged for the early-settled payment.
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 3, 27),
+        ) == Decimal("300.00")
 
 
 # ── Rate History Tests ───────────────────────────────────────────────

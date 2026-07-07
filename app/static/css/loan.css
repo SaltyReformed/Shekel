@@ -96,3 +96,123 @@
   max-height: 22rem;
   overflow-y: auto;
 }
+
+/* =============================================
+   ESCROW VERSION DRAWER (loan detail escrow card)
+   ============================================= */
+/* Each escrow line is a summary row (its amount in effect TODAY) over a
+   collapsible drawer holding the full version history + edit / schedule forms.
+   Tokens only; the grid is what Bootstrap utilities cannot express (aligned
+   money + inline-edit columns). */
+.escrow-line + .escrow-line {
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.escrow-line__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.escrow-line__name {
+  font-weight: 600;
+}
+
+.escrow-line__monthly {
+  font-weight: 700;
+}
+
+/* The chevron rotates to point down when its drawer is open (Bootstrap toggles
+   aria-expanded on the collapse trigger). */
+.escrow-line__toggle .bi {
+  transition: transform 0.15s ease;
+}
+
+.escrow-line__toggle[aria-expanded="true"] .bi {
+  transform: rotate(90deg);
+}
+
+/* A queued future-dated change: a calm heads-up amber, matching the ARM tag. */
+.escrow-badge-scheduled {
+  color: var(--shekel-credit);
+  background: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+  font-weight: 600;
+}
+
+.escrow-line__drawer {
+  padding: 0.25rem 0.75rem 0.75rem 2rem;
+  background: var(--shekel-surface-raised);
+}
+
+.escrow-drawer__rename {
+  max-width: 24rem;
+  margin: 0.5rem 0;
+}
+
+.escrow-versions {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+/* Seven aligned columns: status | effective | annual | monthly | inflation |
+   save | delete.  The inline-edit form uses ``display: contents`` (below) so its
+   fields become cells of this same grid, keeping the read-only and editable rows
+   aligned; status is column 1 in BOTH so every row carries a text label, not
+   colour alone. */
+.escrow-ver {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1.3fr) 1fr 1fr 0.9fr auto auto;
+  gap: 0.375rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  min-width: 28rem;
+}
+
+.escrow-ver--head {
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  padding-bottom: 0.375rem;
+}
+
+.escrow-ver--past {
+  color: var(--shekel-text-muted);
+}
+
+.escrow-ver__edit {
+  display: contents;
+}
+
+.escrow-ver__badge {
+  font-weight: 600;
+  margin-left: 0.25rem;
+}
+
+.escrow-ver--current .escrow-ver__badge {
+  color: var(--shekel-done);
+  background: color-mix(in srgb, var(--shekel-done) 16%, transparent);
+}
+
+.escrow-ver--scheduled .escrow-ver__badge {
+  color: var(--shekel-credit);
+  background: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+}
+
+.escrow-ver--past .escrow-ver__badge {
+  color: var(--shekel-text-muted);
+  background: color-mix(in srgb, var(--shekel-text-muted) 16%, transparent);
+}
+
+/* Schedule-a-change: label on its own line, then effective | annual | infl | add. */
+.escrow-drawer__schedule {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.4fr) 1fr 1fr auto;
+  gap: 0.375rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--shekel-border-subtle);
+}
+
+.escrow-drawer__schedule-label {
+  grid-column: 1 / -1;
+}
