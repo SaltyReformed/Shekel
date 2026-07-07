@@ -820,6 +820,195 @@ class TestEscrow:
         # Current escrow $400.00/mo is projected to $412.00/mo next year.
         assert b"$412.00" in resp.data
 
+    def _build_split_escrow(self, db, account_id, boundary):
+        """Seed the account-3 rename-split: removed "Old Tax" + active "New Tax".
+
+        "Old Tax" is $6,000/yr ($500.00/mo) from the loan's origination, tombstoned
+        on ``boundary``; "New Tax" is $7,200/yr ($600.00/mo) from ``boundary``.  The
+        two tile the timeline (no overlap), so escrow resolves to $500 before the
+        boundary and $600 on/after it.  Returns ``(old_line, new_line)``.
+        """
+        old = add_escrow_line(db.session, account_id, "Old Tax", Decimal("6000.00")).line
+        db.session.add(EscrowComponentVersion(
+            line_id=old.id, effective_date=boundary,
+            annual_amount=Decimal("0.00"), is_removed=True,
+        ))
+        add_escrow_line(
+            db.session, account_id, "New Tax", Decimal("7200.00"),
+            effective_date=boundary,
+        )
+        db.session.commit()
+        new = (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=account_id, name="New Tax").one()
+        )
+        return old, new
+
+    def test_merge_reunifies_split_line(self, auth_client, seed_user, db, seed_periods):
+        """POST merge folds a removed line's history into the active line, escrow intact.
+
+        Merging "Old Tax" into "New Tax" leaves only the new line, carrying BOTH
+        versions, and the escrow resolved on every date is unchanged ($500 before
+        the boundary, $600 on/after) -- so no settled split can move, since the split
+        reads escrow solely via escrow_monthly_as_of.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        boundary = date(2026, 3, 1)
+        old, new = self._build_split_escrow(db, acct.id, boundary)
+
+        # The removed predecessor is hidden from the card but offered as a merge
+        # source in the active line's drawer (labelled by its span + removed state).
+        page = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert b"Merge in" in page.data
+        assert b"Old Tax (Jun 2023 - Mar 2026, removed)" in page.data
+
+        lines_before = loan_loaders.load_escrow_lines(acct.id)
+        before_early = escrow_calculator.escrow_monthly_as_of(
+            lines_before, date(2026, 1, 1),
+        )
+        before_late = escrow_calculator.escrow_monthly_as_of(
+            lines_before, date(2026, 4, 1),
+        )
+        assert before_early == Decimal("500.00")
+        assert before_late == Decimal("600.00")
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{new.id}/merge",
+            data={"source_line_id": old.id},
+        )
+        assert resp.status_code == 200
+
+        # Only the merged line survives, carrying both versions in date order.
+        remaining = db.session.query(EscrowLine).filter_by(account_id=acct.id).all()
+        assert [line.id for line in remaining] == [new.id]
+        assert db.session.get(EscrowLine, old.id) is None
+        versions = sorted(
+            db.session.query(EscrowComponentVersion).filter_by(line_id=new.id).all(),
+            key=lambda v: v.effective_date,
+        )
+        assert [(v.effective_date, v.annual_amount) for v in versions] == [
+            (date(2023, 6, 1), Decimal("6000.00")),
+            (boundary, Decimal("7200.00")),
+        ]
+        # Escrow-per-date is unchanged, so no derived split moves.
+        lines_after = loan_loaders.load_escrow_lines(acct.id)
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines_after, date(2026, 1, 1),
+        ) == before_early
+        assert escrow_calculator.escrow_monthly_as_of(
+            lines_after, date(2026, 4, 1),
+        ) == before_late
+
+    def test_merge_rejects_overlap(self, auth_client, seed_user, db, seed_periods):
+        """POST merge on two concurrent lines returns 400; both lines survive.
+
+        "Tax" ($6,000/yr from origination) and "Insurance" ($7,200/yr from 2024)
+        overlap in time, so merging would drop a charge.  The route rejects it with
+        an actionable message and leaves both lines intact.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        tax = add_escrow_line(db.session, acct.id, "Tax", Decimal("6000.00")).line
+        ins = add_escrow_line(
+            db.session, acct.id, "Insurance", Decimal("7200.00"),
+            effective_date=date(2024, 1, 1),
+        ).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{ins.id}/merge",
+            data={"source_line_id": tax.id},
+        )
+        assert resp.status_code == 400
+        assert b"overlap" in resp.data.lower()
+        assert db.session.get(EscrowLine, tax.id) is not None
+        assert db.session.get(EscrowLine, ins.id) is not None
+
+    def test_merge_source_idor(
+        self, auth_client, seed_user, second_user, db, seed_periods,
+    ):
+        """Merging in a source line owned by another user returns 404, merges nothing."""
+        mine = _create_mortgage(seed_user, db.session)
+        target = add_escrow_line(db.session, mine.id, "My Tax", Decimal("6000.00")).line
+        other = _create_other_loan(second_user, db.session)
+        foreign = add_escrow_line(
+            db.session, other.id, "Foreign Tax", Decimal("6000.00"),
+        ).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{mine.id}/loan/escrow/{target.id}/merge",
+            data={"source_line_id": foreign.id},
+        )
+        assert resp.status_code == 404
+        assert db.session.get(EscrowLine, target.id) is not None
+        assert db.session.get(EscrowLine, foreign.id) is not None
+
+    def test_merge_into_self_rejected(self, auth_client, seed_user, db, seed_periods):
+        """Merging a line into itself returns 400 and changes nothing."""
+        acct = _create_mortgage(seed_user, db.session)
+        line = add_escrow_line(db.session, acct.id, "Tax", Decimal("6000.00")).line
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line.id}/merge",
+            data={"source_line_id": line.id},
+        )
+        assert resp.status_code == 400
+        assert db.session.get(EscrowLine, line.id) is not None
+        assert db.session.query(EscrowComponentVersion).filter_by(
+            line_id=line.id,
+        ).count() == 1
+
+    def test_merge_preserves_settled_payment_split(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A settled payment's posted split survives merging its escrow line.
+
+        The safety proof that merge needs no posting reconcile: a payment settled in
+        period 0 (2026-01-02, before the 2026-03-01 boundary) posts a split whose
+        escrow leg is "Old Tax" $6,000/yr = $500.00/mo.  After merging "Old Tax" into
+        "New Tax" -- which the route does NOT reconcile -- the posted principal /
+        interest / escrow are byte-identical, and a later reconcile re-derives the
+        SAME split from the merged line (escrow-per-date is preserved).
+        """
+        from app.services.loan_posting_service import (  # pylint: disable=import-outside-toplevel
+            backfill_all_loan_postings,
+            confirmed_loan_payment_history,
+        )
+        acct = _create_mortgage(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        old, new = self._build_split_escrow(db, acct.id, date(2026, 3, 1))
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], acct,
+            seed_periods[0], amount=Decimal("2000.00"),
+        )
+        db.session.commit()
+        backfill_all_loan_postings()
+        db.session.commit()
+
+        before = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert len(before) == 1
+        assert before[0].escrow == Decimal("500.00")  # Old Tax: 6000 / 12
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{new.id}/merge",
+            data={"source_line_id": old.id},
+        )
+        assert resp.status_code == 200
+
+        # The posted split is byte-identical -- the merge ran no reconcile ...
+        after = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert after[0].escrow == before[0].escrow
+        assert after[0].principal == before[0].principal
+        assert after[0].interest == before[0].interest
+        # ... and a later reconcile re-derives the SAME split from the merged line.
+        backfill_all_loan_postings()
+        db.session.commit()
+        reconciled = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
+        assert reconciled[0].escrow == before[0].escrow
+        assert reconciled[0].principal == before[0].principal
+        assert reconciled[0].interest == before[0].interest
+
     def test_escrow_add_duplicate_name(self, auth_client, seed_user, db, seed_periods):
         """Duplicate ACTIVE line name returns 400."""
         acct = _create_mortgage(seed_user, db.session)

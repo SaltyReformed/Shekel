@@ -170,6 +170,26 @@
             <i class="bi bi-plus-lg"></i>
           </button>
         </form>
+
+        {# Merge: fold another line's history into this one (reunify a rename-split).
+           Shown only when the account has another line to fold in. #}
+        {% set merge_sources = (merge_candidates | default([]))
+             | rejectattr('id', 'equalto', line.summary.id) | list %}
+        {% if merge_sources %}
+        <form hx-post="{{ url_for('loan.merge_escrow_line', account_id=account.id, line_id=line.summary.id) }}"
+              hx-target="#escrow-list" hx-swap="innerHTML"
+              hx-confirm="Merge the selected line's history into this one? The other line is removed and its versions move here."
+              class="input-group input-group-sm escrow-drawer__merge">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <span class="input-group-text" title="Merge another line in"><i class="bi bi-union"></i></span>
+          <select class="form-select" name="source_line_id" aria-label="Line to merge into this one" required>
+            {% for cand in merge_sources %}
+            <option value="{{ cand.id }}">{{ cand.label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn btn-outline-secondary">Merge in</button>
+        </form>
+        {% endif %}
       </div>
     </li>
     {% endfor %}

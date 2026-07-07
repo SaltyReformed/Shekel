@@ -21,6 +21,7 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.schemas.validation import (
     EscrowComponentSchema,
+    EscrowLineMergeSchema,
     EscrowLineRenameSchema,
     EscrowVersionSchema,
     LoanAnchorTrueupSchema,
@@ -77,6 +78,7 @@ _rate_schema = RateChangeSchema()
 _escrow_schema = EscrowComponentSchema()
 _escrow_version_schema = EscrowVersionSchema()
 _escrow_rename_schema = EscrowLineRenameSchema()
+_escrow_merge_schema = EscrowLineMergeSchema()
 _payoff_schema = PayoffCalculatorSchema()
 _refinance_schema = RefinanceSchema()
 _transfer_schema = LoanPaymentTransferSchema()

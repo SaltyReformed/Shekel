@@ -506,6 +506,11 @@ def dashboard(account_id):
     context["escrow_components"] = escrow_calculator.build_escrow_card(
         ctx.loan.escrow_lines, today, _forward_boundary(account.id, scenario_id),
     )
+    # Merge candidates: every escrow line (incl. hidden removed ones) offered as a
+    # source in each drawer, so a rename-split history can be reunified.
+    context["merge_candidates"] = escrow_calculator.build_merge_candidates(
+        ctx.loan.escrow_lines,
+    )
     context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.

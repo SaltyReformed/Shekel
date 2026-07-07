@@ -216,3 +216,9 @@
 .escrow-drawer__schedule-label {
   grid-column: 1 / -1;
 }
+
+/* Merge-in control: pick another line to fold this drawer's history into. */
+.escrow-drawer__merge {
+  max-width: 28rem;
+  margin: 0.5rem 0 0;
+}

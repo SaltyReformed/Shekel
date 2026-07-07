@@ -9,9 +9,11 @@ from types import SimpleNamespace
 from app.services.escrow_calculator import (
     build_escrow_card,
     build_escrow_display,
+    build_merge_candidates,
     calculate_monthly_escrow,
     calculate_total_payment,
     escrow_monthly_as_of,
+    plan_escrow_line_merge,
     project_monthly_escrow,
     resolve_active_lines,
 )
@@ -689,3 +691,110 @@ class TestBuildEscrowCard:
         assert future_row.is_removed is True
         assert future_row.is_editable is False   # tombstones are not amount-editable
         assert future_row.is_deletable is True    # but a scheduled removal can be undone
+
+
+class TestPlanEscrowLineMerge:
+    """Tests for the pure merge planner (reunify a split line's history)."""
+
+    def test_reunifies_rename_split(self):
+        """The account-3 shape: a removed old line + an active new line -> one line.
+
+        Source "Old" is active from 2018 ($7,403.88/yr) then a removal tombstone on
+        2026-07-06; target "New" is $7,408.00/yr from 2026-07-06.  The plan moves the
+        2018 version onto the target and DROPS the source's tombstone (superseded by
+        the target's real version on the same date); no error.
+        """
+        orig = _ver(date(2018, 12, 1), "7403.88", id=1)
+        tomb = _ver(date(2026, 7, 6), "0.00", is_removed=True, id=2)
+        new = _ver(date(2026, 7, 6), "7408.00", id=3)
+        source = _line(1, "Old", [orig, tomb])
+        target = _line(2, "New", [new])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is None
+        assert plan.versions_to_move == [orig]
+        assert plan.versions_to_drop == [tomb]
+
+    def test_disjoint_split_moves_every_version(self):
+        """A cleanly tiled split (removed before the target begins) moves all versions.
+
+        Source is $6,000/yr from 2019, removed (tombstone) 2021-01-01; target begins
+        2021-06-01.  No date collides, so both source versions move and none drop --
+        the merged line's history shows $500, then removed, then the target's amount,
+        which resolves identically on every date.
+        """
+        v1 = _ver(date(2019, 1, 1), "6000.00", id=1)
+        tomb = _ver(date(2021, 1, 1), "0.00", is_removed=True, id=2)
+        new = _ver(date(2021, 6, 1), "7200.00", id=3)
+        source = _line(1, "Old", [v1, tomb])
+        target = _line(2, "New", [new])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is None
+        assert plan.versions_to_move == [v1, tomb]
+        assert plan.versions_to_drop == []
+
+    def test_rejects_time_overlap(self):
+        """Two concurrent (overlapping) real lines are rejected, not silently merged.
+
+        Source $6,000/yr from 2020 (never removed) and target $7,200/yr from 2021
+        both resolve to a real amount on every date from 2021 on ($500 + $600 =
+        $1,100/mo), so merging would drop a charge to $600/mo.  The planner returns
+        an error and moves nothing.
+        """
+        source = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00", id=1)])
+        target = _line(2, "Insurance", [_ver(date(2021, 1, 1), "7200.00", id=2)])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is not None
+        assert "overlap" in plan.error.lower()
+        assert plan.versions_to_move == []
+        assert plan.versions_to_drop == []
+
+    def test_rejects_same_date_duplicate(self):
+        """Two lines with a real version on the same date are a duplicate, not a split.
+
+        Both carry $6,000/yr from 2020-01-01, so on that date they sum to $1,000/mo;
+        merging (dropping the source's) would halve escrow to $500/mo, so it is
+        rejected -- the operator removes the duplicate line instead.
+        """
+        source = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00", id=1)])
+        target = _line(2, "Tax copy", [_ver(date(2020, 1, 1), "6000.00", id=2)])
+
+        plan = plan_escrow_line_merge(source, target)
+
+        assert plan.error is not None
+
+
+class TestBuildMergeCandidates:
+    """Tests for the merge-source candidate labels (incl. hidden removed lines)."""
+
+    def test_labels_carry_span_and_removed_marker(self):
+        """Each candidate labels its line with the effective span and removed state.
+
+        A single-version active line reads ``name (Mon Year)``; a multi-version
+        removed line reads ``name (first - last, removed)`` so a hidden predecessor
+        is identifiable.
+        """
+        active = _line(2, "Tax and Insurance", [_ver(date(2026, 7, 6), "7408.00")])
+        removed = _line(1, "Old Tax", [
+            _ver(date(2018, 12, 1), "7403.88"),
+            _ver(date(2026, 7, 6), "0.00", is_removed=True),
+        ])
+
+        labels = {c.id: c.label for c in build_merge_candidates([removed, active])}
+
+        assert labels[2] == "Tax and Insurance (Jul 2026)"
+        assert labels[1] == "Old Tax (Dec 2018 - Jul 2026, removed)"
+
+    def test_skips_line_with_no_versions(self):
+        """A versionless line (defensive) is skipped, not labelled."""
+        empty = _line(3, "Empty", [])
+        real = _line(1, "Tax", [_ver(date(2020, 1, 1), "6000.00")])
+
+        candidates = build_merge_candidates([empty, real])
+
+        assert [c.id for c in candidates] == [1]

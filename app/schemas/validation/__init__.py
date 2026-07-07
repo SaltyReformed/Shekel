@@ -98,6 +98,7 @@ from app.schemas.validation.investments import (
 )
 from app.schemas.validation.loans import (
     EscrowComponentSchema,
+    EscrowLineMergeSchema,
     EscrowLineRenameSchema,
     EscrowVersionSchema,
     LoanAnchorTrueupSchema,
@@ -179,6 +180,7 @@ __all__ = [
     "EntryCreateSchema",
     "EntryUpdateSchema",
     "EscrowComponentSchema",
+    "EscrowLineMergeSchema",
     "EscrowLineRenameSchema",
     "EscrowVersionSchema",
     "FicaConfigSchema",

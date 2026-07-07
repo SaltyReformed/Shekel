@@ -574,3 +574,184 @@ def calculate_total_payment(monthly_pi: Decimal, components: list) -> Decimal:
     """
     escrow = calculate_monthly_escrow(components)
     return round_money(monthly_pi + escrow)
+
+
+@dataclass(frozen=True)
+class _MergedLineView:
+    """A line-shaped view of a prospective merged version set (merge planning).
+
+    :func:`plan_escrow_line_merge` builds one of these to resolve the merged
+    line's escrow via :func:`escrow_monthly_as_of` WITHOUT touching the database,
+    so the merge's escrow-preservation invariant is checked before any write.
+    Exposes exactly the ``id`` / ``name`` / ``versions`` attributes
+    :func:`resolve_active_lines` reads off a real
+    :class:`~app.models.escrow_line.EscrowLine`.
+    """
+
+    id: int
+    name: str
+    versions: list
+
+
+@dataclass(frozen=True)
+class EscrowMergeCandidate:
+    """One line offered as a merge SOURCE in another line's drawer.
+
+    ``id`` is the line to fold in; ``label`` is a human tag disambiguating it --
+    the line name plus its effective-date span and a ``removed`` marker -- so the
+    operator can identify a hidden removed predecessor (which the card itself does
+    not show) apart from an active line.  An active name is unique per account, but
+    a removed line may share a name with an active one, so the span / marker is
+    what tells the two apart.
+    """
+
+    id: int
+    label: str
+
+
+@dataclass(frozen=True)
+class EscrowMergePlan:
+    """A validated plan to fold one escrow line's history into another.
+
+    The pure result of :func:`plan_escrow_line_merge`: which of the SOURCE line's
+    versions to repoint onto the target (``versions_to_move``) and which to drop as
+    superseded by a target version already on the same date (``versions_to_drop``),
+    or an actionable ``error`` naming why the merge is unsafe.  The target's own
+    versions are never touched, so its history is preserved verbatim.  ``error`` is
+    set only on the reject path, where both version lists are empty; on the success
+    path the two lists partition the source line's versions (those repointed onto
+    the target and those dropped) -- which is the empty partition for the degenerate
+    versionless source the UI never offers.
+    """
+
+    versions_to_move: list
+    versions_to_drop: list
+    error: str | None
+
+
+def _escrow_unchanged_by_merge(source, target, merged_versions: list) -> bool:
+    """Whether folding SOURCE + TARGET into one line preserves escrow on every date.
+
+    The safety heart of the merge: compares the monthly escrow resolved on every
+    version-boundary date -- the union of both lines' effective dates, the only
+    dates the step-function escrow can change -- summed across the two SEPARATE
+    lines against the single MERGED line.  A step function is constant between its
+    breakpoints, so equality at every breakpoint is equality on every date.  When
+    it holds, no payment's escrow (settled or projected) moves, which is why the
+    merge needs no posting reconcile: the split reads escrow by amount via
+    :func:`escrow_monthly_as_of`, so escrow that is byte-identical on every date
+    leaves every derived split byte-identical too.
+
+    Args:
+        source: The line being folded in.
+        target: The surviving line.
+        merged_versions: The prospective merged version list (the target's kept
+            versions plus the moved source versions).
+
+    Returns:
+        ``True`` when escrow-as-of every boundary date is unchanged by the merge.
+    """
+    merged_line = _MergedLineView(
+        id=target.id, name=target.name, versions=merged_versions,
+    )
+    dates = {version.effective_date for version in source.versions}
+    dates.update(version.effective_date for version in target.versions)
+    return all(
+        escrow_monthly_as_of([source, target], on_date)
+        == escrow_monthly_as_of([merged_line], on_date)
+        for on_date in dates
+    )
+
+
+def plan_escrow_line_merge(source, target) -> EscrowMergePlan:
+    """Plan folding SOURCE's version history into TARGET, preserving escrow-per-date.
+
+    Reunifies a line whose history split across two lines -- the rename-split the
+    supersession model now avoids, but a legacy backfill (one line per historical
+    name) or a Remove+Add can still produce.  Builds the unified version set: every
+    TARGET version is kept, plus each SOURCE version whose ``effective_date`` the
+    target does not already carry; a same-date collision keeps the target's version
+    and drops the source's, since the operator chose the target as the surviving
+    line.  It then VERIFIES (:func:`_escrow_unchanged_by_merge`) that the escrow
+    resolved on every date is byte-identical before and after; when a date's escrow
+    would move, the two lines genuinely OVERLAP in time (two concurrent charges,
+    not one renamed line), so the merge is REJECTED rather than silently dropping a
+    charge or moving a settled payment's split.
+
+    Only source versions are ever moved or dropped, so a merge cannot be used to
+    mutate the target's own history.  Because escrow-per-date is preserved, the
+    forward-only guard is subsumed (no settled split moves) and the caller needs no
+    reconcile (the postings store the escrow amount, never a line id).
+
+    Args:
+        source: The :class:`~app.models.escrow_line.EscrowLine` to fold in and
+            delete (its versions are moved to / dropped from the target).
+        target: The :class:`~app.models.escrow_line.EscrowLine` to keep as the
+            surviving line and history.
+
+    Returns:
+        An :class:`EscrowMergePlan`: the source versions to move and to drop on
+        success, or an ``error`` message when the merge would change escrow.
+    """
+    target_dates = {version.effective_date for version in target.versions}
+    versions_to_move = [
+        version for version in source.versions
+        if version.effective_date not in target_dates
+    ]
+    versions_to_drop = [
+        version for version in source.versions
+        if version.effective_date in target_dates
+    ]
+    merged_versions = list(target.versions) + versions_to_move
+    if not _escrow_unchanged_by_merge(source, target, merged_versions):
+        return EscrowMergePlan(
+            versions_to_move=[],
+            versions_to_drop=[],
+            error=(
+                "These lines are active at the same time, so merging them would "
+                "change the escrow on some dates. Overlapping escrow lines can't be "
+                "merged (if one is a duplicate, remove it instead)."
+            ),
+        )
+    return EscrowMergePlan(
+        versions_to_move=versions_to_move,
+        versions_to_drop=versions_to_drop,
+        error=None,
+    )
+
+
+def build_merge_candidates(lines: list) -> list[EscrowMergeCandidate]:
+    """Build the merge-source candidates for the escrow card (an account's lines).
+
+    One :class:`EscrowMergeCandidate` per line -- INCLUDING fully-removed lines,
+    which :func:`build_escrow_card` hides but which are exactly the rename-split
+    predecessors merge exists to fold back in.  Each label is
+    ``name (first[ - last] effective date[, removed])`` so a hidden line is
+    identifiable; the template offers, in each drawer, every candidate whose id is
+    not that drawer's own line, so an empty / single-line account gets no merge
+    control (nothing to merge in).
+
+    Args:
+        lines: The account's :class:`~app.models.escrow_line.EscrowLine` rows with
+            their ``versions`` loaded
+            (:func:`app.services.loan_loaders.load_escrow_lines`).
+
+    Returns:
+        One candidate per line that has at least one version, in the loader's name
+        order; empty when the account has none.
+    """
+    candidates: list[EscrowMergeCandidate] = []
+    for line in lines:
+        if not line.versions:
+            continue
+        dates = sorted(version.effective_date for version in line.versions)
+        latest = max(line.versions, key=lambda version: version.effective_date)
+        span = dates[0].strftime("%b %Y")
+        if dates[-1] != dates[0]:
+            span = f"{span} - {dates[-1].strftime('%b %Y')}"
+        if latest.is_removed:
+            span = f"{span}, removed"
+        candidates.append(EscrowMergeCandidate(
+            id=line.id, label=f"{line.name} ({span})",
+        ))
+    return candidates

@@ -21,6 +21,7 @@ from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _RATE_HISTORY_UNIQUE_CONSTRAINT,
     _compute_total_payment,
+    _escrow_merge_schema,
     _escrow_rename_schema,
     _escrow_schema,
     _escrow_version_schema,
@@ -347,6 +348,7 @@ def _render_escrow_list(account, params):
         escrow_components=escrow_calculator.build_escrow_card(
             escrow_lines, today, boundary,
         ),
+        merge_candidates=escrow_calculator.build_merge_candidates(escrow_lines),
         monthly_escrow=monthly_escrow,
         total_payment=total_payment,
         today_iso=today.isoformat(),
@@ -690,5 +692,82 @@ def rename_escrow_line(account_id, line_id):
     db.session.commit()
     logger.info(
         "Renamed escrow line %d (loan %d) to '%s'", line_id, account.id, data["name"],
+    )
+    return _render_escrow_list(account, params)
+
+
+def _resolve_merge_source(account, target):
+    """Validate the merge form and resolve the source line, or return an error.
+
+    Consolidates the merge route's input guards so it stays a flat guard-clause
+    chain: schema validation, source-line ownership (404 for a missing / another
+    user's line, per the security-response rule), and the self-merge rejection.
+
+    Args:
+        account: The owning :class:`~app.models.account.Account`.
+        target: The surviving :class:`~app.models.escrow_line.EscrowLine` (the
+            route's URL line), so a merge into itself can be rejected.
+
+    Returns:
+        ``(source_line, None)`` on success, or ``(None, (message, status))`` when a
+        guard fails.
+    """
+    errors = _escrow_merge_schema.validate(request.form)
+    if errors:
+        return None, ("Please correct the highlighted errors and try again.", 400)
+    data = _escrow_merge_schema.load(request.form)
+    source = _owned_line(account, data["source_line_id"])
+    if source is None:
+        return None, ("Component not found", 404)
+    if source.id == target.id:
+        return None, ("A line can't be merged into itself.", 400)
+    return source, None
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/escrow/<int:line_id>/merge",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def merge_escrow_line(account_id, line_id):
+    """Merge another escrow line's history INTO this one (HTMX).
+
+    Reunifies a line whose history split across two lines -- a legacy backfill (one
+    line per historical name) or a Remove+Add: the drawer's line (``line_id``) is
+    the surviving TARGET, and the posted ``source_line_id`` line is folded in and
+    deleted.  Ownership of BOTH lines is checked (404 for a missing or another
+    user's line).  The merge is allowed only when it preserves the escrow resolved
+    on every date (:func:`~app.services.escrow_calculator.plan_escrow_line_merge`),
+    so it can neither move a settled split nor drop a concurrent charge; it is
+    rejected otherwise with an actionable message.  No posting reconcile is needed
+    because escrow-per-date is unchanged and the split stores the escrow amount,
+    not a line id (see the planner).
+    """
+    account, params, _account_type = _load_loan_account(account_id)
+    if account is None:
+        return "Account not found", 404
+    target = _owned_line(account, line_id)
+    if target is None:
+        return "Component not found", 404
+
+    source, error = _resolve_merge_source(account, target)
+    if error is not None:
+        return error
+    plan = escrow_calculator.plan_escrow_line_merge(source, target)
+    if plan.error is not None:
+        return plan.error, 400
+
+    # Repoint the surviving source versions onto the target and flush so their new
+    # line_id persists BEFORE the source line is deleted; deleting the source then
+    # cascade-removes exactly the versions the target already covers on the same
+    # date (``plan.versions_to_drop``), leaving escrow-per-date unchanged.
+    for version in plan.versions_to_move:
+        version.line = target
+    db.session.flush()
+    db.session.delete(source)
+    db.session.commit()
+    logger.info(
+        "Merged escrow line %d into %d (loan %d)", source.id, target.id, account.id,
     )
     return _render_escrow_list(account, params)

@@ -269,6 +269,20 @@ class EscrowLineRenameSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
 
 
+class EscrowLineMergeSchema(BaseSchema):
+    """Validates POST data for merging one escrow line into another.
+
+    ``source_line_id`` is the line to fold in and delete; the surviving TARGET is
+    the route's URL line id.  The route resolves ownership of BOTH lines (404 for
+    a line that is missing or another user's, per the security-response rule) and
+    delegates the safety check -- that the merge preserves the escrow resolved on
+    every date -- to the escrow calculator's merge planner.
+    """
+
+    source_line_id = fields.Integer(
+        required=True, validate=validate.Range(min=1),
+    )
+
 
 class PayoffCalculatorSchema(BaseSchema):
     """Validates POST data for payoff scenario analysis."""
