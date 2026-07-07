@@ -296,20 +296,32 @@ def _resolve_transfer_prompt(account):
     The prompt shows when LoanParams exist but no active recurring
     transfer template targets this account.  When shown, the eligible
     source accounts (active, non-amortizing, excluding this account) and
-    the default source (the checking account, if any) are loaded.
+    the default source (the checking account, if any) are loaded.  When a
+    recurring payment DOES exist, ``has_recurring_payment`` gates the
+    extra-principal edit control and ``recurring_payment_extra`` prefills it
+    from the payment's ``loan_payment_settings`` (0.00 when it has no settings
+    row -- a legacy manual payment).
 
     Returns:
         ``prompt_context`` -- a dict of template vars: show_transfer_prompt,
-        source_accounts, default_source_id.
+        source_accounts, default_source_id, has_recurring_payment,
+        recurring_payment_extra.
     """
     existing_template = active_recurring_transfer_template(
         account.id, current_user.id,
     )
     if existing_template is not None:
+        settings = existing_template.settings
+        extra = (
+            Decimal(str(settings.extra_principal))
+            if settings is not None else Decimal("0.00")
+        )
         return {
             "show_transfer_prompt": False,
             "source_accounts": [],
             "default_source_id": None,
+            "has_recurring_payment": True,
+            "recurring_payment_extra": extra,
         }
 
     source_accounts = (
@@ -335,6 +347,8 @@ def _resolve_transfer_prompt(account):
         "show_transfer_prompt": True,
         "source_accounts": source_accounts,
         "default_source_id": default_source_id,
+        "has_recurring_payment": False,
+        "recurring_payment_extra": Decimal("0.00"),
     }
 
 

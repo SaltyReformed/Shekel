@@ -434,3 +434,247 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert db.session.get(Transaction, income_shadow_id).actual_amount == (
             Decimal("1499.10")
         )
+
+
+# ── Overpayment (step 5): the standing extra rides both modes' cash ──────────
+
+
+def test_derived_override_includes_standing_extra(
+    app, db, seed_user, seed_periods,
+):
+    """A derive-mode override is P&I + escrow + the standing extra_principal.
+
+    Loan $200,000 / 6% / 360mo, escrow $3,600/yr; extra_principal $100.00:
+        P&I    = amortize(200000, 0.06, 360) = 1,199.10
+        escrow = 3600 / 12                   = 300.00
+        cash   = 1,199.10 + 300.00 + 100.00  = 1,599.10
+    The extra is a LIVE parameter added on top; it is NOT baked into the stale
+    stored $1.00, which stays untouched.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.settings.extra_principal = Decimal("100.00")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, shadows,
+        )
+        assert overrides
+        assert all(v == Decimal("1599.10") for v in overrides.values())
+
+
+def test_manual_payment_with_extra_gets_base_plus_extra(
+    app, db, seed_user, seed_periods,
+):
+    """A MANUAL payment (not derive) with a standing extra overrides to base + extra.
+
+    Manual base (stored default) $1,499.10 + extra $100.00 = $1,599.10.  The
+    base is operator-owned (not re-derived); only the extra is added live.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        # Flip to manual mode with a realistic typed base + a standing extra.
+        template.settings.derive_from_loan = False
+        template.settings.extra_principal = Decimal("100.00")
+        template.default_amount = Decimal("1499.10")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, shadows,
+        )
+        assert overrides
+        assert all(v == Decimal("1599.10") for v in overrides.values())
+
+
+def test_manual_extra_keys_to_recurring_base_not_a_typed_actual(
+    app, db, seed_user, seed_periods,
+):
+    """The manual extra rides the RECURRING base, ignoring a pre-settle typed actual.
+
+    A grid full-edit can leave a projected shadow with an operator-typed
+    ``actual_amount`` while still ``is_projected`` and NOT ``is_override``.  The
+    extra must key to the recurring ``estimated_amount`` (1,499.10), NOT
+    ``effective_amount`` (which would return the typed 1,550.00), or the extra
+    would stack on a per-instance value: override = 1,499.10 + 100.00 = 1,599.10,
+    NOT 1,650.00.  This keeps manual mode coherent with derive mode (which also
+    ignores a pre-settle typed actual and recomputes from config).
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.settings.derive_from_loan = False
+        template.settings.extra_principal = Decimal("100.00")
+        template.default_amount = Decimal("1499.10")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        # Operator types a known actual on a projected shadow (grid full-edit
+        # path -- is_override stays False, status stays Projected).
+        shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.scenario_id == scenario_id,
+            )
+            .order_by(Transaction.id)
+            .first()
+        )
+        shadow.actual_amount = Decimal("1550.00")
+        db.session.commit()
+        assert shadow.is_override is False
+        assert shadow.effective_amount == Decimal("1550.00")
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, shadows,
+        )
+        # Extra on the recurring base (1499.10 + 100), NOT on the typed actual.
+        assert overrides[shadow.id] == Decimal("1599.10")
+
+
+def test_manual_payment_without_extra_gets_no_override(
+    app, db, seed_user, seed_periods,
+):
+    """A MANUAL payment with no extra keeps its stored amount (no live override).
+
+    Nothing to re-derive and no extra to add, so the stored base IS the cash --
+    the override map is empty for it (the seam stays dormant).
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.settings.derive_from_loan = False
+        template.settings.extra_principal = Decimal("0.00")
+        template.default_amount = Decimal("1499.10")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, shadows,
+        )
+        assert overrides == {}
+
+
+def test_settling_with_extra_lands_the_extra_in_principal(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """cash == split with a standing extra: the extra flows into principal.
+
+    The Sec. 9 invariant with an overpayment.  Derive payment, escrow $3,600/yr,
+    extra $100.00.  A one-click settle freezes cash = 1,199.10 P&I + 300.00
+    escrow + 100.00 extra = 1,599.10.  The genesis split then divides it:
+        interest  = 200,000 * 0.06 / 12 = 1,000.00
+        escrow    = 300.00
+        principal = 1,599.10 - 1,000.00 - 300.00 = 299.10
+    which is the scheduled principal 199.10 (P&I 1,199.10 - interest 1,000.00)
+    PLUS the 100.00 extra -- the residual split routes it to principal by
+    construction, with no excess.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.settings.extra_principal = Decimal("100.00")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+            )
+            .order_by(Transaction.id)
+            .first()
+        )
+        assert income_shadow is not None
+        income_shadow_id = income_shadow.id
+
+        resp = auth_client.post(f"/transactions/{income_shadow_id}/mark-done")
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow_id)
+        # Frozen cash carries P&I + escrow + extra.
+        assert settled.actual_amount == Decimal("1599.10")
+
+        # The genesis split routes the extra into principal (cash == split).
+        splits = loan_posting_service.compute_loan_payment_splits(
+            loan.id, scenario_id, date.today(),
+        )
+        assert len(splits) == 1
+        split = splits[0]
+        assert split.interest == Decimal("1000.00")
+        assert split.escrow == Decimal("300.00")
+        assert split.principal == Decimal("299.10")
+        assert split.excess == Decimal("0.00")
+
+
+def test_settling_manual_payment_with_extra_captures_base_plus_extra(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """Capture-on-settle fires for a MANUAL payment carrying a standing extra.
+
+    Manual base $1,499.10 + extra $100.00 -> the settle freezes $1,599.10, so
+    the split routes the extra into principal exactly as in derive mode.  A
+    manual payment with NO extra would keep its estimate (covered separately).
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.settings.derive_from_loan = False
+        template.settings.extra_principal = Decimal("100.00")
+        template.default_amount = Decimal("1499.10")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+            )
+            .order_by(Transaction.id)
+            .first()
+        )
+        assert income_shadow is not None
+        income_shadow_id = income_shadow.id
+
+        resp = auth_client.post(f"/transactions/{income_shadow_id}/mark-done")
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow_id)
+        assert settled.actual_amount == Decimal("1599.10")

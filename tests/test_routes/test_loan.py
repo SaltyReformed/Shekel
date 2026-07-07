@@ -3014,6 +3014,152 @@ class TestTransferPrompt:
         assert tpl.settings is not None
         assert tpl.settings.derive_from_loan is False
 
+    def test_create_transfer_with_extra_principal(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Creating a payment with an extra stores it on settings, not the base.
+
+        The standing extra rides the settings row (spec Sec. 6.3); the
+        ``default_amount`` stays the derived base (P&I + escrow), NOT base +
+        extra -- the extra is applied live, never baked in.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "100.00",
+            },
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl is not None
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("100.00")
+        # The base is the derived P&I + escrow, NOT base + extra.
+        assert tpl.default_amount > Decimal("100.00")
+
+    def test_update_payment_settings_changes_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The payment-settings route updates the standing extra in place.
+
+        No shadow regeneration is needed (the extra is a live parameter): the
+        settings row's ``extra_principal`` is set to the new value.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl.settings.extra_principal == Decimal("150.00")
+
+    def test_update_payment_settings_no_recurring_payment_warns(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Editing the extra on a loan with no recurring payment warns, no 500."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"no recurring payment" in resp.data.lower()
+
+    def test_update_payment_settings_rejects_negative_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A negative extra is rejected (danger flash) and never mutates settings."""
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "50.00",
+            },
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "-5.00"},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"valid extra principal" in resp.data.lower()
+        # The original extra is untouched.
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        assert tpl.settings.extra_principal == Decimal("50.00")
+
+    def test_update_payment_settings_idor(
+        self, second_auth_client, seed_user, db, seed_periods,
+    ):
+        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found)."""
+        acct = _create_mortgage(seed_user, db.session)
+
+        resp = second_auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+
+    def test_dashboard_shows_extra_control_when_payment_exists(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The extra-principal edit control renders once a recurring payment exists.
+
+        Prefilled from the payment's stored extra ($125.00), posting to the
+        payment-settings route.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "125.00",
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f"/accounts/{acct.id}/loan/payment-settings" in html
+        assert 'value="125.00"' in html
+
     def test_source_accounts_exclude_debt_account(
         self, auth_client, seed_user, db, seed_periods,
     ):

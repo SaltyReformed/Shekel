@@ -54,9 +54,43 @@
         </select>
       </div>
       <div class="col-auto">
+        <label for="extra_principal" class="form-label form-label-sm mb-0">Extra principal <span class="text-muted">(optional)</span></label>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0" class="form-control" id="extra_principal" name="extra_principal" placeholder="0.00">
+        </div>
+      </div>
+      <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="bi bi-plus-circle"></i> Create Recurring Transfer
         </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if has_recurring_payment %}
+{# ── Extra principal: standing overpayment on the recurring payment ────── #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-plus-slash-minus"></i> Extra principal</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('loan.update_payment_settings', account_id=account.id) }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-auto">
+        <label for="extra_principal_edit" class="form-label form-label-sm mb-0">Added to every payment</label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0" class="form-control" id="extra_principal_edit" name="extra_principal" value="{{ '%.2f'|format(recurring_payment_extra) }}">
+        </div>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">Update</button>
+      </div>
+      <div class="col-12">
+        <p class="form-text mb-0">Paid toward principal on top of the base payment every month, accelerating your payoff. Set to 0 to remove.</p>
       </div>
     </form>
   </div>

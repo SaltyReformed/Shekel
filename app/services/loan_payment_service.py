@@ -658,20 +658,26 @@ def _resolve_loan_pi(
 
 
 def _shadow_live_amount(
-    monthly_pi: Decimal, escrow_lines: list, shadow: Transaction,
+    monthly_pi: Decimal,
+    escrow_lines: list,
+    shadow: Transaction,
+    extra_principal: Decimal,
 ) -> Decimal:
-    """The live PITI a loan-payment shadow should carry: P&I + its DATE's escrow.
+    """Derive-mode live cash for a loan-payment shadow: P&I + its DATE's escrow + extra.
 
     The single expression both the projected-display override
     (:func:`live_loan_transfer_amounts`) and the settle-time capture
-    (:func:`live_loan_payment_amount`) build a loan payment's cash from, so
-    they can never disagree.  The escrow term is
+    (:func:`live_loan_payment_amount`) build an AUTO-DERIVED loan payment's cash
+    from, so they can never disagree.  The escrow term is
     :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
     shadow's OWN pay-period start -- the exact date and function the genesis
     split reads (``_walk._replay_events``) -- so the cash built into a payment
     and the escrow its split subtracts are the same figure by construction
-    (the cash==split invariant), never by coincidence.  ``round_money`` holds
-    the E-26 sum-then-round boundary even though both terms are already 2dp.
+    (the cash==split invariant), never by coincidence.  ``extra_principal`` (the
+    standing overpayment, spec Sec. 6) is added on top in BOTH the display and
+    the settle freeze, and the split's residual ``cash - interest - escrow``
+    lands it in principal automatically.  ``round_money`` holds the E-26
+    sum-then-round boundary even though the terms are already 2dp.
 
     Args:
         monthly_pi: The loan's resolved monthly P&I (:func:`_resolve_loan_pi`),
@@ -679,14 +685,49 @@ def _shadow_live_amount(
         escrow_lines: The loan's escrow lines with their full version history.
         shadow: The payment shadow whose ``pay_period.start_date`` dates the
             escrow resolution.
+        extra_principal: The recurring payment's standing extra principal
+            (``0.00`` when none), from :func:`_loan_payment_config`.
 
     Returns:
-        ``round_money(monthly_pi + escrow_monthly_as_of(lines, shadow date))``.
+        ``round_money(monthly_pi + escrow_monthly_as_of(lines, shadow date)
+        + extra_principal)``.
     """
     escrow = escrow_calculator.escrow_monthly_as_of(
         escrow_lines, shadow.pay_period.start_date,
     )
-    return round_money(monthly_pi + escrow)
+    return round_money(monthly_pi + escrow + extra_principal)
+
+
+def _manual_shadow_amount(
+    shadow: Transaction, extra_principal: Decimal,
+) -> Decimal:
+    """Manual-mode live cash for a loan-payment shadow: its RECURRING base + extra.
+
+    In manual mode the operator owns the base cash (the typed ``default_amount``
+    the generated shadow stores as its ``estimated_amount``); the cash does not
+    re-derive P&I or escrow (decision D).  ``extra_principal`` is still added on
+    top (spec Sec. 6.1, "extra added in BOTH modes"), and the settle freeze
+    captures the same base + extra so the split routes the extra into principal.
+
+    The base is ``estimated_amount`` (the recurring base), NOT ``effective_amount``:
+    a projected shadow can carry an operator-typed ``actual_amount`` while still
+    ``is_projected`` and NOT ``is_override`` (a grid full-edit does not set the
+    override flag), and ``effective_amount`` would return that actual, stacking
+    ``extra`` on a per-instance typed value.  Keying to ``estimated_amount`` (NOT
+    NULL, always the generated base) makes manual mode COHERENT with derive mode,
+    which likewise recomputes from config and ignores a pre-settle typed actual.
+
+    Args:
+        shadow: The projected loan-payment shadow whose recurring base is added to.
+        extra_principal: The standing extra principal (``> 0`` at the call sites).
+
+    Returns:
+        ``round_money(shadow.estimated_amount + extra_principal)``.
+    """
+    base = shadow.estimated_amount
+    if not isinstance(base, Decimal):
+        base = Decimal(str(base))
+    return round_money(base + extra_principal)
 
 
 def _loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
@@ -719,27 +760,29 @@ def _loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
 def live_loan_payment_amount(
     shadow: Transaction, scenario_id: int,
 ) -> Decimal | None:
-    """Live payment-date PITI for a single auto-derived loan payment, or None.
+    """Live payment-date cash for a single loan payment to freeze at settlement, or None.
 
     The settle-time counterpart of :func:`live_loan_transfer_amounts`: the
-    amount a derive-from-loan payment shadow should FREEZE as its actual cash
-    when it settles, so a one-click "mark paid" records the live payment-date
-    cash (P&I + escrow-as-of) instead of the stale template estimate.  Because
-    the frozen cash and the genesis split both read
-    :func:`_shadow_live_amount` on the shadow's own date, ``cash == split``
-    holds by construction -- the settlement analogue of the projected
-    override, closing the gap where a plain settle reverted to
-    ``estimated_amount`` (the creation-time escrow) and desynced the split.
+    amount a loan-payment shadow should FREEZE as its actual cash when it
+    settles, so a one-click "mark paid" records the live payment-date cash
+    instead of the stale template estimate.  Same two modes as the projected
+    override: DERIVE (P&I + escrow-as-of + extra, :func:`_shadow_live_amount`)
+    or MANUAL with a standing extra (stored base + extra,
+    :func:`_manual_shadow_amount`).  Because the frozen cash and the genesis
+    split read the same figure on the shadow's own date, ``cash == split`` holds
+    by construction -- closing the gap where a plain settle reverted to
+    ``estimated_amount`` (the creation-time escrow, and no extra) and desynced
+    the split.
 
     Returns ``None`` -- so the caller leaves the stored estimate / a typed
-    actual untouched -- for any shadow that is NOT a freshly-settling
-    auto-derived loan payment: no transfer, an operator ``is_override`` (the
-    operator owns that amount), an already-settled (non-Projected) shadow, a
-    transfer with no ``derive_from_loan`` template, or a loan that cannot
-    resolve.  Mirrors :func:`live_loan_transfer_amounts`'s candidate filter
-    (transfer, ``is_projected``, not ``is_override``, ``derive_from_loan``), so
-    the settle capture fires for precisely the set the projected override
-    covers.
+    actual untouched -- for any shadow that does NOT need a capture: no transfer,
+    an operator ``is_override`` (the operator owns that amount), an
+    already-settled (non-Projected) shadow, a transfer that is not a loan payment
+    (no settings row), a MANUAL loan payment with no extra (its stored estimate
+    already IS the cash), or a loan that cannot resolve.  Mirrors
+    :func:`live_loan_transfer_amounts`'s candidate filter (transfer,
+    ``is_projected``, not ``is_override``, needs-a-live-override), so the settle
+    capture fires for precisely the set the projected override covers.
 
     The ``is_projected`` guard makes the freeze ONE-SHOT: at the genuine first
     settle the status flip happens inside ``update_transfer`` AFTER this runs,
@@ -756,8 +799,8 @@ def live_loan_payment_amount(
         scenario_id: The scenario to resolve the loan against.
 
     Returns:
-        The live PITI ``Decimal`` to freeze, or ``None`` when the shadow is
-        not a freshly-settling auto-derived loan payment.
+        The live cash ``Decimal`` to freeze, or ``None`` when the shadow does
+        not need a settle-time capture.
     """
     if (
         shadow.transfer_id is None
@@ -775,35 +818,108 @@ def live_loan_payment_amount(
     )
     if transfer is None or transfer.template is None:
         return None
-    derive_from_loan, _extra = _loan_payment_config(transfer.template)
-    if not derive_from_loan:
-        return None
-    monthly_pi = _resolve_loan_pi(
-        transfer.to_account_id, scenario_id, date.today(),
+    derive_from_loan, extra_principal = _loan_payment_config(transfer.template)
+    if derive_from_loan:
+        monthly_pi = _resolve_loan_pi(
+            transfer.to_account_id, scenario_id, date.today(),
+        )
+        if monthly_pi is None:
+            return None
+        escrow_lines = load_escrow_lines(transfer.to_account_id)
+        return _shadow_live_amount(
+            monthly_pi, escrow_lines, shadow, extra_principal,
+        )
+    # Manual mode: freeze the typed base + the standing extra so the split
+    # routes the extra into principal.  A manual payment with no extra needs no
+    # capture -- the plain settle keeps its stored estimate.
+    if extra_principal > Decimal("0.00"):
+        return _manual_shadow_amount(shadow, extra_principal)
+    return None
+
+
+@dataclass(frozen=True)
+class _LivePaymentConfig:
+    """A loan-payment transfer's live-override config: mode, extra, and loan.
+
+    Bundles the three facts :func:`live_loan_transfer_amounts` needs per
+    candidate transfer so the per-shadow loop reads typed attributes instead of
+    threading a 3-tuple.  ``loan_account_id`` is the transfer's destination loan
+    (used only in derive mode, to resolve P&I / escrow).
+    """
+
+    derive_from_loan: bool
+    extra_principal: Decimal
+    loan_account_id: int
+
+
+def _live_config_by_transfer(
+    candidates: list,
+) -> dict[int, "_LivePaymentConfig"]:
+    """Map ``transfer_id -> _LivePaymentConfig`` for candidates needing a live override.
+
+    Loads each candidate's transfer with its template + settings in one query
+    (eager, no N+1) and keeps only the transfers that actually need a read-time
+    override: a DERIVE-mode loan payment (its cash re-derives P&I + as-of escrow
+    + extra) or a MANUAL loan payment carrying a standing extra (its stored base
+    + extra).  A generic transfer (no settings row) and a manual payment with no
+    extra keep their stored amount and are omitted, so the balance render is
+    unchanged for everything that has not opted in.
+
+    Args:
+        candidates: The projected, non-overridden transfer shadows to resolve
+            configs for (their ``transfer_id``s are the query keys).
+
+    Returns:
+        ``{transfer_id: _LivePaymentConfig}``; empty when no candidate transfer
+        needs a live override.
+    """
+    transfer_ids = {txn.transfer_id for txn in candidates}
+    transfers = (
+        db.session.query(Transfer)
+        .options(
+            joinedload(Transfer.template).joinedload(TransferTemplate.settings),
+        )
+        .filter(Transfer.id.in_(transfer_ids))
+        .all()
     )
-    if monthly_pi is None:
-        return None
-    escrow_lines = load_escrow_lines(transfer.to_account_id)
-    return _shadow_live_amount(monthly_pi, escrow_lines, shadow)
+    config: dict[int, _LivePaymentConfig] = {}
+    for xfer in transfers:
+        if xfer.template is None:
+            continue
+        derive, extra = _loan_payment_config(xfer.template)
+        if not derive and extra <= Decimal("0.00"):
+            continue
+        config[xfer.id] = _LivePaymentConfig(
+            derive_from_loan=derive,
+            extra_principal=extra,
+            loan_account_id=xfer.to_account_id,
+        )
+    return config
 
 
 def live_loan_transfer_amounts(
     scenario_id: int,
     transactions: list,
 ) -> dict[int, Decimal]:
-    """Return ``{transaction_id: live PITI}`` for derive-from-loan transfer shadows.
+    """Return ``{transaction_id: live cash}`` for loan-payment transfer shadows.
 
     The read-time analogue of a recurring loan payment's stored
-    ``TransferTemplate.default_amount``: for every Projected,
-    non-overridden shadow transaction whose parent transfer's template
-    has ``derive_from_loan=True``, recompute the full monthly payment
-    LIVE from the destination loan -- ``resolve_loan(...).monthly_payment``
-    (the rate-period P&I, resolved once per loan) plus the escrow in effect on
-    THAT shadow's pay-period start (:func:`_shadow_live_amount`).  A
-    balance/display consumer can then treat the stored transfer amount as
-    a cache that cannot silently disagree with the loan card after an
-    escrow or rate change.  Directly mirrors the salary-income
-    live-recompute, :func:`app.services.income_service.live_projected_net`.
+    ``TransferTemplate.default_amount``: for every Projected, non-overridden
+    shadow transaction of a loan payment (:func:`_live_config_by_transfer`),
+    recompute the cash LIVE so the stored transfer amount is a cache that cannot
+    silently disagree with the loan card after an escrow, rate, or extra change.
+    Two modes (spec Sec. 6):
+
+    * **Derive** (``derive_from_loan``): ``resolve_loan(...).monthly_payment``
+      (the rate-period P&I, resolved once per loan) + the escrow in effect on
+      THAT shadow's pay-period start + the standing ``extra_principal``
+      (:func:`_shadow_live_amount`).
+    * **Manual with a standing extra**: the shadow's stored base +
+      ``extra_principal`` (:func:`_manual_shadow_amount`); the base is
+      operator-owned and not re-derived (decision D).
+
+    Directly mirrors the salary-income live-recompute,
+    :func:`app.services.income_service.live_projected_net`.
 
     Per-shadow escrow (not one PITI per loan) is mandatory once escrow can be
     future-dated: a December projected payment and a January projected payment
@@ -819,11 +935,10 @@ def live_loan_transfer_amounts(
     keeping both equal avoids any surface showing mismatched shadows.
 
     Boundary discipline: no Flask import; inputs are plain data, output a
-    plain dict.  Returns an empty dict when no candidate transfer targets
-    a derive-from-loan template -- the common case for non-loan transfers
-    and every pre-existing template (the flag defaults False) -- after at
-    most one transfer/template lookup, so the balance render is unchanged
-    for loans that have not opted in.
+    plain dict.  Returns an empty dict when no candidate transfer needs a live
+    override -- the common case for non-loan transfers, and for a manual loan
+    payment with no standing extra -- after at most one transfer/template
+    lookup, so the balance render is unchanged for loans that have not opted in.
 
     Args:
         scenario_id: Scenario to resolve each loan against.
@@ -832,8 +947,8 @@ def live_loan_transfer_amounts(
             ``is_projected``), ``is_override``, ``pay_period``, and ``id``.
 
     Returns:
-        ``dict`` mapping transaction id to the live PITI Decimal; empty
-        when no derive-from-loan transfer is present.
+        ``dict`` mapping transaction id to the live cash Decimal; empty
+        when no loan-payment transfer needs a live override.
     """
     candidates = [
         txn for txn in transactions
@@ -844,32 +959,23 @@ def live_loan_transfer_amounts(
     if not candidates:
         return {}
 
-    transfer_ids = {txn.transfer_id for txn in candidates}
-    transfers = (
-        db.session.query(Transfer)
-        .options(
-            joinedload(Transfer.template).joinedload(TransferTemplate.settings),
-        )
-        .filter(Transfer.id.in_(transfer_ids))
-        .all()
-    )
-    loan_by_transfer = {
-        xfer.id: xfer.to_account_id
-        for xfer in transfers
-        if xfer.template is not None
-        and _loan_payment_config(xfer.template)[0]
-    }
-    if not loan_by_transfer:
+    config_by_transfer = _live_config_by_transfer(candidates)
+    if not config_by_transfer:
         return {}
 
-    # Resolve each distinct loan's monthly P&I once and load its escrow lines
+    # Resolve each DERIVE-mode loan's monthly P&I once and load its escrow lines
     # once; the escrow itself is resolved per-shadow (each shadow's own date)
-    # below, so two shadows of one loan with different pay-period starts pick
-    # up different future-dated escrow.
+    # below, so two shadows of one loan with different pay-period starts pick up
+    # different future-dated escrow.  Manual-mode transfers need neither -- their
+    # base is the shadow's stored amount -- so only derive loans are resolved.
     today = date.today()
+    derive_loan_ids = {
+        cfg.loan_account_id for cfg in config_by_transfer.values()
+        if cfg.derive_from_loan
+    }
     pi_by_loan: dict[int, Decimal] = {}
     lines_by_loan: dict[int, list] = {}
-    for loan_account_id in set(loan_by_transfer.values()):
+    for loan_account_id in derive_loan_ids:
         monthly_pi = _resolve_loan_pi(loan_account_id, scenario_id, today)
         if monthly_pi is not None:
             pi_by_loan[loan_account_id] = monthly_pi
@@ -877,12 +983,18 @@ def live_loan_transfer_amounts(
 
     overrides: dict[int, Decimal] = {}
     for txn in candidates:
-        loan_account_id = loan_by_transfer.get(txn.transfer_id)
-        if loan_account_id is None:
+        cfg = config_by_transfer.get(txn.transfer_id)
+        if cfg is None:
             continue
-        monthly_pi = pi_by_loan.get(loan_account_id)
-        if monthly_pi is not None:
-            overrides[txn.id] = _shadow_live_amount(
-                monthly_pi, lines_by_loan[loan_account_id], txn,
-            )
+        if cfg.derive_from_loan:
+            monthly_pi = pi_by_loan.get(cfg.loan_account_id)
+            if monthly_pi is not None:
+                overrides[txn.id] = _shadow_live_amount(
+                    monthly_pi, lines_by_loan[cfg.loan_account_id],
+                    txn, cfg.extra_principal,
+                )
+        else:
+            # Manual mode with a standing extra (the config filter guarantees
+            # extra > 0 here): stored base + extra, no re-derivation.
+            overrides[txn.id] = _manual_shadow_amount(txn, cfg.extra_principal)
     return overrides

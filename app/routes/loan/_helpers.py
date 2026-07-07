@@ -26,6 +26,7 @@ from app.schemas.validation import (
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
     LoanParamsUpdateSchema,
+    LoanPaymentExtraSchema,
     LoanPaymentTransferSchema,
     PayoffCalculatorSchema,
     RateChangeSchema,
@@ -78,6 +79,7 @@ _escrow_rename_schema = EscrowLineRenameSchema()
 _payoff_schema = PayoffCalculatorSchema()
 _refinance_schema = RefinanceSchema()
 _transfer_schema = LoanPaymentTransferSchema()
+_payment_extra_schema = LoanPaymentExtraSchema()
 
 
 def _load_loan_account(account_id):

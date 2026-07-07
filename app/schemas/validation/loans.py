@@ -326,10 +326,41 @@ class LoanPaymentTransferSchema(BaseSchema):
     The source_account_id is required (the account money comes from).
     The amount is optional -- if omitted, the route uses the computed
     monthly payment (P&I + escrow).  If provided, must be positive.
+    ``extra_principal`` is optional (default 0.00): a standing monthly
+    overpayment added to the payment in BOTH derive and manual mode
+    (spec Sec. 6.1), stored in ``loan_payment_settings``.
     """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``extra_principal`` field to its 0.00 default."""
+        return _normalize_empty_inputs(self, data)
 
     source_account_id = fields.Integer(required=True, validate=validate.Range(min=1))
     amount = fields.Decimal(
         places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
+    )
+    extra_principal = fields.Decimal(
+        load_default=Decimal("0.00"), places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+
+
+class LoanPaymentExtraSchema(BaseSchema):
+    """Validates POST data for editing a recurring loan payment's extra principal.
+
+    The single field the loan dashboard's extra-principal control posts: the new
+    standing monthly overpayment (``>= 0``; 0.00 clears it).  An empty submission
+    normalizes to 0.00 so clearing the box removes the overpayment.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``extra_principal`` field to its 0.00 default."""
+        return _normalize_empty_inputs(self, data)
+
+    extra_principal = fields.Decimal(
+        load_default=Decimal("0.00"), places=2, as_string=True,
+        validate=validate.Range(min=0),
     )
