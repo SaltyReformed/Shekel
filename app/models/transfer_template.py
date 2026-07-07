@@ -74,19 +74,10 @@ class TransferTemplate(
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
     )
-    # RETIRED (decision B): the live-derive flag moved to the 1:1
-    # ``loan_payment_settings`` row (see :class:`LoanPaymentSettings` +
-    # ``settings`` below).  The reader cutover repointed every consumer onto the
-    # settings table, so this column is no longer read OR written; it is kept
-    # only as the EXPAND migration's backfill source and is dropped by the
-    # CONTRACT migration.  It is not dual-written during that window because the
-    # whole feature branch ships as one unit (5a..5d together), so no deploy
-    # runs the expand phase without the drop -- the escrow 2a/2b precedent on
-    # this branch.
-    derive_from_loan = db.Column(
-        db.Boolean, nullable=False, default=False,
-        server_default=db.text("false"),
-    )
+    # The live-derive flag + the standing overpayment live in the 1:1
+    # ``loan_payment_settings`` row (decision B), reached via ``settings`` below;
+    # a template with no settings row is not a loan payment.  The old
+    # ``derive_from_loan`` column was dropped by migration ``c1a4f7b9e2d3``.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
