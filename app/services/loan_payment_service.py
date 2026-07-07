@@ -54,6 +54,7 @@ from app.services.loan_loaders import (
 )
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import is_projected
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def load_loan_context(
     )
     payments = prepare_payments_for_engine(
         raw_payments, loan_params.payment_day,
-        monthly_escrow, contractual_pi,
+        escrow_lines, contractual_pi,
     )
 
     return LoanContext(
@@ -354,7 +355,7 @@ def _redistribute_to_distinct_months(
 def prepare_payments_for_engine(
     payments: list[PaymentRecord],
     payment_day: int,
-    monthly_escrow: Decimal,
+    escrow_lines: list,
     contractual_pi: Decimal,
 ) -> list[PaymentRecord]:
     """Prepare payment records for the amortization engine.
@@ -368,6 +369,14 @@ def prepare_payments_for_engine(
        paydown speed and showing escrow as spurious "Extra" entries.
        Only subtracts escrow from the portion that exceeds the standard
        P&I payment, so payments that do not include escrow are unaffected.
+       Each payment subtracts the escrow IN EFFECT ON ITS OWN DATE
+       (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
+       payment's pay-period start), NOT one current figure: once escrow can
+       be future-dated, a payment made under the old escrow must have the old
+       escrow backed out to recover its P&I, or the resolver's replay / payoff
+       projection mis-attributes the escrow delta as extra principal.  This is
+       the same date-keyed escrow the genesis split subtracts, so the two agree
+       on every payment's P&I.
 
     2. Biweekly redistribution: Pay period start dates are biweekly and
        sometimes place two mortgage payments in the same calendar month
@@ -379,7 +388,10 @@ def prepare_payments_for_engine(
     Args:
         payments: List of PaymentRecord from get_payment_history().
         payment_day: Mortgage payment day of month (from LoanParams).
-        monthly_escrow: Monthly escrow amount from escrow_calculator.
+        escrow_lines: The loan's escrow lines with their full version history
+            (:func:`~app.services.loan_loaders.load_escrow_lines`); each
+            payment resolves its own as-of escrow from them.  Empty for a loan
+            with no escrow, which skips the subtraction entirely.
         contractual_pi: Standard monthly P&I payment (no escrow).
 
     Returns:
@@ -390,15 +402,20 @@ def prepare_payments_for_engine(
 
     sorted_payments = sorted(payments, key=lambda p: p.payment_date)
 
-    # Step 1: Subtract escrow from payments that include it.
-    # Only subtract from the excess above contractual P&I so that
-    # payments equal to or below P&I (no escrow included) are untouched.
-    if monthly_escrow > Decimal("0.00"):
+    # Step 1: Subtract each payment's as-of escrow from the portion that
+    # exceeds contractual P&I, so payments equal to or below P&I (no escrow
+    # included) are untouched.  Skipped entirely for a loan with no escrow
+    # lines; a line that resolves to 0 on a given date (not yet in effect, or
+    # a removal tombstone) subtracts nothing for that payment.
+    if escrow_lines:
         adjusted = []
         for p in sorted_payments:
-            if p.amount > contractual_pi:
+            escrow = escrow_calculator.escrow_monthly_as_of(
+                escrow_lines, p.payment_date,
+            )
+            if escrow > Decimal("0.00") and p.amount > contractual_pi:
                 new_amount = p.amount - min(
-                    monthly_escrow, p.amount - contractual_pi,
+                    escrow, p.amount - contractual_pi,
                 )
             else:
                 new_amount = p.amount
@@ -565,7 +582,7 @@ def resolve_account_loan(
     configured loan); the caller skips it.  A configured loan is always
     resolvable -- its origination anchor fact is synthesized from the
     immutable params -- so there is no anchor-based short-circuit here or
-    in :func:`_resolve_loan_piti` (the two differ only in what they
+    in :func:`_resolve_loan_pi` (the two differ only in what they
     return).
 
     Args:
@@ -593,17 +610,29 @@ def resolve_account_loan(
     return params, state
 
 
-def _resolve_loan_piti(
+def _resolve_loan_pi(
     loan_account_id: int, scenario_id: int, as_of: date
 ) -> Decimal | None:
-    """Resolve a loan's full live monthly payment (P&I + escrow), or None.
+    """Resolve a loan's live monthly P&I (no escrow) as of ``as_of``, or None.
 
-    Returns None when the loan has no ``LoanParams`` row (it cannot be
-    resolved, so its shadows keep their stored amount); a configured loan
-    is always resolvable, since its origination anchor fact is synthesized
-    from the immutable params.  ``resolve_loan(...).monthly_payment`` is the
-    rate-period P&I; ``context.monthly_escrow`` adds the escrow component to
-    reach PITI.
+    Returns ``None`` when the loan has no ``LoanParams`` row (it cannot be
+    resolved, so its shadows keep their stored amount); a configured loan is
+    always resolvable, since its origination anchor fact is synthesized from
+    the immutable params.  ``resolve_loan(...).monthly_payment`` is the
+    rate-period P&I; the escrow term is deliberately NOT added here because it
+    is per-payment-DATE (:func:`_shadow_live_amount`), not one figure per loan
+    -- a future-dated escrow version means a December and a January payment
+    carry different escrow, so the escrow must be resolved against each
+    shadow's own date rather than folded into a single loan-level PITI.
+
+    Args:
+        loan_account_id: The destination loan account to resolve.
+        scenario_id: The budget scenario the payments live in.
+        as_of: The evaluation date for the rate-period P&I.
+
+    Returns:
+        The loan's monthly P&I ``Decimal``, or ``None`` when the account is
+        not a configured loan.
     """
     params = load_loan_params(loan_account_id)
     if params is None:
@@ -616,7 +645,109 @@ def _resolve_loan_piti(
         ),
         as_of,
     )
-    return state.monthly_payment + context.monthly_escrow
+    return state.monthly_payment
+
+
+def _shadow_live_amount(
+    monthly_pi: Decimal, escrow_lines: list, shadow: Transaction,
+) -> Decimal:
+    """The live PITI a loan-payment shadow should carry: P&I + its DATE's escrow.
+
+    The single expression both the projected-display override
+    (:func:`live_loan_transfer_amounts`) and the settle-time capture
+    (:func:`live_loan_payment_amount`) build a loan payment's cash from, so
+    they can never disagree.  The escrow term is
+    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
+    shadow's OWN pay-period start -- the exact date and function the genesis
+    split reads (``_walk._replay_events``) -- so the cash built into a payment
+    and the escrow its split subtracts are the same figure by construction
+    (the cash==split invariant), never by coincidence.  ``round_money`` holds
+    the E-26 sum-then-round boundary even though both terms are already 2dp.
+
+    Args:
+        monthly_pi: The loan's resolved monthly P&I (:func:`_resolve_loan_pi`),
+            already resolved once per loan.
+        escrow_lines: The loan's escrow lines with their full version history.
+        shadow: The payment shadow whose ``pay_period.start_date`` dates the
+            escrow resolution.
+
+    Returns:
+        ``round_money(monthly_pi + escrow_monthly_as_of(lines, shadow date))``.
+    """
+    escrow = escrow_calculator.escrow_monthly_as_of(
+        escrow_lines, shadow.pay_period.start_date,
+    )
+    return round_money(monthly_pi + escrow)
+
+
+def live_loan_payment_amount(
+    shadow: Transaction, scenario_id: int,
+) -> Decimal | None:
+    """Live payment-date PITI for a single auto-derived loan payment, or None.
+
+    The settle-time counterpart of :func:`live_loan_transfer_amounts`: the
+    amount a derive-from-loan payment shadow should FREEZE as its actual cash
+    when it settles, so a one-click "mark paid" records the live payment-date
+    cash (P&I + escrow-as-of) instead of the stale template estimate.  Because
+    the frozen cash and the genesis split both read
+    :func:`_shadow_live_amount` on the shadow's own date, ``cash == split``
+    holds by construction -- the settlement analogue of the projected
+    override, closing the gap where a plain settle reverted to
+    ``estimated_amount`` (the creation-time escrow) and desynced the split.
+
+    Returns ``None`` -- so the caller leaves the stored estimate / a typed
+    actual untouched -- for any shadow that is NOT a freshly-settling
+    auto-derived loan payment: no transfer, an operator ``is_override`` (the
+    operator owns that amount), an already-settled (non-Projected) shadow, a
+    transfer with no ``derive_from_loan`` template, or a loan that cannot
+    resolve.  Mirrors :func:`live_loan_transfer_amounts`'s candidate filter
+    (transfer, ``is_projected``, not ``is_override``, ``derive_from_loan``), so
+    the settle capture fires for precisely the set the projected override
+    covers.
+
+    The ``is_projected`` guard makes the freeze ONE-SHOT: at the genuine first
+    settle the status flip happens inside ``update_transfer`` AFTER this runs,
+    so the shadow is still Projected and the capture fires; a re-settle of an
+    already-DONE shadow (a stale-tab click on the still-present mark-paid
+    button, which the ``done -> done`` identity transition admits) resolves to
+    ``None`` here, so the frozen ``actual_amount`` is never silently rewritten
+    to a later live figure that was never paid.
+
+    Args:
+        shadow: The transfer shadow being settled (either leg -- both legs
+            share the transfer id and pay period, so either resolves the same
+            amount, preserving Transfer Invariant 3).
+        scenario_id: The scenario to resolve the loan against.
+
+    Returns:
+        The live PITI ``Decimal`` to freeze, or ``None`` when the shadow is
+        not a freshly-settling auto-derived loan payment.
+    """
+    if (
+        shadow.transfer_id is None
+        or shadow.is_override
+        or not is_projected(shadow)
+    ):
+        return None
+    transfer = (
+        db.session.query(Transfer)
+        .options(joinedload(Transfer.template))
+        .filter(Transfer.id == shadow.transfer_id)
+        .first()
+    )
+    if (
+        transfer is None
+        or transfer.template is None
+        or not transfer.template.derive_from_loan
+    ):
+        return None
+    monthly_pi = _resolve_loan_pi(
+        transfer.to_account_id, scenario_id, date.today(),
+    )
+    if monthly_pi is None:
+        return None
+    escrow_lines = load_escrow_lines(transfer.to_account_id)
+    return _shadow_live_amount(monthly_pi, escrow_lines, shadow)
 
 
 def live_loan_transfer_amounts(
@@ -630,11 +761,18 @@ def live_loan_transfer_amounts(
     non-overridden shadow transaction whose parent transfer's template
     has ``derive_from_loan=True``, recompute the full monthly payment
     LIVE from the destination loan -- ``resolve_loan(...).monthly_payment``
-    (the rate-period P&I) plus the loan's monthly escrow/components.  A
+    (the rate-period P&I, resolved once per loan) plus the escrow in effect on
+    THAT shadow's pay-period start (:func:`_shadow_live_amount`).  A
     balance/display consumer can then treat the stored transfer amount as
     a cache that cannot silently disagree with the loan card after an
     escrow or rate change.  Directly mirrors the salary-income
     live-recompute, :func:`app.services.income_service.live_projected_net`.
+
+    Per-shadow escrow (not one PITI per loan) is mandatory once escrow can be
+    future-dated: a December projected payment and a January projected payment
+    must carry different escrow when a new version takes effect between them,
+    and each must match the escrow its eventual split subtracts -- the same
+    ``escrow_monthly_as_of`` on the same date.
 
     Both shadow legs of a transfer (the checking-side expense and the
     loan-side income) share the transfer id, so both receive the same
@@ -654,7 +792,7 @@ def live_loan_transfer_amounts(
         scenario_id: Scenario to resolve each loan against.
         transactions: Already-loaded (user-scoped) :class:`Transaction`
             rows.  Each must expose ``transfer_id``, ``status`` (for
-            ``is_projected``), ``is_override``, and ``id``.
+            ``is_projected``), ``is_override``, ``pay_period``, and ``id``.
 
     Returns:
         ``dict`` mapping transaction id to the live PITI Decimal; empty
@@ -684,21 +822,27 @@ def live_loan_transfer_amounts(
     if not loan_by_transfer:
         return {}
 
-    # Resolve each distinct loan's full monthly payment (P&I + escrow)
-    # once, then map it onto every candidate shadow of that loan.
+    # Resolve each distinct loan's monthly P&I once and load its escrow lines
+    # once; the escrow itself is resolved per-shadow (each shadow's own date)
+    # below, so two shadows of one loan with different pay-period starts pick
+    # up different future-dated escrow.
     today = date.today()
-    piti_by_loan: dict[int, Decimal] = {}
+    pi_by_loan: dict[int, Decimal] = {}
+    lines_by_loan: dict[int, list] = {}
     for loan_account_id in set(loan_by_transfer.values()):
-        piti = _resolve_loan_piti(loan_account_id, scenario_id, today)
-        if piti is not None:
-            piti_by_loan[loan_account_id] = piti
+        monthly_pi = _resolve_loan_pi(loan_account_id, scenario_id, today)
+        if monthly_pi is not None:
+            pi_by_loan[loan_account_id] = monthly_pi
+            lines_by_loan[loan_account_id] = load_escrow_lines(loan_account_id)
 
     overrides: dict[int, Decimal] = {}
     for txn in candidates:
         loan_account_id = loan_by_transfer.get(txn.transfer_id)
         if loan_account_id is None:
             continue
-        piti = piti_by_loan.get(loan_account_id)
-        if piti is not None:
-            overrides[txn.id] = piti
+        monthly_pi = pi_by_loan.get(loan_account_id)
+        if monthly_pi is not None:
+            overrides[txn.id] = _shadow_live_amount(
+                monthly_pi, lines_by_loan[loan_account_id], txn,
+            )
     return overrides

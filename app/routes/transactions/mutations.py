@@ -31,6 +31,7 @@ from app.extensions import db
 from app.models.ref import Status
 from app.services import (
     credit_workflow,
+    loan_payment_service,
     posting_service,
     status_seam,
     transaction_service,
@@ -582,6 +583,22 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         "status_id": ref_cache.status_id(StatusEnum.DONE),
         "paid_at": db.func.now(),
     }
+
+    # Capture-on-settle (escrow redesign, Option A): when the operator settles
+    # an auto-derived loan payment with a one-click "mark paid" (no typed
+    # actual), freeze the LIVE payment-date amount (P&I + escrow-as-of) as the
+    # actual cash instead of letting ``effective_amount`` fall back to the
+    # stale template ``estimated_amount`` (the creation-time escrow).  This is
+    # what makes ``cash == split`` hold for a plain settle after an escrow
+    # change: the frozen cash and the genesis split read the same
+    # ``escrow_monthly_as_of`` on the shadow's date.  Returns None for any
+    # shadow that is not an auto-derived loan payment (or when the operator
+    # typed an actual, handled above), leaving the estimate / typed value
+    # untouched.
+    if actual_amount is None:
+        actual_amount = loan_payment_service.live_loan_payment_amount(
+            txn, txn.scenario_id,
+        )
 
     if actual_amount is not None:
         svc_kwargs["actual_amount"] = actual_amount

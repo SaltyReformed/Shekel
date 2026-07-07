@@ -683,6 +683,28 @@ class TestComputeContractualPiArmAware:
 # ── Tests for prepare_payments_for_engine ────────────────────────
 
 
+def _standing_escrow_lines(monthly_amount):
+    """Return one transient escrow line resolving to ``monthly_amount``/mo, any date.
+
+    A single opening version effective long before any test payment, so
+    ``escrow_monthly_as_of`` returns exactly ``monthly_amount`` on every date --
+    the supersession-model stand-in for the old scalar ``monthly_escrow`` these
+    subtraction tests passed.  Kept in-memory (never persisted) because
+    ``prepare_payments_for_engine`` is a pure function that only reads each
+    line's ``versions``.
+    """
+    from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+    line = EscrowLine(name="Escrow")
+    line.versions = [
+        EscrowComponentVersion(
+            effective_date=date(2000, 1, 1),
+            annual_amount=monthly_amount * Decimal("12"),
+            is_removed=False,
+        ),
+    ]
+    return [line]
+
+
 class TestPreparePaymentsForEngine:
     """Tests for escrow subtraction and biweekly redistribution."""
 
@@ -700,13 +722,51 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("283.00"),
+            escrow_lines=_standing_escrow_lines(Decimal("283.00")),
             contractual_pi=Decimal("1517.00"),
         )
 
         assert len(result) == 3
         for p in result:
             assert p.amount == Decimal("1517.00")
+
+    def test_escrow_subtraction_is_date_aware(self):
+        """Each payment subtracts the escrow IN EFFECT ON ITS OWN DATE.
+
+        One escrow line, two versions: $283/mo (annual $3,396) from 2020-01-01,
+        then $333/mo (annual $3,996) effective 2026-06-01.  A Jan payment
+        resolves the old $283; a Jul payment resolves the new $333.  Both net
+        to $1,517 P&I after subtracting THEIR date's escrow -- proving the Jul
+        payment used $333, since an old-$283 subtraction would leave $1,567.
+        """
+        from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+        line = EscrowLine(name="Tax & Insurance")
+        line.versions = [
+            EscrowComponentVersion(
+                effective_date=date(2020, 1, 1),
+                annual_amount=Decimal("3396.00"), is_removed=False,
+            ),
+            EscrowComponentVersion(
+                effective_date=date(2026, 6, 1),
+                annual_amount=Decimal("3996.00"), is_removed=False,
+            ),
+        ]
+        payments = [
+            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 7, 1), Decimal("1850.00"), True),
+        ]
+        result = prepare_payments_for_engine(
+            payments,
+            payment_day=1,
+            escrow_lines=[line],
+            contractual_pi=Decimal("1517.00"),
+        )
+
+        assert len(result) == 2
+        # Jan payment: 1800 - min(283, 1800-1517) = 1800 - 283 = 1517 (old).
+        assert result[0].amount == Decimal("1517.00")
+        # Jul payment: 1850 - min(333, 1850-1517) = 1850 - 333 = 1517 (NEW).
+        assert result[1].amount == Decimal("1517.00")
 
     def test_below_pi_not_adjusted(self):
         """C1-4: Payments at or below P&I are not reduced.
@@ -720,7 +780,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("283.00"),
+            escrow_lines=_standing_escrow_lines(Decimal("283.00")),
             contractual_pi=Decimal("1517.00"),
         )
 
@@ -743,7 +803,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("0.00"),
+            escrow_lines=[],
             contractual_pi=Decimal("1517.00"),
         )
 
@@ -758,7 +818,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             [],
             payment_day=1,
-            monthly_escrow=Decimal("283.00"),
+            escrow_lines=_standing_escrow_lines(Decimal("283.00")),
             contractual_pi=Decimal("1517.00"),
         )
         assert result == []
@@ -771,7 +831,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("0.00"),
+            escrow_lines=[],
             contractual_pi=Decimal("1517.00"),
         )
 
@@ -786,7 +846,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("283.00"),
+            escrow_lines=_standing_escrow_lines(Decimal("283.00")),
             contractual_pi=Decimal("1517.00"),
         )
 
@@ -809,7 +869,7 @@ class TestPreparePaymentsForEngine:
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
-            monthly_escrow=Decimal("0.00"),
+            escrow_lines=[],
             contractual_pi=Decimal("1517.00"),
         )
 

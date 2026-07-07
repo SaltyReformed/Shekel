@@ -17,13 +17,19 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
+from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_params import LoanParams
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services import account_service, loan_payment_service, transfer_recurrence
+from app.services import (
+    account_service,
+    loan_payment_service,
+    loan_posting_service,
+    transfer_recurrence,
+)
 from app.services.rate_period_engine import monthly_due_date
 from tests._test_helpers import (
     add_escrow_line,
@@ -245,3 +251,183 @@ def test_derived_transfer_due_date_matches_loan_due_date(
             assert len(shadows) == 2
             for s in shadows:
                 assert s.due_date == xfer.due_date
+
+
+def test_derived_override_is_per_shadow_date_aware(
+    app, db, seed_user, seed_periods,
+):
+    """A future-dated escrow version changes only the shadows on/after its date.
+
+    Loan $200k / 6% / 360mo, P&I 1,199.10.  Escrow $3,600/yr (300/mo) from
+    origination (2026-01-01), then a NEW version $4,800/yr (400/mo) effective
+    2026-03-15 on the SAME line.  The live override resolves escrow per shadow
+    DATE: a shadow whose pay-period start is before 2026-03-15 keeps PITI
+    1,499.10; one on or after picks up 1,599.10.  A single figure per loan
+    (today's escrow for every shadow) would wrongly give them all 1,599.10 --
+    the bug this per-shadow resolution fixes, and the cash side of the
+    cash==split invariant for future-dated escrow.
+    """
+    with app.app_context():
+        loan, escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        # Append a second version on the SAME line: 400/mo effective 2026-03-15.
+        db.session.add(EscrowComponentVersion(
+            line_id=escrow.line_id,
+            effective_date=date(2026, 3, 15),
+            annual_amount=Decimal("4800.00"),
+        ))
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, shadows,
+        )
+        cutoff = date(2026, 3, 15)
+        before = [s for s in shadows if s.pay_period.start_date < cutoff]
+        after = [s for s in shadows if s.pay_period.start_date >= cutoff]
+        assert before and after, (
+            "seed_periods must place shadows on both sides of 2026-03-15"
+        )
+        # Old escrow ($300) for pre-effective shadows: 1199.10 + 300 = 1499.10.
+        assert all(overrides[s.id] == Decimal("1499.10") for s in before)
+        # New escrow ($400) for on/after shadows: 1199.10 + 400 = 1599.10.
+        assert all(overrides[s.id] == Decimal("1599.10") for s in after)
+
+
+def test_settling_derived_loan_payment_captures_live_amount(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """A one-click settle freezes the LIVE payment-date amount, not the estimate.
+
+    Capture-on-settle (escrow redesign, Option A): the transfer's stored
+    default is a deliberately stale $1.00, and the operator settles via the
+    ``mark_done`` route WITHOUT typing an actual.  The frozen ``actual_amount``
+    must be the live PITI (P&I 1,199.10 + escrow 300.00 = 1,499.10), NOT the
+    $1.00 estimate -- so the settled cash carries exactly the escrow the
+    genesis split subtracts (cash == split).  The split then divides 1,499.10
+    into interest 1,000.00 (200,000 * 0.06 / 12), escrow 300.00, and principal
+    199.10 (= P&I 1,199.10 - interest 1,000.00).
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+            )
+            .order_by(Transaction.id)
+            .first()
+        )
+        assert income_shadow is not None
+        # Pre-settle the shadow shows the stale stored estimate ($1.00).
+        assert income_shadow.effective_amount == Decimal("1.00")
+        income_shadow_id = income_shadow.id
+        transfer_id = income_shadow.transfer_id
+
+        resp = auth_client.post(
+            f"/transactions/{income_shadow_id}/mark-done",
+        )
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow_id)
+        assert settled.status.is_settled is True
+        # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
+        assert settled.actual_amount == Decimal("1499.10")
+        assert settled.effective_amount == Decimal("1499.10")
+        # Both legs mirror the captured actual (Transfer Invariant 3).
+        expense = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id == transfer_id,
+                Transaction.id != income_shadow_id,
+            )
+            .one()
+        )
+        assert expense.actual_amount == Decimal("1499.10")
+
+        # cash == split: the genesis split reads the frozen cash and subtracts
+        # the same escrow, leaving principal = P&I.
+        splits = loan_posting_service.compute_loan_payment_splits(
+            loan.id, scenario_id, date.today(),
+        )
+        assert len(splits) == 1
+        split = splits[0]
+        assert split.interest == Decimal("1000.00")
+        assert split.escrow == Decimal("300.00")
+        assert split.principal == Decimal("199.10")
+        assert split.excess == Decimal("0.00")
+
+
+def test_settled_loan_payment_freeze_is_one_shot(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """A re-settle never rewrites an already-frozen loan payment's actual cash.
+
+    Capture-on-settle is ONE-SHOT.  After the first settle freezes 1,499.10,
+    ``live_loan_payment_amount`` returns None for the now-DONE shadow (the
+    ``is_projected`` guard), so a stale-tab re-POST of ``mark_done`` -- admitted
+    by the ``done -> done`` identity transition on the still-present mark-paid
+    button -- leaves the frozen actual untouched.  Without the guard the
+    capture would recompute the CURRENT live amount and silently corrupt the
+    confirmed payment's recorded cash (the value it would return here proves the
+    skip: a non-None result would overwrite the freeze).
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.commit()
+
+        income_shadow_id = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+            )
+            .order_by(Transaction.id)
+            .first()
+            .id
+        )
+
+        resp = auth_client.post(
+            f"/transactions/{income_shadow_id}/mark-done",
+        )
+        assert resp.status_code == 200, resp.data
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow_id)
+        assert settled.status.is_settled is True
+        assert settled.actual_amount == Decimal("1499.10")
+
+        # The freeze is one-shot: the derivation returns None for a settled
+        # shadow, so the settle capture can never fire a second time.
+        assert loan_payment_service.live_loan_payment_amount(
+            settled, scenario_id,
+        ) is None
+
+        # A stale-tab re-settle leaves the frozen actual untouched.
+        resp2 = auth_client.post(
+            f"/transactions/{income_shadow_id}/mark-done",
+        )
+        assert resp2.status_code == 200, resp2.data
+        db.session.expire_all()
+        assert db.session.get(Transaction, income_shadow_id).actual_amount == (
+            Decimal("1499.10")
+        )
