@@ -1,12 +1,12 @@
 # Escrow config redesign: line identity, effective dates, date-aware cash, overpayment
 
-Status: IN PROGRESS -- steps 1, 2a, 2b, 4, 3, and 5 SHIPPED to branch `feat/escrow-config-redesign`;
-steps 6-8 remain (Section 14). The step-5 review's one open finding (cross-surface payoff
-consistency) is now planned as **step 8** -- the resolver-seam fix in Section 16. Written
-2026-07-06. **Supersedes** the earlier "escrow line identity refactor" proposal that this file used
-to hold (see git history) -- an adversarial review of that proposal in a fresh session expanded the
-scope from "add a `line_id` column" to the full, correct redesign below.
-**Decisions A-D approved by the operator 2026-07-06 (Section 12).**
+Status: IN PROGRESS -- steps 1, 2a, 2b, 4, 3, 5, and 8 SHIPPED to branch
+`feat/escrow-config-redesign`; steps 6-7 remain (Section 14). Step 8 (the resolver-seam fix that
+resolved the step-5 review's one open finding, cross-surface payoff consistency) SHIPPED 2026-07-07
+(Section 16). Written 2026-07-06. **Supersedes** the earlier "escrow line identity refactor"
+proposal that this file used to hold (see git history) -- an adversarial review of that proposal in
+a fresh session expanded the scope from "add a `line_id` column" to the full, correct redesign
+below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
 
 ## 0. Why this exists (plain language, no jargon)
 
@@ -517,17 +517,22 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
 6. **Merge** (the operator action that rejoins a line history split in two; merge reconcile). Rename
    in place already shipped in step 3.
 7. **Inflation fix** + docs + `/update-docs`. Full suite is the final gate.
-8. **Plan-aware forward trajectory (resolver-seam fix).** Detailed in Section 16. Make `LoanState`
-   carry the committed (plan) trajectory so net worth, `/savings`, the schedule page, year-end, and
-   the recurrence-`end_date` writer all reflect the standing extra; refinance stays
-   contractual-vs-contractual. Independent of steps 6-7; a read-path fix, no migration.
+8. **Plan-aware forward trajectory (resolver-seam fix). SHIPPED** (commit `a6ff83b6`, 2026-07-07).
+   Detailed in Section 16. Made `LoanState` carry the committed (plan) trajectory so net worth,
+   `/savings`, the schedule page, year-end, and the recurrence-`end_date` writer all reflect the
+   standing extra; refinance stays contractual-vs-contractual. The seam-injection wrappers were
+   extracted to `app/services/loan_resolution.py` (operator decision, to clear the
+   `loan_payment_service` size ceiling). Independent of steps 6-7; a read-path fix, no migration.
 
 ## 16. Step 8: plan-aware forward trajectory (the resolver-seam fix)
 
-**Status: PLANNED.** Supersedes the step-5 deferred follow-up (H1, "cross-surface payoff
+**Status: SHIPPED to branch `feat/escrow-config-redesign` 2026-07-07** (implementation `a6ff83b6`;
+plan doc `21974f0b`). Full suite 7293 passed; `pylint app/` 10.00; no migration. The optional
+checker (8d) is deferred. See 16.7 for the as-built notes (including the extraction that was not in
+the original plan). Supersedes the step-5 deferred follow-up (H1, "cross-surface payoff
 consistency"), which a fresh-session adversarial review (2026-07-07) found under-scoped: the
 divergence is not a payoff-date label, it is a **net-worth correctness defect** plus a
-**cash-flow writer** that generates phantom post-payoff payments. This step fixes all of it at one
+**cash-flow writer** that generates phantom post-payoff payments. This step fixed all of it at one
 seam.
 
 **The mechanism (traced 2026-07-07).** `compute_payoff_scenarios` (`loan_resolver/_payoff.py:342`)
@@ -674,29 +679,46 @@ recurring payment's `end_date` to the CONTRACTUAL payoff, so a loan retiring ear
 keeps generating years of mortgage payments (about $120k of phantom checking debits over a five-year
 gap) after it is really paid off. Step 8 fixes it for free.
 
-### 16.7 Commits (each independently green: targeted tests + pylint 10.00 + code-reviewer)
+### 16.7 Commits (as built)
 
-1. **8a -- red test first.** Extend `test_arm_payoff_date_consistent_across_surfaces`
-   (`test_loan_unified_figures.py`) from its NO-PAYMENT fixture to a
-   **with-recurring-payment + standing-extra** loan asserting resolver / `/savings` / schedule page
-   / year-end share one payoff and total-interest, PLUS a net-worth consistency assertion (per-month
-   asset drop minus liability drop equals escrow + interest only, never + extra; 16.1). It fails on
-   today's code.
-2. **8b -- the seam.** 16.3 (full payments + `extra_principal` in `resolve_loan`) and 16.4
-   (`resolve_loan_seeded` central injection via `loan_standing_extra`). 8a goes green. Re-run the
-   loan split/oracle suite -- unchanged, because `current_balance` is untouched (16.3).
-3. **8c -- refinance.** 16.5 (repoint the current side to `original_forward`; fix the docstrings).
-4. **8d (optional) -- lock it.** A pylint checker (sibling of `shekel-original-principal-as-balance`
-   / W9905) flagging a summary surface that reads a raw contractual forward for a "your projection"
-   display, so the fix cannot silently rot.
+Shipped as ONE implementation commit (`a6ff83b6`), not the three planned below, because the
+extraction (8b) coupled them and each part is green only together. The 8a/8b/8c decomposition stayed
+the working order; the plan doc is `21974f0b`.
+
+1. **8a -- red test first. SHIPPED.** `test_standing_extra_payoff_consistent_across_surfaces`
+   (`test_loan_unified_figures.py`) asserts the summary seam (`resolve_account_loan`) and the
+   year-end debt aggregation share the committed detail trajectory's payoff AND life-of-loan
+   interest for a loan with a standing extra -- red on the old contractual code (summary Jan-2056 vs
+   committed Sep-2043). The direct per-month net-worth arithmetic (16.1) is covered by the
+   schedule-equality PROXY (the cash leg already carries the extra, so proving the liability
+   schedule is committed IS net-worth consistency); a literal per-month assertion was NOT added. A
+   sibling pure-resolver test (`test_projected_overpayment_routes_into_the_forward_schedule`) locks
+   the "stop stripping to confirmed-only" half.
+2. **8b -- the seam + extraction. SHIPPED.** 16.3 (full payments + `extra_principal` in
+   `resolve_loan`) and 16.4 (central injection via `loan_standing_extra_for_account`). To keep
+   `loan_payment_service` under its 1000-line ceiling WITHOUT trimming (operator decision
+   2026-07-07, "re-apply with extraction"), the two resolver-seeding wrappers (`resolve_loan_seeded`
+   / `resolve_account_loan`) moved to a NEW `app/services/loan_resolution.py`; six importers
+   repointed, the ledger-read fence in `test_posting_ledger_loan_reconciliation.py` updated (only
+   `confirmed_loan_view` remains a `loan_payment_service` read-switch reader). This extraction was
+   not in the original plan; it is the cleaner resolution of the ceiling.
+3. **8c -- refinance. SHIPPED.** 16.5 (current side reads `original_forward`; the `schedule.py` and
+   `_build_refinance_comparison` docstrings corrected). The refinance unit test was rewritten for
+   the new `scenarios` signature (adversarial-review finding C1).
+4. **8d (optional) -- lock it. DEFERRED.** The pylint checker fencing a "your projection" surface
+   from a raw contractual forward was not built -- a follow-up if the split ever regresses.
 
 ### 16.8 Verification
 
-- Dev prod-clone (account 3 with a standing extra): net worth, `/savings`, schedule page, detail
-  band chart, and year-end agree to the cent, and the recurring payment's `end_date` equals the
-  committed payoff (payments stop there).
-- Full suite is the final gate; `pylint app/` 10.00; no migration (a read-path fix, no schema
-  change).
+- **Done (automated):** the cross-surface invariant test (8a) locks that the summary seam and
+  year-end share the committed detail trajectory for a standing-extra loan; the part-a test locks
+  the projected-payment routing. Full suite **7293 passed**; `pylint app/` **10.00**; no migration
+  (a read-path fix, no schema change). Adversarial review CONFIRMED the core logic (balance
+  unchanged, no double-count) and surfaced C1 (fixed) + coverage/docstring notes (addressed).
+- **Remaining (manual acceptance):** a dev prod-clone spot-check on account 3 with a standing extra
+  -- confirm net worth, `/savings`, schedule page, detail band chart, and year-end agree to the cent
+  in the running app, and that the recurring payment's `end_date` equals the committed payoff
+  (payments stop there).
 
 ### 16.9 Carve-outs and out-of-scope
 
