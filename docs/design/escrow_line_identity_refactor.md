@@ -1,11 +1,12 @@
 # Escrow config redesign: line identity, effective dates, date-aware cash, overpayment
 
 Status: IN PROGRESS -- steps 1, 2a, 2b, 4, 3, and 5 SHIPPED to branch `feat/escrow-config-redesign`;
-steps 6-7 remain (Section 14). One open follow-up from the step-5 review (cross-surface payoff
-consistency) is DEFERRED -- see Section 16. Written 2026-07-06. **Supersedes** the earlier "escrow
-line identity refactor" proposal that this file used to hold (see git history) -- an adversarial
-review of that proposal in a fresh session expanded the scope from "add a `line_id` column" to the
-full, correct redesign below. **Decisions A-D approved by the operator 2026-07-06 (Section 12).**
+steps 6-8 remain (Section 14). The step-5 review's one open finding (cross-surface payoff
+consistency) is now planned as **step 8** -- the resolver-seam fix in Section 16. Written
+2026-07-06. **Supersedes** the earlier "escrow line identity refactor" proposal that this file used
+to hold (see git history) -- an adversarial review of that proposal in a fresh session expanded the
+scope from "add a `line_id` column" to the full, correct redesign below.
+**Decisions A-D approved by the operator 2026-07-06 (Section 12).**
 
 ## 0. Why this exists (plain language, no jargon)
 
@@ -512,61 +513,209 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
    threaded via `loan_standing_extra` into the dashboard band chart, the payoff lever, and the
    target-date calculator. cash==split-with-extra was proven to the cent; each commit was
    adversarially reviewed (5c fixed one Medium; 5d deferred one High, see Section 16, and addressed
-   two Low). One open follow-up remains: Section 16.
+   two Low). The one open follow-up is now planned as step 8 (Section 16).
 6. **Merge** (the operator action that rejoins a line history split in two; merge reconcile). Rename
    in place already shipped in step 3.
 7. **Inflation fix** + docs + `/update-docs`. Full suite is the final gate.
+8. **Plan-aware forward trajectory (resolver-seam fix).** Detailed in Section 16. Make `LoanState`
+   carry the committed (plan) trajectory so net worth, `/savings`, the schedule page, year-end, and
+   the recurrence-`end_date` writer all reflect the standing extra; refinance stays
+   contractual-vs-contractual. Independent of steps 6-7; a read-path fix, no migration.
 
-## 16. OPEN FOLLOW-UP: cross-surface payoff consistency (H1, 5d adversarial review)
+## 16. Step 8: plan-aware forward trajectory (the resolver-seam fix)
 
-**Status: DEFERRED to a fresh session by operator decision 2026-07-07.** Step 5 (5d) was shipped
-as-is; this is the one open finding to handle next.
+**Status: PLANNED.** Supersedes the step-5 deferred follow-up (H1, "cross-surface payoff
+consistency"), which a fresh-session adversarial review (2026-07-07) found under-scoped: the
+divergence is not a payoff-date label, it is a **net-worth correctness defect** plus a
+**cash-flow writer** that generates phantom post-payoff payments. This step fixes all of it at one
+seam.
 
-**Symptom.** After 5d, the loan **detail** page's "Projected payoff" and "Total interest (life of
-loan)" reflect the standing `extra_principal` (via `_helpers.build_baseline_scenarios` ->
-`compute_payoff_scenarios(extra_principal=...)`). Three OTHER surfaces show a different (later)
-payoff and do NOT reflect the extra:
+**The mechanism (traced 2026-07-07).** `compute_payoff_scenarios` (`loan_resolver/_payoff.py:342`)
+already emits both stories from one replay: `original_forward` (pure contractual, the lender
+minimum) and `committed_forward` (the real plan -- projected recurring payments routed through
+`monthly_override` plus the standing `extra_principal`, `_payoff.py:464-468`). The bug is entirely
+in consumption. `resolve_loan` -- documented as "the single-source-of-truth producer every
+loan-touching surface reads through" (`_state.py:3,:132`) -- calls that engine with
+**confirmed-only payments** (`_state.py:206-210,:234`) and **no `extra_principal`**, so its
+`committed_forward` collapses to contractual and `LoanState.schedule / payoff_date / total_interest`
+are contractual (`_state.py:239-278`). The loan **detail** page bypasses `LoanState` and calls the
+engine itself with all payments plus the standing extra (`_helpers.build_baseline_scenarios`,
+`:445-495`), so it alone is plan-aware. Every other surface reads the contractual `LoanState`.
 
-- `/savings` debt tile -- `savings_dashboard_service/_projections.py`
-  (`payoff_date=state.payoff_date`).
-- Year-end net-worth / debt-progress / mortgage-interest --
-  `net_worth_kernel.py::generate_debt_schedules` -> `loan_payment_service.resolve_account_loan` ->
-  `resolve_loan` (uses `state.schedule`).
-- Refinance "current" side -- `routes/loan/calculators.py::_build_refinance_comparison`
-  (`current_payoff=state.payoff_date`, plus the forward-row interest / remaining-months).
+### 16.1 Why this is a correctness bug, not a conservative baseline
 
-**Root (PRE-EXISTING, not introduced by 5d).** All three read `resolve_loan`, which projects the
-**contractual** schedule: it filters to CONFIRMED payments only (`loan_resolver/_state.py:206-210`)
-and never routes projected recurring payments into the forward projection. So they have ALWAYS shown
-the contractual payoff; for any loan whose recurring payment overpays (a higher manual amount, OR
-now a standing extra) they already diverge from the plan-aware detail page. The standing-extra
-feature makes this pre-existing gap COMMONLY visible (set a $250 extra -> detail says "2044",
-`/savings` says "2049").
+The two legs of a projected loan payment are computed from two different stories, and they must not
+be. The cash leg debits checking by the **live** amount, which **includes** the standing extra:
+`live_loan_transfer_amounts` -> `_shadow_live_amount = P&I + escrow + extra_principal`
+(`loan_payment_service.py:698`), threaded into the cash projection at `balance_resolver.py:419`. The
+liability leg walks the **contractual** `state.schedule`
+(`net_worth_kernel.generate_debt_schedules:181` ->
+`account_projection.balance_from_schedule_at_date:196`), so the extra never reduces it.
+`live_loan_transfer_amounts` states the split outright (`loan_payment_service.py:930-935`): "the
+checking expense leg moves the checking balance; the loan income leg does not affect the loan
+balance (that is resolver-derived)."
 
-**Not a broken test.** The pinned invariant `test_arm_payoff_date_consistent_across_surfaces`
-(`tests/test_integration/test_loan_unified_figures.py`) is scoped to a NO-PAYMENT loan, where
-contractual == plan-aware, so all surfaces agree -- and it still passes (full suite green, 7291).
-Threading the extra into `resolve_loan` would NOT reconcile the surfaces (that path is contractual,
-so it would show "contractual + extra", still != the plan-aware detail number).
+Per-month net-worth change under a standing extra `E`:
 
-**Proposed fix (the "one set of numbers" premise).** Make the three summary surfaces plan-aware AND
-extra-aware, so every surface shows the same accelerated payoff. This changes how those surfaces
-compute payoff (use the committed-plan projection including the standing extra, not `resolve_loan`'s
-contractual `state.payoff_date`), touching the shared resolver seam; it deserves its own focused
-commit, and the invariant test should be extended to a with-recurring-payment + standing-extra case.
-Decide deliberately: contractual summaries may be an intentional conservative baseline, in which
-case document that split instead.
+```text
+today (contractual liability):  checking -(P&I + escrow + E),  loan -(P&I - interest)      => net -(escrow + interest + E)   WRONG
+fixed (committed liability):    checking -(P&I + escrow + E),  loan -(P&I - interest + E)  => net -(escrow + interest)       CORRECT
+```
 
-**Low findings from the same review (already addressed in 5d, noted here):**
+Paying extra principal is net-worth-neutral (cash becomes home equity); today the app destroys `E`
+of net worth every projected month. For the operator's $250 standing extra that is about -$3,000 one
+year out and -$15,000 five years out, widening as the committed balance amortizes faster. The
+"conservative baseline" defense is invalid: once the app projects the extra **leaving** checking,
+projecting the debt contractually is not conservative, it is internally inconsistent. The only
+self-consistent postures are project-both (committed) or project-neither; today projects cash but
+not debt.
 
-- **L1** -- a CONFIRMED payment dated after `as_of` is routed to the forward override carrying its
-  FROZEN actual (base + standing extra, frozen at settlement), so for a loan with a standing extra
-  that one month's forward chart double-applies the extra. Display-only (the ledger balance is
-  authoritative) and requires marking a future-period payment settled (the rare data-hygiene case).
-  Documented as a carve-out in `compute_payoff_scenarios`.
-- **L2** -- the "override suppresses the searched extra" docstrings in
+### 16.2 Decisions (locked)
+
+- **A. `LoanState` carries the COMMITTED trajectory.** Its `schedule / payoff_date / total_interest`
+  become plan-aware (real recurring payments plus the standing extra). A budgeting app projecting
+  *your* finances defaults to *your* plan, not the lender minimum. This is a deliberate reversal of
+  the confirmed-only choice at `_state.py:226-232`; that default was wrong for this app.
+- **B. Contractual stays available from the SAME producer.** The pure-contractual reference is
+  `compute_payoff_scenarios(...).original_forward`, which is unconditionally override-free and
+  extra-free (`_payoff.py:459-463`) regardless of the extra passed. No second engine, no second
+  boundary rule -- surfaces that want the baseline read this slice explicitly.
+- **C. Refinance is contractual-vs-contractual (locked, operator 2026-07-07).** A like-for-like
+  comparison holds the extra constant on both sides; minimum-vs-minimum is the honest baseline, so
+  the current side reads `original_forward`, not `state.schedule`. See 16.5.
+- **D. Debt-strategy is out of scope.** Its baseline deliberately means "pay minimums" and
+  re-simulates from `state.monthly_payment` (`routes/debt_strategy.py:177`), not the schedule, so
+  this change does not touch it. Whether that baseline should fold in a persisted standing extra is
+  a separate product question (16.9).
+
+### 16.3 The seam change, and why it is safe
+
+In `resolve_loan` (`_state.py:125`): stop stripping payments to confirmed-only and thread the
+standing extra into its existing `compute_payoff_scenarios` call, so it composes exactly as
+`build_baseline_scenarios` does:
+
+- pass the full `loan_inputs.payments` (the composer already partitions confirmed-pre-`as_of` into
+  replay and everything else into the forward override, `_payoff.py:170-186`, so passing the full
+  list is what routes projected recurring payments forward), and
+- pass `extra_principal` (new resolve-time parameter, default `Decimal("0.00")`), forwarding it to
+  `compute_payoff_scenarios(..., extra_principal=...)`.
+
+`state.schedule = history_rows + committed_forward` is unchanged in shape (`_state.py:239-241`); it
+simply becomes plan-aware, and `payoff_date` / `total_interest` follow from it (`:271-278`).
+
+**Provably safe for the headline figures.** The three figures every card shows are derived
+independently of the schedule and are untouched:
+
+- `current_balance` = `_replay_from_anchor(loan_inputs, ...)` or `confirmed_view.balance`
+  (`_state.py:253-257`) -- a separate call that already receives the full `loan_inputs` and does not
+  read the composer's payment view. The resolver docstring makes the guarantee explicit: "the
+  resolver owns its balance derivation so a future projection change cannot silently change
+  `state.current_balance`" (`:162-165`).
+- `monthly_payment` / `current_rate` = the rate-period engine at `as_of` (`_state.py:265-267`),
+  independent of the schedule.
+
+So only `schedule / payoff_date / total_interest` move, which is the intent.
+
+### 16.4 Where the standing extra enters (one chokepoint, no drift)
+
+`resolve_loan_seeded` (`loan_payment_service.py`) is the single injection helper the three db-facing
+summary loaders route through (`resolve_account_loan`, the loan route's `_resolve`, and the savings
+`_compute_loan_account`) -- it exists to centralize the read-switch's confirmed-view injection "so
+they cannot drift on HOW the ledger feeds the resolver." Centralize the standing-extra injection at
+the SAME chokepoint, for the same reason: `resolve_loan_seeded` loads
+`loan_standing_extra(account_id, user_id)` (the existing cycle-free leaf helper,
+`recurring_transfer_query.py:55`, already used by the detail page) once and passes it into
+`resolve_loan`. This makes it structurally impossible for a summary surface to resolve a loan's
+trajectory WITHOUT its plan: a new caller cannot silently regress to contractual, because the
+chokepoint owns the load. The pure `resolve_loan` keeps its defaulted
+`extra_principal=Decimal("0.00")` for the rare direct callers (the `date.max` "ever paid off" probe,
+where the boolean is unaffected).
+
+**Stability (no feedback loop).** `project_forward` applies the standing extra to every forward
+month until the balance reaches zero, whether or not a projected payment row exists that month (the
+5d behavior, `_payoff.py:464-468`), so the committed payoff is a function of (balance, P&I, escrow,
+extra), NOT of how far the recurrence extends. Setting the recurrence `end_date` to that payoff
+(16.6, the writer) is therefore a stable fixed point.
+
+### 16.5 Refinance stays contractual-vs-contractual
+
+`_build_refinance_comparison` (`calculators.py:365`) currently measures the current side from
+`state.schedule` forward rows (`:410,:422`). After 16.3 that slice is committed, which would compare
+an accelerated current loan against a minimum-payment refi -- an unfair mix. So this commit repoints
+the current side to the contractual `original_forward`:
+
+- `current_total_interest` = `sum(row.interest for row in scenarios.original_forward)`,
+- `current_remaining_months` = `len(scenarios.original_forward)`,
+- `current_payoff` = `original_forward[-1].payment_date`,
+- `current_monthly` = `state.monthly_payment` and `current_principal` = `state.current_balance` stay
+  as-is (both unaffected by committed-vs-contractual).
+
+The `scenarios` come from the one shared producer (reuse `build_baseline_scenarios`;
+`original_forward` is contractual regardless of the extra passed), so refinance reads the
+contractual baseline from the same seam every other surface reads -- an explicit "this surface wants
+the minimum" opt-in, not an accident of which producer it happened to call. Correct the misleading
+`schedule.py:7-9` and `_build_refinance_comparison` docstrings that claim "committed... with actual
+payments."
+
+### 16.6 Surfaces this one change corrects
+
+| Surface | Reads | Effect of Step 8 |
+|---------|-------|------------------|
+| Net worth / year-end debt-progress | `state.schedule` via `generate_debt_schedules` | plan-aware -> net worth correct (16.1) |
+| Year-end mortgage-interest (tax) | `sum(debt.schedule interest)` (`_income_tax.py:236,255`) | the interest actually paid (less; correct for the deduction) |
+| `/savings` debt tile payoff | `state.payoff_date` (`_projections.py:172`) | matches the detail page |
+| Standalone schedule page | `ctx.state.schedule` (`schedule.py:43`) | matches the card's band chart (its docstring's promise finally holds) |
+| Recurrence `end_date` **writer** | `projected_payoff_end_date(state.schedule)` (`loan_recurrence_sync.py:106`) | generates only to the REAL payoff -> kills phantom post-payoff payments |
+| Refinance current side | repointed to `original_forward` (16.5) | stays contractual, like-for-like |
+| Detail page | already committed via `build_baseline_scenarios` | unchanged; `ctx.state` now agrees with its own band chart |
+
+The recurrence-writer row is the sharpest instance the H1 finding omitted: today the writer sets the
+recurring payment's `end_date` to the CONTRACTUAL payoff, so a loan retiring early under its plan
+keeps generating years of mortgage payments (about $120k of phantom checking debits over a five-year
+gap) after it is really paid off. Step 8 fixes it for free.
+
+### 16.7 Commits (each independently green: targeted tests + pylint 10.00 + code-reviewer)
+
+1. **8a -- red test first.** Extend `test_arm_payoff_date_consistent_across_surfaces`
+   (`test_loan_unified_figures.py`) from its NO-PAYMENT fixture to a
+   **with-recurring-payment + standing-extra** loan asserting resolver / `/savings` / schedule page
+   / year-end share one payoff and total-interest, PLUS a net-worth consistency assertion (per-month
+   asset drop minus liability drop equals escrow + interest only, never + extra; 16.1). It fails on
+   today's code.
+2. **8b -- the seam.** 16.3 (full payments + `extra_principal` in `resolve_loan`) and 16.4
+   (`resolve_loan_seeded` central injection via `loan_standing_extra`). 8a goes green. Re-run the
+   loan split/oracle suite -- unchanged, because `current_balance` is untouched (16.3).
+3. **8c -- refinance.** 16.5 (repoint the current side to `original_forward`; fix the docstrings).
+4. **8d (optional) -- lock it.** A pylint checker (sibling of `shekel-original-principal-as-balance`
+   / W9905) flagging a summary surface that reads a raw contractual forward for a "your projection"
+   display, so the fix cannot silently rot.
+
+### 16.8 Verification
+
+- Dev prod-clone (account 3 with a standing extra): net worth, `/savings`, schedule page, detail
+  band chart, and year-end agree to the cent, and the recurring payment's `end_date` equals the
+  committed payoff (payments stop there).
+- Full suite is the final gate; `pylint app/` 10.00; no migration (a read-path fix, no schema
+  change).
+
+### 16.9 Carve-outs and out-of-scope
+
+- **L1 (display-only, pre-existing).** A CONFIRMED payment dated after `as_of` routes to the forward
+  override carrying its FROZEN actual (base + standing extra frozen at settlement), so that one
+  month's forward chart double-applies the extra. The ledger balance is authoritative, and it needs
+  the rare data-hygiene case of a settled future-period payment. Documented as a carve-out in
+  `compute_payoff_scenarios`; Step 8 widens its surface (all summary surfaces, not just detail) but
+  does not change its display-only nature.
+- **L2 (done in 5d).** The "override suppresses the searched extra" docstrings in
   `amortization_engine/_payoff.py` (`_search_extra_for_payoff` / `required_extra_for_projection`)
-  were updated to the step-5 behavior (the searched extra now applies to every forward month).
+  were corrected to the step-5 behavior (the searched extra applies to every forward month).
+- **Debt-strategy baseline (decision D).** Reads `monthly_payment`, not the schedule, so it is
+  unaffected and out of scope. Whether its "pay minimums" baseline should fold in a persisted
+  standing extra is a separate, lower-stakes product decision.
+- **Level 2 (materialized loan postings).** Orthogonal: even with sum-of-postings balances,
+  projected postings must be generated from *some* trajectory, so the committed-vs-contractual
+  choice still has to be made. Step 8 is the right next move regardless and is compatible with a
+  later Level 2.
 
 ## 15. Related
 
