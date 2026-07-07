@@ -523,6 +523,7 @@ class TestEnvExampleDocumentsDigestVariable:
             )
 
 
+@pytest.mark.docker
 class TestComposeOverrideRequiresDigest:
     """Subprocess test: ``docker compose config`` against the merged
     base + prod override must FAIL when SHEKEL_IMAGE_DIGEST is unset

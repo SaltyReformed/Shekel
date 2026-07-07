@@ -1,0 +1,86 @@
+{% from "_money_macros.html" import money %}
+{% from "_form_macros.html" import render_field, render_input_group, render_errors %}
+{# YTD Tax Checkpoint card -- HTMX partial (T-P2).
+
+   Rendered by salary.save_ytd_checkpoint() and, later, by the analytics
+   Taxes tab (T-P4).  Deliberately minimal: the latest measured checkpoint
+   summary plus the update-from-stub form.  T-P4 owns final placement and
+   styling within the Taxes hero band.  The form swaps this card in place
+   (hx-target="#ytd-checkpoint-card", outerHTML) on save; the plain
+   method/action on the same <form> is the no-JS fallback.
+
+   Context:
+     profile      -- the owned SalaryProfile (form action + heading).
+     year         -- the tax year the card is scoped to.
+     checkpoint   -- the latest YtdTaxCheckpoint for ``year``, or None.
+     errors       -- Marshmallow field-error dict ({} when clean).
+     save_error   -- single banner string on a DB-tier save failure, else None.
+     form_values  -- submitted values to repopulate on an error path ({} when clean).
+#}
+<div id="ytd-checkpoint-card" class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0">YTD Tax Checkpoint</h6>
+    <span class="text-muted small">{{ year }}</span>
+  </div>
+  <div class="card-body">
+
+    {% if checkpoint is not none %}
+    <p class="mb-2 small text-muted">
+      Measured through {{ checkpoint.as_of_date.strftime('%b %-d, %Y') }}
+    </p>
+    <dl class="row mb-3 small">
+      <dt class="col-7 fw-normal">Gross</dt>
+      <dd class="col-5 text-end mb-1">{{ money(checkpoint.ytd_gross) }}</dd>
+      <dt class="col-7 fw-normal">Federal</dt>
+      <dd class="col-5 text-end mb-1">{{ money(checkpoint.ytd_federal) }}</dd>
+      <dt class="col-7 fw-normal">State</dt>
+      <dd class="col-5 text-end mb-1">{{ money(checkpoint.ytd_state) }}</dd>
+      <dt class="col-7 fw-normal">Social Security</dt>
+      <dd class="col-5 text-end mb-1">{{ money(checkpoint.ytd_social_security) }}</dd>
+      <dt class="col-7 fw-normal">Medicare</dt>
+      <dd class="col-5 text-end mb-1">{{ money(checkpoint.ytd_medicare) }}</dd>
+    </dl>
+    {% else %}
+    <p class="mb-3 small text-muted">
+      No checkpoint saved for {{ year }} yet -- withholding is fully modeled.
+    </p>
+    {% endif %}
+
+    {% if save_error %}
+    <div class="alert alert-danger py-2" role="alert">
+      <i class="bi bi-exclamation-triangle"></i> {{ save_error }}
+    </div>
+    {% endif %}
+    {{ render_errors(errors) }}
+
+    <form hx-post="{{ url_for('salary.save_ytd_checkpoint', profile_id=profile.id) }}"
+          hx-target="#ytd-checkpoint-card"
+          hx-swap="outerHTML"
+          method="POST"
+          action="{{ url_for('salary.save_ytd_checkpoint', profile_id=profile.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {{ render_field("as_of_date", "Pay Stub Date", type="date",
+                      value=form_values.get('as_of_date', ''),
+                      required=true, errors=errors) }}
+      {{ render_input_group("ytd_gross", "YTD Gross", prefix="$", step="0.01",
+                            value=form_values.get('ytd_gross', ''),
+                            required=true, errors=errors) }}
+      {{ render_input_group("ytd_federal", "YTD Federal", prefix="$", step="0.01",
+                            value=form_values.get('ytd_federal', ''),
+                            required=true, errors=errors) }}
+      {{ render_input_group("ytd_state", "YTD State", prefix="$", step="0.01",
+                            value=form_values.get('ytd_state', ''),
+                            required=true, errors=errors) }}
+      {{ render_input_group("ytd_social_security", "YTD Social Security",
+                            prefix="$", step="0.01",
+                            value=form_values.get('ytd_social_security', ''),
+                            required=true, errors=errors) }}
+      {{ render_input_group("ytd_medicare", "YTD Medicare", prefix="$", step="0.01",
+                            value=form_values.get('ytd_medicare', ''),
+                            required=true, errors=errors) }}
+      {{ render_field("notes", "Notes (optional)", type="text",
+                      value=form_values.get('notes', ''), errors=errors) }}
+      <button type="submit" class="btn btn-primary btn-sm">Save Checkpoint</button>
+    </form>
+  </div>
+</div>

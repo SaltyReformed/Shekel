@@ -28,15 +28,18 @@ from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.tax_config import (
     FicaConfig,
+    StateChildDeduction,
     StateTaxConfig,
     TaxBracketSet,
 )
 from app.models.user import User
-from app.services.auth_service import (
+from app.services.tax_seed_data import (
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
+    DEFAULT_STATE_CHILD_DEDUCTIONS,
     DEFAULT_STATE_TAX,
-    build_state_tax_config,
+    build_state_child_deductions,
+    build_state_tax_configs,
     build_tax_bracket_set,
     build_tax_brackets,
 )
@@ -70,7 +73,8 @@ def seed_tax_brackets():
         for tax_year, year_data in DEFAULT_FEDERAL_BRACKETS.items():
             _seed_brackets_for_user(user, filing_statuses, tax_year, year_data)
         _seed_fica_for_user(user)
-        _seed_state_tax_for_user(user)
+        _seed_state_tax_for_user(user, filing_statuses)
+        _seed_state_child_deductions_for_user(user, filing_statuses)
 
     db.session.commit()
     print("\nTax bracket seeding complete.")
@@ -128,25 +132,72 @@ def _seed_fica_for_user(user):
         print(f"  + {tax_year} FICA config")
 
 
-def _seed_state_tax_for_user(user):
-    """Seed default state tax configuration."""
+def _seed_state_tax_for_user(user, filing_statuses):
+    """Seed default (per-filing-status) state tax configuration.
+
+    Post-T-P5 the state config is keyed on filing status, so one row per
+    status is built via ``build_state_tax_configs``; each is skipped
+    individually if it already exists (idempotent repair).
+    """
     flat_type_id = ref_cache.tax_type_id(TaxTypeEnum.FLAT)
+    filing_status_ids = {name: fs.id for name, fs in filing_statuses.items()}
 
     for tax_year, data in DEFAULT_STATE_TAX.items():
         state_code = data["state_code"]
-        existing = (
-            db.session.query(StateTaxConfig)
-            .filter_by(user_id=user.id, state_code=state_code, tax_year=tax_year)
-            .first()
-        )
-        if existing:
-            print(f"  ~ {tax_year} {state_code} state tax config already exists, skipping.")
-            continue
+        for config in build_state_tax_configs(
+            user.id, flat_type_id, tax_year, data, filing_status_ids,
+        ):
+            existing = (
+                db.session.query(StateTaxConfig)
+                .filter_by(
+                    user_id=user.id, state_code=state_code, tax_year=tax_year,
+                    filing_status_id=config.filing_status_id,
+                )
+                .first()
+            )
+            if existing:
+                print(
+                    f"  ~ {tax_year} {state_code} state tax config "
+                    f"(status_id={config.filing_status_id}) already exists, skipping."
+                )
+                continue
+            db.session.add(config)
+            print(
+                f"  + {tax_year} {state_code} state tax config "
+                f"(status_id={config.filing_status_id}, flat {data['flat_rate']})"
+            )
 
-        db.session.add(build_state_tax_config(
-            user.id, flat_type_id, tax_year, data,
-        ))
-        print(f"  + {tax_year} {state_code} state tax config (flat {data['flat_rate']})")
+
+def _seed_state_child_deductions_for_user(user, filing_statuses):
+    """Seed the NC per-child deduction tiers (per filing status, AGI-tiered).
+
+    Idempotent: for a given ``(state, year, filing_status)`` the whole tier
+    set is skipped when ANY tier row already exists (they are seeded as a
+    unit, never partially).
+    """
+    filing_status_ids = {name: fs.id for name, fs in filing_statuses.items()}
+
+    for tax_year, data in DEFAULT_STATE_CHILD_DEDUCTIONS.items():
+        state_code = data["state_code"]
+        existing_status_ids = {
+            row.filing_status_id
+            for row in db.session.query(StateChildDeduction.filing_status_id)
+            .filter_by(user_id=user.id, state_code=state_code, tax_year=tax_year)
+            .distinct()
+        }
+        added_status_ids: set[int] = set()
+        for row in build_state_child_deductions(
+            user.id, tax_year, data, filing_status_ids,
+        ):
+            if row.filing_status_id in existing_status_ids:
+                continue
+            db.session.add(row)
+            added_status_ids.add(row.filing_status_id)
+        for status_id in sorted(added_status_ids):
+            print(
+                f"  + {tax_year} {state_code} child deductions "
+                f"(status_id={status_id})"
+            )
 
 
 if __name__ == "__main__":

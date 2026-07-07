@@ -19,31 +19,25 @@ from datetime import date
 from decimal import Decimal
 
 
-# Pylint: ``duplicate-code`` -- incidental structural similarity with
-# ``budget_variance_service.VarianceWindow`` (both are four-field frozen window
-# selectors).  They are deliberately separate value objects in separate bounded
-# contexts: a variance window attributes by a transaction's ``due_date`` while a
-# statement window attributes by the confirmed ledger's paid-date basis, so a
-# shared base would couple two unrelated attribution rules (coding-standards
-# rule 13).  One-sided disable so ``VarianceWindow`` stays un-disabled,
-# mirroring the journal_entry/transfer FK-block precedent.
-# pylint: disable=duplicate-code
 @dataclass(frozen=True)
 class StatementWindow:
     """The time window an income statement is computed over.
 
     A discriminated selector mirroring
-    :class:`app.services.budget_variance_service.VarianceWindow`:
+    :class:`app.services.spending_report_service.SpendingWindow`:
     ``window_type`` decides which of the other fields are meaningful --
     ``period_id`` for ``"pay_period"``, ``month`` + ``year`` for ``"month"``,
     ``year`` for ``"year"``.  A ``"pay_period"`` window filters
     ``JournalEntry.pay_period_id`` directly (reader-contract C-2); a
     ``"month"`` / ``"year"`` window filters the display-timezone attribution
     core by calendar date (C-3).  The two are deliberately separate value
-    objects from ``VarianceWindow`` -- the variance tab attributes by a
-    transaction's ``due_date`` while the statements attribute by the confirmed
-    ledger's paid-date basis, so coupling them would couple two different
-    attribution rules; the route layer shares only the parameter PARSING.
+    objects -- the statements attribute by the confirmed ledger's paid-date
+    basis while a spending window scopes settled-expense attribution, so
+    coupling them would couple two different attribution rules; the route
+    layer shares only the parameter PARSING.  This class is the un-disabled
+    anchor of that ``duplicate-code`` pair (``SpendingWindow`` carries the
+    one-sided disable), mirroring the journal_entry/transfer FK-block
+    precedent.
 
     Attributes:
         window_type: One of ``"pay_period"`` / ``"month"`` / ``"year"``.
@@ -56,7 +50,6 @@ class StatementWindow:
     period_id: int | None = None
     month: int | None = None
     year: int | None = None
-    # pylint: enable=duplicate-code
 
 
 @dataclass(frozen=True)

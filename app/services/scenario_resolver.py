@@ -2,8 +2,8 @@
 Shekel Budget App -- Baseline Scenario Resolver
 
 Single source of truth for "load the user's baseline scenario."
-Every analytics service (budget_variance, calendar, spending_trend,
-dashboard, retirement_dashboard, savings_dashboard, year_end_summary)
+Every analytics service (calendar, spending_trend, dashboard,
+retirement_dashboard, savings_dashboard, year_end_summary)
 needs the user's baseline scenario as a starting point for queries
 that must NOT spill into what-if scenarios.
 

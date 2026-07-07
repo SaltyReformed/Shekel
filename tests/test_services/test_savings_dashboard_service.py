@@ -1470,7 +1470,6 @@ class TestDebtSummary:
         """
         with app.app_context():
             from app.models.loan_params import LoanParams as LP
-            from app.models.loan_features import EscrowComponent
 
             mortgage_type = (
                 db.session.query(AccountType)
@@ -1498,18 +1497,17 @@ class TestDebtSummary:
             db.session.add(lp)
             db.session.flush()
             from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                add_escrow_line,
                 insert_origination_event as _ioe,
                 insert_origination_rate as _ior,
             )
             _ioe(lp)
             _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
 
-            ec = EscrowComponent(
-                account_id=mortgage.id,
-                name="Property Tax",
-                annual_amount=Decimal("7200.00"),
+            add_escrow_line(
+                db.session, mortgage.id, "Property Tax", Decimal("7200.00"),
+                effective_date=lp.origination_date,
             )
-            db.session.add(ec)
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(

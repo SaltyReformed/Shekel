@@ -22,6 +22,14 @@ CLAUDE.md and are loaded when working on tests or when test-related decisions ar
   before pytest runs (see "Catalog fragmentation and the test-runner wrapper" below for the reason),
   forwards all arguments verbatim, and falls through to plain pytest when the container is absent
   (CI, fresh checkout). `SKIP_DB_RESTART=1` skips the restart for chained follow-up invocations.
+- **Container-spawning deploy tests are excluded by default.** The `tests/test_deploy` integration
+  tests that drive a real `docker` daemon are marked `@pytest.mark.docker`, and `./scripts/test.sh`
+  defaults to `-m "not docker"` so a routine local run never spawns containers on the host's
+  production Docker daemon (which the homelab `wud`/`cadvisor`/`alloy` stack watches). CI runs bare
+  `pytest`, so it still executes them. A `tests/test_deploy/conftest.py` guard also skips them if a
+  bare `pytest` reaches the system daemon outside CI. Opt in locally with
+  `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
+  Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
 - **Full suite:** ~65 s wall-clock including the restart (~62 s pytest + ~3 s restart) on a fresh
   test-db container, ~5,504 tests at the default `-n 12` parallelism (set in `pytest.ini`
   `addopts`). A single `./scripts/test.sh` invocation completes well under the 10-min hard timeout.

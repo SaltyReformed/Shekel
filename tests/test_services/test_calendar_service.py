@@ -23,6 +23,7 @@ from app.services import calendar_service
 from app.services.balance_resolver import period_subtotal
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
+    DailyView,
     _detect_third_paycheck_months,
     _is_infrequent,
 )
@@ -281,16 +282,23 @@ class TestDayAssignment:
 class TestNoDuplicates:
     """Tests ensuring no double-counting across period boundaries."""
 
-    def test_no_double_counting_cross_period(self, app, seed_user, seed_periods, db):
-        """Txn with due_date in Feb is NOT counted in January detail.
+    def test_out_of_period_due_date_clamps_into_its_period_month(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A due_date past its period end is counted once, in its period.
 
-        Period 1 (Jan 16 - Jan 29) overlaps with January, but the
-        transaction's due_date is in February.
+        The transaction belongs to period 1 (Jan 16 - Jan 29) but carries a
+        stray Feb 1 due_date (outside its own period).  The clamped
+        attribution rule pulls it to the period end (Jan 29), so it is
+        counted ONCE, in January (its period's month) -- never in February,
+        and never in both.  This is the locked clamp behavior that keeps the
+        daily balance reconciling with the grid: a period's flow always
+        closes by its own end_date.
         """
         with app.app_context():
             p1 = seed_periods[1]  # Jan 16 - Jan 29
             _add_transaction(
-                db.session, seed_user, p1, "Feb Bill", "300.00",
+                db.session, seed_user, p1, "Stray Bill", "300.00",
                 due_date=date(2026, 2, 1),
             )
             db.session.commit()
@@ -305,10 +313,11 @@ class TestNoDuplicates:
                 year=2026,
                 month=2,
             )
-            # Should NOT be in January.
-            assert jan.total_expenses == Decimal("0")
-            # Should be in February.
-            assert feb.total_expenses == Decimal("300.00")
+            # Clamped to period 1's end (Jan 29): counted in January...
+            assert jan.total_expenses == Decimal("300.00")
+            assert 29 in jan.day_entries
+            # ...and NOT in February (its period does not reach February).
+            assert feb.total_expenses == Decimal("0")
 
     def test_no_double_counting_same_month(self, app, seed_user, seed_periods, db):
         """Same txn in two overlapping periods counted exactly once."""
@@ -1361,3 +1370,159 @@ class TestUnresolvableAccountOrScenario:
                     user_id=seed_user["user"].id,
                     year=2026,
                 )
+
+
+class TestCalendarDailyView:
+    """The month's daily running-balance projection (DailyView).
+
+    Uses the standard ``seed_periods`` scenario (biweekly from 2026-01-02,
+    anchor = period 0 at $1000).  January flows: Rent -500 due 01-05, Salary
+    +2000 due 01-09 (period 0); Car -800 due 01-20, Salary +2000 due 01-23
+    (period 1).  The hand-computed running balance is 01-05 500, 01-09 2500,
+    01-15 2500, 01-20 1700, 01-23 3700, 01-29 3700; the month trough is $500
+    on the 5th.
+    """
+
+    def _seed_january(self, db, seed_user, seed_periods):
+        p0, p1 = seed_periods[0], seed_periods[1]
+        _add_transaction(
+            db.session, seed_user, p0, "Rent", "500.00",
+            due_date=date(2026, 1, 5),
+        )
+        _add_transaction(
+            db.session, seed_user, p0, "Salary", "2000.00",
+            is_income=True, due_date=date(2026, 1, 9),
+        )
+        _add_transaction(
+            db.session, seed_user, p1, "Car", "800.00",
+            due_date=date(2026, 1, 20),
+        )
+        _add_transaction(
+            db.session, seed_user, p1, "Salary", "2000.00",
+            is_income=True, due_date=date(2026, 1, 23),
+        )
+        db.session.commit()
+
+    def test_daily_is_none_without_today(self, app, seed_user, seed_periods, db):
+        """Omitting ``today`` yields no daily view (year-overview parity)."""
+        with app.app_context():
+            self._seed_january(db, seed_user, seed_periods)
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+            )
+        assert result.daily is None
+
+    def test_daily_balances_and_trough(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The daily view carries per-day balances and the month trough."""
+        with app.app_context():
+            self._seed_january(db, seed_user, seed_periods)
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                today=date(2026, 1, 20),
+            )
+        daily = result.daily
+        assert isinstance(daily, DailyView)
+        assert daily.daily_balances[5] == Decimal("500.00")
+        assert daily.daily_balances[9] == Decimal("2500.00")
+        assert daily.daily_balances[29] == Decimal("3700.00")
+        # Trough is the earliest day of the month minimum ($500 on the 5th).
+        assert daily.trough_day == 5
+        assert daily.trough_balance == Decimal("500.00")
+
+    def test_balance_today_and_elapsed_remaining_split(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """balance_today and the elapsed/remaining split key off ``today``."""
+        with app.app_context():
+            self._seed_january(db, seed_user, seed_periods)
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                today=date(2026, 1, 20),
+            )
+        daily = result.daily
+        # End-of-day balance on the 20th (after the Car payment): $1700.
+        assert daily.balance_today == Decimal("1700.00")
+        # Elapsed (days 1-20): Salary 2000 in, Rent 500 + Car 800 = 1300 out.
+        assert daily.elapsed_income == Decimal("2000.00")
+        assert daily.elapsed_expense == Decimal("1300.00")
+        # Remaining (days 21-31): the second Salary; no more expenses.
+        assert daily.remaining_income == Decimal("2000.00")
+        assert daily.remaining_expense == Decimal("0.00")
+
+    def test_future_month_is_all_remaining(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A month entirely after today is all remaining, no balance_today."""
+        with app.app_context():
+            self._seed_january(db, seed_user, seed_periods)
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                today=date(2025, 12, 15),
+            )
+        daily = result.daily
+        assert daily.balance_today is None
+        assert daily.elapsed_income == Decimal("0.00")
+        assert daily.elapsed_expense == Decimal("0.00")
+        assert daily.remaining_income == Decimal("4000.00")
+        assert daily.remaining_expense == Decimal("1300.00")
+
+    def test_income_first_then_expense_by_magnitude(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Day cells order income first, then expenses by descending size."""
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Small Income", "100.00",
+                is_income=True, due_date=date(2026, 1, 6),
+            )
+            _add_transaction(
+                db.session, seed_user, p0, "Big Expense", "500.00",
+                due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                today=date(2026, 1, 6),
+            )
+        names = [e.name for e in result.day_entries[6]]
+        # Income leads even though the expense is larger.
+        assert names == ["Small Income", "Big Expense"]
+
+    def test_day_overflow_collapses_beyond_three_flows(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A day with more than three flows yields a "+N more" residual.
+
+        Day has 1 income (+3000) and 4 expenses (500/400/300/200).  Ordered
+        income-first then expense-desc, the visible three are the income and
+        the two largest expenses; the residual is the two smallest expenses
+        (-300 and -200 = -500).
+        """
+        with app.app_context():
+            p0 = seed_periods[0]
+            _add_transaction(
+                db.session, seed_user, p0, "Pay", "3000.00",
+                is_income=True, due_date=date(2026, 1, 7),
+            )
+            for name, amt in [
+                ("E500", "500.00"), ("E400", "400.00"),
+                ("E300", "300.00"), ("E200", "200.00"),
+            ]:
+                _add_transaction(
+                    db.session, seed_user, p0, name, amt,
+                    due_date=date(2026, 1, 7),
+                )
+            db.session.commit()
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                today=date(2026, 1, 7),
+            )
+        assert len(result.day_entries[7]) == 5
+        overflow = result.day_overflow[7]
+        assert overflow.count == 2
+        assert overflow.net == Decimal("-500.00")
+        # Days at or under the cap carry no overflow entry.
+        assert 5 not in result.day_overflow

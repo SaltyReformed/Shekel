@@ -306,6 +306,19 @@ class UserSettings(TimestampMixin, db.Model):
     merit_raise_horizon_years = db.Column(
         db.Integer, nullable=False, default=5, server_default="5",
     )
+    # Recurring surface (Loop B): which unit the Monthly / Per-paycheck
+    # toggle shows first on the unified /templates page.  FALSE = monthly
+    # (the default lens, standing in for the retired /obligations monthly
+    # view); TRUE = per-paycheck (the grid-comparison lens the developer
+    # reaches for).  The recurring-view producer renders BOTH units for
+    # every figure regardless; this preference only picks the initially
+    # visible one.  NOT NULL with a server default of FALSE so every
+    # existing row lands on the monthly default -- the static default fits
+    # all rows, so the column is added in one step.
+    recurring_show_per_paycheck = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
 
     # Back-reference to User
     user = db.relationship("User", back_populates="settings")

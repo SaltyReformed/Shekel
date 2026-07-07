@@ -32,12 +32,18 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.tax_config import (
+    FicaConfig,
+    StateChildDeduction,
+    StateTaxConfig,
+    TaxBracketSet,
+)
 from app.models.user import User, UserSettings
 from app.services.auth_service import (
     DEFAULT_CATEGORIES,
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
+    DEFAULT_STATE_CHILD_DEDUCTIONS,
     DEFAULT_STATE_TAX,
 )
 # Aliased so the module-level name cannot shadow the ``seed_user``
@@ -410,8 +416,9 @@ class TestSeedUserProvisioning:
             )
 
             # Tax configuration: one bracket set per (year, status) in
-            # the shared defaults, one FICA row and one state row per
-            # year.
+            # the shared defaults, one FICA row per year, and -- post-T-P5 --
+            # one state config per (year, filing status) plus the NC per-child
+            # deduction tiers per (year, filing status).
             expected_sets = sum(
                 len(year_data)
                 for year_data in DEFAULT_FEDERAL_BRACKETS.values()
@@ -424,9 +431,22 @@ class TestSeedUserProvisioning:
                 db.session.query(FicaConfig)
                 .filter_by(user_id=user.id).count() == len(DEFAULT_FICA)
             )
+            expected_state_configs = sum(
+                len(data["standard_deduction_by_status"])
+                for data in DEFAULT_STATE_TAX.values()
+            )
             assert (
                 db.session.query(StateTaxConfig)
-                .filter_by(user_id=user.id).count() == len(DEFAULT_STATE_TAX)
+                .filter_by(user_id=user.id).count() == expected_state_configs
+            )
+            expected_child_tiers = sum(
+                len(tiers)
+                for data in DEFAULT_STATE_CHILD_DEDUCTIONS.values()
+                for tiers in data["tiers_by_status"].values()
+            )
+            assert (
+                db.session.query(StateChildDeduction)
+                .filter_by(user_id=user.id).count() == expected_child_tiers
             )
 
     def test_seed_rerun_is_idempotent_skip(self, app, db, monkeypatch, capsys):

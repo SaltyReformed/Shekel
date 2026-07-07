@@ -147,12 +147,13 @@ def build_recurring_transfer_template(
     :func:`flush_template_or_namedup_redirect`) so name-collision
     handling stays at the route layer.
 
-    The ``derive_from_loan`` column is intentionally NOT set here: it
-    defaults to ``False`` (the model / server default) for investment
-    contributions and every generic transfer, and the loan-payment
-    creator -- the only caller that needs it -- sets
-    ``template.derive_from_loan`` itself on the returned row before the
-    flush, keeping that loan-only concern at the loan call site.
+    Loan-payment settings are intentionally NOT set here: an investment
+    contribution and every generic transfer get NO
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row, so every
+    reader defaults them to non-derive (decision B).  The loan-payment creator
+    -- the only caller that needs it -- attaches ``template.settings`` itself on
+    the returned row before the flush, keeping that loan-only concern at the
+    loan call site.
 
     Args:
         source_account: The owned, active funding account
@@ -165,8 +166,9 @@ def build_recurring_transfer_template(
         default_amount: Per-period transfer amount (Decimal).
 
     Returns:
-        The added (not yet flushed) :class:`TransferTemplate`, with
-        ``derive_from_loan`` at its ``False`` default.
+        The added (not yet flushed) :class:`TransferTemplate`, with no
+        loan-payment settings row (the caller attaches one only for a loan
+        payment).
     """
     template = TransferTemplate(
         user_id=current_user.id,

@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 
+# Refundable Additional Child Tax Credit (ACTC) formula parameters (IRC
+# 24(d)).  The refundable ACTC is ``15% x max(0, earned_income - 2,500)``,
+# further capped at the per-child refundable ceiling.  These two parameters
+# are STATUTORY and, verified 2026-07 against the 2025 Schedule 8812
+# instructions, were NOT changed by OBBBA and are not inflation-indexed --
+# so they are module constants, not seeded per-year columns (unlike the
+# per-child ceiling, which does carry a per-year seeded value on the bracket
+# set).  If a future law makes either parameter year-varying, promote it to
+# a seeded column then.
+ACTC_EARNED_INCOME_RATE = Decimal("0.15")
+ACTC_EARNED_INCOME_FLOOR = Decimal("2500")
+
 
 # ── Federal Withholding (IRS Pub 15-T Percentage Method) ──────────
 
@@ -253,16 +265,252 @@ def _apply_marginal_brackets(taxable_income, brackets):
     return round_money(total_tax)
 
 
+def marginal_rate_for(taxable, brackets):
+    """Return the marginal bracket rate that contains ``taxable`` income.
+
+    The rate on the taxpayer's LAST dollar of taxable income -- the chip
+    the analytics Taxes hero band shows next to the effective rate.  It is
+    the rate of the highest bracket whose ``min_income`` is STRICTLY below
+    ``taxable``, which is exactly the last bracket
+    :func:`_apply_marginal_brackets` adds tax from (that loop stops at the
+    first bracket with ``taxable <= min_income``).  Sourcing the chip from
+    the same bracket ladder the liability uses means the marginal chip and
+    the tax math cannot disagree.
+
+    Boundary rule (documented so the chip and the liability agree at an
+    exact edge): a ``taxable`` sitting EXACTLY on a bracket edge -- i.e.
+    equal to the upper bracket's ``min_income`` (and the lower bracket's
+    ``max_income``) -- belongs to the LOWER bracket.  The upper bracket
+    starts STRICTLY above its ``min_income`` (``taxable > min_income`` is
+    required for it to apply), so at the edge the last taxed dollar is
+    still in the lower tier.  Example (2026 single): ``taxable == 50,400``
+    -> 12% (the 22% tier opens above 50,400), while ``taxable == 50,401``
+    -> 22%.
+
+    ``taxable`` at or below the lowest bracket's ``min_income`` (the usual
+    case being income fully absorbed by the standard deduction, ``taxable
+    == 0``) returns the LOWEST bracket's rate: the rate the first positive
+    dollar of taxable income would meet.  An empty ``brackets`` iterable
+    returns ``ZERO`` (no tax structure to place ``taxable`` in) -- a
+    degenerate seed the analytics producer never hits, since it computes
+    the liability (which raises on a missing bracket set) first.
+
+    Args:
+        taxable: The federal taxable income to place (Decimal, or any
+            value ``Decimal(str(...))`` accepts; coerced from a string so
+            a ``float`` never enters the money math).
+        brackets: The bracket set's TaxBracket iterable, each exposing
+            ``sort_order``, ``min_income``, and ``rate`` (the same objects
+            :func:`_apply_marginal_brackets` iterates).
+
+    Returns:
+        Decimal -- the marginal bracket rate as a fraction (e.g.
+        ``Decimal("0.2400")`` for the 24% tier).
+    """
+    ordered = sorted(brackets, key=lambda b: b.sort_order)
+    if not ordered:
+        return ZERO
+
+    taxable = Decimal(str(taxable))
+    # Default to the lowest tier's rate: for ``taxable`` at or below the
+    # lowest ``min_income`` no bracket is strictly below it, so the first
+    # positive taxable dollar's rate is the honest answer.
+    marginal = Decimal(str(ordered[0].rate))
+    for bracket in ordered:
+        # Mirror _apply_marginal_brackets: a bracket taxes income only when
+        # ``taxable > min_income``, so the marginal tier is the last one
+        # that gate admits.  An exact edge (``taxable == min_income``) fails
+        # the gate and leaves the lower tier as marginal.
+        if taxable > Decimal(str(bracket.min_income)):
+            marginal = Decimal(str(bracket.rate))
+        else:
+            break
+    return marginal
+
+
+# ── Annual Filing-Time Liability (federal) ────────────────────────
+
+
+@dataclass(frozen=True)
+class AnnualFederalTax:
+    """The computed figures of the filing-time federal calculation.
+
+    ``taxable`` is federal taxable income (wages plus W-4 Step 4(a) income,
+    less pre-tax deductions and the standard deduction, floored at zero);
+    ``liability`` is the tax owed on it after nonrefundable dependent
+    credits, floored at zero; ``refundable_actc`` is the refundable
+    Additional Child Tax Credit computed separately from ``liability`` (the
+    liability clamps at zero, but the unused child credit spills into this
+    refundable component -- T-P5).  The three travel together so a caller
+    that renders the derivation -- the Taxes tab's assumptions card (T-P4) --
+    does not have to recompute ``taxable`` from the raw income components:
+    the taxable-income clamp expression lives in exactly one place,
+    :func:`calculate_annual_federal_liability`.
+    """
+
+    taxable: Decimal
+    liability: Decimal
+    refundable_actc: Decimal
+
+
+def calculate_annual_federal_liability(annual_wage_income, bracket_set, w4=W4Inputs()):
+    """Compute the filing-time FEDERAL income tax liability for a full year.
+
+    This is the annual-liability sibling of
+    :func:`calculate_federal_withholding`: it applies the SAME seeded
+    bracket ladder and dependent credits, but ONCE to the whole year's
+    income rather than per pay period, to answer "what will this taxpayer
+    owe the IRS at filing time" (the tax-refund estimate the analytics
+    Taxes tab is built around).  Both functions share the
+    :func:`_apply_marginal_brackets` and :func:`_dependent_credits`
+    primitives, so there is a single bracket implementation.
+
+    The identity (developer ruling 2026-07-04, worked-example fork):
+
+        taxable   = max(0, wages + Step 4(a) income
+                            - pre-tax deductions - standard deduction)
+        liability = max(0, marginal_brackets(taxable) - dependent_credits)
+
+    W-4 Step 4(a) additional income (``w4.additional_income``) counts as
+    REAL income and is included in the base.  W-4 Step 4(b) additional
+    deductions (``w4.additional_deductions``) and Step 4(c) extra
+    withholding (``w4.extra_withholding``) are withholding-only hints and
+    are DELIBERATELY NOT read here: at filing time the Schedule A check
+    owns the itemize-vs-standard election, so 4(b) must not move the
+    liability.  Dependent credits are nonrefundable for the ``liability``
+    itself (it clamps at zero), but the UNUSED child-credit portion spills
+    into a SEPARATE refundable component -- the Additional Child Tax Credit
+    (ACTC), computed by :func:`_refundable_actc` (T-P5).
+
+    Args:
+        annual_wage_income: The year's Box-1 wage income (gross wages less
+            pre-tax deductions is passed as ``annual_wage_income`` minus
+            ``w4.pre_tax_deductions``).  Also used as the ACTC earned-income
+            base (a documented approximation -- Box-1 wages are the
+            taxpayer's earned income here).  Constructed to ``Decimal`` from
+            a string; a ``float`` argument is coerced via ``str`` first.
+        bracket_set: A TaxBracketSet (or a stand-in) exposing
+            ``standard_deduction``, ``child_credit_amount``,
+            ``other_dependent_credit_amount``, ``child_credit_refundable_cap``,
+            and ``brackets``.
+        w4: :class:`W4Inputs` -- the employee's W-4 inputs.  Only
+            ``additional_income``, ``pre_tax_deductions``,
+            ``qualifying_children``, and ``other_dependents`` are consulted;
+            ``additional_deductions`` and ``extra_withholding`` are ignored
+            (see above).  Defaults to an empty ``W4Inputs()`` (a blank W-4).
+
+    Returns:
+        :class:`AnnualFederalTax` -- the year's federal ``taxable`` income,
+        the nonrefundable ``liability`` owed on it, and the ``refundable_actc``
+        refundable credit, all Decimal at two places.
+
+    Raises:
+        InvalidFilingStatusError:   If ``bracket_set`` is None (mirrors
+            :func:`calculate_federal_withholding`, which cannot resolve a
+            bracket ladder without a filing status).
+        InvalidDependentCountError: If a dependent count is negative.
+    """
+    if bracket_set is None:
+        raise InvalidFilingStatusError(None)
+    if w4.qualifying_children < 0:
+        raise InvalidDependentCountError(
+            "qualifying_children", w4.qualifying_children,
+        )
+    if w4.other_dependents < 0:
+        raise InvalidDependentCountError(
+            "other_dependents", w4.other_dependents,
+        )
+
+    annual_wage_income = Decimal(str(annual_wage_income))
+    standard_deduction = Decimal(str(bracket_set.standard_deduction))
+
+    # Filing-time taxable income.  Step 4(a) is real income; Step 4(b)
+    # (w4.additional_deductions) and Step 4(c) (w4.extra_withholding) are
+    # withholding-only and deliberately excluded per the 2026-07-04 ruling.
+    taxable = (
+        annual_wage_income
+        + w4.additional_income
+        - w4.pre_tax_deductions
+        - standard_deduction
+    )
+    taxable = max(taxable, ZERO)
+
+    tax_before_credits = _apply_marginal_brackets(taxable, bracket_set.brackets)
+    total_credits = _dependent_credits(
+        bracket_set, w4.qualifying_children, w4.other_dependents,
+    )
+    liability = max(tax_before_credits - total_credits, ZERO)
+    refundable_actc = _refundable_actc(
+        bracket_set, w4.qualifying_children, tax_before_credits,
+        total_credits, annual_wage_income,
+    )
+
+    return AnnualFederalTax(
+        taxable=taxable, liability=liability, refundable_actc=refundable_actc,
+    )
+
+
+def _refundable_actc(
+    bracket_set, qualifying_children, tax_before_credits, total_credits,
+    earned_income,
+):
+    """Return the refundable Additional Child Tax Credit (ACTC).
+
+    The refundable ACTC is the smallest of three legs (per IRC 24(d) /
+    Schedule 8812; developer T-P5 ruling):
+
+        unused_credit   = max(0, total_dependent_credits - tax_before_credits)
+        cap_leg         = child_credit_refundable_cap x qualifying_children
+        earned_income_leg = 15% x max(0, earned_income - 2,500)
+        ACTC = max(0, min(unused_credit, cap_leg, earned_income_leg))
+
+    ``unused_credit`` uses the TOTAL dependent credits (CTC + ODC) per the
+    ruling's formula; the ``cap_leg`` (which multiplies only qualifying
+    CHILDREN by the per-child refundable ceiling) is what bounds the result
+    to the child-only refundable maximum, so an other-dependent credit can
+    only widen ``unused_credit``, never the refundable payout, unless it is
+    the binding leg -- see the report's out-of-scope note.  ``earned_income``
+    is the Box-1 wage income (a documented approximation of IRC earned
+    income).  Phase-outs (MAGI over 400k MFJ / 200k other) are NOT modeled.
+
+    Args:
+        bracket_set: The bracket set exposing ``child_credit_refundable_cap``
+            (treated as 0 when unset, mirroring :func:`_dependent_credits`).
+        qualifying_children: W-4 Step 3 qualifying-children count.
+        tax_before_credits: Marginal-bracket tax before dependent credits.
+        total_credits: The total nonrefundable dependent credits (CTC + ODC).
+        earned_income: The ACTC earned-income base (Box-1 wages).
+
+    Returns:
+        Decimal -- the refundable ACTC, quantised HALF_UP to two places.
+    """
+    refundable_cap = Decimal(
+        str(getattr(bracket_set, "child_credit_refundable_cap", 0) or 0)
+    )
+    unused_credit = max(ZERO, total_credits - tax_before_credits)
+    cap_leg = refundable_cap * qualifying_children
+    earned_income_leg = ACTC_EARNED_INCOME_RATE * max(
+        ZERO, Decimal(str(earned_income)) - ACTC_EARNED_INCOME_FLOOR,
+    )
+    actc = min(unused_credit, cap_leg, earned_income_leg)
+    return round_money(max(actc, ZERO))
+
+
 # ── State Tax ─────────────────────────────────────────────────────
 
 
-def calculate_state_tax(annual_gross, state_config):
+def calculate_state_tax(annual_gross, state_config, *, additional_deduction=ZERO):
     """Calculate annual state income tax.
 
     Args:
         annual_gross:  Total annual gross income (Decimal).
         state_config:  A StateTaxConfig object. If None or tax_type is 'none',
                        returns 0.
+        additional_deduction:  A further deduction subtracted from the base
+            alongside the state standard deduction (the resolved NC per-child
+            deduction total -- T-P5).  Defaults to ``ZERO`` so the withholding
+            path (which does NOT apply the child deduction) is unchanged; the
+            liability service passes the resolved child-deduction total.
 
     Returns:
         Decimal -- annual state tax owed.
@@ -277,10 +525,47 @@ def calculate_state_tax(annual_gross, state_config):
     if state_config.flat_rate:
         rate = Decimal(str(state_config.flat_rate))
         std_ded = Decimal(str(getattr(state_config, "standard_deduction", None) or 0))
-        taxable = annual_gross - std_ded
+        taxable = annual_gross - std_ded - Decimal(str(additional_deduction))
         taxable = max(taxable, ZERO)
         return round_money(taxable * rate)
 
+    return ZERO
+
+
+def resolve_child_deduction_per_child(agi, tiers):
+    """Return the per-child state child-deduction for the AGI tier.
+
+    The NC child deduction (N.C.G.S. 105-153.5(a1)) is AGI-tiered: each tier
+    (a :class:`~app.models.tax_config.StateChildDeduction` row, or any object
+    exposing ``agi_max`` and ``deduction_per_child``) applies to AGI in
+    ``(agi_min, agi_max]``.  The statute reads "Up to $X" (inclusive) then
+    "Over $X", so a threshold value belongs to the LOWER / more-generous
+    tier; the matching tier is therefore the one with the SMALLEST ``agi_max``
+    that is >= ``agi``.  The open-ended top tier (``agi_max is None``) catches
+    everything above the last finite bound and returns its (typically $0)
+    amount.  An empty ``tiers`` (a state with no child deduction, e.g. any
+    non-NC state) returns ``ZERO``.
+
+    Args:
+        agi: The AGI to place (the NC base -- wages + 4(a) - pre-tax -- as a
+            documented approximation of federal AGI).  Coerced from a string.
+        tiers: Iterable of tier objects (``agi_max``, ``deduction_per_child``).
+
+    Returns:
+        Decimal -- the per-child deduction for the tier containing ``agi``
+        (``ZERO`` when no tier matches / the list is empty).
+    """
+    agi = Decimal(str(agi))
+
+    def _sort_key(tier):
+        # Finite bounds ascending by value, the open-ended (None) tier last.
+        if tier.agi_max is None:
+            return (True, ZERO)
+        return (False, Decimal(str(tier.agi_max)))
+
+    for tier in sorted(tiers, key=_sort_key):
+        if tier.agi_max is None or agi <= Decimal(str(tier.agi_max)):
+            return Decimal(str(tier.deduction_per_child))
     return ZERO
 
 

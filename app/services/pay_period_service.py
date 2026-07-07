@@ -281,9 +281,9 @@ def get_overlapping_periods(
     ``start_date <= last_day`` AND ``end_date >= first_day``.  The
     range is inclusive on both ends.
 
-    Used by the calendar and budget-variance services to find the
-    pay periods that need to be inspected when reporting on a
-    calendar month or year window.  Centralised here so a future
+    Used by the calendar, daily-balance series, and spending-report
+    services to find the pay periods that need to be inspected when
+    reporting on a calendar month or year window.  Centralised here so a future
     change (e.g. excluding inactive scenarios' periods, or adding a
     second index ordering) is a single edit rather than chasing the
     inline copies the audit's Issue 1 noted.

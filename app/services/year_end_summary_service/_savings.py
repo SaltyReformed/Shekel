@@ -16,12 +16,12 @@ from app.services.investment_projection import (
     build_contribution_timeline,
 )
 from app.services.projection_inputs import build_investment_projection_inputs
-# ``get_anchor_period_index`` moved to the shared kernel (Loop B Phase 1);
-# the private alias keeps this module's call site unchanged.  The cash-basis
-# investment SEED is read via the ``balance_at`` seam
-# (``investment_seed_map``), NOT the kernel producer directly, so this
-# consumer stays behind the W9906 fence (see the call site below).
-from app.services.net_worth_kernel import (
+# ``get_anchor_period_index`` lives in ``net_worth_investment`` (the investment
+# growth sub-chain extracted from the kernel); the private alias keeps this
+# module's call site unchanged.  The cash-basis investment SEED is read via the
+# ``balance_at`` seam (``investment_seed_map``), NOT the producer directly, so
+# this consumer stays behind the W9906 fence (see the call site below).
+from app.services.net_worth_investment import (
     get_anchor_period_index as _get_anchor_period_index,
 )
 from app.services.year_end_summary_service._balances import (

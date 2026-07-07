@@ -15,12 +15,14 @@ from markupsafe import Markup
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.user import UserSettings
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.utils import archive_helpers
@@ -30,10 +32,10 @@ from app.services import (
     category_service,
     pay_period_service,
     recurrence_engine,
+    recurring_view,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
-from app.exceptions import RecurrenceConflict
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
@@ -41,10 +43,11 @@ from app.routes._commit_helpers import (
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
-    handle_recurrence_conflict,
     handle_stale_form_conflict,
+    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._redirect_target import RedirectTarget
@@ -182,18 +185,21 @@ def _apply_fields_and_propagate_rename(template, data):
     """Apply allowlisted field updates, propagating a rename to instances.
 
     Writes every :data:`_TEMPLATE_UPDATE_FIELDS` key present in *data* onto
-    *template*, then propagates a changed name to every existing
-    non-deleted Transaction generated from this template.
+    *template*, then propagates a changed name to EVERY existing Transaction
+    generated from this template -- including soft-deleted ones.
 
     The rename propagation is load-bearing: ``regenerate_for_template``
     only deletes/recreates non-override rows on or after ``effective_from``,
     so historic rows, overrides, and settled rows would otherwise keep the
     old label and desync every view that renders ``txn.name`` directly
-    (variance report, CSV export, calendar, companion card, edit form
-    header).  The partial unique index on transactions covers
-    ``(template_id, pay_period_id, scenario_id)`` only, so a bulk name
-    update cannot trip a constraint.  Template ownership is verified by the
-    caller, so ``template_id`` alone scopes the update to the current user.
+    (calendar CSV export, calendar, companion card, edit form header).
+    Soft-deleted rows are renamed too, so a row later restored -- by the
+    recurrence-conflict chooser's "use" action or by carry-forward --
+    surfaces with the current name rather than a stale one.  The partial
+    unique index on transactions covers ``(template_id, pay_period_id,
+    scenario_id)`` only, so a bulk name update cannot trip a constraint.
+    Template ownership is verified by the caller, so ``template_id`` alone
+    scopes the update to the current user.
     """
     old_name = template.name
     for field, value in data.items():
@@ -203,45 +209,209 @@ def _apply_fields_and_propagate_rename(template, data):
     if template.name != old_name:
         db.session.query(Transaction).filter(
             Transaction.template_id == template.id,
-            Transaction.is_deleted.is_(False),
         ).update({"name": template.name}, synchronize_session="fetch")
+
+
+# Form values the unit-preference toggle submits, mapped to the stored
+# boolean.  Any other value is ignored (the toggle only ever sends one of
+# these two), so a hand-crafted request cannot force an unexpected state.
+_UNIT_MONTHLY = "monthly"
+_UNIT_PER_PAYCHECK = "per_paycheck"
+
+# Query-param hint the Recurring surface's "New" picker passes so the
+# creation form pre-selects the right transaction type.  "income" selects
+# the income type; any other value (including the default Expense picker
+# entry and a hand-crafted request) falls back to expense, the most common
+# recurring definition.
+_NEW_TYPE_INCOME = "income"
+
+
+def _load_active_transaction_templates(user_id):
+    """Load the user's active income and expense templates, partitioned.
+
+    One query (relationships are ``lazy="joined"`` on the model, so no
+    N+1), split by transaction type so the producer receives the income
+    and expense sections separately.  ``sort_order, name`` fixes the
+    tie-break order the producer then re-sorts by monthly cost.
+    """
+    income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    templates = (
+        db.session.query(TransactionTemplate)
+        .filter(
+            TransactionTemplate.user_id == user_id,
+            TransactionTemplate.is_active.is_(True),
+        )
+        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
+        .all()
+    )
+    income = [t for t in templates if t.transaction_type_id == income_id]
+    expense = [t for t in templates if t.transaction_type_id == expense_id]
+    return income, expense
+
+
+def _load_active_transfer_templates(user_id):
+    """Load the user's active transfer templates, ordered for display."""
+    return (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == user_id,
+            TransferTemplate.is_active.is_(True),
+        )
+        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
+        .all()
+    )
+
+
+def _load_archived_templates(user_id):
+    """Load the user's archived transaction and transfer templates.
+
+    Returns ``(archived_transactions, archived_transfers)``; the unified
+    page renders both under one collapsed Archived section with Unarchive
+    actions.  Archived rows carry no monthly equivalent (they are inactive
+    and excluded from every total), so they bypass the producer.
+    """
+    archived_transactions = (
+        db.session.query(TransactionTemplate)
+        .filter(
+            TransactionTemplate.user_id == user_id,
+            TransactionTemplate.is_active.is_(False),
+        )
+        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
+        .all()
+    )
+    archived_transfers = (
+        db.session.query(TransferTemplate)
+        .filter(
+            TransferTemplate.user_id == user_id,
+            TransferTemplate.is_active.is_(False),
+        )
+        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
+        .all()
+    )
+    return archived_transactions, archived_transfers
+
+
+def _load_recurring_view(user_id):
+    """Build the unified Recurring display model for a user.
+
+    Shared by the full-page ``list_templates`` render and the
+    ``set_unit_preference`` HTMX toggle, so both paths produce identical
+    figures from one code path.  The toggle only re-picks which unit the
+    template displays; it does not open a second money path.
+    """
+    income_templates, expense_templates = _load_active_transaction_templates(
+        user_id,
+    )
+    transfer_templates = _load_active_transfer_templates(user_id)
+    periods = pay_period_service.get_all_periods(user_id)
+    return recurring_view.build_view(
+        income_templates=income_templates,
+        expense_templates=expense_templates,
+        transfer_templates=transfer_templates,
+        periods=periods,
+        as_of=date.today(),
+    )
 
 
 @templates_bp.route("/templates")
 @login_required
 @require_owner
 def list_templates():
-    """List all transaction templates for the current user.
+    """Render the unified Recurring surface.
 
-    Separates templates into active and archived lists for the UI.
-    Both lists inherit the same ordering (sort_order, name).
+    One page for every recurring definition -- income, expense, and
+    transfer templates -- replacing the retired ``/transfers`` list and
+    ``/obligations`` page.  ``recurring_view.build_view`` produces the
+    summary band (the /obligations monthly kernel), the three grouped
+    sections with per-section subtotals, and per row the monthly +
+    per-paycheck equivalents, engine-backed next date, and share of section
+    committed total.  ``show_per_paycheck`` seeds which unit the page-wide
+    toggle shows first, read from the user's stored preference.
     """
-    templates = (
-        db.session.query(TransactionTemplate)
-        .filter_by(user_id=current_user.id)
-        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
-        .all()
-    )
-    active_templates = [t for t in templates if t.is_active]
-    archived_templates = [t for t in templates if not t.is_active]
+    user_id = current_user.id
+    view = _load_recurring_view(user_id)
+    archived_transactions, archived_transfers = _load_archived_templates(user_id)
+
+    settings = current_user.settings
+    show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
+
     return render_template(
         "templates/list.html",
-        active_templates=active_templates,
-        archived_templates=archived_templates,
+        view=view,
+        archived_transactions=archived_transactions,
+        archived_transfers=archived_transfers,
+        show_per_paycheck=show_per_paycheck,
     )
+
+
+@templates_bp.route("/templates/unit-preference", methods=["POST"])
+@login_required
+@require_owner
+def set_unit_preference():
+    """Persist the Recurring surface's Monthly / Per-paycheck unit choice.
+
+    The page-wide unit toggle POSTs ``unit=monthly`` or
+    ``unit=per_paycheck``; the choice is stored on the user's settings so
+    it survives across devices and sessions (the producer renders both
+    units regardless -- this only sets which one shows first).  Any other
+    ``unit`` value is ignored.
+
+    Response shape depends on the caller.  An HTMX toggle (``HX-Request``
+    header) gets the re-rendered ``_recurring_body`` fragment in the
+    EFFECTIVE unit, swapped live into ``#recurring-body`` -- money is
+    formatted once, server-side, so the toggle never recomputes a figure in
+    JS.  A plain (no-JS) POST redirects back to the list, which then
+    re-renders in the stored unit.
+
+    An unrecognized ``unit`` leaves the stored preference untouched; the
+    response still matches the caller (a fragment in the unchanged unit for
+    HTMX, a redirect otherwise), so an HTMX request never receives a
+    redirect it would follow and swap the whole page into the body.
+    """
+    unit = request.form.get("unit")
+    if unit in (_UNIT_MONTHLY, _UNIT_PER_PAYCHECK):
+        settings = current_user.settings
+        if settings is None:
+            settings = UserSettings(user_id=current_user.id)
+            db.session.add(settings)
+        settings.recurring_show_per_paycheck = unit == _UNIT_PER_PAYCHECK
+        db.session.commit()
+
+    if request.headers.get("HX-Request"):
+        settings = current_user.settings
+        show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
+        view = _load_recurring_view(current_user.id)
+        return render_template(
+            "templates/_recurring_body.html",
+            view=view,
+            show_per_paycheck=show_per_paycheck,
+        )
+    return redirect(url_for("templates.list_templates"))
 
 
 @templates_bp.route("/templates/new", methods=["GET"])
 @login_required
 @require_owner
 def new_template():
-    """Display the template creation form."""
+    """Display the template creation form.
+
+    The Recurring surface's "New" picker offers Expense / Income / Transfer;
+    the Income entry links here with ``?type=income`` so the form lands with
+    the income type pre-selected (expense and income share this form).  Any
+    other ``type`` value falls back to expense.
+    """
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
     patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
+
+    if request.args.get("type") == _NEW_TYPE_INCOME:
+        default_txn_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    else:
+        default_txn_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
     return render_template(
         "templates/form.html",
@@ -252,6 +422,7 @@ def new_template():
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
+        default_txn_type_id=default_txn_type_id,
     )
 
 
@@ -362,7 +533,21 @@ def edit_template(template_id):
         txn_types=txn_types,
         periods=[],
         current_period=None,
+        # Unused when editing (the form reads the template's own type), but
+        # passed so the shared template never references an undefined value.
+        default_txn_type_id=None,
     )
+
+
+# The transaction-template kind for the shared regenerate-or-chooser flow:
+# how to regenerate, resolve, load, and re-edit an expense / income row.
+_TXN_TEMPLATE_KIND = RecurrenceConflictKind(
+    model=Transaction,
+    amount_attr="estimated_amount",
+    regenerate_fn=recurrence_engine.regenerate_for_template,
+    resolve_fn=recurrence_engine.resolve_conflicts,
+    update_endpoint="templates.update_template",
+)
 
 
 @templates_bp.route("/templates/<int:template_id>", methods=["POST"])
@@ -472,31 +657,22 @@ def update_template(template_id):
 
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
+    old_amount = template.default_amount
     _apply_fields_and_propagate_rename(template, data)
 
-    # Regenerate future transactions.
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario and template.recurrence_rule:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        try:
-            recurrence_engine.regenerate_for_template(
-                template, periods, scenario.id, effective_from=effective_from,
-            )
-        except RecurrenceConflict as conflict:
-            # Phase-1 auto-keep-overrides advisory.  Routed through
-            # the F-26 helper so the log message and the user-facing
-            # flash share a single implementation with the parallel
-            # transfer-template regeneration call.  ``log_label``
-            # preserves the templates-side prefix verbatim so log-
-            # grep patterns stay valid.
-            handle_recurrence_conflict(
-                logger=logger,
-                log_label="Recurrence conflict for template",
-                log_id=template.id,
-                conflict=conflict,
-            )
+    # Regenerate future transactions, diverting to the conflict chooser when
+    # an amount change would overwrite hand-edited upcoming instances (the
+    # chooser rolls the pending edit back; its Apply re-runs this same edit).
+    diverted = regenerate_or_conflict_chooser(
+        template, old_amount, effective_from, _TXN_TEMPLATE_KIND,
+        amount_drives_instances=not recurrence_engine.is_salary_linked_template(
+            template.id,
+        ),
+    )
 
-    conflict = commit_or_handle_stale(StaleConflictContext(
+    # The chooser short-circuits (its pending edit is already rolled back);
+    # otherwise commit the edit, subject to the stale-version guard.
+    response = diverted or commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="update_template",
         log_id=template_id,
@@ -508,8 +684,8 @@ def update_template(template_id):
             {"template_id": template_id},
         ),
     ))
-    if conflict is not None:
-        return conflict
+    if response is not None:
+        return response
     flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 

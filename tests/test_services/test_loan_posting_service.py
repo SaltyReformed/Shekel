@@ -41,7 +41,8 @@ from app.enums import (
 )
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.escrow_line import EscrowComponentVersion
+from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -54,11 +55,13 @@ from app.services import (
     transfer_service,
 )
 from tests._test_helpers import (
+    add_escrow_line,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     find_loan_ledger_account,
     freeze_today,
+    insert_tracking_start_event,
     insert_trueup_event,
     ledger_accounts_for_account,
     ledger_net,
@@ -337,29 +340,29 @@ class TestComputeLoanPaymentSplits:
         """Each payment's escrow is the version in effect ON its date, and a
         LATER escrow change never re-splits an already-past payment.
 
-        Two escrow versions: $1,200/yr ($100.00/mo) from origination until
-        2026-03-01, then $2,400/yr ($200.00/mo).  P1's pay-period start
-        (2026-01-16) is in the first version -> escrow 100.00; the later
-        payment's start (2026-03-13) is in the second -> escrow 200.00.  Then a
-        THIRD version ($3,600/yr) effective 2026-06-01 (the second closed there)
-        must leave BOTH earlier splits unchanged -- proving the split is
-        immutable for a past date, the whole point of effective-dating escrow
-        (the pre-fix code recomputed every payment at the current escrow, so the
-        third change would have retroactively moved both to $300.00).
+        One escrow line, two effective-dated versions (supersession, no
+        end_date): $1,200/yr ($100.00/mo) from origination, superseded by
+        $2,400/yr ($200.00/mo) on 2026-03-01.  P1's pay-period start
+        (2026-01-16) resolves to the first version -> escrow 100.00; the later
+        payment's start (2026-03-13) resolves to the second -> escrow 200.00.
+        Then a THIRD version ($3,600/yr) effective 2026-06-01 supersedes the
+        second FROM that date only, so it must leave BOTH earlier splits
+        unchanged -- proving the split is immutable for a past date, the whole
+        point of effective-dating escrow (the pre-fix code recomputed every
+        payment at the current escrow, so the third change would have
+        retroactively moved both to $300.00).
         """
         with app.app_context():
             loan = _make_loan(seed_user)  # no escrow via the helper
-            # V1: $100/mo from origination, removed 2026-03-01.
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
-                annual_amount=Decimal("1200.00"),
-                effective_date=_ORIGINATION_DATE, end_date=date(2026, 3, 1),
-            ))
-            # V2: $200/mo from 2026-03-01 (open).
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
+            # V1: $100/mo from origination.
+            line_id = add_escrow_line(
+                db.session, loan.id, "Escrow", Decimal("1200.00"),
+                effective_date=_ORIGINATION_DATE,
+            ).line_id
+            # V2: $200/mo from 2026-03-01 (supersedes V1 from that date).
+            db.session.add(EscrowComponentVersion(
+                line_id=line_id, effective_date=date(2026, 3, 1),
                 annual_amount=Decimal("2400.00"),
-                effective_date=date(2026, 3, 1),
             ))
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
@@ -378,20 +381,12 @@ class TestComputeLoanPaymentSplits:
                 Decimal("100.00"), Decimal("200.00"),
             ]
 
-            # A future escrow change: close V2 at 2026-06-01 (flush first so the
-            # active-name partial unique frees), then add a $300/mo V3.  Neither
-            # past payment's date falls in V3's range, so both splits must hold.
-            v2 = (
-                db.session.query(EscrowComponent)
-                .filter_by(account_id=loan.id, annual_amount=Decimal("2400.00"))
-                .one()
-            )
-            v2.end_date = date(2026, 6, 1)
-            db.session.flush()
-            db.session.add(EscrowComponent(
-                account_id=loan.id, name="Escrow",
+            # A future escrow change: a THIRD version at 2026-06-01 supersedes
+            # V2 from that date only.  Neither past payment is on/after it, so
+            # both splits must hold (supersession never re-splits a past date).
+            db.session.add(EscrowComponentVersion(
+                line_id=line_id, effective_date=date(2026, 6, 1),
                 annual_amount=Decimal("3600.00"),
-                effective_date=date(2026, 6, 1),
             ))
             db.session.commit()
 
@@ -593,6 +588,106 @@ class TestComputeLoanPaymentSplits:
                 checking.id, seed_user["scenario"].id, _AS_OF,
             )
             assert splits == []
+
+
+# ---------------------------------------------------------------------------
+# tracking-start opening -- a mid-life loan opens at the recent balance
+# ---------------------------------------------------------------------------
+
+
+class TestTrackingStartOpening:
+    """A tracking-start event seeds the walk at the recent balance, not origination."""
+
+    def test_split_and_balance_open_from_tracking_start(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A mid-life loan opens at its tracking-start balance; the payment accrues on it.
+
+        Origination is $250,000 @ 6% (2025-01-01), but the operator started
+        tracking with a $100,000 balance as of 2026-01-05.  The single $1,000
+        payment therefore accrues interest on $100,000:
+
+          * interest = round(100000 * 0.06 / 12) = 500.00 (NOT origination's
+            250000 -> 1250.00, which is the pre-fix bug this pins against)
+          * principal = 1000 - 500 - 0 = 500.00
+          * confirmed balance opens at 100000 and amortizes to 100000 - 500 =
+            99500.00 (origination's 250000 never enters the ledger)
+          * Schedule-A interest for 2026 is the same 500.00.
+        """
+        # ``confirmed_loan_balance_at`` answers only ``as_of <= today``; freeze
+        # today after the payment period so the confirmed read is in range and
+        # the wiring's sync-as-of is deterministic across CI clocks.
+        as_of = date(2026, 6, 30)
+        freeze_today(monkeypatch, as_of)
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Mid-life Loan",
+                principal=_ORIGINATION_PRINCIPAL, rate=_RATE,
+                origination_date=_ORIGINATION_DATE, term=360,
+            )
+            insert_tracking_start_event(
+                _loan_params(loan), Decimal("100000.00"), date(2026, 1, 5),
+            )
+            db.session.commit()
+
+            # Explicit paid_at in 2026 so the Schedule-A year attribution does
+            # not depend on the wall clock (CI runs in any year).
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[_P1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            splits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, scenario_id, as_of,
+            )
+            assert len(splits) == 1
+            split = splits[0]
+            assert split.interest == Decimal("500.00")
+            assert split.principal == Decimal("500.00")
+            assert split.escrow == Decimal("0.00")
+
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, as_of,
+            ) == Decimal("99500.00")
+
+            assert loan_posting_service.confirmed_loan_interest_in_year(
+                loan.id, scenario_id, 2026,
+            ) == Decimal("500.00")
+
+    def test_drift_scorecard_labels_the_tracking_start_opening(
+        self, app, db, seed_user,
+    ):
+        """The anchor drift scorecard marks the opening as a tracking-start.
+
+        A configured mid-life loan (no payments) shows exactly one drift row: the
+        tracking-start opening at its recorded balance, flagged
+        ``is_tracking_start`` so the display labels it "Tracking start" rather
+        than "Origination".
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Mid-life Loan 2",
+                principal=_ORIGINATION_PRINCIPAL, rate=_RATE,
+                origination_date=_ORIGINATION_DATE, term=360,
+            )
+            insert_tracking_start_event(
+                _loan_params(loan), Decimal("100000.00"), date(2026, 1, 5),
+            )
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            rows = loan_posting_service.loan_balance_anchor_history(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert len(rows) == 1
+            assert rows[0].is_opening is True
+            assert rows[0].is_tracking_start is True
+            assert rows[0].recorded == Decimal("100000.00")
+            assert rows[0].anchor_date == date(2026, 1, 5)
 
 
 # ---------------------------------------------------------------------------

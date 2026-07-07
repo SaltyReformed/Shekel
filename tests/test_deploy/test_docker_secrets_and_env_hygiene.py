@@ -1567,6 +1567,7 @@ class TestProdComposeSecretsBlock:
 # ──────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.docker
 class TestProdComposeMergedConfig:
     """``docker compose config`` parses the secrets block successfully.
 

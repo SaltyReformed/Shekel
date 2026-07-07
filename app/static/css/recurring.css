@@ -1,0 +1,121 @@
+/* Shekel Recurring surface -- the unified /templates page (Loop B, P2).
+   Anatomy (docs/design/recurring_audit.md, "Loop A record" round 1): a
+   summary band (a net-committed verdict hero over income / expenses /
+   transfers chips), a search / kind-filter / sort toolbar, three
+   kind-grouped section cards with tinted banners + per-section subtotals,
+   and a collapsed archived drawer.
+
+   Reuse, not reinvention: the band is the shared cockpit grammar
+   (.pulse-canvas / .nw-sky / .nw-hero* / .pulse-statrow / .pulse-chip* from
+   dashboard.css + accounts.css) and the share bars are driven by
+   progress_bar.js (data-progress-pct), exactly like the Spending tab. Only
+   the surface-specific pieces below live here.
+
+   Load-order contract (see base.html): this file loads AFTER dashboard.css
+   and accounts.css (whose band vocabulary it reuses) and BEFORE
+   utilities.css (which must stay last). Tokens only -- no raw hex, no
+   !important. */
+
+/* =============================================
+   NET-COMMITTED VERDICT HERO
+   The band answers one question -- do the recurring rules leave a monthly
+   margin? -- so the net figure is the hero, coloured by sign. Colour is
+   never the only signal: the caption always states "surplus" / "shortfall"
+   / "balanced" beside it.
+   ============================================= */
+.recurring-net--pos {
+  color: var(--shekel-done);
+}
+
+.recurring-net--neg {
+  color: var(--shekel-danger);
+}
+
+/* =============================================
+   SECTION BANNERS
+   A tinted card header carrying the kind name and its committed subtotal.
+   Income / expense reuse the section tokens (their defined purpose);
+   transfers take a neutral accent tint because a transfer moves money
+   between the user's own accounts rather than into or out of the budget.
+   The 3px left rule echoes the grid's section banners so a "section" reads
+   the same across screens.
+   ============================================= */
+.recurring-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-left: 3px solid transparent;
+}
+
+.recurring-banner--income {
+  background: var(--shekel-section-income-bg);
+  border-left-color: var(--shekel-section-income-text);
+}
+
+.recurring-banner--income .recurring-banner__title {
+  color: var(--shekel-section-income-text);
+}
+
+.recurring-banner--expense {
+  background: var(--shekel-section-expense-bg);
+  border-left-color: var(--shekel-section-expense-text);
+}
+
+.recurring-banner--expense .recurring-banner__title {
+  color: var(--shekel-section-expense-text);
+}
+
+.recurring-banner--transfer {
+  background: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
+  border-left-color: var(--shekel-accent);
+}
+
+.recurring-banner--transfer .recurring-banner__title {
+  color: var(--shekel-accent);
+}
+
+.recurring-banner__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* =============================================
+   SHARE-OF-COMMITTED BAR
+   The Spending tab's bar vocabulary (a thin accent pill filled by
+   progress_bar.js from data-progress-pct, so the CSP never sees an inline
+   width) adapted to a table cell, where it sits full-width beneath the
+   equivalent figure.
+   ============================================= */
+.recurring-bar {
+  display: block;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+  overflow: hidden;
+  margin-top: 0.25rem;
+}
+
+.recurring-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--shekel-accent);
+}
+
+/* =============================================
+   TOOLBAR
+   Search / kind-filter / sort controls sit above the sections; layout is
+   Bootstrap utilities, so only the search field's max width is bespoke.
+   ============================================= */
+.recurring-search {
+  max-width: 18rem;
+}
+
+/* The kind-filter pill for a section that is currently empty is disabled by
+   recurring.js (nothing to filter to); dim it so the state reads. */
+.recurring-filter[disabled] {
+  opacity: 0.5;
+}

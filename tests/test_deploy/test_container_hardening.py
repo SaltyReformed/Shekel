@@ -581,6 +581,7 @@ class TestProdComposeOverrideInheritsHardening:
         )
 
 
+@pytest.mark.docker
 class TestMergedComposeHardeningSurvivesOverride:
     """Run ``docker compose config`` against the merged base +
     shared-mode override and verify the hardening fields appear on

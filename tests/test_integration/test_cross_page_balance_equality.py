@@ -77,6 +77,7 @@ from app.services import (
     home_equity_service,
     investment_dashboard_service,
     loan_payment_service,
+    loan_resolution,
     savings_dashboard_service,
     year_end_summary_service,
 )
@@ -860,7 +861,7 @@ def _loan_detail_value(ctx):
     resolver's ``LoanState.current_balance`` as of today, a positive amount
     owed.
     """
-    resolved = loan_payment_service.resolve_account_loan(
+    resolved = loan_resolution.resolve_account_loan(
         ctx["account_id"], ctx["scenario_id"], date.today(),
     )
     assert resolved is not None, (
@@ -902,7 +903,7 @@ def _loan_schedule_table_value(ctx):
     the card's ``current_balance`` (an empty table shows no history), keeping
     the reader total for the on-schedule kind test too.
     """
-    resolved = loan_payment_service.resolve_account_loan(
+    resolved = loan_resolution.resolve_account_loan(
         ctx["account_id"], ctx["scenario_id"], date.today(),
     )
     assert resolved is not None, (
@@ -1081,7 +1082,7 @@ class TestLoanCrossPageEquality:
             # nothing has settled since -- the ledger-derived rows make the
             # walk read the REAL balance, equal to today's card, and NOT the
             # replay's scheduled figure.
-            resolved = loan_payment_service.resolve_account_loan(
+            resolved = loan_resolution.resolve_account_loan(
                 ctx["account_id"], ctx["scenario_id"], date.today(),
             )
             confirmed_rows = [
@@ -1292,7 +1293,7 @@ class TestSecuredHomeEquityEquality:
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
             )["current_balance"]
-            resolved = loan_payment_service.resolve_account_loan(
+            resolved = loan_resolution.resolve_account_loan(
                 ctx["mortgage_account_id"], ctx["scenario_id"], date.today(),
             )
             assert resolved is not None, "securing mortgage did not resolve"

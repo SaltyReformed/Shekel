@@ -43,7 +43,6 @@ from app.models.transaction import Transaction
 from app.services import (
     balance_calculator,
     balance_resolver,
-    growth_engine,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -51,10 +50,7 @@ from app.services.account_projection import (
     compute_loan_period_balance_map,
     splice_confirmed_and_projected_loan_balances,
 )
-from app.services.investment_projection import adapt_deductions
-from app.services.loan_loaders import query_shadow_income
-from app.services.loan_payment_service import resolve_account_loan
-from app.services.projection_inputs import build_investment_projection_inputs
+from app.services.loan_resolution import resolve_account_loan
 from app.utils.balance_predicates import account_period_scope_clause
 
 ZERO = Decimal("0")
@@ -73,7 +69,7 @@ def load_account_period_transactions(
     (``_compute_interest_for_year`` and ``_settled_net_by_period`` in
     :mod:`._balances`).  All three select EVERY non-deleted row for the
     account in the period span -- unlike
-    :func:`~app.services.balance_resolver._load_balance_transactions`,
+    :func:`~app.services.balance_resolver.load_balance_transactions`,
     which additionally drops Credit / Cancelled rows -- because their
     downstream consumers (interest accrual and the settled-net walk)
     apply their own status logic and need the full row set.
@@ -460,9 +456,19 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
 
     # Investment accounts: use the growth engine.  The base balance
     # feeding the projection comes from the canonical entries-aware
-    # producer (E-25 / CRIT-01 / R-1).
+    # producer (E-25 / CRIT-01 / R-1).  The investment growth sub-chain was
+    # extracted to ``net_worth_investment`` (module-size ceiling); it composes
+    # this kernel's ``investment_base_balance_map`` seed, so the dispatch is a
+    # call-time import (the sub-chain imports back from here).
     if kind is AccountProjectionKind.INVESTMENT and investment_params is not None:
-        return _build_investment_balance_map(
+        # Pylint: ``import-outside-toplevel`` -- lazy import so the static
+        # import graph carries no ``net_worth_kernel -> net_worth_investment``
+        # cycle at module load, the same seam pattern the loan-reader read
+        # above uses.
+        from app.services.net_worth_investment import (  # pylint: disable=import-outside-toplevel
+            build_investment_balance_map,
+        )
+        return build_investment_balance_map(
             account, investment_params, scenario, periods,
             deductions, salary_gross_biweekly,
         )
@@ -471,9 +477,16 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     # compounds forward at its annual rate.  The rate rides on the
     # account's eager ``asset_appreciation_params`` backref, so no new
     # dispatch kwarg is needed; the helper flat-carries when the params
-    # row is absent.
+    # row is absent.  Same call-time import as the investment branch: the
+    # growth builders live in ``net_worth_investment`` (which imports back).
     if kind is AccountProjectionKind.APPRECIATING:
-        return _build_appreciation_balance_map(account, scenario, periods)
+        # Pylint: ``import-outside-toplevel`` -- lazy import breaks the
+        # ``net_worth_kernel -> net_worth_investment`` cycle, the same seam
+        # pattern the loan-reader read below uses.
+        from app.services.net_worth_investment import (  # pylint: disable=import-outside-toplevel
+            build_appreciation_balance_map,
+        )
+        return build_appreciation_balance_map(account, scenario, periods)
 
     # Interest-bearing and plain accounts share the base path, and it is the
     # only branch that forwards ``amount_overrides``: the override map only
@@ -539,50 +552,6 @@ def account_balance_map_from_inputs(
     )
 
 
-def investment_base_balance_map(
-    account: Account,
-    scenario: Scenario,
-    periods: list,
-) -> "OrderedDict[int, Decimal]":
-    """Return an investment account's cash-basis (pre-growth) balance map.
-
-    The transaction-sum balance an investment account holds from its
-    anchor plus contributions, with NO modeled growth layered on -- the
-    seed a forward growth projection compounds from.  It is the canonical
-    entries-aware producer's map verbatim
-    (:func:`~app.services.balance_resolver.balances_for`), so it agrees
-    penny-for-penny with the figure the grid and every cash surface render
-    for the same rows.
-
-    Shared by every investment growth projection so none re-derives the
-    seed: the net-worth investment sub-chain
-    (:func:`_build_investment_balance_map`, which forward/reverse-projects
-    growth off it), the year-end savings-progress projection
-    (:func:`app.services.year_end_summary_service._savings._project_investment_for_year`,
-    which re-projects each calendar year from this cash basis), and the
-    investment / retirement dashboard forward projections
-    (``investment_dashboard_service._resolve_seed_balance`` and
-    ``retirement_projection._resolve_balance_maps``, whose growth
-    chart seeds from this cash basis while the DISPLAYED headline reads the
-    modeled :func:`balance_map`).  Each must seed from THIS pre-growth map,
-    not the growth-modeled :func:`balance_map` the ``balance_at`` seam
-    returns for an investment account -- seeding from the modeled balance
-    would compound growth on top of growth (re-grow the current period).
-    Exposed from the engine cluster precisely so those consumers can read
-    the seed without calling the fenced cash producer directly.
-
-    Args:
-        account: The investment account.
-        scenario: The baseline scenario (its id scopes the resolver).
-        periods: The pay periods to span (ordered by ``period_index``;
-            must include the anchor so the resolver has its running seed).
-
-    Returns:
-        The ``OrderedDict`` period_id -> Decimal cash-basis balance.
-    """
-    return balance_resolver.balances_for(account, scenario.id, periods).balances
-
-
 def _build_amortizing_balance_map(
     account: Account,
     scenario: Scenario,
@@ -642,357 +611,3 @@ def _build_amortizing_balance_map(
     return splice_confirmed_and_projected_loan_balances(
         periods, confirmed_map, projected_map, date.today(),
     )
-
-
-def _build_investment_balance_map(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    account: Account,
-    investment_params: InvestmentParams,
-    scenario: Scenario,
-    periods: list,
-    deductions: list,
-    salary_gross_biweekly: Decimal,
-) -> "OrderedDict[int, Decimal]":
-    """Build period_id -> balance map using the growth engine.
-
-    Produces balances for all periods by combining three sources:
-
-    - **Pre-anchor periods**: reverse growth engine projection backward
-      from the anchor balance.
-    - **Anchor period**: canonical entries-aware producer (anchor +
-      remaining transactions).
-    - **Post-anchor periods**: forward growth engine projection from
-      the anchor balance.
-
-    Pylint: ``too-many-arguments`` (6/5) /
-    ``too-many-positional-arguments`` (6/5) -- the six are this account's
-    independent growth-engine inputs (the account, its params, the
-    scenario, the period list, its deductions, and the engine
-    gross-biweekly).  They were previously folded behind the year-end
-    ``_ProjectionInputs`` bundle; unfolding the two the kernel needs onto
-    the signature is the honesty-first decomposition the standards prefer
-    over re-wrapping them in a kernel-specific bundle no other caller
-    would share.
-
-    Args:
-        account: Investment account.
-        investment_params: InvestmentParams for the account.
-        scenario: Baseline scenario.
-        periods: All user pay periods.
-        deductions: This account's active paycheck deductions (the
-            contribution feed; adapted internally).
-        salary_gross_biweekly: Raise-aware engine gross per pay period
-            (the employer-match cap basis).
-
-    Returns:
-        OrderedDict mapping period_id to Decimal balance.
-    """
-    # Base balances from the canonical entries-aware producer (E-25 /
-    # CRIT-01 / F-009 / R-1: Commit 8).  ``balances_for`` owns the
-    # transaction query with ``selectinload(Transaction.entries)``,
-    # resolves the anchor via the dated ``AccountAnchorHistory`` SoT,
-    # and routes through the same engine math as the grid -- so the
-    # base balance feeding the growth projection here is identical to
-    # the figure rendered on the grid and other surfaces.  Via the
-    # shared seed accessor so the year-end savings-progress projection
-    # compounds from the SAME cash basis (one definition of the seed).
-    base_balances = investment_base_balance_map(account, scenario, periods)
-
-    # Find the anchor period's index to split pre/post-anchor.
-    anchor_idx = get_anchor_period_index(account, periods)
-    if anchor_idx is None:
-        return base_balances
-
-    pre_anchor = [p for p in periods if p.period_index < anchor_idx]
-    post_anchor = [p for p in periods if p.period_index > anchor_idx]
-    if not pre_anchor and not post_anchor:
-        return base_balances
-
-    # Adapt paycheck deductions, load the post-anchor shadow-income
-    # contribution feed, and compute the growth-engine projection inputs.
-    # F-22 / Commit 18: shared kwargs-splat helper.  The contribution feed
-    # is fed straight in (used once) rather than bound to a local.
-    proj_inputs = build_investment_projection_inputs(
-        investment_params,
-        adapt_deductions(deductions),
-        _load_shadow_contributions(
-            account.id, scenario.id, [p.id for p in post_anchor],
-        ),
-        periods,
-        post_anchor[0] if post_anchor else pre_anchor[-1],
-        salary_gross_biweekly,
-    )
-
-    anchor_balance = base_balances.get(
-        account.current_anchor_period_id, ZERO,
-    )
-    anchor_period = next(
-        (p for p in periods if p.id == account.current_anchor_period_id),
-        None,
-    )
-
-    proj_by_pid = _forward_project_periods(
-        post_anchor, anchor_balance, investment_params, proj_inputs,
-    )
-    rev_by_pid = _reverse_project_periods(
-        pre_anchor, anchor_period, anchor_balance,
-        investment_params, proj_inputs,
-    )
-    return _merge_balance_sources(
-        periods, proj_by_pid, base_balances, rev_by_pid,
-    )
-
-
-def _build_appreciation_balance_map(
-    account: Account,
-    scenario: Scenario,
-    periods: list,
-) -> "OrderedDict[int, Decimal]":
-    """Build period_id -> balance for an appreciating physical asset.
-
-    The user-set market value (the canonical entries-aware resolver's flat
-    anchor carry) is the base; post-anchor periods compound forward at the
-    annual appreciation rate via the growth engine with no contributions.
-
-    Pre-anchor periods are NOT back-cast: a manually-asserted point-in-time
-    market value has no historical basis to compound backward from (unlike
-    an investment's contribution history), so they keep the flat base
-    value.  This is the deliberate asymmetry with
-    :func:`_build_investment_balance_map`, which reverse-projects.
-
-    Degrades to the flat base map when the account has no
-    :class:`~app.models.asset_appreciation_params.AssetAppreciationParams`
-    row yet (Property created, rate not set) or has no post-anchor periods.
-
-    Args:
-        account: The Property account; its ``asset_appreciation_params``
-            backref carries the annual rate.
-        scenario: The baseline scenario.
-        periods: All user pay periods.
-
-    Returns:
-        OrderedDict mapping period_id to Decimal balance.
-    """
-    base_balances = balance_resolver.balances_for(
-        account, scenario.id, periods,
-    ).balances
-
-    anchor_idx = get_anchor_period_index(account, periods)
-    if anchor_idx is None:
-        return base_balances
-
-    anchor_balance = base_balances.get(account.current_anchor_period_id, ZERO)
-
-    # Compound the market value forward at the annual rate (no
-    # contributions) when a rate is configured.  An absent params row
-    # leaves ``proj_by_pid`` empty so the value simply flat-carries forward
-    # via the resolver's base map instead.
-    proj_by_pid: dict = {}
-    params = account.asset_appreciation_params
-    if params is not None:
-        post_anchor = [p for p in periods if p.period_index > anchor_idx]
-        if post_anchor:
-            projection = growth_engine.project_balance(
-                current_balance=anchor_balance,
-                assumed_annual_return=params.annual_appreciation_rate,
-                periods=post_anchor,
-            )
-            proj_by_pid = {pb.period_id: pb.end_balance for pb in projection}
-
-    # Per period: the compounded value (post-anchor), else the resolver's
-    # flat carry (the anchor and forward), else the anchor value
-    # (pre-anchor).  The resolver does not produce pre-anchor balances, so
-    # a manually-set market value is held FLAT backward (back-filled at the
-    # anchor value) rather than reverse-compounded -- there is no
-    # historical valuation to compound backward from -- yet the home still
-    # contributes to net worth at every period.
-    result: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        if period.id in proj_by_pid:
-            result[period.id] = proj_by_pid[period.id]
-        elif period.id in base_balances:
-            result[period.id] = base_balances[period.id]
-        else:
-            result[period.id] = anchor_balance
-    return result
-
-
-def _forward_project_periods(
-    post_anchor: list,
-    anchor_balance: Decimal,
-    investment_params: InvestmentParams,
-    proj_inputs,
-) -> dict:
-    """Forward-project post-anchor period-end balances via the growth engine.
-
-    Args:
-        post_anchor: Periods after the anchor (chronological).
-        anchor_balance: Balance at the end of the anchor period.
-        investment_params: InvestmentParams (for the assumed return).
-        proj_inputs: ``build_investment_projection_inputs`` result.
-
-    Returns:
-        dict mapping period_id to projected end balance, or ``{}`` when
-        there are no post-anchor periods.
-    """
-    if not post_anchor:
-        return {}
-
-    projection = growth_engine.project_balance(
-        current_balance=anchor_balance,
-        assumed_annual_return=investment_params.assumed_annual_return,
-        periods=post_anchor,
-        periodic_contribution=proj_inputs.periodic_contribution,
-        employer_params=proj_inputs.employer_params,
-        annual_contribution_limit=proj_inputs.annual_contribution_limit,
-        ytd_contributions_start=proj_inputs.ytd_contributions,
-    )
-    return {pb.period_id: pb.end_balance for pb in projection}
-
-
-def _reverse_project_periods(
-    pre_anchor: list,
-    anchor_period,
-    anchor_balance: Decimal,
-    investment_params: InvestmentParams,
-    proj_inputs,
-) -> dict:
-    """Reverse-project pre-anchor period-end balances via the growth engine.
-
-    The anchor period is appended to the reverse list so
-    ``reverse_project_balance`` has the correct endpoint (the anchor
-    balance is the end-of-anchor-period value); the anchor's own entry is
-    then dropped from the result so the base-balance map keeps ownership
-    of it.
-
-    Args:
-        pre_anchor: Periods before the anchor (chronological).
-        anchor_period: The anchor PayPeriod (the reverse endpoint), or
-            None if it could not be resolved.
-        anchor_balance: Balance at the end of the anchor period.
-        investment_params: InvestmentParams (for the assumed return).
-        proj_inputs: ``build_investment_projection_inputs`` result.
-
-    Returns:
-        dict mapping period_id to projected end balance, or ``{}`` when
-        there are no pre-anchor periods.
-    """
-    if not pre_anchor or anchor_period is None:
-        return {}
-
-    # DH-#28: thread the annual contribution limit so the reverse caps each
-    # period exactly as the forward path does (otherwise a maxed-out account's
-    # pre-anchor balances are derived too low).  ytd_contributions_start=ZERO
-    # because this window starts at the user's earliest period, before which
-    # no contribution exists; each later calendar year inside the window resets
-    # YTD on its own (the engine replays the year-boundary reset).
-    reversed_proj = growth_engine.reverse_project_balance(
-        anchor_balance=anchor_balance,
-        assumed_annual_return=investment_params.assumed_annual_return,
-        periods=pre_anchor + [anchor_period],
-        periodic_contribution=proj_inputs.periodic_contribution,
-        employer_params=proj_inputs.employer_params,
-        annual_contribution_limit=proj_inputs.annual_contribution_limit,
-        ytd_contributions_start=ZERO,
-    )
-    return {
-        pb.period_id: pb.end_balance
-        for pb in reversed_proj
-        if pb.period_id != anchor_period.id
-    }
-
-
-def _merge_balance_sources(
-    periods: list,
-    proj_by_pid: dict,
-    base_balances: dict,
-    rev_by_pid: dict,
-) -> "OrderedDict[int, Decimal]":
-    """Merge the three balance sources into one period-ordered map.
-
-    For each period, prefers the forward projection, then the canonical
-    base balance, then the reverse projection.  Periods absent from all
-    three sources are omitted.
-
-    Args:
-        periods: All user pay periods (defines output order).
-        proj_by_pid: Forward post-anchor balances by period_id.
-        base_balances: Canonical anchor/base balances by period_id.
-        rev_by_pid: Reverse pre-anchor balances by period_id.
-
-    Returns:
-        OrderedDict mapping period_id to Decimal balance.
-    """
-    result: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        if period.id in proj_by_pid:
-            result[period.id] = proj_by_pid[period.id]
-        elif period.id in base_balances:
-            result[period.id] = base_balances[period.id]
-        elif period.id in rev_by_pid:
-            result[period.id] = rev_by_pid[period.id]
-    return result
-
-
-def _load_shadow_contributions(
-    account_id: int,
-    scenario_id: int,
-    period_ids: list[int],
-) -> list:
-    """Load settled shadow-income (transfer-in) transactions for an account.
-
-    The contribution-history feed for the growth engine, shared by the
-    year-end savings-progress projection
-    (``_project_investment_for_year``) and the net-worth investment
-    balance map (:func:`_build_investment_balance_map`).  ``status`` and
-    ``pay_period`` are eager-loaded so the downstream consumer
-    (``investment_projection.calculate_investment_inputs`` /
-    ``build_contribution_timeline``) reads ``txn.status.*`` /
-    ``txn.pay_period`` without an N+1.  The status filter routes through
-    ``balance_excluded_status_ids`` (D6-09 / MED-02), which lets the
-    query drop the ``Status`` INNER JOIN while the ``joinedload`` keeps
-    the attribute available; the audit-trigger row count is unchanged.
-
-    Args:
-        account_id: Target account ID.
-        scenario_id: Baseline scenario ID.
-        period_ids: Pay period IDs whose shadow income forms the
-            contribution history.
-
-    Returns:
-        List of shadow-income Transaction objects, or ``[]`` when
-        ``period_ids`` is empty.
-    """
-    if not period_ids:
-        return []
-
-    # Shadow-income definition + status/pay_period eager-loads come from
-    # the shared ``query_shadow_income`` builder (the R0801 sibling is
-    # ``loan_payment_service.get_payment_history``, NOT ``budget_variance``
-    # as a prior rationale wrongly claimed); the feed scopes it to the
-    # supplied periods.
-    return (
-        query_shadow_income(account_id, scenario_id)
-        .filter(Transaction.pay_period_id.in_(period_ids))
-        .all()
-    )
-
-
-def get_anchor_period_index(
-    account: Account, all_periods: list,
-) -> int | None:
-    """Return the period_index of the account's anchor period.
-
-    Args:
-        account: Account with current_anchor_period_id set.
-        all_periods: All user pay periods.
-
-    Returns:
-        int period_index, or None if the anchor period is not found.
-    """
-    anchor_pid = account.current_anchor_period_id
-    if anchor_pid is None:
-        return None
-    for p in all_periods:
-        if p.id == anchor_pid:
-            return p.period_index
-    return None

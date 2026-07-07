@@ -1,0 +1,41 @@
+{% from "_money_macros.html" import money %}
+{# Investment / retirement detail balance hero (Loop B P1 C4, restyled
+   into the band hero in P2 -- docs/design/investment_audit.md, locked
+   anatomy).
+
+   The click-to-edit anchor control for the detail page: clicking (or
+   Enter / Space via the global data-keyboard-activate handler in app.js)
+   swaps in the shared grid anchor editor
+   (accounts.anchor_form?revert=investment), which REPLACES this cell.
+   Cancel / Escape revert here via investment.balance_hero; a save fires
+   balanceChanged and the page's hero region (and the chart container)
+   re-render, re-syncing the displayed model-from-anchor balance.
+
+   The editor edits the RAW anchor balance; this cell DISPLAYS the resolver
+   model-from-anchor current_balance (the same display-vs-edit split the
+   dashboard hero and the cockpit cell use).
+
+   Context: account (Account), current_balance (Decimal | None -- the
+   model-from-anchor balance the headline shows, rendered as a non-editable
+   dash when no figure resolves), anchor_as_of (date | None -- the anchor
+   event date for the "anchored <date>" caption). #}
+{% if current_balance is not none %}
+<div id="investment-balance-hero"
+     class="nw-hero__num font-mono invd-hero-edit"
+     hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='investment') }}"
+     hx-target="this"
+     hx-swap="outerHTML"
+     role="button"
+     tabindex="0"
+     data-keyboard-activate
+     aria-label="{{ account.name }} balance: {{ money(current_balance, cents=false) }}. Click to record a statement balance."
+     title="Click to record a statement balance">
+  {{ money(current_balance) }}
+  <i class="bi bi-pencil-square invd-hero-edit__pencil" aria-hidden="true"></i>
+  {% if anchor_as_of %}
+  <small class="nw-hero__cap d-block">anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}</small>
+  {% endif %}
+</div>
+{% else %}
+<div id="investment-balance-hero" class="nw-hero__num font-mono">--</div>
+{% endif %}

@@ -1,10 +1,12 @@
 """
-Tests for csv_export_service.py -- Commit 17 + Build-Order Step 5 (C11).
+Tests for csv_export_service.py -- calendar export (Commit 17).
 
-Verifies CSV generation for the six analytics export functions
-(calendar, year-end, variance, trends, income statement, balance sheet).
-Tests cover header correctness, data formatting, edge cases
-(None, special characters, decimal precision), and CSV parseability.
+Verifies CSV generation for the calendar month/year export -- the only
+surviving analytics export after the Slice-4 shell collapse (the year-end,
+variance, trends, income-statement, and balance-sheet exports were retired
+with their tabs).  Tests cover header correctness, data formatting, edge
+cases (None, special characters, decimal precision), CSV parseability, and
+formula-injection (CWE-1236) neutralization.
 """
 
 import csv
@@ -13,16 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
-from app.services.csv_export_service import (
-    export_balance_sheet_csv,
-    export_calendar_csv,
-    export_income_statement_csv,
-    export_trends_csv,
-    export_variance_csv,
-    export_year_end_csv,
-)
+from app.services.csv_export_service import export_calendar_csv
 
 
 # ── Fake Data Structures ─────────────────────────────────────────
@@ -54,7 +47,12 @@ class FakeMonthSummary:
     projected_end_balance: Decimal = Decimal("5000.00")
     is_third_paycheck_month: bool = False
     day_entries: dict = field(default_factory=dict)
+    day_totals: dict = field(default_factory=dict)
+    day_overflow: dict = field(default_factory=dict)
     paycheck_days: list = field(default_factory=list)
+    # Daily running-balance view; None here means the CSV's end-of-day
+    # balance column is blank (the route supplies it in production).
+    daily: object = None
 
 
 @dataclass(frozen=True)
@@ -65,145 +63,6 @@ class FakeYearOverview:
     annual_income: Decimal = Decimal("36000.00")
     annual_expenses: Decimal = Decimal("24000.00")
     annual_net: Decimal = Decimal("12000.00")
-
-
-@dataclass(frozen=True)
-class FakeVarianceFigures:
-    """Minimal VarianceFigures stand-in for CSV tests."""
-    estimated: Decimal = Decimal("1200.00")
-    actual: Decimal = Decimal("1200.00")
-    variance: Decimal = Decimal("0.00")
-    variance_pct: Decimal | None = Decimal("0.00")
-
-
-def _zero_figures() -> FakeVarianceFigures:
-    """Zero figures with a null percentage -- the empty-report default."""
-    return FakeVarianceFigures(
-        estimated=Decimal("0.00"),
-        actual=Decimal("0.00"),
-        variance=Decimal("0.00"),
-        variance_pct=None,
-    )
-
-
-@dataclass(frozen=True)
-class FakeTransactionVariance:
-    """Minimal TransactionVariance for CSV tests."""
-    transaction_id: int = 1
-    name: str = "Rent Payment"
-    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
-    is_paid: bool = True
-    due_date: date | None = None
-
-
-@dataclass(frozen=True)
-class FakeCategoryItemVariance:
-    """Minimal CategoryItemVariance for CSV tests."""
-    category_id: int = 1
-    group_name: str = "Home"
-    item_name: str = "Rent"
-    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
-    transaction_count: int = 1
-    transactions: list = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class FakeCategoryGroupVariance:
-    """Minimal CategoryGroupVariance for CSV tests."""
-    group_name: str = "Home"
-    figures: FakeVarianceFigures = field(default_factory=FakeVarianceFigures)
-    items: list = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class FakeVarianceReport:
-    """Minimal VarianceReport for CSV tests."""
-    window_type: str = "pay_period"
-    window_label: str = "Jan 02 - Jan 15, 2026"
-    groups: list = field(default_factory=list)
-    figures: FakeVarianceFigures = field(default_factory=_zero_figures)
-    transaction_count: int = 0
-
-
-@dataclass(frozen=True)
-class FakeItemTrend:
-    """Minimal ItemTrend for CSV tests."""
-    category_id: int = 1
-    group_name: str = "Home"
-    item_name: str = "Rent"
-    period_average: Decimal = Decimal("500.00")
-    trend_direction: str = "up"
-    pct_change: Decimal | None = Decimal("10.50")
-    absolute_change: Decimal = Decimal("50.00")
-    is_flagged: bool = True
-    data_points: int = 10
-    total_spending: Decimal = Decimal("5000.00")
-    avg_days_before_due: Decimal | None = None
-
-
-@dataclass(frozen=True)
-class FakeTrendReport:
-    """Minimal TrendReport for CSV tests."""
-    window_months: int = 6
-    window_periods: int = 13
-    top_increasing: list = field(default_factory=list)
-    top_decreasing: list = field(default_factory=list)
-    all_items: list = field(default_factory=list)
-    group_trends: list = field(default_factory=list)
-    data_sufficiency: str = "sufficient"
-    threshold: Decimal = Decimal("0.1000")
-
-
-# ── Statement Fakes (Build-Order Step 5) ─────────────────────────
-# Duck-typed stand-ins for the ledger_report_service frozen shapes, kept
-# local so these stay pure formatting unit tests (the real report -> CSV
-# path is covered end-to-end by the route tests).  The CSV functions read
-# only the attributes named here.
-
-
-@dataclass(frozen=True)
-class FakeStatementLine:
-    """Minimal StatementLine for CSV tests (label + natural amount)."""
-    label: str
-    amount: Decimal
-    ledger_account_id: int | None = None
-
-
-@dataclass(frozen=True)
-class FakeStatementSection:
-    """Minimal StatementSection for CSV tests (lines + total)."""
-    lines: list = field(default_factory=list)
-    total: Decimal = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class FakeTieOut:
-    """Minimal TrialBalanceTieOut for CSV tests."""
-    assets: Decimal = Decimal("0.00")
-    liabilities_plus_equity: Decimal = Decimal("0.00")
-    ledger_net: Decimal = Decimal("0.00")
-    in_balance: bool = True
-
-
-@dataclass(frozen=True)
-class FakeIncomeStatement:
-    """Minimal IncomeStatementReport for CSV tests."""
-    window_label: str = "January 2026"
-    income: FakeStatementSection = field(default_factory=FakeStatementSection)
-    expense: FakeStatementSection = field(default_factory=FakeStatementSection)
-    net_income: Decimal = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class FakeBalanceSheet:
-    """Minimal BalanceSheetReport for CSV tests."""
-    as_of: date = date(2026, 3, 20)
-    assets: FakeStatementSection = field(default_factory=FakeStatementSection)
-    liabilities: FakeStatementSection = field(
-        default_factory=FakeStatementSection,
-    )
-    equity: FakeStatementSection = field(default_factory=FakeStatementSection)
-    tie_out: FakeTieOut = field(default_factory=FakeTieOut)
 
 
 def _parse_csv(csv_str):
@@ -227,6 +86,20 @@ class TestCalendarExport:
         assert rows[0][0] == "Due Date"
         assert "Amount ($)" in rows[0]
         assert "Income/Expense" in rows[0]
+        assert "End-of-Day Balance ($)" in rows[0]
+
+    def test_export_calendar_month_eod_balance_column(self, app):
+        """The end-of-day balance column carries the day's running balance."""
+        from types import SimpleNamespace
+        data = FakeMonthSummary(
+            day_entries={5: [FakeDayEntry(name="Rent")]},
+            daily=SimpleNamespace(daily_balances={5: Decimal("800.00")}),
+        )
+        result = export_calendar_csv(data, "month")
+        rows = _parse_csv(result)
+        eod_col = rows[0].index("End-of-Day Balance ($)")
+        # The Rent row (day 5) carries that day's projected EOD balance.
+        assert rows[1][eod_col] == "800.00"
 
     def test_export_calendar_month_data(self, app):
         """C17-svc2: Month CSV has correct number of data rows."""
@@ -256,285 +129,11 @@ class TestCalendarExport:
         assert len(rows) == 1  # headers only
 
 
-# ── Year-End Tests ────────────────────────────────────────────────
-
-
-class TestYearEndExport:
-    """Tests for export_year_end_csv()."""
-
-    def test_export_year_end_sections(self, app):
-        """C17-svc4: Year-end CSV contains all section headers."""
-        data = _build_year_end_data()
-        result = export_year_end_csv(data)
-        assert "[Income and Taxes]" in result
-        assert "[Spending by Category]" in result
-        assert "[Transfers]" in result
-        assert "[Net Worth Monthly]" in result
-        assert "[Debt Progress]" in result
-        assert "[Savings Progress]" in result
-
-    def test_export_year_end_payment_timeliness(self, app):
-        """C17-extra9: Payment Timeliness section present with OP-2 data."""
-        data = _build_year_end_data(with_timeliness=True)
-        result = export_year_end_csv(data)
-        assert "[Payment Timeliness]" in result
-        assert "Total Bills Paid" in result
-
-    def test_export_year_end_no_timeliness(self, app):
-        """C17-extra10: No crash and no section when OP-2 data is None."""
-        data = _build_year_end_data(with_timeliness=False)
-        result = export_year_end_csv(data)
-        assert "[Payment Timeliness]" not in result
-
-
-# ── Variance Tests ────────────────────────────────────────────────
-
-
-class TestVarianceExport:
-    """Tests for export_variance_csv()."""
-
-    def test_export_variance_hierarchy(self, app):
-        """C17-svc5: CSV has Group, Item, and Transaction level rows."""
-        report = _build_variance_report()
-        result = export_variance_csv(report)
-        rows = _parse_csv(result)
-        levels = [r[0] for r in rows[1:]]  # skip header
-        assert "Group" in levels
-        assert "Item" in levels
-        assert "Transaction" in levels
-
-    def test_export_variance_totals_row(self, app):
-        """C17-svc6: Last data row is 'Total'."""
-        report = _build_variance_report()
-        result = export_variance_csv(report)
-        rows = _parse_csv(result)
-        last = rows[-1]
-        assert last[0] == "Total"
-
-    def test_export_variance_pct_none(self, app):
-        """C17-extra8: None variance_pct exported as empty string."""
-        none_pct = FakeVarianceFigures(variance_pct=None)
-        txn = FakeTransactionVariance(figures=none_pct)
-        item = FakeCategoryItemVariance(transactions=[txn], figures=none_pct)
-        group = FakeCategoryGroupVariance(items=[item], figures=none_pct)
-        report = FakeVarianceReport(groups=[group], figures=none_pct)
-        result = export_variance_csv(report)
-        assert "None" not in result
-
-
-# ── Trends Tests ──────────────────────────────────────────────────
-
-
-class TestTrendsExport:
-    """Tests for export_trends_csv()."""
-
-    def test_export_trends_metadata(self, app):
-        """C17-svc7: First row contains window months and threshold."""
-        report = FakeTrendReport(window_months=6, threshold=Decimal("0.1000"))
-        result = export_trends_csv(report)
-        rows = _parse_csv(result)
-        assert rows[0][0] == "Window"
-        assert "6 months" in rows[0][1]
-        assert "10.00%" in rows[0][3]
-
-    def test_export_trends_all_items(self, app):
-        """C17-svc8: CSV has correct number of item rows."""
-        items = [
-            FakeItemTrend(item_name=f"Item {i}") for i in range(5)
-        ]
-        report = FakeTrendReport(all_items=items)
-        result = export_trends_csv(report)
-        rows = _parse_csv(result)
-        # metadata + header + 5 items
-        assert len(rows) == 7
-
-    def test_export_trends_emerging_new(self, app):
-        """An emerging item (pct_change=None) exports 'New' in the % column."""
-        item = FakeItemTrend(item_name="New Bill", pct_change=None)
-        report = FakeTrendReport(all_items=[item])
-        result = export_trends_csv(report)
-        rows = _parse_csv(result)
-        # Header order: ..., Direction(3), Change (%)(4), ... -> index 4.
-        assert rows[2][4] == "New"
-
-
-# ── Income Statement Tests (Build-Order Step 5) ──────────────────
-
-
-class TestIncomeStatementExport:
-    """Tests for export_income_statement_csv()."""
-
-    def test_export_income_statement_sections(self, app):
-        """C11-svc1: title, both bracketed sections, totals, and net income.
-
-        Income 2000 + 500 = 2500; expense 1200 + 300 = 1500; net 1000.
-        """
-        report = FakeIncomeStatement(
-            window_label="January 2026",
-            income=FakeStatementSection(
-                lines=[
-                    FakeStatementLine("Salary", Decimal("2000.00"), 1),
-                    FakeStatementLine("Freelance", Decimal("500.00"), 2),
-                ],
-                total=Decimal("2500.00"),
-            ),
-            expense=FakeStatementSection(
-                lines=[
-                    FakeStatementLine("Rent", Decimal("1200.00"), 3),
-                    FakeStatementLine("Groceries", Decimal("300.00"), 4),
-                ],
-                total=Decimal("1500.00"),
-            ),
-            net_income=Decimal("1000.00"),
-        )
-        rows = _parse_csv(export_income_statement_csv(report))
-        assert rows[0] == ["Income Statement", "January 2026"]
-        flat = {cell for row in rows for cell in row}
-        assert "[Income]" in flat
-        assert "[Expenses]" in flat
-        assert ["Salary", "2000.00"] in rows
-        assert ["Groceries", "300.00"] in rows
-        assert ["Total Income", "2500.00"] in rows
-        assert ["Total Expenses", "1500.00"] in rows
-        assert ["Net Income", "1000.00"] in rows
-
-    def test_export_income_statement_empty(self, app):
-        """C11-svc2: an empty statement still emits both sections and zeros.
-
-        A user with nothing posted in the window exports valid structure --
-        both bracketed sections, zero totals, and a zero net income -- not
-        an empty file.
-        """
-        report = FakeIncomeStatement(
-            window_label="2026",
-            income=FakeStatementSection(lines=[], total=Decimal("0.00")),
-            expense=FakeStatementSection(lines=[], total=Decimal("0.00")),
-            net_income=Decimal("0.00"),
-        )
-        rows = _parse_csv(export_income_statement_csv(report))
-        flat = {cell for row in rows for cell in row}
-        assert "[Income]" in flat
-        assert "[Expenses]" in flat
-        assert ["Total Income", "0.00"] in rows
-        assert ["Total Expenses", "0.00"] in rows
-        assert ["Net Income", "0.00"] in rows
-
-    def test_export_income_statement_negative_net(self, app):
-        """C11-svc3: a loss exports a negative net income (numeric, not quoted).
-
-        Expenses 800 exceed income 500 -> net -300; the numeric stays a
-        plain '-300.00' so a spreadsheet can aggregate it.
-        """
-        report = FakeIncomeStatement(
-            income=FakeStatementSection(
-                lines=[FakeStatementLine("Salary", Decimal("500.00"), 1)],
-                total=Decimal("500.00"),
-            ),
-            expense=FakeStatementSection(
-                lines=[FakeStatementLine("Rent", Decimal("800.00"), 3)],
-                total=Decimal("800.00"),
-            ),
-            net_income=Decimal("-300.00"),
-        )
-        rows = _parse_csv(export_income_statement_csv(report))
-        assert ["Net Income", "-300.00"] in rows
-
-
-# ── Balance Sheet Tests (Build-Order Step 5) ─────────────────────
-
-
-class TestBalanceSheetExport:
-    """Tests for export_balance_sheet_csv()."""
-
-    def test_export_balance_sheet_sections(self, app):
-        """C11-svc4: title (as-of), the three sections, and a green tie-out.
-
-        Assets 1500; Liabilities 200; Equity 1000 opening + 300 retained =
-        1300; L+E = 1500 = Assets, so In Balance is Yes.
-        """
-        report = FakeBalanceSheet(
-            as_of=date(2026, 3, 20),
-            assets=FakeStatementSection(
-                lines=[FakeStatementLine("Checking", Decimal("1500.00"), 1)],
-                total=Decimal("1500.00"),
-            ),
-            liabilities=FakeStatementSection(
-                lines=[FakeStatementLine("Credit Card", Decimal("200.00"), 2)],
-                total=Decimal("200.00"),
-            ),
-            equity=FakeStatementSection(
-                lines=[
-                    FakeStatementLine("Checking -- Opening",
-                                      Decimal("1000.00"), 3),
-                    FakeStatementLine("Retained Earnings",
-                                      Decimal("300.00"), None),
-                ],
-                total=Decimal("1300.00"),
-            ),
-            tie_out=FakeTieOut(
-                assets=Decimal("1500.00"),
-                liabilities_plus_equity=Decimal("1500.00"),
-                ledger_net=Decimal("0.00"),
-                in_balance=True,
-            ),
-        )
-        rows = _parse_csv(export_balance_sheet_csv(report))
-        assert rows[0] == ["Balance Sheet", "2026-03-20"]
-        flat = {cell for row in rows for cell in row}
-        assert "[Assets]" in flat
-        assert "[Liabilities]" in flat
-        assert "[Equity]" in flat
-        assert "[Trial Balance]" in flat
-        assert ["Total Assets", "1500.00"] in rows
-        assert ["Total Liabilities", "200.00"] in rows
-        assert ["Total Equity", "1300.00"] in rows
-        assert ["Retained Earnings", "300.00"] in rows
-        assert ["Assets", "1500.00"] in rows
-        assert ["Liabilities + Equity", "1500.00"] in rows
-        assert ["In Balance", "Yes"] in rows
-
-    def test_export_balance_sheet_out_of_balance(self, app):
-        """C11-svc5: a broken tie-out exports 'No' and the nonzero ledger net.
-
-        When the ledger does not close, the export must surface it (In
-        Balance = No) and carry the mechanical ledger-net figure so the
-        discrepancy is visible in the download, not just on screen.
-        """
-        report = FakeBalanceSheet(
-            tie_out=FakeTieOut(
-                assets=Decimal("1500.00"),
-                liabilities_plus_equity=Decimal("1475.00"),
-                ledger_net=Decimal("25.00"),
-                in_balance=False,
-            ),
-        )
-        rows = _parse_csv(export_balance_sheet_csv(report))
-        assert ["In Balance", "No"] in rows
-        assert ["Ledger Net", "25.00"] in rows
-
-    def test_export_balance_sheet_liability_natural_sign(self, app):
-        """C11-svc6: a natural-signed liability line exports positive.
-
-        The reader signs a credit-normal liability into positive
-        natural-balance terms (reader-contract C-4), so the CSV renders it
-        as a positive Liabilities line with no ``-abs`` in the exporter.
-        """
-        report = FakeBalanceSheet(
-            liabilities=FakeStatementSection(
-                lines=[FakeStatementLine("Loan", Decimal("5000.00"), 9)],
-                total=Decimal("5000.00"),
-            ),
-        )
-        rows = _parse_csv(export_balance_sheet_csv(report))
-        assert ["Loan", "5000.00"] in rows
-        assert ["Total Liabilities", "5000.00"] in rows
-
-
 # ── Cross-Cutting Tests ──────────────────────────────────────────
 
 
 class TestCsvFormatting:
-    """Tests for CSV formatting rules across all export functions."""
+    """Tests for CSV formatting rules on the calendar export."""
 
     def test_export_amounts_no_currency_symbol(self, app):
         """C17-extra2: No $ in CSV data (only in column headers)."""
@@ -594,9 +193,12 @@ class TestCsvFormatting:
         assert "1500.10" in result
 
     def test_csv_parseable(self, app):
-        """C17-extra11: Output is parseable by csv.reader."""
-        report = _build_variance_report()
-        result = export_variance_csv(report)
+        """C17-extra11: Output is parseable with uniform column counts."""
+        data = FakeMonthSummary(day_entries={
+            5: [FakeDayEntry(name="A"), FakeDayEntry(name="B")],
+            10: [FakeDayEntry(name="C")],
+        })
+        result = export_calendar_csv(data, "month")
         rows = _parse_csv(result)
         assert len(rows) > 1
         # All rows should have the same number of columns.
@@ -635,104 +237,6 @@ class TestFormulaInjection:
         assert rows[1][2] == "'+Home"
         assert rows[1][3] == "'@Rent"
 
-    def test_year_end_names_neutralized(self, app):
-        """Deduction, spending-category, and every account-name column in
-        the year-end export are neutralized."""
-        data = _build_year_end_data()
-        data["income_tax"]["pretax_deductions"] = [
-            {"name": "=evil()", "annual_total": Decimal("100.00")},
-        ]
-        data["spending_by_category"] = [{
-            "group_name": "-Home",
-            "group_total": Decimal("100.00"),
-            "items": [{"item_name": "@Rent", "item_total": Decimal("100.00")}],
-        }]
-        data["transfers_summary"] = [{
-            "destination_account": "=SUM(A1)",
-            "destination_account_id": 2,
-            "total_amount": Decimal("50.00"),
-        }]
-        data["debt_progress"][0]["account_name"] = "+Mortgage"
-        data["savings_progress"][0]["account_name"] = "@Savings"
-        cells = {c for row in _parse_csv(export_year_end_csv(data)) for c in row}
-        assert "'=evil()" in cells
-        assert "'-Home" in cells
-        assert "'@Rent" in cells
-        assert "'=SUM(A1)" in cells
-        assert "'+Mortgage" in cells
-        assert "'@Savings" in cells
-
-    def test_variance_names_neutralized(self, app):
-        """Group, item, and transaction names are neutralized at every
-        level of the variance export."""
-        figures = FakeVarianceFigures(
-            estimated=Decimal("100.00"), actual=Decimal("100.00"),
-            variance=Decimal("0.00"), variance_pct=Decimal("0.00"),
-        )
-        txn = FakeTransactionVariance(name="=evil()", figures=figures)
-        item = FakeCategoryItemVariance(
-            group_name="+Home", item_name="@Rent",
-            figures=figures, transactions=[txn],
-        )
-        group = FakeCategoryGroupVariance(
-            group_name="+Home", figures=figures, items=[item],
-        )
-        report = FakeVarianceReport(
-            groups=[group], figures=figures, transaction_count=1,
-        )
-        cells = {c for row in _parse_csv(export_variance_csv(report)) for c in row}
-        assert "'+Home" in cells
-        assert "'@Rent" in cells
-        assert "'=evil()" in cells
-
-    def test_trends_names_neutralized(self, app):
-        """Category group/item names in the trends export are neutralized."""
-        item = FakeItemTrend(group_name="=evil()", item_name="-Rent")
-        report = FakeTrendReport(all_items=[item])
-        cells = {c for row in _parse_csv(export_trends_csv(report)) for c in row}
-        assert "'=evil()" in cells
-        assert "'-Rent" in cells
-
-    def test_income_statement_names_neutralized(self, app):
-        """Income/Expense line labels (user category names) are neutralized."""
-        report = FakeIncomeStatement(
-            income=FakeStatementSection(
-                lines=[FakeStatementLine("=SUM(A1)", Decimal("100.00"), 1)],
-                total=Decimal("100.00"),
-            ),
-            expense=FakeStatementSection(
-                lines=[FakeStatementLine("@evil", Decimal("50.00"), 2)],
-                total=Decimal("50.00"),
-            ),
-            net_income=Decimal("50.00"),
-        )
-        cells = {
-            c for row in _parse_csv(export_income_statement_csv(report))
-            for c in row
-        }
-        assert "'=SUM(A1)" in cells
-        assert "'@evil" in cells
-
-    def test_balance_sheet_names_neutralized(self, app):
-        """Asset/Liability/Equity line labels (user account names) are
-        neutralized."""
-        report = FakeBalanceSheet(
-            assets=FakeStatementSection(
-                lines=[FakeStatementLine("+Checking", Decimal("100.00"), 1)],
-                total=Decimal("100.00"),
-            ),
-            equity=FakeStatementSection(
-                lines=[FakeStatementLine("-Opening", Decimal("100.00"), 3)],
-                total=Decimal("100.00"),
-            ),
-        )
-        cells = {
-            c for row in _parse_csv(export_balance_sheet_csv(report))
-            for c in row
-        }
-        assert "'+Checking" in cells
-        assert "'-Opening" in cells
-
     def test_ordinary_name_not_prefixed(self, app):
         """A name that does not lead with a formula char is unchanged --
         no spurious quote is added (avoids corrupting every benign name)."""
@@ -756,104 +260,3 @@ class TestFormulaInjection:
         rows = _parse_csv(export_calendar_csv(data, "month"))
         # Column 4 is "Amount ($)" in the month export.
         assert rows[1][4] == "-50.00"
-
-
-# ── Helpers ───────────────────────────────────────────────────────
-
-
-def _build_year_end_data(with_timeliness=False):
-    """Build a minimal year-end summary dict for testing."""
-    monthly_values = [
-        {"month": m, "month_name": f"Month{m}", "balance": Decimal("1000.00")}
-        for m in range(1, 13)
-    ]
-    data = {
-        "income_tax": {
-            "gross_wages": Decimal("75000.00"),
-            "federal_tax": Decimal("6000.00"),
-            "state_tax": Decimal("3000.00"),
-            "social_security_tax": Decimal("4650.00"),
-            "medicare_tax": Decimal("1087.50"),
-            "pretax_deductions": [
-                {"name": "401k", "annual_total": Decimal("5200.00")},
-            ],
-            "posttax_deductions": [],
-            "total_pretax": Decimal("5200.00"),
-            "total_posttax": Decimal("0.00"),
-            "net_pay_total": Decimal("55062.50"),
-            "mortgage_interest_total": Decimal("15000.00"),
-        },
-        "spending_by_category": [
-            {
-                "group_name": "Home",
-                "group_total": Decimal("14400.00"),
-                "items": [
-                    {"item_name": "Rent", "item_total": Decimal("14400.00")},
-                ],
-            },
-        ],
-        "transfers_summary": [
-            {
-                "destination_account": "Savings",
-                "destination_account_id": 2,
-                "total_amount": Decimal("6000.00"),
-            },
-        ],
-        "net_worth": {
-            "monthly_values": monthly_values,
-            "jan1": Decimal("10000.00"),
-            "dec31": Decimal("22000.00"),
-            "delta": Decimal("12000.00"),
-        },
-        "debt_progress": [
-            {
-                "account_name": "Mortgage",
-                "account_id": 3,
-                "jan1_balance": Decimal("240000.00"),
-                "dec31_balance": Decimal("235000.00"),
-                "principal_paid": Decimal("5000.00"),
-            },
-        ],
-        "savings_progress": [
-            {
-                "account_name": "Savings",
-                "account_id": 2,
-                "jan1_balance": Decimal("500.00"),
-                "dec31_balance": Decimal("6500.00"),
-                "total_contributions": Decimal("6000.00"),
-                "employer_contributions": Decimal("0.00"),
-                "investment_growth": Decimal("0.00"),
-            },
-        ],
-        "payment_timeliness": None,
-    }
-    if with_timeliness:
-        data["payment_timeliness"] = {
-            "total_bills_paid": 24,
-            "paid_on_time": 22,
-            "paid_late": 2,
-            "avg_days_before_due": Decimal("3.50"),
-        }
-    return data
-
-
-def _build_variance_report():
-    """Build a VarianceReport with one group, one item, one txn.
-
-    The same figures (est 1200, act 1250, variance 50.00, pct 4.17) apply
-    at every level, matching how a single-transaction report rolls up.
-    """
-    figures = FakeVarianceFigures(
-        estimated=Decimal("1200.00"),
-        actual=Decimal("1250.00"),
-        variance=Decimal("50.00"),
-        variance_pct=Decimal("4.17"),
-    )
-    txn = FakeTransactionVariance(name="Jan Rent", figures=figures)
-    item = FakeCategoryItemVariance(figures=figures, transactions=[txn])
-    group = FakeCategoryGroupVariance(figures=figures, items=[item])
-    return FakeVarianceReport(
-        groups=[group],
-        figures=figures,
-        transaction_count=1,
-    )

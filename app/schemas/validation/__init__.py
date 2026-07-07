@@ -98,9 +98,13 @@ from app.schemas.validation.investments import (
 )
 from app.schemas.validation.loans import (
     EscrowComponentSchema,
+    EscrowLineMergeSchema,
+    EscrowLineRenameSchema,
+    EscrowVersionSchema,
     LoanAnchorTrueupSchema,
     LoanParamsCreateSchema,
     LoanParamsUpdateSchema,
+    LoanPaymentExtraSchema,
     LoanPaymentTransferSchema,
     PayoffCalculatorSchema,
     RateChangeSchema,
@@ -132,6 +136,7 @@ from app.schemas.validation.salary import (
     SalaryProfileUpdateSchema,
     StateTaxConfigSchema,
     TaxBracketSetSchema,
+    YtdTaxCheckpointSchema,
 )
 from app.schemas.validation.savings import (
     SavingsGoalCreateSchema,
@@ -175,6 +180,9 @@ __all__ = [
     "EntryCreateSchema",
     "EntryUpdateSchema",
     "EscrowComponentSchema",
+    "EscrowLineMergeSchema",
+    "EscrowLineRenameSchema",
+    "EscrowVersionSchema",
     "FicaConfigSchema",
     "InlineTransactionCreateSchema",
     "InterestParamsCreateSchema",
@@ -185,6 +193,7 @@ __all__ = [
     "LoanAnchorTrueupSchema",
     "LoanParamsCreateSchema",
     "LoanParamsUpdateSchema",
+    "LoanPaymentExtraSchema",
     "LoanPaymentTransferSchema",
     "LoginSchema",
     "MarkDoneSchema",
@@ -223,4 +232,5 @@ __all__ = [
     "TransferTemplateUpdateSchema",
     "TransferUpdateSchema",
     "UserSettingsSchema",
+    "YtdTaxCheckpointSchema",
 ]

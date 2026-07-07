@@ -169,20 +169,25 @@ class TestObligationsAggregator:
                 f"ONCE must not contribute; recurring -> $216.67; got {result}"
             )
 
-    def test_obligations_and_savings_agree(self, app, seed_user, auth_client):
-        """C23-4: the /obligations page expense subtotal and
-        savings_dashboard's EF committed_monthly baseline -- now both
-        route through obligations_aggregator -- agree on the same
-        dollar number for the same templates.
+    def test_recurring_surface_and_savings_agree(
+        self, app, seed_user, auth_client,
+    ):
+        """C23-4: the unified Recurring surface's expense subtotal and
+        savings_dashboard's EF committed_monthly baseline -- both route
+        through obligations_aggregator -- agree on the same dollar number
+        for the same templates.
+
+        The /obligations page retired (Loop B); its monthly-equivalent
+        kernel moved to the unified /templates surface, reached here by
+        following the /obligations redirect.
 
         Setup: two expenses on checking ($100 biweekly + $500 monthly).
         Hand-computed monthly equivalents:
             $100 * 26 / 12 = $216.67
             $500           = $500.00
             total expense  = $716.67
-        Pre-Commit-23 the /obligations total and the EF baseline
-        applied two different filters; with the canonical aggregator
-        they cannot diverge.
+        The rendered subtotal and the EF baseline both call the canonical
+        aggregator, so they cannot diverge.
         """
         with app.app_context():
             biweekly_rule = _create_rule(
@@ -201,12 +206,13 @@ class TestObligationsAggregator:
             )
             db.session.commit()
 
-            # /obligations expense subtotal -- read from the rendered
-            # page so we are testing the actual route, not the function.
-            resp = auth_client.get("/obligations")
+            # Expense subtotal read from the rendered unified Recurring
+            # surface (via the /obligations redirect) so we test the actual
+            # route, not just the function.
+            resp = auth_client.get("/obligations", follow_redirects=True)
             assert resp.status_code == 200
             assert "$716.67" in resp.data.decode(), (
-                "/obligations expense subtotal must show $716.67"
+                "unified Recurring surface expense subtotal must show $716.67"
             )
 
             # Same templates fed through the aggregator directly --

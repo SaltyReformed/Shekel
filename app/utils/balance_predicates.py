@@ -12,10 +12,9 @@ different forms:
   ``savings_dashboard_service.py``, ``loan_payment_service.py``.
 - Jinja conditionals against status IDs across the grid templates.
 
-In addition the ``[CREDIT, CANCELLED]`` exclusion set is re-derived twice
-under different names (``_get_excluded_status_ids`` in
-``year_end_summary_service.py``; ``excluded_status_ids`` in
-``budget_variance_service.py``) plus reproduced inline.
+In addition the ``[CREDIT, CANCELLED]`` exclusion set is re-derived under a
+different name (``_get_excluded_status_ids`` in
+``year_end_summary_service.py``) plus reproduced inline.
 
 Every site is individually ID-based and correct today (E-15 is satisfied
 at each site -- never a name-string comparison), so no displayed number
@@ -72,7 +71,7 @@ module source.
 """
 from datetime import date
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -433,51 +432,15 @@ def account_period_scope_clause(
     )
 
 
-def monthly_attribution_clause(first_day: date, last_day: date, period_ids: list[int]):
-    """Return a SQLAlchemy clause attributing a transaction to a date range.
-
-    The canonical monthly-attribution business rule, shared by the
-    calendar day-cell loader (``calendar_service._query_transactions_for_range``)
-    and the budget-variance date-range query
-    (``budget_variance_service._query_by_date_range``): a transaction
-    belongs to ``[first_day, last_day]`` if its ``due_date`` falls in that
-    range, OR it has no ``due_date`` and its pay period overlaps the range
-    (the fallback attribution assigns an undated row by its period). The
-    two surfaces -- and any future date-range consumer -- read this one
-    definition so they cannot drift on which transactions land in a given
-    month (MED-02: a one-sided change to the overlap rule would otherwise
-    silently desynchronize the calendar and the variance report).
-
-    Args:
-        first_day: Inclusive start of the date range.
-        last_day: Inclusive end of the date range.
-        period_ids: IDs of the pay periods overlapping the range (from
-            :func:`~app.services.pay_period_service.get_overlapping_periods`).
-            An empty list degrades to the no-match sentinel ``[-1]`` so a
-            range with no overlapping periods still matches dated rows but
-            no undated ones.
-
-    Returns:
-        A SQLAlchemy boolean expression suitable for ``query.filter(...)``
-        on a select rooted at ``Transaction``.
-    """
-    return or_(
-        Transaction.due_date.between(first_day, last_day),
-        Transaction.due_date.is_(None) & Transaction.pay_period_id.in_(
-            period_ids if period_ids else [-1],
-        ),
-    )
-
-
 def attribution_year(due_date: date | None, period_start: date) -> int:
     """Return the calendar year a dated budget event is attributed to.
 
     The single definition of the year-end report's calendar-year
     attribution rule: ``COALESCE(due_date, period_start).year`` -- the
     explicit due date when present, else the owning pay period's start
-    date.  This is the year-bucket form of the same precedence
-    :func:`monthly_attribution_clause` applies to a date range (due_date
-    wins; an undated row falls back to its period), so a boundary-period
+    date.  This is the year-bucket form of the same due-date-wins
+    precedence the calendar and daily-series producers apply to a date
+    range (an undated row falls back to its period), so a boundary-period
     event -- a December pay period carrying a January due_date -- lands
     in the same calendar year on every surface that uses it.
 

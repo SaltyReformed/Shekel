@@ -35,45 +35,32 @@ duplicate is the whole point: a third copy is exactly the duplication this
 work exists to kill.
 
 Two views, one seam.  The KIND-CORRECT entries (:func:`balance_map`,
-:func:`build_maps`, :func:`balance_at`) dispatch per account kind and are
-what the NET-WORTH surfaces want (the savings cockpit, the year-end
-summary, the dashboards): a HYSA accrues interest, a loan walks its
-amortization schedule, an investment / property compounds.  The CASH-FLOW
-entries (:func:`cash_balance_map`, :func:`cash_balance_at`) take the same
-account but always return its pure transaction running-balance, with NO
-kind dispatch -- the view the single-account cash-flow surfaces need (the
-budget grid, the obligations panel, the calendar, the checking detail
-page), where the projected balance must reconcile with the account's own
-transaction rows / subtotals on the same screen, and where the account is
-NOT guaranteed to be cash (``resolve_grid_account`` /
-``resolve_analytics_account`` can point at any kind, so accruing interest
-into the grid's balance row -- while its subtotal row stays
-transaction-based -- would break the grid's
-``balances[p] - balances[p-1] == subtotals[p].net`` invariant).  Both
-families route every read through this one module, so no screen reaches a
-balance producer directly.
+:func:`build_maps`, :func:`balance_at`) dispatch per account kind -- a HYSA
+accrues interest, a loan walks its amortization schedule, an investment /
+property compounds -- the view the NET-WORTH surfaces (savings cockpit,
+year-end summary, dashboards) want.  The CASH-FLOW entries
+(:func:`cash_balance_map`, :func:`cash_balance_at`) always return the
+account's pure transaction running-balance with NO kind dispatch -- the view
+the single-account cash-flow surfaces (grid, obligations, calendar, checking
+detail) need, where the balance must reconcile with the on-screen transaction
+rows, and where the account is NOT guaranteed cash (``resolve_grid_account``
+can point at any kind, so accruing interest into the grid balance row while
+its subtotal stays transaction-based would break
+``balances[p] - balances[p-1] == subtotals[p].net``).  Both families route
+every read through this one module, so no screen reaches a producer directly.
 
 Dependency direction (SOLID).  Consumers (routes, savings, year-end,
-dashboards) depend on this seam; the seam depends only on the engine
-cluster (:mod:`~app.services.net_worth_kernel`,
-:mod:`~app.services.account_projection`,
-:mod:`~app.services.balance_resolver`,
-:mod:`~app.services.projection_inputs`,
-:mod:`~app.services.income_service`,
-:mod:`~app.services.pay_period_service`) and the models.  It MUST NOT import
-a consumer package (savings_dashboard_service, year_end_summary_service,
-dashboards, routes).
+dashboards) depend on this seam; the seam depends only on the engine cluster
+(``net_worth_kernel`` / ``net_worth_investment`` / ``account_projection`` /
+``balance_resolver`` / ``projection_inputs`` / ``income_service`` /
+``pay_period_service``) and the models -- never a consumer package.
 
-Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"):
-this module imports no Flask symbol and performs no database writes.  All
-money is :class:`~decimal.Decimal`; ``float`` belongs only at a route's
-serialization boundary, never here.
+Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
+is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
 
-Liability classification is NOT a balance concern: the maps this module
-returns are balances only.  Consumers that need the asset-plus /
-liability-minus net-worth sum add ``is_liability`` themselves (the kernel's
-:func:`~app.services.net_worth_kernel.sum_net_worth_at_period` already
-owns that rule).
+Liability classification is NOT a balance concern: these maps are balances
+only; the net-worth sum's asset-plus / liability-minus rule lives in
+:func:`~app.services.net_worth_kernel.sum_net_worth_at_period`.
 """
 
 from collections import OrderedDict
@@ -86,7 +73,9 @@ from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.services import (
     balance_resolver,
+    daily_balance_series,
     income_service,
+    net_worth_investment,
     net_worth_kernel,
     pay_period_service,
 )
@@ -557,7 +546,7 @@ def investment_seed_map(
     growth, re-growing the current period).
 
     The seam owns this read (delegating to
-    :func:`~app.services.net_worth_kernel.investment_base_balance_map`) so
+    :func:`~app.services.net_worth_investment.investment_base_balance_map`) so
     that EVERY balance map -- the modeled one a screen DISPLAYS and the
     pre-growth one a chart SEEDS from -- flows through this one module, and the
     raw kernel producer stays fenced behind the W9906 seam checker.  A consumer
@@ -580,8 +569,34 @@ def investment_seed_map(
             nullable baseline must guard first.
     """
     _require_scenario(scenario)
-    return net_worth_kernel.investment_base_balance_map(
+    return net_worth_investment.investment_base_balance_map(
         account, scenario, periods,
+    )
+
+
+def investment_growth_since_anchor(
+    account: Account, scenario: Scenario, periods: list, current_period,
+) -> "tuple[Decimal, Decimal] | None":
+    """Return ``(growth, contributed)`` since the anchor, or ``None`` (hidden).
+
+    The fenced seam entry for the investment detail page's growth chip:
+    assembles this account's inputs via the same :func:`_assemble_inputs` the
+    balance maps use -- so the decomposition reconciles with :func:`balance_map`
+    to the cent -- and delegates to
+    :func:`~app.services.net_worth_investment.investment_growth_since_anchor`
+    (its docstring owns the reconciliation contract).  ``None`` when the
+    account has no investment params / anchor / post-anchor window; raises
+    ``ValueError`` when ``scenario`` is None.
+    """
+    _require_scenario(scenario)
+    inputs = _assemble_inputs([account], scenario)
+    params = inputs.investment_params_map.get(account.id)
+    if params is None:
+        return None
+    return net_worth_investment.investment_growth_since_anchor(
+        account, params, scenario, periods,
+        inputs.deductions_by_account.get(account.id, []),
+        inputs.salary_gross_biweekly, current_period,
     )
 
 
@@ -697,6 +712,57 @@ def cash_balance_at(
     """
     _require_scenario(scenario)
     return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+
+
+def cash_daily_balance_series(
+    account: Account,
+    scenario: Scenario,
+    first_day: date,
+    last_day: date,
+    *,
+    amount_overrides: "dict[int, Decimal] | None" = None,
+) -> "OrderedDict[date, Decimal]":
+    """Return one account's projected end-of-day cash-flow balance per day.
+
+    The daily-granularity cash-flow view -- the running-balance counterpart
+    of the period-flat :func:`cash_balance_at`.  Delegates to
+    :func:`app.services.daily_balance_series.build_daily_series`, which walks
+    each calendar day in ``[first_day, last_day]`` as a true checkbook
+    balance that steps on that day's projected, period-clamped, entry-aware
+    flows and reconciles with the grid at every period end
+    (``series[P.end_date] == cash_balance_at(account, scenario, P.end_date)``).
+
+    Like :func:`cash_balance_at` this does NOT dispatch by kind: it is the
+    cash-flow balance of whatever account the surface points at (the
+    calendar's account can be any kind via an explicit ``account_id``).  Used
+    by the analytics calendar's flow strip and day-cell end-of-day balances.
+
+    Args:
+        account: The account to project.  Its kind is NOT consulted; must be
+            session-attached.
+        scenario: The baseline scenario (its id scopes the producer).
+        first_day: Inclusive first calendar day of the range.
+        last_day: Inclusive last calendar day of the range.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map, forwarded to the producer (built there when
+            None, so income is live by default).
+
+    Returns:
+        An ``OrderedDict`` mapping each calendar ``date`` in the inclusive
+        range (ascending) to its projected end-of-day cash-flow balance,
+        quantized to cents.  An inverted range yields an empty map.
+
+    Raises:
+        ValueError: When ``scenario`` is None -- callers that resolve a
+            nullable baseline must guard first.
+        TypeError: When ``first_day`` / ``last_day`` are not
+            :class:`datetime.date`.
+    """
+    _require_scenario(scenario)
+    return daily_balance_series.build_daily_series(
+        account, scenario.id, first_day, last_day,
+        amount_overrides=amount_overrides,
+    )
 
 
 # ── Grid / obligations kind-aware view ──────────────────────────────

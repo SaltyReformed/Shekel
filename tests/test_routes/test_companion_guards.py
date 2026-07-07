@@ -119,8 +119,13 @@ class TestOwnerAccessRegression:
         assert resp.status_code == 200
 
     def test_owner_can_access_transfers(self, auth_client):
-        """Owner can access /transfers -- empty list is fine."""
-        resp = auth_client.get("/transfers")
+        """Owner is not blocked from /transfers by the companion guards.
+
+        /transfers now forwards to the unified Recurring surface (Loop B);
+        following the redirect confirms the owner reaches it (200), i.e. the
+        guards did not wrongly reject the owner.
+        """
+        resp = auth_client.get("/transfers", follow_redirects=True)
         assert resp.status_code == 200
 
     def test_owner_can_access_dashboard(self, auth_client, seed_periods_today):

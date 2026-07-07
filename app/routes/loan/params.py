@@ -27,8 +27,14 @@ from app.routes.loan._helpers import (
     _trueup_schema,
     _update_schema,
 )
-from app.services import anchor_service, loan_posting_service
+from app.services import (
+    anchor_service,
+    loan_loaders,
+    loan_posting_service,
+    loan_recurrence_sync,
+)
 from app.services.anchor_service import AnchorTrueUpOutcome
+from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import _validate_collateral_link
 from app.utils.auth_helpers import get_or_404, require_owner
 
@@ -169,6 +175,9 @@ def update_params(account_id):
     # re-sync every scenario's full genesis ledger UNCONDITIONALLY, not only on
     # the rate path.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    # R-4: a term / rate / payment-day edit moves the projected payoff, so
+    # re-bound the recurring payment's end_date to it before committing.
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")
@@ -303,12 +312,128 @@ def true_up_balance(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
+    # R-4: the true-up re-bases the balance, moving the projected payoff.
+    # ``apply_loan_anchor_true_up`` already committed the event + posting
+    # re-sync, so this sets the recurring payment's end_date and commits it in a
+    # follow-on transaction (self-healing: a failure here re-syncs at the next
+    # loan mutation).
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    db.session.commit()
+
     logger.info(
         "Loan trueup: account %d set to $%s as of %s",
         account.id, anchor_balance, anchor_date,
     )
     flash(
         f"Recorded loan balance of ${anchor_balance:,.2f} "
+        f"as of {anchor_date.strftime('%b %-d, %Y')}.",
+        "success",
+    )
+    return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/tracking-start", methods=["POST"])
+@login_required
+@require_owner
+def record_tracking_start(account_id):
+    """Record a mid-life-import tracking-start opening (a ``tracking_start`` event).
+
+    For an already-amortizing loan the operator began tracking mid-life: the user
+    asserts "when I started tracking, my real balance was $X as of date D."  The
+    handler appends a ``tracking_start`` :class:`LoanAnchorEvent` which becomes
+    the loan's confirmed-ledger OPENING
+    (:func:`app.services.loan_loaders._opening_anchor_fact` synthesizes the
+    ``is_opening`` anchor from it in place of the origination), so the genesis
+    ledger opens at the recent known balance -- eliminating the fictional
+    origination-to-tracking-start plateau and letting every recorded payment
+    accrue interest on the correct balance.  The origination fields on
+    :class:`LoanParams` are untouched (they still drive the amortization schedule
+    / projection).
+
+    Validation chain (mirrors :func:`true_up_balance`, plus the ordering guard):
+
+      1. ``_require_configured_loan`` rejects cross-owner / non-loan / unconfigured
+         accounts.
+      2. :class:`LoanAnchorTrueupSchema` (reused -- identical fields) enforces
+         ``anchor_balance >= 0`` and ``anchor_date <= today``.
+      3. The route enforces ``anchor_date >= params.origination_date`` (a loan
+         cannot be tracked before it existed) and ``anchor_date`` STRICTLY BEFORE
+         the earliest recorded payment's due date -- otherwise that payment would
+         sort before the opening in the walk and be subsumed (dropped).  Both are
+         route-level because the schema has no access to the loan.
+
+    Outcomes mirror the true-up: COMMITTED (success flash + redirect) or
+    DUPLICATE_SAME_DAY (idempotent success on a same-day identical resubmit).
+
+    A tracking-start is meant to be the FIRST anchor recorded (the opening).  A
+    ``user_trueup`` dated earlier than the tracking-start is not rejected here;
+    its only effect is cosmetic (the drift scorecard would show the opening's
+    ``computed`` as that true-up's balance rather than 0) -- the genesis walk's
+    reset-at-every-anchor still reconstructs the correct final balance, and both
+    correction legs still sum to zero.
+    """
+    account, params, _ = _require_configured_loan(account_id)
+
+    errors = _trueup_schema.validate(request.form)
+    if errors:
+        flash(
+            "Please correct the highlighted errors and try again.",
+            "danger",
+        )
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    data = _trueup_schema.load(request.form)
+    anchor_date = data["anchor_date"]
+    anchor_balance = Decimal(str(data["anchor_balance"]))
+
+    if anchor_date < params.origination_date:
+        flash(
+            "Tracking-start date cannot be before the loan's origination "
+            f"date ({params.origination_date.isoformat()}).",
+            "danger",
+        )
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    scenario = get_baseline_scenario(current_user.id)
+    scenario_id = scenario.id if scenario else None
+    earliest_due = (
+        loan_loaders.earliest_settled_payment_due_date(account.id, scenario_id)
+        if scenario_id is not None else None
+    )
+    if earliest_due is not None and anchor_date >= earliest_due:
+        flash(
+            "Tracking-start date must be before your earliest recorded "
+            f"payment ({earliest_due.strftime('%b %-d, %Y')}).",
+            "danger",
+        )
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    outcome = anchor_service.record_loan_tracking_start(
+        account=account,
+        anchor_balance=anchor_balance,
+        anchor_date=anchor_date,
+    )
+
+    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
+        flash(
+            "Tracking-start balance already recorded for that date.",
+            "info",
+        )
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+
+    # A tracking-start re-bases the opening balance, moving the projected payoff;
+    # re-bound the recurring payment's end_date (mirrors the true-up route).
+    # ``record_loan_tracking_start`` already committed the event + posting
+    # re-sync, so this commits the end_date in a follow-on transaction.
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    db.session.commit()
+
+    logger.info(
+        "Loan tracking-start: account %d set to $%s as of %s",
+        account.id, anchor_balance, anchor_date,
+    )
+    flash(
+        f"Recorded tracking-start balance of ${anchor_balance:,.2f} "
         f"as of {anchor_date.strftime('%b %-d, %Y')}.",
         "success",
     )

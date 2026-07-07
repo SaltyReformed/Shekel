@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Amortization Schedule -- {{ account.name }} -- Shekel{% endblock title %}
+
+{% block breadcrumbs %}
+<nav aria-label="breadcrumb" class="container-fluid mt-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('loan.dashboard', account_id=account.id) }}">{{ account.name }} {{ account_type.name }}</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Amortization Schedule</li>
+  </ol>
+</nav>
+{% endblock breadcrumbs %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4><i class="bi bi-table"></i> {{ account.name }} Amortization Schedule</h4>
+  <a href="{{ url_for('loan.dashboard', account_id=account.id) }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back to Loan
+  </a>
+</div>
+
+{% if amortization_schedule %}
+  {% include "loan/_schedule.html" %}
+{% else %}
+<div class="card">
+  <div class="card-body text-muted mb-0">
+    <i class="bi bi-info-circle"></i>
+    No schedule to display -- the loan may be paid off.
+  </div>
+</div>
+{% endif %}
+{% endblock content %}

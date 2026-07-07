@@ -17,9 +17,11 @@ run (Flask refuses ``app.add_url_rule`` once a request has been
 handled).
 """
 import logging
+from decimal import Decimal
 from types import SimpleNamespace
 
 from flask import Response
+from werkzeug.datastructures import MultiDict
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
@@ -33,10 +35,12 @@ from app.routes._commit_helpers import (
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceConflictKind,
     RecurrenceFormContext,
+    apply_conflict_decisions,
     build_recurrence_rule_from_form,
-    handle_recurrence_conflict,
     handle_stale_form_conflict,
+    parse_conflict_decisions,
     resolve_recurrence_rule_for_update,
     update_recurrence_rule_from_form,
 )
@@ -586,83 +590,67 @@ class TestHandleStaleFormConflict:
             assert "current=9" in log_msg
 
 
-class TestHandleRecurrenceConflict:
-    """F-26 helper :func:`handle_recurrence_conflict` contract tests.
+class TestParseConflictDecisions:
+    """The chooser's per-instance keep/use parser (Loop B, P3)."""
 
-    Phase-1 auto-keep-overrides advisory handler.  Logs at WARNING
-    with the override / delete counts; flashes the canonical
-    "kept as-is" notice; returns ``None`` (NOT a Response -- the
-    caller continues executing after the flash).
-    """
+    def test_no_marker_returns_none(self):
+        """A first-time edit submit (no chooser marker) parses to None, so the
+        route knows to render the chooser rather than resolve."""
+        form = MultiDict({"default_amount": "10.00"})
+        assert parse_conflict_decisions(form) is None
 
-    def test_logs_warning_flashes_and_returns_none(
-        self, app, auth_client, seed_user, caplog,  # pylint: disable=unused-argument
-    ):
-        """C3-2: log WARN with counts; flash counts; return None.
+    def test_marker_parses_valid_decisions_and_drops_malformed(self):
+        """With the marker, valid ``conflict_decision_<id>`` pairs parse; a
+        non-integer id or an unrecognized value is dropped (the surviving ids
+        are re-checked against the real conflict set at apply time)."""
+        form = MultiDict({
+            "conflict_apply": "1",
+            "conflict_decision_5": "keep",
+            "conflict_decision_9": "use",
+            "conflict_decision_x": "use",     # non-integer id -> dropped
+            "conflict_decision_7": "bogus",   # invalid value -> dropped
+            "default_amount": "10.00",
+        })
+        assert parse_conflict_decisions(form) == {5: "keep", 9: "use"}
 
-        Hand-arithmetic: ``len([1, 2, 3]) = 3`` overridden,
-        ``len([4]) = 1`` deleted.  The flash string substitutes
-        both counts.
-        """
-        with app.test_request_context():
-            test_logger = logging.getLogger(
-                "test_handle_recurrence_conflict",
-            )
-            conflict = RecurrenceConflict(
-                overridden=[1, 2, 3],
-                deleted=[4],
-            )
-            with caplog.at_level(
-                logging.WARNING,
-                logger="test_handle_recurrence_conflict",
-            ):
-                result = handle_recurrence_conflict(
-                    logger=test_logger,
-                    log_label="Recurrence conflict for template",
-                    log_id=99,
-                    conflict=conflict,
-                )
-            # Load-bearing: must return None, not a Response.  A
-            # Response return would cause the caller (which does
-            # ``handle_recurrence_conflict(...)`` without
-            # ``return``) to discard it, but a future caller that
-            # added ``return`` by mistake would early-exit the
-            # route mid-update.  Pin the contract.
-            assert result is None
-            log_msg = caplog.records[-1].getMessage()
-            assert "Recurrence conflict for template 99" in log_msg
-            assert "3 overridden" in log_msg
-            assert "1 deleted" in log_msg
+    def test_marker_without_decisions_is_empty_map(self):
+        """The marker with no decision fields parses to an empty map (an Apply
+        that resolves nothing), distinct from None (render the chooser)."""
+        assert parse_conflict_decisions(MultiDict({"conflict_apply": "1"})) == {}
 
-    def test_log_label_preserves_transfers_side_prefix(
-        self, app, auth_client, seed_user, caplog,  # pylint: disable=unused-argument
-    ):
-        """C3-2 (variant): log_label kwarg carries the prefix verbatim.
 
-        Pre-extraction the transfers side logged with prefix
-        "Transfer recurrence conflict for template"; the helper
-        preserves the prefix via the ``log_label`` kwarg so log-
-        grep patterns stay valid post-extraction.
-        """
-        with app.test_request_context():
-            test_logger = logging.getLogger(
-                "test_handle_recurrence_conflict_transfer",
-            )
-            conflict = RecurrenceConflict(overridden=[], deleted=[])
-            with caplog.at_level(
-                logging.WARNING,
-                logger="test_handle_recurrence_conflict_transfer",
-            ):
-                handle_recurrence_conflict(
-                    logger=test_logger,
-                    log_label="Transfer recurrence conflict for template",
-                    log_id=77,
-                    conflict=conflict,
-                )
-            log_msg = caplog.records[-1].getMessage()
-            assert (
-                "Transfer recurrence conflict for template 77"
-                in log_msg
-            )
-            assert "0 overridden" in log_msg
-            assert "0 deleted" in log_msg
+class TestApplyConflictDecisions:
+    """The chooser's resolution dispatch (Loop B, P3)."""
+
+    def test_ignores_ids_outside_conflict_set(self):
+        """An id absent from the raised conflict set never reaches
+        ``resolve_fn``, so the chooser cannot be used to mutate an arbitrary
+        owned row.  ``resolve_fn`` is a spy here; the partition into use/keep
+        must exclude the out-of-set id (999)."""
+        calls = []
+
+        def fake_resolve(ids, action, user_id, new_amount=None):
+            calls.append({
+                "ids": list(ids), "action": action,
+                "user_id": user_id, "new_amount": new_amount,
+            })
+
+        kind = RecurrenceConflictKind(
+            model=None, amount_attr="amount", regenerate_fn=None,
+            resolve_fn=fake_resolve, update_endpoint="x",
+        )
+        conflict = RecurrenceConflict(overridden=[10], deleted=[20])
+        decisions = {10: "keep", 20: "use", 999: "use"}  # 999 not in the set
+
+        apply_conflict_decisions(
+            kind=kind, conflict=conflict, decisions=decisions,
+            new_amount=Decimal("5.00"), user_id=1,
+        )
+
+        update = next(c for c in calls if c["action"] == "update")
+        keep = next(c for c in calls if c["action"] == "keep")
+        assert update["ids"] == [20]            # only the in-set "use"
+        assert update["new_amount"] == Decimal("5.00")
+        assert keep["ids"] == [10]              # only the in-set "keep"
+        assert 999 not in update["ids"]
+        assert 999 not in keep["ids"]

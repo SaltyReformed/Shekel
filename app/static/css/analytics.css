@@ -1,16 +1,62 @@
-/* Shekel analytics screen -- the calendar, year-end summary, budget
-   variance, and spending trends tabs.
+/* Shekel analytics screen -- the Calendar, Spending, Statements, and Taxes
+   tabs (the Slice-4 four-pill shell).
 
    Load-order contract (see base.html): after theme-steel-ink.css and
    base.css.  The calendar's mobile media block must stay after the
    calendar base rules. */
 
 /* =============================================
-   CALENDAR
+   CALENDAR (slice-1 flagship rebuild)
+   Summary strip (reuses the shared .pulse-chip vocabulary from
+   dashboard.css, the accounts-cockpit precedent), month flow strip,
+   and ledger day cells with an end-of-day balance hero.
    ============================================= */
+
+/* Summary strip: chip row above the flow strip. */
+.calendar-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.calendar-chip-cap {
+  font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
+  margin-top: 0.125rem;
+}
+
+.calendar-chip-pair {
+  margin-top: 0.0625rem;
+}
+
+.calendar-chip-pair-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.calendar-chip-pair-label {
+  font-size: 0.71875rem;
+  font-weight: 400;
+  color: var(--shekel-text-secondary);
+}
+
+/* Month flow strip: the end-of-day balance line canvas. */
+.calendar-flow-strip {
+  height: 210px;
+  padding: 0.5rem 0.75rem 0.375rem;
+  position: relative;
+}
+
+/* minmax(0, 1fr), not bare 1fr: a bare 1fr track floors at the cells'
+   min-content width, so on narrow viewports the balance figures would
+   push the grid wider than its container and clip the Saturday column. */
 .calendar-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1px;
   background-color: var(--shekel-border-subtle);
   border: 1px solid var(--shekel-border-subtle);
@@ -24,15 +70,17 @@
 
 .calendar-day {
   background-color: var(--shekel-surface);
-  min-height: 70px;
+  min-height: 92px;
   padding: 4px 6px;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .calendar-day--empty {
   background-color: var(--shekel-surface);
   opacity: 0.4;
-  min-height: 70px;
+  min-height: 92px;
 }
 
 /* "Today" and the user-selected day share the accent outline highlight
@@ -48,23 +96,105 @@
   background-color: rgba(var(--shekel-accent-rgb), 0.08);
 }
 
+.calendar-day-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .calendar-day-number {
   font-size: 0.8rem;
   color: var(--shekel-text-secondary);
 }
 
-.calendar-day-totals {
-  margin-top: 2px;
-  line-height: 1.2;
+.calendar-pay-tag {
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  padding: 0 3px;
+  border-radius: 0.25rem;
+  color: var(--shekel-accent);
+  border: 1px solid color-mix(in srgb, var(--shekel-accent) 45%, transparent);
 }
 
+.calendar-infreq {
+  font-size: 0.5625rem;
+  color: var(--shekel-text-muted);
+}
+
+/* Named flow lines: income first, then expenses by magnitude (service
+   order); names truncate, amounts stay whole. */
+.calendar-day-flows {
+  margin-top: 2px;
+  line-height: 1.3;
+  min-width: 0;
+}
+
+.calendar-day-flow {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 0.71875rem;
+  min-width: 0;
+}
+
+.calendar-flow-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--shekel-text-secondary);
+}
+
+.calendar-flow-name .bi-check2 {
+  color: var(--shekel-done);
+}
+
+.calendar-flow-amt {
+  flex-shrink: 0;
+}
+
+/* Money-state color classes: cells, chips, and the day-detail table
+   share them (sizing comes from each context). */
 .calendar-day-income {
-  font-size: 0.8rem;
   color: var(--shekel-done);
 }
 
 .calendar-day-expense {
-  font-size: 0.8rem;
+  color: var(--shekel-danger);
+}
+
+.calendar-day-more {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 0.6875rem;
+  color: var(--shekel-text-muted);
+}
+
+/* The cell hero: projected end-of-day running balance, bottom-right.
+   The overflow guard ellipsizes a figure too wide for its cell (a
+   visible truncation signal; the exact value stays one tap away in
+   the day detail) instead of bleeding across the neighboring cell. */
+.calendar-day-balance {
+  margin-top: auto;
+  padding-top: 2px;
+  text-align: right;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--shekel-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-day-balance--modeled {
+  color: var(--shekel-text-secondary);
+  font-weight: 500;
+}
+
+.calendar-day-balance--danger {
   color: var(--shekel-danger);
 }
 
@@ -74,6 +204,17 @@
 
 .calendar-day[data-day]:hover {
   background-color: var(--shekel-surface-raised);
+}
+
+/* Mobile flow-presence dot: shown only below 767.98px, where the named
+   flow lines are hidden and the tap-for-detail affordance needs a cue. */
+.calendar-day[data-day] .calendar-day-head::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background-color: var(--shekel-accent);
+  display: none;
 }
 
 #calendar-day-detail:empty {
@@ -93,111 +234,103 @@
 
 @media (max-width: 767.98px) {
   .calendar-day {
-    min-height: 50px;
+    min-height: 56px;
     padding: 2px 4px;
   }
 
   .calendar-day--empty {
-    min-height: 50px;
+    min-height: 56px;
   }
 
   .calendar-day-number {
     font-size: 0.7rem;
   }
 
-  .calendar-day-income,
-  .calendar-day-expense {
-    font-size: 0.7rem;
+  /* Cells keep the balance hero; the named flow lines collapse to the
+     presence dot (full list stays one tap away in the day detail). */
+  .calendar-day-flows {
+    display: none;
+  }
+
+  /* Payday cells skip the dot: the PAY tag already fills the narrow
+     head, and a clipped half-dot would bleed into the neighbor cell. */
+  .calendar-day[data-day]:not(.calendar-paycheck) .calendar-day-head::after {
+    display: inline-block;
+  }
+
+  .calendar-pay-tag {
+    font-size: 0.5rem;
+    padding: 0 2px;
+  }
+
+  .calendar-day-balance {
+    font-size: 0.625rem;
+  }
+
+  .calendar-flow-strip {
+    height: 150px;
+    padding: 0.375rem 0.375rem 0.25rem;
   }
 }
 
-/* ── Year-End Summary ──────────────────────────────────────────── */
+/* ── Taxes (slice-2 rebuild: refund hero + ledger + W-2 + Sch. A) ── */
 
-.year-end-section .card-header {
-  background-color: var(--shekel-surface-raised);
-}
-
-.year-end-table {
-  margin-bottom: 0;
-}
-
-.year-end-table td,
-.year-end-table th {
-  padding: 0.5rem 0.75rem;
-  vertical-align: middle;
-}
-
-.year-end-subtotal td {
-  border-top: 2px solid var(--shekel-border-strong);
-}
-
-.year-end-delta-positive {
+/* Money-state mapping for refund vs owed: positive/refund = done,
+   negative/owed = danger; always paired with the "refund"/"owed" word
+   (color is never the only signal). */
+.tax-refund {
   color: var(--shekel-done);
 }
 
-.year-end-delta-negative {
+.tax-owed {
   color: var(--shekel-danger);
 }
 
-.year-end-chart-wrap {
-  min-height: 280px;
-  position: relative;
+/* The page-level basis chip: one neutral chip stating each tab's data basis
+   in the unified page-wide vocabulary (Calendar = "mixed", Spending =
+   "measured", Statements = "confirmed", Taxes = "modeled estimate").  Slice 4
+   collapsed the former per-tab .tax-basis-chip / .spend-basis-chip into this
+   one class. */
+.analytics-basis-chip {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.75rem;
+  color: var(--shekel-text-secondary);
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
 }
 
-/* ── Budget Variance ───────────────────────────────────────────── */
-
-.variance-over {
-  color: var(--shekel-danger);
-}
-
-.variance-under {
-  color: var(--shekel-done);
-}
-
-.variance-zero {
-  color: var(--shekel-text-muted);
-}
-
-.variance-table td,
-.variance-table th {
-  padding: 0.5rem 0.75rem;
+.tax-ledger td,
+.tax-w2 td {
+  padding: 0.4375rem 0.75rem;
   vertical-align: middle;
 }
 
-.variance-group-row {
-  cursor: pointer;
-}
-
-.variance-group-row:hover {
-  background-color: var(--shekel-row-hover);
-}
-
-.variance-item-row {
-  cursor: pointer;
-}
-
-.variance-txn-row td {
-  font-size: 0.875rem;
-}
-
-.variance-total-row td {
+/* Subtotal and result rows: the same divider grammar as the year-end
+   and variance tables (strong top border marks a computed line). */
+.tax-ledger-subtotal td,
+.tax-ledger-result td {
   border-top: 2px solid var(--shekel-border-strong);
 }
 
-.variance-chart-wrap {
-  min-height: 280px;
-  position: relative;
+.tax-ledger-total td {
+  border-top: 2px solid var(--shekel-border-strong);
+  background-color: var(--shekel-summary-bg);
 }
 
-.variance-chevron {
-  transition: transform 0.15s;
+.tax-ledger-subtotal-dt {
+  border-top: 2px solid var(--shekel-border-strong);
+  padding-top: 0.25rem;
+  font-weight: 600;
 }
 
-[aria-expanded="true"] > td .variance-chevron {
-  transform: rotate(90deg);
-}
-
-/* ── Spending Trends ───────────────────────────────────────────── */
+/* ── Spending trend deltas (movers + delta chips) ──────────────── */
+/* trend-up/down/flat map a trend direction to the money-state colours;
+   reused by the Spending tab's delta chips, movers, and sparkline strokes
+   (the sparkline stroke colours via currentColor from the direction class). */
 
 .trend-up {
   color: var(--shekel-danger);
@@ -211,27 +344,196 @@
   color: var(--shekel-text-muted);
 }
 
-.trend-arrow {
-  font-size: 0.875rem;
+/* ── Spending (slice-3 rebuild: hero + Where It Went + rail) ─────── */
+
+/* In-progress month caption + the "Where It Went" header note. */
+.spend-inprogress {
+  font-style: italic;
 }
 
-.trend-item {
-  padding: 0.625rem 1rem;
+.spend-header-note {
+  font-size: 0.71875rem;
 }
 
-.trend-pct {
+.spend-month-label {
+  min-width: 7.5rem;
+  text-align: center;
+}
+
+/* Where It Went rows: one shared grid so the group head and its item rows
+   align column-for-column (marker / name / share bar / sparkline / delta /
+   figures).  The group head is a <button>, the items are <div>s, so the grid
+   template is applied to both via .spend-row. */
+.spend-row {
+  display: grid;
+  grid-template-columns:
+    1.1rem minmax(4rem, 9rem) minmax(0, 1fr) 74px 66px minmax(5.5rem, auto);
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 1rem;
+}
+
+.spend-group {
+  border-bottom: 1px solid var(--shekel-border-subtle);
+}
+
+.spend-group:last-child {
+  border-bottom: none;
+}
+
+/* Group head: a full-width button that toggles its items' collapse. */
+.spend-group__head {
+  width: 100%;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.spend-group__head:hover,
+.spend-group__head:focus-visible {
+  background-color: var(--shekel-row-hover);
+}
+
+.spend-item {
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+}
+
+.spend-item .spend-name {
+  color: var(--shekel-text-secondary);
+}
+
+.spend-chevron {
+  font-size: 0.8rem;
+  color: var(--shekel-text-muted);
+  transition: transform 0.15s;
+}
+
+/* Default state is expanded (chevron-down); collapsed points right. */
+.spend-group__head[aria-expanded="false"] .spend-chevron {
+  transform: rotate(-90deg);
+}
+
+.spend-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Share bar: proportion of the window total.  Fill width is applied by
+   progress_bar.js from data-progress-pct (CSP forbids inline style). */
+.spend-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+  overflow: hidden;
+}
+
+.spend-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--shekel-accent);
+}
+
+/* Item fill is a lighter accent so a group bar reads as the sum of its
+   (nested) item bars. */
+.spend-bar__fill--item {
+  background: color-mix(in srgb, var(--shekel-accent) 55%, transparent);
+}
+
+/* Sparkline cell: the per-period trend polyline, stroke coloured by the
+   direction class (trend-up / trend-down / trend-flat) via currentColor, so
+   the cell is theme-reactive with no JS. */
+.spend-spark {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.spend-spark-svg {
+  width: 100%;
+  height: 22px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.spend-delta {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Figures cell: amount over its share of the window total. */
+.spend-figs {
+  text-align: right;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.spend-figs .font-mono {
+  display: block;
+}
+
+.spend-share {
+  font-size: 0.6875rem;
+  color: var(--shekel-text-muted);
+}
+
+/* Rail: Top Movers + Estimate Surprises. */
+.spend-mover {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.spend-mover__name {
+  min-width: 0;
+  font-size: 0.8125rem;
+}
+
+.spend-mover__abs {
+  font-size: 0.6875rem;
+}
+
+.spend-surprise__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
   font-weight: 600;
 }
 
-.trend-abs {
-  font-size: 0.8125rem;
+.spend-surprise__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.trend-flagged {
-  font-size: 0.75rem;
+.spend-surprise__sub {
+  margin-top: 0.0625rem;
 }
 
-.trend-payment-late {
-  color: var(--shekel-danger);
-  font-size: 0.8125rem;
+/* Mobile: drop the share bar and sparkline columns (the % and delta carry
+   the same signals in less space); the remaining four cells reflow into the
+   narrower grid in source order. */
+@media (max-width: 767.98px) {
+  .spend-row {
+    grid-template-columns: 1.1rem minmax(0, 1fr) auto auto;
+    gap: 0.375rem 0.625rem;
+  }
+
+  .spend-bar,
+  .spend-spark {
+    display: none;
+  }
 }

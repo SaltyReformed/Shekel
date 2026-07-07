@@ -1,12 +1,14 @@
 """Salary, paycheck-deduction, tax-config, and calibration schemas."""
 
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from marshmallow import (
     fields,
     pre_load,
     validate,
+    validates,
     validates_schema,
     ValidationError,
 )
@@ -19,6 +21,7 @@ from app.schemas.validation._helpers import (
     _PERCENT_INPUT_RANGE,
     _NON_NEGATIVE_MONETARY,
 )
+from app.utils.dates import to_display_date
 
 
 class SalaryProfileCreateSchema(BaseSchema):
@@ -591,5 +594,107 @@ class CalibrationConfirmSchema(BaseSchema):
                     f"{medicare_actual / gross}, derived {derived})."
                 ]
 
+        if errors:
+            raise ValidationError(errors)
+
+
+class YtdTaxCheckpointSchema(BaseSchema):
+    """Validates POST data for a YTD tax checkpoint (T-P2).
+
+    The five year-to-date figures a user reads off a real pay stub plus
+    the stub's ``as_of_date``.  Each figure is a non-negative
+    ``Numeric(12, 2)`` (the schema-tier counterpart to the table's
+    ``ck_ytd_tax_checkpoints_nonneg_*`` CHECKs), and the cross-field rule
+    below rejects any withholding line larger than gross (the
+    ``*_le_gross`` CHECKs' counterpart) -- a stub where federal exceeds
+    gross is a data-entry typo, caught here as a clean field-level 400
+    rather than an opaque IntegrityError.  ``as_of_date`` cannot be in the
+    future (a stub for a date that has not happened yet is nonsense),
+    bounded against the display-timezone civil day so the check follows
+    the user's wall clock, not the server's UTC day (the timezone display
+    policy).
+    """
+
+    # The four withholding lines, keyed by their form field name -> the
+    # error surface for the ``<= gross`` cross-check below.
+    _WITHHOLDING_FIELDS = (
+        "ytd_federal",
+        "ytd_state",
+        "ytd_social_security",
+        "ytd_medicare",
+    )
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
+    as_of_date = fields.Date(required=True)
+    ytd_gross = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    ytd_federal = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    ytd_state = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    ytd_social_security = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    ytd_medicare = fields.Decimal(
+        required=True, places=2, as_string=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
+    notes = fields.String(allow_none=True, validate=validate.Length(max=500))
+
+    @validates("as_of_date")
+    def validate_not_future(self, value, **kwargs):
+        """Reject an ``as_of_date`` after the display-timezone today.
+
+        A pay stub can only measure withholding through a date that has
+        already happened.  The bound is the user's wall-clock day
+        (``America/New_York``), not the server's UTC day, so a late-evening
+        Eastern entry near midnight is not spuriously rejected as "future"
+        by a UTC clock that has already rolled over.
+
+        Raises:
+            ValidationError: When *value* is after the display-tz today.
+        """
+        today = to_display_date(datetime.now(timezone.utc))
+        if value > today:
+            raise ValidationError(
+                f"as_of_date {value.isoformat()} is in the future "
+                f"(after {today.isoformat()})."
+            )
+
+    @validates_schema
+    def validate_components_le_gross(self, data, **kwargs):
+        """Reject any withholding line that exceeds YTD gross.
+
+        A federal / state / Social Security / Medicare figure larger than
+        the gross it was withheld from is impossible -- a swapped or
+        extra-digit typo.  The error is attached to the offending line so
+        the route's field-level handler highlights the right input; the
+        DB ``*_le_gross`` CHECKs are the storage-tier backstop for a
+        raw-SQL bypass.
+
+        Raises:
+            ValidationError: When a withholding line exceeds ``ytd_gross``.
+        """
+        gross = data.get("ytd_gross")
+        if gross is None:
+            return
+        errors: dict[str, list[str]] = {}
+        for field_name in self._WITHHOLDING_FIELDS:
+            value = data.get(field_name)
+            if value is not None and value > gross:
+                errors[field_name] = [
+                    f"{field_name} {value} exceeds ytd_gross {gross}."
+                ]
         if errors:
             raise ValidationError(errors)

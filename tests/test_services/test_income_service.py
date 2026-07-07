@@ -620,11 +620,15 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             db.session.add_all([
                 StateTaxConfig(
                     user_id=user_id, state_code="NC", tax_year=2026,
-                    tax_type_id=flat_type.id, flat_rate=Decimal("0.0399"),
+                    tax_type_id=flat_type.id,
+                    filing_status_id=profile.filing_status_id,
+                    flat_rate=Decimal("0.0399"),
                 ),
                 StateTaxConfig(
                     user_id=user_id, state_code="NC", tax_year=2027,
-                    tax_type_id=flat_type.id, flat_rate=Decimal("0.0600"),
+                    tax_type_id=flat_type.id,
+                    filing_status_id=profile.filing_status_id,
+                    flat_rate=Decimal("0.0600"),
                 ),
             ])
             db.session.commit()

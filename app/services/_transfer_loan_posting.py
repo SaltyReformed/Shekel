@@ -32,7 +32,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import loan_posting_service
+from app.services import loan_posting_service, loan_recurrence_sync
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -126,6 +126,11 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
         loan_posting_service.sync_loan_postings(
             xfer.to_account_id, xfer.scenario_id, date.today(),
         )
+        # R-4: an extra-principal payment shifts payoff earliest, so re-bound the
+        # recurring payment's end_date to the new projected payoff (baseline).
+        loan_recurrence_sync.sync_recurring_payment_end_date(
+            xfer.to_account_id,
+        )
 
 
 def _reverse_loan_payment_before_delete(xfer: Transfer) -> bool:
@@ -181,3 +186,6 @@ def _resync_loan_postings_after_delete(
     loan_posting_service.sync_loan_postings(
         loan_account_id, scenario_id, date.today(),
     )
+    # R-4: deleting a payment moves the projected payoff, so re-bound the
+    # recurring payment's end_date to it (baseline scenario).
+    loan_recurrence_sync.sync_recurring_payment_end_date(loan_account_id)

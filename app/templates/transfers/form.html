@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% from "_form_macros.html" import form_card %}
+{% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
 {% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock title %}
 
 {% set prefill_from = prefill_from | default(None) %}
@@ -7,8 +9,8 @@
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('transfers.list_transfer_templates') }}">Recurring Transfers</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Recurring Transfer' if template else 'New Recurring Transfer' }}</li>
+    <li class="breadcrumb-item"><a href="{{ url_for('templates.list_templates') }}">Recurring</a></li>
+    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit' if template else 'New' }} Recurring Transfer</li>
   </ol>
 </nav>
 {% endblock breadcrumbs %}
@@ -16,18 +18,14 @@
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
-    <h4>
-      <i class="bi bi-arrow-left-right"></i>
-      {{ 'Edit' if template else 'New' }} Recurring Transfer
-    </h4>
-
+    {% call form_card(('Edit' if template else 'New') ~ ' Recurring Transfer', 'bi-arrow-left-right') %}
     <form method="POST"
           action="{{ url_for('transfers.update_transfer_template', template_id=template.id) if template else url_for('transfers.create_transfer_template') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {# Optimistic-locking version pin (commit C-18 / F-010).
-         Submitted on update; the handler compares against the
-         current row and short-circuits with a flash + redirect if
-         the form was rendered against an older version. #}
+         Submitted on update; the handler compares against the current row
+         and short-circuits with a flash + redirect if the form was rendered
+         against an older version. #}
       {% if template %}
       <input type="hidden" name="version_id" value="{{ template.version_id }}">
       {% endif %}
@@ -35,16 +33,14 @@
       <div class="mb-3">
         <label for="name" class="form-label">Name</label>
         <input type="text" id="name" name="name" class="form-control" required
-               value="{{ template.name if template else '' }}"
-               placeholder="e.g. Monthly Savings">
+               value="{{ template.name if template else '' }}" placeholder="e.g. Monthly Savings">
       </div>
 
       <div class="mb-3">
         <label for="default_amount" class="form-label">Amount</label>
         <div class="input-group">
           <span class="input-group-text">$</span>
-          <input type="number" step="0.01" min="0.01" id="default_amount" name="default_amount"
-                 class="form-control" required
+          <input type="number" step="0.01" min="0.01" id="default_amount" name="default_amount" class="form-control" required
                  value="{{ template.default_amount if template else '' }}">
         </div>
       </div>
@@ -81,98 +77,40 @@
         <label for="category_id" class="form-label">Category</label>
         <select id="category_id" name="category_id" class="form-select" required>
           {% for cat in categories %}
-          <option value="{{ cat.id }}"
-            {{ 'selected' if template and template.category_id == cat.id else '' }}>
-            {{ cat.group_name }}: {{ cat.item_name }}
+          <option value="{{ cat.id }}" {{ 'selected' if template and template.category_id == cat.id else '' }}>
+            {{ cat.display_name }}
           </option>
           {% endfor %}
         </select>
         <div class="form-text">Category for this transfer (used in charts and grid grouping).</div>
       </div>
 
-      {# Recurrence rule fields #}
-      <hr>
-      <h5>Recurrence Rule</h5>
-
-      <div class="mb-3">
-        <label for="recurrence_pattern" class="form-label">Pattern</label>
-        <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
-                data-every-n="{{ REC_EVERY_N_PERIODS }}"
-                data-monthly="{{ REC_MONTHLY }}"
-                data-quarterly="{{ REC_QUARTERLY }}"
-                data-semi-annual="{{ REC_SEMI_ANNUAL }}"
-                data-annual="{{ REC_ANNUAL }}"
-                data-once="{{ REC_ONCE }}">
-          {% for p in patterns %}
-          <option value="{{ p.id }}"
-            {{ 'selected' if (template and template.recurrence_rule and template.recurrence_rule.pattern_id == p.id) or (not template and p.id == REC_ONCE) else '' }}>
-            {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div id="recurrence-fields" class="d-none">
-        <div class="mb-3 d-none" id="field-interval">
-          <label for="interval_n" class="form-label">Repeat every N paychecks</label>
-          <input type="number" id="interval_n" name="interval_n"
-                 class="form-control" min="1"
-                 value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
+      {# --- Recurrence (accent emphasis section) --- #}
+      <div class="form-section--accent">
+        <h6 class="form-section__title">Recurrence</h6>
+        {% set sel_pattern = template.recurrence_rule.pattern_id if template and template.recurrence_rule else REC_ONCE %}
+        {{ recurrence_pattern_select(patterns, sel_pattern, include_none_option=false) }}
+        <div id="recurrence-fields" class="d-none">
+          {{ recurrence_detail_fields(template, include_due_day=false) }}
+          {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
-        <div class="row mb-3">
-          <div class="col d-none" id="field-dom">
-            <label for="day_of_month" class="form-label">Day of Month</label>
-            <input type="number" id="day_of_month" name="day_of_month"
-                   class="form-control" min="1" max="31"
-                   value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
-          </div>
-          <div class="col d-none" id="field-moy">
-            <label for="month_of_year" class="form-label">Month</label>
-            <select id="month_of_year" name="month_of_year" class="form-select">
-              <option value="">--</option>
-              {% for num in range(1, 13) %}
-              <option value="{{ num }}"
-                {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
-                {{ num|month_name }}
-              </option>
-              {% endfor %}
-            </select>
-          </div>
-        </div>
-
-        <div class="mb-3 d-none" id="field-end-date">
-          <label for="end_date" class="form-label">End Date</label>
-          <input type="date" id="end_date" name="end_date" class="form-control"
-                 aria-describedby="end-date-help"
-                 value="{{ template.recurrence_rule.end_date.isoformat() if template and template.recurrence_rule and template.recurrence_rule.end_date else '' }}">
-          <div id="end-date-help" class="form-text">Leave blank for indefinite. Transfers won't be generated after this date.</div>
-        </div>
+        {# The pay-period selector sits OUTSIDE #recurrence-fields so it stays
+           visible for a one-time (ONCE) transfer, which has no recurring
+           cadence but still needs a period to land in.  recurrence_form.js
+           swaps its label between "Pay period" and "First paycheck". #}
+        {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
       </div>
-
-      {# Pay period selector: shown for one-time transfers (no pattern) and
-         recurring transfers (as "First paycheck").  Placed outside the
-         recurrence-fields container so it remains visible when no pattern
-         is selected. #}
-      {% if not template %}
-      <div class="mb-3" id="field-start-period">
-        <label class="form-label" id="start-period-label">Pay period</label>
-        <select name="start_period_id" class="form-select" aria-describedby="start-period-help">
-          {% for p in periods %}
-          <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id }}>
-            {{ p.label }}
-          </option>
-          {% endfor %}
-        </select>
-        <div id="start-period-help" class="form-text">Which pay period should this transfer appear in?</div>
-      </div>
-      {% endif %}
 
       {% if template %}
-      <div class="mb-3">
-        <label for="effective_from" class="form-label">Regenerate effective from</label>
-        <input type="date" id="effective_from" name="effective_from" class="form-control"
-               aria-describedby="effective-from-help">
-        <div id="effective-from-help" class="form-text">Leave blank to use today's date.</div>
+      {# --- Apply changes (edit only) --- #}
+      <div class="form-section">
+        <h6 class="form-section__title">Apply changes</h6>
+        <div class="mb-3">
+          <label for="effective_from" class="form-label">Regenerate effective from</label>
+          <input type="date" id="effective_from" name="effective_from" class="form-control"
+                 aria-describedby="effective-from-help">
+          <div id="effective-from-help" class="form-text">Leave blank to use today's date.</div>
+        </div>
       </div>
       {% endif %}
 
@@ -180,11 +118,10 @@
         <button type="submit" class="btn btn-primary">
           <i class="bi bi-check-circle"></i> {{ 'Update' if template else 'Create' }}
         </button>
-        <a href="{{ url_for('transfers.list_transfer_templates') }}" class="btn btn-outline-secondary">
-          Cancel
-        </a>
+        <a href="{{ url_for('templates.list_templates') }}" class="btn btn-outline-secondary">Cancel</a>
       </div>
     </form>
+    {% endcall %}
   </div>
 </div>
 {% endblock content %}

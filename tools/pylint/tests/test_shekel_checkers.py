@@ -618,10 +618,15 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
-    def test_flags_private_investment_builder_from_consumer(self) -> None:
-        """The private _build_investment_balance_map is guarded too: no reaching past the seam."""
+    def test_flags_investment_builder_from_consumer(self) -> None:
+        """build_investment_balance_map is guarded too: no reaching past the seam.
+
+        Extracted from net_worth_kernel to net_worth_investment and made public
+        (the kernel dispatches into it), but it stays a fenced balance producer:
+        a consumer outside the engine cluster must go through the balance_at seam.
+        """
         node = self._producer_call(
-            "net_worth_kernel._build_investment_balance_map("
+            "net_worth_investment.build_investment_balance_map("
             "account, params, scenario, periods)",
             "app.services.investment_dashboard_service",
         )
@@ -629,7 +634,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("_build_investment_balance_map",),
+                args=("build_investment_balance_map",),
             ),
             ignore_position=True,
         ):

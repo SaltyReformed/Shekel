@@ -1,0 +1,250 @@
+{# Unified Recurring surface -- the swappable body (Loop B, P2).
+
+   Rendered two ways with an identical result:
+     * included by templates/list.html for the full page, and
+     * returned on its own by templates.set_unit_preference for the live
+       Monthly / Per-paycheck toggle (an HTMX swap into #recurring-body).
+
+   Because the toggle re-renders this fragment server-side in the chosen
+   unit, every figure here is the ACTIVE unit only: money is formatted once,
+   in the money macro, from the producer's Decimals -- never in JS, and the
+   inactive unit never enters the DOM. recurring.js only re-applies the
+   search / filter / sort view to the freshly-swapped rows.
+
+   Context contract (recurring_view.build_view + the route):
+     view                -- RecurringView (band + income/expenses/transfers).
+     show_per_paycheck   -- which unit is active (bool).
+
+   Self-contained imports so the standalone render has them too. #}
+{% from "_money_macros.html" import money %}
+{% from "_recurrence_macros.html" import recurrence_cell with context %}
+
+{# ---- Local render helpers. The producer passed both units in; these only
+   pick the active one and format it. No money math here. ---- #}
+{% macro equiv(pair, show_pp) %}
+{%- set val = pair.per_paycheck if show_pp else pair.monthly -%}
+{%- if val is none -%}<span class="text-muted">--</span>{%- else -%}{{ money(val) }}{%- endif -%}
+{% endmacro %}
+
+{% macro next_date_cell(value) %}
+{%- if value -%}{{ value.strftime('%b %d, %Y') }}{%- else -%}<span class="text-muted">--</span>{%- endif -%}
+{% endmacro %}
+
+{# Share-of-committed bar: the Spending tab's bar vocabulary, filled by
+   progress_bar.js from data-progress-pct (CSP forbids an inline width). #}
+{% macro share_bar(share_pct) %}
+{%- if share_pct is not none -%}
+<span class="recurring-bar" aria-hidden="true"><span class="recurring-bar__fill" data-progress-pct="{{ share_pct }}"></span></span>
+<small class="text-muted d-block">{{ share_pct }}% of section</small>
+{%- endif -%}
+{% endmacro %}
+
+{# Active-row actions: Edit + Archive (Loop A locked; permanent delete lives
+   on the archived drawer). ``noun`` is transaction / transfer so the confirm
+   copy reads correctly for both kinds. #}
+{% macro edit_archive_actions(edit_url, archive_url, name, noun) %}
+<a href="{{ edit_url }}" class="btn btn-sm btn-outline-secondary me-1" aria-label="Edit {{ name }}">
+  <i class="bi bi-pencil"></i>
+</a>
+<form method="POST" action="{{ archive_url }}" class="d-inline"
+      data-confirm="Archive this recurring {{ noun }}? All projected {{ noun }}s will be removed.">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="btn btn-sm btn-outline-warning" aria-label="Archive {{ name }}">
+    <i class="bi bi-archive"></i>
+  </button>
+</form>
+{% endmacro %}
+
+{# One data-sort-* set per row, so recurring.js can search by name and sort by
+   name / defined amount / monthly cost / next date without touching money as
+   money. Empty keys (no equivalent / no next date) sort last. #}
+{% macro row_sort_attrs(row) %}
+data-recurring-row
+data-sort-name="{{ row.template.name|lower }}"
+data-sort-amount="{{ row.template.default_amount }}"
+data-sort-monthly="{{ row.equivalent.monthly if row.equivalent.monthly is not none else '' }}"
+data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
+{% endmacro %}
+
+{# Income and expense sections: category context, transaction-template action
+   URLs, and the envelope / companion badges that only expenses carry. #}
+{% macro txn_section(title, kind, section, show_pp) %}
+<section class="card mb-3" data-recurring-section="{{ kind }}">
+  <div class="card-header recurring-banner recurring-banner--{{ kind }}">
+    <h6 class="recurring-banner__title">{{ title }}</h6>
+    <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
+  </div>
+  {% if section.rows %}
+  <div class="table-responsive">
+    <table class="table table-hover table-sm align-middle mb-0">
+      <caption class="visually-hidden">{{ title }} recurring definitions</caption>
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Category</th>
+          <th scope="col" class="text-end">Amount</th>
+          <th scope="col">Recurrence</th>
+          <th scope="col" class="text-end">{{ 'Per paycheck' if show_pp else 'Monthly' }}</th>
+          <th scope="col">Next</th>
+          <th scope="col" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in section.rows %}
+        {% set t = row.template %}
+        <tr {{ row_sort_attrs(row) }}>
+          <td>
+            {{ t.name }}
+            {% if t.is_envelope %}
+            <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
+              <i class="bi bi-cart"></i>
+            </span>
+            {% endif %}
+            {% if t.companion_visible %}
+            <span class="badge bg-success-subtle text-success ms-1" title="Companion visible">
+              <i class="bi bi-eye"></i>
+            </span>
+            {% endif %}
+          </td>
+          <td>{{ t.category.display_name if t.category else '--' }}</td>
+          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+          <td>{{ recurrence_cell(t) }}</td>
+          <td class="text-end">
+            <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>
+            {{ share_bar(row.share_pct) }}
+          </td>
+          <td class="text-nowrap">{{ next_date_cell(row.next_date) }}</td>
+          <td class="text-nowrap text-end">
+            {{ edit_archive_actions(
+                 url_for('templates.edit_template', template_id=t.id),
+                 url_for('templates.archive_template', template_id=t.id),
+                 t.name, "transaction") }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body"><p class="text-muted small mb-0">None yet.</p></div>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{% macro transfer_section(section, show_pp) %}
+<section class="card mb-3" data-recurring-section="transfer">
+  <div class="card-header recurring-banner recurring-banner--transfer">
+    <h6 class="recurring-banner__title">Transfers</h6>
+    <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
+  </div>
+  {% if section.rows %}
+  <div class="table-responsive">
+    <table class="table table-hover table-sm align-middle mb-0">
+      <caption class="visually-hidden">Recurring transfer definitions</caption>
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">From &rarr; To</th>
+          <th scope="col" class="text-end">Amount</th>
+          <th scope="col">Recurrence</th>
+          <th scope="col" class="text-end">{{ 'Per paycheck' if show_pp else 'Monthly' }}</th>
+          <th scope="col">Next</th>
+          <th scope="col" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in section.rows %}
+        {% set t = row.template %}
+        <tr {{ row_sort_attrs(row) }}>
+          <td>{{ t.name }}</td>
+          <td>
+            {{ t.from_account.name if t.from_account else '--' }}
+            <i class="bi bi-arrow-right mx-1"></i>
+            {{ t.to_account.name if t.to_account else '--' }}
+          </td>
+          <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
+          <td>{{ recurrence_cell(t) }}</td>
+          <td class="text-end">
+            <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>
+            {{ share_bar(row.share_pct) }}
+          </td>
+          <td class="text-nowrap">{{ next_date_cell(row.next_date) }}</td>
+          <td class="text-nowrap text-end">
+            {{ edit_archive_actions(
+                 url_for('transfers.edit_transfer_template', template_id=t.id),
+                 url_for('transfers.archive_transfer_template', template_id=t.id),
+                 t.name, "transfer") }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body"><p class="text-muted small mb-0">None yet.</p></div>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{# ================================================================== #}
+{% if view.income.rows or view.expenses.rows or view.transfers.rows %}
+
+{# ---- Summary band: the retired /obligations monthly kernel. The net
+   figure is the hero (the verdict) coloured by sign; income / expenses /
+   transfers are its components. The number, its colour, and the
+   surplus/shortfall word are all keyed off ``net_val`` -- the SAME
+   active-unit figure -- so they can never disagree, even at the sub-penny
+   boundary where the monthly and per-paycheck nets (each summed from
+   independently rounded subtotals) could straddle zero. ---- #}
+{% set band = view.band %}
+{% set net_val = band.net.per_paycheck if show_per_paycheck else band.net.monthly %}
+<div class="pulse-canvas mb-3">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Net committed</div>
+      <div class="nw-hero__num font-mono {% if net_val < 0 %}recurring-net--neg{% elif net_val > 0 %}recurring-net--pos{% endif %}">
+        {{ money(net_val) }}
+      </div>
+      <div class="nw-hero__cap">
+        {% if net_val > 0 %}surplus{% elif net_val < 0 %}shortfall{% else %}balanced{% endif %}
+        from the rules, no projection
+      </div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Income</div>
+        <div class="pulse-chip__value font-mono">{{ equiv(band.income, show_per_paycheck) }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Expenses</div>
+        <div class="pulse-chip__value font-mono">{{ equiv(band.expenses, show_per_paycheck) }}</div>
+        {% if band.expenses_pct_of_income is not none %}
+        <div class="small text-muted">{{ band.expenses_pct_of_income }}% of income</div>
+        {% endif %}
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Transfers out</div>
+        <div class="pulse-chip__value font-mono">{{ equiv(band.transfers_out, show_per_paycheck) }}</div>
+      </div>
+    </div>
+  </div>
+  <p class="pulse-hero__cap--faint px-3 pb-2 mb-0">
+    Committed monthly totals from your active recurring rules. The toggle switches every figure
+    between monthly and per-paycheck equivalents.
+  </p>
+</div>
+
+{{ txn_section('Income', 'income', view.income, show_per_paycheck) }}
+{{ txn_section('Expenses', 'expense', view.expenses, show_per_paycheck) }}
+{{ transfer_section(view.transfers, show_per_paycheck) }}
+
+<div data-recurring-nomatch class="alert alert-secondary d-none" role="status">
+  No definitions match your search.
+</div>
+
+{% else %}
+<div class="alert alert-info">
+  No active recurring definitions. Use <strong>New</strong> to add a recurring expense, income, or
+  transfer -- each auto-generates budget entries every pay period.
+</div>
+{% endif %}

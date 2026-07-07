@@ -49,6 +49,7 @@ from ._common import _called_name_in, _module_in_allowlist
 _BALANCE_PRODUCERS = frozenset({
     "balances_for",
     "balance_as_of_date",
+    "build_daily_series",
     "calculate_balances",
     "calculate_balances_with_interest",
     "compute_loan_period_balance_map",
@@ -57,8 +58,8 @@ _BALANCE_PRODUCERS = frozenset({
     "base_account_balance_map",
     "account_balance_map_from_inputs",
     "investment_base_balance_map",
-    "_build_investment_balance_map",
-    "_build_appreciation_balance_map",
+    "build_investment_balance_map",
+    "build_appreciation_balance_map",
 })
 # Modules allowed to call a balance producer directly: the balance_at seam plus
 # the engine cluster it composes (the SOLID dependency direction -- consumers
@@ -79,6 +80,19 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.balance_calculator",
     "app.services.account_projection",
     "app.services.net_worth_kernel",
+    # Investment growth sub-chain, extracted from net_worth_kernel (which hit
+    # its module-size ceiling): builds an investment account's modeled balance
+    # map (build_investment_balance_map, the kernel dispatches here) and the
+    # growth-since-anchor decomposition off the SAME forward projection. It
+    # composes the kernel's investment_base_balance_map seed, so it lives
+    # inside the cluster rather than re-inventing the boundary from outside it.
+    "app.services.net_worth_investment",
+    # Daily distribution producer: composes ``balance_as_of_date`` for its
+    # per-day seed and ``sum_projected`` for the per-day nets, then exposed
+    # through the seam as ``balance_at.cash_daily_balance_series``.  It is a
+    # balance producer (daily granularity), so it lives inside the cluster
+    # rather than re-inventing the boundary from outside it.
+    "app.services.daily_balance_series",
 })
 
 # Genesis loan-ledger balance readers (W9906, the read switch's final commit):

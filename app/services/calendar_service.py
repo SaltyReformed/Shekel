@@ -32,10 +32,16 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
-    monthly_attribution_clause,
 )
+from app.utils.dates import attribution_date
 
 logger = logging.getLogger(__name__)
+
+# Day cells show at most this many named flow lines; any beyond collapse to
+# a single "+N more" line whose residual net is computed in the service
+# (templates never do money math).  The locked calendar anatomy fixes this
+# at three (income first, then expenses by descending magnitude).
+MAX_VISIBLE_DAY_FLOWS = 3
 
 
 class CalendarAccountNotResolvableError(LookupError):
@@ -97,10 +103,75 @@ class DayEntry:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class DayOverflow:
+    """The collapsed "+N more" residual for a day with more flows than fit.
+
+    A day cell renders at most :data:`MAX_VISIBLE_DAY_FLOWS` named flow lines;
+    the remainder collapse to one "+N more" line.  This carries that line's
+    two service-computed values so the template does no money math: the
+    ``count`` of hidden flows and their signed ``net`` (income positive,
+    expense negative).  Only days whose flow count exceeds the cap have an
+    entry (see :func:`_assign_transactions_to_days`).
+    """
+
+    count: int
+    net: Decimal
+
+
+@dataclass(frozen=True)
+class DailyView:  # pylint: disable=too-many-instance-attributes
+    """The month's daily running-balance projection for the calendar surface.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because this
+    is one cohesive value record: the month view's daily projection, read as
+    a unit by the calendar month template and its flow strip.  Splitting it
+    would fragment a single concept (the running balance and the summary-strip
+    figures derived from it) for no design gain.
+
+    The balances are projected-only and entry-aware, sourced from the balance
+    seam's :func:`~app.services.balance_at.cash_daily_balance_series`, so the
+    day-cell end-of-day hero and the flow strip line share one basis and
+    reconcile with the grid.  The ``elapsed_*`` / ``remaining_*`` figures are
+    the MEASURED / PROJECTED nominal in-out folds (from ``day_totals``, the
+    same ``effective_amount`` basis the day cells show), so they tie to the
+    day cells beside them; they COINCIDE with the projected balances in
+    ordinary data but deliberately diverge where the projection excludes a
+    settled row (already in the anchor), applies an envelope's entry-aware
+    reservation, or takes a live override -- the measured-vs-modeled
+    distinction the presentation labels, not a defect.  ``None`` on
+    :class:`MonthSummary` for the year overview (which does not render daily
+    balances; slice-1 scope).
+
+    Attributes:
+        daily_balances: ``{day_of_month: Decimal}`` projected end-of-day
+            running balance, one entry per calendar day in the month.
+        trough_day: The day of the month's minimum end-of-day balance (the
+            earliest such day on a tie), or ``None`` for an empty month.
+        trough_balance: That minimum end-of-day balance, or ``None``.
+        balance_today: The end-of-day balance on the current day when it
+            falls in this month (display timezone), else ``None``.
+        elapsed_income / elapsed_expense: Income / expense that has landed on
+            or before today (measured-so-far); the whole month when the month
+            is entirely past.
+        remaining_income / remaining_expense: Income / expense still projected
+            after today; the whole month when the month is entirely future.
+    """
+
+    daily_balances: dict[int, Decimal]
+    trough_day: int | None
+    trough_balance: Decimal | None
+    balance_today: Decimal | None
+    elapsed_income: Decimal
+    elapsed_expense: Decimal
+    remaining_income: Decimal
+    remaining_expense: Decimal
+
+
+@dataclass(frozen=True)
 class MonthSummary:  # pylint: disable=too-many-instance-attributes
     """Aggregated data for one calendar month.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
+    Pylint: ``too-many-instance-attributes`` (13/7) -- suppressed
     because this is a cohesive single-return aggregate -- one calendar
     month's summary -- whose fields are flat columns read together by the
     calendar surface: the month and year templates render the money fields
@@ -111,7 +182,19 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     templates and the exporter for no design gain.  ``day_totals`` is the
     per-day income/expense map (parallel to ``day_entries``) the analytics
     calendar route renders directly, so the route does no money math of
-    its own.
+    its own.  ``day_overflow`` is the parallel per-day "+N more" residual;
+    ``daily`` bundles the whole daily running-balance projection as one
+    cohesive sub-object (:class:`DailyView`), ``None`` for the year overview.
+    ``account_name`` is the resolved analytics account's display name (the
+    on-screen scope label the month template renders so the checking-only
+    scope is stated, not silent -- the analytics-audit cross-cutting fix).
+
+    ``projected_end_balance`` is the period-flat seam scalar at the last
+    calendar day (the containing period's end); the month view's honest
+    "balance on the last day of the month" is ``daily.daily_balances[last]``,
+    which the flow strip ends on -- the two differ when the month ends
+    mid-period, and the month template uses the running value so the strip
+    and the month-end tile agree.
     """
 
     year: int
@@ -123,7 +206,10 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     is_third_paycheck_month: bool
     day_entries: dict[int, list[DayEntry]]
     day_totals: dict[int, tuple[Decimal, Decimal]]
+    day_overflow: dict[int, DayOverflow]
     paycheck_days: list[int]
+    daily: DailyView | None
+    account_name: str
 
 
 @dataclass(frozen=True)
@@ -137,19 +223,30 @@ class YearOverview:
     annual_net: Decimal
 
 
-def get_month_detail(
+def get_month_detail(  # pylint: disable=too-many-arguments
     user_id: int,
     year: int,
     month: int,
     account_id: int | None = None,
     large_threshold: int = 500,
+    *,
+    today: date | None = None,
 ) -> MonthSummary:
     """Compute calendar data for a single month.
 
     Queries transactions for pay periods that overlap the given month,
-    assigns each transaction to a calendar day via due_date (falling
-    back to pay period start_date), and computes income/expense totals,
-    projected month-end balance, and large/infrequent flags.
+    assigns each transaction to a calendar day via due_date (clamped into
+    its pay period), and computes income/expense totals, projected
+    month-end balance, large/infrequent flags, and -- when ``today`` is
+    supplied -- the daily running-balance projection (:class:`DailyView`).
+
+    Pylint: ``too-many-arguments`` (6/5) -- these six are independent
+    calendar-render inputs, not a cohesive entity: the owner id, the target
+    year and month, the optional account scope, the large-flag threshold, and
+    the display-tz ``today`` that gates the daily view.  They are passed
+    straight through from the route's own request args, so a param object
+    would be stamp coupling; ``get_year_overview`` shares the same
+    non-cohesive shape minus ``today``.
 
     Args:
         user_id: The user's ID.
@@ -159,6 +256,12 @@ def get_month_detail(
             the user's first active checking account.
         large_threshold: Amount at or above which a transaction is
             flagged as large.
+        today: The current date in the display timezone (the route resolves
+            it).  When supplied, the month's daily running-balance view is
+            computed and attached as :attr:`MonthSummary.daily` (the flow
+            strip, day-cell balances, and elapsed/remaining split need it);
+            when ``None`` (aggregate callers that do not render daily
+            balances) ``daily`` is ``None`` and no balance-series read runs.
 
     Returns:
         A MonthSummary with day-level and aggregate data.
@@ -188,7 +291,7 @@ def get_month_detail(
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
         transactions=transactions, large_threshold=large_threshold,
-        scenario=scenario,
+        scenario=scenario, today=today,
     )
     return _build_month_summary(month, ctx)
 
@@ -237,7 +340,7 @@ def get_year_overview(
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
         transactions=all_txns, large_threshold=large_threshold,
-        scenario=scenario,
+        scenario=scenario, today=None,
     )
     months = [_build_month_summary(m, ctx) for m in range(1, 13)]
 
@@ -263,13 +366,22 @@ def _query_transactions_for_range(
     first_day: date,
     last_day: date,
 ) -> list[Transaction]:
-    """Load transactions that belong to the given date range.
+    """Load the transactions of every pay period overlapping the range.
 
-    Includes transactions via two paths to avoid missing those whose
-    due_date falls outside their pay period's date range:
-      1. Transactions with due_date in [first_day, last_day].
-      2. Transactions with no due_date in periods overlapping the range
-         (fallback assignment uses the period's start_date).
+    Fetches by PERIOD MEMBERSHIP -- all balance-contributing rows whose
+    ``pay_period_id`` is a period overlapping ``[first_day, last_day]`` --
+    NOT by raw ``due_date``.  This is the basis the clamped
+    :func:`~app.utils.dates.attribution_date` display rule and the daily
+    balance producer both use: a transaction is attributed to a day inside
+    its own pay period, so the day cell that renders it and the balance line
+    that steps for it share one period-anchored day.  A ``due_date`` that
+    strays outside its period (the reason the prior query needed a second
+    due-date-in-range path) is pulled back to the period boundary by the
+    clamp; fetching by membership means such a row is still loaded for the
+    month its period lands in and is never dropped.  ``_get_display_day``
+    then filters each loaded row to the single month its clamped attribution
+    date falls in, so a period straddling two months splits its rows across
+    them without double-counting.
 
     Eager-loads category, status, template -> recurrence_rule, and
     pay_period to prevent N+1 queries downstream.
@@ -285,25 +397,6 @@ def _query_transactions_for_range(
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
     """
-    # Pylint: ``duplicate-code`` -- the overlapping-periods preamble +
-    # eager-loaded ``Transaction`` query below (``get_overlapping_periods``
-    # then ``query(Transaction).options(joinedload(category), joinedload(
-    # status), ...)``) is incidental SQLAlchemy boilerplate structurally
-    # parallel to ``budget_variance_service._query_by_date_range`` (the
-    # R0801 preamble cluster).  The genuinely shared logic has already been
-    # lifted out: the monthly-attribution business rule into
-    # ``monthly_attribution_clause`` (called by both), and both queries
-    # apply the IDENTICAL balance-contributing gate -- calendar's
-    # ``balance_contributing_clause()`` is exactly budget-variance's
-    # ``is_deleted.is_(False)`` + ``~status_id.in_(balance_excluded_status_ids())``
-    # (NOT a "Projected-only" gate, as a prior rationale wrongly claimed).
-    # The only genuine divergence is eager-loads: calendar adds
-    # ``joinedload(template -> recurrence_rule)`` for ``_is_infrequent``'s
-    # day-cell display; budget-variance never reads templates.  A shared
-    # query builder would parameterize that per-consumer eager-load set for
-    # no logic saved (coding-standards rule 13), so the preamble stays a
-    # documented one-sided disable.
-    # pylint: disable=duplicate-code
     overlapping = get_overlapping_periods(user_id, first_day, last_day)
     period_ids = [p.id for p in overlapping]
 
@@ -321,11 +414,10 @@ def _query_transactions_for_range(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
             balance_contributing_clause(),
-            monthly_attribution_clause(first_day, last_day, period_ids),
+            Transaction.pay_period_id.in_(period_ids),
         )
         .all()
     )
-    # pylint: enable=duplicate-code
 
 
 def _build_day_entry(
@@ -392,12 +484,22 @@ def _assign_transactions_to_days(
     year: int,
     month: int,
     large_threshold: int,
-) -> tuple[dict[int, list[DayEntry]], dict[int, tuple[Decimal, Decimal]]]:
+) -> tuple[
+    dict[int, list[DayEntry]],
+    dict[int, tuple[Decimal, Decimal]],
+    dict[int, DayOverflow],
+]:
     """Assign transactions to calendar days and fold per-day totals.
 
-    Returns the day_map and a per-day ``{day: (income, expense)}`` totals
-    map for the target month.  Deduplicates by transaction ID to prevent
-    double-counting when periods overlap month boundaries.
+    Returns the day_map, the per-day ``{day: (income, expense)}`` totals
+    map, and the per-day ``{day: DayOverflow}`` collapse map for the target
+    month.  Deduplicates by transaction ID to prevent double-counting when
+    periods overlap month boundaries.
+
+    Each day's entries are ordered income first, then expenses by descending
+    magnitude (the locked calendar anatomy); the first
+    :data:`MAX_VISIBLE_DAY_FLOWS` are the visible named lines and any beyond
+    are summarized in :class:`DayOverflow` (count plus signed residual net).
 
     Per F-3 / W-065, every transaction is re-checked against
     :func:`~app.utils.balance_predicates.is_balance_contributing`
@@ -430,16 +532,45 @@ def _assign_transactions_to_days(
         entry = _build_day_entry(txn, income_type_id, threshold)
         day_map[display_day].append(entry)
 
-    # Sort each day's entries by abs(amount) descending.
+    # Order each day income first, then expenses by descending magnitude.
     for day in day_map:
-        day_map[day].sort(key=lambda e: abs(e.amount), reverse=True)
+        day_map[day].sort(key=lambda e: (not e.is_income, -abs(e.amount)))
 
     day_totals = {
         day: _fold_income_expense(entries)
         for day, entries in day_map.items()
     }
+    day_overflow = {
+        day: _day_overflow(entries)
+        for day, entries in day_map.items()
+        if len(entries) > MAX_VISIBLE_DAY_FLOWS
+    }
 
-    return dict(day_map), day_totals
+    return dict(day_map), day_totals, day_overflow
+
+
+def _day_overflow(entries: list[DayEntry]) -> DayOverflow:
+    """Summarize the flows past the visible cap into a "+N more" residual.
+
+    The entries are pre-sorted (income first, then expenses by descending
+    magnitude), so the hidden tail is everything after the first
+    :data:`MAX_VISIBLE_DAY_FLOWS`.  The residual ``net`` is signed (income
+    positive, expense negative) and seeded at ``Decimal("0")`` so it stays a
+    ``Decimal``.  Called only for days whose flow count exceeds the cap.
+
+    Args:
+        entries: One day's ordered :class:`DayEntry` list (length greater
+            than :data:`MAX_VISIBLE_DAY_FLOWS`).
+
+    Returns:
+        The :class:`DayOverflow` for the hidden tail.
+    """
+    hidden = entries[MAX_VISIBLE_DAY_FLOWS:]
+    net = sum(
+        (e.amount if e.is_income else -abs(e.amount) for e in hidden),
+        Decimal("0"),
+    )
+    return DayOverflow(count=len(hidden), net=net)
 
 
 @dataclass(frozen=True)
@@ -452,6 +583,11 @@ class _MonthBuildContext:
     Bundling these into the context the build shares keeps
     :func:`_build_month_summary` a two-argument call and makes that
     resolved-once-reused relationship explicit.
+
+    ``today`` is the display-timezone current date supplied by the month
+    view (``None`` for the year overview): when set, the build computes the
+    month's daily running-balance :class:`DailyView`; when ``None`` no
+    balance-series read runs and ``MonthSummary.daily`` stays ``None``.
     """
 
     year: int
@@ -460,6 +596,7 @@ class _MonthBuildContext:
     transactions: list[Transaction]
     large_threshold: int
     scenario: Scenario
+    today: date | None
 
 
 def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
@@ -477,7 +614,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     Returns:
         A MonthSummary for the target month.
     """
-    day_entries, day_totals = _assign_transactions_to_days(
+    day_entries, day_totals, day_overflow = _assign_transactions_to_days(
         ctx.transactions, ctx.year, month, ctx.large_threshold,
     )
     # Month headline totals are the sum of the per-day folds, so the
@@ -499,6 +636,11 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         if p.start_date.year == ctx.year and p.start_date.month == month
     })
 
+    daily = (
+        _compute_daily_view(ctx, month, day_totals)
+        if ctx.today is not None else None
+    )
+
     return MonthSummary(
         year=ctx.year,
         month=month,
@@ -509,8 +651,124 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         is_third_paycheck_month=month in third_paycheck_months,
         day_entries=day_entries,
         day_totals=day_totals,
+        day_overflow=day_overflow,
         paycheck_days=paycheck_days,
+        daily=daily,
+        account_name=ctx.account.name,
     )
+
+
+def _compute_daily_view(
+    ctx: _MonthBuildContext,
+    month: int,
+    day_totals: dict[int, tuple[Decimal, Decimal]],
+) -> DailyView:
+    """Build the month's daily running-balance projection.
+
+    Reads the day-by-day end-of-day balance from the balance seam
+    (:func:`~app.services.balance_at.cash_daily_balance_series`), derives the
+    month trough (earliest day of the minimum balance) and today's balance,
+    and splits the per-day income/expense folds into elapsed (on or before
+    today) and remaining (after today).  ``ctx.today`` is the display-timezone
+    current date; a month entirely in the past is all elapsed, one entirely
+    in the future all remaining.
+
+    Args:
+        ctx: The build context (account, scenario, and display-tz ``today``,
+            which must not be ``None`` here -- the caller gates on it).
+        month: Target calendar month (1-12).
+        day_totals: The per-day ``{day: (income, expense)}`` folds, split at
+            ``today`` into the elapsed / remaining summary-strip figures.
+
+    Returns:
+        The assembled :class:`DailyView`.
+    """
+    first_day = date(ctx.year, month, 1)
+    last_day = date(ctx.year, month, calendar.monthrange(ctx.year, month)[1])
+    series = balance_at.cash_daily_balance_series(
+        ctx.account, ctx.scenario, first_day, last_day,
+    )
+    daily_balances = {day.day: balance for day, balance in series.items()}
+
+    trough_day, trough_balance = _find_trough(daily_balances)
+
+    today = ctx.today
+    if today > last_day:
+        split_day, balance_today = last_day.day, None
+    elif today < first_day:
+        split_day, balance_today = 0, None
+    else:
+        split_day, balance_today = today.day, daily_balances.get(today.day)
+
+    elapsed = _fold_split(day_totals, split_day, True)
+    remaining = _fold_split(day_totals, split_day, False)
+
+    return DailyView(
+        daily_balances=daily_balances,
+        trough_day=trough_day,
+        trough_balance=trough_balance,
+        balance_today=balance_today,
+        elapsed_income=elapsed[0],
+        elapsed_expense=elapsed[1],
+        remaining_income=remaining[0],
+        remaining_expense=remaining[1],
+    )
+
+
+def _find_trough(
+    daily_balances: dict[int, Decimal],
+) -> tuple[int | None, Decimal | None]:
+    """Return the (day, balance) of the month's minimum end-of-day balance.
+
+    The series is day-ascending, so a strict ``<`` comparison keeps the
+    EARLIEST day on a tie.  An empty month (no days) returns ``(None, None)``.
+
+    Args:
+        daily_balances: The ``{day: Decimal}`` end-of-day balances.
+
+    Returns:
+        ``(trough_day, trough_balance)``, or ``(None, None)`` when empty.
+    """
+    trough_day: int | None = None
+    trough_balance: Decimal | None = None
+    for day, balance in daily_balances.items():
+        if trough_balance is None or balance < trough_balance:
+            trough_day, trough_balance = day, balance
+    return trough_day, trough_balance
+
+
+def _fold_split(
+    day_totals: dict[int, tuple[Decimal, Decimal]],
+    split_day: int,
+    elapsed: bool,
+) -> tuple[Decimal, Decimal]:
+    """Sum the per-day income / expense folds on one side of ``split_day``.
+
+    ``elapsed`` selects days on or before ``split_day`` (measured so far);
+    otherwise days strictly after it (still projected).  Both legs seed at
+    ``Decimal("0")`` so money stays ``Decimal``.
+
+    Args:
+        day_totals: The per-day ``{day: (income, expense)}`` folds.
+        split_day: The day the month splits at (today's day, or a whole-month
+            boundary for a fully past / future month).
+        elapsed: ``True`` for the elapsed side (day <= split_day), ``False``
+            for the remaining side (day > split_day).
+
+    Returns:
+        ``(income, expense)`` summed over the selected side.
+    """
+    income = sum(
+        (inc for day, (inc, _exp) in day_totals.items()
+         if (day <= split_day) == elapsed),
+        Decimal("0"),
+    )
+    expense = sum(
+        (exp for day, (_inc, exp) in day_totals.items()
+         if (day <= split_day) == elapsed),
+        Decimal("0"),
+    )
+    return income, expense
 
 
 def _get_display_day(
@@ -520,23 +778,24 @@ def _get_display_day(
 ) -> int | None:
     """Determine the calendar day to display a transaction on.
 
-    Returns the day-of-month if the transaction belongs in the target
-    month, or None if it does not (preventing double-counting across
+    Returns the day-of-month when the transaction's attribution date falls in
+    the target month, or None otherwise (preventing double-counting across
     month boundaries).
 
-    Primary: txn.due_date -- assigned by the recurrence engine.
-    Fallback: txn.pay_period.start_date (for transactions without
-    a due_date, which should be rare after the Commit 2 backfill).
+    The attribution date is the shared
+    :func:`~app.utils.dates.attribution_date` rule the daily balance ramp
+    uses -- ``due_date`` (fallback: the pay period ``start_date``) clamped
+    into the transaction's own pay period span.  Sharing the one rule keeps
+    a flow's cell and the balance line's step on the same day; the clamp also
+    prevents a due_date that strays just outside its period from leaking a
+    flow onto a neighboring period's day.
     """
-    if txn.due_date is not None:
-        if txn.due_date.month == target_month and txn.due_date.year == target_year:
-            return txn.due_date.day
-        return None
-
-    # Fallback to pay period start_date.
-    start = txn.pay_period.start_date
-    if start.month == target_month and start.year == target_year:
-        return start.day
+    period = txn.pay_period
+    landing = attribution_date(
+        txn.due_date, period.start_date, period.end_date,
+    )
+    if landing.month == target_month and landing.year == target_year:
+        return landing.day
     return None
 
 

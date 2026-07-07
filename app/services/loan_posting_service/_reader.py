@@ -69,7 +69,7 @@ from app.services.rate_period_engine import (
 from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
-from ._walk import _confirmed_shadows_through
+from ._walk import _confirmed_shadows_through, _settled_income_shadows
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -374,14 +374,169 @@ def confirmed_loan_interest_in_year(
     linked = _ledger_account_for(loan_account_id)
     if not _has_opening_posting(linked.id, scenario_id):
         return None
-    net_by_shadow = _interest_net_by_shadow(loan_account_id, scenario_id)
+    # Attribute each payment's net interest to its CURRENT paid date's year in
+    # the DISPLAY timezone (the tax-correct basis per L9; see the docstring); the
+    # shared attribution reads ``paid_at`` / period start back per shadow so a
+    # since-cleared ``paid_at`` falls back to the period start the entry dating
+    # used, and a reverted payment (net zero) drops out cleanly.
+    return _attribute_net_by_shadow_to_year(
+        _interest_net_by_shadow(loan_account_id, scenario_id), year,
+    )
+
+
+def _net_by_shadow_for_kind(
+    loan_account_id: int,
+    scenario_id: int,
+    kind_enum: LedgerAccountKindEnum,
+) -> dict[int, Decimal]:
+    """Return each payment shadow's NET posted amount on one per-loan ledger kind.
+
+    Sums the postings on the loan's per-loan ledger of *kind_enum*
+    (``loan_interest`` / ``loan_escrow`` / ...), grouped by the payment shadow
+    they book under (``journal_entries.transaction_id`` -- every such leg is a
+    loan-payment split correction, which links by the income shadow's id).  A
+    payment shadow's net across all its legs of this kind is the original split
+    plus any true-up / rate re-split delta or reversal, so a reverted payment
+    nets to zero and drops out with no status filter.  A HARD-deleted payment's
+    legs carry a NULL ``transaction_id`` (``journal_entries.transaction_id`` is
+    ``ON DELETE SET NULL``) after its correction was already reversed to zero
+    (:func:`._payments.reverse_loan_payment_postings_for_shadow` runs before the
+    delete); the ``isnot(None)`` filter drops that dead group explicitly.
+
+    The one query shape behind every per-loan-kind per-shadow reader (interest
+    for the tax figure, escrow for the payment-history split), so no two can
+    drift on what counts as a payment's posted amount of a given kind.
+
+    Args:
+        loan_account_id: The loan whose per-payment legs to sum.
+        scenario_id: The budget scenario to scope to.
+        kind_enum: The per-loan ledger kind to sum (e.g.
+            :attr:`~app.enums.LedgerAccountKindEnum.LOAN_INTEREST`).
+
+    Returns:
+        ``{shadow transaction id: net Decimal}``; empty when no leg of this kind
+        is posted yet.
+    """
+    kind_id = ref_cache.ledger_account_kind_id(kind_enum)
+    return dict(
+        db.session.query(
+            JournalEntry.transaction_id, db.func.sum(Posting.amount),
+        )
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
+        .filter(
+            LedgerAccount.loan_account_id == loan_account_id,
+            LedgerAccount.kind_id == kind_id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.transaction_id.isnot(None),
+        )
+        .group_by(JournalEntry.transaction_id)
+        .all()
+    )
+
+
+def _interest_net_by_shadow(
+    loan_account_id: int, scenario_id: int,
+) -> dict[int, Decimal]:
+    """Return each payment shadow's NET posted interest, keyed by shadow id.
+
+    The ``loan_interest`` specialisation of :func:`_net_by_shadow_for_kind` (see
+    it for the net / reversal / hard-delete semantics).  Shared by the tax
+    reader (:func:`confirmed_loan_interest_in_year`, which attributes each net to
+    its civil paid YEAR) and the history readers
+    (:func:`confirmed_loan_history_rows` and
+    :func:`confirmed_loan_payment_history`, which place each net on its
+    payment's row), so the surfaces cannot drift on what counts as a payment's
+    actual interest.
+
+    Args:
+        loan_account_id: The loan whose per-payment interest to sum.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        ``{shadow transaction id: net interest Decimal}``; empty when no
+        interest leg is posted yet.
+    """
+    return _net_by_shadow_for_kind(
+        loan_account_id, scenario_id, LedgerAccountKindEnum.LOAN_INTEREST,
+    )
+
+
+def _principal_net_by_shadow(
+    loan_account_id: int, scenario_id: int,
+) -> dict[int, Decimal]:
+    """Return each settled payment's NET principal on the loan's linked ledger.
+
+    A payment's principal is its net on the loan's LINKED (liability) ledger --
+    the Step-2 cash leg plus the Step-4 split correction -- which by the balanced
+    construction of the correction is exactly the real debt it paid down (a
+    payoff-overpayment's excess goes to a Refund leg, not principal).  The cash
+    leg links by the payment's ``transfer_id`` (``transaction_id`` NULL); the
+    correction links by the income shadow's ``transaction_id``; so both linkages
+    map to the same settled shadow and their nets accumulate into that payment's
+    principal.  A non-payment linked posting -- the opening, every true-up, a raw
+    transaction typed onto the loan -- matches no settled shadow and is excluded,
+    so this is payment principal only.
+
+    Covers EVERY settled payment (no period bound), matching the all-settled
+    basis of :func:`_interest_net_by_shadow`, so the paid-year principal and
+    interest chips sum over the identical payment set.
+
+    Args:
+        loan_account_id: The loan whose per-payment principal to sum.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        ``{shadow transaction id: net principal Decimal}`` (unrounded running
+        sums; the caller rounds); empty when the loan has no settled payment.
+    """
+    shadows = _settled_income_shadows(loan_account_id, scenario_id)
+    shadow_ids = {shadow.id for shadow in shadows}
+    shadow_id_by_transfer = {
+        shadow.transfer_id: shadow.id for shadow in shadows
+    }
+    linked = _ledger_account_for(loan_account_id)
+    principal_by_shadow: dict[int, Decimal] = {}
+    for _date, _source, transfer_id, transaction_id, net in _linked_entry_nets(
+        linked.id, scenario_id,
+    ):
+        if transaction_id in shadow_ids:
+            key = transaction_id
+        elif transfer_id in shadow_id_by_transfer:
+            key = shadow_id_by_transfer[transfer_id]
+        else:
+            continue
+        principal_by_shadow[key] = (
+            principal_by_shadow.get(key, _ZERO_MONEY) + net
+        )
+    return principal_by_shadow
+
+
+def _attribute_net_by_shadow_to_year(
+    net_by_shadow: dict[int, Decimal], year: int,
+) -> Decimal:
+    """Sum the per-shadow nets whose payment was PAID in *year* (display civil date).
+
+    The paid-date attribution shared by the interest and principal in-year
+    readers: each shadow's net is attributed to the civil year of its payment's
+    display-timezone paid date (:func:`app.utils.dates.to_display_civil_date` of
+    the shadow's current ``paid_at``, falling back to its pay-period start when
+    ``paid_at`` is cleared) -- the L9 tax-correct basis (see
+    :func:`confirmed_loan_interest_in_year`).  Reading ``paid_at`` and the period
+    start back per shadow makes both readers robust to a reversal the same way: a
+    reverted payment's net is zero, so it drops from every year cleanly.
+
+    Args:
+        net_by_shadow: ``{shadow transaction id: net Decimal}`` (interest or
+            principal), from :func:`_interest_net_by_shadow` /
+            :func:`_principal_net_by_shadow`.
+        year: The calendar year to sum within.
+
+    Returns:
+        The cent-quantized sum of the nets paid in *year* (``0.00`` when none).
+    """
     if not net_by_shadow:
         return _ZERO_MONEY
-    # Attribute each payment's net interest to its CURRENT paid date's year in
-    # the DISPLAY timezone (the tax-correct basis per L9; see the docstring),
-    # reading ``paid_at`` and the pay-period start back from the shadow so a
-    # since-cleared ``paid_at`` falls back to the same period start the entry
-    # dating used.
     shadows = (
         db.session.query(Transaction)
         .options(joinedload(Transaction.pay_period))
@@ -396,57 +551,6 @@ def confirmed_loan_interest_in_year(
         if paid_date.year == year:
             total += net_by_shadow[shadow.id]
     return round_money(total)
-
-
-def _interest_net_by_shadow(
-    loan_account_id: int, scenario_id: int,
-) -> dict[int, Decimal]:
-    """Return each payment shadow's NET posted interest, keyed by shadow id.
-
-    Each payment shadow's NET interest across every ``loan_interest`` leg it
-    carries -- the original split plus any true-up / rate re-split delta or
-    reversal -- keyed by the shadow, in one grouped load.  A reverted payment's
-    legs net to zero here, so no payment-status filter is needed: it simply
-    contributes nothing.  A HARD-deleted payment's legs carry a NULL
-    ``transaction_id`` (``journal_entries.transaction_id`` is ``ON DELETE SET
-    NULL``) after its correction was already reversed to zero
-    (:func:`._payments.reverse_loan_payment_postings_for_shadow` runs before the
-    delete); the ``isnot(None)`` filter drops that dead group explicitly -- a
-    deleted payment is not history -- rather than leaning on a downstream shadow
-    load to silently skip a ``None`` key.
-
-    Shared by the tax reader (:func:`confirmed_loan_interest_in_year`, which
-    attributes each net to its civil paid YEAR) and the history reader
-    (:func:`confirmed_loan_history_rows`, which places each net on its
-    payment's schedule ROW), so the two cannot drift on what counts as a
-    payment's actual interest.
-
-    Args:
-        loan_account_id: The loan whose per-payment interest to sum.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``{shadow transaction id: net interest Decimal}``; empty when no
-        interest leg is posted yet.
-    """
-    interest_kind_id = ref_cache.ledger_account_kind_id(
-        LedgerAccountKindEnum.LOAN_INTEREST
-    )
-    return dict(
-        db.session.query(
-            JournalEntry.transaction_id, db.func.sum(Posting.amount),
-        )
-        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
-        .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
-        .filter(
-            LedgerAccount.loan_account_id == loan_account_id,
-            LedgerAccount.kind_id == interest_kind_id,
-            JournalEntry.scenario_id == scenario_id,
-            JournalEntry.transaction_id.isnot(None),
-        )
-        .group_by(JournalEntry.transaction_id)
-        .all()
-    )
 
 
 def _linked_entry_nets(
@@ -716,6 +820,38 @@ def _replay_history_events(
     return rows
 
 
+def _confirmed_history_inputs(
+    loan_account_id: int, scenario_id: int, as_of: date,
+) -> "tuple[LoanParams, LedgerAccount, list[Transaction]] | None":
+    """Load the shared inputs of the confirmed history producers, or None.
+
+    The common entry guard + load behind both confirmed-history surfaces -- the
+    amortization rows (:func:`confirmed_loan_history_rows`) and the payment-history
+    table (:func:`._display.confirmed_loan_payment_history`): a configured loan
+    (:class:`~app.models.loan_params.LoanParams`) with an OPENING posting in the
+    scenario, plus its confirmed income shadows through *as_of*.  Returns ``None``
+    when the ledger cannot answer -- no params, or no opening posting -- so both
+    surfaces fall back / hide on the identical condition.
+
+    Args:
+        loan_account_id: The loan account to load.
+        scenario_id: The budget scenario to scope to.
+        as_of: The display boundary for the confirmed shadows.
+
+    Returns:
+        ``(params, linked ledger account, confirmed shadows through as_of)``, or
+        ``None`` when the loan is unconfigured / not opened in the scenario.
+    """
+    params = loan_loaders.load_loan_params(loan_account_id)
+    if params is None:
+        return None
+    linked = _ledger_account_for(loan_account_id)
+    if not _has_opening_posting(linked.id, scenario_id):
+        return None
+    shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)
+    return params, linked, shadows
+
+
 def confirmed_loan_history_rows(
     loan_account_id: int, scenario_id: int, as_of: date,
 ) -> list[AmortizationRow] | None:
@@ -791,14 +927,10 @@ def confirmed_loan_history_rows(
             f"{as_of.isoformat()}.  A future date is a forward projection -- "
             f"route it to resolve_loan, not the confirmed ledger."
         )
-    params = loan_loaders.load_loan_params(loan_account_id)
-    if params is None:
+    inputs = _confirmed_history_inputs(loan_account_id, scenario_id, as_of)
+    if inputs is None:
         return None
-    linked = _ledger_account_for(loan_account_id)
-    if not _has_opening_posting(linked.id, scenario_id):
-        return None
-
-    shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)
+    params, linked, shadows = inputs
     principal_by_shadow, other_events = _classify_linked_nets(
         _linked_entry_nets(linked.id, scenario_id),
         shadows,

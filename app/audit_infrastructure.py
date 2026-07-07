@@ -73,13 +73,15 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "accounts"),
     ("budget", "asset_appreciation_params"),
     ("budget", "categories"),
-    ("budget", "escrow_components"),
+    ("budget", "escrow_component_versions"),
+    ("budget", "escrow_lines"),
     ("budget", "interest_params"),
     ("budget", "investment_params"),
     ("budget", "journal_entries"),
     ("budget", "ledger_accounts"),
     ("budget", "loan_anchor_events"),
     ("budget", "loan_params"),
+    ("budget", "loan_payment_settings"),
     ("budget", "pay_periods"),
     ("budget", "pay_schedule"),
     ("budget", "rate_history"),
@@ -105,9 +107,11 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("salary", "pension_profiles"),
     ("salary", "salary_profiles"),
     ("salary", "salary_raises"),
+    ("salary", "state_child_deductions"),
     ("salary", "state_tax_configs"),
     ("salary", "tax_bracket_sets"),
     ("salary", "tax_brackets"),
+    ("salary", "ytd_tax_checkpoints"),
 )
 
 

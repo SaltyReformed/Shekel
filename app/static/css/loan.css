@@ -1,0 +1,224 @@
+/* Shekel loan detail screen -- the Fable 5 rebuild (docs/design/loan_audit.md,
+   locked anatomy).  Reuses the band vocabulary from dashboard.css
+   (.pulse-canvas / .nw-sky / .nw-hero* / .pulse-chip* / .pulse-chart) and the
+   account-detail additions from accounts.css (.acctd-*); the rules here add
+   only what is unique to the loan page: the ARM chip tag, the what-if levers
+   and their result chips, the balance-anchor drift coloring, and the
+   payment-history scroll.
+
+   Load-order contract (see base.html): loads AFTER dashboard.css and
+   accounts.css (so it may reuse their band vocabulary) and BEFORE utilities.css
+   (which must stay last).  Tokens only -- no raw hex, no !important. */
+
+/* ARM tag inside the rate band chip: a calm heads-up amber, not an alarm. */
+.loan-chip-tag {
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 99px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  color: var(--shekel-credit);
+  background: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+}
+
+/* =============================================
+   WHAT-IF LEVERS (pay off sooner / refinance)
+   ============================================= */
+/* The result area is separated from the form only once a result swaps in. */
+.loan-lever__results:not(:empty) {
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+/* Metric chips shared by the payoff results (and any compact lever verdict). */
+.loan-result-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.loan-result-chip {
+  flex: 1 1 auto;
+  min-width: 6rem;
+  padding: 0.4375rem 0.75rem;
+  border-radius: 0.625rem;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+}
+
+.loan-result-chip__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+}
+
+.loan-result-chip__value {
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 0.0625rem;
+  color: var(--shekel-text-primary);
+}
+
+/* Money-state text: a saving / gain in the done token, a cost / loss in danger.
+   Always paired with a sign or word so color is never the only signal. */
+.loan-pos {
+  color: var(--shekel-done);
+}
+
+.loan-neg {
+  color: var(--shekel-danger);
+}
+
+/* =============================================
+   BALANCE-ANCHOR DRIFT + PAYMENT HISTORY
+   ============================================= */
+/* Drift = recorded balance minus the ledger's computed balance.  "Owe more than
+   the ledger modeled" is a calm heads-up (credit/amber, paired with a leading
+   +); "owe less" is the done token (paired with the money macro's leading -). */
+.loan-drift--up {
+  color: var(--shekel-credit);
+}
+
+.loan-drift--down {
+  color: var(--shekel-done);
+}
+
+/* Payment history can run to hundreds of rows on an old loan: cap the height and
+   let it scroll in place rather than dominating the page (the footer link to the
+   full amortization schedule is the deep view). */
+.loan-history-scroll {
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+/* =============================================
+   ESCROW VERSION DRAWER (loan detail escrow card)
+   ============================================= */
+/* Each escrow line is a summary row (its amount in effect TODAY) over a
+   collapsible drawer holding the full version history + edit / schedule forms.
+   Tokens only; the grid is what Bootstrap utilities cannot express (aligned
+   money + inline-edit columns). */
+.escrow-line + .escrow-line {
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.escrow-line__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.escrow-line__name {
+  font-weight: 600;
+}
+
+.escrow-line__monthly {
+  font-weight: 700;
+}
+
+/* The chevron rotates to point down when its drawer is open (Bootstrap toggles
+   aria-expanded on the collapse trigger). */
+.escrow-line__toggle .bi {
+  transition: transform 0.15s ease;
+}
+
+.escrow-line__toggle[aria-expanded="true"] .bi {
+  transform: rotate(90deg);
+}
+
+/* A queued future-dated change: a calm heads-up amber, matching the ARM tag. */
+.escrow-badge-scheduled {
+  color: var(--shekel-credit);
+  background: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+  font-weight: 600;
+}
+
+.escrow-line__drawer {
+  padding: 0.25rem 0.75rem 0.75rem 2rem;
+  background: var(--shekel-surface-raised);
+}
+
+.escrow-drawer__rename {
+  max-width: 24rem;
+  margin: 0.5rem 0;
+}
+
+.escrow-versions {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+/* Seven aligned columns: status | effective | annual | monthly | inflation |
+   save | delete.  The inline-edit form uses ``display: contents`` (below) so its
+   fields become cells of this same grid, keeping the read-only and editable rows
+   aligned; status is column 1 in BOTH so every row carries a text label, not
+   colour alone. */
+.escrow-ver {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1.3fr) 1fr 1fr 0.9fr auto auto;
+  gap: 0.375rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  min-width: 28rem;
+}
+
+.escrow-ver--head {
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  padding-bottom: 0.375rem;
+}
+
+.escrow-ver--past {
+  color: var(--shekel-text-muted);
+}
+
+.escrow-ver__edit {
+  display: contents;
+}
+
+.escrow-ver__badge {
+  font-weight: 600;
+  margin-left: 0.25rem;
+}
+
+.escrow-ver--current .escrow-ver__badge {
+  color: var(--shekel-done);
+  background: color-mix(in srgb, var(--shekel-done) 16%, transparent);
+}
+
+.escrow-ver--scheduled .escrow-ver__badge {
+  color: var(--shekel-credit);
+  background: color-mix(in srgb, var(--shekel-credit) 16%, transparent);
+}
+
+.escrow-ver--past .escrow-ver__badge {
+  color: var(--shekel-text-muted);
+  background: color-mix(in srgb, var(--shekel-text-muted) 16%, transparent);
+}
+
+/* Schedule-a-change: label on its own line, then effective | annual | infl | add. */
+.escrow-drawer__schedule {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1.4fr) 1fr 1fr auto;
+  gap: 0.375rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--shekel-border-subtle);
+}
+
+.escrow-drawer__schedule-label {
+  grid-column: 1 / -1;
+}
+
+/* Merge-in control: pick another line to fold this drawer's history into. */
+.escrow-drawer__merge {
+  max-width: 28rem;
+  margin: 0.5rem 0 0;
+}

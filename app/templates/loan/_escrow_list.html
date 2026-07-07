@@ -1,64 +1,199 @@
-{# HTMX fragment: escrow component list + OOB payment summary updates #}
+{# HTMX fragment: escrow version-drawer card + OOB band-chip updates #}
 {% from "_money_macros.html" import money %}
+{% from "loan/_chips.html" import total_payment_chip, escrow_badge %}
 
-{# OOB swap: update the total monthly payment on the Overview tab #}
-{% if total_payment is defined and total_payment is not none %}
-<div class="d-flex justify-content-between mb-2" id="total-payment-display" hx-swap-oob="true">
-  <span class="text-muted">Total Monthly (with escrow)</span>
-  <span class="fw-bold font-mono text-accent">
-    {{ money(total_payment) }}
-  </span>
+{# OOB swaps: emitted ONLY when this partial is served as an HTMX response (the
+   escrow routes pass ``oob_swaps=True``), never when the dashboard includes it
+   inline -- otherwise the inline copy would duplicate the band chip / escrow
+   badge ids in the initial DOM.  Same macros the band renders, so the swapped-in
+   markup can never drift from the in-band chip. #}
+{% if oob_swaps %}
+{% if total_payment is not none %}
+{{ total_payment_chip(total_payment, monthly_escrow, oob=true) }}
+{% endif %}
+{% if monthly_escrow is not none %}
+{{ escrow_badge(monthly_escrow, oob=true) }}
+{% endif %}
+{% endif %}
+{# Rejected-change surface: a guard 4xx does not swap (preserving typed input),
+   so escrow_card.js projects the server's message here.  Hidden by default and
+   re-rendered hidden on every successful swap, so the error self-clears. #}
+<div id="escrow-error" class="alert alert-danger alert-dismissible d-none rounded-0 border-0 border-bottom mb-0"
+     role="alert" aria-live="assertive">
+  <span data-escrow-error-text></span>
+  <button type="button" class="btn-close" data-escrow-error-close aria-label="Dismiss"></button>
 </div>
-{% endif %}
-
-{# OOB swap: update the monthly escrow badge in the Escrow tab header #}
-{% if monthly_escrow is defined and monthly_escrow is not none %}
-<span class="badge bg-secondary font-mono" id="escrow-badge" hx-swap-oob="true">
-  {{ money(monthly_escrow) }}/mo
-</span>
-{% endif %}
 <div class="card-body p-0">
   {% if escrow_components %}
-  <div class="table-responsive">
-    <table class="table table-sm table-hover mb-0">
-      <thead>
-        <tr>
-          <th>Component</th>
-          <th class="text-end">Annual Amount</th>
-          <th class="text-end">Monthly</th>
-          <th class="text-end">Inflation</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for comp in escrow_components %}
-        <tr>
-          <td>{{ comp.name }}</td>
-          <td class="text-end font-mono">{{ money(comp.annual_amount) }}</td>
-          <td class="text-end font-mono">{{ money(comp.monthly_amount) }}</td>
-          <td class="text-end">
-            {% if comp.inflation_rate %}
-              {{ "%.1f"|format(comp.inflation_rate_pct) }}%
-            {% else %}
-              --
-            {% endif %}
-          </td>
-          <td class="text-end">
-            <form hx-post="{{ url_for('loan.delete_escrow', account_id=account.id, component_id=comp.id) }}"
-                  hx-target="#escrow-list" hx-swap="innerHTML"
-                  hx-confirm="Remove this escrow component?"
-                  class="d-inline">
+  <ul class="list-unstyled mb-0">
+    {% for line in escrow_components %}
+    {% set drawer_id = "escrow-drawer-" ~ line.summary.id %}
+    <li class="escrow-line">
+      {# Summary row: the line's amount in effect TODAY, plus history toggle. #}
+      <div class="escrow-line__summary">
+        <button type="button" class="btn btn-sm btn-link p-0 escrow-line__toggle"
+                data-bs-toggle="collapse" data-bs-target="#{{ drawer_id }}"
+                aria-expanded="false" aria-controls="{{ drawer_id }}"
+                title="Show version history">
+          <i class="bi bi-chevron-right"></i>
+        </button>
+        <span class="escrow-line__name">{{ line.summary.name }}</span>
+        {% if line.has_scheduled %}
+        <span class="badge escrow-badge-scheduled"
+              title="A future-dated change is scheduled for this line">
+          <i class="bi bi-calendar-event"></i> Scheduled
+        </span>
+        {% endif %}
+        <span class="ms-auto text-end">
+          <span class="font-mono escrow-line__monthly">{{ money(line.summary.monthly_amount) }}</span>
+          <span class="text-muted small">/mo</span>
+        </span>
+        <span class="text-end text-muted small font-mono escrow-line__annual">
+          {{ money(line.summary.annual_amount) }}/yr
+        </span>
+        <span class="text-end text-muted small escrow-line__infl">
+          {% if line.summary.inflation_rate_pct is not none %}
+            {{ "%.1f"|format(line.summary.inflation_rate_pct) }}%
+          {% else %}--{% endif %}
+        </span>
+        <form hx-post="{{ url_for('loan.delete_escrow', account_id=account.id, line_id=line.summary.id) }}"
+              hx-target="#escrow-list" hx-swap="innerHTML"
+              hx-confirm="Remove this escrow line as of today? Its history is kept."
+              class="d-inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove line">
+            <i class="bi bi-trash"></i>
+          </button>
+        </form>
+      </div>
+
+      {# Drawer: rename, full version history, and schedule-a-change. #}
+      <div class="collapse escrow-line__drawer" id="{{ drawer_id }}">
+        <form hx-post="{{ url_for('loan.rename_escrow_line', account_id=account.id, line_id=line.summary.id) }}"
+              hx-target="#escrow-list" hx-swap="innerHTML"
+              class="input-group input-group-sm escrow-drawer__rename">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <span class="input-group-text"><i class="bi bi-pencil"></i></span>
+          <input type="text" class="form-control" name="name" value="{{ line.summary.name }}"
+                 maxlength="100" aria-label="Line name" required>
+          <button type="submit" class="btn btn-outline-secondary">Rename</button>
+        </form>
+
+        <div class="escrow-versions">
+          {# Grid columns 6-7 (the action buttons) have no header; the shared
+             grid-template-columns leaves those trailing cells empty on rows that
+             do not fill them, so no placeholder cells are needed. #}
+          <div class="escrow-ver escrow-ver--head text-muted small">
+            <span>Status</span>
+            <span>Effective</span>
+            <span class="text-end">Annual</span>
+            <span class="text-end">Monthly</span>
+            <span class="text-end">Inflation</span>
+          </div>
+          {% for v in line.versions %}
+          {% if v.is_editable %}
+          {# A scheduled (unfrozen) version is editable inline. #}
+          <div class="escrow-ver escrow-ver--{{ v.status_key }}">
+            <form hx-post="{{ url_for('loan.edit_escrow_version', account_id=account.id, version_id=v.id) }}"
+                  hx-target="#escrow-list" hx-swap="innerHTML" class="escrow-ver__edit">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
+              <span class="badge escrow-ver__badge">{{ v.status_label }}</span>
+              <input type="date" class="form-control form-control-sm" name="effective_date"
+                     value="{{ v.effective_date.isoformat() }}" aria-label="Effective date" required>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" name="annual_amount" step="0.01" min="0"
+                       value="{{ v.annual_amount }}" aria-label="Annual amount" required>
+              </div>
+              <span class="text-end font-mono text-muted">{{ money(v.monthly_amount) }}</span>
+              <div class="input-group input-group-sm">
+                <input type="number" class="form-control" name="inflation_rate" step="0.01" min="0" max="100"
+                       value="{% if v.inflation_rate_pct is not none %}{{ v.inflation_rate_pct }}{% endif %}"
+                       aria-label="Inflation rate" placeholder="0">
+                <span class="input-group-text">%</span>
+              </div>
+              <button type="submit" class="btn btn-sm btn-outline-primary" title="Save change">
+                <i class="bi bi-check-lg"></i>
+              </button>
+            </form>
+            {% if v.is_deletable %}
+            <form hx-post="{{ url_for('loan.delete_escrow_version', account_id=account.id, version_id=v.id) }}"
+                  hx-target="#escrow-list" hx-swap="innerHTML"
+                  hx-confirm="Delete this scheduled change?" class="escrow-ver__del">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete scheduled change">
                 <i class="bi bi-trash"></i>
               </button>
             </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+            {% endif %}
+          </div>
+          {% else %}
+          {# A frozen / current / past version is read-only. #}
+          <div class="escrow-ver escrow-ver--{{ v.status_key }}">
+            <span><span class="badge escrow-ver__badge">{{ v.status_label }}</span></span>
+            <span>{{ v.effective_date.strftime('%b %-d, %Y') }}</span>
+            <span class="text-end font-mono">
+              {% if v.is_removed %}--{% else %}{{ money(v.annual_amount) }}{% endif %}
+            </span>
+            <span class="text-end font-mono text-muted">
+              {% if v.is_removed %}--{% else %}{{ money(v.monthly_amount) }}{% endif %}
+            </span>
+            <span class="text-end text-muted small">
+              {% if v.inflation_rate_pct is not none %}
+                {{ "%.1f"|format(v.inflation_rate_pct) }}%
+              {% else %}--{% endif %}
+            </span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+
+        <form hx-post="{{ url_for('loan.add_escrow_version', account_id=account.id, line_id=line.summary.id) }}"
+              hx-target="#escrow-list" hx-swap="innerHTML" class="escrow-drawer__schedule">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <span class="escrow-drawer__schedule-label small text-muted">
+            <i class="bi bi-calendar-plus"></i> Schedule a change
+          </span>
+          <input type="date" class="form-control form-control-sm" name="effective_date"
+                 aria-label="Effective date" required>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" name="annual_amount" step="0.01" min="0"
+                   placeholder="Annual" aria-label="Annual amount" required>
+          </div>
+          <div class="input-group input-group-sm">
+            <input type="number" class="form-control" name="inflation_rate" step="0.01" min="0" max="100"
+                   placeholder="Infl %" aria-label="Inflation rate">
+            <span class="input-group-text">%</span>
+          </div>
+          <button type="submit" class="btn btn-sm btn-primary" title="Schedule change">
+            <i class="bi bi-plus-lg"></i>
+          </button>
+        </form>
+
+        {# Merge: fold another line's history into this one (reunify a rename-split).
+           Shown only when the account has another line to fold in. #}
+        {% set merge_sources = (merge_candidates | default([]))
+             | rejectattr('id', 'equalto', line.summary.id) | list %}
+        {% if merge_sources %}
+        <form hx-post="{{ url_for('loan.merge_escrow_line', account_id=account.id, line_id=line.summary.id) }}"
+              hx-target="#escrow-list" hx-swap="innerHTML"
+              hx-confirm="Merge the selected line's history into this one? The other line is removed and its versions move here."
+              class="input-group input-group-sm escrow-drawer__merge">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <span class="input-group-text" title="Merge another line in"><i class="bi bi-union"></i></span>
+          <select class="form-select" name="source_line_id" aria-label="Line to merge into this one" required>
+            {% for cand in merge_sources %}
+            <option value="{{ cand.id }}">{{ cand.label }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn btn-outline-secondary">Merge in</button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
   {% else %}
   <div class="p-3 text-muted">No escrow components configured.</div>
   {% endif %}
@@ -71,7 +206,7 @@
     <div class="col-md-3">
       <label for="escrow-name" class="form-label small">Name</label>
       <input type="text" class="form-control form-control-sm" id="escrow-name"
-             name="name" placeholder="Property Tax" required>
+             name="name" placeholder="Property Tax" maxlength="100" required>
     </div>
     <div class="col-md-3">
       <label for="escrow-amount" class="form-label small">Annual Amount</label>
@@ -81,16 +216,21 @@
                name="annual_amount" step="0.01" min="0" required>
       </div>
     </div>
-    <div class="col-md-3">
-      <label for="escrow-inflation" class="form-label small">Inflation Rate</label>
+    <div class="col-md-2">
+      <label for="escrow-effective" class="form-label small">Effective</label>
+      <input type="date" class="form-control form-control-sm" id="escrow-effective"
+             name="effective_date" value="{{ today_iso }}">
+    </div>
+    <div class="col-md-2">
+      <label for="escrow-inflation" class="form-label small">Inflation</label>
       <div class="input-group input-group-sm">
         <input type="number" class="form-control" id="escrow-inflation"
                name="inflation_rate" step="0.01" min="0" max="100" placeholder="3">
         <span class="input-group-text">%</span>
       </div>
     </div>
-    <div class="col-md-3">
-      <button type="submit" class="btn btn-primary btn-sm">
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary btn-sm w-100">
         <i class="bi bi-plus-circle"></i> Add
       </button>
     </div>

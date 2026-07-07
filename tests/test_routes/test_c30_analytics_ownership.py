@@ -3,18 +3,18 @@ Shekel Budget App -- C-30 Analytics Cross-User Ownership Tests
 
 Route-level coverage for commit C-30 of the 2026-04-15 security
 remediation plan: ``analytics.calendar_tab`` rejects a cross-user
-or non-existent ``account_id`` with 404 (F-039), and
-``analytics.variance_tab`` rejects a cross-user or non-existent
-``period_id`` with 404 (F-098).
+or non-existent ``account_id`` with 404 (F-039), and the analytics
+route that lifts a ``period_id`` off the query string rejects a
+cross-user or non-existent one with 404 (F-098).
 
 Threat model.  Both gaps shared the same shape: the route lifted a
 foreign-key id straight off the query string and handed it to the
 service layer, which itself either silently fell back to a user-
-scoped default (calendar) or read victim metadata into the
-response label and CSV filename (variance).  Neither service raised
-a security exception, so the IDOR probe surfaced as a normal-
-looking 200 instead of a 404, masking the boundary breach behind
-plausible response bodies.
+scoped default (calendar) or read victim metadata into the response
+label (the period_id vector).  Neither service raised a security
+exception, so the IDOR probe surfaced as a normal-looking 200
+instead of a 404, masking the boundary breach behind plausible
+response bodies.
 
   * F-039 (calendar): ``calendar_service._resolve_account`` checks
     ownership but on failure silently falls through to the user's
@@ -25,13 +25,15 @@ plausible response bodies.
     silent-fallback gap and emits the standard
     ``access_denied_cross_user`` audit event.
 
-  * F-098 (variance): the budget-variance txn filter joins
+  * F-098 (period_id): a windowed report's txn filter joins
     ``account_id`` (user-owned) with ``pay_period_id`` and so
-    returns no rows on a cross-user period_id, BUT
-    ``_build_window_label`` and ``_window_csv_filename`` both
-    read ``PayPeriod.start_date`` without an ownership re-check.
-    The victim's start_date leaks through the variance label
-    visible in the HTML response and the CSV download filename.
+    returns no rows on a cross-user period_id, BUT the service
+    reads ``PayPeriod.start_date`` for the window LABEL without an
+    ownership re-check, leaking the victim's start_date into the
+    response.  The variance tab that first carried this vector was
+    retired at Slice 4 (its route now redirects); the income
+    statement inherited the same period_id shape and carries the
+    route-boundary guard, so the F-098 coverage lives there now.
 
 The route-level guard delegates ownership to
 :func:`app.utils.auth_helpers.get_or_404` (Pattern A in
@@ -40,13 +42,11 @@ The route-level guard delegates ownership to
 ``access_denied_cross_user`` for cross-user pk) covers both the
 analytics routes and every other route that uses the helper.
 
-Test scope.  Each finding is exercised through HTML (HTMX) and
-CSV paths because the C-30 plan's "G" gate (re-run the IDOR probe;
-expect zero failures) covers both.  An additional
-defense-in-depth class verifies that period_id is validated even
-on window types that ignore it downstream -- the service contract
-may shift in the future and the boundary check should not depend
-on whether the value happens to be consumed.
+Test scope.  The calendar finding is exercised through both HTML
+and CSV paths (the calendar CSV export survives).  The income
+statement period_id guard is exercised through HTML and across
+window types that ignore period_id downstream -- the boundary check
+must not depend on whether the value happens to be consumed.
 """
 
 from datetime import date
@@ -64,7 +64,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
     The seeded pay-period range spans 2026-01-02 through roughly
     2026-05-08.  Freezing today inside that window keeps the
-    variance defaults (current period lookup, year selector) on a
+    analytics defaults (current period lookup, year selector) on a
     real period regardless of the wall-clock date when the test
     runs.  Mirrors the autouse freeze in ``test_analytics.py`` so
     fixture behavior is consistent.
@@ -254,279 +254,6 @@ class TestCalendarTabAccountIdOwnership:
             assert resp.status_code == 200
 
 
-# ── analytics.variance_tab -- F-098 ──────────────────────────────────
-
-
-class TestVarianceTabPeriodIdOwnership:
-    """``analytics.variance_tab`` rejects a cross-user ``period_id``.
-
-    The variance txn filter joins ``account_id`` (user-owned) with
-    ``pay_period_id``, so a cross-user ``period_id`` returns no
-    rows -- but the metadata path (``_build_window_label`` and
-    ``_window_csv_filename``) reads ``PayPeriod.start_date``
-    without an ownership re-check.  The route-boundary 404 closes
-    the metadata leak and aligns with the security response rule.
-    """
-
-    def test_own_period_id_html_succeeds(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-    ):
-        """A's HTMX variance request with their own ``period_id`` returns 200.
-
-        Baseline: a legitimate same-user ``period_id`` must
-        continue to render successfully.
-        """
-        with app.app_context():
-            own_period_id = seed_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/variance?window=pay_period"
-                f"&period_id={own_period_id}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-    def test_own_period_id_csv_succeeds(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-    ):
-        """A's CSV variance download with their own ``period_id`` returns 200.
-
-        Baseline for the CSV path -- confirms the legitimate
-        same-user CSV download is not blocked by the validator.
-        """
-        with app.app_context():
-            own_period_id = seed_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/variance?format=csv&window=pay_period"
-                f"&period_id={own_period_id}",
-            )
-            assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
-
-    def test_cross_user_period_id_html_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A's HTMX variance request with B's ``period_id`` returns 404.
-
-        F-098 baseline: without the route-level guard the response
-        body would carry ``_build_window_label``'s text containing
-        the victim's start_date (e.g. ``"Pay period 2026-01-02 to
-        2026-01-15"``).  The 404 prevents the leak.
-        """
-        with app.app_context():
-            attacker_target = seed_second_periods[0].id
-            assert attacker_target != seed_periods[0].id, (
-                "fixture sanity: the two seeded users must have "
-                "distinct period ids for the probe"
-            )
-            resp = auth_client.get(
-                f"/analytics/variance?window=pay_period"
-                f"&period_id={attacker_target}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_cross_user_period_id_csv_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A's CSV variance download with B's ``period_id`` returns 404.
-
-        F-098 specific: ``_window_csv_filename`` builds a name
-        like ``variance_period_2026-01-02.csv`` from the period's
-        ``start_date``.  Without the guard the filename would leak
-        the victim's date into the Content-Disposition header.
-        """
-        with app.app_context():
-            attacker_target = seed_second_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/variance?format=csv&window=pay_period"
-                f"&period_id={attacker_target}",
-            )
-            assert resp.status_code == 404
-
-    def test_csv_filename_does_not_leak_victim_start_date(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A 404 response must not embed B's ``start_date`` anywhere.
-
-        F-098's leak vector is the CSV filename built from
-        ``period.start_date``.  After C-30 the route 404s before
-        the helper runs, so the response must not contain the
-        Content-Disposition header at all (and certainly not the
-        victim's date).  This test asserts on the absence of the
-        leaked value rather than just the status code so a
-        regression that 404s but still emits the filename is
-        caught.
-        """
-        with app.app_context():
-            victim_period = db.session.get(
-                PayPeriod, seed_second_periods[0].id,
-            )
-            victim_start = victim_period.start_date.isoformat()
-
-            resp = auth_client.get(
-                f"/analytics/variance?format=csv&window=pay_period"
-                f"&period_id={victim_period.id}",
-            )
-            assert resp.status_code == 404
-
-            # The 404 response must not carry a CSV
-            # Content-Disposition with the victim's start_date.
-            cd_header = resp.headers.get("Content-Disposition", "")
-            assert victim_start not in cd_header, (
-                f"Content-Disposition header leaked victim's "
-                f"start_date {victim_start!r}: {cd_header!r}"
-            )
-            # Belt-and-suspenders: the body must not contain it
-            # either (a future change that wraps the 404 in a
-            # custom template should not regress this).
-            body = resp.data.decode(errors="replace")
-            assert victim_start not in body, (
-                f"Response body leaked victim's start_date "
-                f"{victim_start!r}"
-            )
-
-    def test_nonexistent_period_id_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-    ):
-        """A non-existent ``period_id`` returns 404.
-
-        Exercises the ``record is None`` branch of ``get_or_404``;
-        the same 404 keeps "not found" and "not yours"
-        indistinguishable from the client's perspective.
-        """
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/variance?window=pay_period&period_id=9999999",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_no_period_id_param_uses_default(
-        self, app, auth_client, seed_user, seed_periods_today,  # pylint: disable=unused-argument
-    ):
-        """A variance request without ``period_id`` falls back to the user's current period.
-
-        Uses ``seed_periods_today`` so
-        ``pay_period_service.get_current_period`` returns a real
-        period.  Confirms the validation helper bypasses the
-        check when the query arg is absent, preserving the
-        "no period_id --> current period" service-default path.
-        """
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/variance?window=pay_period",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-
-# ── Defense in depth: validate regardless of window_type ─────────────
-
-
-class TestVarianceTabPeriodIdDefenseInDepth:
-    """The route boundary validates ``period_id`` regardless of ``window_type``.
-
-    Today the variance service ignores ``period_id`` when
-    ``window_type != "pay_period"`` and the CSV filename helper
-    falls through to the year/month branches, so a cross-user
-    period_id with ``window=year`` does not technically leak.
-    The validation still runs at the boundary because:
-
-      * The boundary must not depend on whether downstream code
-        happens to consume the value.  A future refactor that
-        starts using period_id under any window type would silently
-        re-introduce the leak.
-      * The IDOR probe model treats every user-supplied FK as
-        equally privileged, regardless of conditional usage.
-
-    This class locks in the always-validate posture.
-    """
-
-    def test_cross_user_period_id_with_month_window_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A cross-user ``period_id`` paired with ``window=month`` still 404s.
-
-        In normal flow ``window=month`` ignores ``period_id``, but
-        the route boundary must still reject a cross-user FK so
-        the always-validate posture is preserved.
-        """
-        with app.app_context():
-            attacker_target = seed_second_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/variance?window=month&month=1&year=2026"
-                f"&period_id={attacker_target}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_cross_user_period_id_with_year_window_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A cross-user ``period_id`` paired with ``window=year`` still 404s.
-
-        ``window=year`` is the broadest window and the most likely
-        target of a "scan all victim period ids while looking
-        innocuous" probe.  The validation must fire here too.
-        """
-        with app.app_context():
-            attacker_target = seed_second_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/variance?window=year&year=2026"
-                f"&period_id={attacker_target}",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-
-# ── Sibling routes -- confirm they are NOT affected ─────────────────
-
-
-class TestUntouchedRoutes:
-    """``year_end_tab`` and ``trends_tab`` accept no FK query args.
-
-    Locks in the audit conclusion that F-039 / F-098 are the only
-    analytics ownership gaps.  If a future change adds an
-    ``account_id`` or ``period_id`` query arg to year_end or
-    trends, this class breaks and forces a fresh ownership audit.
-    """
-
-    def test_year_end_tab_baseline_succeeds(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-    ):
-        """``year_end_tab`` accepts only ``year`` (no FK) and must keep working.
-
-        Regression check: the C-30 changes are scoped to
-        ``calendar_tab`` and ``variance_tab``; a stray helper call
-        on this route would break this test.
-        """
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/year-end?year=2026",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-    def test_trends_tab_baseline_succeeds(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-    ):
-        """``trends_tab`` accepts no query-arg FKs and must keep working.
-
-        Regression check, same reasoning as the year-end test.
-        """
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/trends",
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 200
-
-
 # ── Audit emission -- verify the cross-user log event fires ─────────
 
 
@@ -601,9 +328,10 @@ class TestCrossUserAuditEvent:
     ):
         """A cross-user period_id probe writes ``access_denied_cross_user`` at WARNING.
 
-        Same contract as the account_id case.  Both probes need
-        the same event name so SOC dashboards can correlate IDOR
-        attempts across analytics endpoints under a single rule.
+        The income statement is the surviving period_id IDOR surface (the
+        variance tab that once carried this vector was retired at Slice 4).
+        Its route-boundary guard emits the same event name as the account_id
+        case so SOC dashboards correlate IDOR attempts under a single rule.
         """
         import logging  # pylint: disable=import-outside-toplevel
 
@@ -611,7 +339,7 @@ class TestCrossUserAuditEvent:
         with app.app_context():
             attacker_target = seed_second_periods[0].id
             resp = auth_client.get(
-                f"/analytics/variance?window=pay_period"
+                f"/analytics/income-statement?window=pay_period"
                 f"&period_id={attacker_target}",
                 headers={"HX-Request": "true"},
             )
@@ -740,7 +468,7 @@ class TestIncomeStatementTabPeriodIdOwnership:
 
         The month window ignores ``period_id`` downstream, but the
         always-validate boundary posture must not depend on whether the
-        value is consumed (mirrors the variance defense-in-depth class).
+        value is consumed -- the guard fires before the window is resolved.
         """
         with app.app_context():
             attacker_target = seed_second_periods[0].id
@@ -750,26 +478,3 @@ class TestIncomeStatementTabPeriodIdOwnership:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
-
-    def test_cross_user_period_id_csv_returns_404(
-        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
-        seed_second_periods,
-    ):
-        """A CSV income-statement download with B's ``period_id`` 404s.
-
-        C11's CSV branch sits after the boundary IDOR guard and builds the
-        download filename from the period's ``start_date``
-        (``_window_csv_filename``), so without the guard the victim's date
-        would leak into the ``Content-Disposition`` header.  The guard fires
-        first, so the download 404s and emits no filename at all -- asserted
-        on the absence of the header so a regression that 404s but still
-        builds the disposition is caught.
-        """
-        with app.app_context():
-            attacker_target = seed_second_periods[0].id
-            resp = auth_client.get(
-                f"/analytics/income-statement?format=csv&window=pay_period"
-                f"&period_id={attacker_target}",
-            )
-            assert resp.status_code == 404
-            assert "Content-Disposition" not in resp.headers

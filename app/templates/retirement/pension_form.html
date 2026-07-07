@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_form_macros.html" import form_card %}
 {% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock title %}
 
 {% block breadcrumbs %}
@@ -73,11 +74,7 @@
 {% set fd = form_data|default(none) %}
 {% set errs = errors|default(none) %}
 {% set sel_sp = fd.get('salary_profile_id', '') if fd else (pension.salary_profile_id|string if pension and pension.salary_profile_id else '') %}
-<div class="card">
-  <div class="card-header">
-    <h6 class="mb-0">{{ 'Edit Pension' if pension else 'Add New Pension' }}</h6>
-  </div>
-  <div class="card-body">
+{% call form_card('Edit Pension' if pension else 'Add New Pension', 'bi-shield-check') %}
     <form method="POST"
           action="{{ url_for('retirement.update_pension', pension_id=pension.id) if pension else url_for('retirement.create_pension') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -163,6 +160,5 @@
         </div>
       </div>
     </form>
-  </div>
-</div>
+{% endcall %}
 {% endblock content %}

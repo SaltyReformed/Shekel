@@ -52,7 +52,6 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_features import EscrowComponent
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
@@ -62,7 +61,7 @@ from app.services import (
     loan_resolver,
     transfer_service,
 )
-from tests._test_helpers import insert_origination_rate
+from tests._test_helpers import add_escrow_line, insert_origination_rate
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -152,9 +151,9 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
         origination_date: Loan origination date; also the
             ``LoanAnchorEvent.anchor_date`` for the origination event.
         payment_day: Day-of-month the lender expects payment on.
-        escrow_annual: If provided, attach a single
-            :class:`EscrowComponent` with this annual amount so
-            ``calculate_monthly_escrow`` returns a non-zero figure.
+        escrow_annual: If provided, attach a single escrow line (one
+            origination-dated version) with this annual amount so the
+            resolved monthly escrow is a non-zero figure.
 
     Returns:
         Tuple of (account, loan_params, origination_event) all
@@ -203,12 +202,10 @@ def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-
     db.session.flush()
 
     if escrow_annual is not None:
-        db.session.add(EscrowComponent(
-            account_id=account.id,
-            name="Property Tax",
-            annual_amount=escrow_annual,
-        ))
-        db.session.flush()
+        add_escrow_line(
+            db.session, account.id, "Property Tax", escrow_annual,
+            effective_date=origination_date,
+        )
 
     return account, loan_params, origination_event
 

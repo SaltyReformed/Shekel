@@ -48,14 +48,25 @@ def _make_profile(seed_user, *, state_code="NC", filing_status_name="single"):
     return profile
 
 
-def _seed_state_config(seed_user, tax_year, flat_rate, *, state_code="NC"):
-    """Seed a flat StateTaxConfig for ``tax_year``; returns it."""
+def _seed_state_config(
+    seed_user, tax_year, flat_rate, *, state_code="NC", filing_status_name="single",
+):
+    """Seed a flat StateTaxConfig for ``tax_year``; returns it.
+
+    T-P5: state configs are filing-status-keyed, so the row carries a
+    filing status (defaults to ``single``, matching the ``_make_profile``
+    default so ``load_tax_configs`` resolves it for the test profile).
+    """
     flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+    filing_status = (
+        db.session.query(FilingStatus).filter_by(name=filing_status_name).one()
+    )
     config = StateTaxConfig(
         user_id=seed_user["user"].id,
         state_code=state_code,
         tax_year=tax_year,
         tax_type_id=flat_type.id,
+        filing_status_id=filing_status.id,
         flat_rate=flat_rate,
     )
     db.session.add(config)
@@ -136,6 +147,7 @@ class TestLoadTaxConfigs:
                 state_code="PA",
                 tax_year=tax_year,
                 tax_type_id=flat_type.id,
+                filing_status_id=filing_status.id,
                 flat_rate=Decimal("0.0307"),
             )
             db.session.add(state_config)
@@ -192,6 +204,7 @@ class TestLoadTaxConfigs:
                 state_code="NC",
                 tax_year=current_year,
                 tax_type_id=flat_type.id,
+                filing_status_id=filing_status.id,
                 flat_rate=Decimal("0.0399"),
             )
             state_other = StateTaxConfig(
@@ -199,6 +212,7 @@ class TestLoadTaxConfigs:
                 state_code="NC",
                 tax_year=other_year,
                 tax_type_id=flat_type.id,
+                filing_status_id=filing_status.id,
                 flat_rate=Decimal("0.0500"),
             )
             db.session.add_all([state_current, state_other])

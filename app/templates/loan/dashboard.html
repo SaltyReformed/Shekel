@@ -1,55 +1,34 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
+{% from "loan/_chips.html" import rate_chip, total_payment_chip, escrow_badge %}
 {% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock title %}
+
+{# Fable 5 loan detail page (docs/design/loan_audit.md, locked anatomy):
+   a balance band (owed hero + honest caption + measured chips + full-width
+   balance-over-time chart), two what-if levers (pay off sooner / refinance),
+   then the section cards (payment allocation, confirmed payment history,
+   balance-anchor drift, escrow, ARM rate history, secured-by, parameters).
+   The amortization schedule is demoted to a footer link (its own route).
+   All money is computed in the route / services and passed in; templates format
+   only. #}
 
 {% block breadcrumbs %}
 <nav aria-label="breadcrumb" class="container-fluid mt-2">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }} {{ account_type.name }}</li>
+    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
   </ol>
 </nav>
 {% endblock breadcrumbs %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }}</h4>
-  <a href="{{ url_for('savings.dashboard') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back to Accounts
-  </a>
+<div class="d-flex align-items-center gap-2 mb-3">
+  <h4 class="mb-0"><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }}</h4>
+  <span class="acctd-type-tag">{{ account_type.name }}</span>
 </div>
 
-<ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
-  <li class="nav-item" role="presentation">
-    <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-overview"
-            type="button" role="tab" aria-controls="tab-overview" aria-selected="true">Overview</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-escrow"
-            type="button" role="tab" aria-controls="tab-escrow" aria-selected="false">Escrow</button>
-  </li>
-  {% if params.is_arm %}
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-rates"
-            type="button" role="tab" aria-controls="tab-rates" aria-selected="false">Rate History</button>
-  </li>
-  {% endif %}
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-schedule"
-            type="button" role="tab" aria-controls="tab-schedule" aria-selected="false">Amortization Schedule</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-payoff"
-            type="button" role="tab" aria-controls="tab-payoff" aria-selected="false">Payoff Calculator</button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-refinance"
-            type="button" role="tab" aria-controls="tab-refinance" aria-selected="false">Refinance Calculator</button>
-  </li>
-</ul>
-
 {% if show_transfer_prompt and source_accounts %}
-<div class="alert alert-info d-flex align-items-start mb-3" role="alert">
+<div class="alert alert-info d-flex align-items-start mb-4" role="alert">
   <i class="bi bi-arrow-repeat me-3 fs-4"></i>
   <div class="flex-grow-1">
     <h6 class="alert-heading mb-1">No recurring payment set up for this loan</h6>
@@ -75,6 +54,13 @@
         </select>
       </div>
       <div class="col-auto">
+        <label for="extra_principal" class="form-label form-label-sm mb-0">Extra principal <span class="text-muted">(optional)</span></label>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0" class="form-control" id="extra_principal" name="extra_principal" placeholder="0.00">
+        </div>
+      </div>
+      <div class="col-auto">
         <button type="submit" class="btn btn-primary btn-sm">
           <i class="bi bi-plus-circle"></i> Create Recurring Transfer
         </button>
@@ -84,194 +70,272 @@
 </div>
 {% endif %}
 
-<div class="tab-content">
-  {# === Overview Tab === #}
-  <div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
-    <div class="row g-3 mb-4">
-      {# --- Loan Summary --- #}
-      <div class="col-md-6">
-        <div class="card h-100">
-          <div class="card-header">
-            <h6 class="mb-0"><i class="bi bi-info-circle"></i> Loan Summary</h6>
-          </div>
-          <div class="card-body">
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Original Principal</span>
-              <span class="font-mono">{{ money(params.original_principal) }}</span>
-            </div>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Current Principal</span>
-              <span class="fs-5 fw-bold font-mono text-accent">
-                {# E-18 / Commit 15: resolver-derived current_balance,
-                   not the non-authoritative stored LoanParams.current_principal
-                   column.  Same dollar figure as /savings debt card and
-                   the year-end net-worth liability. #}
-                {{ money(current_principal_display) }}
-              </span>
-            </div>
-            <div class="d-flex justify-content-between mb-2" id="interest-rate-display">
-              <span class="text-muted">Interest Rate</span>
-              <span class="fw-bold text-accent">
-                {# DH-#56: resolver-derived current rate (the rate in
-                   effect today), not the retired LoanParams.interest_rate
-                   column.  For an ARM this reflects the latest adjustment. #}
-                {{ "%.3f"|format(current_rate|to_percent) }}%
-                {% if params.is_arm %}<span class="badge bg-warning text-dark ms-1">ARM</span>{% endif %}
-              </span>
-            </div>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Term</span>
-              <span>{{ params.term_months }} months ({{ params.term_months|months_to_years }} years)</span>
-            </div>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Origination Date</span>
-              <span>{{ params.origination_date.strftime('%b %-d, %Y') }}</span>
-            </div>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Payment Day</span>
-              {# The ordinal filter handles the day-of-month suffix
-                 (1st/21st/31st vs the 11th/12th/13th teens). #}
-              <span>{{ params.payment_day|ordinal }} of each month</span>
-            </div>
-            <hr>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted" title="Principal &amp; Interest">Monthly P&I</span>
-              <span class="fw-bold font-mono">{{ money(summary.monthly_payment) }}</span>
-            </div>
-            <div class="d-flex justify-content-between mb-2{% if not total_payment %} d-none{% endif %}" id="total-payment-display">
-              <span class="text-muted">Total Monthly (with escrow)</span>
-              <span class="fw-bold font-mono text-accent">
-                {% if total_payment %}{{ money(total_payment) }}{% endif %}
-              </span>
-            </div>
-            <div class="d-flex justify-content-between mb-2">
-              <span class="text-muted">Total Interest (life of loan)</span>
-              <span class="font-mono">{{ money(summary.total_interest) }}</span>
-            </div>
-            <div class="d-flex justify-content-between">
-              <span class="text-muted">Projected Payoff</span>
-              <span>{{ summary.payoff_date.strftime('%b %Y') }}</span>
-            </div>
-          </div>
+{% if has_recurring_payment %}
+{# ── Extra principal: standing overpayment on the recurring payment ────── #}
+<div class="card mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-plus-slash-minus"></i> Extra principal</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('loan.update_payment_settings', account_id=account.id) }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-auto">
+        <label for="extra_principal_edit" class="form-label form-label-sm mb-0">Added to every payment</label>
+        <div class="input-group">
+          <span class="input-group-text">$</span>
+          <input type="number" step="0.01" min="0" class="form-control" id="extra_principal_edit" name="extra_principal" value="{{ '%.2f'|format(recurring_payment_extra) }}">
         </div>
       </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary">Update</button>
+      </div>
+      <div class="col-12">
+        <p class="form-text mb-0">Paid toward principal on top of the base payment every month, accelerating your payoff. Set to 0 to remove.</p>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
 
-      {# --- Edit Parameters --- #}
-      <div class="col-md-6">
-        <div class="card h-100">
-          <div class="card-header">
-            <h6 class="mb-0"><i class="bi bi-gear"></i> Loan Parameters</h6>
-          </div>
-          <div class="card-body">
-            {# E-18 / Commit 16 (decision D-C): the "Current Principal"
-               input was removed from this form.  The column is now
-               non-authoritative seed and the displayed current
-               balance is the resolver's output.  Users edit the
-               balance by appending a dated LoanAnchorEvent via the
-               "Record Loan Balance" form below.  Mirrors the
-               checking-account anchor true-up UX. #}
-            <form method="POST" action="{{ url_for('loan.update_params', account_id=account.id) }}">
+{# ── Balance band: owed hero + measured chips + balance-over-time chart ── #}
+<div class="pulse-canvas mb-4">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Balance owed</div>
+      {# E-18 / read switch: resolver-derived current_balance (ledger
+         authoritative) -- the same figure as the /savings debt card and the
+         net-worth liability, never the stored LoanParams.current_principal. #}
+      <div class="nw-hero__num font-mono">{{ money(current_principal_display) }}</div>
+      <div class="nw-hero__cap">
+        {%- set last_payment = payment_history[-1] if payment_history else none -%}
+        {%- set last_anchor = balance_anchors[-1] if balance_anchors else none -%}
+        {%- if last_payment %}Ledger-confirmed through {{ last_payment.due_date.strftime('%b %Y') }}
+        {%- else %}Projected from schedule{% endif -%}
+        {%- if last_anchor and not last_anchor.is_opening %}, anchored {{ last_anchor.anchor_date.strftime('%b %-d, %Y') }}{% endif -%}
+      </div>
+    </div>
+
+    <div class="pulse-statrow nw-statrow">
+      {{ rate_chip(current_rate, params.is_arm) }}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Monthly P&I</div>
+        <div class="pulse-chip__value font-mono">{{ money(summary.monthly_payment) }}</div>
+      </div>
+      {{ total_payment_chip(total_payment, monthly_escrow) }}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Projected payoff</div>
+        <div class="pulse-chip__value">{{ summary.payoff_date.strftime('%b %Y') }}</div>
+      </div>
+      {% if interest_paid_ytd is not none %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Interest paid, YTD</div>
+        <div class="pulse-chip__value font-mono">{{ money(interest_paid_ytd) }}</div>
+      </div>
+      {% endif %}
+      {% if principal_paid_ytd is not none %}
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Principal paid, YTD</div>
+        <div class="pulse-chip__value font-mono">{{ money(principal_paid_ytd) }}</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if has_chart %}
+  <div class="pulse-chart">
+    <canvas id="loan-balance-chart"
+            data-chart='{{ band_chart|tojson }}'
+            role="img"
+            aria-label="{{ account.name }} balance over time: solid confirmed history, dashed projection to payoff, with a Today marker and an optional green dashed extra-payment preview"></canvas>
+  </div>
+  {% else %}
+  <div class="acctd-empty">
+    No balance to chart -- this loan is paid off.
+  </div>
+  {% endif %}
+</div>
+
+{# ── What-if levers: pay off sooner / refinance ──────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">
+    <div class="card h-100 loan-lever">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-lightning-charge"></i> Pay off sooner</h6>
+      </div>
+      <div class="card-body">
+        <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#lever-extra"
+                    type="button" role="tab" aria-controls="lever-extra" aria-selected="true">Extra payment</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#lever-target"
+                    type="button" role="tab" aria-controls="lever-target" aria-selected="false">Payoff by date</button>
+          </li>
+        </ul>
+        <div class="tab-content">
+          <div class="tab-pane fade show active" id="lever-extra" role="tabpanel">
+            <form id="payoff-form"
+                  hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
+                  hx-target="#payoff-results" hx-swap="innerHTML"
+                  hx-trigger="submit, slider-changed">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <div class="row mb-3">
-                <div class="col-6">
-                  {# DH-#56: this field edits the loan's ORIGINATION
-                     (period-0) rate -- its earliest RateHistory row,
-                     which update_params upserts.  For a fixed-rate loan
-                     that is the loan's only rate; for an ARM the current
-                     rate (shown above) and later adjustments are managed
-                     on the Rate History tab. #}
-                  <label for="interest_rate" class="form-label">Origination Rate</label>
-                  <div class="input-group">
-                    <input type="number" class="form-control" id="interest_rate" name="interest_rate"
-                           value="{{ "%.3f"|format(origination_rate|to_percent) }}" step="0.001" min="0" max="100">
-                    <span class="input-group-text">%</span>
-                  </div>
-                </div>
-                <div class="col-6">
-                  <label for="payment_day" class="form-label">Payment Day</label>
-                  <input type="number" class="form-control" id="payment_day" name="payment_day"
-                         value="{{ params.payment_day }}" min="1" max="31">
-                </div>
+              <input type="hidden" name="mode" value="extra_payment">
+              <label for="extra_monthly" class="form-label">Extra monthly payment</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control" id="extra_monthly" name="extra_monthly"
+                       value="200" step="1" min="0"
+                       data-slider-group="payoff">
               </div>
-              <div class="row mb-3">
-                <div class="col-6">
-                  <label for="term_months" class="form-label">Loan Term (months)</label>
-                  <input type="number" class="form-control" id="term_months" name="term_months"
-                         value="{{ params.term_months }}" step="1" min="1"
-                         max="{{ account_type.max_term_months or 600 }}">
-                </div>
-                <div class="col-6">
-                  <div class="form-check mt-4 pt-2">
-                    <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
-                           {% if params.is_arm %}checked{% endif %} value="true">
-                    <label class="form-check-label" for="is_arm">Adjustable Rate (ARM)</label>
-                  </div>
-                </div>
+              <input type="range" class="form-range mt-2" id="extra_monthly_slider"
+                     min="0" max="2000" step="25" value="200"
+                     data-slider-group="payoff"
+                     data-slider-target="payoff-form"
+                     data-slider-debounce="250"
+                     aria-label="Extra monthly payment slider">
+              <div class="d-flex justify-content-between">
+                <small class="text-muted">$0</small>
+                <small class="text-muted">$2,000</small>
               </div>
-              <button type="submit" class="btn btn-primary btn-sm">
-                <i class="bi bi-check-lg"></i> Update Parameters
+              <button type="submit" class="btn btn-primary btn-sm mt-2">
+                <i class="bi bi-calculator"></i> Calculate
+              </button>
+            </form>
+          </div>
+          <div class="tab-pane fade" id="lever-target" role="tabpanel">
+            <form hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
+                  hx-target="#payoff-results" hx-swap="innerHTML">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="mode" value="target_date">
+              <label for="target_date" class="form-label">Target payoff date</label>
+              <input type="date" class="form-control" id="target_date" name="target_date">
+              <button type="submit" class="btn btn-primary btn-sm mt-3">
+                <i class="bi bi-calculator"></i> Calculate
               </button>
             </form>
           </div>
         </div>
+        <div id="payoff-results" class="loan-lever__results"></div>
       </div>
     </div>
+  </div>
 
-    {# --- Record Loan Balance (dated true-up) --- #}
-    {# E-18 / Commit 16 (decision D-C).  Mirrors the checking-account
-       anchor true-up UX so the mental model is consistent across
-       account types: the user asserts "the lender reports my
-       balance is $X as of date D" and the resolver replays
-       confirmed payments forward from that event.  The table is
-       structurally append-only -- a correction is expressed as
-       another append, never an edit. #}
-    <div class="card mb-4" id="record-loan-balance">
+  <div class="col-lg-6">
+    <div class="card h-100 loan-lever">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-pencil-square"></i> Record Loan Balance</h6>
+        <h6 class="mb-0"><i class="bi bi-arrow-repeat"></i> Refinance</h6>
       </div>
       <div class="card-body">
-        <p class="text-muted small mb-3">
-          When the lender reports a balance that differs from the
-          projected value, record it here as a dated true-up.
-          The amortization schedule and current principal will
-          replay forward from this date.
-        </p>
-        <form method="POST" action="{{ url_for('loan.true_up_balance', account_id=account.id) }}"
-              class="row g-2 align-items-end">
+        <form hx-post="{{ url_for('loan.refinance_calculate', account_id=account.id) }}"
+              hx-target="#refinance-results" hx-swap="innerHTML">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <div class="col-md-4">
-            <label for="anchor_date" class="form-label">As of Date</label>
-            <input type="date" class="form-control form-control-sm"
-                   id="anchor_date" name="anchor_date"
-                   min="{{ params.origination_date.isoformat() }}"
-                   max="{{ today_iso }}"
-                   value="{{ today_iso }}"
-                   required>
-          </div>
-          <div class="col-md-4">
-            <label for="anchor_balance" class="form-label">Balance</label>
-            <div class="input-group input-group-sm">
-              <span class="input-group-text">$</span>
-              <input type="number" class="form-control"
-                     id="anchor_balance" name="anchor_balance"
-                     step="0.01" min="0"
-                     value="{{ "%.2f"|format(current_principal_display) }}"
-                     required>
+          <div class="row g-2 mb-2">
+            <div class="col-sm-6">
+              <label for="new_rate" class="form-label">New rate</label>
+              <div class="input-group">
+                <input type="number" name="new_rate" id="new_rate"
+                       class="form-control" step="0.001" min="0" max="100"
+                       placeholder="5.0" required>
+                <span class="input-group-text">%</span>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label for="new_term_months" class="form-label">New term</label>
+              <div class="input-group">
+                <input type="number" name="new_term_months" id="new_term_months"
+                       class="form-control" step="1" min="1" max="600"
+                       placeholder="360" required>
+                <span class="input-group-text">mo</span>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label for="closing_costs" class="form-label">Closing costs</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" name="closing_costs" id="closing_costs"
+                       class="form-control" step="0.01" min="0"
+                       placeholder="0.00" value="0">
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label for="new_principal" class="form-label">New principal</label>
+              <div class="input-group">
+                <span class="input-group-text">$</span>
+                <input type="number" name="new_principal" id="new_principal"
+                       class="form-control" step="0.01" min="0.01"
+                       placeholder="Auto">
+              </div>
             </div>
           </div>
-          <div class="col-md-4">
-            <button type="submit" class="btn btn-primary btn-sm">
-              <i class="bi bi-check-lg"></i> Record Balance
-            </button>
-          </div>
+          <div class="form-text mb-2">Leave principal blank to use the current balance plus closing costs.</div>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-calculator"></i> Compare
+          </button>
         </form>
+        <div id="refinance-results" class="loan-lever__results"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Confirmed payment history (measured) ────────────────────────────── #}
+{% if payment_history %}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h6 class="mb-0"><i class="bi bi-clock-history"></i> Payment history</h6>
+    <span class="badge bg-success">{{ payment_history|length }} confirmed</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="loan-history-scroll">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Payment</th>
+            <th class="text-end">Cash</th>
+            <th class="text-end">Principal</th>
+            <th class="text-end">Interest</th>
+            <th class="text-end">Escrow</th>
+          </tr>
+        </thead>
+        <tbody>
+          {# Most recent first (display ordering only; the producer returns
+             chronological). #}
+          {% for row in payment_history|reverse %}
+          <tr>
+            <td>{{ row.due_date.strftime('%b %Y') }}</td>
+            <td class="text-end font-mono">{{ money(row.cash) }}</td>
+            <td class="text-end font-mono">{{ money(row.principal) }}</td>
+            <td class="text-end font-mono">{{ money(row.interest) }}</td>
+            <td class="text-end font-mono">{% if row.escrow > 0 %}{{ money(row.escrow) }}{% else %}--{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Two-stack section grid ──────────────────────────────────────────── #}
+<div class="row g-3">
+  {# Left stack: the money-flow story. #}
+  <div class="col-lg-6">
+    {% include "loan/_payment_breakdown.html" %}
+
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-shield-check"></i> Escrow</h6>
+        {{ escrow_badge(monthly_escrow) }}
+      </div>
+      <div id="escrow-list">
+        {% include "loan/_escrow_list.html" %}
       </div>
     </div>
 
-    {# --- Secured By (home-equity link) --- #}
     <div class="card mb-4" id="secured-by">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-house-heart"></i> Secured By</h6>
+        <h6 class="mb-0"><i class="bi bi-house-heart"></i> Secured by</h6>
       </div>
       <div class="card-body">
         {% if collateral_candidates %}
@@ -294,7 +358,7 @@
           </div>
           <div class="col-md-4">
             <button type="submit" class="btn btn-primary btn-sm">
-              <i class="bi bi-check-lg"></i> Save Link
+              <i class="bi bi-check-lg"></i> Save link
             </button>
           </div>
         </form>
@@ -307,150 +371,213 @@
         {% endif %}
       </div>
     </div>
-
-    {# --- Payment Allocation Breakdown --- #}
-    {% include "loan/_payment_breakdown.html" %}
-
-    {# --- Balance Over Time Chart --- #}
-    <div class="card mb-4">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-graph-down"></i> Balance Over Time</h6>
-      </div>
-      <div class="card-body">
-        <canvas id="payoff-chart"
-                class="canvas-max-h-400"
-                data-labels='{{ chart_labels|tojson }}'
-                data-original='{{ chart_original|tojson }}'
-                data-committed='{{ chart_committed|tojson }}'
-                data-floor='{{ chart_floor|tojson }}'></canvas>
-      </div>
-    </div>
   </div>
 
-  {# === Escrow Tab === #}
-  <div class="tab-pane fade" id="tab-escrow" role="tabpanel">
-    <div class="card mb-4">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h6 class="mb-0"><i class="bi bi-shield-check"></i> Escrow Components</h6>
-        <span class="badge bg-secondary font-mono" id="escrow-badge">
-          {{ money(monthly_escrow) }}/mo
-        </span>
-      </div>
-      <div id="escrow-list">
-        {% include "loan/_escrow_list.html" %}
-      </div>
-    </div>
-  </div>
-
-  {# === Rate History Tab (ARM only) === #}
-  {% if params.is_arm %}
-  <div class="tab-pane fade" id="tab-rates" role="tabpanel">
+  {# Right stack: the records + settings story. #}
+  <div class="col-lg-6">
+    {% if balance_anchors %}
     <div class="card mb-4">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-clock-history"></i> Rate History</h6>
+        <h6 class="mb-0"><i class="bi bi-clipboard-check"></i> Balance anchors</h6>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 align-middle">
+          <thead>
+            <tr>
+              <th>As of</th>
+              <th class="text-end">Recorded</th>
+              <th class="text-end">Ledger</th>
+              <th class="text-end">Drift</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for anchor in balance_anchors|reverse %}
+            <tr>
+              <td>
+                {{ anchor.anchor_date.strftime('%b %-d, %Y') }}
+                {% if anchor.is_opening %}
+                  <span class="badge bg-secondary ms-1">
+                    {% if anchor.is_tracking_start %}Tracking start{% else %}Origination{% endif %}
+                  </span>
+                {% endif %}
+              </td>
+              <td class="text-end font-mono">{{ money(anchor.recorded) }}</td>
+              <td class="text-end font-mono">
+                {% if anchor.is_opening %}--{% else %}{{ money(anchor.computed) }}{% endif %}
+              </td>
+              <td class="text-end font-mono">
+                {% if anchor.is_opening %}
+                  <span class="text-muted">--</span>
+                {% elif anchor.drift > 0 %}
+                  <span class="loan-drift--up">+{{ money(anchor.drift) }}</span>
+                {% elif anchor.drift < 0 %}
+                  <span class="loan-drift--down">{{ money(anchor.drift) }}</span>
+                {% else %}
+                  <span class="text-muted">{{ money(anchor.drift) }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer text-muted small">
+        Drift is the recorded balance minus what the ledger had computed just
+        before each true-up: the running scorecard of your records vs the
+        ledger's replay.
+      </div>
+    </div>
+    {% endif %}
+
+    {% if params.is_arm %}
+    <div class="card mb-4">
+      <div class="card-header">
+        <h6 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Rate history</h6>
       </div>
       <div id="rate-history">
         {% include "loan/_rate_history.html" %}
       </div>
     </div>
-  </div>
-  {% endif %}
-
-  {# === Amortization Schedule Tab === #}
-  <div class="tab-pane fade" id="tab-schedule" role="tabpanel">
-    {% if amortization_schedule %}
-      {% include "loan/_schedule.html" %}
-    {% else %}
-      <p class="text-muted mt-3">No schedule to display -- the loan may be paid off.</p>
     {% endif %}
-  </div>
 
-  {# === Payoff Calculator Tab === #}
-  <div class="tab-pane fade" id="tab-payoff" role="tabpanel">
     <div class="card mb-4">
       <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-calculator"></i> Payoff Calculator</h6>
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Loan parameters</h6>
       </div>
       <div class="card-body">
-        <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
-          <li class="nav-item" role="presentation">
-            <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#extra-tab"
-                    type="button" role="tab">Extra Payment</button>
-          </li>
-          <li class="nav-item" role="presentation">
-            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#target-tab"
-                    type="button" role="tab">Target Date</button>
-          </li>
-        </ul>
-        <div class="tab-content">
-          <div class="tab-pane fade show active" id="extra-tab" role="tabpanel">
-            <form id="payoff-form"
-                  hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
-                  hx-target="#payoff-results" hx-swap="innerHTML"
-                  hx-trigger="submit, slider-changed">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <input type="hidden" name="mode" value="extra_payment">
-              <div class="row align-items-end">
-                <div class="col-md-6">
-                  <label for="extra_monthly" class="form-label">Extra Monthly Payment</label>
-                  <div class="input-group">
-                    <span class="input-group-text">$</span>
-                    <input type="number" class="form-control" id="extra_monthly" name="extra_monthly"
-                           value="200" step="1" min="0"
-                           data-slider-group="payoff">
-                  </div>
-                  <input type="range" class="form-range mt-2" id="extra_monthly_slider"
-                         min="0" max="2000" step="25" value="200"
-                         data-slider-group="payoff"
-                         data-slider-target="payoff-form"
-                         data-slider-debounce="250">
-                  <div class="d-flex justify-content-between">
-                    <small class="text-muted">$0</small>
-                    <small class="text-muted">$2,000</small>
-                  </div>
-                </div>
-                <div class="col-md-6">
-                  <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="bi bi-calculator"></i> Calculate
-                  </button>
-                </div>
+        {# E-18 / Commit 16 (decision D-C): the current-principal input was
+           removed; the balance is resolver-derived and edited by appending a
+           dated true-up in "Record balance" below.  The rate field edits the
+           loan's ORIGINATION RateHistory row (DH-#56), which update_params
+           upserts. #}
+        <form method="POST" action="{{ url_for('loan.update_params', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label for="interest_rate" class="form-label">Origination rate</label>
+              <div class="input-group">
+                <input type="number" class="form-control" id="interest_rate" name="interest_rate"
+                       value="{{ "%.3f"|format(origination_rate|to_percent) }}" step="0.001" min="0" max="100">
+                <span class="input-group-text">%</span>
               </div>
-            </form>
-          </div>
-          <div class="tab-pane fade" id="target-tab" role="tabpanel">
-            <form hx-post="{{ url_for('loan.payoff_calculate', account_id=account.id) }}"
-                  hx-target="#payoff-results" hx-swap="innerHTML">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <input type="hidden" name="mode" value="target_date">
-              <div class="row align-items-end">
-                <div class="col-md-6">
-                  <label for="target_date" class="form-label">Target Payoff Date</label>
-                  <input type="date" class="form-control" id="target_date" name="target_date">
-                </div>
-                <div class="col-md-6">
-                  <button type="submit" class="btn btn-primary btn-sm">
-                    <i class="bi bi-calculator"></i> Calculate
-                  </button>
-                </div>
+            </div>
+            <div class="col-6">
+              <label for="payment_day" class="form-label">Payment day</label>
+              <input type="number" class="form-control" id="payment_day" name="payment_day"
+                     value="{{ params.payment_day }}" min="1" max="31">
+              <div class="form-text">The {{ params.payment_day|ordinal }} of each month.</div>
+            </div>
+            <div class="col-6">
+              <label for="term_months" class="form-label">Term (months)</label>
+              <input type="number" class="form-control" id="term_months" name="term_months"
+                     value="{{ params.term_months }}" step="1" min="1"
+                     max="{{ account_type.max_term_months or 600 }}">
+            </div>
+            <div class="col-6 d-flex align-items-end">
+              <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" id="is_arm" name="is_arm"
+                       {% if params.is_arm %}checked{% endif %} value="true">
+                <label class="form-check-label" for="is_arm">Adjustable rate (ARM)</label>
               </div>
-            </form>
+            </div>
           </div>
-        </div>
-        <div id="payoff-results" class="mt-3"></div>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="bi bi-check-lg"></i> Update parameters
+          </button>
+        </form>
+        <hr>
+        {# Record loan balance (dated true-up).  Mirrors the checking-account
+           anchor true-up UX; the balance-anchors card above shows the history
+           this form appends to. #}
+        <form method="POST" action="{{ url_for('loan.true_up_balance', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label class="form-label mb-1"><i class="bi bi-pencil-square"></i> Record balance</label>
+          <p class="text-muted small mb-2">
+            When the lender reports a balance that differs from the projected
+            value, record it here as a dated true-up. The balance and schedule
+            replay forward from this date.
+          </p>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-6">
+              <label for="anchor_date" class="form-label">As of date</label>
+              <input type="date" class="form-control form-control-sm"
+                     id="anchor_date" name="anchor_date"
+                     min="{{ params.origination_date.isoformat() }}"
+                     max="{{ today_iso }}"
+                     value="{{ today_iso }}"
+                     required>
+            </div>
+            <div class="col-sm-6">
+              <label for="anchor_balance" class="form-label">Balance</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control"
+                       id="anchor_balance" name="anchor_balance"
+                       step="0.01" min="0"
+                       value="{{ "%.2f"|format(current_principal_display) }}"
+                       required>
+              </div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-outline-primary btn-sm mt-2">
+            <i class="bi bi-check-lg"></i> Record balance
+          </button>
+        </form>
+        <hr>
+        {# Tracking start (mid-life import).  For a loan you began tracking after
+           origination: records the real opening balance as of a date at/before
+           your first recorded payment, so the confirmed ledger opens there
+           instead of the full origination amount (no fictional plateau, and
+           recorded payments accrue interest on the correct balance). #}
+        <form method="POST" action="{{ url_for('loan.record_tracking_start', account_id=account.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label class="form-label mb-1"><i class="bi bi-flag"></i> Tracking start</label>
+          <p class="text-muted small mb-2">
+            Started tracking this loan mid-life? Record the lender's balance as
+            of a date on or before your first recorded payment. The confirmed
+            ledger opens from here instead of the original loan amount.
+          </p>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-6">
+              <label for="tracking_start_date" class="form-label">As of date</label>
+              <input type="date" class="form-control form-control-sm"
+                     id="tracking_start_date" name="anchor_date"
+                     min="{{ params.origination_date.isoformat() }}"
+                     max="{{ today_iso }}"
+                     required>
+            </div>
+            <div class="col-sm-6">
+              <label for="tracking_start_balance" class="form-label">Balance</label>
+              <div class="input-group input-group-sm">
+                <span class="input-group-text">$</span>
+                <input type="number" class="form-control"
+                       id="tracking_start_balance" name="anchor_balance"
+                       step="0.01" min="0"
+                       required>
+              </div>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">
+            <i class="bi bi-flag"></i> Record tracking start
+          </button>
+        </form>
       </div>
     </div>
   </div>
+</div>
 
-  {# === Refinance Calculator Tab === #}
-  <div class="tab-pane fade" id="tab-refinance" role="tabpanel">
-    {% include "loan/_refinance.html" %}
-  </div>
+{# ── Footer: full amortization schedule (demoted to its own route) ───── #}
+<div class="text-center my-4">
+  <a href="{{ url_for('loan.schedule', account_id=account.id) }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-table"></i> View full amortization schedule
+  </a>
 </div>
 {% endblock content %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
-<script src="{{ url_for('static', filename='js/payoff_chart.js') }}"></script>
+<script src="{{ url_for('static', filename='js/loan_detail.js') }}"></script>
+<script src="{{ url_for('static', filename='js/escrow_card.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_slider.js') }}"></script>
 {% endblock scripts %}

@@ -107,7 +107,7 @@ def _debt_summary_with_dti(
         account_data: Per-account dicts from
             ``_compute_account_projections`` (any mix -- the debt
             summary reads only the entries carrying ``loan_params``).
-        escrow_map: account_id -> list of EscrowComponent (PITI).
+        escrow_map: account_id -> list of EscrowLine with versions (PITI).
         current_breakdown: The engine ``PaycheckBreakdown`` for the
             current period, or ``None`` with no salary configured.
 

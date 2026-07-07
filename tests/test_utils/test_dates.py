@@ -16,11 +16,14 @@ from datetime import date, datetime, timezone
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
+    attribution_date,
+    display_today,
     months_between,
     to_display_civil_date,
     to_display_date,
     to_display_tz,
 )
+from tests._test_helpers import freeze_today
 
 
 class TestMonthsBetween:
@@ -134,6 +137,48 @@ class TestDisplayTimezone:
         assert to_display_date(None) is None
 
 
+class TestDisplayToday:
+    """Pin ``display_today`` -- the user's wall-clock 'today' in the display tz.
+
+    The presentation-layer "now" that civil-window surfaces (the analytics Taxes
+    tab, the loan YTD chips) select their year / month by, so they follow the
+    user's Eastern clock rather than the server's UTC day at the New Year (and
+    every late-evening) boundary.
+    """
+
+    def test_new_year_boundary_is_the_eastern_day(self, monkeypatch):
+        """Midnight UTC on Jan 1 is still Dec 31 in Eastern, so the year is 2026.
+
+        ``freeze_today`` sets ``datetime.now(utc)`` to 2027-01-01 00:00 UTC.
+        That instant is 7:00 PM EST on 2026-12-31, so ``display_today()`` is
+        Dec 31 2026 -- year 2026 -- even though ``date.today()`` (UTC) has
+        already rolled to 2027.  This is the exact skew the loan YTD chips must
+        follow to agree with the Taxes tab.
+        """
+        freeze_today(monkeypatch, date(2027, 1, 1), modules=["app.utils.dates"])
+        assert display_today() == date(2026, 12, 31)
+        assert display_today().year == 2026
+
+    def test_daytime_utc_is_the_same_eastern_day(self, monkeypatch):
+        """A mid-day UTC instant maps to the same calendar day in Eastern.
+
+        ``freeze_today`` freezes ``now`` at midnight UTC, but a manual
+        mid-afternoon stub proves the non-boundary case: 2026-06-12 18:00 UTC is
+        14:00 EDT, still June 12, so ``display_today()`` is 2026-06-12.
+        """
+        class _FixedDateTime(datetime):
+            """A datetime whose ``now`` is a fixed mid-day UTC instant."""
+
+            @classmethod
+            def now(cls, tz=None):
+                """Return 2026-06-12 18:00 in the requested tz (UTC by default)."""
+                fixed = datetime(2026, 6, 12, 18, 0, tzinfo=timezone.utc)
+                return fixed if tz is None else fixed.astimezone(tz)
+
+        monkeypatch.setattr("app.utils.dates.datetime", _FixedDateTime)
+        assert display_today() == date(2026, 6, 12)
+
+
 class TestToDisplayCivilDate:
     """Pin the L9 tax-attribution helper: display-tz civil date, or fallback.
 
@@ -175,3 +220,55 @@ class TestToDisplayCivilDate:
         assert to_display_civil_date(
             datetime(2027, 1, 1, 1, 5), date(2027, 2, 1),
         ) == date(2026, 12, 31)
+
+
+class TestAttributionDate:
+    """Pin the shared calendar-attribution clamp.
+
+    ``attribution_date`` is the one rule both the calendar's day-cell
+    grouping and the daily balance ramp use, so a flow's cell and the
+    balance line's step land on the same day.  An item lands on its
+    ``due_date`` (fallback: the period ``start_date``), clamped into the
+    period's inclusive span so a period's flows always sum by its
+    ``end_date`` -- the calendar/grid reconciliation invariant.
+    """
+
+    def test_due_date_within_period_is_unchanged(self):
+        """An in-period due_date is the attribution day verbatim."""
+        assert attribution_date(
+            date(2026, 7, 6), date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 6)
+
+    def test_missing_due_date_falls_back_to_period_start(self):
+        """A None due_date attributes to the period start_date."""
+        assert attribution_date(
+            None, date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 1)
+
+    def test_due_date_before_period_clamps_to_start(self):
+        """A due_date before the period start is pulled up to start_date."""
+        # Recurrence engine dated the item Jun 28; its period is Jul 1-14,
+        # so it lands on Jul 1 rather than escaping into June.
+        assert attribution_date(
+            date(2026, 6, 28), date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 1)
+
+    def test_due_date_after_period_clamps_to_end(self):
+        """A due_date after the period end is pulled down to end_date.
+
+        An item in the Jul 1-14 period dated Jul 20 lands on Jul 14 so the
+        period's running-balance sum still closes by its end_date and
+        reconciles with the grid period-end.
+        """
+        assert attribution_date(
+            date(2026, 7, 20), date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 14)
+
+    def test_boundary_dates_are_inclusive(self):
+        """Both period endpoints are valid landing days (inclusive clamp)."""
+        assert attribution_date(
+            date(2026, 7, 1), date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 1)
+        assert attribution_date(
+            date(2026, 7, 14), date(2026, 7, 1), date(2026, 7, 14),
+        ) == date(2026, 7, 14)

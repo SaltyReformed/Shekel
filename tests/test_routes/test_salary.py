@@ -1486,7 +1486,13 @@ class TestTaxConfig:
             assert "section=tax" in response.headers["Location"]
 
     def test_update_state_tax_config(self, app, auth_client, seed_user):
-        """POST /salary/tax-config creates/updates a state tax config."""
+        """POST /salary/tax-config creates a per-filing-status state tax config.
+
+        T-P5: the state config is filing-status-keyed, so a create builds ONE
+        row per filing status (the settings form applies the single rate +
+        deduction uniformly across statuses).  Every created row carries the
+        entered rate.
+        """
         with app.app_context():
             # Seed the 'flat' tax type (needed for creating new state config).
             response = auth_client.post("/salary/tax-config", data={
@@ -1499,12 +1505,15 @@ class TestTaxConfig:
             # Flash could be "created" or "updated" depending on state.
             assert b"State tax config for NC" in response.data
 
-            state_config = (
+            configs = (
                 db.session.query(StateTaxConfig)
                 .filter_by(user_id=seed_user["user"].id, state_code="NC", tax_year=2026)
-                .one()
+                .all()
             )
-            assert state_config.flat_rate == Decimal("0.0450")
+            # One row per filing status (single, MFJ, MFS, HoH = 4).
+            filing_status_count = db.session.query(FilingStatus).count()
+            assert len(configs) == filing_status_count
+            assert all(c.flat_rate == Decimal("0.0450") for c in configs)
 
     def test_create_state_tax_config_without_rate_is_rejected(
         self, app, auth_client, seed_user,
@@ -1992,11 +2001,18 @@ def _seed_state_tax(user_id, rate, tax_year=2026, state_code="NC"):
         StateTaxConfig: The created config.
     """
     flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+    # T-P5: state configs are filing-status-keyed.  These net-biweekly tests
+    # all use single-filer profiles, so the config carries the single status
+    # (matching the withholding path's filing-status-scoped lookup).
+    single_status = (
+        db.session.query(FilingStatus).filter_by(name="single").one()
+    )
     config = StateTaxConfig(
         user_id=user_id,
         state_code=state_code,
         tax_year=tax_year,
         tax_type_id=flat_type.id,
+        filing_status_id=single_status.id,
         flat_rate=rate,
         standard_deduction=Decimal("25500.00"),
     )

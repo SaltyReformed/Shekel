@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-Five recurrence-specific helpers shared between the transaction-template
-(:mod:`app.routes.templates`) and transfer-template
+Recurrence-form and conflict-chooser helpers shared between the
+transaction-template (:mod:`app.routes.templates`) and transfer-template
 (:mod:`app.routes.transfers`) CRUD routes:
 
 * :func:`build_recurrence_rule_from_form` -- consumes a Marshmallow-
@@ -25,11 +25,19 @@ Five recurrence-specific helpers shared between the transaction-template
   guard for the ``submitted_version != template.version_id``
   branch; logs both counters so post-mortem analysis can reconstruct
   the race; redirects.  [F-26 pair 1]
-* :func:`handle_recurrence_conflict` -- Phase-1 auto-keep-overrides
-  advisory handler invoked from the ``except RecurrenceConflict``
-  branch of the regeneration call; logs the override / delete
-  counts and flashes the canonical "kept as-is" notice; returns
-  ``None`` because the caller continues executing.  [F-26 pair 2]
+* The recurrence-conflict chooser (Loop B, P3) --
+  :func:`parse_conflict_decisions`, :func:`render_recurrence_conflict_chooser`,
+  and :func:`apply_conflict_decisions` (plus the :class:`ConflictChoice`,
+  :class:`RecurrenceConflictKind`, and :class:`ConflictChooserContext`
+  data holders).  When a template edit's regeneration collides with
+  hand-edited upcoming instances, the update route renders a full-page
+  chooser instead of committing: the pending edit is rolled back, and
+  Apply re-runs the identical edit before resolving each instance
+  (keep the override, or move it to the template's new value) through
+  the kind's ``resolve_conflicts``.  Shared by the transaction-template
+  and transfer-template routes; each supplies its own
+  :class:`RecurrenceConflictKind`.  [Loop B P3, replacing the F-26 pair-2
+  auto-keep advisory]
 
 The first three helpers share a verbatim trio of inputs -- the form's
 recurrence end date, the validation-error redirect target, and the
@@ -51,17 +59,18 @@ Flask ``flash`` / ``redirect`` / ``url_for`` (the last two via
 The leading underscore marks the module as route-internal.
 
 Module-level flash-template constants centralise the canonical
-"stale by another action" and "kept as-is" copy without forcing
-every caller through a single wording (some routes name "while you
-were editing" -- the update-template / update-transfer-template
-forms; others omit it -- archive / unarchive / hard-delete).
+"stale by another action" copy without forcing every caller through a
+single wording (some routes name "while you were editing" -- the
+update-template / update-transfer-template forms; others omit it --
+archive / unarchive / hard-delete).
 """
-import logging
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
-from flask import Response, flash
+from flask import Response, flash, render_template, request, url_for
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
@@ -72,6 +81,8 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
+from app.services import pay_period_service
+from app.services.scenario_resolver import get_baseline_scenario
 
 
 # Stale-conflict flash templates.  The ``{noun}`` placeholder is
@@ -92,17 +103,6 @@ STALE_ACTION_MESSAGE: str = (
 """Flash template for non-edit-form mutations (archive / unarchive /
 hard-delete) where "while you were editing" would be misleading."""
 
-_RECURRENCE_CONFLICT_FLASH: str = (
-    "Note: {overridden_count} overridden and "
-    "{deleted_count} deleted entries were kept as-is."
-)
-"""Flash template for the Phase-1 auto-keep-overrides advisory
-emitted by :func:`handle_recurrence_conflict` when a regenerate-
-for-template call surfaces overridden / deleted instances.  The
-counts are substituted by the caller; the wording is byte-
-identical between the templates and transfers sides (the only
-pre-extraction difference was the log prefix, which the
-``log_label`` kwarg preserves)."""
 
 
 # Keys the recurrence-rule helper pops from the validated form payload
@@ -444,58 +444,333 @@ def handle_stale_form_conflict(
     return ctx.redirect.to_response()
 
 
-def handle_recurrence_conflict(
-    *,
-    logger: logging.Logger,
-    log_label: str,
-    log_id: int,
-    conflict: RecurrenceConflict,
-) -> None:
-    """Auto-keep-overrides Phase-1 advisory handler (F-26).
+# --- Recurrence-conflict chooser (Loop B, P3) --------------------------
+#
+# When a template edit's regeneration collides with hand-edited upcoming
+# instances, the update route shows a full-page chooser: keep each override
+# or move it to the template's new value.  These helpers are shared by the
+# transaction-template and transfer-template update routes; each passes its
+# own model, amount attribute, and ``resolve_conflicts`` callable, so the
+# flow stays DRY across the two kinds.
 
-    Called from inside an ``except RecurrenceConflict as conflict:``
-    block where the regenerate-for-template call surfaced
-    overridden / deleted transactions that Phase-1 chooses to
-    keep as-is.  Logs the override / delete counts and flashes the
-    canonical advisory notice.  Returns ``None`` -- the caller
-    continues executing (the helper is advisory, not control-flow),
-    exactly the pre-extraction behaviour.
+_CONFLICT_APPLY_MARKER = "conflict_apply"
+_CONFLICT_DECISION_PREFIX = "conflict_decision_"
+_DECISION_KEEP = "keep"
+_DECISION_USE = "use"
+
+
+@dataclass(frozen=True)
+class ConflictChoice:
+    """One conflicted upcoming instance, shaped for a chooser row.
+
+    Attributes:
+        row_id: The Transaction / Transfer id the decision applies to.
+        due_date: The instance's due date (``None`` if unset), used to
+            order and label the row chronologically.
+        period_label: The owning pay period's ``label`` (e.g.
+            ``"02/21 - 03/06"``).
+        your_amount: The instance's current (hand-edited) amount -- the
+            "Keep" side of the toggle.
+        is_deleted_conflict: ``True`` when the conflict is a soft-deleted
+            instance (Keep leaves it deleted; Use restores it), ``False``
+            for an overridden one.
+    """
+
+    row_id: int
+    due_date: date | None
+    period_label: str
+    your_amount: Decimal
+    is_deleted_conflict: bool
+
+
+def parse_conflict_decisions(form) -> dict[int, str] | None:
+    """Parse the chooser's per-instance keep/use decisions from a POST form.
+
+    Returns ``None`` for a first-time edit submit (no chooser marker), so
+    the route knows to render the chooser; returns a ``{row_id: "keep" |
+    "use"}`` map for the chooser's Apply submit.  Malformed ids or values
+    are dropped -- every surviving id is re-checked against the real
+    conflict set in :func:`apply_conflict_decisions` before any mutation,
+    so a hand-crafted id cannot reach a row.
 
     Args:
-        logger: Per-module logger; see :func:`handle_stale_form_conflict`
-            for the originate-at-the-route-module rationale.
-        log_label: Full prefix for the log message preserved
-            verbatim from the pre-extraction wording -- e.g.
-            ``"Recurrence conflict for template"`` (templates side)
-            or ``"Transfer recurrence conflict for template"``
-            (transfers side).  Accepting the prefix verbatim keeps
-            log-grep patterns valid post-extraction.
-        log_id: The template id whose regeneration surfaced the
-            conflict.
-        conflict: The :class:`RecurrenceConflict` instance the
-            caller caught; only ``overridden`` and ``deleted`` are
-            read.
+        form: The request form (a ``MultiDict``).
 
     Returns:
-        ``None``.  Returning ``None`` (not a :class:`Response`) is
-        load-bearing: if the helper returned a Response and the
-        caller did ``return helper(...)``, the route would early-
-        exit before the commit attempt, dropping every other field
-        change in the update payload.  The pre-extraction body did
-        not return; the helper does not either.
+        ``None`` when the form carries no chooser marker; otherwise the
+        decision map (possibly empty).
     """
-    logger.warning(
-        "%s %d: %d overridden, %d deleted",
-        log_label, log_id,
-        len(conflict.overridden), len(conflict.deleted),
+    if form.get(_CONFLICT_APPLY_MARKER) is None:
+        return None
+    decisions: dict[int, str] = {}
+    for key in form:
+        if not key.startswith(_CONFLICT_DECISION_PREFIX):
+            continue
+        value = form.get(key)
+        if value not in (_DECISION_KEEP, _DECISION_USE):
+            continue
+        try:
+            row_id = int(key[len(_CONFLICT_DECISION_PREFIX):])
+        except ValueError:
+            continue
+        decisions[row_id] = value
+    return decisions
+
+
+def _build_conflict_choices(conflict, model, amount_attr) -> list[ConflictChoice]:
+    """Load the conflicted rows and shape them for the chooser.
+
+    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``model`` (a
+    Transaction or Transfer); ``amount_attr`` names the row's amount column
+    (``"estimated_amount"`` for transactions, ``"amount"`` for transfers).
+    Rows are returned chronologically (undated last) so the chooser reads
+    top-to-bottom in time order.  A vanished id (deleted between the raise
+    and this load) is skipped.
+    """
+    choices = []
+    for ids, is_deleted_conflict in (
+        (conflict.overridden, False),
+        (conflict.deleted, True),
+    ):
+        for row_id in ids:
+            row = db.session.get(model, row_id)
+            if row is None:
+                continue
+            period = row.pay_period
+            choices.append(ConflictChoice(
+                row_id=row_id,
+                due_date=row.due_date,
+                period_label=period.label if period else "",
+                your_amount=getattr(row, amount_attr),
+                is_deleted_conflict=is_deleted_conflict,
+            ))
+    choices.sort(key=lambda choice: (choice.due_date is None, choice.due_date or date.min))
+    return choices
+
+
+@dataclass(frozen=True)
+class RecurrenceConflictKind:
+    """Per-kind config for the recurring-definition edit + conflict flow.
+
+    The transaction-template and transfer-template update routes differ
+    only in the row model, its amount column, and the engine functions /
+    endpoint that regenerate, resolve, and re-edit it; bundling those five
+    lets :func:`regenerate_or_conflict_chooser` and the chooser helpers stay
+    one shared, kind-agnostic implementation.
+
+    Attributes:
+        model: The instance row model (Transaction / Transfer) whose ids the
+            conflict carries.
+        amount_attr: The row's amount column name (``"estimated_amount"`` /
+            ``"amount"``).
+        regenerate_fn: The kind's ``regenerate_for_template(template,
+            periods, scenario_id, effective_from=...)`` callable.
+        resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id,
+            new_amount=...)`` callable.
+        update_endpoint: The kind's update-route endpoint, resolved with the
+            template id for the chooser's Apply action.
+    """
+
+    model: Any
+    amount_attr: str
+    regenerate_fn: Any
+    resolve_fn: Any
+    update_endpoint: str
+
+
+@dataclass(frozen=True)
+class ConflictChooserContext:
+    """Everything the recurrence-conflict chooser page renders from.
+
+    Bundled because :func:`render_recurrence_conflict_chooser` is a public
+    route helper whose inputs are one cohesive concept: the pending edit,
+    its kind, and where Apply / Cancel go.
+
+    Attributes:
+        conflict: The caught :class:`RecurrenceConflict` (the conflicted
+            row ids).
+        kind: The row model / amount / resolver bundle
+            (:class:`RecurrenceConflictKind`).
+        template_name: The edited template's new name (framing sentence).
+        new_amount: The template's new amount (the "Use" figure).
+        effective_from: The edit's effective date (framing sentence).
+        action_url: Where Apply posts (the same update endpoint).
+        cancel_url: Where Cancel returns (the list), abandoning the edit.
+    """
+
+    conflict: RecurrenceConflict
+    kind: RecurrenceConflictKind
+    template_name: str
+    new_amount: Decimal
+    effective_from: date
+    action_url: str
+    cancel_url: str
+
+
+def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str:
+    """Render the full-page conflict chooser for a pending template edit.
+
+    Loads the conflicted instances into chooser rows and echoes the
+    submitted edit ``form`` as hidden inputs (minus the CSRF token, which
+    the chooser re-issues) so Apply re-runs the identical edit before
+    resolving.  Renders and returns HTML only -- no mutation and no commit
+    happen here; the caller rolls back the pending edit after this returns.
+
+    Args:
+        ctx: The pending-edit conflict context (see
+            :class:`ConflictChooserContext`).
+        form: The submitted edit form, echoed so Apply reproduces it.
+
+    Returns:
+        The rendered chooser page HTML.
+    """
+    echo = form.to_dict(flat=True)
+    echo.pop("csrf_token", None)
+    return render_template(
+        "recurrence_conflict_chooser.html",
+        choices=_build_conflict_choices(ctx.conflict, ctx.kind.model, ctx.kind.amount_attr),
+        template_name=ctx.template_name,
+        new_amount=ctx.new_amount,
+        effective_from=ctx.effective_from,
+        echo=echo,
+        action_url=ctx.action_url,
+        cancel_url=ctx.cancel_url,
+        apply_marker=_CONFLICT_APPLY_MARKER,
+        decision_prefix=_CONFLICT_DECISION_PREFIX,
+        decision_keep=_DECISION_KEEP,
+        decision_use=_DECISION_USE,
     )
-    flash(
-        _RECURRENCE_CONFLICT_FLASH.format(
-            overridden_count=len(conflict.overridden),
-            deleted_count=len(conflict.deleted),
-        ),
-        "warning",
-    )
+
+
+def apply_conflict_decisions(
+    *,
+    kind: RecurrenceConflictKind,
+    conflict: RecurrenceConflict,
+    decisions: dict[int, str],
+    new_amount: Decimal,
+    user_id: int,
+) -> None:
+    """Apply the chooser's per-instance keep/use decisions.
+
+    Only ids genuinely in the raised conflict set (``conflict.overridden``
+    + ``conflict.deleted``) are acted on; a submitted id outside that set
+    is ignored, so the chooser can never mutate an arbitrary owned row.
+    "use" ids are realigned to ``new_amount`` (clearing the override /
+    soft-delete) through ``kind.resolve_fn(..., "update", ...)``; "keep"
+    ids are recorded through ``kind.resolve_fn(..., "keep", ...)`` for the
+    audit trail (the regeneration already left them untouched).
+    ``kind.resolve_fn`` ownership-checks every id and, on the transaction
+    side, refuses transfer shadows.
+
+    Args:
+        kind: The row model / amount / resolver bundle; only
+            ``kind.resolve_fn`` is used here.
+        conflict: The caught :class:`RecurrenceConflict` (the id allow-list).
+        decisions: The ``{row_id: "keep" | "use"}`` map from
+            :func:`parse_conflict_decisions`.
+        new_amount: The template's new amount applied to "use" ids.
+        user_id: The requesting user's id (passed through for the ownership
+            checks inside ``kind.resolve_fn``).
+    """
+    allowed = set(conflict.overridden) | set(conflict.deleted)
+    use_ids = [
+        rid for rid, choice in decisions.items()
+        if choice == _DECISION_USE and rid in allowed
+    ]
+    keep_ids = [
+        rid for rid, choice in decisions.items()
+        if choice == _DECISION_KEEP and rid in allowed
+    ]
+    kind.resolve_fn(use_ids, "update", user_id, new_amount=new_amount)
+    kind.resolve_fn(keep_ids, "keep", user_id)
+
+
+# The Recurring surface is the single list both kinds cancel back to.
+_RECURRING_LIST_ENDPOINT = "templates.list_templates"
+
+
+def regenerate_or_conflict_chooser(
+    template, old_amount, effective_from, kind, amount_drives_instances,
+):
+    """Regenerate a template's future rows, diverting to the conflict chooser.
+
+    Shared by the transaction-template and transfer-template update routes
+    (each passes its own :class:`RecurrenceConflictKind`).  Loads the
+    baseline scenario and pay periods, then regenerates the non-overridden
+    future instances via ``kind.regenerate_fn``.  When the edit collides with
+    hand-edited (override / soft-deleted) upcoming instances the regeneration
+    raises; the branch then depends on the submit and on whether this edit is
+    a real per-instance AMOUNT change (the chooser only offers a keep-vs-use
+    AMOUNT decision):
+
+      * Apply (chooser decisions present): resolve each conflicted instance
+        per the user's keep/use choice, then return ``None`` so the caller
+        commits the edit together with the resolutions.
+      * First submit of an amount-changing edit (``amount_drives_instances``
+        and ``default_amount`` differs from ``old_amount``): render the
+        chooser, ROLL BACK the pending edit (nothing is persisted), and
+        return the chooser :class:`~flask.Response` for the caller to return.
+      * Any other conflicting edit -- a rename / rule / flag change, or a
+        salary-linked template whose ``default_amount`` does not drive its
+        instance amounts -- leaves the overrides as the regeneration
+        preserved them and returns ``None`` so the caller commits.  This
+        keep-silently branch is deliberate: nothing the user can see changed
+        for those instances, so no prompt and no flash (the service still
+        logs the override / delete counts for forensics).
+
+    Args:
+        template: The edited template (its field updates already applied).
+        old_amount: The template's amount BEFORE this edit; the chooser is
+            offered only when ``template.default_amount`` now differs.
+        effective_from: The edit's effective date.
+        kind: The per-kind config (:class:`RecurrenceConflictKind`).
+        amount_drives_instances: Whether ``default_amount`` actually drives
+            this template's generated instance amounts.  ``False`` for a
+            salary-linked template (paycheck-calculated per period), which
+            suppresses the chooser so a vestigial ``default_amount`` edit
+            never mis-states a paycheck.  Transfers always pass ``True``.
+
+    Returns:
+        The chooser response to short-circuit to, or ``None`` to proceed to
+        commit (no recurrence rule / scenario, no conflict, a non-amount edit,
+        or a conflict already resolved from Apply).
+    """
+    scenario = get_baseline_scenario(current_user.id)
+    if scenario is None or template.recurrence_rule is None:
+        return None
+    periods = pay_period_service.get_all_periods(current_user.id)
+    decisions = parse_conflict_decisions(request.form)
+    try:
+        kind.regenerate_fn(
+            template, periods, scenario.id, effective_from=effective_from,
+        )
+    except RecurrenceConflict as conflict:
+        if decisions is not None:
+            apply_conflict_decisions(
+                kind=kind,
+                conflict=conflict,
+                decisions=decisions,
+                new_amount=template.default_amount,
+                user_id=current_user.id,
+            )
+        elif amount_drives_instances and template.default_amount != old_amount:
+            chooser = render_recurrence_conflict_chooser(
+                ConflictChooserContext(
+                    conflict=conflict,
+                    kind=kind,
+                    template_name=template.name,
+                    new_amount=template.default_amount,
+                    effective_from=effective_from,
+                    action_url=url_for(
+                        kind.update_endpoint, template_id=template.id,
+                    ),
+                    cancel_url=url_for(_RECURRING_LIST_ENDPOINT),
+                ),
+                request.form,
+            )
+            db.session.rollback()
+            return chooser
+    return None
 
 
 __all__ = [
@@ -506,5 +781,11 @@ __all__ = [
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
     "handle_stale_form_conflict",
-    "handle_recurrence_conflict",
+    "ConflictChoice",
+    "RecurrenceConflictKind",
+    "ConflictChooserContext",
+    "parse_conflict_decisions",
+    "render_recurrence_conflict_chooser",
+    "apply_conflict_decisions",
+    "regenerate_or_conflict_chooser",
 ]

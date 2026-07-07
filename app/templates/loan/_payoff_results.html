@@ -1,55 +1,47 @@
 {% from "_money_macros.html" import money %}
-{# HTMX fragment: payoff calculator results #}
+{# HTMX fragment: payoff calculator results (swapped into #payoff-results).
+
+   In extra-payment mode it renders the saved-months / saved-interest metric
+   chips AND carries the accelerated forward series in ``data-overlay`` so
+   loan_detail.js draws the green dashed "pay off sooner" preview on the band
+   chart (docs/design/loan_audit.md, locked anatomy).  Target-date mode answers
+   a required-extra figure and carries no overlay (loan_detail.js clears any
+   previous preview when it swaps in without the carrier). #}
 {% if error %}
-<div class="alert alert-warning">{{ error }}</div>
+<div class="alert alert-warning mb-0">{{ error }}</div>
 {% elif mode == "extra_payment" %}
-<div class="row g-3">
-  <div class="col-md-4">
-    <div class="text-muted small">New Payoff Date</div>
-    <div class="fw-bold text-accent">
-      {{ payoff_summary.payoff_date_with_extra.strftime('%b %Y') }}
-    </div>
+<div class="loan-result-chips">
+  <div class="loan-result-chip">
+    <div class="loan-result-chip__label">New Payoff</div>
+    <div class="loan-result-chip__value">{{ payoff_summary.payoff_date_with_extra.strftime('%b %Y') }}</div>
   </div>
-  <div class="col-md-4">
-    <div class="text-muted small">Months Saved</div>
-    <div class="fw-bold text-success">{{ payoff_summary.months_saved }}</div>
+  <div class="loan-result-chip">
+    <div class="loan-result-chip__label">Months Saved</div>
+    <div class="loan-result-chip__value loan-pos">{{ payoff_summary.months_saved }}</div>
   </div>
-  <div class="col-md-4">
-    <div class="text-muted small">Interest Saved</div>
-    <div class="fw-bold text-success font-mono">
-      {{ money(payoff_summary.interest_saved) }}
-    </div>
+  <div class="loan-result-chip">
+    <div class="loan-result-chip__label">Interest Saved</div>
+    <div class="loan-result-chip__value loan-pos font-mono">{{ money(payoff_summary.interest_saved) }}</div>
   </div>
 </div>
 {% if has_payments is defined and has_payments %}
-<div class="row g-3 mt-2 py-2 border rounded">
-  <div class="col-md-6">
-    <div class="text-muted small">Current Plan vs. Original</div>
-    <div class="fw-bold">
-      {% if committed_months_saved > 0 %}
-      <span class="text-success">{{ committed_months_saved }} months ahead</span>
-      {% elif committed_months_saved < 0 %}
-      <span class="text-danger">{{ committed_months_saved|abs }} months behind</span>
-      {% else %}
-      <span class="text-muted">On track</span>
-      {% endif %}
-      <span class="font-mono ms-2 text-success">
-        {% if committed_interest_saved > 0 %}
-        {{ money(committed_interest_saved) }} saved
-        {% endif %}
-      </span>
-    </div>
-  </div>
+<div class="text-muted small mt-2">
+  Current plan vs. original:
+  {% if committed_months_saved > 0 %}
+  <span class="loan-pos">{{ committed_months_saved }} months ahead</span>
+  {% elif committed_months_saved < 0 %}
+  <span class="loan-neg">{{ committed_months_saved|abs }} months behind</span>
+  {% else %}
+  <span>on track</span>
+  {% endif %}
+  {% if committed_interest_saved > 0 %}
+  , <span class="loan-pos font-mono">{{ money(committed_interest_saved) }}</span> saved
+  {% endif %}
 </div>
 {% endif %}
-{% if chart_labels %}
-<canvas id="payoff-chart-results"
-        class="mt-3 canvas-max-h-300"
-        data-labels='{{ chart_labels|tojson }}'
-        data-original='{{ chart_original|tojson if chart_original is defined else "[]" }}'
-        data-committed='{{ chart_committed|tojson if chart_committed is defined else "[]" }}'
-        data-accelerated='{{ chart_accelerated|tojson }}'></canvas>
-{% endif %}
+{# Band-chart overlay payload: forward-only accelerated balances (leading nulls
+   over confirmed history), read by loan_detail.js. #}
+<div id="payoff-overlay-data" data-overlay='{{ overlay|tojson }}' hidden></div>
 {% elif mode == "target_date" %}
 {% if has_payments is defined and has_payments and outlook is not none %}
 {# F-27 reframe: the user has a recurring payment plan, so the headline
@@ -57,11 +49,11 @@
    the extra-payment tab); the raw no-plan figure stays as a secondary
    line below.  Route guarantees outlook is set whenever has_payments. #}
 {% if outlook.required_extra is none %}
-<div class="alert alert-warning">
+<div class="alert alert-warning mb-0">
   Target date is not achievable -- it may be in the past or too soon.
 </div>
 {% elif outlook.required_extra == 0 %}
-<div class="alert alert-success">
+<div class="alert alert-success mb-0">
   Your current payment plan already pays this loan off by the target date
   {%- if outlook.committed_payoff_date %}
   ({{ outlook.committed_payoff_date.strftime('%b %Y') }})
@@ -96,11 +88,11 @@
 {% endif %}
 {% endif %}
 {% elif required_extra is none %}
-<div class="alert alert-warning">
+<div class="alert alert-warning mb-0">
   Target date is not achievable -- it may be in the past or too soon.
 </div>
 {% elif required_extra == 0 %}
-<div class="alert alert-success">
+<div class="alert alert-success mb-0">
   Your loan will be paid off before this date with standard payments.
 </div>
 {% else %}

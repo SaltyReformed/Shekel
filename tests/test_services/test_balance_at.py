@@ -43,6 +43,7 @@ from app.services import (
     balance_calculator,
     balance_resolver,
     income_service,
+    net_worth_investment,
     net_worth_kernel,
     pay_period_service,
 )
@@ -408,8 +409,10 @@ class TestBalanceMapInvestment:
             )
 
             seed = balance_at.investment_seed_map(inv, scenario, periods)
-            # Delegation parity: the seam returns the kernel seed verbatim.
-            assert seed == net_worth_kernel.investment_base_balance_map(
+            # Delegation parity: the seam returns the producer's seed verbatim
+            # (investment_base_balance_map lives in net_worth_investment, the
+            # investment growth sub-chain extracted from the kernel).
+            assert seed == net_worth_investment.investment_base_balance_map(
                 inv, scenario, periods,
             )
             # Cash basis: anchor $10,000.00 carried flat (no contributions, no
@@ -419,6 +422,127 @@ class TestBalanceMapInvestment:
             # Strictly below the growth-modeled map -- the seed is pre-growth.
             modeled = balance_at.balance_map(inv, scenario, periods)
             assert modeled[periods[-1].id] > seed[periods[-1].id]
+
+
+class TestInvestmentGrowthSinceAnchor:
+    """``investment_growth_since_anchor`` decomposes growth vs contributions.
+
+    The chip's contract: ``growth + contributed`` must reconcile to the cent
+    with the DISPLAYED balance change since the anchor
+    (``balance_map[current] - balance_map[anchor_period]``), because both are
+    read from the SAME forward projection the modeled map uses.  These tests
+    are the load-bearing guard against the map and the decomposition drifting
+    apart (they assemble inputs three different ways -- the map, the seam, and
+    the raw producer -- yet must agree).
+    """
+
+    def test_reconciles_with_displayed_balance_change(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """growth + contributed == balance_map[current] - anchor balance.
+
+        Anchored well before the current period so the window
+        ``(anchor, current]`` is non-empty and spans real growth; the
+        decomposition must sum to the modeled balance delta EXACTLY (the
+        telescoping identity), so the chip can never disagree with the hero.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            current = pay_period_service.get_current_period(user_id)
+            # Anchor at the first period, strictly before the current one.
+            inv = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+
+            result = balance_at.investment_growth_since_anchor(
+                inv, scenario, periods, current,
+            )
+            assert result is not None
+            growth, contributed = result
+
+            balances = balance_at.balance_map(inv, scenario, periods)
+            anchor_balance = balances[periods[0].id]
+            current_balance = balances[current.id]
+            # The reconciliation identity, to the cent.
+            assert growth + contributed == current_balance - anchor_balance
+            # A growing account with no negative movements grows: growth > 0.
+            assert growth > Decimal("0.00")
+
+    def test_seam_matches_raw_producer(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The seam returns the raw producer's decomposition verbatim.
+
+        Delegation parity: the seam assembles the params / deductions / gross
+        via ``_assemble_inputs`` and hands them to
+        ``net_worth_investment.investment_growth_since_anchor``; calling that
+        producer with the same manually-assembled inputs must agree.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            current = pay_period_service.get_current_period(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+
+            params = load_investment_params_for_accounts([inv]).get(inv.id)
+            deductions = load_active_deductions_for_accounts(
+                user_id, [inv.id],
+            ).get(inv.id, [])
+            gross = income_service.get_current_gross_biweekly(user_id)
+
+            seam = balance_at.investment_growth_since_anchor(
+                inv, scenario, periods, current,
+            )
+            raw = net_worth_investment.investment_growth_since_anchor(
+                inv, params, scenario, periods, deductions, gross, current,
+            )
+            assert seam == raw
+            assert seam is not None
+
+    def test_none_when_anchored_at_current_period(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No post-anchor window yet (anchored this period) -> None (chip hidden).
+
+        With the anchor AT the current period there are zero periods after the
+        anchor and at or before current, so no growth has accrued since the
+        anchor: the decomposition returns None rather than a spurious $0 chip.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            current = pay_period_service.get_current_period(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, current, Decimal("10000.00"),
+            )
+
+            result = balance_at.investment_growth_since_anchor(
+                inv, scenario, periods, current,
+            )
+            assert result is None
+
+    def test_none_when_current_period_is_none(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No current period -> None (the caller hides the chip)."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+
+            result = balance_at.investment_growth_since_anchor(
+                inv, scenario, periods, None,
+            )
+            assert result is None
 
 
 class TestBalanceMapProperty:

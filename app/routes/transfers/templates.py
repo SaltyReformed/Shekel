@@ -37,7 +37,6 @@ from app.services.recurrence_engine import compute_due_date
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import (
     NotFoundError,
-    RecurrenceConflict,
     ValidationError as ShekelValidationError,
 )
 from app.utils.balance_predicates import is_projected_clause
@@ -49,10 +48,11 @@ from app.routes._commit_helpers import (
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
+    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
-    handle_recurrence_conflict,
     handle_stale_form_conflict,
+    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._redirect_target import RedirectTarget
@@ -81,24 +81,15 @@ _TEMPLATE_UPDATE_FIELDS = {
 @login_required
 @require_owner
 def list_transfer_templates():
-    """List all transfer templates for the current user.
+    """Redirect the retired /transfers list to the unified Recurring surface.
 
-    Separates templates into active and archived lists for the UI.
-    Both lists inherit the same ordering (sort_order, name).
+    Transfer templates are now listed and managed alongside recurring
+    income and expenses on the unified ``/templates`` (Recurring) surface
+    (Loop B).  This URL is kept as a redirect so old bookmarks -- and the
+    transfer create/update routes' post-save redirects, which still target
+    this endpoint -- land on the surface that replaced the standalone list.
     """
-    templates = (
-        db.session.query(TransferTemplate)
-        .filter_by(user_id=current_user.id)
-        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
-        .all()
-    )
-    active_templates = [t for t in templates if t.is_active]
-    archived_templates = [t for t in templates if not t.is_active]
-    return render_template(
-        "transfers/list.html",
-        active_templates=active_templates,
-        archived_templates=archived_templates,
-    )
+    return redirect(url_for("templates.list_templates"))
 
 
 @transfers_bp.route("/transfers/new", methods=["GET"])
@@ -251,6 +242,17 @@ def edit_transfer_template(template_id):
     )
 
 
+# The transfer-template kind for the shared regenerate-or-chooser flow.
+# Mutations route through transfer_recurrence (shadow-safe resolve).
+_TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
+    model=Transfer,
+    amount_attr="amount",
+    regenerate_fn=transfer_recurrence.regenerate_for_template,
+    resolve_fn=transfer_recurrence.resolve_conflicts,
+    update_endpoint="transfers.update_transfer_template",
+)
+
+
 @transfers_bp.route("/transfers/<int:template_id>", methods=["POST"])
 @login_required
 @require_owner
@@ -332,6 +334,7 @@ def update_transfer_template(template_id):
             "transfers.edit_transfer_template", template_id=template_id,
         ))
 
+    old_amount = template.default_amount
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
@@ -347,7 +350,9 @@ def update_transfer_template(template_id):
     if namedup_redirect is not None:
         return namedup_redirect
 
-    return _regenerate_and_commit_template(template, effective_from, template_id)
+    return _regenerate_and_commit_template(
+        template, old_amount, effective_from, template_id,
+    )
 
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
@@ -712,43 +717,40 @@ def _first_unowned_template_fk(data):
     return None
 
 
-def _regenerate_and_commit_template(template, effective_from, template_id):
+def _regenerate_and_commit_template(
+    template, old_amount, effective_from, template_id,
+):
     """Regenerate a transfer template's future transfers, then commit.
 
     Re-runs ``transfer_recurrence.regenerate_for_template`` against the
-    baseline scenario (auto-keeping any overridden instances via the F-26
-    conflict helper), then commits.  Optimistic-lock and name-uniqueness
-    failures at flush time are converted to the same flash + redirect the
-    form-side guards produce, so a concurrent edit never surfaces as a 500.
+    baseline scenario, diverting to the recurrence-conflict chooser when an
+    amount change would overwrite hand-edited upcoming transfers, then
+    commits.  Optimistic-lock and name-uniqueness failures at flush time are
+    converted to the same flash + redirect the form-side guards produce, so a
+    concurrent edit never surfaces as a 500.
 
     Args:
         template: The TransferTemplate whose field changes are already staged
             in the session.
+        old_amount: The template's amount before this edit (gates the chooser
+            -- see :func:`regenerate_or_conflict_chooser`).
         effective_from: Date from which regeneration applies.
         template_id: The template's id, used for redirect kwargs and logging.
 
     Returns:
-        A redirect ``Response`` -- to the edit form on a stale-data or
-        name-duplicate conflict, or to the template list on success.
+        A ``Response`` -- the chooser, or the edit form on a stale-data or
+        name-duplicate conflict, or a redirect to the template list on
+        success.
     """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario and template.recurrence_rule:
-        periods = pay_period_service.get_all_periods(current_user.id)
-        try:
-            transfer_recurrence.regenerate_for_template(
-                template, periods, scenario.id, effective_from=effective_from,
-            )
-        except RecurrenceConflict as conflict:
-            # Phase-1 auto-keep-overrides advisory.  Routed through
-            # the F-26 helper; ``log_label`` carries the transfers-
-            # side "Transfer recurrence conflict for template"
-            # prefix verbatim so log-grep patterns stay valid.
-            handle_recurrence_conflict(
-                logger=logger,
-                log_label="Transfer recurrence conflict for template",
-                log_id=template.id,
-                conflict=conflict,
-            )
+    # Regenerate future transfers, diverting to the conflict chooser when an
+    # amount change would overwrite hand-edited upcoming instances.
+    diverted = regenerate_or_conflict_chooser(
+        template, old_amount, effective_from, _TRANSFER_TEMPLATE_KIND,
+        amount_drives_instances=True,
+    )
+    # The chooser short-circuits (its pending edit is already rolled back).
+    if diverted is not None:
+        return diverted
 
     try:
         db.session.commit()

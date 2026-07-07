@@ -13,6 +13,10 @@
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
 
+{# Four pills (Slice-4 shell collapse): Calendar, Spending, Statements, Taxes.
+   The Statements pill loads the Income Statement by default; its own internal
+   toggle swaps to the Balance Sheet (both target #tab-content), so the
+   Statements pill stays active while the two confirmed-ledger reports switch. #}
 <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
   <li class="nav-item" role="presentation">
     <button class="nav-link active" data-bs-toggle="pill"
@@ -26,32 +30,12 @@
   </li>
   <li class="nav-item" role="presentation">
     <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.year_end_tab') }}"
+            hx-get="{{ url_for('analytics.spending_tab') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-trigger="click"
             hx-indicator="#tab-spinner"
             role="tab" aria-selected="false">
-      Year-End
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.variance_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Variance
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.trends_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Trends
+      Spending
     </button>
   </li>
   <li class="nav-item" role="presentation">
@@ -61,17 +45,17 @@
             hx-trigger="click"
             hx-indicator="#tab-spinner"
             role="tab" aria-selected="false">
-      Income Statement
+      Statements
     </button>
   </li>
   <li class="nav-item" role="presentation">
     <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.balance_sheet_tab') }}"
+            hx-get="{{ url_for('analytics.taxes_tab') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-trigger="click"
             hx-indicator="#tab-spinner"
             role="tab" aria-selected="false">
-      Balance Sheet
+      Taxes
     </button>
   </li>
 </ul>
@@ -99,6 +83,5 @@
 <script src="{{ url_for('static', filename='js/calendar.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
-<script src="{{ url_for('static', filename='js/chart_year_end.js') }}"></script>
-<script src="{{ url_for('static', filename='js/chart_variance.js') }}"></script>
+<script src="{{ url_for('static', filename='js/calendar_flow_strip.js') }}"></script>
 {% endblock scripts %}

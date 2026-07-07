@@ -1,0 +1,34 @@
+{# Statements pill header (Slice-4 shell collapse).  The Statements pill groups
+   the two confirmed-ledger reports; this shared toggle swaps between them.
+   Included by _income_statement.html and _balance_sheet.html, each passing
+   ``active_statement`` ("income" or "balance") to mark the active half.  Both
+   buttons target #tab-content, so the nav Statements pill stays active while
+   the two reports switch.
+
+   Basis: CONFIRMED -- the append-only double-entry posting ledger, tied out by
+   the balance sheet's two-part trial balance (the audit's fourth data
+   semantics, a stronger claim than "measured"). #}
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+  <div class="d-flex align-items-center gap-2">
+    <h5 class="mb-0">Statements</h5>
+    <span class="analytics-basis-chip"
+          title="The confirmed double-entry posting ledger; the balance sheet's two-part trial balance ties it out.">confirmed</span>
+  </div>
+  <div class="btn-group" role="group" aria-label="Statement type">
+    <button class="btn btn-sm {% if active_statement == 'income' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.income_statement_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            {% if active_statement == 'income' %}aria-current="true"{% endif %}>
+      Income Statement
+    </button>
+    <button class="btn btn-sm {% if active_statement == 'balance' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+            hx-get="{{ url_for('analytics.balance_sheet_tab') }}"
+            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-indicator="#tab-spinner"
+            {% if active_statement == 'balance' %}aria-current="true"{% endif %}>
+      Balance Sheet
+    </button>
+  </div>
+</div>
+<p class="text-muted small mb-3">Confirmed posting ledger, all accounts.</p>

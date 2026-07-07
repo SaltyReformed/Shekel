@@ -163,6 +163,7 @@ class TestDeployFilesExist:
         assert "./nginx/nginx.conf:" not in text
 
 
+@pytest.mark.docker
 class TestDeployNginxConfigParses:
     """Validate that the bundled Nginx config passes ``nginx -t``.
 
@@ -230,6 +231,7 @@ class TestDeployNginxConfigParses:
         assert "test is successful" in result.stderr
 
 
+@pytest.mark.docker
 class TestDeployComposeParses:
     """Validate that ``docker compose config`` accepts the merged
     base + shared-mode override.

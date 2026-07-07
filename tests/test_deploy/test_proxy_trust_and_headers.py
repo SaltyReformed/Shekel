@@ -422,6 +422,7 @@ class TestSharedVhostSecurityHeaders:
         )
 
 
+@pytest.mark.docker
 class TestSharedVhostNginxParse:
     """Validate ``deploy/nginx-shared/`` parses cleanly via
     ``nginx -t`` inside an ephemeral nginx:1.27-alpine container.
@@ -748,6 +749,7 @@ class TestCloudflaredTemplate:
 # create/destroy, the readiness probes, and the curl probes.
 # Steady-state runs complete in ~10-15s on a hot Docker daemon.
 @pytest.mark.timeout(120)
+@pytest.mark.docker
 class TestSharedNginxRuntimeHeaders:
     """End-to-end test: run the real shared Nginx config inside a
     container against a real stub upstream and confirm the four

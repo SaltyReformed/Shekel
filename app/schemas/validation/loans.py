@@ -200,13 +200,26 @@ class RateChangeSchema(BaseSchema):
 
 
 class EscrowComponentSchema(BaseSchema):
-    """Validates POST data for creating/updating an escrow component.
+    """Validates POST data for creating / amending an escrow line version.
+
+    Serves every escrow write: the add-line form, the per-line
+    "schedule a change" (add-version) form, and the version edit form.
+    ``name`` is required for the add-line form (rename has its own
+    :class:`EscrowLineRenameSchema`) and ignored by the add-version /
+    edit routes, which key on the line / version id.
 
     E-28 / HIGH-06 / PA-02: ``inflation_rate`` is validated as a
     decimal fraction matching the DB CHECK on
-    ``escrow_components.inflation_rate``
+    ``escrow_component_versions.inflation_rate``
     (``IS NULL OR (>= 0 AND <= 1)``).  Nullable -- the user may omit
-    the field for an escrow component with no scheduled inflation.
+    the field for an escrow line with no scheduled inflation.
+
+    ``effective_date`` is OPTIONAL and defaults to today in the route
+    when absent (spec Sec. 4.1: "defaulting to today, so the common case
+    is unchanged"); a supplied date lets the operator schedule a change
+    on a future date.  The route enforces the forward-only guard (the
+    date must fall strictly after the latest settled payment's pay-period
+    start), which the schema cannot -- it has no access to the loan.
     """
 
     _PERCENT_FIELDS = ("inflation_rate",)
@@ -226,7 +239,49 @@ class EscrowComponentSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
+    effective_date = fields.Date(load_default=None)
 
+
+class EscrowVersionSchema(EscrowComponentSchema):
+    """Validates POST data for amending an existing escrow line (add / edit version).
+
+    The add-version and edit-version routes key on the line / version id
+    and never set the display label, so ``name`` is not required here --
+    otherwise identical to :class:`EscrowComponentSchema` (annual amount,
+    optional inflation, optional effective date defaulting to today).
+    """
+
+    name = fields.String(
+        required=False, allow_none=True,
+        validate=validate.Length(min=1, max=100),
+    )
+
+
+class EscrowLineRenameSchema(BaseSchema):
+    """Validates POST data for renaming an escrow line (display label only).
+
+    A rename edits ``escrow_lines.name`` in place; it is display-only and
+    cannot move a cent of any posted loan-payment split (the split reads a
+    version's amount + effective date, never the line name).  The route
+    still rejects a rename onto another ACTIVE line's name (decision C).
+    """
+
+    name = fields.String(required=True, validate=validate.Length(min=1, max=100))
+
+
+class EscrowLineMergeSchema(BaseSchema):
+    """Validates POST data for merging one escrow line into another.
+
+    ``source_line_id`` is the line to fold in and delete; the surviving TARGET is
+    the route's URL line id.  The route resolves ownership of BOTH lines (404 for
+    a line that is missing or another user's, per the security-response rule) and
+    delegates the safety check -- that the merge preserves the escrow resolved on
+    every date -- to the escrow calculator's merge planner.
+    """
+
+    source_line_id = fields.Integer(
+        required=True, validate=validate.Range(min=1),
+    )
 
 
 class PayoffCalculatorSchema(BaseSchema):
@@ -285,10 +340,41 @@ class LoanPaymentTransferSchema(BaseSchema):
     The source_account_id is required (the account money comes from).
     The amount is optional -- if omitted, the route uses the computed
     monthly payment (P&I + escrow).  If provided, must be positive.
+    ``extra_principal`` is optional (default 0.00): a standing monthly
+    overpayment added to the payment in BOTH derive and manual mode
+    (spec Sec. 6.1), stored in ``loan_payment_settings``.
     """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``extra_principal`` field to its 0.00 default."""
+        return _normalize_empty_inputs(self, data)
 
     source_account_id = fields.Integer(required=True, validate=validate.Range(min=1))
     amount = fields.Decimal(
         places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
+    )
+    extra_principal = fields.Decimal(
+        load_default=Decimal("0.00"), places=2, as_string=True,
+        validate=validate.Range(min=0),
+    )
+
+
+class LoanPaymentExtraSchema(BaseSchema):
+    """Validates POST data for editing a recurring loan payment's extra principal.
+
+    The single field the loan dashboard's extra-principal control posts: the new
+    standing monthly overpayment (``>= 0``; 0.00 clears it).  An empty submission
+    normalizes to 0.00 so clearing the box removes the overpayment.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Map an empty ``extra_principal`` field to its 0.00 default."""
+        return _normalize_empty_inputs(self, data)
+
+    extra_principal = fields.Decimal(
+        load_default=Decimal("0.00"), places=2, as_string=True,
+        validate=validate.Range(min=0),
     )

@@ -80,17 +80,19 @@ def _seed_window(db_session, seed_user, count=14):
     """Create periods and return the completed in-window periods.
 
     Generates ``count`` biweekly periods from ``_WINDOW_START``, anchors the
-    account to the first one, and returns
-    ``spending_trend_service._get_window_periods(user_id, 6)`` -- the
-    completed periods F1 admits.  MUST be called with the test clock already
-    patched (the window query reads ``date.today()``).
+    account to the first one, and returns the last ``_FULL_WINDOW_PERIODS``
+    completed periods F1 admits (the same 12-period window every value
+    assertion below is computed against).  MUST be called with the test
+    clock already patched (the window query reads ``date.today()``).
     """
     periods = _generate_periods(
         db_session, seed_user["user"].id, _WINDOW_START, count,
     )
     seed_user["account"].current_anchor_period_id = periods[0].id
     db_session.commit()
-    return spending_trend_service._get_window_periods(seed_user["user"].id, 6)
+    return spending_trend_service._get_window_periods(
+        seed_user["user"].id, spending_trend_service._FULL_WINDOW_PERIODS,
+    )
 
 
 def _add_paid_expense(
@@ -402,7 +404,7 @@ class TestDataSufficiency:
             db.session.commit()
 
             window = spending_trend_service._get_window_periods(
-                seed_user["user"].id, 6,
+                seed_user["user"].id, spending_trend_service._FULL_WINDOW_PERIODS,
             )
             assert len(window) == _N_WINDOW
             assert all(p.end_date < _TODAY for p in window)
@@ -411,6 +413,144 @@ class TestDataSufficiency:
             future = [p for p in periods if p.end_date >= _TODAY]
             assert future, "fixture must include >=1 incomplete period"
             assert all(p.id not in in_ids for p in future)
+
+
+# ── Data-Sufficiency Boundary Tests (S-P1 unit-mismatch fix) ────────
+
+
+def _seed_completed(db_session, seed_user, start, count):
+    """Generate ``count`` biweekly periods from ``start`` and fill each.
+
+    Each period gets one $100 Groceries settled expense, so every generated
+    period that has completed before the (patched) clock counts as a
+    distinct paid pay period for the sufficiency gate.  Returns the periods.
+    """
+    periods = _generate_periods(
+        db_session, seed_user["user"].id, start, count,
+    )
+    seed_user["account"].current_anchor_period_id = periods[0].id
+    for period in periods:
+        _add_paid_expense(
+            db_session, seed_user, period, "Groceries", "100.00",
+            category_key="Groceries",
+        )
+    db_session.commit()
+    return periods
+
+
+class TestSufficiencyBoundaries:
+    """Boundary tests for the period-based data-sufficiency gate.
+
+    The S-P1 fix counts COMPLETED PAY PERIODS with settled spending -- the
+    same unit the series is built in -- rather than distinct calendar
+    months.  The insufficient/preliminary boundary is at
+    ``_PRELIMINARY_MIN_PERIODS`` (6) and the preliminary/sufficient boundary
+    is at ``_FULL_WINDOW_PERIODS`` (12).  All periods are generated so they
+    complete before the patched clock (_TODAY = 2026-07-01).
+    """
+
+    @patch("app.services.spending_trend_service.date")
+    def test_five_periods_insufficient(self, mock_date, app, seed_user, db):
+        """5 completed paid periods (< 6) -> insufficient, window 0.
+
+        Biweekly from 2026-04-03: Apr 3/17, May 1/15/29 -- five periods that
+        all end before _TODAY, so distinct_paid_periods == 5 < 6.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            _seed_completed(db.session, seed_user, date(2026, 4, 3), 5)
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            assert result.data_sufficiency == "insufficient"
+            assert result.window_months == 0
+            assert result.window_periods == 0
+
+    @patch("app.services.spending_trend_service.date")
+    def test_six_periods_preliminary_boundary(self, mock_date, app, seed_user, db):
+        """6 completed paid periods (== boundary) -> preliminary, window 3.
+
+        distinct_paid_periods == 6 == _PRELIMINARY_MIN_PERIODS, the lowest
+        count that clears insufficient; the preliminary window holds those 6.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            _seed_completed(db.session, seed_user, date(2026, 4, 3), 6)
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            assert result.data_sufficiency == "preliminary"
+            assert result.window_months == 3
+            assert result.window_periods == 6
+
+    @patch("app.services.spending_trend_service.date")
+    def test_eleven_periods_preliminary(self, mock_date, app, seed_user, db):
+        """11 completed paid periods (< 12) -> preliminary, 6-period window.
+
+        distinct_paid_periods == 11 is below _FULL_WINDOW_PERIODS (12), so the
+        banner is preliminary and the window is the last 6 of the 11 periods.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            _seed_completed(db.session, seed_user, _WINDOW_START, 11)
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            assert result.data_sufficiency == "preliminary"
+            assert result.window_months == 3
+            assert result.window_periods == 6
+
+    @patch("app.services.spending_trend_service.date")
+    def test_twelve_periods_sufficient_boundary(self, mock_date, app, seed_user, db):
+        """12 completed paid periods (== boundary) -> sufficient, window 6.
+
+        distinct_paid_periods == 12 == _FULL_WINDOW_PERIODS, the lowest count
+        that reads sufficient; the full window holds all 12.
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            _seed_completed(db.session, seed_user, _WINDOW_START, 12)
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            assert result.data_sufficiency == "sufficient"
+            assert result.window_months == 6
+            assert result.window_periods == _N_WINDOW
+
+
+# ── Series Source Tests (S-P1 one-data-source rule) ─────────────────
+
+
+class TestSeriesSource:
+    """The per-period series carried on ItemTrend IS the series the delta
+    was computed from (so the Spending sparkline cannot disagree with the
+    chip)."""
+
+    @patch("app.services.spending_trend_service.date")
+    def test_period_totals_is_the_delta_source(self, mock_date, app, seed_user, db):
+        """item.period_totals equals the filled series AND reproduces the delta.
+
+        Groceries filled with 100,110,...,210 over the 12 window periods: the
+        carried period_totals must equal those exact values, and re-running
+        the half-window change on them must reproduce the row's own
+        pct/absolute change (one source, cannot disagree).
+        """
+        _patch_today(mock_date)
+        with app.app_context():
+            window = _seed_window(db.session, seed_user)
+            amounts = [100 + 10 * i for i in range(_N_WINDOW)]
+            _fill(db.session, seed_user, window, "Groceries", amounts)
+            db.session.commit()
+
+            result = spending_trend_service.compute_trends(
+                user_id=seed_user["user"].id,
+            )
+            item = _item(result, "Groceries")
+            assert item.period_totals == [Decimal(str(a)) for a in amounts]
+            # The delta the chip shows comes from THIS same list.
+            abs_change, pct = _half_window_change(item.period_totals)
+            assert abs_change == item.absolute_change
+            assert pct == item.pct_change
 
 
 # ── Trend Detection Tests ───────────────────────────────────────────

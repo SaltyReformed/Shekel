@@ -10,7 +10,12 @@ chart_data_service.py.
 from datetime import date
 
 from app.extensions import db
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
+from app.models.tax_config import (
+    FicaConfig,
+    StateChildDeduction,
+    StateTaxConfig,
+    TaxBracketSet,
+)
 
 
 def load_tax_configs(user_id, profile, tax_year=None):
@@ -46,12 +51,17 @@ def load_tax_configs(user_id, profile, tax_year=None):
         .first()
     )
 
+    # T-P5: the state config is filing-status-keyed (the NC standard
+    # deduction is status-specific), so the query filters by the profile's
+    # filing status.  The withholding path resolves the profile's own
+    # status; the analytics liability resolves the primary filer's.
     state_config = (
         db.session.query(StateTaxConfig)
         .filter_by(
             user_id=user_id,
             state_code=profile.state_code,
             tax_year=tax_year,
+            filing_status_id=profile.filing_status_id,
         )
         .first()
     )
@@ -148,3 +158,36 @@ def load_tax_configs_for_periods(user_id, profile, periods, *, fallback_year=Non
         )
         for year in years
     }
+
+
+def load_state_child_deductions(user_id, state_code, tax_year, filing_status_id):
+    """Load the state per-child deduction tiers for a state/year/filing status.
+
+    Returns every :class:`~app.models.tax_config.StateChildDeduction` tier row
+    for the given key (the NC AGI-tiered child deduction, T-P5), ordered by
+    ``agi_min`` for readability.  The tier LOOKUP itself keys on ``agi_max``
+    (see :func:`app.services.tax_calculator.resolve_child_deduction_per_child`),
+    so the order here is only presentational.  A state/year/status with no
+    seeded tiers (e.g. any non-NC state) yields an empty list, which the
+    resolver treats as "no child deduction."
+
+    Args:
+        user_id (int): The owning user's ID (tiers are per-user seed rows).
+        state_code (str): Two-letter state code.
+        tax_year (int): The tax year to load tiers for.
+        filing_status_id (int): The filing status the tiers apply to.
+
+    Returns:
+        list[StateChildDeduction]: The matching tier rows (possibly empty).
+    """
+    return (
+        db.session.query(StateChildDeduction)
+        .filter_by(
+            user_id=user_id,
+            state_code=state_code,
+            tax_year=tax_year,
+            filing_status_id=filing_status_id,
+        )
+        .order_by(StateChildDeduction.agi_min)
+        .all()
+    )

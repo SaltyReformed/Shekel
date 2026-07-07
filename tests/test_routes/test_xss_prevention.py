@@ -390,7 +390,9 @@ class TestXSSPrevention:
                 "category_id": category.id,
             })
 
-            resp = auth_client.get("/transfers")
+            # /transfers now forwards to the unified Recurring surface,
+            # where the transfer name renders in the Transfers section.
+            resp = auth_client.get("/transfers", follow_redirects=True)
             assert resp.status_code == 200
             self._assert_xss_safe(resp, payload, escaped_fragment)
 

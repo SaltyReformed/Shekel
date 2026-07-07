@@ -42,13 +42,15 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
+from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.ledger_account import LedgerAccount
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.savings_goal import SavingsGoal
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_features import RateHistory, EscrowComponent
+from app.models.loan_features import RateHistory
+from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
 
@@ -58,8 +60,10 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
+from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.models.tax_config import (
     FicaConfig,
+    StateChildDeduction,
     StateTaxConfig,
     TaxBracket,
     TaxBracketSet,
@@ -106,6 +110,7 @@ __all__ = [
     "TransactionEntry",
     "TransferTemplate",
     "Transfer",
+    "LoanPaymentSettings",
     "LedgerAccount",
     "JournalEntry",
     "Posting",
@@ -114,7 +119,8 @@ __all__ = [
     "LoanParams",
     "LoanAnchorEvent",
     "RateHistory",
-    "EscrowComponent",
+    "EscrowLine",
+    "EscrowComponentVersion",
     "InvestmentParams",
     "AssetAppreciationParams",
     # Salary domain
@@ -123,7 +129,9 @@ __all__ = [
     "PaycheckDeduction",
     "PensionProfile",
     "CalibrationOverride",
+    "YtdTaxCheckpoint",
     "FicaConfig",
+    "StateChildDeduction",
     "StateTaxConfig",
     "TaxBracket",
     "TaxBracketSet",

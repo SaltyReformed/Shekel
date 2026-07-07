@@ -394,6 +394,45 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     return event
 
 
+def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
+    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life opening).
+
+    Mirrors the production tracking-start path
+    (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
+    began tracking an already-amortizing loan and asserts its real balance as of a
+    date at/before the first recorded payment.  When present it becomes the loan's
+    confirmed-ledger OPENING (:func:`app.services.loan_loaders._opening_anchor_fact`
+    synthesizes the ``is_opening`` anchor from it in place of the origination), so
+    the genesis walk seeds from this balance/date instead of the origination.
+
+    Args:
+        loan_params: The :class:`LoanParams` ORM instance, already flushed.
+        anchor_balance: The asserted opening balance (Decimal).
+        anchor_date: The date the balance was asserted (at/before the first
+            recorded payment).
+
+    Returns:
+        The newly added :class:`LoanAnchorEvent` (added, not committed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as insert_trueup_event above.
+    from app import ref_cache
+    from app.enums import LoanAnchorSourceEnum
+    from app.extensions import db
+    from app.models.loan_anchor_event import LoanAnchorEvent
+
+    event = LoanAnchorEvent(
+        account_id=loan_params.account_id,
+        anchor_date=anchor_date,
+        anchor_balance=anchor_balance,
+        source_id=ref_cache.loan_anchor_source_id(
+            LoanAnchorSourceEnum.TRACKING_START,
+        ),
+    )
+    db.session.add(event)
+    return event
+
+
 def create_loan_account(
     seed_user, db_session, name="Test Loan",
     principal=None, rate=None, term=24,
@@ -474,6 +513,58 @@ def create_loan_account(
     return account
 
 
+def add_escrow_line(
+    db_session, account_id, name, annual_amount, *,
+    effective_date=None, inflation_rate=None,
+):
+    """Create an escrow LINE with one opening version (supersession model).
+
+    The shared escrow-setup builder for tests that exercise app paths reading
+    escrow (the loan-payment split, PITI, savings-dashboard PITI, the loan-card
+    breakdown).  Inserts the ``EscrowLine`` + ``EscrowComponentVersion`` pair the
+    app reads (the supersession escrow model).  When
+    ``effective_date`` is omitted it defaults to the loan's ``origination_date``,
+    so the escrow is active for the whole loan life (the standing-charge case
+    every escrow test intends); pass an explicit date to build a version that
+    supersedes an earlier one.  Flushes so ids are assigned; the caller commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The loan account the escrow belongs to.
+        name: The escrow line display name.
+        annual_amount: The opening version's stored annual amount (Decimal).
+        effective_date: The version's effective date; defaults to the loan's
+            origination date when omitted.
+        inflation_rate: Optional decimal-fraction inflation rate for the version.
+
+    Returns:
+        The created :class:`~app.models.escrow_line.EscrowComponentVersion` (its
+        ``line`` relationship carries the parent line), so a caller can mutate
+        ``annual_amount`` to exercise a live escrow change.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+    from app.models.loan_params import LoanParams
+
+    if effective_date is None:
+        params = (
+            db_session.query(LoanParams).filter_by(account_id=account_id).one()
+        )
+        effective_date = params.origination_date
+
+    line = EscrowLine(account_id=account_id, name=name)
+    db_session.add(line)
+    db_session.flush()
+    version = EscrowComponentVersion(
+        line_id=line.id, effective_date=effective_date,
+        annual_amount=annual_amount, inflation_rate=inflation_rate,
+    )
+    db_session.add(version)
+    db_session.flush()
+    return version
+
+
 def create_loan_with_trueup(
     seed_user, db_session, *, origination_principal, anchor_balance,
     anchor_date, rate, origination_date, name="Split Loan", term=360,
@@ -512,7 +603,6 @@ def create_loan_with_trueup(
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
-    from app.models.loan_features import EscrowComponent
     from app.models.loan_params import LoanParams
 
     loan = create_loan_account(
@@ -525,10 +615,10 @@ def create_loan_with_trueup(
     )
     insert_trueup_event(params, anchor_balance, anchor_date)
     if escrow_annual is not None:
-        db_session.add(EscrowComponent(
-            account_id=loan.id, name="Tax & Insurance",
-            annual_amount=escrow_annual, effective_date=origination_date,
-        ))
+        add_escrow_line(
+            db_session, loan.id, "Tax & Insurance", escrow_annual,
+            effective_date=origination_date,
+        )
     db_session.commit()
     return loan
 

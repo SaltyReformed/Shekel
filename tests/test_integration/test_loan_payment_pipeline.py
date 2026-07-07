@@ -174,7 +174,7 @@ class TestLoanPaymentPipeline:
             resp = auth_client.get(f"/accounts/{mortgage.id}/loan")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Loan Summary" in html
+            assert "Balance owed" in html
             # Prompt should be hidden (recurring transfer exists).
             assert "No recurring payment" not in html
 

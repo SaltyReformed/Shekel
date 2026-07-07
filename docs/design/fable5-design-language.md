@@ -172,6 +172,19 @@ number. The Steel Blue palette, the design tokens, and tabular figures remain th
 everywhere, and the principles above (the number is the hero, a figure and its caption never
 disagree, tabular money, both themes) bind every screen regardless of form.
 
+## Standalone form idiom (added 2026-07-05)
+
+Every standalone create / edit / setup form is presented in one shared Steel Ink card via the
+`form_card(title, icon)` macro (`app/templates/_form_macros.html`): a themed Bootstrap `.card` with
+a titled `.card-header` over a `.card-body`, wrapped around the form body with `{% call %}`. Grouped
+fields inside a form use the `.form-section` (hairline-separated) and `.form-section--accent` (a
+tinted, accent-left-ruled emphasis box, for a form's centre of gravity such as a recurrence picker)
+vocabulary in `components.css`. New forms adopt this rather than a bare `<h4>` + form, so the create
+/ edit surfaces stay consistent (principle 7). Exceptions, by decision: pre-login auth pages keep
+their narrow logo-gate card; multi-part forms already built as stacked cards (e.g.
+`salary/form.html`) are left intact rather than rewritten; inline HTMX edit forms (grid cells, quick
+/ full edits) belong to their host surface and are not carded.
+
 ## How a screen uses this document
 
 1. Read this brief and the relevant per-screen audit (for the dashboard, `dashboard_card_audit.md`).

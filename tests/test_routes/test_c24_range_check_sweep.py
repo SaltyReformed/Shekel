@@ -49,7 +49,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.calibration_override import CalibrationOverride
 from app.models.interest_params import InterestParams
-from app.models.loan_features import EscrowComponent, RateHistory
+from app.models.loan_features import RateHistory
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming,
@@ -78,8 +78,6 @@ from app.schemas.validation import (
 # ``app/models/`` and with the migration body in
 # ``migrations/versions/b71c4a8f5d3e_c24_marshmallow_range_check_sweep.py``.
 
-CK_ESCROW_NONNEG = "ck_escrow_components_nonneg_annual_amount"
-CK_ESCROW_INFLATION = "ck_escrow_components_valid_inflation_rate"
 CK_INTEREST_APY = "ck_interest_params_valid_apy"
 CK_INVEST_RETURN = "ck_investment_params_valid_return"
 CK_INVEST_LIMIT = "ck_investment_params_nonneg_contribution_limit"
@@ -576,67 +574,6 @@ def _insert_account(seed_user, name, type_name):
     return account
 
 
-class TestEscrowComponentsCheck:
-    """``budget.escrow_components`` CHECK constraints (F-077)."""
-
-    def test_negative_annual_amount_rejected(self, app, seed_user):
-        with app.app_context():
-            account = _insert_account(
-                seed_user, "Mortgage", "Mortgage",
-            )
-            with pytest.raises(IntegrityError) as info:
-                db.session.execute(
-                    text(
-                        "INSERT INTO budget.escrow_components "
-                        "(account_id, name, annual_amount, "
-                        " inflation_rate, "
-                        " created_at, updated_at) "
-                        "VALUES (:aid, 'Tax', -100.00, NULL, "
-                        "        now(), now())"
-                    ),
-                    {"aid": account.id},
-                )
-                db.session.flush()
-            db.session.rollback()
-            assert _constraint_name_from(info.value) == CK_ESCROW_NONNEG
-
-    def test_inflation_rate_above_one_rejected(self, app, seed_user):
-        with app.app_context():
-            account = _insert_account(
-                seed_user, "Mortgage 2", "Mortgage",
-            )
-            with pytest.raises(IntegrityError) as info:
-                db.session.execute(
-                    text(
-                        "INSERT INTO budget.escrow_components "
-                        "(account_id, name, annual_amount, "
-                        " inflation_rate, "
-                        " created_at, updated_at) "
-                        "VALUES (:aid, 'Tax', 1200.00, 1.5, "
-                        "        now(), now())"
-                    ),
-                    {"aid": account.id},
-                )
-                db.session.flush()
-            db.session.rollback()
-            assert _constraint_name_from(info.value) == CK_ESCROW_INFLATION
-
-    def test_inflation_rate_null_accepted(self, app, seed_user):
-        with app.app_context():
-            account = _insert_account(
-                seed_user, "Mortgage 3", "Mortgage",
-            )
-            comp = EscrowComponent(
-                account_id=account.id,
-                name="Property Tax",
-                annual_amount=Decimal("1200.00"),
-                inflation_rate=None,
-            )
-            db.session.add(comp)
-            db.session.commit()
-            assert comp.id is not None
-
-
 class TestInterestParamsCheck:
     """``budget.interest_params.apy`` CHECK (F-077)."""
 
@@ -1118,10 +1055,11 @@ class TestStateTaxConfigCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO salary.state_tax_configs "
-                        "(user_id, tax_type_id, state_code, tax_year, "
-                        " flat_rate, standard_deduction, created_at) "
-                        "VALUES (:uid, :ttid, 'CA', 2026, 0.05, "
-                        "        -1.00, now())"
+                        "(user_id, tax_type_id, filing_status_id, state_code, "
+                        " tax_year, flat_rate, standard_deduction, created_at) "
+                        "VALUES (:uid, :ttid, "
+                        " (SELECT id FROM ref.filing_statuses WHERE name='single'), "
+                        " 'CA', 2026, 0.05, -1.00, now())"
                     ),
                     {"uid": seed_user["user"].id, "ttid": tax_type_id},
                 )
@@ -1139,10 +1077,11 @@ class TestStateTaxConfigCheck:
                 db.session.execute(
                     text(
                         "INSERT INTO salary.state_tax_configs "
-                        "(user_id, tax_type_id, state_code, tax_year, "
-                        " flat_rate, created_at) "
-                        "VALUES (:uid, :ttid, 'CA', 2200, 0.05, "
-                        "        now())"
+                        "(user_id, tax_type_id, filing_status_id, state_code, "
+                        " tax_year, flat_rate, created_at) "
+                        "VALUES (:uid, :ttid, "
+                        " (SELECT id FROM ref.filing_statuses WHERE name='single'), "
+                        " 'CA', 2200, 0.05, now())"
                     ),
                     {"uid": seed_user["user"].id, "ttid": tax_type_id},
                 )
