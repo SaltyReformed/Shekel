@@ -89,10 +89,12 @@
   color: var(--shekel-done);
 }
 
-/* Amber caution flags (missing tax estimate, contribution headroom,
-   unlinked contributions); always paired with explanatory text. */
+/* Setup-gap flags (missing tax estimate, contribution headroom,
+   unlinked contributions); always paired with explanatory text.
+   Accent, not a money-state token: these mark configuration gaps, not
+   money states (polish audit P-RT3). */
 .retire-flag {
-  color: var(--shekel-credit);
+  color: var(--shekel-accent);
   font-weight: 600;
 }
 

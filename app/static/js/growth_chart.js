@@ -57,8 +57,9 @@
 
   /**
    * Inline plugin: dashed vertical marker at the retirement-year slot.
-   * The Today marker's sibling, in the credit token so the landmark
-   * reads as a milestone, not a warning; paired with its text label.
+   * The Today marker's sibling, in muted ink so the landmark reads as
+   * structure, not a money state (polish audit P-DT4); paired with its
+   * text label.
    * @param {number} index - Combined-axis slot of the retirement period.
    * @param {string} yearLabel - The retirement year, e.g. "2050".
    * @param {string} color - Marker line + label color.
@@ -137,7 +138,7 @@
     var style = getComputedStyle(document.documentElement);
     var colors = ShekelChart.getThemeColors();
     var accent = style.getPropertyValue('--shekel-accent').trim();
-    var credit = style.getPropertyValue('--shekel-credit').trim();
+    var markerInk = style.getPropertyValue('--shekel-text-muted').trim();
 
     var datasets = [
       {
@@ -188,7 +189,7 @@
       ShekelChart.todayMarkerPlugin(boundary, colors.textSecondary)
     ];
     if (retireIndex !== null && Number.isFinite(retireIndex)) {
-      plugins.push(retirementMarkerPlugin(retireIndex, retireYear, credit));
+      plugins.push(retirementMarkerPlugin(retireIndex, retireYear, markerInk));
     }
 
     return {
