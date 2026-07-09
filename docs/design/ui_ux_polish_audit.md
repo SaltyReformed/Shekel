@@ -191,15 +191,20 @@ Section 4.
 
 ### Grid
 
-- **P-GR1 [bug]** Sticky month-band header has `opacity: 0.85` on the whole element
-  (`grid.css:145`), so scrolled rows ghost through it legibly. Both themes.
-- **P-GR2 [bug]** `table-layout: fixed` + the colspan month-band first row defeats every declared
-  column width: all 14 columns split the viewport equally, which (i) collapses the label column -
-  the O12 truncation plus ~10 more truncated labels, and (ii) ships broken 1Y/2Y presets: 27-53
-  equal columns with NO horizontal scroll, amounts clipped to "$...". The most user-visible layout
-  bug of the audit.
-- **P-GR3 [consistency]** Square corners on the grid wrapper while every neighboring surface is
-  rounded (O13).
+- **P-GR1 [bug - FIXED 2026-07-09]** Sticky month-band header had `opacity: 0.85` on the whole
+  element (`grid.css:145`), so scrolled rows ghosted through it legibly (clearest at the sticky
+  corner cell in a scrolled-state capture). Both themes. Fixed by dimming the text via `color-mix`
+  toward the header bg on a fully opaque cell.
+- **P-GR2 [bug - FIXED 2026-07-09]** `table-layout: fixed` + the colspan month-band first row
+  defeated every declared column width: all 14 columns split the viewport equally, which (i)
+  collapsed the label column - the O12 truncation plus ~10 more truncated labels, and (ii) shipped
+  broken 1Y/2Y presets: 27-53 equal columns with NO horizontal scroll, amounts clipped to "$...".
+  The most user-visible layout bug of the audit. Fixed with a `<colgroup>` column contract (200px
+  label + 150/110/80px periods keyed off grid-wide/medium/compact); wide presets now widen the table
+  and scroll horizontally under the sticky label column (verified scrolled: scrollWidth 2280 = 200 +
+  26x80 on 1Y, labels pinned, full "Projected End Balance" label).
+- **P-GR3 [consistency - FIXED 2026-07-09]** Square corners on the grid wrapper while every
+  neighboring surface is rounded (O13). Wrapper now clips at `--bs-border-radius`.
 - **P-GR4 [consistency]** Mobile This-Period/Plan pill raw blue - RC2.
 - **P-GR5 [polish]** Mobile header states the same period three times (heading, subtitle,
   jump-select).
@@ -457,7 +462,9 @@ pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
   darker hues, so remapping would drop dark success toasts to ~2.5:1. The solid `bg-*` / `text-*`
   usages therefore stay template swaps in their Wave 2 page sessions (P-AN12, P-SA2, P-RC4, P-DT2).
   Every page improves before any page is redesigned.
-- **Wave 2 - page bug fixes (Fable, template/page CSS).** Grid P-GR1/P-GR2/P-GR3; dashboard
+- **Wave 2 - page bug fixes (Fable, template/page CSS).** Grid P-GR1/P-GR2/P-GR3 (DONE 2026-07-09,
+  commits cdd57441 -> a9c0e98c; verified by baseline/after screenshots in both themes plus a
+  scripted scrolled-state check; grid route tests 213 green, full suite 7311 green); dashboard
   P-DB1/P-DB3/P-DB6; recurring P-RC1/P-RC2/P-RC5; analytics P-AN1/P-AN5/P-AN7/P-AN14/P-AN16;
   retirement P-RT1 (incl. mobile overflow)/P-RT4/P-RT5; salary P-SA2/P-SA3/P-SA6; detail
   P-DT3/P-DT5/P-DT7; accounts P-AC1/P-AC4/P-AC6.
