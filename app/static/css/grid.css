@@ -15,10 +15,13 @@
 /* =============================================
    GRID TABLE
    ============================================= */
-/* Grid scrollable container -- max-height enables sticky tfoot */
+/* Grid scrollable container -- max-height enables sticky tfoot.
+   border-radius matches the card/alert surfaces around it (polish
+   audit P-GR3); the overflow clip rounds the table's corners. */
 .grid-wrapper {
   max-height: calc(100vh - 160px);
   overflow: auto;
+  border-radius: var(--bs-border-radius);
 }
 
 .grid-table {
