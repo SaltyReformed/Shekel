@@ -332,6 +332,16 @@
   box-shadow: 0 0 0 1px var(--shekel-surface), 0 0 0 0.25rem rgba(var(--shekel-accent-rgb), 0.25);
 }
 
+/* .table-light compiles its own literals (#f8f9fa bg, #000 text) and so
+   ignores both theme blocks -- the glaring white thead strips inside
+   dark cards on the salary edit and pension pages (polish audit RC3).
+   Retuned to the raised surface in both themes via tokens. */
+.table-light {
+  --bs-table-bg: var(--shekel-surface-raised);
+  --bs-table-color: var(--shekel-text-primary);
+  --bs-table-border-color: var(--shekel-border-subtle);
+}
+
 /* =============================================
    TYPOGRAPHY
    ============================================= */

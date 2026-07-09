@@ -58,6 +58,33 @@
   --shekel-section-expense-text: #E5697E;
   --shekel-group-header-bg: #191C22;
   --shekel-summary-bg: #101216;
+  /* Bootstrap semantic palette -> Steel Ink (polish audit RC3):
+     success/danger track the money trio, warning tracks credit amber,
+     info tracks the accent, so alerts and *-subtle badges render in
+     tokens.  The *-rgb vars are deliberately NOT remapped: text-bg-*
+     compiles `color:#fff !important` tuned to Bootstrap's darker hues,
+     and the brighter --shekel-done would drop dark success toasts to
+     ~2.5:1.  Solid bg- and text- utility usages are replaced per
+     template instead (register Wave 2).  Buttons compile their own
+     literals (decision D5). */
+  --bs-success: #3FB950;
+  --bs-success-text-emphasis: #3FB950;
+  --bs-success-bg-subtle: color-mix(in srgb, var(--shekel-done) 16%, var(--shekel-page-bg));
+  --bs-success-border-subtle: color-mix(in srgb, var(--shekel-done) 38%, var(--shekel-page-bg));
+  --bs-danger: #F85149;
+  --bs-danger-text-emphasis: #F85149;
+  --bs-danger-bg-subtle: color-mix(in srgb, var(--shekel-danger) 16%, var(--shekel-page-bg));
+  --bs-danger-border-subtle: color-mix(in srgb, var(--shekel-danger) 38%, var(--shekel-page-bg));
+  --bs-warning: #D29922;
+  --bs-warning-text-emphasis: #D29922;
+  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-credit) 16%, var(--shekel-page-bg));
+  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-credit) 38%, var(--shekel-page-bg));
+  --bs-info: #4A9ECC;
+  --bs-info-text-emphasis: #4A9ECC;
+  --bs-info-bg-subtle: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-page-bg));
+  --bs-info-border-subtle: color-mix(in srgb, var(--shekel-accent) 38%, var(--shekel-page-bg));
+  /* Bootstrap's magenta code color is off-palette (MFA manual key). */
+  --bs-code-color: #4A9ECC;
 }
 
 /* Light mode variables -- e-ink paper derivation of Steel Ink.  The
@@ -102,4 +129,24 @@
   --shekel-section-expense-text: #8E2336;
   --shekel-group-header-bg: #F0EEE8;
   --shekel-summary-bg: #ECEAE3;
+  /* Bootstrap semantic palette -> Steel Ink (RC3); see the dark block
+     for the mapping rationale and the deliberate *-rgb exclusion.
+     Light subtle tints mix on the paper surface, not the page bg. */
+  --bs-success: #1A7F37;
+  --bs-success-text-emphasis: #1A7F37;
+  --bs-success-bg-subtle: color-mix(in srgb, var(--shekel-done) 14%, var(--shekel-surface));
+  --bs-success-border-subtle: color-mix(in srgb, var(--shekel-done) 35%, var(--shekel-surface));
+  --bs-danger: #CF222E;
+  --bs-danger-text-emphasis: #CF222E;
+  --bs-danger-bg-subtle: color-mix(in srgb, var(--shekel-danger) 14%, var(--shekel-surface));
+  --bs-danger-border-subtle: color-mix(in srgb, var(--shekel-danger) 35%, var(--shekel-surface));
+  --bs-warning: #9A6700;
+  --bs-warning-text-emphasis: #9A6700;
+  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-credit) 14%, var(--shekel-surface));
+  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-credit) 35%, var(--shekel-surface));
+  --bs-info: #25719F;
+  --bs-info-text-emphasis: #25719F;
+  --bs-info-bg-subtle: color-mix(in srgb, var(--shekel-accent) 14%, var(--shekel-surface));
+  --bs-info-border-subtle: color-mix(in srgb, var(--shekel-accent) 35%, var(--shekel-surface));
+  --bs-code-color: #25719F;
 }
