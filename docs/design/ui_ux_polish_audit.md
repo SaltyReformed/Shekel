@@ -445,14 +445,18 @@ pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
   gate: the hook layer resolved `pylint` from ambient PATH, so a session launched without the venv
   on PATH turned every fail-closed Python gate into a hard block; `_hooklib.sh` now prepends the
   repo venv bin so hooks always run the pinned toolchain.
-- **Wave 1 - system fixes (Fable, CSS/tokens; one session; IN PROGRESS 2026-07-09).** RC1 light
-  `.card` skin; RC2 component skins (+ P-ST1 active-state bug); RC4 muted token bump + light accent
-  nudge; RC5 type floor sweep; RC7 chart theme completion; RC3 CSS-layer slice: the `table-light`
-  skin, `--bs-code-color`, and the semantic `*-subtle` / `*-text-emphasis` / base-hex remaps
-  (alerts, subtle badges). The `*-rgb` vars are deliberately NOT remapped: `text-bg-*` compiles
-  `color:#fff !important` tuned to Bootstrap's darker hues, so remapping would drop dark success
-  toasts to ~2.5:1. The solid `bg-*` / `text-*` usages therefore stay template swaps in their Wave 2
-  page sessions (P-AN12, P-SA2, P-RC4, P-DT2). Every page improves before any page is redesigned.
+- **Wave 1 - system fixes (Fable, CSS/tokens; one session; DONE 2026-07-09, commits 7892b433 ->
+  c2e95d9d, full suite 7311 green).** Verified by re-shoot: light cards pop (accounts), dark
+  settings selection visible, analytics pill on-palette, salary-edit thead strips dark, chart spine
+  gone + light gridlines visible. Bonus RC2 member found during verification: checked checkbox/radio
+  (#0d6efd literal) - skinned in c2e95d9d.** RC1 light `.card` skin; RC2 component skins (+ P-ST1
+  active-state bug); RC4 muted token bump + light accent nudge; RC5 type floor sweep; RC7 chart
+  theme completion; RC3 CSS-layer slice: the `table-light` skin, `--bs-code-color`, and the semantic
+  `*-subtle` / `*-text-emphasis` / base-hex remaps (alerts, subtle badges). The `*-rgb` vars are
+  deliberately NOT remapped: `text-bg-*` compiles `color:#fff !important` tuned to Bootstrap's
+  darker hues, so remapping would drop dark success toasts to ~2.5:1. The solid `bg-*` / `text-*`
+  usages therefore stay template swaps in their Wave 2 page sessions (P-AN12, P-SA2, P-RC4, P-DT2).
+  Every page improves before any page is redesigned.
 - **Wave 2 - page bug fixes (Fable, template/page CSS).** Grid P-GR1/P-GR2/P-GR3; dashboard
   P-DB1/P-DB3/P-DB6; recurring P-RC1/P-RC2/P-RC5; analytics P-AN1/P-AN5/P-AN7/P-AN14/P-AN16;
   retirement P-RT1 (incl. mobile overflow)/P-RT4/P-RT5; salary P-SA2/P-SA3/P-SA6; detail
