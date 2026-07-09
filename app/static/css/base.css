@@ -234,6 +234,46 @@
   --bs-btn-hover-color: #fff;
 }
 
+/* Surface parity with the dark skins above (polish audit RC1): without
+   these, Bootstrap's light defaults resolve every card / table /
+   list-group / modal background to --bs-body-bg -- the PAGE background
+   -- so surfaces dissolve into the page while hand-tokened heroes sit
+   on --shekel-surface.  Light's card/page hierarchy must match dark's. */
+[data-bs-theme="light"] .card {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
+}
+
+[data-bs-theme="light"] .card-header {
+  background-color: var(--shekel-surface-raised);
+  border-bottom-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="light"] .table {
+  --bs-table-bg: var(--shekel-surface);
+  --bs-table-border-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="light"] .modal-content {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="light"] .modal-header {
+  border-bottom-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="light"] .modal-footer {
+  border-top-color: var(--shekel-border-subtle);
+}
+
+[data-bs-theme="light"] .list-group-item:not(.active) {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-subtle);
+  color: var(--shekel-text-primary);
+}
+
 /* =============================================
    TYPOGRAPHY
    ============================================= */
