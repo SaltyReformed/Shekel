@@ -102,6 +102,19 @@
 <div class="table-responsive grid-wrapper grid-scroll-wrapper position-relative">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
+    {# Column contract -- table-layout:fixed sizes columns from the first
+       row, and that row is the colspan month band, so widths declared on
+       cells are ignored and every column collapses to an equal share of
+       the viewport.  <col> widths are what the fixed algorithm honors;
+       grid.css keys them off the grid-{{ col_size }} sizing variant.
+       When the columns outgrow the viewport the wrapper scrolls
+       horizontally and the sticky label column keeps rows readable. #}
+    <colgroup>
+      <col class="grid-col-label">
+      {% for period in periods %}
+      <col class="grid-col-period">
+      {% endfor %}
+    </colgroup>
     <thead class="table-dark">
       {# Month band -- the C3 "Month Spine" (rebuild decision 1):
          one <th> per calendar month spanning its periods, so the eye

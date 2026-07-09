@@ -99,29 +99,36 @@ thead .sticky-col {
   color: var(--shekel-header-text);
 }
 
-.row-label-col {
-  min-width: 160px;
-  max-width: 200px;
-}
-
 .row-label {
   font-size: 0.8rem;
 }
 
-/* Column sizing variants */
-.grid-wide th:not(.row-label-col),
-.grid-wide td:not(.sticky-col) {
-  min-width: 150px;
+/* Column contract (polish audit P-GR2).  table-layout:fixed sizes
+   columns from the first table row -- the colspan month band -- so
+   min-widths on cells were never honored: every preset squeezed its
+   columns into equal viewport shares, collapsing the label column and
+   clipping 1Y/2Y amounts.  Widths on <col> (grid.html's <colgroup>)
+   are what the fixed algorithm honors; when they outgrow the wrapper
+   the table widens past 100% and .grid-wrapper scrolls horizontally,
+   which the sticky label column and sticky thead/tfoot exist for. */
+.grid-table col.grid-col-label {
+  width: 200px;
 }
 
-.grid-medium th:not(.row-label-col),
-.grid-medium td:not(.sticky-col) {
-  min-width: 110px;
+.grid-table.grid-wide col.grid-col-period {
+  width: 150px;
+}
+
+.grid-table.grid-medium col.grid-col-period {
+  width: 110px;
+}
+
+.grid-table.grid-compact col.grid-col-period {
+  width: 80px;
 }
 
 .grid-compact th:not(.row-label-col),
 .grid-compact td:not(.sticky-col) {
-  min-width: 80px;
   font-size: 0.75rem;
 }
 
