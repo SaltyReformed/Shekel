@@ -306,6 +306,13 @@
   --bs-list-group-active-border-color: var(--shekel-accent);
 }
 
+/* Checked checkboxes / radios / switches bake #0d6efd the same way
+   (found on the loan ARM checkbox during Wave 1 verification). */
+.form-check-input:checked {
+  background-color: var(--shekel-accent);
+  border-color: var(--shekel-accent);
+}
+
 /* form-range bakes its thumb colors directly into engine-prefixed
    rules (no CSS variable exposed), so each state is re-declared. */
 .form-range::-webkit-slider-thumb {
