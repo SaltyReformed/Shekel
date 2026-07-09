@@ -28,7 +28,7 @@ var ShekelChart = (function () {
    * @type {Array<{name: string, dark: string, light: string}>}
    */
   var palette = [
-    { name: 'Accent',  dark: '#4A9ECC', light: '#2878A8' },
+    { name: 'Accent',  dark: '#4A9ECC', light: '#25719F' },
     { name: 'Green',   dark: '#2ECC71', light: '#1A9B50' },
     { name: 'Amber',   dark: '#E67E22', light: '#C96B15' },
     { name: 'Rose',    dark: '#D97BA0', light: '#B05A80' },

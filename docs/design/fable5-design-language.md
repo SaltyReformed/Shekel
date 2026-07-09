@@ -129,11 +129,11 @@ now live in `app/static/css/theme-steel-ink.css`.
 | `--shekel-border-subtle` | `#242832` | `#DDDAD2` |
 | `--shekel-text-primary` | `#ECEEF1` | `#1B1D22` |
 | `--shekel-text-secondary` | `#ADB3BD` | `#4A4E57` |
-| `--shekel-text-muted` | `#757C88` | `#6E737D` |
-| `--shekel-accent` | `#4A9ECC` | `#2878A8` |
+| `--shekel-text-muted` | `#848B97` | `#63686F` |
+| `--shekel-accent` | `#4A9ECC` | `#25719F` |
 | `--shekel-accent-hover` | `#2878A8` | `#1C5E86` |
 | `--shekel-accent-light` | `#6BB8E0` | `#4A9ECC` |
-| `--shekel-accent-rgb` | `74, 158, 204` | `40, 120, 168` |
+| `--shekel-accent-rgb` | `74, 158, 204` | `37, 113, 159` |
 | `--shekel-done` | `#3FB950` | `#1A7F37` |
 | `--shekel-credit` | `#D29922` | `#9A6700` |
 | `--shekel-danger` | `#F85149` | `#CF222E` |
@@ -142,11 +142,18 @@ now live in `app/static/css/theme-steel-ink.css`.
 | `--shekel-section-expense-bg` | `#271619` | `#F3DCDF` |
 | `--shekel-section-expense-text` | `#E5697E` | `#8E2336` |
 
-Notes: the accent now differs between modes (`#4A9ECC` dark, `#2878A8` light) for contrast on the
+Notes: the accent now differs between modes (`#4A9ECC` dark, `#25719F` light) for contrast on the
 paper background, so accent tints should use `color-mix` with `--shekel-accent` (or the per-theme
 `--shekel-accent-rgb`) rather than hardcoded rgba values. The state trio is the vivid set; the soft
 Tokyo Night trio (M2) was considered and rejected because the achromatic base exists precisely to
 let the state colors carry maximum contrast.
+
+Contrast revision 2026-07-09 (polish audit RC4): `--shekel-text-muted` was under WCAG AA at the
+caption sizes it is used at (dark 4.31:1 on surface, light 4.07:1 on the page bg); both values were
+lifted one step (`#757C88 -> #848B97` dark, `#6E737D -> #63686F` light) and now clear 4.5:1 on every
+surface tier while staying visibly quieter than the secondary tier. The light accent deepened
+`#2878A8 -> #25719F` for the same reason (links on the bare page bg were 4.13:1). A type floor
+accompanies this: no text below `0.6875rem` (11px) anywhere in the app.
 
 ## Accessibility
 

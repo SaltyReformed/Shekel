@@ -38,7 +38,11 @@
   --shekel-accent-rgb: 74, 158, 204;
   --shekel-text-primary: #ECEEF1;
   --shekel-text-secondary: #ADB3BD;
-  --shekel-text-muted: #757C88;
+  /* #848B97, was #757C88: the old value was 4.31:1 on the surface and
+     3.97:1 on the raised surface -- under WCAG AA (4.5:1) exactly where
+     muted text runs smallest (captions, chip labels).  Polish audit RC4;
+     now 4.87-5.63:1 across all three backgrounds. */
+  --shekel-text-muted: #848B97;
   --shekel-border-strong: #3A3F4A;
   --shekel-border-subtle: #242832;
   --shekel-sticky-bg: #101216;
@@ -57,14 +61,16 @@
 }
 
 /* Light mode variables -- e-ink paper derivation of Steel Ink.  The
-   accent deepens to #2878A8 for contrast on the paper background; the
-   navbar/header intentionally stays dark in light mode. */
+   accent deepens to #25719F for contrast on the paper background (was
+   #2878A8 at 4.13:1 on the page bg -- under AA for link text; #25719F
+   reaches 4.55:1, polish audit RC4); the navbar/header intentionally
+   stays dark in light mode. */
 [data-bs-theme="light"] {
   --bs-body-bg: #EFEDE8;
   --bs-body-color: #1B1D22;
-  --bs-primary: #2878A8;
-  --bs-primary-rgb: 40, 120, 168;
-  --bs-link-color: #2878A8;
+  --bs-primary: #25719F;
+  --bs-primary-rgb: 37, 113, 159;
+  --bs-link-color: #25719F;
   --bs-link-hover-color: #1C5E86;
   --bs-border-color: #DDDAD2;
   --bs-tertiary-bg: #FBFAF7;
@@ -72,13 +78,15 @@
   --shekel-page-bg: #EFEDE8;
   --shekel-surface: #FBFAF7;
   --shekel-surface-raised: #EDEBE5;
-  --shekel-accent: #2878A8;
+  --shekel-accent: #25719F;
   --shekel-accent-hover: #1C5E86;
   --shekel-accent-light: #4A9ECC;
-  --shekel-accent-rgb: 40, 120, 168;
+  --shekel-accent-rgb: 37, 113, 159;
   --shekel-text-primary: #1B1D22;
   --shekel-text-secondary: #4A4E57;
-  --shekel-text-muted: #6E737D;
+  /* #63686F, was #6E737D (4.07:1 on the page bg, 3.99:1 raised -- under
+     AA at caption sizes).  Polish audit RC4; now 4.71-5.38:1. */
+  --shekel-text-muted: #63686F;
   --shekel-border-strong: #C8C5BD;
   --shekel-border-subtle: #DDDAD2;
   --shekel-sticky-bg: #EAE8E1;
