@@ -71,7 +71,7 @@
    *   trough, or null when the month has no series.
    * @param {number|null} troughValue - The trough end-of-day balance.
    * @param {number|null} threshold - The low-balance threshold, or null.
-   * @param {{danger: string, credit: string}} inks - Marker text colors.
+   * @param {{danger: string, warning: string}} inks - Marker text colors.
    * @returns {object} A Chart.js plugin.
    */
   function stripMarkersPlugin(troughIndex, troughValue, threshold, inks) {
@@ -108,7 +108,7 @@
         if (threshold !== null && threshold !== undefined) {
           const yLine = yScale.getPixelForValue(threshold);
           if (yLine >= area.top && yLine <= area.bottom) {
-            ctx.fillStyle = inks.credit;
+            ctx.fillStyle = inks.warning;
             ctx.textAlign = "right";
             ctx.textBaseline = "bottom";
             ctx.fillText(
@@ -135,7 +135,9 @@
     var accent = style.getPropertyValue("--shekel-accent").trim();
     var danger = style.getPropertyValue("--shekel-danger").trim();
     var done = style.getPropertyValue("--shekel-done").trim();
-    var credit = style.getPropertyValue("--shekel-credit").trim();
+    // Low-balance threshold ink: the caution token, not the credit
+    // money state (polish audit D11 split).
+    var warning = style.getPropertyValue("--shekel-warning").trim();
     var surface = style.getPropertyValue("--shekel-surface").trim();
     var colors = ShekelChart.getThemeColors();
 
@@ -226,10 +228,10 @@
 
     if (data.threshold !== null && data.threshold !== undefined) {
       // Same treatment as the dashboard pulse chart's threshold line:
-      // a flat credit-colored dashed dataset, filtered out of tooltips.
+      // a flat caution-colored dashed dataset, filtered out of tooltips.
       datasets.push({
         data: data.labels.map(function () { return data.threshold; }),
-        borderColor: credit,
+        borderColor: warning,
         borderDash: THRESHOLD_DASH,
         borderWidth: 1,
         pointRadius: 0,
@@ -305,7 +307,7 @@
         ShekelChart.todayMarkerPlugin(data.current_index, colors.textSecondary),
         stripMarkersPlugin(
           data.trough_index, troughValue, data.threshold,
-          { danger: danger, credit: credit }
+          { danger: danger, warning: warning }
         )
       ]
     };

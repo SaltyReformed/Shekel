@@ -72,7 +72,7 @@
 /* Stale-anchor state of the "last updated" caption (Gate ruling: the
    alerts banner retired; staleness lives on the control that fixes it). */
 .pulse-stale {
-  color: var(--shekel-credit);
+  color: var(--shekel-warning);
   font-weight: 600;
 }
 
@@ -218,7 +218,7 @@
 }
 
 .street__event--overdue::before { background: var(--shekel-danger); }
-.street__event--soon::before { background: var(--shekel-credit); }
+.street__event--soon::before { background: var(--shekel-warning); }
 
 /* A bill due on the period-end date shares the terminus point; the
    terminus ring marks it, so this station drops its duplicate dot and its
@@ -279,7 +279,7 @@
 }
 
 .street__event--overdue .street__station-amt { color: var(--shekel-danger); }
-.street__event--soon .street__station-amt { color: var(--shekel-credit); }
+.street__event--soon .street__station-amt { color: var(--shekel-warning); }
 
 /* Over-budget envelope keeps the red dual-amount signal (color pairs with
    the dual amount, not color alone). */
@@ -408,9 +408,10 @@
   font-weight: 600;
 }
 
-.verdict-pill--credit {
-  background: color-mix(in srgb, var(--shekel-credit) 18%, transparent);
-  color: var(--shekel-credit);
+/* "Behind" is a pace caution, not the credit money state (S1 split). */
+.verdict-pill--warning {
+  background: color-mix(in srgb, var(--shekel-warning) 18%, transparent);
+  color: var(--shekel-warning);
 }
 
 .verdict-pill--done {

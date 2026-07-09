@@ -394,8 +394,10 @@ thead .sticky-col {
   background-color: color-mix(in srgb, var(--shekel-danger) 12%, transparent) !important;
 }
 
+/* Low-but-positive balance: the caution token, split from the credit
+   money state (polish audit D11 -- the two roles shared amber). */
 .balance-low {
-  color: var(--shekel-credit) !important;
+  color: var(--shekel-warning) !important;
 }
 
 /* =============================================

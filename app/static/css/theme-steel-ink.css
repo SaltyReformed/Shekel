@@ -50,7 +50,15 @@
   --shekel-header-text: #F0F1F3;
   --shekel-row-hover: #23262E;
   --shekel-done: #3FB950;
-  --shekel-credit: #D29922;
+  /* Credit money state: violet, ratified 2026-07-09 (S1 token round,
+     polish audit D5+D11).  Brightened from the plan's ~#A371F7 so chip
+     text clears AA (4.5:1) on its own 16% tint, not just on the bare
+     surface tiers (4.71 on the chip, 5.44-6.29 on the tiers). */
+  --shekel-credit: #A87BF7;
+  /* Caution / low-balance warning (non-money): amber, split from the
+     credit money state per the same ruling -- the two roles shared
+     amber and were indistinguishable. */
+  --shekel-warning: #D29922;
   --shekel-danger: #F85149;
   --shekel-section-income-bg: #142219;
   --shekel-section-income-text: #4CC368;
@@ -59,8 +67,9 @@
   --shekel-group-header-bg: #191C22;
   --shekel-summary-bg: #101216;
   /* Bootstrap semantic palette -> Steel Ink (polish audit RC3):
-     success/danger track the money trio, warning tracks credit amber,
-     info tracks the accent, so alerts and *-subtle badges render in
+     success/danger track the money trio, warning tracks the caution
+     amber (--shekel-warning, split from credit per D5+D11), info
+     tracks the accent, so alerts and *-subtle badges render in
      tokens.  The *-rgb vars are deliberately NOT remapped: text-bg-*
      compiles `color:#fff !important` tuned to Bootstrap's darker hues,
      and the brighter --shekel-done would drop dark success toasts to
@@ -77,8 +86,8 @@
   --bs-danger-border-subtle: color-mix(in srgb, var(--shekel-danger) 38%, var(--shekel-page-bg));
   --bs-warning: #D29922;
   --bs-warning-text-emphasis: #D29922;
-  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-credit) 16%, var(--shekel-page-bg));
-  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-credit) 38%, var(--shekel-page-bg));
+  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-warning) 16%, var(--shekel-page-bg));
+  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-warning) 38%, var(--shekel-page-bg));
   --bs-info: #4A9ECC;
   --bs-info-text-emphasis: #4A9ECC;
   --bs-info-bg-subtle: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-page-bg));
@@ -121,7 +130,18 @@
   --shekel-header-text: #F0F1F3;
   --shekel-row-hover: #E6E3DC;
   --shekel-done: #1A7F37;
-  --shekel-credit: #9A6700;
+  /* Credit money state: violet (ratified 2026-07-09; see dark block).
+     Deepened from the plan's ~#8250DF, which was under AA on the page
+     bg (4.31) and raised tier (4.23); #7443CC clears every tier and
+     the chip tint (4.66-5.89). */
+  --shekel-credit: #7443CC;
+  /* Caution / low-balance warning; see the dark block's rationale.
+     #855800, not the credit's old amber #9A6700: that value was under
+     AA exactly where caution text runs smallest (4.16 on the page bg,
+     4.08 raised, 3.78 on its own chip tint -- the same failure class
+     RC4 fixed for muted text).  #855800 clears every tier and the
+     chip tint (4.71-5.93) while staying visibly the same amber role. */
+  --shekel-warning: #855800;
   --shekel-danger: #CF222E;
   --shekel-section-income-bg: #DCEBDD;
   --shekel-section-income-text: #185C2C;
@@ -140,10 +160,10 @@
   --bs-danger-text-emphasis: #CF222E;
   --bs-danger-bg-subtle: color-mix(in srgb, var(--shekel-danger) 14%, var(--shekel-surface));
   --bs-danger-border-subtle: color-mix(in srgb, var(--shekel-danger) 35%, var(--shekel-surface));
-  --bs-warning: #9A6700;
-  --bs-warning-text-emphasis: #9A6700;
-  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-credit) 14%, var(--shekel-surface));
-  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-credit) 35%, var(--shekel-surface));
+  --bs-warning: #855800;
+  --bs-warning-text-emphasis: #855800;
+  --bs-warning-bg-subtle: color-mix(in srgb, var(--shekel-warning) 14%, var(--shekel-surface));
+  --bs-warning-border-subtle: color-mix(in srgb, var(--shekel-warning) 35%, var(--shekel-surface));
   --bs-info: #25719F;
   --bs-info-text-emphasis: #25719F;
   --bs-info-bg-subtle: color-mix(in srgb, var(--shekel-accent) 14%, var(--shekel-surface));

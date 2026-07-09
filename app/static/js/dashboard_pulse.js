@@ -74,7 +74,9 @@
       var style = getComputedStyle(document.documentElement);
       var accent = style.getPropertyValue("--shekel-accent").trim();
       var danger = style.getPropertyValue("--shekel-danger").trim();
-      var credit = style.getPropertyValue("--shekel-credit").trim();
+      // Low-balance threshold line: the caution token, not the credit
+      // money state (polish audit D11 split).
+      var warning = style.getPropertyValue("--shekel-warning").trim();
       var colors = ShekelChart.getThemeColors();
 
       var datasets = [{
@@ -99,7 +101,7 @@
       if (data.threshold !== null && data.threshold !== undefined) {
         datasets.push({
           data: data.labels.map(function () { return data.threshold; }),
-          borderColor: credit,
+          borderColor: warning,
           borderDash: [4, 4],
           borderWidth: 1,
           pointRadius: 0,

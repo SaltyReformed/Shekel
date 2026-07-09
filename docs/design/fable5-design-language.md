@@ -96,14 +96,19 @@ introduce new raw hex. The Step 2a refactor consolidates the remaining inlined h
 | `--shekel-header-bg` | grid header background |
 | `--shekel-summary-bg` | grid summary / total row background |
 | `--shekel-done` (`#2ECC71`) | settled / done / positive |
-| `--shekel-credit` (`#E67E22`) | credit state |
+| `--shekel-credit` | credit money state (violet; values in the Steel Ink table) |
+| `--shekel-warning` | caution / low-balance warning -- a non-money state (amber) |
 | `--shekel-danger` (`#E74C3C`) | danger / negative |
 | `--shekel-section-income-bg` / `--shekel-section-income-text` | income section banners |
 | `--shekel-section-expense-bg` / `--shekel-section-expense-text` | expense section banners |
 
 Semantic mapping for money state: positive / settled uses `--shekel-done`, negative / over-budget
 uses `--shekel-danger`, credit uses `--shekel-credit`. These already match the grid; the rebuild
-keeps them consistent so a color means the same thing on every screen.
+keeps them consistent so a color means the same thing on every screen. Money-state tokens are used
+ONLY when the state is true (D11): cautions that are not money states -- a low-but-positive balance,
+the threshold line, a scheduled future change, a stale anchor, the ARM tag -- use
+`--shekel-warning`, and structural markers (a chart landmark, a threshold) use accent or muted with
+a text label.
 
 ### Committed theme: Steel Ink (decided 2026-06-11)
 
@@ -135,7 +140,8 @@ now live in `app/static/css/theme-steel-ink.css`.
 | `--shekel-accent-light` | `#6BB8E0` | `#4A9ECC` |
 | `--shekel-accent-rgb` | `74, 158, 204` | `37, 113, 159` |
 | `--shekel-done` | `#3FB950` | `#1A7F37` |
-| `--shekel-credit` | `#D29922` | `#9A6700` |
+| `--shekel-credit` | `#A87BF7` | `#7443CC` |
+| `--shekel-warning` | `#D29922` | `#855800` |
 | `--shekel-danger` | `#F85149` | `#CF222E` |
 | `--shekel-section-income-bg` | `#142219` | `#DCEBDD` |
 | `--shekel-section-income-text` | `#4CC368` | `#185C2C` |
@@ -154,6 +160,27 @@ lifted one step (`#757C88 -> #848B97` dark, `#6E737D -> #63686F` light) and now 
 surface tier while staying visibly quieter than the secondary tier. The light accent deepened
 `#2878A8 -> #25719F` for the same reason (links on the bare page bg were 4.13:1). A type floor
 accompanies this: no text below `0.6875rem` (11px) anywhere in the app.
+
+### Credit / warning split (ratified 2026-07-09, S1 token round)
+
+The credit money state and the caution role shared amber, making an informational state (paid by
+credit card) indistinguishable from a warning (low balance). The developer's D5+D11 ruling split
+them:
+
+- `--shekel-credit` is violet (`#A87BF7` dark / `#7443CC` light) and means EXACTLY the credit money
+  state: credit chips and glyphs, the mark-credit / undo-credit actions, the command palette's
+  credit action icon.
+- `--shekel-warning` keeps the amber caution role (`#D29922` dark / `#855800` light): the grid's
+  low-but-positive balance, the low-balance threshold line, due-soon markers, stale-anchor captions,
+  scheduled escrow changes, the ARM tag. The light value deepened from credit's old `#9A6700`, which
+  was under AA on two of three light tiers.
+- Every value clears WCAG AA (>= 4.5:1) on all three surface tiers per theme AND as chip text on its
+  own 16% `color-mix` tint.
+
+**Archive / delete button convention (D5):** archive and deactivate controls are `--shekel-warning`
+amber outline buttons; true deletes are `--shekel-danger` outline buttons. Amber is never used on a
+control for any other reason, and raw Bootstrap `btn-outline-warning` (`#FFC107`) is retired -- the
+per-page sweeps execute in the page sessions.
 
 ## Accessibility
 
