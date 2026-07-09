@@ -148,8 +148,10 @@ thead .sticky-col {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-align: center;
-  color: var(--shekel-header-text);
-  opacity: 0.85;
+  /* Dim by mixing the text toward the header bg, NOT by element
+     opacity: these th are sticky, and a translucent cell lets the
+     rows scrolled beneath ghost through it (polish audit P-GR1). */
+  color: color-mix(in srgb, var(--shekel-header-text) 85%, var(--shekel-header-bg));
   padding-top: 0.15rem;
   padding-bottom: 0.15rem;
 }
