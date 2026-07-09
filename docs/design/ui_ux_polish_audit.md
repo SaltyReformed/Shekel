@@ -464,10 +464,14 @@ pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
   Every page improves before any page is redesigned.
 - **Wave 2 - page bug fixes (Fable, template/page CSS).** Grid P-GR1/P-GR2/P-GR3 (DONE 2026-07-09,
   commits cdd57441 -> a9c0e98c; verified by baseline/after screenshots in both themes plus a
-  scripted scrolled-state check; grid route tests 213 green, full suite 7311 green); dashboard
-  P-DB1/P-DB3/P-DB6; recurring P-RC1/P-RC2/P-RC5; analytics P-AN1/P-AN5/P-AN7/P-AN14/P-AN16;
-  retirement P-RT1 (incl. mobile overflow)/P-RT4/P-RT5; salary P-SA2/P-SA3/P-SA6; detail
-  P-DT3/P-DT5/P-DT7; accounts P-AC1/P-AC4/P-AC6.
+  scripted scrolled-state check; grid route tests 213 green, full suite 7311 green; follow-up the
+  same day: removed grid.css's dead sub-768px rules for the desktop-only table - it is d-none below
+  md, so .grid-table/.sticky-col/.row-label-col/.grid-wrapper/.txn-cell/.period-btn-group had no
+  mobile render path; mobile and desktop shots pixel-identical before/after); grid P-GR5 (mobile
+  header period triplication) was assigned to no wave - added here 2026-07-09, still open, needs a
+  which-copy-stays call; dashboard P-DB1/P-DB3/P-DB6; recurring P-RC1/P-RC2/P-RC5; analytics
+  P-AN1/P-AN5/P-AN7/P-AN14/P-AN16; retirement P-RT1 (incl. mobile overflow)/P-RT4/P-RT5; salary
+  P-SA2/P-SA3/P-SA6; detail P-DT3/P-DT5/P-DT7; accounts P-AC1/P-AC4/P-AC6.
 - **Wave 3 - service/route work (OPUS session).** P-SA1 raise-event collapse; P-AN4 CSV removal
   root-and-branch; D13 tab push-url if ratified; P-SA4 axis data if it needs route changes.
 - **Wave 4 - ruled decisions and screen rebuilds.** D1 breadcrumb sweep; D5 archive convention
