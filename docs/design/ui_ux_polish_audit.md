@@ -381,65 +381,99 @@ pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
 
 ## 4. Decision register (developer gates - nothing here builds without a ruling)
 
+Developer rulings recorded 2026-07-09 (inline per item below). Summary: D1, D8, D9, D10, D12, D13,
+D14 are ruled and buildable; D2, D3+D4 (combined), D6, D7 are approved for Loop A rounds with
+direction notes; D5 + D11 share one open sub-fork - who owns amber (credit vs low-balance warning) -
+which needs a token proposal ratified on real-page mockups before their dependent items build.
+
 - **D1. Breadcrumb policy.** Recommend: delete breadcrumbs on navbar-level pages (dashboard, grid,
   recurring, accounts, salary, retirement, analytics, settings - where they restate the active nav
   pill), keep them on sub-pages (detail pages, forms, schedule) where they are the only way back.
   ~24 templates, mechanical once ruled.
+  **RULED 2026-07-09: delete breadcrumbs EVERYWHERE, sub-pages included.** The developer prefers the
+  amortization-schedule pattern - a top-right "Back to <parent>" button - and the navbar covers
+  one-level-deep pages. Scope grows beyond the mechanical sweep: every sub-page whose only way back
+  was the breadcrumb gets a Back button added in the same pass (inventory needed before the sweep).
 - **D2. Brand wordmark font.** Today: coin PNG + plain Inter. CSP requires a vendored woff2 (Inter +
   JetBrains Mono are already vendored, so the pipeline exists). Recommend a short Loop A: 3-4
-  candidate faces on the navbar + auth logo-gate mockup.
+  candidate faces on the navbar + auth logo-gate mockup. **RULED 2026-07-09: Loop A approved** -
+  vendored-woff2 candidates with some uniqueness; decision deferred to the loop.
 - **D3. Grid row tracking.** Prior Loop A (grid_audit decision 7) rejected banding in favor of hover
   row-tint; developer still feels the pain reading without the mouse. Options: (a) keep hover only;
   (b) subtle zebra banding; (c) hairline group separators every N rows; (d) sticky row-label hover
   pairing. Recommend revisiting via Loop A mockups on the real grid - this is the app's core surface
   and O10 is a reading-comfort regression the hover tint does not cover.
+  **RULED 2026-07-09: Loop A approved**, with a developer-added candidate: make the category header
+  row more distinctive so it breaks up the grid; noted that a category hierarchy treatment (D4) may
+  itself solve tracking - run D3 and D4 as ONE combined Loop A.
 - **D4. Grid category hierarchy (O11).** Child category exists only in a hover tooltip. Options: (a)
   two-line row label (child in muted subline); (b) indented child rows under parent group rows; (c)
   status quo + a visible affordance. Recommend (a) - preserves density, makes the data visible, no
-  structural change.
+  structural change. **RULED 2026-07-09: Loop A approved** (combined with D3, see above).
 - **D5. Archive/destructive button convention.** `btn-outline-warning` amber is used for
   archive/deactivate in 10+ templates, is off-palette, and is illegible on light paper. Recommend:
   neutral outline + archive icon for archive/deactivate; `--shekel-danger` outline reserved for true
   deletes; amber never used on controls (credit state only).
+  **PARTIAL RULING 2026-07-09: neutral gray REJECTED** - the developer wants a color distinguishable
+  from the edit button and from plain gray, and is open to recommendations. Interacts with D11's
+  credit-vs-warning split (both decide who owns amber); resolve the two together via one token
+  proposal ratified on real-page mockups before the sweep.
 - **D6. Accounts cockpit de-busying (O17/O18).** Options: (a) tinted/ruled group banners (the
   recurring vocabulary, neutralized) + demote per-card Transfer buttons to the kebab; (b) collapse
   account cards to dense list rows per group, keeping cards only for the hero and summaries; (c)
   both. Recommend Loop A with (a) and (b) as directions; (a) is the smaller change and directly
   answers O18.
+  **RULED 2026-07-09: Loop A approved with (b) dense list rows REJECTED as a direction**; moving the
+  per-card Transfer button into the kebab is approved outright.
 - **D7. Spending tab restructure (O31-O34).** Merge Where It Went + Top Movers into one
   change-focused visual (bar + delta, movers as sort/filter of the same rows), cap the share bars,
   and lead with a chart card per cockpit grammar. Redesign fork - needs Loop A; recommend scheduling
-  it as its own screen rebuild after the mechanical waves.
+  it as its own screen rebuild after the mechanical waves. **RULED 2026-07-09: Loop A approved;
+  leading with the chart card per cockpit grammar is confirmed as the anchor of every direction.**
 - **D8. Statement section distinction (O35).** Options: (a) tint only the Income Statement with the
   existing income/expense banner tokens, Balance Sheet gets stronger typographic headers; (b) add a
   neutral accent-tinted section-banner variant used by ALL statement sections
   (Assets/Liabilities/Equity get structure-color, not state-color); (c) typography only. Recommend
   (b): honors "money-state colors mean money state" (green/red stay on figures), gives the developer
   the recurring-page feel they asked for, and adds exactly one token pair.
+  **RULED 2026-07-09: hybrid, and bigger than tinting.** Income Statement sections tint with the
+  existing income/expense banner tokens; Assets/Liabilities/Equity get structure-color (the neutral
+  accent-tinted banner variant from (b)); AND the tab's hierarchy inverts - Net Income becomes the
+  Income Statement's hero instead of a bottom line, and the Balance Sheet totals become its hero.
+  This is a statements-tab restructure (hero band + sections), not a class swap.
 - **D9. Taxes lever chart (O36).** Recommend NO. The tab is a scalar (refund) plus its derivation
   and a calibration input; there is no trajectory to bend, and sliders would fight the tab's
   measured-vs-modeled honesty stance. Cockpit consistency is already carried by the hero band. The
   right future chart is estimate-convergence across saved checkpoints, once checkpoint history
   exists. (Independent auditor conclusion; developer to ratify.)
+  **RATIFIED 2026-07-09: no lever chart.**
 - **D10. Dashboard position tracks.** The hero-sized figure is the destination (or $0 for debt
   payoff); the actual answer is a small mid-bar label; the tier is the page's only uncarded surface.
   Recommend: make current-progress the big figure, destination the caption, and card the tier like
-  its neighbors.
+  its neighbors. **RULED 2026-07-09: as recommended.**
 - **D11. Non-money warning color policy.** Two symptoms: the dashboard threshold line borrows credit
   amber and is unlabeled (P-DB7); the calendar trough day borrows danger red for a healthy balance
   (P-AN6). Recommend one rule: money-state tokens ONLY when the state is true (negative,
   over-budget, credit); thresholds/markers use accent or muted with a text label; the trough figure
   colors red only when below the threshold.
+  **RULED 2026-07-09, and it goes further than the recommendation:** credit (informational) and
+  low-balance (warning) currently share amber on the grid and MUST become different colors; the
+  dashboard threshold line matches the low-balance warning color and gets a label; the calendar
+  adopts the grid's thresholds and colors for low and negative balances. Open sub-fork (with D5):
+  which state keeps amber - needs a token proposal ratified on real-page mockups before the
+  dependent page fixes (P-DB7, P-AN6, grid balance-low, archive buttons) build.
 - **D12. Chart series-ramp policy (O24 + P-AC3).** Same-hue accent mixes are indistinguishable in
   dark. Recommend: adjacent series must differ by >=3:1 luminance or use a second achromatic
   treatment (pattern/gap + direct labels), applied to the retirement pair and the accounts
-  allocation bar together.
+  allocation bar together. **RULED 2026-07-09: as recommended.**
 - **D13. Analytics tabs as navigation.** Visual fixes (RC2, heading collapse) are decided by the
   design language; the structural half - hx-push-url so each tab is a real URL and direct GETs load
   their own tab - changes route behavior. Recommend yes, in the Opus wave.
+  **RULED 2026-07-09: as recommended (yes; Opus session).**
 - **D14. Anchor-recording idiom on detail pages.** Three siblings, three gestures (P-DT8). Recommend
   standardizing on the investment click-to-edit hero (the most discoverable), added to loan and cash
   in a later pass; not urgent.
+  **RULED 2026-07-09: as recommended - standardize on the click-to-edit hero.**
 
 ---
 
