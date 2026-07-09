@@ -32,8 +32,10 @@
 }
 
 /* Sub-Bootstrap-small font sizes used in cell badges and
-   table-row metadata. */
-.fs-mini    { font-size: 0.65rem; }
+   table-row metadata.  Type floor: 0.6875rem (11px) is the smallest
+   text size anywhere in the app (design language, contrast revision
+   2026-07-09 / polish audit RC5) -- do not add sizes below it. */
+.fs-mini    { font-size: 0.6875rem; }
 .fs-xs      { font-size: 0.75rem; }
 .fs-display { font-size: 2rem; }
 

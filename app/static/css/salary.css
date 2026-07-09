@@ -358,7 +358,7 @@
 
 .sal-badge-raise {
   display: inline-block;
-  font-size: 0.65625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   border: 1px solid var(--shekel-done);

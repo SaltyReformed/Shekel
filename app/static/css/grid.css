@@ -137,7 +137,7 @@ thead .sticky-col {
 /* Month band -- second header row grouping the period columns by
    calendar month. */
 .month-band-row th {
-  font-size: 0.6rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-align: center;
@@ -212,7 +212,7 @@ thead .sticky-col {
 .txn-chip .badge-credit {
   background: transparent;
   color: var(--shekel-credit);
-  font-size: 0.65rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   padding: 0;
 }
@@ -394,7 +394,7 @@ thead .sticky-col {
 .badge-credit {
   display: inline-block;
   color: #fff;
-  font-size: 0.6rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   padding: 0.1rem 0.35rem;
   border-radius: 10px;
@@ -807,7 +807,7 @@ thead .sticky-col {
   }
 
   .row-label {
-    font-size: 0.65rem;
+    font-size: 0.6875rem;
   }
 
   .anchor-balance-display {
@@ -845,11 +845,11 @@ thead .sticky-col {
 
   /* Scale down grid font for 320px devices */
   .grid-table {
-    font-size: 0.6rem;
+    font-size: 0.6875rem;
   }
 
   .row-label {
-    font-size: 0.55rem;
+    font-size: 0.6875rem;
   }
 
   /* Reduce anchor balance display for narrow screens */
@@ -859,7 +859,7 @@ thead .sticky-col {
 
   /* Compact period quick-select buttons */
   .period-btn-group .btn {
-    font-size: 0.65rem;
+    font-size: 0.6875rem;
     padding: 0.15rem 0.35rem;
   }
 }
