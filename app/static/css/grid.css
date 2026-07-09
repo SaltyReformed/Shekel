@@ -658,50 +658,19 @@ thead .sticky-col {
 
 /* =============================================
    MOBILE GRID IMPROVEMENTS
-   (base rules above; three blocks in descending breakpoint order)
+   (base rules above; three blocks in descending breakpoint order.
+   The desktop table and its chrome -- .grid-table, .sticky-col,
+   .row-label-col, .grid-wrapper, .txn-cell, .period-btn-group --
+   render inside grid.html's d-none d-md-block wrapper, so below md
+   they are display:none and need no rules here; these blocks style
+   only what actually renders on mobile: the anchor display, the
+   card view, the bottom sheet, and the fullscreen modal.)
    ============================================= */
 @media (max-width: 767.98px) {
-  .sticky-col {
-    min-width: 110px;
-    max-width: 130px;
-  }
-
-  .row-label-col {
-    min-width: 110px;
-    max-width: 130px;
-  }
-
-  .grid-table {
-    font-size: 0.75rem;
-  }
-
-  .row-label {
-    font-size: 0.7rem;
-  }
-
-  .grid-table th,
-  .grid-table td {
-    padding: 0.2rem 0.3rem;
-  }
-
-  .period-btn-group {
-    flex-wrap: wrap;
-    gap: 0.25rem;
-  }
-
-  .grid-wrapper {
-    max-height: calc(100vh - 200px);
-  }
-
   /* Touch target: extra-small buttons (status actions in full-edit popover) */
   .btn-xs {
     padding: 0.4rem 0.6rem;
     font-size: 0.8rem;
-  }
-
-  /* Touch target: transaction cell tap area */
-  .txn-cell {
-    padding: 0.35rem 0.4rem;
   }
 
   /* Touch target: expand button (three dots) */
@@ -711,12 +680,6 @@ thead .sticky-col {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-  }
-
-  /* Touch target: period navigation quick-select buttons */
-  .period-btn-group .btn {
-    padding: 0.35rem 0.65rem;
-    font-size: 0.8rem;
   }
 
   /* Touch target: form controls inside full-edit popover */
@@ -804,24 +767,6 @@ thead .sticky-col {
 }
 
 @media (max-width: 575.98px) {
-  .sticky-col {
-    min-width: 90px;
-    max-width: 110px;
-  }
-
-  .row-label-col {
-    min-width: 90px;
-    max-width: 110px;
-  }
-
-  .grid-table {
-    font-size: 0.7rem;
-  }
-
-  .row-label {
-    font-size: 0.6875rem;
-  }
-
   .anchor-balance-display {
     font-size: 22px;
   }
@@ -844,34 +789,8 @@ thead .sticky-col {
 }
 
 @media (max-width: 359.98px) {
-  /* Further reduce the grid sticky column for very small screens */
-  .sticky-col {
-    min-width: 70px;
-    max-width: 90px;
-  }
-
-  .row-label-col {
-    min-width: 70px;
-    max-width: 90px;
-  }
-
-  /* Scale down grid font for 320px devices */
-  .grid-table {
-    font-size: 0.6875rem;
-  }
-
-  .row-label {
-    font-size: 0.6875rem;
-  }
-
   /* Reduce anchor balance display for narrow screens */
   .anchor-balance-display {
     font-size: 18px;
-  }
-
-  /* Compact period quick-select buttons */
-  .period-btn-group .btn {
-    font-size: 0.6875rem;
-    padding: 0.15rem 0.35rem;
   }
 }

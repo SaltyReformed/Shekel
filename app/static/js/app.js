@@ -577,8 +577,8 @@ document.addEventListener('keydown', function(e) {
       scroll-padding, `block:'nearest'` treats a cell hidden UNDER that
       chrome as already visible (no scroll at all) and aligns edge cells
       flush beneath it.  Measured per call because the chrome is not a
-      constant: the thead grows when Carry Fwd buttons render and the
-      label column width varies by breakpoint.  The window gets the
+      constant: the thead grows when Carry Fwd buttons render.  The
+      window gets the
       sticky navbar's height for the rare page-scroll leg.  CSSOM
       property setters are the CSP-sanctioned dynamic-styling pattern
       (style-src 'self' allows them; inline style attributes are
