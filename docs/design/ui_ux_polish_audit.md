@@ -479,6 +479,11 @@ which needs a token proposal ratified on real-page mockups before their dependen
 
 ## 5. Proposed build order
 
+**Superseded for sequencing 2026-07-09:** with the D1-D14 rulings recorded, the remaining work is
+regrouped into surface-bundled sessions with per-session model assignments in
+`docs/plans/implementation_plan_ui_ux_polish.md`. The wave list below remains the record of what
+each wave contained and what is already done; the plan governs session order from here.
+
 - **Wave 0 - fix the instrument. DONE 2026-07-08.** RC6 fixed (`shoot.py` theme event + rebuild
   wait); P-DB2 / RC7 re-shot and re-verified (see RC7). Bonus finding while unblocking the per-edit
   gate: the hook layer resolved `pylint` from ambient PATH, so a session launched without the venv

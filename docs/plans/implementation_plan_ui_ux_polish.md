@@ -1,0 +1,172 @@
+# Implementation Plan: UI/UX Polish Pass (Sessions and Model Assignment)
+
+Companion to `docs/design/ui_ux_polish_audit.md` (the SoT for findings, root causes, and the D1-D14
+rulings recorded 2026-07-09). This plan regroups the remaining work into logical sessions, each
+sized and assigned a model, so Fable context goes where it buys the most. Waves may be worked out of
+order; the true dependencies are listed per session and in the ordering notes at the end.
+
+Plan written 2026-07-09. Done before this plan: Wave 0 (tooling), Wave 1 (system CSS, commits
+7892b433 -> c2e95d9d), Wave 2 grid slice (P-GR1/P-GR2/P-GR3 + dead-rule cleanup, commits cdd57441 ->
+aceb87af).
+
+## Model policy
+
+- **Fable:** visual, template, and CSS work - anything whose value is generating or judging design
+  alternatives (Loop A rounds, hero/composition restructures, token color calls).
+- **Opus:** required for any edit to `app/services/`, `app/routes/`, or test assertions (CLAUDE.md
+  model discipline). Also well suited to visual work that is fully specified and mechanical - class
+  swaps, pattern ports, sweeps - where design judgment is already spent.
+- Sessions marked "Fable preferred, Opus capable" degrade gracefully: Opus executes the spec; defer
+  the flagged judgment items inside those sessions if running on Opus.
+
+## Session protocol (every session)
+
+1. Load the `shekel-design` skill; read the register section for the touched surface.
+2. Baseline screenshots before, re-shoot after (`tests/manual/shoot.py`, both themes; mobile
+   viewport when the surface renders there). Scripted checks for scroll/hover states.
+3. Targeted tests per change; full suite once as the session's final gate.
+4. Logical commits per finding; update the register (mark items FIXED with date + commits).
+5. Model discipline inside a session: if a Fable session needs a `services/`/`routes/`/test-
+   assertion edit, that edit happens in an Opus context, not inline.
+
+## Sessions
+
+### S1. Token round: the amber fork (D5 + D11) -- FABLE (high value), size S
+
+The one true "do this first": it gates the archive sweep, P-DB7, P-AN6, and the grid balance-low
+color. Scope: land P-RT3 and P-DT4 first (they remove the last non-money borrowings of the credit
+token); mint `--shekel-warning` (amber keeps the caution role) and recolor `--shekel-credit` (violet
+candidate ~#A371F7 dark / ~#8250DF light, AA-verified); ratify on real-page mockups (grid chips +
+balance-low, recurring, statements); land the token block + chip/badge consumers. Archive convention
+lands here as a written rule (warning-amber outline archive, danger outline delete); the per-page
+button sweeps execute in the page sessions.
+
+### S2. Dashboard bundle (P-DB1, P-DB3, P-DB6, D10, P-DB7) -- FABLE (high value), size M
+
+Today-label overlap fix, pulse-bracket removal, group-OVERDUE tag placement, the D10 track inversion
+(current progress becomes the hero figure, destination the caption, tier carded), and the threshold
+line in warning color with a label (after S1). D10 and P-DB1 are composition work - this is a Fable
+session; P-DB3/P-DB7 alone would be Opus-fine but do not split them out.
+
+### S3. Opus backend session (P-SA1, P-AN4, D13) -- OPUS (required), size M
+
+Raise-event run-collapse in `salary_cockpit_service` (reuse the `_is_raise_run_start` seam); CSV
+export removal root-and-branch (routes, service, buttons, tests); analytics tabs become real
+navigation (hx-push-url, direct tab GETs render their tab). Independent of every Fable session; can
+run any time. Note: P-AN6 needs NO route plumbing - `analytics.py` already passes
+`low_balance_threshold` - so the calendar threshold work is display-side in S5. Splittable into
+two smaller Opus sessions (salary | analytics) if context is tight.
+
+### S4. Recurring bundle (P-RC1, P-RC2, P-RC4, P-RC5, archive swap) -- OPUS CAPABLE, size S
+
+Dark banner-tint specificity fix (two-class pattern documented at components.css:140-145), CSRF
+input out of the btn-group sibling chain, RC3 badge swaps, toolbar field interiors, archive buttons
+to the S1 convention. All mechanical once S1 lands. Good Opus candidate to save Fable context. P-RC3
+(the cross-section column contract) is NOT here - it needs table-grammar judgment; it rides with
+S12's grid work (same table-design headspace).
+
+### S5. Analytics shell + calendar + taxes bundle -- FABLE preferred, OPUS capable, size M
+
+Shell: P-AN1 spinner dead space, P-AN2 heading collapse (visual half), P-AN7 mobile pill clip.
+Calendar: P-AN5 payday tint, P-AN6 trough-red only below threshold (threshold already in context),
+P-AN8 notation legend, P-AN9 mobile nav, P-AN3 calendar hero + ONE shared month-picker idiom. Taxes:
+P-AN16 specificity, P-AN17 collapse form, P-AN18 captions. The judgment item is P-AN3 (cockpit hero
+plus picker consolidation) - defer it if running on Opus. Sequence with S3 (shared shell templates):
+either order, not simultaneous.
+
+### S6. Statements restructure (D8; subsumes P-AN12/13/14/15) -- FABLE (high value), size M
+
+Ruled hybrid: Net Income becomes the Income Statement hero and the Balance Sheet totals its hero;
+income/expense sections tint with existing banner tokens; Assets/Liabilities/Equity get the neutral
+accent-tinted structure banners; money-state green/red stays on figures. Hero composition is the
+point - spend Fable here. Data is already on the page; if any figure needs re-plumbing, that slice
+is Opus per discipline.
+
+### S7. Retirement + salary visual bundle -- FABLE preferred, OPUS capable, size M
+
+Retirement: P-RT1 pension-profiles retheme (form_card idiom exists) + the mobile overflow bug, the
+P-RT2/P-AC3 ramp fix per ruled D12 (>=3:1 luminance, applied to the retirement pair and the accounts
+allocation bar together), P-RT4 legend swatch, P-RT5 precision agreement. Salary: P-SA2 edit residue
+swaps, P-SA3 mobile action row, P-SA4 minimal sparkline axes (Chart.js config; likely JS-only -
+verify data is already client-side), P-SA5 dead band, P-SA6 legend sliver. Mostly pattern
+application; P-SA3 and the D12 value choice carry the judgment.
+
+### S8. Detail pages + anchor idiom (P-DT2/3/5/6/7/9, D14) -- OPUS recommended, size S-M
+
+RC3 swaps on the loan allocation bar and badges, mono-caption one-liner, casing normalization,
+half-width row, ARM tag floor case, amortization link promoted to a real control, and the D14 port
+of the investment click-to-edit hero to loan and cash. Cash currently has no on-page anchor
+recording, so the port may touch a route/form - Opus fits the whole session; the pattern being
+copied already exists on investment.
+
+### S9. Accounts bundle (P-AC1, P-AC4, P-AC6, P-AC2, D6 kebab move) -- FABLE preferred, size S
+
+Make the allocation-bar track read as a track (and the center tick visible), liability red on the
+loan card balances, property-card dead space, archive button per S1, and the ruled Transfer -> kebab
+demotion. P-AC5 (legacy goals/EF card anatomy) deliberately deferred to S13's Loop B, since D6 may
+reshape that whole section. P-AC1 is the judgment item.
+
+### S10. Breadcrumb removal + back buttons (D1) -- OPUS recommended, size M
+
+Inventory first: every sub-page whose only way back is the breadcrumb (forms, schedule, settings
+sub-pages, detail pages) gets a top-right "Back to <parent>" button on the amortization-schedule
+pattern; then delete breadcrumbs everywhere (~24 templates). Fully specified, pattern exists - save
+Fable. Run it when no other session is mid-flight (it brushes many templates).
+
+### S11. Settings retheme (P-ST3-P-ST6, mini Loop B) -- FABLE preferred, OPUS workable, size M-L
+
+The one page-scale rebuild outside the Loop A queue: form_card adoption for General/Security/MFA,
+sidebar/section layout, Save button normalization, strength-meter and categories-page cleanup,
+archive buttons per S1. The form_card idiom is established, so Opus can execute most of it; the
+page-level composition (sidebar rhythm, section order) is where Fable helps. P-ST1/P-ST2/P-ST4 color
+halves already landed in Wave 1/S1.
+
+### S12. Loop A: grid tracking + category hierarchy (D3+D4) -- FABLE (highest value), size L
+
+One combined round on the real grid: tracking candidates (hover-only status quo, banding, hairline
+group separators, sticky-label pairing) x hierarchy candidates (two-line label, indented child rows,
+distinctive category header rows - the developer's added direction). The hierarchy treatment may
+itself solve tracking; judge together. Loop B build follows the ruling. P-RC3 (the recurring column
+contract) rides along - same table-grammar decisions. P-GR5's which-copy-stays ruling can be taken
+during this session's mobile pass.
+
+### S13. Loop A: accounts de-busying (D6) -- FABLE (highest value), size M-L
+
+Directions around tinted/ruled group banners and card-weight reduction; dense list rows are ruled
+OUT. Loop B build includes P-AC5 (goals/EF cards to the chosen anatomy).
+
+### S14. Loop A: spending restructure (D7; subsumes P-AN10/P-AN11) -- FABLE (highest value), size L
+
+Chart-card lead is confirmed as every direction's anchor. Merge Where It Went + Top Movers into one
+change-focused visual; movers as sort/filter of the same rows; cap the share bars. Loop B build
+follows. If any new aggregate is needed for the chart, that data slice is Opus.
+
+### S15. Loop A: brand wordmark (D2) -- FABLE, size S
+
+3-4 vendored-woff2 candidates on the navbar + auth logo-gate mockup; tiny build after ruling (font
+files + @font-face + two templates).
+
+## Where to spend Fable context (priority order)
+
+1. **S12 grid Loop A (D3+D4)** - the app's core surface; irreplaceable design-generation work.
+2. **S1 token round** - small, pure color judgment, unblocks four sessions.
+3. **S14 spending Loop A (D7)** - full-screen redesign from scratch.
+4. **S13 accounts Loop A (D6)** - direction generation with one direction already ruled out.
+5. **S2 dashboard bundle** - D10 hero inversion + P-DB1 layout composition.
+6. **S6 statements restructure** - two hero compositions.
+7. **S15 wordmark Loop A** - small but pure taste.
+8. **S11 settings retheme** - composition helps, but the idiom is established.
+9. **S5's P-AN3 only** (calendar hero) - pull just this item into any Fable session if S5 runs on
+   Opus.
+
+Everything else - S3 (Opus required), S4, S7, S8, S10, and the mechanical remainder of S5 - runs
+well on Opus with the register as the spec.
+
+## Ordering constraints (the only real ones)
+
+- S1 before S2 (P-DB7), S4 (archive), S5 (P-AN6), S9 (P-AC2); everything else is order-free.
+- S3 and S5 share the analytics shell templates: either order, not simultaneous.
+- S10 brushes ~24 templates: run it solo, between other sessions.
+- Loop B builds follow their Loop A rulings; a Loop A round with an unanswered question is a STOP,
+  not a license to build.
+- Full-suite runs are the session gate; do not run two suites concurrently (shared test DB).
