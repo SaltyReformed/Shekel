@@ -76,13 +76,18 @@ var ShekelChart = (function () {
       (theme === 'dark' ? '#B0B9C6' : '#3E4A5C');
     var borderSubtle = style.getPropertyValue('--shekel-border-subtle').trim() ||
       (theme === 'dark' ? '#3A4250' : '#D0D8E2');
+    var borderStrong = style.getPropertyValue('--shekel-border-strong').trim() ||
+      (theme === 'dark' ? '#3A3F4A' : '#C8C5BD');
 
     return {
       textColor: textColor,
       textSecondary: textSecondary,
-      gridColor: theme === 'dark'
-        ? 'rgba(255, 255, 255, 0.06)'
-        : 'rgba(0, 0, 0, 0.08)',
+      // Gridlines derive from the border tokens: the old light value
+      // (8% black) was invisible on the paper background while dark's
+      // showed clearly, leaving each theme half-styled (polish audit
+      // RC7).  Light needs the stronger hairline; dark's subtle border
+      // matches the previous overlay almost exactly.
+      gridColor: theme === 'dark' ? borderSubtle : borderStrong,
       borderColor: borderSubtle,
       fontFamily: "'Inter', system-ui, -apple-system, sans-serif"
     };
@@ -145,6 +150,15 @@ var ShekelChart = (function () {
         scale.grid = scale.grid || {};
         if (!scale.grid.color) {
           scale.grid.color = colors.gridColor;
+        }
+
+        // Hide the axis border (spine) unless the factory asked for
+        // one.  Chart.js draws it in an unthemed near-black by
+        // default, which dark mode hides and light mode exposes as a
+        // hard line down the y-axis (polish audit RC7 / P-DB2).
+        scale.border = scale.border || {};
+        if (scale.border.display === undefined) {
+          scale.border.display = false;
         }
       }
     }
