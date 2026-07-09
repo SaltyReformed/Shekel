@@ -7,9 +7,11 @@ dependencies and no Node.
 
 For each (viewport, direction, theme) combination it loads the target, sets
 ``data-theme`` / ``data-bs-theme`` (and ``data-direction`` when given) on the
-root element, then screenshots. ``data-bs-theme`` drives the real app's theme;
-``data-direction`` drives a mockup's direction variants; setting an attribute
-the page does not use is harmless.
+root element, dispatches ``shekel:theme-changed`` (the real toggle's event,
+which ShekelChart listens on to re-theme charts), then screenshots.
+``data-bs-theme`` drives the real app's theme; ``data-direction`` drives a
+mockup's direction variants; setting an attribute or firing an event the page
+does not use is harmless.
 
 Examples::
 
@@ -107,10 +109,19 @@ def shoot(args: argparse.Namespace) -> int:
                                 r.setAttribute('data-theme', theme);
                                 r.setAttribute('data-bs-theme', theme);
                                 if (direction) r.setAttribute('data-direction', direction);
+                                // Mirror the real toggle (app.js): ShekelChart
+                                // re-themes on this event, not on the attribute
+                                // flip -- without it every chart keeps the
+                                // load-time theme's colors in the capture.
+                                document.dispatchEvent(new CustomEvent(
+                                    'shekel:theme-changed', { detail: { theme } }
+                                ));
                             }""",
                             [theme, direction],
                         )
-                        page.wait_for_timeout(180)
+                        # The event handler destroys and recreates every
+                        # tracked chart; 180ms raced that rebuild.
+                        page.wait_for_timeout(600)
                         parts = [name, vp_name]
                         if direction:
                             parts.append(direction)
