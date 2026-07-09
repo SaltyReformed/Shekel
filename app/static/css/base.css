@@ -210,7 +210,11 @@
   --bs-btn-color: #fff;
 }
 
-[data-bs-theme="dark"] .list-group-item {
+/* :not(.active) -- this direct background used to clobber Bootstrap's
+   equal-specificity .list-group-item.active rule by load order, leaving
+   the selected settings section visually indistinguishable in dark mode
+   (polish audit P-ST1). */
+[data-bs-theme="dark"] .list-group-item:not(.active) {
   background-color: var(--shekel-surface);
   border-color: var(--shekel-border-subtle);
   color: var(--shekel-text-primary);
@@ -272,6 +276,60 @@
   background-color: var(--shekel-surface);
   border-color: var(--shekel-border-subtle);
   color: var(--shekel-text-primary);
+}
+
+/* =============================================
+   ACTIVE-STATE SKINS (both themes)
+   ============================================= */
+/* Bootstrap 5.3 compiles #0d6efd as a LITERAL into these component
+   variables and rules, so the --bs-primary retune in theme-steel-ink.css
+   never reaches them (polish audit RC2: analytics/grid/settings pills,
+   settings sidebar, loan payoff slider).  Fill choice per theme: the
+   dark accent #4A9ECC + white text is only 3.0:1, so dark uses the
+   deeper --shekel-accent-hover; light's accent already passes with
+   white text (>=4.5:1 AA both ways). */
+[data-bs-theme="dark"] .nav-pills {
+  --bs-nav-pills-link-active-bg: var(--shekel-accent-hover);
+}
+
+[data-bs-theme="light"] .nav-pills {
+  --bs-nav-pills-link-active-bg: var(--shekel-accent);
+}
+
+[data-bs-theme="dark"] .list-group {
+  --bs-list-group-active-bg: var(--shekel-accent-hover);
+  --bs-list-group-active-border-color: var(--shekel-accent-hover);
+}
+
+[data-bs-theme="light"] .list-group {
+  --bs-list-group-active-bg: var(--shekel-accent);
+  --bs-list-group-active-border-color: var(--shekel-accent);
+}
+
+/* form-range bakes its thumb colors directly into engine-prefixed
+   rules (no CSS variable exposed), so each state is re-declared. */
+.form-range::-webkit-slider-thumb {
+  background-color: var(--shekel-accent);
+}
+
+.form-range::-moz-range-thumb {
+  background-color: var(--shekel-accent);
+}
+
+.form-range::-webkit-slider-thumb:active {
+  background-color: color-mix(in srgb, var(--shekel-accent) 55%, var(--shekel-surface));
+}
+
+.form-range::-moz-range-thumb:active {
+  background-color: color-mix(in srgb, var(--shekel-accent) 55%, var(--shekel-surface));
+}
+
+.form-range:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 1px var(--shekel-surface), 0 0 0 0.25rem rgba(var(--shekel-accent-rgb), 0.25);
+}
+
+.form-range:focus::-moz-range-thumb {
+  box-shadow: 0 0 0 1px var(--shekel-surface), 0 0 0 0.25rem rgba(var(--shekel-accent-rgb), 0.25);
 }
 
 /* =============================================
