@@ -208,6 +208,12 @@ Section 4.
 - **P-GR4 [consistency]** Mobile This-Period/Plan pill raw blue - RC2.
 - **P-GR5 [polish]** Mobile header states the same period three times (heading, subtitle,
   jump-select).
+- **P-GR6 [bug-adjacent, found during S1]** The SOLID `.badge-done` / `.badge-credit` pills
+  (`grid.css` STATUS BADGES block; render bare in CC-payback rows and the mobile cards - the in-chip
+  variant flattens to a glyph) set `color: #fff` on the raw state color: white-on-green is ~2.2:1
+  and white-on-violet ~3.1:1 at 11px bold, far under AA. Pre-existing (white-on-amber was 2.5:1);
+  needs the chip treatment (tinted bg + state-colored text) or dark ink. Rides with S12's grid
+  table-grammar session.
 - Striping and category hierarchy are decisions: D3, D4.
 
 ### Recurring
@@ -274,9 +280,14 @@ Section 4.
   scroll. The Add form half already uses form_card correctly.
 - **P-RT2 [consistency]** Income in Retirement stacked bar: Pension `#2878A8` vs Withdrawals
   `#4A9ECC`, ~1.6:1 in dark (O24). Fix the pair in `retirement.css:17-24`; policy at D12.
-- **P-RT3 [consistency]** "none linked" warning uses the credit money token deliberately
-  (`retirement.css:95`) - swap to accent or muted+icon per the money-state discipline.
+- **P-RT3 [consistency - FIXED 2026-07-09 (S1)]** "none linked" warning used the credit money token
+  deliberately (`retirement.css:95`). Fixed: `.retire-flag` is accent - the flags mark setup gaps
+  (actionable, two are links), not money states and not low-balance cautions.
 - **P-RT4 [polish]** "Uncovered" legend row has no swatch while its siblings do.
+- **[note, found during S1]** Salary's post-tax composition/deduction segments and the
+  third-paycheck row tint are categorical series colors riding the caution amber (now
+  `--shekel-warning`, pixels unchanged); whether amber is the right categorical hue for them is an
+  S7 judgment item.
 - **P-RT5 [polish]** "Close the Gap" hero says +$7 while the stepper says +$6.71 - rounding puts
   principle 2 on a hair trigger; render both at the same precision.
 
@@ -366,8 +377,9 @@ pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
   `bg-success/bg-warning/bg-info` (RC3).
 - **P-DT3 [consistency]** Investment hero caption inherits `font-mono` (nested inside the mono hero
   div); loan and cash captions are sans - one-line template fix.
-- **P-DT4 [consistency]** Retirement marker in `growth_chart.js` borrows the credit token - same
-  discipline as P-RT3.
+- **P-DT4 [consistency - FIXED 2026-07-09 (S1)]** Retirement marker in `growth_chart.js` borrowed
+  the credit token. Fixed: muted ink - the chart's landmark grammar is gray text inks (the Today
+  marker is `textSecondary`), so the farther milestone sits one step quieter, both labeled.
 - **P-DT5 [polish]** Casing drift: "Payment Allocation" Title Case; save buttons read "Update
   parameters" / "Update Parameters" / "Save parameters" across the three siblings.
 - **P-DT6 [polish]** Investment ends on a half-width row with an empty right column.
@@ -418,6 +430,11 @@ which needs a token proposal ratified on real-page mockups before their dependen
   from the edit button and from plain gray, and is open to recommendations. Interacts with D11's
   credit-vs-warning split (both decide who owns amber); resolve the two together via one token
   proposal ratified on real-page mockups before the sweep.
+  **RESOLVED 2026-07-09 (S1 token round): amber keeps the caution role.** Archive/deactivate =
+  `--shekel-warning` amber outline; true delete = `--shekel-danger` outline; amber never appears on
+  a control for any other reason. Convention written into `fable5-design-language.md` ("Credit /
+  warning split"); the per-page `btn-outline-warning` sweeps execute in the page sessions (S4, S9,
+  S11).
 - **D6. Accounts cockpit de-busying (O17/O18).** Options: (a) tinted/ruled group banners (the
   recurring vocabulary, neutralized) + demote per-card Transfer buttons to the kebab; (b) collapse
   account cards to dense list rows per group, keeping cards only for the hero and summaries; (c)
@@ -462,6 +479,18 @@ which needs a token proposal ratified on real-page mockups before their dependen
   adopts the grid's thresholds and colors for low and negative balances. Open sub-fork (with D5):
   which state keeps amber - needs a token proposal ratified on real-page mockups before the
   dependent page fixes (P-DB7, P-AN6, grid balance-low, archive buttons) build.
+  **RESOLVED 2026-07-09 (S1 token round): credit goes violet, warning keeps amber.** Ratified by the
+  developer on a three-candidate mockup sheet (violet #A87BF7/#7443CC vs rose vs teal, both themes,
+  against the full state set; rose rejected on taste, teal rejected as too close to done-green). All
+  values AA-verified on every surface tier plus the chip's own 16% tint; the violet was tuned from
+  the plan's ~#A371F7/~#8250DF, which failed the chip tint (dark) and two light tiers. Bonus AA fix:
+  the light warning amber deepened `#9A6700 -> #855800` (the old credit value was 4.16:1 on the page
+  bg and 3.78:1 on its chip tint - the RC4 failure class). Landed with the split: every caution
+  consumer re-pointed to `--shekel-warning` (balance-low, threshold-line inks in
+  `dashboard_pulse.js` + `calendar_flow_strip.js`, due-soon, stale anchor, ARM tag, escrow
+  scheduled, loan drift-up, salary post-tax/third-paycheck tints, `verdict-pill--credit` renamed
+  `--warning` since "Behind" is a pace caution). The label half of P-DB7 stays in S2 and the
+  calendar threshold behavior half of P-AN6 stays in S5.
 - **D12. Chart series-ramp policy (O24 + P-AC3).** Same-hue accent mixes are indistinguishable in
   dark. Recommend: adjacent series must differ by >=3:1 luminance or use a second achromatic
   treatment (pattern/gap + direct labels), applied to the retirement pair and the accounts
