@@ -614,8 +614,10 @@ which needs a token proposal ratified on real-page mockups before their dependen
   - The producer's trailing-12 series is the ONE source for the chart bars AND the hero's vs-prior /
     vs-average baselines (agreement by construction); a pre-history month is a None point (excluded
     from the average, drawn as a baseline tick) while a tracked zero-spend month counts as a real
-    zero. The existing per-window attribution rule (periods overlapping the window + COALESCE
-    due_date/period-start filter) was preserved exactly - no financial-semantics change.
+    zero. The build preserved the per-window attribution fetch exactly; the same-day follow-up
+    3fe12436 then fixed its boundary hole (a bill due in month M funded from a period outside M was
+    attributed to NO month window) by selecting on COALESCE(due_date, period start) in SQL across
+    all the user's periods - every settled expense now belongs to exactly one calendar window.
   - Ledger deltas are signed MoM DOLLARS on every row (groups sum stopped categories into their
     prior side); "new" badges replace the old percent-of-zero "New"; exact-zero deltas render muted.
     The lens toggle is Bootstrap's pill plugin (both row sets in one render, no round trip).
@@ -624,10 +626,12 @@ which needs a token proposal ratified on real-page mockups before their dependen
     note, value labels clamped inside the chart area (mobile edge bar), y ticks capped at 5 (2k
     steps on the real data), bar-click navigation via htmx.ajax mirroring the picker buttons.
   - spending_trend_service (module + 42 tests) deleted as dead code (the budget_variance_service
-    precedent). Follow-ups spotted, not built: UserSettings.trend_alert_threshold is now a fully
-    orphaned setting (needs a migration; S11 candidate), and htmx's settle-phase attribute clone
-    fires a harmless CSP style-src violation when a swap replaces an id-matched Chart.js canvas -
-    PRE-EXISTING (the calendar flow strip's month nav does the same), logged for a later root fix.
+    precedent). Both spotted follow-ups were then FIXED the same day at the developer's direction:
+    the orphaned UserSettings.trend_alert_threshold removed root-and-branch with reversible
+    migration ec6054b19620 (commit 38163d02; the S11 archive-button sweep note stands, but the
+    settings retheme no longer inherits this field), and the htmx settle-phase CSP violation closed
+    by dropping "style" from attributesToSettle in the htmx-config meta (commit bf0b6f57;
+    live-verified zero violations on the calendar AND spending chart swaps).
 - **D8. Statement section distinction (O35).** Options: (a) tint only the Income Statement with the
   existing income/expense banner tokens, Balance Sheet gets stronger typographic headers; (b) add a
   neutral accent-tinted section-banner variant used by ALL statement sections
