@@ -14,50 +14,33 @@
 <h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
 
 {# Four pills (Slice-4 shell collapse): Calendar, Spending, Statements, Taxes.
-   The Statements pill loads the Income Statement by default; its own internal
-   toggle swaps to the Balance Sheet (both target #tab-content), so the
-   Statements pill stays active while the two confirmed-ledger reports switch. #}
+   Each pill pushes its own URL (D13: hx-push-url) so a tab is a real,
+   refreshable address, and ``active_tab`` (set by the route) marks the active
+   pill.  The Statements pill loads the Income Statement by default; its own
+   internal toggle swaps to the Balance Sheet (both target #tab-content), so
+   the Statements pill stays active while the two confirmed-ledger reports
+   switch.  One ``tabs`` list drives both the pills and the initial auto-load
+   below (DRY: a single source of tab key/label/url). #}
+{% set tabs = [
+  {"key": "calendar", "label": "Calendar", "url": url_for("analytics.calendar_tab")},
+  {"key": "spending", "label": "Spending", "url": url_for("analytics.spending_tab")},
+  {"key": "statements", "label": "Statements", "url": url_for("analytics.income_statement_tab")},
+  {"key": "taxes", "label": "Taxes", "url": url_for("analytics.taxes_tab")},
+] %}
 <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
+  {% for tab in tabs %}
   <li class="nav-item" role="presentation">
-    <button class="nav-link active" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.calendar_tab') }}"
+    <button class="nav-link{{ ' active' if tab.key == active_tab }}" data-bs-toggle="pill"
+            hx-get="{{ tab.url }}"
             hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click, load"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="true">
-      Calendar
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.spending_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-push-url="true"
             hx-trigger="click"
             hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Spending
+            role="tab" aria-selected="{{ 'true' if tab.key == active_tab else 'false' }}">
+      {{ tab.label }}
     </button>
   </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.income_statement_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Statements
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.taxes_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Taxes
-    </button>
-  </li>
+  {% endfor %}
 </ul>
 
 {# Loading indicator for subsequent tab switches -- survives content swaps
@@ -70,8 +53,16 @@
 </div>
 
 <div id="tab-content">
-  {# Initial spinner shown until the Calendar tab auto-loads via hx-trigger="load" #}
-  <div class="d-flex justify-content-center py-5">
+  {# The active tab auto-loads on page load from HERE, not from the pill (D13):
+     the load lives on this soon-to-be-replaced spinner so the initial fetch
+     never pushes a URL (only pill CLICKS push).  That keeps the Back button
+     from restoring a stale pre-load snapshot.  ``active_tab`` (default
+     "calendar") selects which partial loads. #}
+  <div hx-get="{{ (tabs | selectattr('key', 'equalto', active_tab) | first).url }}"
+       hx-trigger="load"
+       hx-target="#tab-content" hx-swap="innerHTML"
+       hx-indicator="#tab-spinner"
+       class="d-flex justify-content-center py-5">
     <div class="spinner-border text-secondary" role="status">
       <span class="visually-hidden">Loading...</span>
     </div>

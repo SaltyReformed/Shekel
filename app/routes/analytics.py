@@ -9,15 +9,17 @@ internal toggle.  The Spending pill (Slice 3) replaced the Variance and Trends
 pills and the Taxes pill (Slice 2) replaced Year-End; the retired
 ``/analytics/variance``, ``/analytics/trends``, and ``/analytics/year-end``
 URLs now redirect to the main page (``retired_tab``) so old bookmarks do not
-404.  The calendar month CSV is the only surviving export.
+404.  Each tab pill pushes its own URL and a direct (non-HTMX) GET renders the
+shell with that tab active rather than redirecting to Calendar (D13).  No
+analytics export remains -- the last one, the calendar month/year CSV, was
+removed with P-AN4.
 """
 
 import calendar as cal_mod
 from datetime import date, datetime, timezone
 
 from flask import (
-    Blueprint, abort, make_response, redirect, render_template, request,
-    url_for,
+    Blueprint, abort, redirect, render_template, request, url_for,
 )
 from flask_login import current_user, login_required
 
@@ -32,7 +34,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
     calendar_service,
-    csv_export_service,
     ledger_report_service,
     pay_period_service,
     spending_report_service,
@@ -100,6 +101,36 @@ def _validate_owned_or_abort(model, pk):
     return record
 
 
+def _tab_shell_if_not_htmx(active_tab: str):
+    """Return the analytics shell for a direct (non-HTMX) tab GET, else None.
+
+    D13 (analytics tabs as navigation): a tab endpoint is a real URL.  A
+    direct browser navigation to it -- a fresh load, a refresh, or a
+    bookmark -- carries no ``HX-Request`` header, so instead of redirecting
+    to the Calendar default it renders the full shell with ``active_tab``
+    pre-selected; the shell then auto-loads that tab's partial.  An HTMX tab
+    request returns ``None`` so the caller renders its ``_``-partial as
+    before.
+
+    Callers MUST run any ownership validation (e.g.
+    :func:`_validate_owned_or_abort`) before calling this, so a cross-user id
+    still 404s on a direct navigation rather than being served the shell.
+
+    Args:
+        active_tab: The shell's active-tab discriminator -- one of
+            ``"calendar"``, ``"spending"``, ``"statements"``, ``"taxes"``.
+            A display-only string (no business logic keys off it), matching
+            the ``active_statement`` idiom the Statements toggle already uses.
+
+    Returns:
+        A rendered-shell response for a non-HTMX request, or ``None`` when
+        the request is an HTMX tab load.
+    """
+    if request.headers.get("HX-Request"):
+        return None
+    return render_template("analytics/analytics.html", active_tab=active_tab)
+
+
 @analytics_bp.route("/analytics")
 @login_required
 @require_owner
@@ -111,26 +142,27 @@ def page():
     groups the Income Statement and Balance Sheet behind an internal toggle;
     the Spending pill replaced the retired Variance and Trends pills (Slice
     3) and the Taxes pill replaced Year-End (Slice 2).  The Calendar tab
-    auto-loads on page visit via HTMX; the others load on click.
+    auto-loads on page visit via HTMX (``active_tab="calendar"``); the others
+    load on click.  Each pill pushes its own URL, and a direct GET to a tab
+    endpoint renders this shell with that tab active (D13).
     """
-    return render_template("analytics/analytics.html")
+    return render_template("analytics/analytics.html", active_tab="calendar")
 
 
 @analytics_bp.route("/analytics/calendar")
 @login_required
 @require_owner
 def calendar_tab():
-    """HTMX partial or CSV: calendar tab with month detail or year overview.
+    """HTMX partial: calendar tab with month detail or year overview.
 
     Query parameters:
         view: 'month' (default) or 'year'.
         year: Calendar year (default: current year).
         month: Calendar month 1-12 (default: current month).
         account_id: Optional account filter.
-        format: 'csv' for CSV download.
 
-    Non-HTMX requests redirect to the main analytics page unless
-    format=csv (CSV downloads are regular browser navigations).
+    A direct (non-HTMX) request renders the analytics shell with the
+    Calendar tab active (D13), which then auto-loads this partial.
     """
     # ``today`` is the user's wall-clock day (display timezone), not the
     # server's UTC day: the month default, the today marker, and the
@@ -153,41 +185,19 @@ def calendar_tab():
     year = max(2000, min(2100, year))
     month = max(1, min(12, month))
 
+    # D13: a direct (non-HTMX) hit renders the shell with Calendar active --
+    # after the ownership guard above, so a cross-user account_id still 404s
+    # before any page is served -- and the shell auto-loads this partial.  An
+    # HTMX tab request falls through to render the partial below.
+    shell = _tab_shell_if_not_htmx("calendar")
+    if shell is not None:
+        return shell
+
     settings = db.session.query(UserSettings).filter_by(
         user_id=current_user.id,
     ).first()
     threshold = settings.large_transaction_threshold if settings else 500
     low_balance = settings.low_balance_threshold if settings else 500
-
-    # CSV export -- before HTMX guard.
-    if request.args.get("format") == "csv":
-        try:
-            if view == "year":
-                data = calendar_service.get_year_overview(
-                    user_id=current_user.id, year=year,
-                    account_id=account_id, large_threshold=threshold,
-                )
-                csv_str = csv_export_service.export_calendar_csv(data, "year")
-                fname = f"calendar_{year}_year.csv"
-            else:
-                # Pass ``today`` so the daily running balance (and thus the
-                # CSV's end-of-day balance column) is computed.
-                data = calendar_service.get_month_detail(
-                    user_id=current_user.id, year=year, month=month,
-                    account_id=account_id, large_threshold=threshold,
-                    today=today,
-                )
-                csv_str = csv_export_service.export_calendar_csv(data, "month")
-                fname = f"calendar_{year}_{month:02d}.csv"
-        except CalendarAccountNotResolvableError:
-            # F-2: missing analytics account / baseline scenario is an
-            # upstream defect after the Commit 3-8 anchor remediation;
-            # surface a 404 instead of masking it behind a zeroed CSV.
-            abort(404)
-        return _csv_response(csv_str, fname)
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
 
     try:
         if view == "year":
@@ -221,15 +231,16 @@ def taxes_tab():
         year: Tax year (default: the display-timezone current year),
             clamped to [2000, 2100] like the sibling tabs.
 
-    Non-HTMX requests redirect to the main analytics page (no CSV export
-    for this tab).
+    A direct (non-HTMX) request renders the shell with the Taxes tab active
+    (D13), which then auto-loads this partial.
     """
     today = to_display_date(datetime.now(timezone.utc))
     year = request.args.get("year", today.year, type=int)
     year = max(2000, min(2100, year))
 
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
+    shell = _tab_shell_if_not_htmx("taxes")
+    if shell is not None:
+        return shell
 
     report = tax_report_service.compute_tax_report(current_user.id, year, today)
     available_years = _get_available_years(current_user.id, today.year)
@@ -292,8 +303,8 @@ def spending_tab():
         year: Calendar year (default: the prior month's year), clamped to
             [2000, 2100].
 
-    Non-HTMX requests redirect to the main analytics page (no CSV export for
-    this tab, per the 2026-07-05 CSV ruling).
+    A direct (non-HTMX) request renders the shell with the Spending tab
+    active (D13), which then auto-loads this partial.
     """
     today = to_display_date(datetime.now(timezone.utc))
     default_year, default_month = analytics_view.prev_month(
@@ -304,8 +315,9 @@ def spending_tab():
     month = max(1, min(12, month))
     year = max(2000, min(2100, year))
 
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
+    shell = _tab_shell_if_not_htmx("spending")
+    if shell is not None:
+        return shell
 
     window = spending_report_service.SpendingWindow(
         window_type="month", month=month, year=year,
@@ -369,7 +381,9 @@ def income_statement_tab():
         month: Month number 1-12 (for the month window).
         year: Calendar year (for the month/year windows).
 
-    Non-HTMX requests redirect to the main analytics page.
+    A direct (non-HTMX) request renders the shell with the Statements tab
+    active (D13), which then auto-loads this partial (the Statements pill's
+    income-statement default).
     """
     today = date.today()
 
@@ -383,6 +397,13 @@ def income_statement_tab():
         PayPeriod, request.args.get("period_id", type=int),
     )
 
+    # D13: a direct navigation renders the shell (Statements active) after the
+    # ownership guard, so a foreign period_id still 404s; the report below is
+    # then only computed for the actual HTMX partial render.
+    shell = _tab_shell_if_not_htmx("statements")
+    if shell is not None:
+        return shell
+
     window_type, period_id, month, year = _resolve_window_params(today)
     window = ledger_report_service.StatementWindow(
         window_type=window_type, period_id=period_id, month=month, year=year,
@@ -390,9 +411,6 @@ def income_statement_tab():
     report = ledger_report_service.compute_income_statement(
         current_user.id, window,
     )
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
 
     periods = pay_period_service.get_all_periods(current_user.id)
     available_years = _get_available_years(current_user.id, today.year)
@@ -427,16 +445,21 @@ def balance_sheet_tab():
         as_of: ISO date (YYYY-MM-DD); defaults to today and is clamped to
             [2000-01-01, today].
 
-    Non-HTMX requests redirect to the main analytics page.
+    A direct (non-HTMX) request renders the shell with the Statements tab
+    active (D13), which then auto-loads the Statements pill's income-statement
+    default; the internal toggle reaches this balance sheet.
     """
+    # D13: a direct navigation renders the shell (Statements active); the
+    # balance sheet below is only computed for the actual HTMX partial render.
+    shell = _tab_shell_if_not_htmx("statements")
+    if shell is not None:
+        return shell
+
     today = date.today()
     as_of = _resolve_as_of_param(request.args.get("as_of"), today)
     report = ledger_report_service.compute_balance_sheet(
         current_user.id, as_of,
     )
-
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("analytics.page"))
 
     return render_template(
         "analytics/_balance_sheet.html",
@@ -535,27 +558,6 @@ def _render_year_view(year, account_id, threshold):
         month_cards=month_cards,
         year=year,
     )
-
-
-# ── CSV helpers ────────────────────────────────────────────────────
-
-
-def _csv_response(csv_content: str, filename: str):
-    """Build a Flask response for CSV file download.
-
-    Args:
-        csv_content: The CSV string body.
-        filename: Suggested download filename.
-
-    Returns:
-        Flask Response with CSV headers.
-    """
-    response = make_response(csv_content)
-    response.headers["Content-Type"] = "text/csv; charset=utf-8"
-    response.headers["Content-Disposition"] = (
-        f'attachment; filename="{filename}"'
-    )
-    return response
 
 
 # ── Window helpers ─────────────────────────────────────────────────

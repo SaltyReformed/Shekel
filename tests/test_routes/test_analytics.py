@@ -5,12 +5,13 @@ Tests for the analytics page shell and HTMX tab endpoints:
   - Authentication required for all endpoints
   - Main page renders with nav-pills and tab-content div
   - Tab endpoints return placeholders/content with HX-Request header
-  - Tab endpoints redirect without HX-Request header
+  - A direct (non-HTMX) tab GET renders the shell with that tab active (D13)
   - Nav bar shows Analytics link with correct active state
   - Statements pill groups the income statement + balance sheet toggle
   - Retired Variance / Trends / Year-End URLs redirect to the page
 """
 
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
@@ -36,6 +37,21 @@ def _freeze_today_inside_seed_range(monkeypatch):
     with the test's view of "today" regardless of wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
+
+
+def _shell_autoload_target(html):
+    """Return the hx-get URL of the shell's single auto-loading element.
+
+    D13: the analytics shell auto-loads its active tab from the #tab-content
+    spinner (the one element carrying ``hx-trigger="load"``).  Tests use this
+    to assert WHICH tab a direct (non-HTMX) GET pre-selected, since the
+    active-tab discriminator drives both that loader's target and the active
+    pill.  Returns ``None`` when no auto-loader is present.
+    """
+    before_load = html.split('hx-trigger="load"')[0]
+    loader = before_load[before_load.rfind("<div"):]
+    match = re.search(r'hx-get="([^"]+)"', loader)
+    return match.group(1) if match else None
 
 
 def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
@@ -343,22 +359,37 @@ class TestAnalyticsPage:
             assert b'id="tab-content"' in resp.data
 
     def test_calendar_tab_is_default_load(self, app, auth_client, seed_user):
-        """Calendar pill has hx-trigger containing 'load' so it auto-loads."""
+        """The shell auto-loads Calendar by default from inside #tab-content.
+
+        D13 moved the auto-load off the pill onto the #tab-content spinner
+        (so the initial fetch never pushes a URL); on the bare /analytics page
+        (active_tab="calendar") that loader targets the calendar tab.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
-            assert 'hx-trigger="click, load"' in html
+            # Exactly one element auto-loads on page load, and it fetches the
+            # Calendar partial.
+            assert 'hx-trigger="load"' in html
+            loader = html.split('hx-trigger="load"')[0].rsplit("<div", 1)[1]
+            assert "/analytics/calendar" in loader
 
     def test_other_tabs_no_auto_load(self, app, auth_client, seed_user):
-        """Only the Calendar pill auto-loads; the other pills load on click."""
+        """Only one element auto-loads; the pills are click-only (D13).
+
+        The pills push their URL on click (hx-push-url) and no longer carry a
+        'load' trigger -- the single auto-load lives on the #tab-content
+        spinner -- so exactly one 'load' trigger exists on the page.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
-            # Only the Calendar pill should have the 'load' trigger.
-            load_triggers = html.count('hx-trigger="click, load"')
+            load_triggers = html.count('hx-trigger="load"')
             assert load_triggers == 1, (
-                f"Expected exactly 1 pill with 'load' trigger, found {load_triggers}"
+                f"Expected exactly 1 'load' trigger, found {load_triggers}"
             )
+            # Every pill pushes its own URL (D13).
+            assert html.count('hx-push-url="true"') == 4
 
     def test_tab_content_has_spinner(self, app, auth_client, seed_user):
         """The #tab-content div contains spinner markup as initial content."""
@@ -392,12 +423,19 @@ class TestCalendarTab:
             # Calendar replaced the placeholder; month view renders by default.
             assert b"calendar-grid" in resp.data
 
-    def test_calendar_tab_no_htmx_redirects(self, app, auth_client, seed_user):
-        """GET /analytics/calendar without HX-Request redirects to /analytics."""
+    def test_calendar_tab_no_htmx_renders_shell(self, app, auth_client, seed_user):
+        """GET /analytics/calendar without HX-Request renders the shell (D13).
+
+        A direct navigation to the tab URL now serves the analytics shell with
+        Calendar active (which then auto-loads the calendar partial), instead
+        of redirecting to the page and defaulting to Calendar the long way.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/calendar")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/calendar"
 
     def test_calendar_tab_404_when_account_unresolvable(
         self, app, auth_client, seed_user, monkeypatch,
@@ -452,22 +490,6 @@ class TestCalendarTab:
             resp = auth_client.get(
                 "/analytics/calendar?view=year",
                 headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_calendar_tab_csv_404_when_scenario_unresolvable(
-        self, app, auth_client, seed_user, monkeypatch,
-    ):
-        """C11-1/C11-2 (route, CSV branch): CSV path also 404s."""
-        from app.services import calendar_service as cs
-        monkeypatch.setattr(
-            cs, "get_baseline_scenario",
-            lambda _user_id: None,
-        )
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month"
-                "&year=2026&month=1",
             )
             assert resp.status_code == 404
 
@@ -528,13 +550,19 @@ class TestIncomeStatementTab:
             assert resp.status_code == 302
             assert "/login" in resp.headers["Location"]
 
-    def test_income_statement_no_htmx_redirects(self, app, auth_client,
-                                                seed_user):
-        """Non-HTMX request redirects to /analytics."""
+    def test_income_statement_no_htmx_renders_shell(self, app, auth_client,
+                                                    seed_user):
+        """Non-HTMX request renders the shell with Statements active (D13).
+
+        The Statements pill's default half is the income statement, so a
+        direct GET auto-loads /analytics/income-statement inside the shell.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/income-statement")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/income-statement"
 
     def test_income_statement_htmx_renders(self, app, auth_client, seed_user,
                                            seed_periods):
@@ -703,12 +731,19 @@ class TestBalanceSheetTab:
             assert resp.status_code == 302
             assert "/login" in resp.headers["Location"]
 
-    def test_balance_sheet_no_htmx_redirects(self, app, auth_client, seed_user):
-        """Non-HTMX request redirects to /analytics."""
+    def test_balance_sheet_no_htmx_renders_shell(self, app, auth_client, seed_user):
+        """Non-HTMX request renders the shell with Statements active (D13).
+
+        Balance Sheet is the Statements pill's second half (reached by its
+        internal toggle), so a direct GET lands on the Statements tab, which
+        auto-loads its income-statement default.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/balance-sheet")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/income-statement"
 
     def test_balance_sheet_htmx_renders(self, app, auth_client, seed_user):
         """HTMX request renders the balance sheet heading and as-of input."""
@@ -835,145 +870,75 @@ class TestBalanceSheetTab:
 # ── CSV Export Tests ──────────────────────────────────────────────
 
 
-class TestCsvExport:
-    """Tests for the calendar CSV export (the only surviving export).
+class TestCsvExportRetired:
+    """The calendar CSV export was removed root-and-branch (P-AN4).
 
-    The Slice-4 shell collapse retired the year-end, variance, trends,
-    income-statement, and balance-sheet CSV exports with their tabs; only
-    the calendar month/year CSV still ships (Calendar decision 9).
+    The calendar month/year CSV was the last surviving analytics export (the
+    Slice-4 shell collapse had already retired the year-end, variance, trends,
+    income-statement, and balance-sheet exports).  With P-AN4 no analytics
+    export remains: neither calendar view offers a CSV button, and a stale
+    ``?format=csv`` is now an inert query arg that renders the normal calendar
+    rather than a download.
     """
 
-    def test_calendar_csv_export(self, app, auth_client, seed_user,
-                                  seed_periods):
-        """C17-1: Calendar CSV returns 200 with text/csv content type."""
+    def test_calendar_month_has_no_csv_button(self, app, auth_client, seed_user,
+                                              seed_periods):
+        """The calendar month view offers no CSV download control."""
         with app.app_context():
             resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
+                "/analytics/calendar?view=month",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
+            html = resp.data.decode()
+            assert "format=csv" not in html
+            assert "bi-download" not in html
 
-    def test_calendar_csv_content(self, app, auth_client, seed_user,
-                                   seed_periods, db):
-        """C17-2: Calendar CSV body contains transaction names."""
+    def test_calendar_year_has_no_csv_button(self, app, auth_client, seed_user,
+                                             seed_periods):
+        """The calendar year view offers no CSV download control."""
         with app.app_context():
-            _create_paid_expense_for_route_test(
-                db, seed_user, seed_periods,
-                "January Rent", Decimal("1200.00"), "Rent",
-            )
             resp = auth_client.get(
-                f"/analytics/calendar?format=csv&view=month&year=2026&month=1"
-                f"&period_id={seed_periods[0].id}",
+                "/analytics/calendar?view=year&year=2026",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"January Rent" in resp.data
+            html = resp.data.decode()
+            assert "format=csv" not in html
+            assert "bi-download" not in html
 
-    def test_calendar_csv_has_eod_balance_column(
-        self, app, auth_client, seed_user, seed_periods, db,
-    ):
-        """The month CSV carries the end-of-day running-balance column.
+    def test_format_csv_is_inert_on_htmx_request(self, app, auth_client,
+                                                 seed_user, seed_periods):
+        """A stale ?format=csv on an HTMX calendar GET renders the grid.
 
-        Anchor $1000 (period 0); a projected -$250 expense due Jan 8 leaves
-        the projected end-of-day balance at $750 on that day.
+        The format arg has no branch anymore, so it is ignored: the request
+        returns the normal calendar partial, never a text/csv attachment.
         """
         with app.app_context():
-            from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
-            from datetime import date
-            from decimal import Decimal
-            db.session.add(Transaction(
-                account_id=seed_user["account"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Groceries",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("250.00"),
-                due_date=date(2026, 1, 8),
-            ))
-            db.session.commit()
             resp = auth_client.get(
                 "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            assert resp.status_code == 200
-            body = resp.data.decode()
-            assert "End-of-Day Balance ($)" in body
-            # The Groceries row carries the day's projected EOD balance ($750).
-            assert "750.00" in body
-
-    def test_csv_requires_auth(self, app, client):
-        """C17-8: CSV export requires authentication."""
-        with app.app_context():
-            resp = client.get("/analytics/calendar?format=csv")
-            assert resp.status_code == 302
-            assert "/login" in resp.headers["Location"]
-
-    def test_csv_content_disposition(self, app, auth_client, seed_user,
-                                      seed_periods):
-        """C17-9: CSV has Content-Disposition with attachment and .csv."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            cd = resp.headers.get("Content-Disposition", "")
-            assert "attachment" in cd
-            assert ".csv" in cd
-
-    def test_csv_does_not_require_htmx(self, app, auth_client, seed_user,
-                                        seed_periods):
-        """C17-extra12: the calendar CSV works without an HX-Request header."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            # Should NOT redirect -- CSV bypasses the HTMX guard.
-            assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
-
-    def test_csv_filename_includes_context(self, app, auth_client,
-                                            seed_user, seed_periods):
-        """C17-extra14: Calendar CSV filename contains year and month."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=4",
-            )
-            cd = resp.headers.get("Content-Disposition", "")
-            assert "2026_04" in cd
-
-    def test_calendar_year_csv_export(self, app, auth_client, seed_user,
-                                       seed_periods):
-        """C17-extra15: Calendar year CSV returns year overview data."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=year&year=2026",
-            )
-            assert resp.status_code == 200
-            assert b"January" in resp.data
-
-    def test_html_still_works_without_format(self, app, auth_client,
-                                              seed_user, seed_periods):
-        """C17-extra16: Without format=csv, normal HTMX HTML is returned."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
             assert b"calendar-grid" in resp.data
             assert "text/csv" not in resp.headers.get("Content-Type", "")
 
-    def test_calendar_has_export_button(self, app, auth_client, seed_user,
-                                         seed_periods):
-        """C17-extra17: Calendar tab contains CSV export link."""
+    def test_format_csv_non_htmx_renders_shell_not_csv(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A stale ?format=csv on a direct (non-HTMX) GET serves the shell.
+
+        With the CSV branch gone, format=csv no longer bypasses the HTMX
+        guard; a non-HTMX hit renders the analytics shell (Calendar active,
+        D13), never a CSV attachment.
+        """
         with app.app_context():
             resp = auth_client.get(
-                "/analytics/calendar?view=month",
-                headers={"HX-Request": "true"},
+                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
             )
-            html = resp.data.decode()
-            assert "format=csv" in html
-            assert "bi-download" in html
+            assert resp.status_code == 200
+            assert "text/csv" not in resp.headers.get("Content-Type", "")
+            assert "shekel-scroll-pills" in resp.data.decode()
 
 
 # ── Retired Tab Redirect Tests ────────────────────────────────────
@@ -1875,12 +1840,14 @@ class TestTaxesTab:
             assert "No active salary profile" in html
             assert "Set up salary" in html
 
-    def test_taxes_tab_non_htmx_redirects(self, app, auth_client, seed_user):
-        """A non-HTMX GET redirects to the analytics page."""
+    def test_taxes_tab_non_htmx_renders_shell(self, app, auth_client, seed_user):
+        """A non-HTMX GET renders the shell with Taxes active (D13)."""
         with app.app_context():
             resp = auth_client.get("/analytics/taxes")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/taxes"
 
 
 def _settled_spending_txn(db, seed_user, period, name, category_key,
@@ -2098,9 +2065,11 @@ class TestSpendingTab:
             assert resp.status_code == 200
             assert "February 2026" in resp.data.decode()
 
-    def test_spending_tab_non_htmx_redirects(self, app, auth_client, seed_user):
-        """A non-HTMX GET redirects to the analytics page."""
+    def test_spending_tab_non_htmx_renders_shell(self, app, auth_client, seed_user):
+        """A non-HTMX GET renders the shell with Spending active (D13)."""
         with app.app_context():
             resp = auth_client.get("/analytics/spending")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/spending"
