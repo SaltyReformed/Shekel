@@ -35,8 +35,17 @@
      entries are restated around it.  422 and the other 4xx stay
      non-swapping deliberately: those bodies are raw strings or JSON
      (str(errors), jsonify(...)), and the carry-forward modal's
-     htmx:responseError handler (app.js) relies on 4xx not swapping. #}
-  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
+     htmx:responseError handler (app.js) relies on 4xx not swapping.
+
+     attributesToSettle: htmx's default list includes "style", which the
+     settle phase copies between id-matched old/new nodes with
+     setAttribute("style", ...) -- an inline-style application the CSP
+     blocks (style-src 'self', no 'unsafe-hashes').  The copy was already
+     failing silently on every swap that replaces a Chart.js canvas (the
+     library sizes canvases via CSSOM inline styles), so dropping "style"
+     changes no behavior; it stops the console CSP violation.  class /
+     width / height (the rest of htmx's default) still settle. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"attributesToSettle":["class","width","height"],"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
 
   {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
      The CSP forbids external origins (audit F-037), so every CSS/JS/font
