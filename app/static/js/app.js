@@ -525,7 +525,7 @@ document.addEventListener('keydown', function(e) {
     return gridTable;
   }
 
-  /** Return all data rows (tbody tr that are not banners/spacers/group headers). */
+  /** Return all data rows (tbody tr that are not banners/spacers/headers). */
   function getDataRows() {
     var table = getGridTable();
     if (!table) return [];
@@ -534,6 +534,7 @@ document.addEventListener('keydown', function(e) {
              !tr.classList.contains('section-banner-expense') &&
              !tr.classList.contains('spacer-row') &&
              !tr.classList.contains('group-header-row') &&
+             !tr.classList.contains('item-header-row') &&
              !tr.classList.contains('subtotal-row') &&
              !tr.classList.contains('net-cash-flow-row');
     });

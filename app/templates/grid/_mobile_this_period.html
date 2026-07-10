@@ -108,11 +108,13 @@
        aria-label="Previous period">
       <i class="bi bi-chevron-left"></i>
     </a>
+    {# P-GR5 (ruled 2026-07-09): the label alone -- the old muted
+       date-range subtitle restated the label verbatim, the third of
+       three period statements in a row (heading, subtitle, jump
+       select).  The heading navigates, the select fast-travels; the
+       subtitle had no function. #}
     <div class="text-center">
       <div class="fw-bold">{{ period.label }}</div>
-      <small class="text-muted">
-        {{ period.start_date.strftime('%-m/%-d') }} -- {{ period.end_date.strftime('%-m/%-d') }}
-      </small>
     </div>
     <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('grid.index', periods=1, offset=start_offset + 1) }}#this-period"
@@ -167,15 +169,39 @@
     </div>
     <div class="collapse show" id="mobile-tp-income-{{ period.id }}">
       <ul class="list-group list-group-flush">
-        {% set ns_inc = namespace(current_group='') %}
+        {# S12 category spine, mobile half (D3+D4 ruling): the group
+           header is skipped when it restates the section card header
+           ("Income" under the Income card), and a child-category
+           item header renders where the category holds 2+ rows in
+           the section's full row-key set -- the same rule as the
+           desktop grid, so an item is "headed" or "inline"
+           consistently across views. #}
+        {% set ns_inc = namespace(current_group='', current_item=none) %}
         {% for rk in income_row_keys %}
           {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
           {% if matched %}
             {% if rk.group_name != ns_inc.current_group %}
               {% set ns_inc.current_group = rk.group_name %}
+              {% set ns_inc.current_item = none %}
+              {% if rk.group_name | lower != 'income' %}
               <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
                 {{ rk.group_name }}
               </li>
+              {% endif %}
+            {% endif %}
+            {% if rk.item_name != ns_inc.current_item %}
+              {% set ns_inc.current_item = rk.item_name %}
+              {% if rk.item_name %}
+                {% set item_run = income_row_keys
+                   | selectattr('group_name', 'equalto', rk.group_name)
+                   | selectattr('item_name', 'equalto', rk.item_name)
+                   | list | length %}
+                {% if item_run >= 2 %}
+              <li class="list-group-item py-1 px-3 small mobile-item-header">
+                {{ rk.item_name }}
+              </li>
+                {% endif %}
+              {% endif %}
             {% endif %}
             {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
@@ -203,15 +229,34 @@
     </div>
     <div class="collapse show" id="mobile-tp-expense-{{ period.id }}">
       <ul class="list-group list-group-flush">
-        {% set ns_exp = namespace(current_group='') %}
+        {# S12 category spine, mobile half -- same structure as the
+           income list above. #}
+        {% set ns_exp = namespace(current_group='', current_item=none) %}
         {% for rk in expense_row_keys %}
           {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
           {% if matched %}
             {% if rk.group_name != ns_exp.current_group %}
               {% set ns_exp.current_group = rk.group_name %}
+              {% set ns_exp.current_item = none %}
+              {% if rk.group_name | lower not in ('expense', 'expenses') %}
               <li class="list-group-item py-1 px-3 text-muted small fw-semibold text-uppercase mobile-group-header">
                 {{ rk.group_name }}
               </li>
+              {% endif %}
+            {% endif %}
+            {% if rk.item_name != ns_exp.current_item %}
+              {% set ns_exp.current_item = rk.item_name %}
+              {% if rk.item_name %}
+                {% set item_run = expense_row_keys
+                   | selectattr('group_name', 'equalto', rk.group_name)
+                   | selectattr('item_name', 'equalto', rk.item_name)
+                   | list | length %}
+                {% if item_run >= 2 %}
+              <li class="list-group-item py-1 px-3 small mobile-item-header">
+                {{ rk.item_name }}
+              </li>
+                {% endif %}
+              {% endif %}
             {% endif %}
             {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
           {% endif %}

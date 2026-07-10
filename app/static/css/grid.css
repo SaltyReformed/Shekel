@@ -8,7 +8,9 @@
    base.css.  INTERNAL ORDER IS LOAD-BEARING -- in particular the
    .grid-table th/td border reset must precede the subtotal /
    net-cash-flow / balance-row border-top rules (equal specificity),
-   td.cur must precede td.cell-focused, base rules must precede the
+   the S12 zebra band rules must precede the hover / keyboard-cursor
+   re-asserts that follow them (equal specificity; source order is
+   what lets hover beat the bands), base rules must precede the
    media blocks, and the three media blocks stay in descending
    breakpoint order.  See docs/design/css_architecture_audit.md. */
 
@@ -107,6 +109,11 @@ thead .sticky-col {
   /* Down from the th browser-default bold: the label must not out-weigh
      the money figure beside it (S16 ink hierarchy, polish audit D15). */
   font-weight: 600;
+  /* S12 category spine: every row label shares one indented left edge
+     under its group header, whether or not a child-category item
+     header sits above it -- three ledger levels (group flush, item
+     header at 0.85rem, rows here). */
+  padding-left: 1.6rem;
 }
 
 /* Column contract (polish audit P-GR2).  table-layout:fixed sizes
@@ -171,15 +178,13 @@ thead .sticky-col {
   border-left: 2px solid var(--shekel-border-strong);
 }
 
-/* Current pay period: accent top rule on the header plus a faint
-   tint down the body column. */
-.grid-table thead th.current-period {
-  box-shadow: inset 0 2px 0 var(--shekel-accent);
-}
-
-.grid-table td.cur {
-  background-color: color-mix(in srgb, var(--shekel-accent) 7%, transparent);
-}
+/* Current pay period: NO visual treatment (S12 Loop B ruling,
+   2026-07-09 -- the accent header rule and column tint were judged
+   redundant since the current period is the first column at the
+   default view).  The th.current-period / td.cur classes still render:
+   they are semantic hooks -- command_palette.js prefers the current
+   period's cell for add-purchase actions and app.js starts the
+   keyboard cursor at th.current-period. */
 
 /* Status chips: settled and credit amounts render as filled pills;
    projected stays plain text until hover previews the chip. */
@@ -299,6 +304,45 @@ thead .sticky-col {
 }
 
 /* =============================================
+   S12 WHISPER ZEBRA (D3+D4 ruling, 2026-07-09)
+   ============================================= */
+/* Row bands step DARKER than the surface (ruled: engraved to the page,
+   never lighter -- lighter is the hover's direction, so the two can
+   never be confused).  grid.html stamps data-band 0/1 on every txn
+   row, resetting at section banners and at every emitted group / item
+   header.  Cells render var(--bs-table-bg) = --shekel-surface, so the
+   band steps from there: dark drops to the page bg (1.13:1 on the
+   Graphite ladder); light steps toward the warm hover gray. */
+[data-bs-theme="dark"] .grid-table tbody tr[data-band="1"] > td,
+[data-bs-theme="dark"] .grid-table tbody tr[data-band="1"] > th.sticky-col {
+  background-color: var(--shekel-page-bg);
+}
+
+[data-bs-theme="light"] .grid-table tbody tr[data-band="1"] > td,
+[data-bs-theme="light"] .grid-table tbody tr[data-band="1"] > th.sticky-col {
+  background-color: color-mix(in srgb, var(--shekel-surface) 78%, var(--shekel-row-hover));
+}
+
+/* Hover and the keyboard cursor must beat the bands.  Same specificity
+   as the band rules; SOURCE ORDER (this block after the bands) is the
+   tiebreaker -- see the load-order note in the file header.  Scoped to
+   tr[data-band] (every txn row carries the attribute, 0 or 1) so the
+   label cell now takes the mild hover tint too, keeping a hovered
+   banded row from reading half-lit. */
+.grid-table tbody tr[data-band]:hover > td,
+.grid-table tbody tr[data-band]:hover > th.sticky-col {
+  background-color: color-mix(in srgb, var(--shekel-surface) 65%, var(--shekel-row-hover));
+}
+
+.grid-table tbody tr[data-band]:hover > td:hover {
+  background-color: var(--shekel-row-hover);
+}
+
+.grid-table tbody tr[data-band] > td.cell-focused {
+  background-color: var(--shekel-row-hover);
+}
+
+/* =============================================
    SECTION BANNERS
    ============================================= */
 .section-banner-income td {
@@ -323,14 +367,56 @@ thead .sticky-col {
   padding-bottom: 0.5rem;
 }
 
-/* Category sub-headers */
+/* Category group headers -- boosted per the S12 D3+D4 ruling so the
+   groups visibly break up the grid (12px secondary ink over the
+   raised tint, strong top rule). */
 .group-header-row td {
   background-color: var(--shekel-group-header-bg);
-  font-size: 11px;
+  font-size: 0.75rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
-  padding: 0.25rem 0.5rem;
-  color: var(--shekel-text-muted);
+  letter-spacing: 1px;
+  padding: 0.35rem 0.5rem;
+  color: var(--shekel-text-secondary);
+  border-top: 2px solid var(--shekel-border-strong);
+}
+
+/* Child-category item headers (S12 category spine): quieter than a
+   group header -- no fill, sentence case, indented between the group
+   edge and the row labels.  Emitted by grid.html only where a child
+   category holds 2+ rows; singleton rows carry their category in the
+   row-label tooltip instead. */
+.item-header-row td {
+  background-color: transparent;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--shekel-text-secondary);
+  padding: 0.35rem 0.5rem 0.1rem 0.85rem;
+  border-right: 0;
+}
+
+/* Pin for colspan header-row text (section banners, group headers,
+   item headers): the cell spans the full table width, so under
+   horizontal scroll its text would ride off-screen with the columns
+   (the cell itself cannot stick -- it IS the full row).  An inline
+   sticky element CAN pin within the wide cell, so every header label
+   stays readable while the periods scroll (S12 Loop B; the banner and
+   group-header halves fix a pre-existing gap the spine made louder). */
+.hdr-pin {
+  position: sticky;
+  left: 0.5rem;
+  display: inline-block;
+}
+
+/* The base cell rule clips overflow (ellipsis for amounts), but an
+   overflow-hidden ancestor becomes a sticky element's containment box
+   -- the pin would stick to the cell instead of the scrollport.  The
+   full-width header cells never need the clip, so lift it there. */
+.section-banner-income td,
+.section-banner-expense td,
+.group-header-row td,
+.item-header-row td {
+  overflow: visible;
 }
 
 /* Spacer row between sections */
@@ -420,11 +506,15 @@ thead .sticky-col {
 /* =============================================
    STATUS BADGES
    ============================================= */
-/* Shared chip shape; only the background token differs per status. */
+/* Shared chip shape.  Tinted-background treatment (polish audit P-GR6,
+   S12 Loop B): the old solid pills set white on the raw state color --
+   ~2.2:1 on done-green and ~3.1:1 on credit-violet at 11px bold, far
+   under AA.  State-colored text on the state's own 16% tint matches
+   the desktop .txn-chip grammar and clears AA on every tier (verified
+   in the S16 round's chip-tint checks). */
 .badge-done,
 .badge-credit {
   display: inline-block;
-  color: #fff;
   font-size: 0.6875rem;
   font-weight: 700;
   padding: 0.1rem 0.35rem;
@@ -434,11 +524,13 @@ thead .sticky-col {
 }
 
 .badge-done {
-  background-color: var(--shekel-done);
+  background-color: color-mix(in srgb, var(--shekel-done) 16%, var(--shekel-surface));
+  color: var(--shekel-done);
 }
 
 .badge-credit {
-  background-color: var(--shekel-credit);
+  background-color: color-mix(in srgb, var(--shekel-credit) 16%, var(--shekel-surface));
+  color: var(--shekel-credit);
 }
 
 /* =============================================
@@ -660,6 +752,15 @@ thead .sticky-col {
   cursor: pointer;
   transition: background-color 0.1s;
   min-height: 44px;
+}
+
+/* Child-category header in the mobile lists (S12 category spine,
+   mobile half): a quieter sibling of .mobile-group-header -- sentence
+   case, secondary ink, indented one step. */
+.mobile-item-header {
+  color: var(--shekel-text-secondary);
+  font-weight: 600;
+  padding-left: 1.25rem;
 }
 
 .mobile-txn-card:active,

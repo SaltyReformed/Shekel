@@ -3390,6 +3390,13 @@ class TestTransactionNameRows:
     ):
         """Transaction rows do not have excluded CSS classes; group headers,
         subtotals, and banners do.
+
+        The Income group header is intentionally suppressed under the INCOME
+        banner (S12 D3+D4 ruling: a group header is skipped when it would
+        merely restate the section banner). So a non-section-named group must
+        be present to assert the ``group-header-row`` class renders: the
+        expense-side "Home" group (Rent) is not named "expense"/"expenses",
+        so its header is not suppressed.
         """
         with app.app_context():
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -3397,7 +3404,7 @@ class TestTransactionNameRows:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
+            income_txn = Transaction(
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -3407,7 +3414,20 @@ class TestTransactionNameRows:
                 transaction_type_id=income_type.id,
                 estimated_amount=Decimal("2000.00"),
             )
-            db.session.add(txn)
+            # Expense in the "Home" group so a real (non-suppressed) group
+            # header renders -- the "Income" group header is dropped as
+            # redundant with the INCOME banner.
+            expense_txn = Transaction(
+                pay_period_id=current.id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Rent",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("1500.00"),
+            )
+            db.session.add_all([income_txn, expense_txn])
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
