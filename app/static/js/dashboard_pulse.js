@@ -44,6 +44,42 @@
   }
 
   /**
+   * Inline plugin: name the low-balance threshold line on the canvas.
+   * Unlabeled it reads as chart chrome, especially when it hugs the
+   * y-minimum (polish audit P-DB7; D11 ruling: structural markers
+   * carry a text label). Mirrors ShekelChart.todayMarkerPlugin.
+   * @param {number} threshold - Threshold value in dollars.
+   * @param {string} color - Warning ink shared with the dashed line.
+   * @returns {object} A Chart.js plugin.
+   */
+  function thresholdLabelPlugin(threshold, color) {
+    return {
+      id: "shekelThresholdLabel",
+      afterDatasetsDraw: function (chart) {
+        var yScale = chart.scales.y;
+        if (!yScale) return;
+        var y = yScale.getPixelForValue(threshold);
+        if (!Number.isFinite(y) || y < yScale.top || y > yScale.bottom) {
+          return;
+        }
+        var ctx = chart.ctx;
+        ctx.save();
+        ctx.fillStyle = color;
+        // 11px: the app-wide type floor (polish audit RC4).
+        ctx.font = "11px 'Inter', system-ui, sans-serif";
+        ctx.textAlign = "right";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(
+          "Low balance " + ShekelChart.formatMoney(threshold, false),
+          chart.chartArea.right - 4,
+          y - 3
+        );
+        ctx.restore();
+      }
+    };
+  }
+
+  /**
    * Build (or rebuild) the projected end-balance chart from the
    * canvas's ``data-chart`` JSON: {labels: [], values: [], threshold}.
    * @param {Element|Document} root - Subtree containing the canvas.
@@ -98,7 +134,9 @@
         }
       }];
 
-      if (data.threshold !== null && data.threshold !== undefined) {
+      var hasThreshold =
+        data.threshold !== null && data.threshold !== undefined;
+      if (hasThreshold) {
         datasets.push({
           data: data.labels.map(function () { return data.threshold; }),
           borderColor: warning,
@@ -112,6 +150,9 @@
       return {
         type: "line",
         data: { labels: data.labels, datasets: datasets },
+        plugins: hasThreshold
+          ? [thresholdLabelPlugin(data.threshold, warning)]
+          : [],
         options: {
           responsive: true,
           maintainAspectRatio: false,
