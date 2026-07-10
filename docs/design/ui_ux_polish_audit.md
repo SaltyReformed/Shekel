@@ -370,9 +370,12 @@ Section 4.
 - **P-AN10 [decision -> D7]** Where It Went + Top Movers restructure (O31-O34): share-bar tracks
   mostly empty (largest fill 40%); four encodings pile into the right 30% with ragged alignment;
   every Top Mover delta already on screen in the list; three text answers to one "what changed"
-  question. Redesign fork - Loop A.
+  question. Redesign fork - Loop A. **RULED 2026-07-10: see the D7 resolution** (direction A cockpit
+  form; builds in S14 Loop B).
 - **P-AN11 [polish]** "VS MAY $2,509.82" reads as May's total but is the absolute delta,
   disambiguated only by a muted caption - caption/figure agreement in spirit.
+  **Fix form ruled 2026-07-10 (D7):** the chip shows the signed delta with the prior month's total
+  in the caption; builds in S14 Loop B.
 
 ### Analytics - Statements
 
@@ -547,6 +550,50 @@ which needs a token proposal ratified on real-page mockups before their dependen
   and lead with a chart card per cockpit grammar. Redesign fork - needs Loop A; recommend scheduling
   it as its own screen rebuild after the mechanical waves. **RULED 2026-07-09: Loop A approved;
   leading with the chart card per cockpit grammar is confirmed as the anchor of every direction.**
+  **RESOLVED 2026-07-10 (S14 Loop A): direction A, "months lead," in cockpit form.** Four chart-led
+  candidates ran on the real June 2026 data in a direction-switching viewer (months-lead emphasis
+  chart / per-group small multiples / diverging vs-prior chart / hero-canvas sparkbars), with the
+  live page as a baseline tab. The ruled form:
+  - ONE pulse canvas in the dashboard / accounts / salary grammar (hero + chips + chart in one band;
+    no chart card, no card-header strip). The month picker is PAGE chrome (header top right,
+    whole-tab scope - a developer correction to the round's first cockpit draft, which had parked it
+    in-canvas where it read as a chart control); the chart bars double as click-to-navigate (Loop B
+    wires it); the in-canvas caption states both ("settled spending by month - click a bar to jump
+    to that month").
+  - Lead chart: monthly settled totals, trailing-12 window, EMPHASIS form (viewed month in accent,
+    other months muted gray), dashed muted 6-mo-avg reference line with a text label (per D11), y
+    ticks at 2k/4k/6k, value labels only on the viewed month and its comparison month. Months with
+    no settled rows render a small baseline tick (NOT a $0 bar) plus one "settled history begins Mar
+    2026" note.
+  - Merged ledger ("Where It Went"): the Top Movers card is DELETED; a "By size / By change" lens
+    pill toggles one row set. **Change basis is MONTH-OVER-MONTH vs the prior month** (developer
+    ruling 2026-07-10). By size keeps the group-to-item ledger with bars CAPPED to the largest row
+    (bar length = relative magnitude; the % text stays share-of-total). By change is flat, sorted by
+    absolute delta, with a center-zeroed diverging minibar, a signed colored delta, and the viewed
+    month's total per row.
+  - Per-row sparklines are DROPPED (developer: unnecessary with the bar chart; rows fall to two
+    encodings). P-AN11 fix form: the vs-prior chip shows the SIGNED delta with the prior month's
+    total in the caption (`"-$2,509.82 / -41.6% - May total $6,036.73"`).
+  - Riders, all approved 2026-07-10: categories with prior-month spend but none in the viewed month
+    appear as `$0.00` rows under By change (Mortgage, Savings Transfer, Birthday in the June data);
+    singleton groups collapse to one row ("Credit Card - Payback"; the grid D3 singleton rule ported
+    - today two identical `$784.01` rows render); Estimate Surprises keeps its rail unchanged.
+  Data findings that shaped the ruling: the per-period-trend change basis misleads on a month-anchored
+  page (real June data: Car Payment listed as a +100.00% Top Mover while June exactly equals May at
+  `$531.94`; Mortgage/Rent, the single largest change at `-$1,910.95` to zero - it never settled
+  inside June - appeared NOWHERE in Top Movers); settled history is 4 months deep (Mar-Jun 2026), so
+  the chart must degrade gracefully; a 5-series stacked-by-group chart was rejected before
+  presentation (a one-hue steel ramp fails the dataviz palette validator - adjacent steps read as one
+  gray, darkest steps 1.4-2.1:1 on the dark surface - and a multi-hue ramp would break Steel Ink's
+  one-chroma commitment); small multiples was the compliant sibling and lost to A on taste. Loop B
+  build order: (1) OPUS data slice - expose the monthly-totals series (the hero already computes these
+  windows) and prior-month per-category totals for the MoM deltas including zero-current rows; with
+  sparklines and Top Movers gone the per-period trend engine has no remaining consumer on this tab
+  (ItemTrend display, movers, and the sparkline serializer retire; evaluate for dead code). (2) FABLE
+  page slice - template + analytics.css rebuild per the ruled form, chart in the app chart grammar
+  with click-to-navigate bars; mobile reflows the ledger to name / delta / amount and compresses the
+  chart. Scratch viewer (real data, all four candidates) at
+  ~/Documents/spending_directions_mockup.html until Loop B ships.
 - **D8. Statement section distinction (O35).** Options: (a) tint only the Income Statement with the
   existing income/expense banner tokens, Balance Sheet gets stronger typographic headers; (b) add a
   neutral accent-tinted section-banner variant used by ALL statement sections

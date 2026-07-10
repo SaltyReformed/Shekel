@@ -198,9 +198,17 @@ context per the model discipline, plus the matching negative-marker test.
 
 ### S14. Loop A: spending restructure (D7; subsumes P-AN10/P-AN11) -- FABLE (highest value), size L
 
-Chart-card lead is confirmed as every direction's anchor. Merge Where It Went + Top Movers into one
-change-focused visual; movers as sort/filter of the same rows; cap the share bars. Loop B build
-follows. If any new aggregate is needed for the chart, that data slice is Opus.
+**LOOP A COMPLETE + RULED 2026-07-10** (four chart-led candidates on real June 2026 data in a
+direction-switching viewer; ruling, data findings, and the Loop B build order recorded inline at D7
+in the audit register). Ruled form: direction A "months lead" in cockpit form - one pulse canvas
+(hero + chips + trailing-12 emphasis month chart, no chart card), month picker as page chrome with
+click-to-navigate bars, merged ledger with a By size / By change lens on a MONTH-OVER-MONTH basis,
+Top Movers card deleted, sparklines dropped, capped bars, P-AN11 signed-delta chip fix,
+singleton-group collapse, zero-month rows, surprises rail unchanged.
+**Loop B next, two slices in order:** (1) OPUS data slice - monthly-totals series + prior-month
+per-category totals (incl. zero-current rows); retire the tab's per-period trend consumers
+(ItemTrend display, movers, sparkline serializer). (2) FABLE page build - template + analytics.css +
+chart wiring per the D7 record.
 
 ### S15. Loop A: brand wordmark (D2) -- FABLE, size S
 
