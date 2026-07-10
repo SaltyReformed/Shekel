@@ -63,6 +63,16 @@ navigation (hx-push-url, direct tab GETs render their tab). Independent of every
 run any time. Note: P-AN6 needs NO route plumbing - `analytics.py` already passes
 `low_balance_threshold` - so the calendar threshold work is display-side in S5. Splittable into
 two smaller Opus sessions (salary | analytics) if context is tight.
+**SESSION COMPLETE 2026-07-10** (run on Fable 5, which supersedes Opus in capability; full suite
+7297 green, pylint 10.00/10). P-SA1: banner collapsed to the run start via a shared
+`raise_run_starts` seam + public `get_raise_event`; the anatomy template is unchanged. P-AN4: the
+calendar CSV removed root-and-branch (2 buttons, route branch + `_csv_response` + imports,
+`csv_export_service.py` + `test_csv_export_service.py` deleted, stale `year_end` comment fixed);
+`format=csv` is now inert. D13: pills push their URL; direct (non-HTMX) tab GETs render the shell
+with that tab active (guard-before-render preserves the IDOR 404); the auto-load moved to the
+`#tab-content` spinner so the first fetch never pushes (Back-button safe). Flagged out-of-scope:
+`salary/projection.html` badges every period of a raise run (same genus as P-SA1, different table
+surface). NOT yet committed.
 
 ### S4. Recurring bundle (P-RC1, P-RC2, P-RC4, P-RC5, archive swap) -- OPUS CAPABLE, size S
 

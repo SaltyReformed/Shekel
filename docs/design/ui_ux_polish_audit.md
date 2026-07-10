@@ -45,7 +45,7 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O17 | Accounts: too many cards, busy | CONFIRMED (14 equal-weight surfaces) | D6 |
 | O18 | Accounts: sections hard to distinguish | CONFIRMED (11px muted labels only) | D6 |
 | O19 | Accounts: bar segment without legend | CONFIRMED; NOT a data bug (empty track) | P-AC1 |
-| O20 | Salary: raise banner repeats every paycheck | CONFIRMED; service-layer root cause | P-SA1 |
+| O20 | Salary: raise banner repeats every paycheck | FIXED 2026-07-10 (S3) | P-SA1 |
 | O21 | Edit Salary Profile not rethemed | CONFIRMED (residue, not wholesale) | P-SA2 |
 | O22 | Salary Path chart unlabeled axes | CONFIRMED (deliberate sparkline config) | P-SA4 |
 | O23 | Pension Profiles not rethemed | CONFIRMED + a real mobile overflow bug | P-RT1 |
@@ -55,7 +55,7 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O27 | Analytics: tabs vs tab header redundant | CONFIRMED (title appears up to 5 times) | P-AN2 |
 | O28 | Analytics: tabs don't read as tabs | CONFIRMED (structural too: URL never changes) | P-AN2 |
 | O29 | Calendar: almost-cockpit | CONFIRMED (no hero; scattered month nav) | P-AN3 |
-| O30 | Calendar: remove CSV export | Located (routes + service + 2 buttons) | P-AN4 |
+| O30 | Calendar: remove CSV export | FIXED 2026-07-10 (S3) | P-AN4 |
 | O31 | Spending: not quite cockpit | PARTLY (hero band is cockpit; below is not) | D7 |
 | O32 | Where It Went disjointed | CONFIRMED (4 encodings pile into right 30%) | D7 |
 | O33 | Top Movers + Where It Went should merge | CONFIRMED (every mover % appears twice) | D7 |
@@ -269,10 +269,17 @@ Section 4.
 
 ### Salary
 
-- **P-SA1 [bug, service layer]** Raise banner repeats on every paycheck of the raise month (O20):
-  `salary_cockpit_service.py:151-153` sets `raise_event` on every period; templates render it
-  verbatim. A run-collapsing helper (`_is_raise_run_start`) already exists for the "next raise" chip
-  - reuse that seam. OPUS session (financial-logic file).
+- **P-SA1 [bug, service layer - FIXED 2026-07-10 (S3)]** Raise banner repeated on every paycheck of
+  the raise month (O20): the calculator badges `raise_event` on every period of a raise month, so
+  the cockpit anatomy banner reappeared on each. Fixed by collapsing the banner to the run's first
+  paycheck: `paycheck_calculator._get_raise_event` promoted to public `get_raise_event`; a shared
+  `salary_cockpit_service.raise_run_starts(current, prev)` seam extracted (the pairs-indexed
+  `_is_raise_run_start` now delegates to it, reused from the "next raise" chip); `cockpit`'s
+  `_anatomy_context` computes the predecessor's event via `get_raise_event` and passes `raise_event`
+  only on the run start (`_anatomy.html` unchanged). Tests: `TestRaiseRunStarts` (7) + two anatomy
+  route tests (banner shows on run start, hidden on continuation). **OUT OF SCOPE, flagged:**
+  `salary/projection.html` also badges every period of a run (`sal-badge-raise` per row) - the same
+  genus on a different (table) surface, not named in this finding; left for a separate call.
 - **P-SA2 [consistency]** Edit-profile residue (O21): `table-light` thead strips (RC3), `bg-info`
   pre-tax badges + `text-info` icons (RC3), bare `h4` title over a header-less first card
   (stacked-card layout itself is the documented form_card exception - keep).
@@ -323,9 +330,13 @@ Section 4.
   full-width scattered row unlike any other page (and unlike Spending's own picker - three month-nav
   idioms exist inside one Analytics page). Consolidate on one shared picker component; give the
   strip a hero.
-- **P-AN4 [approved removal]** CSV export (O30): buttons in `_calendar_month.html:54-56` and
-  `_calendar_year.html:18-20`, the `format=csv` branch in `analytics.py:162-187`, and
-  `csv_export_service.export_calendar_csv`. Route/service removal = OPUS session.
+- **P-AN4 [approved removal - FIXED 2026-07-10 (S3)]** CSV export (O30) removed root-and-branch: the
+  two calendar buttons, the `format=csv` branch + the `_csv_response` helper + the
+  `csv_export_service`/`make_response` imports in `analytics.py`, the whole `csv_export_service.py`
+  module, and `test_csv_export_service.py` all deleted; the stale `csv_export_service` mention in
+  `year_end_summary_service/__init__.py` corrected. `format=csv` is now an inert query arg (renders
+  the normal calendar / the D13 shell). `TestCsvExport` rewritten to `TestCsvExportRetired`; C-30
+  IDOR CSV tests reworked onto the non-HTMX path.
 - **P-AN5 [bug]** Payday cell tint is translucent over the grid-gap backdrop, not the cell surface
   (`analytics.css:95-97`), so light-mode paydays render flat putty-gray and read as disabled. Use an
   opaque `color-mix` with the surface.
@@ -565,7 +576,13 @@ which needs a token proposal ratified on real-page mockups before their dependen
 - **D13. Analytics tabs as navigation.** Visual fixes (RC2, heading collapse) are decided by the
   design language; the structural half - hx-push-url so each tab is a real URL and direct GETs load
   their own tab - changes route behavior. Recommend yes, in the Opus wave.
-  **RULED 2026-07-09: as recommended (yes; Opus session).**
+  **RULED 2026-07-09: as recommended (yes; Opus session).** **IMPLEMENTED 2026-07-10 (S3):** each
+  pill carries `hx-push-url="true"` (click pushes its URL); every tab route renders the shell with
+  `active_tab` pre-selected on a non-HTMX GET (after its ownership guard, so a cross-user id still
+  404s) instead of redirecting to Calendar. The initial auto-load moved OFF the pill ONTO the
+  `#tab-content` spinner (`hx-trigger="load"`, no push) so the first fetch never pushes a URL -
+  which avoids a Back-button stuck-spinner trap. The internal Statements toggle (income/balance)
+  stays sub-navigation, not deep-linked (tab-level scope).
 - **D14. Anchor-recording idiom on detail pages.** Three siblings, three gestures (P-DT8). Recommend
   standardizing on the investment click-to-edit hero (the most discoverable), added to loan and cash
   in a later pass; not urgent.
