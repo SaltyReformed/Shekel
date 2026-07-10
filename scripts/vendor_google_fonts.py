@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- Vendor Google Fonts CSS + Variable-Font woff2 Files
 
-Refreshes the locally vendored Inter and JetBrains Mono assets under
-``app/static/vendor/fonts/``.  Idempotent: every run downloads the
+Refreshes the locally vendored Inter, JetBrains Mono, and Besley assets
+under ``app/static/vendor/fonts/``.  Idempotent: every run downloads the
 upstream Google Fonts CSS, extracts the latin and latin-ext
 ``@font-face`` blocks, downloads each unique woff2 file, and emits a
 self-hosted CSS file that references the local files.
@@ -31,13 +31,15 @@ import urllib.request
 from pathlib import Path
 
 
-# Google Fonts CSS endpoint, fully pinned to the Inter (3 weights) and
-# JetBrains Mono (2 weights) shapes the app actually uses.  Bumping a
-# weight or family means editing this URL.
+# Google Fonts CSS endpoint, fully pinned to the shapes the app actually
+# uses: Inter (3 weights, UI text), JetBrains Mono (3 weights -- the 500
+# stop is the S16 money-figure ink), and Besley 700 (the brand wordmark,
+# polish audit D2).  Bumping a weight or family means editing this URL.
 FONTS_URL = (
     "https://fonts.googleapis.com/css2"
-    "?family=Inter:wght@400;600;700"
-    "&family=JetBrains+Mono:wght@400;700"
+    "?family=Besley:wght@700"
+    "&family=Inter:wght@400;600;700"
+    "&family=JetBrains+Mono:wght@400;500;700"
     "&display=swap"
 )
 
@@ -176,7 +178,10 @@ def _write_fonts_css(
         out_dir: Directory receiving ``fonts.css``.
     """
     header = [
-        "/* Self-hosted Google Fonts -- Inter, JetBrains Mono.",
+        "/* Self-hosted Google Fonts -- Inter, JetBrains Mono, Besley.",
+        " * Inter: UI text.  JetBrains Mono: money figures (the 500 stop",
+        " * is the S16 ink hierarchy).  Besley 700: the brand wordmark",
+        " * (.shekel-wordmark, polish audit D2).",
         " * Subsets: latin, latin-ext only (English-language app).",
         " * Source: https://fonts.googleapis.com/css2",
         " * Subsets dropped: cyrillic, cyrillic-ext, greek, greek-ext,",
