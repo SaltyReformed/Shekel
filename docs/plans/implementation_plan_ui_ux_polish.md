@@ -112,6 +112,10 @@ Make the allocation-bar track read as a track (and the center tick visible), lia
 loan card balances, property-card dead space, archive button per S1, and the ruled Transfer -> kebab
 demotion. P-AC5 (legacy goals/EF card anatomy) deliberately deferred to S13's Loop B, since D6 may
 reshape that whole section. P-AC1 is the judgment item.
+**Scope shrunk by S13's build (2026-07-10):** the kebab move, P-AC2, and P-AC6 landed with the D6-F
+cell rebuild. Remaining here: P-AC1 (allocation-bar track + center tick), P-AC4 (liability red on
+the cell balances), and the archive-button sweep (the cockpit has no on-card archive button left -
+verify the account edit form and archived list against the S1 convention).
 
 ### S10. Breadcrumb removal + back buttons (D1) -- OPUS recommended, size M
 
@@ -157,6 +161,19 @@ re-judging nothing else - the D3+D4 spine ruling stands as recorded.
 
 Directions around tinted/ruled group banners and card-weight reduction; dense list rows are ruled
 OUT. Loop B build includes P-AC5 (goals/EF cards to the chosen anatomy).
+**Loop A COMPLETE + RULED 2026-07-10** (two rounds on the live-DB page via a direction-switching
+viewer + artifact decision sheet). Round 1 (banners / banners+quiet / panels / ledger rules) was
+rejected - restyling did not reduce the fourteen equal-weight surfaces - and round 2's structural
+axis was ruled: **direction F "group cells"** (one card per category, tinted banner header, accounts
+as chip-cells; the three derivative cards - Debt Summary, Home Equity, EF Coverage - folded into
+their groups). Full ruling inline at D6 in the audit register.
+**LOOP B BUILT 2026-07-10 - SESSION COMPLETE** (savings/_cockpit.html + savings/dashboard.html +
+accounts.css; template + CSS only, no service changes - equity matched by account id from the
+existing `property_equity` context). Fourteen surfaces -> five (hero + four group cards); P-AC5
+(goals/EF re-housed into the Savings group card), P-AC2 (Payoff Strategies amber outline -> foot
+link), and P-AC6 (property dead space) land here; S9's "D6 kebab move" is subsumed. Seven
+redesign-coupled test assertions (old Debt Summary / EF Coverage headings) refitted in an Opus
+context per the model discipline, plus the matching negative-marker test.
 
 ### S14. Loop A: spending restructure (D7; subsumes P-AN10/P-AN11) -- FABLE (highest value), size L
 

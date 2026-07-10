@@ -251,15 +251,20 @@ Section 4.
   half of the diverging allocation bar, styled `--shekel-border-subtle` - dark enough to read as a
   fourth data series whose width happens to encode net worth. Presentational fix: make the track
   visibly a track (or label the gap), and make the center tick visible.
-- **P-AC2 [consistency]** "Payoff Strategies" is `btn-outline-warning` - RC3.
+- **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
+  `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
+  accent link in the Liabilities group-card footer.
 - **P-AC3 [polish]** Asset vs Retirement bar blues are adjacent same-hue mixes (`rgb(70,147,190)` vs
   `rgb(58,117,151)`) - same genus as P-RT2; fix together (D12 covers the ramp policy).
 - **P-AC4 [consistency]** Liability red applied to chip, subtotal, and bar segment but not to the
   loan card balances themselves - one quantity, two treatments on one screen.
-- **P-AC5 [consistency]** Savings Goals + Emergency Fund keep pre-cockpit anatomy (legacy
-  progress-bar cards, accent-colored money, badge grammar) below the new cockpit cards.
-- **P-AC6 [polish]** Property card dead space (no sparkline by design; row-stretch leaves an empty
-  middle).
+- **P-AC5 [consistency - FIXED 2026-07-10 (S13 Loop B)]** Savings Goals + Emergency Fund keep
+  pre-cockpit anatomy (legacy progress-bar cards, accent-colored money, badge grammar) below the new
+  cockpit cards. Fixed: both re-housed into the "Savings" group card per the D6-F ruling (goals as
+  blocks in the card body, coverage as the card's footer line).
+- **P-AC6 [polish - FIXED 2026-07-10 (S13 Loop B)]** Property card dead space (no sparkline by
+  design; row-stretch leaves an empty middle). Fixed structurally: the F-cell anatomy has no
+  stretched middle; the Property cell carries the folded equity caption instead.
 - Busy-ness / weak section separation: D6.
 
 ### Salary
@@ -472,6 +477,23 @@ which needs a token proposal ratified on real-page mockups before their dependen
   answers O18.
   **RULED 2026-07-09: Loop A approved with (b) dense list rows REJECTED as a direction**; moving the
   per-card Transfer button into the kebab is approved outright.
+  **RESOLVED 2026-07-10 (S13 Loop A, two rounds): direction F "group cells."** Round 1 ran four
+  chrome restylings on the live-DB page (neutralized banners / banners + quiet cards / hairline-tile
+  panels / untinted ledger rules); the developer rejected the round - restyling left fourteen
+  equal-weight surfaces fourteen - naming B (banners + quiet cards) best-looking, so B became round
+  2's base. Round 2 exercised the structural axis (fold-ins / cells / bands) and the developer ruled
+  F: ONE card per category with a tinted banner header (12% accent mix over surface, 3px accent left
+  rule, accent title, pluralized labels Assets / Liabilities, subtotal in-band) and each account as
+  a chip-cell inside it - the dashboard's stat-chip grammar - carrying the name link with the Setup
+  Required / Paid Off badges, the click-to-edit mono balance, one caption line, a muted sparkline
+  (55% accent mix), and a quiet corner kebab (Transfer / Edit / Archive; S9's "D6 kebab move" is
+  subsumed here). Ratified fold-ins for the three derivative cards: Home Equity becomes an "Equity
+  $X - LTV Y%" caption on the Property cell; Debt Summary becomes the Liabilities card's footer line
+  (monthly / avg rate / debt-free / DTI badge + the Payoff Strategies link, which retires that
+  button's amber outline, P-AC2); Emergency Fund Coverage becomes the Savings group card's footer
+  line beneath the goals (the P-AC5 re-housing). The Total Debt row is not repeated in the foot - it
+  equals the banner subtotal. Fourteen equal-weight surfaces collapse to five (hero + four group
+  cards), page ~35% shorter; bands (G) and fold-ins-only (E) were the losing round-2 candidates.
 - **D7. Spending tab restructure (O31-O34).** Merge Where It Went + Top Movers into one
   change-focused visual (bar + delta, movers as sort/filter of the same rows), cap the share bars,
   and lead with a chart card per cockpit grammar. Redesign fork - needs Loop A; recommend scheduling
