@@ -6,20 +6,20 @@
    also rendered standalone by savings.cockpit_section.  Holds every
    balance-derived figure that must re-sync together when an inline card
    balance is edited: the net-worth hero + chips + forward trend, the
-   per-category account grid with its group subtotals, the debt summary
-   tied to the liabilities group, and the home-equity cards.  The savings
-   goals, emergency-fund coverage, and archived list (in dashboard.html,
-   below this region) are page-load-only.
+   per-category group cards with their subtotals and the folded debt
+   footer, and the per-cell equity captions.  The savings goals and
+   archived list (in dashboard.html, below this region) are
+   page-load-only.
 
    Context (from savings._cockpit_context -> compute_dashboard_data plus
    the route-serialized net_worth_chart_json): net_worth, grouped_accounts,
    group_subtotals, property_equity, debt_summary, net_worth_chart_json. #}
 
-{# The per-card presentation helpers (acct_glyph / detail_endpoint) live in
+{# The per-cell presentation helpers (acct_glyph / detail_endpoint) live in
    _acct_macros.html, shared with the account detail pages so the icon
    glyph and the detail-page target cannot drift apart across screens.
    detail_endpoint now resolves EVERY cash type (checking, interest, plain
-   Savings / Credit Card / custom) to accounts.cash_detail, so every card
+   Savings / Credit Card / custom) to accounts.cash_detail, so every cell
    has a Details destination (account_detail_audit.md, decision 2). #}
 
 {# ── Net-worth hero band: headline + chips + forward trend ──────────── #}
@@ -127,7 +127,15 @@
   {% endif %}
 </div>
 
-{# ── Account grid: one auto-fit grid per category, with a subtotal ──── #}
+{# ── Account groups: ONE card per category, accounts as chip-cells ────
+   The D6-F ruling (ui_ux_polish_audit.md, resolved 2026-07-10): a tinted
+   banner header (accent title, subtotal in-band) over a grid of compact
+   cells -- the dashboard's stat-chip grammar.  Each cell: name link (the
+   stretched-link covers the cell; the balance and menu are raised
+   siblings), click-to-edit balance, one caption line, a muted sparkline,
+   and a corner kebab carrying Transfer / Edit / Archive.  The labels
+   dict is display microcopy keyed on the producer's category keys --
+   grouping logic itself stays in the service. #}
 {% set category_icons = {
   'asset': 'bi-bank',
   'liability': 'bi-credit-card',
@@ -135,216 +143,154 @@
   'investment': 'bi-graph-up',
   'other': 'bi-wallet',
 } %}
+{% set category_labels = {
+  'asset': 'Assets',
+  'liability': 'Liabilities',
+  'retirement': 'Retirement',
+  'investment': 'Investment',
+  'other': 'Other',
+} %}
 {% for category_name, category_accounts in grouped_accounts.items() %}
 <section class="acct-group">
   <div class="acct-group__head">
     <h2 class="acct-group__title">
       <i class="bi {{ category_icons.get(category_name, 'bi-wallet') }}"></i>
-      {{ category_name|title }}
+      {{ category_labels.get(category_name, category_name|title) }}
     </h2>
     <span class="acct-group__subtotal{% if category_name == 'liability' %} acct-group__subtotal--liability{% endif %} font-mono">
       {{ money(group_subtotals[category_name]) }}
     </span>
   </div>
 
-  <div class="acct-grid">
+  <div class="acct-cells">
     {% for ad in category_accounts %}
     {% set ep = detail_endpoint(ad.account) | trim %}
-    <div class="card acct-card">
-      <div class="card-body">
-        <div class="acct-card__head">
-          <i class="bi {{ acct_glyph(ad.account) }} acct-card__icon"></i>
-          <div class="acct-card__titlewrap">
-            {% if ep %}
-            <a href="{{ url_for(ep, account_id=ad.account.id) }}"
-               class="stretched-link acct-card__name">{{ ad.account.name }}</a>
-            {% else %}
-            <span class="acct-card__name">{{ ad.account.name }}</span>
-            {% endif %}
-            {% if ad.needs_setup %}
-            <span class="badge bg-warning text-dark ms-1">Setup Required</span>
-            {% endif %}
-            {% if ad.is_paid_off %}
-            <span class="badge bg-success ms-1">Paid Off</span>
-            {% endif %}
-            <div class="acct-card__type">
-              {{ ad.account.account_type.name if ad.account.account_type else '--' }}
-              {%- if ad.interest_params is defined and ad.interest_params %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
-              {%- if ad.loan_params is defined and ad.loan_params %} &middot; {{ "%.3f"|format(ad.current_rate|to_percent) }}%{% endif -%}
-              {%- if ad.investment_params is defined and ad.investment_params %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
-              {%- if ad.account.asset_appreciation_params %} &middot; Appr {{ "%.2f"|format(ad.account.asset_appreciation_params.annual_appreciation_rate|to_percent) }}%{% endif -%}
-            </div>
-          </div>
-        </div>
-
-        {# Click-to-edit balance: the cell DISPLAYS the resolver
-           current_balance (SSOT with the hero and the group subtotal) and
-           opens the shared anchor editor on click; the "Balance" label
-           sits outside the swapped cell so it persists during the edit
-           (mirroring the dashboard hero's external label).  The wrapper --
-           not just the cell -- carries the raised z-index, so the inline
-           editor that REPLACES the cell (input + Save / Cancel) is also
-           lifted above the card's .stretched-link overlay and stays
-           clickable. #}
-        <div class="acct-card__balance">
-          <div class="acct-card__label">Balance</div>
-          {% with account=ad.account, current_balance=ad.current_balance %}
-          {% include "savings/_cockpit_balance.html" %}
-          {% endwith %}
-        </div>
-
-        {# Conditional sparkline (decision 9): an informative account (a
-           loan amortizing, an investment growing -- see compute_sparklines)
-           draws its forward trajectory as a server-normalized SVG polyline
-           ABOVE the secondary line; a flat account omits it and shows just
-           the figure + projected line.  The shape carries no money (the
-           value lives in the secondary line); non-scaling-stroke keeps it
-           crisp under the stretched viewBox. #}
-        {% if ad.account.id in sparkline_points %}
-        <svg class="acct-spark" viewBox="0 0 100 28" preserveAspectRatio="none"
-             role="img" aria-label="{{ ad.account.name }} projected balance trend">
-          <polyline class="acct-spark__line"
-                    points="{{ sparkline_points[ad.account.id] }}"></polyline>
-        </svg>
+    <div class="acct-cell">
+      <div class="acct-cell__name">
+        <i class="bi {{ acct_glyph(ad.account) }} acct-cell__icon"></i>
+        {% if ep %}
+        <a href="{{ url_for(ep, account_id=ad.account.id) }}"
+           class="stretched-link acct-cell__link">{{ ad.account.name }}</a>
+        {% else %}
+        <span class="acct-cell__link">{{ ad.account.name }}</span>
         {% endif %}
+        {% if ad.needs_setup %}
+        <span class="badge bg-warning text-dark">Setup Required</span>
+        {% endif %}
+        {% if ad.is_paid_off %}
+        <span class="badge bg-success">Paid Off</span>
+        {% endif %}
+      </div>
 
+      {# Click-to-edit balance: the cell DISPLAYS the resolver
+         current_balance (SSOT with the hero and the group subtotal) and
+         opens the shared anchor editor on click.  The wrapper -- not just
+         the inner cell -- carries the raised z-index, so the inline editor
+         that REPLACES it (input + Save / Cancel) is also lifted above the
+         cell's .stretched-link overlay and stays clickable. #}
+      <div class="acct-cell__balance">
+        {% with account=ad.account, current_balance=ad.current_balance %}
+        {% include "savings/_cockpit_balance.html" %}
+        {% endwith %}
+      </div>
+
+      {# One caption line: type + rate, the loan payment or the projected
+         figure, and the folded home-equity caption on the Property cell
+         (D6-F fold-in; the Home Equity card is retired).  Every figure is
+         producer-computed; equity matches by account id. #}
+      <div class="acct-cell__cap">
+        <span>
+          {{ ad.account.account_type.name if ad.account.account_type else '--' }}
+          {%- if ad.interest_params is defined and ad.interest_params %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
+          {%- if ad.loan_params is defined and ad.loan_params %} &middot; {{ "%.3f"|format(ad.current_rate|to_percent) }}%{% endif -%}
+          {%- if ad.investment_params is defined and ad.investment_params %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
+          {%- if ad.account.asset_appreciation_params %} &middot; Appr {{ "%.2f"|format(ad.account.asset_appreciation_params.annual_appreciation_rate|to_percent) }}%{% endif -%}
+        </span>
         {% if ad.loan_params is defined and ad.loan_params %}
-        <div class="acct-card__secondary">
+        <span>
           Monthly Payment <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
-          {% if ad.payoff_date %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
-        </div>
+          {%- if ad.payoff_date %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
+        </span>
         {% elif ad.projected %}
         {% set last_proj = ad.projected.items() | list | last %}
-        <div class="acct-card__secondary">
-          {{ last_proj[0] }} <span class="font-mono">{{ money(last_proj[1], cents=false) }}</span>
-        </div>
+        <span>{{ last_proj[0] }} <span class="font-mono">{{ money(last_proj[1], cents=false) }}</span></span>
         {% endif %}
+        {% if property_equity %}
+        {% for pe in property_equity if pe.account.id == ad.account.id %}
+        <span>
+          Equity <span class="font-mono{% if pe.equity.equity < 0 %} acct-cell__cap-neg{% endif %}">{{ money(pe.equity.equity) }}</span>
+          {%- if pe.equity.ltv is not none %} &middot; LTV <span class="font-mono">{{ "%.1f"|format(pe.equity.ltv|to_percent) }}%</span>{% endif %}
+        </span>
+        {% endfor %}
+        {% endif %}
+      </div>
 
-        <div class="acct-card__actions">
-          <a href="{{ url_for('transfers.new_transfer_template', from_account=ad.account.id) }}"
-             class="btn btn-sm btn-outline-secondary"
-             title="New transfer from {{ ad.account.name }}">
-            <i class="bi bi-arrow-left-right"></i> Transfer
-          </a>
-          <div class="dropdown">
-            <button class="btn btn-sm btn-outline-secondary" type="button"
-                    data-bs-toggle="dropdown" aria-expanded="false"
-                    aria-label="More actions for {{ ad.account.name }}">
-              <i class="bi bi-three-dots-vertical"></i>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-              <li>
-                <a class="dropdown-item" href="{{ url_for('accounts.edit_account', account_id=ad.account.id) }}">
-                  <i class="bi bi-pencil me-2"></i>Edit
-                </a>
-              </li>
-              <li><hr class="dropdown-divider"></li>
-              <li>
-                <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
-                      data-confirm="Archive this account?">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="dropdown-item">
-                    <i class="bi bi-archive me-2"></i>Archive
-                  </button>
-                </form>
-              </li>
-            </ul>
-          </div>
-        </div>
+      {# Conditional sparkline (decision 9): an informative account (a
+         loan amortizing, an investment growing -- see compute_sparklines)
+         draws its forward trajectory as a server-normalized SVG polyline;
+         a flat account omits it.  Muted stroke per the D6-F ruling so the
+         accent does not repeat once per cell. #}
+      {% if ad.account.id in sparkline_points %}
+      <svg class="acct-spark" viewBox="0 0 100 28" preserveAspectRatio="none"
+           role="img" aria-label="{{ ad.account.name }} projected balance trend">
+        <polyline class="acct-spark__line"
+                  points="{{ sparkline_points[ad.account.id] }}"></polyline>
+      </svg>
+      {% endif %}
+
+      <div class="dropdown acct-cell__menu">
+        <button class="btn btn-sm acct-cell__menu-btn" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-label="Actions for {{ ad.account.name }}">
+          <i class="bi bi-three-dots-vertical"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li>
+            <a class="dropdown-item"
+               href="{{ url_for('transfers.new_transfer_template', from_account=ad.account.id) }}">
+              <i class="bi bi-arrow-left-right me-2"></i>Transfer
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="{{ url_for('accounts.edit_account', account_id=ad.account.id) }}">
+              <i class="bi bi-pencil me-2"></i>Edit
+            </a>
+          </li>
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="POST" action="{{ url_for('accounts.archive_account', account_id=ad.account.id) }}"
+                  data-confirm="Archive this account?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="dropdown-item">
+                <i class="bi bi-archive me-2"></i>Archive
+              </button>
+            </form>
+          </li>
+        </ul>
       </div>
     </div>
     {% endfor %}
   </div>
 
-  {# Debt Summary, tied to the liabilities group (rebuild decision 2). It
-     now sits AFTER the group's grid rather than as a full-width grid-breaker
-     before it (audit Surface 3 + 4). #}
+  {# Debt Summary, folded into the Liabilities card's footer line (D6-F
+     fold-in; the standalone card is retired).  Total Debt is not repeated
+     here -- it equals the banner subtotal above. #}
   {% if category_name == 'liability' and debt_summary %}
-  <div class="card mt-3">
-    <div class="card-header">
-      <h6 class="mb-0"><i class="bi bi-bar-chart"></i> Debt Summary</h6>
-    </div>
-    <div class="card-body">
-      <div class="row">
-        <div class="col-md-6">
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="text-muted">Total Debt</span>
-            <span class="fw-bold font-mono">{{ money(debt_summary.total_debt) }}</span>
-          </div>
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="text-muted">Monthly Payments</span>
-            <span class="fw-bold font-mono">{{ money(debt_summary.total_monthly_payments) }}</span>
-          </div>
-        </div>
-        <div class="col-md-6">
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="text-muted">Weighted Avg Rate</span>
-            <span class="fw-bold">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span>
-          </div>
-          {% if debt_summary.projected_debt_free_date %}
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="text-muted">Debt-Free Date</span>
-            <span class="fw-bold">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span>
-          </div>
-          {% endif %}
-        </div>
-      </div>
-      {% if debt_summary.dti_ratio is not none %}
-      <div class="mt-2 pt-2 border-top d-flex align-items-center">
-        <span class="text-muted small me-2">Debt-to-Income:</span>
-        <strong class="me-2">{{ debt_summary.dti_ratio }}%</strong>
-        {{ dti_badge(debt_summary.dti_label) }}
-      </div>
-      {% else %}
-      <div class="mt-2 pt-2 border-top">
-        <span class="text-muted small">Debt-to-Income: N/A (no salary profile)</span>
-      </div>
-      {% endif %}
-      <div class="mt-2 pt-2 border-top text-end">
-        <a href="{{ url_for('debt_strategy.dashboard') }}" class="btn btn-sm btn-outline-warning">
-          <i class="bi bi-graph-down-arrow"></i> Payoff Strategies
-        </a>
-      </div>
-    </div>
+  <div class="acct-group__foot">
+    <span>Monthly <span class="font-mono">{{ money(debt_summary.total_monthly_payments) }}</span></span>
+    <span>Avg rate <span class="font-mono">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span></span>
+    {% if debt_summary.projected_debt_free_date %}
+    <span>Debt-free <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
+    {% endif %}
+    {% if debt_summary.dti_ratio is not none %}
+    <span>DTI <span class="font-mono">{{ debt_summary.dti_ratio }}%</span> {{ dti_badge(debt_summary.dti_label) }}</span>
+    {% else %}
+    <span>DTI N/A (no salary profile)</span>
+    {% endif %}
+    <a href="{{ url_for('debt_strategy.dashboard') }}" class="acct-group__foot-link">
+      <i class="bi bi-graph-down-arrow"></i> Payoff Strategies
+    </a>
   </div>
   {% endif %}
 </section>
 {% endfor %}
-
-{# ── Home equity: each Property nets against the loans it secures ───── #}
-{% if property_equity %}
-<section class="acct-group">
-  <div class="acct-group__head">
-    <h2 class="acct-group__title"><i class="bi bi-house-door"></i> Home Equity</h2>
-  </div>
-  <div class="equity-grid">
-    {% for pe in property_equity %}
-    <div class="card">
-      <div class="card-body">
-        <h6 class="card-title mb-2">{{ pe.account.name }}</h6>
-        <div class="equity-card__row">
-          <span class="text-muted">Market value</span>
-          <span class="font-mono">{{ money(pe.equity.market_value) }}</span>
-        </div>
-        <div class="equity-card__row">
-          <span class="text-muted">Mortgage balance</span>
-          <span class="font-mono">{{ money(pe.equity.total_debt) }}</span>
-        </div>
-        <div class="equity-card__row equity-card__equity">
-          <span class="text-muted">Equity</span>
-          <span class="font-mono equity-card__equity-num{% if pe.equity.equity < 0 %} equity-card__equity-num--neg{% endif %}">
-            {{ money(pe.equity.equity) }}
-          </span>
-        </div>
-        {% if pe.equity.ltv is not none %}
-        <div class="equity-card__row mt-1">
-          <span class="text-muted">Loan-to-value</span>
-          <span class="font-mono">{{ "%.1f"|format(pe.equity.ltv|to_percent) }}%</span>
-        </div>
-        {% endif %}
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}

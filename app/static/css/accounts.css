@@ -193,33 +193,43 @@
 }
 
 /* =============================================
-   ACCOUNT GRID (per-category auto-fit)
-   Each category renders its OWN auto-fit grid under its group header, so
-   empty tracks collapse and there are no trailing holes; more cards flow
-   in as the viewport widens (audit Surface 3 + Loop A grid correction).
+   ACCOUNT GROUPS (D6-F "group cells", ruled 2026-07-10)
+   ONE card per category: a tinted banner header (the recurring banner
+   vocabulary neutralized onto the accent -- 12% mix, 3px left rule,
+   accent title, subtotal in-band) over a grid of account chip-cells.
+   The same section grammar carries the Savings group (dashboard.html)
+   and the folded Debt Summary / emergency-fund footer lines.
    ============================================= */
+/* No overflow:hidden here -- it would clip the cells' kebab dropdown
+   menus; the head rounds its own top corners instead (the Bootstrap
+   card-header pattern). */
 .acct-group {
-  margin-bottom: 1.75rem;
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 0.625rem;
+  margin-bottom: 1.375rem;
 }
 
 .acct-group__head {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 0.75rem;
-  margin-bottom: 0.625rem;
   flex-wrap: wrap;
+  background: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
+  border-left: 3px solid var(--shekel-accent);
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  border-radius: calc(0.625rem - 1px) calc(0.625rem - 1px) 0 0;
+  padding: 0.5625rem 1rem;
 }
 
 .acct-group__title {
   display: flex;
   align-items: center;
   gap: 0.4375rem;
-  font-size: 0.6875rem;
+  font-size: 0.9375rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--shekel-text-secondary);
+  color: var(--shekel-accent);
   margin: 0;
 }
 
@@ -235,75 +245,147 @@
   color: var(--shekel-danger);
 }
 
-.acct-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(17.5rem, 100%), 1fr));
-  gap: 1rem;
+/* Padded body for non-cell content (the Savings group's empty state). */
+.acct-group__body {
+  padding: 0.875rem 1rem 1rem;
+}
+
+/* Folded footer line: the Liabilities card's debt stats and the Savings
+   card's emergency-fund coverage (D6-F fold-ins).  Figures take number
+   ink; the lead-in labels stay secondary. */
+.acct-group__foot {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+  padding: 0.5625rem 1rem 0.6875rem;
+  font-size: 0.75rem;
+  color: var(--shekel-text-secondary);
+}
+
+.acct-group__foot .font-mono {
+  color: var(--shekel-number-ink);
+}
+
+.acct-group__foot-link {
+  margin-left: auto;
+  color: var(--shekel-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.acct-group__foot-link:hover,
+.acct-group__foot-link:focus-visible {
+  text-decoration: underline;
+}
+
+.acct-group__foot-note {
+  color: var(--shekel-text-muted);
 }
 
 /* =============================================
-   ACCOUNT CARD
-   The whole card opens the type-specific detail page (the name carries
-   the .stretched-link); the Transfer button and the kebab are raised
-   siblings so the stretched link does not swallow them.
+   ACCOUNT CELL
+   One account as a compact chip (the dashboard stat-chip grammar): name
+   link + badges, click-to-edit balance, one caption line, a muted
+   sparkline, and a quiet corner kebab.  The whole cell opens the
+   type-specific detail page (the name carries the .stretched-link); the
+   balance wrapper and the kebab are raised siblings so the overlay does
+   not swallow them.  auto-fill (not auto-fit) so a sparse group keeps
+   chip-sized cells instead of stretching them across the card.
    ============================================= */
-.acct-card {
+.acct-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  gap: 0.625rem;
+  padding: 0.875rem 1rem 1rem;
+}
+
+.acct-cell {
   position: relative;
+  background: color-mix(in srgb, var(--shekel-surface-raised) 55%, var(--shekel-surface));
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem 0.5625rem;
 }
 
-.acct-card .card-body {
+.acct-cell__name {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.acct-card__head {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding-right: 1.375rem;
+  margin-bottom: 0.125rem;
 }
 
 /* Monochrome type glyph: the Steel Ink base keeps the accent as the only
    non-money chroma, so account types are distinguished by glyph, not by a
    rainbow of icon colors. */
-.acct-card__icon {
+.acct-cell__icon {
   color: var(--shekel-text-secondary);
-  font-size: 1.125rem;
-  line-height: 1.4;
+  font-size: 0.875rem;
+  line-height: 1;
 }
 
-.acct-card__titlewrap {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.acct-card__name {
-  font-weight: 600;
+.acct-cell__link {
   color: var(--shekel-text-primary);
   text-decoration: none;
 }
 
-.acct-card__name:hover,
-.acct-card__name:focus-visible {
+a.acct-cell__link:hover,
+a.acct-cell__link:focus-visible {
   color: var(--shekel-accent);
   text-decoration: underline;
 }
 
-.acct-card__type {
-  font-size: 0.75rem;
+/* Caption line: type + rate, the loan payment / projected figure, and the
+   Property cell's folded equity.  Mono figures step up to secondary ink so
+   they read against the muted labels without shouting. */
+.acct-cell__cap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.625rem;
+  font-size: 0.71875rem;
   color: var(--shekel-text-muted);
 }
 
-.acct-card__label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--shekel-text-muted);
+.acct-cell__cap .font-mono {
+  color: var(--shekel-text-secondary);
 }
 
+/* Underwater equity: debt exceeds value (a numeric comparison decides
+   this, never a name string). */
+.acct-cell__cap-neg {
+  color: var(--shekel-danger);
+}
+
+/* Corner kebab: Transfer / Edit / Archive.  Quiet by default, ink on
+   hover; raised above the cell's stretched link. */
+.acct-cell__menu {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  z-index: 2;
+}
+
+.acct-cell__menu-btn {
+  border: 0;
+  color: var(--shekel-text-muted);
+  padding: 0.0625rem 0.3125rem;
+}
+
+.acct-cell__menu-btn:hover,
+.acct-cell__menu-btn:focus-visible {
+  color: var(--shekel-text-primary);
+}
+
+/* Balance figure inside the cell.  The acct-card__num* names are the
+   shared contract with savings/_cockpit_balance.html (also rendered
+   standalone by savings.cockpit_balance and swapped by the grid anchor
+   editor), so they keep their names through the D6-F cell rebuild. */
 .acct-card__num {
-  font-size: 1.5rem;
+  font-size: 1.25rem;
   font-weight: 700;
   line-height: 1.15;
   color: var(--shekel-text-primary);
@@ -313,14 +395,14 @@
   color: var(--shekel-danger);
 }
 
-/* The balance row is raised above the card's .stretched-link overlay (the
-   same raised-sibling treatment as .acct-card__actions) so BOTH the
+/* The balance wrapper is raised above the cell's .stretched-link overlay
+   (the same raised-sibling treatment as .acct-cell__menu) so BOTH the
    click-to-edit cell AND the inline editor that replaces it (input + Save /
-   Cancel buttons) sit above the card link.  Raising only the cell would
-   leave the editor -- which swaps in WITHOUT the raised class -- below the
-   overlay, and the stretched link would swallow clicks on the input and
-   buttons, navigating to the detail page instead of editing. */
-.acct-card__balance {
+   Cancel buttons) sit above the cell link.  Raising only the inner cell
+   would leave the editor -- which swaps in WITHOUT the raised class --
+   below the overlay, and the stretched link would swallow clicks on the
+   input and buttons, navigating to the detail page instead of editing. */
+.acct-cell__balance {
   position: relative;
   z-index: 2;
 }
@@ -353,87 +435,40 @@
   outline-offset: 2px;
 }
 
-.acct-card__secondary {
-  font-size: 0.78125rem;
-  color: var(--shekel-text-secondary);
-}
-
 /* Conditional per-account sparkline (decision 9): the account's forward
    balance trajectory, drawn only where it reads as a trend (the producer
    filters flat accounts).  preserveAspectRatio="none" stretches the 100x28
-   viewBox to the card width; non-scaling-stroke keeps the line crisp despite
-   the stretch. */
+   viewBox to the cell width; non-scaling-stroke keeps the line crisp
+   despite the stretch.  The stroke is a muted accent mix (D6-F ruling) so
+   the accent does not repeat at full strength once per cell. */
 .acct-spark {
   display: block;
   width: 100%;
-  height: 1.5rem;
-  margin: 0.125rem 0 0.0625rem;
+  height: 1.125rem;
+  margin: 0.3125rem 0 0;
   overflow: visible;
 }
 
 .acct-spark__line {
   fill: none;
-  stroke: var(--shekel-accent);
+  stroke: color-mix(in srgb, var(--shekel-accent) 55%, var(--shekel-surface));
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 
-/* Raised above the stretched link so they remain independently
-   clickable (Loop A card link/edit accessibility refinement). */
-.acct-card__actions {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  margin-top: auto;
-  padding-top: 0.25rem;
-}
-
-.acct-card__actions .dropdown {
-  margin-left: auto;
-}
-
 /* =============================================
-   HOME EQUITY CARDS (Property <-> its mortgage)
-   Surfaces the equity producer (home_equity_service) the Property detail
-   page already uses; the net-worth math itself stays emergent.
+   SAVINGS GOALS (inside the Savings group card)
+   Goal blocks keep their full anatomy (progress, dates, trajectory);
+   only the housing changed from standalone cards to blocks in the group
+   card body (D6-F / P-AC5).
    ============================================= */
-.equity-grid {
+.savings-goals {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
-  gap: 1rem;
-}
-
-.equity-card__row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 0.75rem;
-  font-size: 0.875rem;
-}
-
-.equity-card__row + .equity-card__row {
-  margin-top: 0.3125rem;
-}
-
-.equity-card__equity {
-  border-top: 1px solid var(--shekel-border-subtle);
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-}
-
-.equity-card__equity-num {
-  font-weight: 700;
-  color: var(--shekel-done);
-}
-
-/* Underwater: debt exceeds value (a numeric comparison decides this, never
-   a name string). */
-.equity-card__equity-num--neg {
-  color: var(--shekel-danger);
+  grid-template-columns: repeat(auto-fill, minmax(min(22rem, 100%), 1fr));
+  gap: 1.25rem 2.5rem;
+  padding: 0.875rem 1rem 1rem;
 }
 
 /* =============================================
