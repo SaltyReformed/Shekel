@@ -43,12 +43,6 @@
                          help_text="Transactions above this amount are flagged on the dashboard calendar.",
                          errors=errors) }}
 
-  {{ render_input_group("trend_alert_threshold", "Spending Trend Alert Threshold",
-                         value=(settings.trend_alert_threshold|to_percent)|round(0)|int if settings.trend_alert_threshold is not none else 10, suffix="%",
-                         input_attrs='min="1" max="100"',
-                         help_text="Alert when category spending changes by more than this percentage between periods.",
-                         errors=errors) }}
-
   {{ render_field("anchor_staleness_days", "Anchor Staleness Warning",
                    type="number", value=settings.anchor_staleness_days if settings.anchor_staleness_days is not none else 14,
                    help_text="Show a warning when the anchor balance has not been updated in this many days.",

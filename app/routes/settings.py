@@ -44,18 +44,17 @@ _VALID_SECTIONS = [
 
 # The scalar UserSettings fields the POST handler copies straight from the
 # validated form.  All are storage-domain values: UserSettingsSchema's
-# ``@pre_load`` already divided ``default_inflation_rate`` and
-# ``trend_alert_threshold`` from form percent into the [0, 1] decimal fraction
-# the DB CHECK enforces (E-28 / HIGH-06 / PA-01, Commit 24), so the route stores
-# them verbatim.  Zero is a valid value (E-12 "zero is a value"), so each field
-# is applied on ``is not None``, never on truthiness.  ``default_grid_account_id``
-# is deliberately NOT in this list -- it needs a route-level ownership check.
+# ``@pre_load`` already divided ``default_inflation_rate`` from form percent
+# into the [0, 1] decimal fraction the DB CHECK enforces (E-28 / HIGH-06 /
+# PA-02, Commit 24), so the route stores them verbatim.  Zero is a valid
+# value (E-12 "zero is a value"), so each field is applied on
+# ``is not None``, never on truthiness.  ``default_grid_account_id`` is
+# deliberately NOT in this list -- it needs a route-level ownership check.
 _SIMPLE_SETTINGS_FIELDS = (
     "grid_default_periods",
     "default_inflation_rate",
     "low_balance_threshold",
     "large_transaction_threshold",
-    "trend_alert_threshold",
     "anchor_staleness_days",
 )
 
