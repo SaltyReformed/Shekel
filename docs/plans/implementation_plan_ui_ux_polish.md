@@ -127,14 +127,15 @@ halves already landed in Wave 1/S1.
 data findings recorded inline at D3/D4 in the audit register). Ruled form: category spine (child
 header rows only for 2+ row categories, plain names for singletons, uniform indent, boosted group
 headers) + whisper zebra that steps DARKER in dark mode (hover lightens, so the two never collide).
-P-GR5 ruled the same day: delete the mobile subtitle line. Remaining: **S12 Loop B build** -
-template + CSS only (RowKey already carries item_name): spine + zebra in grid.html /
-_grid_row_macros.html / grid.css, cascade-ordered so hover beats bands without !important; the P-GR5
-subtitle deletion; P-GR6 badge chips to the tinted-bg treatment; mobile list adopts the item
-headers; P-RC3 recurring column contract per the ruled table grammar; PLUS the S16-session ruling to
-remove the current-period column highlight (cur class emission + current_period_id threading +
-td.cur / th.current-period CSS; any test-assertion edits happen in an Opus context per the model
-discipline). S16 tokens are landed, so the build happens directly on the Graphite values.
+P-GR5 ruled the same day: delete the mobile subtitle line.
+**LOOP B BUILT 2026-07-09 - SESSION COMPLETE** (commits 584ff3a6 grid + d9d15028 recurring; full
+suite 7311 green; both themes + mobile + 1Y-scrolled re-shot). Landed: category spine (item headers
+for 2+ row categories on desktop AND the mobile lists, uniform indent, boosted group headers,
+redundant Income header dropped), whisper zebra (darker; hover/cursor beat bands by source order, no
+!important), current-period highlight removed (classes kept as JS semantic hooks), header-text pins
+under horizontal scroll (fixed a pre-existing banner/group gap too), P-GR5 subtitle deletion, P-GR6
+tinted badge chips, P-RC3 shared recurring column contract (th tracks pixel-identical across the
+three sections). One test refitted in an Opus context per the model discipline.
 
 ### S16. Token round: dark neutral ladder + ink hierarchy (D15) -- FABLE (high value), size M
 

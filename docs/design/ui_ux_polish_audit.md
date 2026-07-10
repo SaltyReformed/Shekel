@@ -206,17 +206,19 @@ Section 4.
 - **P-GR3 [consistency - FIXED 2026-07-09]** Square corners on the grid wrapper while every
   neighboring surface is rounded (O13). Wrapper now clips at `--bs-border-radius`.
 - **P-GR4 [consistency]** Mobile This-Period/Plan pill raw blue - RC2.
-- **P-GR5 [polish]** Mobile header states the same period three times (heading, subtitle,
-  jump-select). **RULED 2026-07-09: delete the muted subtitle**
+- **P-GR5 [polish - FIXED 2026-07-09, commit 584ff3a6]** Mobile header states the same period three
+  times (heading, subtitle, jump-select). **RULED 2026-07-09: delete the muted subtitle**
   (`grid/_mobile_this_period.html:113-115`) - it is the only one of the three with no function; the
   heading stays as the navigation label, the jump-select stays as fast-travel. Builds in S12 Loop B.
-- **P-GR6 [bug-adjacent, found during S1]** The SOLID `.badge-done` / `.badge-credit` pills
-  (`grid.css` STATUS BADGES block; render bare in CC-payback rows and the mobile cards - the in-chip
-  variant flattens to a glyph) set `color: #fff` on the raw state color: white-on-green is ~2.2:1
-  and white-on-violet ~3.1:1 at 11px bold, far under AA. Pre-existing (white-on-amber was 2.5:1);
-  needs the chip treatment (tinted bg + state-colored text) or dark ink. Rides with S12's grid
-  table-grammar session.
-- Striping and category hierarchy are decisions: D3, D4.
+- **P-GR6 [bug-adjacent, found during S1 - FIXED 2026-07-09, commit 584ff3a6]** The SOLID
+  `.badge-done` / `.badge-credit` pills (`grid.css` STATUS BADGES block; render bare in CC-payback
+  rows and the mobile cards - the in-chip variant flattens to a glyph) set `color: #fff` on the raw
+  state color: white-on-green is ~2.2:1 and white-on-violet ~3.1:1 at 11px bold, far under AA.
+  Pre-existing (white-on-amber was 2.5:1); needs the chip treatment (tinted bg + state-colored text)
+  or dark ink. Rides with S12's grid table-grammar session.
+- Striping and category hierarchy are decisions: D3, D4 - RULED AND BUILT 2026-07-09 (S12 Loop B,
+  commit 584ff3a6: category spine + whisper zebra + boosted headers + header-text pins +
+  current-period highlight removal; the ruling record is inline at D3).
 
 ### Recurring
 
@@ -228,9 +230,9 @@ Section 4.
 - **P-RC2 [bug]** Monthly toggle square corner (O15): the hidden CSRF input is the first child of
   the `.btn-group`, so Bootstrap's sibling selector strips the first button's left radius
   (`templates/list.html:30-47`). Move the input out of the sibling chain.
-- **P-RC3 [consistency]** Income / Expenses / Transfers are three independent auto-layout tables, so
-  no column lines up across sections (O14; measured up to 280px drift). Needs a shared column
-  contract (fixed widths or a single table grammar).
+- **P-RC3 [consistency - FIXED 2026-07-09, commit d9d15028]** Income / Expenses / Transfers are
+  three independent auto-layout tables, so no column lines up across sections (O14; measured up to
+  280px drift). Needs a shared column contract (fixed widths or a single table grammar).
 - **P-RC4 [consistency]** Envelope/companion badges use cyan `bg-info-subtle` and money-green
   `bg-success-subtle` for non-money flags - RC3.
 - **P-RC5 [polish]** Light-mode toolbar search/sort interiors sample identical to the page
