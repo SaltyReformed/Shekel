@@ -102,6 +102,19 @@
 <div class="table-responsive grid-wrapper grid-scroll-wrapper position-relative">
   <table class="table table-bordered table-sm grid-table grid-{{ col_size }}">
     <caption class="visually-hidden">Budget grid showing income and expenses by pay period</caption>
+    {# Column contract -- table-layout:fixed sizes columns from the first
+       row, and that row is the colspan month band, so widths declared on
+       cells are ignored and every column collapses to an equal share of
+       the viewport.  <col> widths are what the fixed algorithm honors;
+       grid.css keys them off the grid-{{ col_size }} sizing variant.
+       When the columns outgrow the viewport the wrapper scrolls
+       horizontally and the sticky label column keeps rows readable. #}
+    <colgroup>
+      <col class="grid-col-label">
+      {% for period in periods %}
+      <col class="grid-col-period">
+      {% endfor %}
+    </colgroup>
     <thead class="table-dark">
       {# Month band -- the C3 "Month Spine" (rebuild decision 1):
          one <th> per calendar month spanning its periods, so the eye
@@ -170,26 +183,55 @@
       {# --- Income Section --- #}
       <tr class="section-banner-income">
         <td class="sticky-col" colspan="{{ periods|length + 1 }}">
-          INCOME
+          <span class="hdr-pin">INCOME</span>
         </td>
       </tr>
 
-      {# Render income rows -- one row per unique (category, template, name) #}
-      {% set ns = namespace(current_group='') %}
+      {# Render income rows -- one row per unique (category, template, name).
+         S12 category spine (D3+D4 ruling, docs/design/ui_ux_polish_audit.md):
+         a group header per group_name change (skipped when it would just
+         restate the INCOME section banner), a child-category
+         item-header-row where a category holds 2+ rows (singletons show
+         the plain row name; the th title keeps their category), and a
+         whisper-zebra band counter that resets at every emitted header
+         so alternation never leaks across structural rows. #}
+      {% set ns = namespace(current_group='', current_item=none, band=0) %}
       {% for rk in income_row_keys %}
         {% if rk.group_name != ns.current_group %}
           {% set ns.current_group = rk.group_name %}
+          {% set ns.current_item = none %}
+          {% set ns.band = 0 %}
+          {% if rk.group_name | lower != 'income' %}
           <tr class="group-header-row">
-            <td class="sticky-col text-muted small fw-semibold"
+            <td class="sticky-col"
                 colspan="{{ periods|length + 1 }}">
-              {{ rk.group_name }}
+              <span class="hdr-pin">{{ rk.group_name }}</span>
             </td>
           </tr>
+          {% endif %}
+        {% endif %}
+
+        {% if rk.item_name != ns.current_item %}
+          {% set ns.current_item = rk.item_name %}
+          {% if rk.item_name %}
+            {% set item_run = income_row_keys
+               | selectattr('group_name', 'equalto', rk.group_name)
+               | selectattr('item_name', 'equalto', rk.item_name)
+               | list | length %}
+            {% if item_run >= 2 %}
+              {% set ns.band = 0 %}
+          <tr class="item-header-row">
+            <td colspan="{{ periods|length + 1 }}"><span class="hdr-pin">{{ rk.item_name }}</span></td>
+          </tr>
+            {% endif %}
+          {% endif %}
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
                              entry_sums, TXN_TYPE_INCOME, account, today,
-                             current_period_id=current_period.id) }}
+                             current_period_id=current_period.id,
+                             band=ns.band % 2) }}
+        {% set ns.band = ns.band + 1 %}
       {% endfor %}
 
     </tbody>
@@ -208,25 +250,51 @@
       {# --- Expense Section --- #}
       <tr class="section-banner-expense">
         <td class="sticky-col" colspan="{{ periods|length + 1 }}">
-          EXPENSES
+          <span class="hdr-pin">EXPENSES</span>
         </td>
       </tr>
 
-      {% set ns2 = namespace(current_group='') %}
+      {# S12 category spine -- same structure as the income section above
+         (group header skipped only when it restates the EXPENSES banner,
+         which no real group does today; the guard keeps the two sections
+         symmetric). #}
+      {% set ns2 = namespace(current_group='', current_item=none, band=0) %}
       {% for rk in expense_row_keys %}
         {% if rk.group_name != ns2.current_group %}
           {% set ns2.current_group = rk.group_name %}
+          {% set ns2.current_item = none %}
+          {% set ns2.band = 0 %}
+          {% if rk.group_name | lower not in ('expense', 'expenses') %}
           <tr class="group-header-row">
-            <td class="sticky-col text-muted small fw-semibold"
+            <td class="sticky-col"
                 colspan="{{ periods|length + 1 }}">
-              {{ rk.group_name }}
+              <span class="hdr-pin">{{ rk.group_name }}</span>
             </td>
           </tr>
+          {% endif %}
+        {% endif %}
+
+        {% if rk.item_name != ns2.current_item %}
+          {% set ns2.current_item = rk.item_name %}
+          {% if rk.item_name %}
+            {% set item_run = expense_row_keys
+               | selectattr('group_name', 'equalto', rk.group_name)
+               | selectattr('item_name', 'equalto', rk.item_name)
+               | list | length %}
+            {% if item_run >= 2 %}
+              {% set ns2.band = 0 %}
+          <tr class="item-header-row">
+            <td colspan="{{ periods|length + 1 }}"><span class="hdr-pin">{{ rk.item_name }}</span></td>
+          </tr>
+            {% endif %}
+          {% endif %}
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
                              entry_sums, TXN_TYPE_EXPENSE, account, today,
-                             current_period_id=current_period.id) }}
+                             current_period_id=current_period.id,
+                             band=ns2.band % 2) }}
+        {% set ns2.band = ns2.band + 1 %}
       {% endfor %}
 
     </tbody>

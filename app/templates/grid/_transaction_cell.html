@@ -137,7 +137,7 @@
 
 {# Due date indicator -- shown only when due_date differs from period start #}
 {% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
-  <small class="text-muted d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+  <small class="cell-caption d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
 {% endif %}
 
 {# Envelope progress underline (cell hierarchy, audit B2): a thin bar

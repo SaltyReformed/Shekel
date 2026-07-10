@@ -135,8 +135,10 @@
   background: color-mix(in srgb, var(--shekel-danger) 45%, var(--shekel-surface));
 }
 
+/* Post-tax is a categorical series tint riding the caution amber, not a
+   money state; re-judged with the salary visuals in the S7 session. */
 .sal-comp-seg--post {
-  background: color-mix(in srgb, var(--shekel-credit) 55%, var(--shekel-surface));
+  background: color-mix(in srgb, var(--shekel-warning) 55%, var(--shekel-surface));
 }
 
 .sal-comp-leg {
@@ -180,7 +182,8 @@
 /* ---------------------------------------------
    Deduction bar-list: name | proportional track | amount.  Bars scale
    to the largest line item (bar_pct from the producer); pre-tax bars
-   use the accent tint, post-tax the credit tint, matching the spine.
+   use the accent tint, post-tax the caution-amber tint, matching the
+   spine.
    --------------------------------------------- */
 .sal-grp-label {
   font-size: 0.6875rem;
@@ -235,7 +238,7 @@
 }
 
 .sal-ded-bar--post_tax {
-  background: color-mix(in srgb, var(--shekel-credit) 55%, var(--shekel-surface));
+  background: color-mix(in srgb, var(--shekel-warning) 55%, var(--shekel-surface));
 }
 
 .sal-ded-amt {
@@ -353,12 +356,12 @@
 }
 
 .sal-ledger tbody tr.sal-row-third td {
-  background: color-mix(in srgb, var(--shekel-credit) 7%, transparent);
+  background: color-mix(in srgb, var(--shekel-warning) 7%, transparent);
 }
 
 .sal-badge-raise {
   display: inline-block;
-  font-size: 0.65625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   border: 1px solid var(--shekel-done);
@@ -369,5 +372,5 @@
 }
 
 .sal-third-flag {
-  color: var(--shekel-credit);
+  color: var(--shekel-warning);
 }

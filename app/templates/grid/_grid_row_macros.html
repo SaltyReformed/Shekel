@@ -32,13 +32,14 @@
 {%- if idx > 0 and periods[idx].start_date.month != periods[idx - 1].start_date.month %} mstart{% endif -%}
 {%- endmacro %}
 
-{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none) -%}
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
     cell"> per visible period.  Group-header rows are emitted by
     the caller (the v1 grid.html convention: one
     `<tr class="group-header-row">` per rk.group_name change,
-    outside this row).
+    outside this row), as are the child-category
+    `<tr class="item-header-row">` rows of the S12 category spine.
 
     Each matched transaction is wrapped in
     `<div id="txn-cell-{{ txn.id }}">` so HTMX cell-swap targets
@@ -51,12 +52,20 @@
     in the <thead> rather than in row cells.
 
     `current_period_id` (C3 rebuild): the current pay period's id;
-    its column's body cells get the ``cur`` tint so the current
-    period reads as a continuous highlighted column, matching the
-    ``current-period`` header treatment.  Optional so direct macro
+    its column's body cells get the ``cur`` class.  Since the S12
+    Loop B ruling removed the current-period tint, the class is a
+    pure semantic hook -- the command palette prefers the current
+    period's cell for add-purchase actions and grid keyboard
+    navigation starts its cursor there.  Optional so direct macro
     render sites (unit tests) keep working unchanged.
+
+    `band` (S12 Loop B zebra): 0 or 1, stamped as ``data-band`` for
+    the whisper row banding; the caller owns the alternation
+    counter (it resets at section banners and at every emitted
+    group / item header).  None (the default) omits the attribute
+    so direct macro render sites keep working unchanged.
 -#}
-<tr>
+<tr{% if band is not none %} data-band="{{ band }}"{% endif %}>
   <th scope="row" class="sticky-col row-label" title="{{ rk.group_name }}: {{ rk.item_name }}">
     {{ rk.display_name }}
   </th>

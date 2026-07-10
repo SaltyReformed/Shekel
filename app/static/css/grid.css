@@ -8,17 +8,22 @@
    base.css.  INTERNAL ORDER IS LOAD-BEARING -- in particular the
    .grid-table th/td border reset must precede the subtotal /
    net-cash-flow / balance-row border-top rules (equal specificity),
-   td.cur must precede td.cell-focused, base rules must precede the
+   the S12 zebra band rules must precede the hover / keyboard-cursor
+   re-asserts that follow them (equal specificity; source order is
+   what lets hover beat the bands), base rules must precede the
    media blocks, and the three media blocks stay in descending
    breakpoint order.  See docs/design/css_architecture_audit.md. */
 
 /* =============================================
    GRID TABLE
    ============================================= */
-/* Grid scrollable container -- max-height enables sticky tfoot */
+/* Grid scrollable container -- max-height enables sticky tfoot.
+   border-radius matches the card/alert surfaces around it (polish
+   audit P-GR3); the overflow clip rounds the table's corners. */
 .grid-wrapper {
   max-height: calc(100vh - 160px);
   overflow: auto;
+  border-radius: var(--bs-border-radius);
 }
 
 .grid-table {
@@ -99,29 +104,44 @@ thead .sticky-col {
   color: var(--shekel-header-text);
 }
 
-.row-label-col {
-  min-width: 160px;
-  max-width: 200px;
-}
-
 .row-label {
   font-size: 0.8rem;
+  /* Down from the th browser-default bold: the label must not out-weigh
+     the money figure beside it (S16 ink hierarchy, polish audit D15). */
+  font-weight: 600;
+  /* S12 category spine: every row label shares one indented left edge
+     under its group header, whether or not a child-category item
+     header sits above it -- three ledger levels (group flush, item
+     header at 0.85rem, rows here). */
+  padding-left: 1.6rem;
 }
 
-/* Column sizing variants */
-.grid-wide th:not(.row-label-col),
-.grid-wide td:not(.sticky-col) {
-  min-width: 150px;
+/* Column contract (polish audit P-GR2).  table-layout:fixed sizes
+   columns from the first table row -- the colspan month band -- so
+   min-widths on cells were never honored: every preset squeezed its
+   columns into equal viewport shares, collapsing the label column and
+   clipping 1Y/2Y amounts.  Widths on <col> (grid.html's <colgroup>)
+   are what the fixed algorithm honors; when they outgrow the wrapper
+   the table widens past 100% and .grid-wrapper scrolls horizontally,
+   which the sticky label column and sticky thead/tfoot exist for. */
+.grid-table col.grid-col-label {
+  width: 200px;
 }
 
-.grid-medium th:not(.row-label-col),
-.grid-medium td:not(.sticky-col) {
-  min-width: 110px;
+.grid-table.grid-wide col.grid-col-period {
+  width: 150px;
+}
+
+.grid-table.grid-medium col.grid-col-period {
+  width: 110px;
+}
+
+.grid-table.grid-compact col.grid-col-period {
+  width: 80px;
 }
 
 .grid-compact th:not(.row-label-col),
 .grid-compact td:not(.sticky-col) {
-  min-width: 80px;
   font-size: 0.75rem;
 }
 
@@ -137,12 +157,14 @@ thead .sticky-col {
 /* Month band -- second header row grouping the period columns by
    calendar month. */
 .month-band-row th {
-  font-size: 0.6rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-align: center;
-  color: var(--shekel-header-text);
-  opacity: 0.85;
+  /* Dim by mixing the text toward the header bg, NOT by element
+     opacity: these th are sticky, and a translucent cell lets the
+     rows scrolled beneath ghost through it (polish audit P-GR1). */
+  color: color-mix(in srgb, var(--shekel-header-text) 85%, var(--shekel-header-bg));
   padding-top: 0.15rem;
   padding-bottom: 0.15rem;
 }
@@ -156,15 +178,13 @@ thead .sticky-col {
   border-left: 2px solid var(--shekel-border-strong);
 }
 
-/* Current pay period: accent top rule on the header plus a faint
-   tint down the body column. */
-.grid-table thead th.current-period {
-  box-shadow: inset 0 2px 0 var(--shekel-accent);
-}
-
-.grid-table td.cur {
-  background-color: color-mix(in srgb, var(--shekel-accent) 7%, transparent);
-}
+/* Current pay period: NO visual treatment (S12 Loop B ruling,
+   2026-07-09 -- the accent header rule and column tint were judged
+   redundant since the current period is the first column at the
+   default view).  The th.current-period / td.cur classes still render:
+   they are semantic hooks -- command_palette.js prefers the current
+   period's cell for add-purchase actions and app.js starts the
+   keyboard cursor at th.current-period. */
 
 /* Status chips: settled and credit amounts render as filled pills;
    projected stays plain text until hover previews the chip. */
@@ -175,6 +195,20 @@ thead .sticky-col {
   border: 1px solid transparent;
   border-radius: 999px;
   padding: 0 0.45rem;
+}
+
+/* The number is the hero: plain (projected) amounts render in the
+   number ink, one step above body text (S16 / D15).  Settled and
+   credit amounts keep their state colors -- the .st-done/.st-credit
+   rules below outrank this one on specificity. */
+.txn-chip .font-mono {
+  color: var(--shekel-number-ink);
+}
+
+/* Cell caption (the Due: date under an amount): supporting DATA, not
+   chrome -- secondary ink, not muted (S16 / D15 reassignment). */
+.cell-caption {
+  color: var(--shekel-text-secondary);
 }
 
 .txn-chip .txn-open {
@@ -212,7 +246,7 @@ thead .sticky-col {
 .txn-chip .badge-credit {
   background: transparent;
   color: var(--shekel-credit);
-  font-size: 0.65rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   padding: 0;
 }
@@ -270,6 +304,45 @@ thead .sticky-col {
 }
 
 /* =============================================
+   S12 WHISPER ZEBRA (D3+D4 ruling, 2026-07-09)
+   ============================================= */
+/* Row bands step DARKER than the surface (ruled: engraved to the page,
+   never lighter -- lighter is the hover's direction, so the two can
+   never be confused).  grid.html stamps data-band 0/1 on every txn
+   row, resetting at section banners and at every emitted group / item
+   header.  Cells render var(--bs-table-bg) = --shekel-surface, so the
+   band steps from there: dark drops to the page bg (1.13:1 on the
+   Graphite ladder); light steps toward the warm hover gray. */
+[data-bs-theme="dark"] .grid-table tbody tr[data-band="1"] > td,
+[data-bs-theme="dark"] .grid-table tbody tr[data-band="1"] > th.sticky-col {
+  background-color: var(--shekel-page-bg);
+}
+
+[data-bs-theme="light"] .grid-table tbody tr[data-band="1"] > td,
+[data-bs-theme="light"] .grid-table tbody tr[data-band="1"] > th.sticky-col {
+  background-color: color-mix(in srgb, var(--shekel-surface) 78%, var(--shekel-row-hover));
+}
+
+/* Hover and the keyboard cursor must beat the bands.  Same specificity
+   as the band rules; SOURCE ORDER (this block after the bands) is the
+   tiebreaker -- see the load-order note in the file header.  Scoped to
+   tr[data-band] (every txn row carries the attribute, 0 or 1) so the
+   label cell now takes the mild hover tint too, keeping a hovered
+   banded row from reading half-lit. */
+.grid-table tbody tr[data-band]:hover > td,
+.grid-table tbody tr[data-band]:hover > th.sticky-col {
+  background-color: color-mix(in srgb, var(--shekel-surface) 65%, var(--shekel-row-hover));
+}
+
+.grid-table tbody tr[data-band]:hover > td:hover {
+  background-color: var(--shekel-row-hover);
+}
+
+.grid-table tbody tr[data-band] > td.cell-focused {
+  background-color: var(--shekel-row-hover);
+}
+
+/* =============================================
    SECTION BANNERS
    ============================================= */
 .section-banner-income td {
@@ -294,14 +367,56 @@ thead .sticky-col {
   padding-bottom: 0.5rem;
 }
 
-/* Category sub-headers */
+/* Category group headers -- boosted per the S12 D3+D4 ruling so the
+   groups visibly break up the grid (12px secondary ink over the
+   raised tint, strong top rule). */
 .group-header-row td {
   background-color: var(--shekel-group-header-bg);
-  font-size: 11px;
+  font-size: 0.75rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
-  padding: 0.25rem 0.5rem;
-  color: var(--shekel-text-muted);
+  letter-spacing: 1px;
+  padding: 0.35rem 0.5rem;
+  color: var(--shekel-text-secondary);
+  border-top: 2px solid var(--shekel-border-strong);
+}
+
+/* Child-category item headers (S12 category spine): quieter than a
+   group header -- no fill, sentence case, indented between the group
+   edge and the row labels.  Emitted by grid.html only where a child
+   category holds 2+ rows; singleton rows carry their category in the
+   row-label tooltip instead. */
+.item-header-row td {
+  background-color: transparent;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--shekel-text-secondary);
+  padding: 0.35rem 0.5rem 0.1rem 0.85rem;
+  border-right: 0;
+}
+
+/* Pin for colspan header-row text (section banners, group headers,
+   item headers): the cell spans the full table width, so under
+   horizontal scroll its text would ride off-screen with the columns
+   (the cell itself cannot stick -- it IS the full row).  An inline
+   sticky element CAN pin within the wide cell, so every header label
+   stays readable while the periods scroll (S12 Loop B; the banner and
+   group-header halves fix a pre-existing gap the spine made louder). */
+.hdr-pin {
+  position: sticky;
+  left: 0.5rem;
+  display: inline-block;
+}
+
+/* The base cell rule clips overflow (ellipsis for amounts), but an
+   overflow-hidden ancestor becomes a sticky element's containment box
+   -- the pin would stick to the cell instead of the scrollport.  The
+   full-width header cells never need the clip, so lift it there. */
+.section-banner-income td,
+.section-banner-expense td,
+.group-header-row td,
+.item-header-row td {
+  overflow: visible;
 }
 
 /* Spacer row between sections */
@@ -382,19 +497,25 @@ thead .sticky-col {
   background-color: color-mix(in srgb, var(--shekel-danger) 12%, transparent) !important;
 }
 
+/* Low-but-positive balance: the caution token, split from the credit
+   money state (polish audit D11 -- the two roles shared amber). */
 .balance-low {
-  color: var(--shekel-credit) !important;
+  color: var(--shekel-warning) !important;
 }
 
 /* =============================================
    STATUS BADGES
    ============================================= */
-/* Shared chip shape; only the background token differs per status. */
+/* Shared chip shape.  Tinted-background treatment (polish audit P-GR6,
+   S12 Loop B): the old solid pills set white on the raw state color --
+   ~2.2:1 on done-green and ~3.1:1 on credit-violet at 11px bold, far
+   under AA.  State-colored text on the state's own 16% tint matches
+   the desktop .txn-chip grammar and clears AA on every tier (verified
+   in the S16 round's chip-tint checks). */
 .badge-done,
 .badge-credit {
   display: inline-block;
-  color: #fff;
-  font-size: 0.6rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   padding: 0.1rem 0.35rem;
   border-radius: 10px;
@@ -403,11 +524,13 @@ thead .sticky-col {
 }
 
 .badge-done {
-  background-color: var(--shekel-done);
+  background-color: color-mix(in srgb, var(--shekel-done) 16%, var(--shekel-surface));
+  color: var(--shekel-done);
 }
 
 .badge-credit {
-  background-color: var(--shekel-credit);
+  background-color: color-mix(in srgb, var(--shekel-credit) 16%, var(--shekel-surface));
+  color: var(--shekel-credit);
 }
 
 /* =============================================
@@ -631,6 +754,15 @@ thead .sticky-col {
   min-height: 44px;
 }
 
+/* Child-category header in the mobile lists (S12 category spine,
+   mobile half): a quieter sibling of .mobile-group-header -- sentence
+   case, secondary ink, indented one step. */
+.mobile-item-header {
+  color: var(--shekel-text-secondary);
+  font-weight: 600;
+  padding-left: 1.25rem;
+}
+
 .mobile-txn-card:active,
 .mobile-txn-card:focus-visible {
   background-color: rgba(var(--shekel-accent-rgb), 0.10);
@@ -646,50 +778,19 @@ thead .sticky-col {
 
 /* =============================================
    MOBILE GRID IMPROVEMENTS
-   (base rules above; three blocks in descending breakpoint order)
+   (base rules above; three blocks in descending breakpoint order.
+   The desktop table and its chrome -- .grid-table, .sticky-col,
+   .row-label-col, .grid-wrapper, .txn-cell, .period-btn-group --
+   render inside grid.html's d-none d-md-block wrapper, so below md
+   they are display:none and need no rules here; these blocks style
+   only what actually renders on mobile: the anchor display, the
+   card view, the bottom sheet, and the fullscreen modal.)
    ============================================= */
 @media (max-width: 767.98px) {
-  .sticky-col {
-    min-width: 110px;
-    max-width: 130px;
-  }
-
-  .row-label-col {
-    min-width: 110px;
-    max-width: 130px;
-  }
-
-  .grid-table {
-    font-size: 0.75rem;
-  }
-
-  .row-label {
-    font-size: 0.7rem;
-  }
-
-  .grid-table th,
-  .grid-table td {
-    padding: 0.2rem 0.3rem;
-  }
-
-  .period-btn-group {
-    flex-wrap: wrap;
-    gap: 0.25rem;
-  }
-
-  .grid-wrapper {
-    max-height: calc(100vh - 200px);
-  }
-
   /* Touch target: extra-small buttons (status actions in full-edit popover) */
   .btn-xs {
     padding: 0.4rem 0.6rem;
     font-size: 0.8rem;
-  }
-
-  /* Touch target: transaction cell tap area */
-  .txn-cell {
-    padding: 0.35rem 0.4rem;
   }
 
   /* Touch target: expand button (three dots) */
@@ -699,12 +800,6 @@ thead .sticky-col {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-  }
-
-  /* Touch target: period navigation quick-select buttons */
-  .period-btn-group .btn {
-    padding: 0.35rem 0.65rem;
-    font-size: 0.8rem;
   }
 
   /* Touch target: form controls inside full-edit popover */
@@ -792,24 +887,6 @@ thead .sticky-col {
 }
 
 @media (max-width: 575.98px) {
-  .sticky-col {
-    min-width: 90px;
-    max-width: 110px;
-  }
-
-  .row-label-col {
-    min-width: 90px;
-    max-width: 110px;
-  }
-
-  .grid-table {
-    font-size: 0.7rem;
-  }
-
-  .row-label {
-    font-size: 0.65rem;
-  }
-
   .anchor-balance-display {
     font-size: 22px;
   }
@@ -832,34 +909,8 @@ thead .sticky-col {
 }
 
 @media (max-width: 359.98px) {
-  /* Further reduce the grid sticky column for very small screens */
-  .sticky-col {
-    min-width: 70px;
-    max-width: 90px;
-  }
-
-  .row-label-col {
-    min-width: 70px;
-    max-width: 90px;
-  }
-
-  /* Scale down grid font for 320px devices */
-  .grid-table {
-    font-size: 0.6rem;
-  }
-
-  .row-label {
-    font-size: 0.55rem;
-  }
-
   /* Reduce anchor balance display for narrow screens */
   .anchor-balance-display {
     font-size: 18px;
-  }
-
-  /* Compact period quick-select buttons */
-  .period-btn-group .btn {
-    font-size: 0.65rem;
-    padding: 0.15rem 0.35rem;
   }
 }

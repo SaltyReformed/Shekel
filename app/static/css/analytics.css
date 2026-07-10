@@ -108,7 +108,7 @@
 }
 
 .calendar-pay-tag {
-  font-size: 0.5625rem;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   line-height: 1.4;
@@ -119,7 +119,7 @@
 }
 
 .calendar-infreq {
-  font-size: 0.5625rem;
+  font-size: 0.6875rem;
   color: var(--shekel-text-muted);
 }
 
@@ -259,12 +259,11 @@
   }
 
   .calendar-pay-tag {
-    font-size: 0.5rem;
     padding: 0 2px;
   }
 
   .calendar-day-balance {
-    font-size: 0.625rem;
+    font-size: 0.6875rem;
   }
 
   .calendar-flow-strip {

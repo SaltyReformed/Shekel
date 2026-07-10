@@ -22,7 +22,7 @@
 
 {%- macro pace_pill(pace) -%}
 {%- if pace == 'behind' -%}
-<span class="verdict-pill verdict-pill--credit">Behind</span>
+<span class="verdict-pill verdict-pill--warning">Behind</span>
 {%- elif pace == 'ahead' -%}
 <span class="verdict-pill verdict-pill--done">Ahead</span>
 {%- elif pace == 'on_track' -%}

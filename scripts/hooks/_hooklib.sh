@@ -27,6 +27,18 @@ hook_repo_root() {
     printf '%s\n' "${root%/}"
 }
 
+# Put the repo venv's bin first on PATH so every hook resolves the PINNED
+# toolchain (pylint et al. from requirements.txt), not whatever the launching
+# shell happens to expose. Observed 2026-07-08: a session started without the
+# venv on PATH made bare `pylint` unresolvable inside the hooks, so the
+# fail-closed gates blocked every Python edit on infrastructure error rather
+# than on a finding. Guarded so a missing venv (e.g. CI, which installs the
+# toolchain globally) leaves PATH untouched.
+_hook_venv_bin="$(hook_repo_root)/.venv/bin"
+if [ -d "$_hook_venv_bin" ]; then
+    PATH="$_hook_venv_bin:$PATH"
+fi
+
 # Echo the edited file's path normalized to repo-relative (e.g. app/foo.py).
 # Consumes stdin, so call it at most once per hook invocation.
 #
