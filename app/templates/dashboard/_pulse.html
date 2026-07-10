@@ -134,6 +134,13 @@
     <div class="street__event street__event--{{ state }}{% if at_end %} street__event--below street__event--at-end{% elif loop.index0 is odd %} street__event--below{% endif %}"
          data-day="{{ st.day_offset }}">
       <span class="street__event-label">
+        {# The overdue flag is a DAY state (every bill on the dot's date
+           shares it), so it heads the stack as a group tag -- trailing
+           the last item it read as that item's own flag (polish audit
+           P-DB6). The "+N more" overflow stays a footer line. #}
+        {% if state == 'overdue' %}
+        <span class="street__station-overdue">overdue</span>
+        {% endif %}
         {% for ev in st.visible_items %}
         <span class="street__station-item{% if ev.entry_over_budget %} street__station-item--over{% endif %}">
           <span class="street__station-name">{{ ev.name }}</span>
@@ -146,11 +153,8 @@
           </span>
         </span>
         {% endfor %}
-        {% if state == 'overdue' or st.extra_count > 0 %}
-        <span class="street__station-meta">
-          {%- if state == 'overdue' %}<span class="street__station-overdue">overdue</span>{% endif -%}
-          {%- if st.extra_count > 0 %}<span class="street__station-more">+{{ st.extra_count }} more</span>{% endif -%}
-        </span>
+        {% if st.extra_count > 0 %}
+        <span class="street__station-more">+{{ st.extra_count }} more</span>
         {% endif %}
       </span>
     </div>
