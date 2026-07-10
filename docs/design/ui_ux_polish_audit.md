@@ -425,6 +425,18 @@ which needs a token proposal ratified on real-page mockups before their dependen
   JetBrains Mono are already vendored, so the pipeline exists). Recommend a short Loop A: 3-4
   candidate faces on the navbar + auth logo-gate mockup. **RULED 2026-07-09: Loop A approved** -
   vendored-woff2 candidates with some uniqueness; decision deferred to the loop.
+  **RESOLVED 2026-07-10 (S15 Loop A, two rounds + build): Besley 700.** Round 1 (Space Grotesk 700 /
+  Fraunces 600 / Instrument Serif 400 / JetBrains Mono 700 against the Inter baseline, on a
+  replica-navbar + auth-gate direction-switching viewer) was rejected whole: the grotesque read as
+  Inter, mono was ruled out for the wordmark, Instrument was too tall-and-scrunched, and Fraunces
+  only "won by default." Round 2 kept Fraunces as the bar to beat and swung sturdier (Bricolage
+  Grotesque 600 / Besley 700 / Lora 600 / Young Serif 400 / DM Serif Display 400); the developer
+  ruled **Besley 700** - a Clarendon, the banknote-and-ledger slab genre - with Young Serif the
+  runner-up. Built same day: Besley latin + latin-ext vendored (+28 KB) via
+  scripts/vendor_google_fonts.py (whose pinned URL now also carries the S16 JetBrains Mono 500 stop
+  that had been hand-added to the generated fonts.css - a re-run would have silently dropped the
+  money-figure weight), `.shekel-wordmark` in base.css (Besley 700, 1.03em, 0.005em tracking), and
+  the span applied to the navbar brand, the mobile drawer title, and all four auth logo gates.
 - **D3. Grid row tracking.** Prior Loop A (grid_audit decision 7) rejected banding in favor of hover
   row-tint; developer still feels the pain reading without the mouse. Options: (a) keep hover only;
   (b) subtle zebra banding; (c) hairline group separators every N rows; (d) sticky row-label hover

@@ -185,6 +185,13 @@ follows. If any new aggregate is needed for the chart, that data slice is Opus.
 
 3-4 vendored-woff2 candidates on the navbar + auth logo-gate mockup; tiny build after ruling (font
 files + @font-face + two templates).
+**DONE 2026-07-10 - two Loop A rounds + build; ruling inline at D2 in the audit register.** Ruled:
+Besley 700 (round 1 rejected whole; round 2 ran sturdier faces against a Fraunces reference).
+Landed: Besley latin/latin-ext vendored (+28 KB) through scripts/vendor_google_fonts.py - the
+script's pinned URL now also carries the S16 JetBrains Mono 500 stop so a future re-run cannot drop
+the money-figure weight - plus `.shekel-wordmark` (base.css) on the navbar brand, drawer title, and
+the four auth logo gates. Live-verified on the dev app (login gate both themes + mobile; computed
+font Besley 700 confirmed); full suite 7311 green.
 
 ## Where to spend Fable context (priority order)
 
