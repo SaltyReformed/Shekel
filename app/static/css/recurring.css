@@ -87,7 +87,6 @@
 }
 
 .recurring-banner--income {
-  background: var(--shekel-section-income-bg);
   border-left-color: var(--shekel-section-income-text);
 }
 
@@ -96,7 +95,6 @@
 }
 
 .recurring-banner--expense {
-  background: var(--shekel-section-expense-bg);
   border-left-color: var(--shekel-section-expense-text);
 }
 
@@ -105,7 +103,6 @@
 }
 
 .recurring-banner--transfer {
-  background: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
   border-left-color: var(--shekel-accent);
 }
 
@@ -117,6 +114,48 @@
   font-size: 0.9375rem;
   font-weight: 600;
   margin: 0;
+}
+
+/* The dark AND light .card-header skins (base.css) set background-color at
+   two-class specificity ([data-bs-theme="..."] .card-header), which outranks
+   the single-class banner rules above and flattens all three tints to raised
+   gray (polish audit P-RC1: dark was originally flagged; the Wave 1 light
+   .card-header skin extended the same clobber to light). Re-assert each tint
+   with the theme attribute so the selectors match that specificity;
+   [data-bs-theme] scopes both themes at once, and recurring.css loads after
+   base.css, so the equal-specificity tie resolves in the banner's favor --
+   the same mechanism documented at components.css .category-group-header. */
+[data-bs-theme] .recurring-banner--income {
+  background-color: var(--shekel-section-income-bg);
+}
+
+[data-bs-theme] .recurring-banner--expense {
+  background-color: var(--shekel-section-expense-bg);
+}
+
+[data-bs-theme] .recurring-banner--transfer {
+  background-color: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
+}
+
+/* =============================================
+   ROW FLAGS (envelope / companion)
+   Non-money boolean flags on an expense row. Steel Ink commits the accent as
+   the only non-money chroma (design language), so these ride the accent, not
+   the off-palette cyan / money-green they used before (polish audit P-RC4 /
+   RC3). The two flags are told apart by their icon and title, never by color
+   alone. Shape mirrors the grid's tinted status chip (.badge-done /
+   .badge-credit): state-colored text on the state's own 16% tint.
+   ============================================= */
+.recurring-flag {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 10px;
+  vertical-align: middle;
+  line-height: 1.3;
+  background-color: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-surface));
+  color: var(--shekel-accent);
 }
 
 /* =============================================
@@ -150,6 +189,20 @@
    ============================================= */
 .recurring-search {
   max-width: 18rem;
+}
+
+/* The toolbar sits directly on the page background (no card), where an
+   unskinned field interior samples the page color and only a hairline border
+   marks it as a field -- illegible on light paper especially (polish audit
+   P-RC5). Fill the search + sort interiors with the surface token so they
+   read as raised fields in both themes, with a crisp border. Two-class
+   [data-bs-theme] specificity so this also beats base.css's dark .form-control
+   skin (which fills fields with the page bg); recurring.css loads after
+   base.css. */
+[data-bs-theme] [data-recurring-search],
+[data-bs-theme] [data-recurring-sort] {
+  background-color: var(--shekel-surface);
+  border-color: var(--shekel-border-strong);
 }
 
 /* The kind-filter pill for a section that is currently empty is disabled by
