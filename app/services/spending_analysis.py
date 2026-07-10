@@ -2,10 +2,11 @@
 Shekel Budget App -- Shared Spending-Analysis Primitives
 
 The settled-expense primitives shared by every retrospective spending
-surface: the Trends engine (:mod:`spending_trend_service`), the Year-End
-spending section (:mod:`year_end_summary_service`), and the unified Spending
-report (:mod:`spending_report_service`, whose ``_build_surprises`` is the
-settled-surprises kernel the retired Variance tab once owned).
+surface: the Year-End spending section (:mod:`year_end_summary_service`)
+and the unified Spending report (:mod:`spending_report_service`, whose
+``_build_surprises`` is the settled-surprises kernel the retired Variance
+tab once owned; the retired per-period Trends engine read spending through
+here too until the D7 rebuild removed its last consumer).
 
 Extracting them here means the "what counts as measured spending" rule is
 defined once rather than re-implemented per surface (coding-standards rule
@@ -14,9 +15,8 @@ defined once rather than re-implemented per surface (coding-standards rule
 
 * :func:`query_settled_expenses` -- the one settled-expense ORM query
   (settled status, expense type, not deleted, scoped to one account /
-  scenario / period set).  The Trends engine and the Spending report both
-  read spending through it, so a change to what "settled spending" selects
-  is a single edit.
+  scenario / period set).  Every consumer reads spending through it, so a
+  change to what "settled spending" selects is a single edit.
 * :func:`resolved_actual_amount` -- the settled-surprises kernel's
   estimate-at-entry vs actual-at-settle rule (a settled row uses its
   entered actual, falling back to the estimate; an unsettled row has no
