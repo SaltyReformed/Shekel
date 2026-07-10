@@ -1497,7 +1497,7 @@ class TestEmergencyFundCommittedBaseline:
 
             html = resp.data.decode()
             # Section renders (savings > 0) but no expense info.
-            assert "Emergency Fund Coverage" in html
+            assert "Emergency fund coverage" in html
             assert "avg expenses" not in html
 
     def test_emergency_fund_monthly_template_contribution(
@@ -3135,27 +3135,36 @@ class TestDebtSummaryDisplay:
     def test_dashboard_debt_summary_card_rendered(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """C-5.12-17: Dashboard shows debt summary card when loans exist."""
+        """C-5.12-17: Dashboard shows debt summary when loans exist.
+
+        D6-F fold: the standalone Debt Summary card is retired; its metrics
+        now render as the Liabilities group card's footer line, so assert
+        against that folded copy.
+        """
         with app.app_context():
             _create_small_loan(seed_user)
 
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt Summary" in html
-            assert "Total Debt" in html
-            assert "Monthly Payments" in html
-            assert "Weighted Avg Rate" in html
+            assert "Avg rate" in html
+            assert "Debt-free" in html
+            assert "Payoff Strategies" in html
 
     def test_dashboard_no_debt_summary_when_no_loans(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """C-5.12-19: No debt summary card when no loan accounts exist."""
+        """C-5.12-19: No debt summary when no loan accounts exist.
+
+        D6-F fold: the negative case now checks the same folded-footer
+        marker ("Avg rate") the positive test asserts, since the standalone
+        "Debt Summary" heading no longer exists.
+        """
         with app.app_context():
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt Summary" not in html
+            assert "Avg rate" not in html
 
     def test_dashboard_dti_badge_rendered(
         self, app, auth_client, seed_user, seed_periods,
@@ -3178,7 +3187,7 @@ class TestDebtSummaryDisplay:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt-to-Income" in html
+            assert "DTI" in html
             # Small loan relative to $78K salary -> "Healthy" badge
             assert "Healthy" in html
 
