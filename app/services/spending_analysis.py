@@ -17,6 +17,12 @@ defined once rather than re-implemented per surface (coding-standards rule
   (settled status, expense type, not deleted, scoped to one account /
   scenario / period set).  Every consumer reads spending through it, so a
   change to what "settled spending" selects is a single edit.
+* :func:`query_settled_expenses_in_span` -- the same row filters selected
+  by the attribution rule instead of a period set: COALESCE(due_date,
+  owning period start) inside a calendar span, across ALL the user's pay
+  periods.  The Spending report's calendar windows read through it so a
+  bill due in month M is attributed to M even when its funding period does
+  not overlap M.
 * :func:`resolved_actual_amount` -- the settled-surprises kernel's
   estimate-at-entry vs actual-at-settle rule (a settled row uses its
   entered actual, falling back to the estimate; an unsettled row has no
@@ -36,11 +42,12 @@ import calendar as cal_mod
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import CENTS, HUNDRED, ZERO
@@ -141,6 +148,67 @@ def query_settled_expenses(
         .all()
     )
     # pylint: enable=duplicate-code
+
+
+def query_settled_expenses_in_span(
+    scenario_id: int,
+    account_id: int,
+    user_id: int,
+    first_day: date,
+    last_day: date,
+) -> list[Transaction]:
+    """Load the settled expenses ATTRIBUTED to a calendar span.
+
+    The same row filters as :func:`query_settled_expenses`, selected by the
+    attribution rule instead of a period set: rows whose
+    ``COALESCE(due_date, owning period start)`` falls inside
+    ``[first_day, last_day]``, across ALL the user's pay periods.  The
+    former period-overlap pre-filter under-fetched at window boundaries: a
+    settled bill due in month M whose funding period did not overlap M was
+    attributed to NO month window at all (its own period's months excluded
+    it by date; M never loaded its period).  Selecting by the attribution
+    day itself makes every settled expense belong to exactly one calendar
+    window, and the result no longer depends on which window is viewed.
+
+    The COALESCE runs in SQL on the joined period row -- the same rule
+    consumers previously applied in Python -- so the filter and the
+    attribution stay one definition.
+
+    Args:
+        scenario_id: The budget scenario to scope to (the caller's
+            baseline).
+        account_id: The account to scope to (the analytics checking scope).
+        user_id: The owning user (scopes the pay-period join).
+        first_day: The span's first calendar day (inclusive).
+        last_day: The span's last calendar day (inclusive).
+
+    Returns:
+        The matching settled expense :class:`Transaction` rows, with
+        ``category`` and ``pay_period`` eager-loaded like the sibling query.
+    """
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    attribution_day = db.func.coalesce(
+        Transaction.due_date, PayPeriod.start_date,
+    )
+    return (
+        db.session.query(Transaction)
+        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        .options(
+            joinedload(Transaction.category),
+            contains_eager(Transaction.pay_period),
+        )
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            PayPeriod.user_id == user_id,
+            Transaction.is_deleted.is_(False),
+            Transaction.transaction_type_id == expense_type_id,
+            Transaction.status_id.in_(settled_status_ids()),
+            attribution_day >= first_day,
+            attribution_day <= last_day,
+        )
+        .all()
+    )
 
 
 def resolved_actual_amount(txn: Transaction) -> Decimal:

@@ -360,9 +360,11 @@ class _ResolvedWindow:
     """A window resolved to the period set and date span it covers.
 
     ``first_day`` / ``last_day`` are ``None`` for a ``"pay_period"`` window
-    (the period IS the span, so no date attribution filter is applied); for
-    a ``"month"`` / ``"year"`` window they bound the COALESCE(due_date, pay
-    period start) attribution.
+    (the period IS the span; ``period_ids`` drives the fetch); for a
+    ``"month"`` / ``"year"`` window they bound the COALESCE(due_date, pay
+    period start) attribution fetch, and ``period_ids`` (the overlapping
+    periods) serves only as the tracked-window signal for the None-vs-zero
+    total rule (:func:`_window_total`).
     """
 
     period_ids: list[int]
@@ -442,7 +444,7 @@ def compute_spending_report(
     )
     resolved = _resolve_window(user_id, window)
     txns = _window_transactions(ids, resolved)
-    viewed_total = _spent_total(txns) if resolved.period_ids else None
+    viewed_total = _window_total(resolved, txns)
 
     # The prior window loads once: its transactions feed the per-category
     # deltas AND its total feeds both the series' step-1 point and the
@@ -487,9 +489,9 @@ def _resolve_window(user_id: int, window: SpendingWindow) -> _ResolvedWindow:
 
     A ``"pay_period"`` window resolves to its single period with no date
     span (the period is the window).  A ``"month"`` / ``"year"`` window
-    resolves to every pay period overlapping its calendar span, filtered
-    downstream by COALESCE(due_date, period start) attribution
-    (:func:`_window_transactions`).
+    resolves to its calendar span -- the attribution fetch runs on the span
+    itself (:func:`_window_transactions`) -- plus the overlapping periods
+    as the tracked-window signal.
 
     Args:
         user_id: The owning user (scopes the overlapping-period lookup).
@@ -550,47 +552,54 @@ def _window_transactions(
 ) -> list[Transaction]:
     """Load the settled expenses attributed to a resolved window.
 
-    Reads the shared settled-expense query for the window's periods, then --
-    for a calendar window -- keeps only rows whose COALESCE(due_date, pay
-    period start) falls inside the window span.  This is the year-end
-    Section 3 attribution rule generalized from a single year to any date
-    span; a pay-period window applies no date filter (the period is the
-    window).
+    A calendar window selects by the attribution rule itself --
+    COALESCE(due_date, pay period start) inside the window span, across
+    ALL the user's periods
+    (:func:`spending_analysis.query_settled_expenses_in_span`) -- so a
+    bill due in month M belongs to M even when its funding period does not
+    overlap M (the former period-overlap pre-filter attributed such a row
+    to NO month window).  A pay-period window applies no date filter: the
+    period IS the window.
 
     Args:
-        ids: The report's scope ids (account + scenario are read here).
+        ids: The report's scope ids.
         resolved: The resolved window (period ids + optional span).
 
     Returns:
         The window's settled expense :class:`Transaction` rows.
     """
-    txns = spending_analysis.query_settled_expenses(
-        ids.scenario_id, resolved.period_ids, ids.account_id,
-    )
     if resolved.first_day is None:
-        return txns
-    return [
-        txn for txn in txns
-        if resolved.first_day <= _attribution_day(txn) <= resolved.last_day
-    ]
+        return spending_analysis.query_settled_expenses(
+            ids.scenario_id, resolved.period_ids, ids.account_id,
+        )
+    return spending_analysis.query_settled_expenses_in_span(
+        ids.scenario_id, ids.account_id, ids.user_id,
+        resolved.first_day, resolved.last_day,
+    )
 
 
-def _attribution_day(txn: Transaction) -> date:
-    """Return the day a settled expense is attributed to (unclamped).
+def _window_total(
+    resolved: _ResolvedWindow, txns: list[Transaction],
+) -> Decimal | None:
+    """Return a loaded window's spend total, or ``None`` when untracked.
 
-    The COALESCE(due_date, pay period start) rule the year-end summary uses
-    for calendar-year attribution, here yielding a full date so a calendar
-    window can range-filter on it.
+    ``None`` means the window overlaps no pay period AND holds no
+    attributed rows (before the user's history) so callers exclude it from
+    averages and the chart draws a tick.  A tracked window with no spend is
+    ``Decimal("0")`` -- a real lean window that DOES count -- and a window
+    that is untracked but still holds attributed rows (a due date outside
+    every period's span) sums them rather than hiding real settled money.
 
     Args:
-        txn: The transaction (``pay_period`` eager-loaded by the query).
+        resolved: The resolved window (the tracked signal).
+        txns: The window's loaded settled expenses.
 
     Returns:
-        ``txn.due_date`` when set, else the owning period's ``start_date``.
+        The settled spend total, or ``None``.
     """
-    if txn.due_date is not None:
-        return txn.due_date
-    return txn.pay_period.start_date
+    if not resolved.period_ids and not txns:
+        return None
+    return _spent_total(txns)
 
 
 def _load_window(
@@ -603,16 +612,11 @@ def _load_window(
         window: The window to load.
 
     Returns:
-        ``(transactions, total)``.  ``total`` is ``None`` when the window
-        overlaps no pay period (before the user's history) so a caller
-        excludes it from an average; a window with periods but no spend
-        returns ``Decimal("0")`` (a real lean window that DOES count).
+        ``(transactions, total)``; ``total`` per :func:`_window_total`.
     """
     resolved = _resolve_window(ids.user_id, window)
-    if not resolved.period_ids:
-        return [], None
     txns = _window_transactions(ids, resolved)
-    return txns, _spent_total(txns)
+    return txns, _window_total(resolved, txns)
 
 
 # ── Trailing series ─────────────────────────────────────────────────

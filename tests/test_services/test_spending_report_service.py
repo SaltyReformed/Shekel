@@ -185,6 +185,35 @@ class TestBreakdown:
             assert report.hero.spent_total == Decimal("1200.00")
             assert report.scope.window_label == "January 2026"
 
+    def test_cross_boundary_due_date_belongs_to_its_month(self, app, seed_user,
+                                                          seed_periods, db):
+        """A bill due in month M funded from a period outside M belongs to M.
+
+        period[1] spans 2026-01-16..29 (entirely January) and holds a bill
+        with due_date 2026-02-05.  The period never overlaps February, so
+        the former period-overlap pre-filter attributed the row to NO month
+        window (January excluded it by date; February never loaded its
+        period).  The attribution-day fetch puts it where it is due:
+        February counts the 150.00; January does not.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[1], "EarlyFebBill", "Rent",
+                 "150.00", due_date=date(2026, 2, 5))
+            db.session.commit()
+
+            february = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=2, year=2026),
+            )
+            assert february.hero.spent_total == Decimal("150.00")
+            assert february.breakdown[0].items[0].item_name == "Rent"
+
+            january = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=1, year=2026),
+            )
+            assert january.hero.spent_total == Decimal("0")
+
 
 # ── Surprises ────────────────────────────────────────────────────────
 
