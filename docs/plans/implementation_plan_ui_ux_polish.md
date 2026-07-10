@@ -205,10 +205,16 @@ in the audit register). Ruled form: direction A "months lead" in cockpit form - 
 click-to-navigate bars, merged ledger with a By size / By change lens on a MONTH-OVER-MONTH basis,
 Top Movers card deleted, sparklines dropped, capped bars, P-AN11 signed-delta chip fix,
 singleton-group collapse, zero-month rows, surprises rail unchanged.
-**Loop B next, two slices in order:** (1) OPUS data slice - monthly-totals series + prior-month
-per-category totals (incl. zero-current rows); retire the tab's per-period trend consumers
-(ItemTrend display, movers, sparkline serializer). (2) FABLE page build - template + analytics.css +
-chart wiring per the D7 record.
+**LOOP B BUILT 2026-07-10 - SESSION COMPLETE** (both slices in one Fable 5 session, the S3
+precedent; commits 5bbcf9e7 rebuild + 0f57cdaf trend-engine deletion; full suite 7261 green, pylint
+10.00/10, biome clean; both themes + mobile re-shot before/after via a git-stash baseline; bar-click
+navigation live-verified). Landed: window-over-window producer (trailing-12 series feeds the chart
+AND the hero baselines - one source), merged ledger with the Bootstrap-pill lens, MoM dollar deltas
+with zero-current rows and "new" badges, singleton-group collapse, P-AN11 signed-delta chips with
+baseline captions, Top Movers + sparklines deleted, spending_tab.js emphasis chart (ticks, history
+note, labeled avg line, click-to-navigate), spending_trend_service deleted as dead code. As-built
+notes + two spotted follow-ups (orphaned trend_alert_threshold setting; the pre-existing htmx-settle
+CSP noise on Chart.js canvases) recorded inline at D7 in the register.
 
 ### S15. Loop A: brand wordmark (D2) -- FABLE, size S
 

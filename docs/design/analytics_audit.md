@@ -715,10 +715,18 @@ extensions `70ac1689`. Next: slice 3, Spending (S-P1 producers, then S-P2 page).
 
 ## Spending slice as-built (S-P1..S-P2, on dev)
 
-Built per the locked Spending anatomy (hero band; Where It Went rows with share bar + amount/% +
-per-period sparkline + delta chip; rail = Top Movers + Estimate Surprises) and the S-P1 Gate rulings
-(checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED month; no
-CSV).
+**SUPERSEDED 2026-07-10 by the S14 "months lead" cockpit rebuild** (polish audit ruling D7 in
+`ui_ux_polish_audit.md`, where the as-built record now lives): the per-period trend enrichment
+(sparklines, trend delta chips, Top Movers) retired for a month-over-month change basis, one pulse
+canvas with a trailing-12 emphasis month chart, and a By size / By change ledger lens. The Gate A
+rulings below (checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED
+month; no CSV) still stand. The section is kept as the historical S-P1..S-P2 record.
+
+Built per the then-locked Spending anatomy (hero band; Where It Went rows with share bar + amount/%
+
+- per-period sparkline + delta chip; rail = Top Movers + Estimate Surprises) and the S-P1 Gate
+rulings (checking-only labeled; calendar-month picker defaulting to the most recent COMPLETED month;
+no CSV).
 
 - **S-P1 `c7bc39a4`** -- the unified
   `spending_report_service.compute_spending_report(user_id, window)` producer + shared

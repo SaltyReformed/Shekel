@@ -376,11 +376,14 @@ Section 4.
   mostly empty (largest fill 40%); four encodings pile into the right 30% with ragged alignment;
   every Top Mover delta already on screen in the list; three text answers to one "what changed"
   question. Redesign fork - Loop A. **RULED 2026-07-10: see the D7 resolution** (direction A cockpit
-  form; builds in S14 Loop B).
-- **P-AN11 [polish]** "VS MAY $2,509.82" reads as May's total but is the absolute delta,
+  form; builds in S14 Loop B). **FIXED 2026-07-10 (S14 Loop B, commits 5bbcf9e7 + 0f57cdaf):** built
+  as ruled - see the D7 as-built record.
+- **P-AN11 [polish]** `"VS MAY $2,509.82"` reads as May's total but is the absolute delta,
   disambiguated only by a muted caption - caption/figure agreement in spirit.
   **Fix form ruled 2026-07-10 (D7):** the chip shows the signed delta with the prior month's total
-  in the caption; builds in S14 Loop B.
+  in the caption; builds in S14 Loop B. **FIXED 2026-07-10 (S14 Loop B, commit 5bbcf9e7):** both
+  hero chips show the SIGNED delta; the vs-prior caption states the prior month's total (the
+  `"-41.6% - May total $6,036.73"` form) and the vs-average caption states the average itself.
 
 ### Analytics - Statements
 
@@ -605,7 +608,26 @@ which needs a token proposal ratified on real-page mockups before their dependen
   page slice - template + analytics.css rebuild per the ruled form, chart in the app chart grammar
   with click-to-navigate bars; mobile reflows the ledger to name / delta / amount and compresses the
   chart. Scratch viewer (real data, all four candidates) at
-  ~/Documents/spending_directions_mockup.html until Loop B ships.
+  ~/Documents/spending_directions_mockup.html until Loop B ships. **BUILT 2026-07-10 (S14 Loop B, both
+  slices in one Fable 5 session per the S3 precedent; commits 5bbcf9e7 rebuild + 0f57cdaf dead-code
+  deletion).** As ruled, with these as-built notes:
+  - The producer's trailing-12 series is the ONE source for the chart bars AND the hero's vs-prior /
+    vs-average baselines (agreement by construction); a pre-history month is a None point (excluded
+    from the average, drawn as a baseline tick) while a tracked zero-spend month counts as a real
+    zero. The existing per-window attribution rule (periods overlapping the window + COALESCE
+    due_date/period-start filter) was preserved exactly - no financial-semantics change.
+  - Ledger deltas are signed MoM DOLLARS on every row (groups sum stopped categories into their
+    prior side); "new" badges replace the old percent-of-zero "New"; exact-zero deltas render muted.
+    The lens toggle is Bootstrap's pill plugin (both row sets in one render, no round trip).
+  - The chart is Chart.js in the app grammar (spending_tab.js): emphasis bar accent + muted 42%
+    fills, dashed muted 6-mo-avg line labeled per D11, empty-month baseline ticks + the history
+    note, value labels clamped inside the chart area (mobile edge bar), y ticks capped at 5 (2k
+    steps on the real data), bar-click navigation via htmx.ajax mirroring the picker buttons.
+  - spending_trend_service (module + 42 tests) deleted as dead code (the budget_variance_service
+    precedent). Follow-ups spotted, not built: UserSettings.trend_alert_threshold is now a fully
+    orphaned setting (needs a migration; S11 candidate), and htmx's settle-phase attribute clone
+    fires a harmless CSP style-src violation when a swap replaces an id-matched Chart.js canvas -
+    PRE-EXISTING (the calendar flow strip's month nav does the same), logged for a later root fix.
 - **D8. Statement section distinction (O35).** Options: (a) tint only the Income Statement with the
   existing income/expense banner tokens, Balance Sheet gets stronger typographic headers; (b) add a
   neutral accent-tinted section-banner variant used by ALL statement sections
