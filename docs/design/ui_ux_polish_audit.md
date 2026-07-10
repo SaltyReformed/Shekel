@@ -256,9 +256,14 @@ Section 4.
 - **Archive button amber (RC3 / D5): FIXED 2026-07-10 (S4), commit ad90dcfb.** The active-row
   archive button keeps `btn-outline-warning`, now skinned to `--shekel-warning` (deep, legible
   amber) by the app-wide base.css token skin; the archived-drawer delete rides the matching
-  `btn-outline-danger` skin. See the D5 note in Section 4 for the app-wide skin. (Out-of-scope note:
-  the drawer's "unarchive" button still uses `btn-outline-success` money-green for a non-money
-  restore; D5 does not cover restore, so it was left as-is.)
+  `btn-outline-danger` skin. See the D5 note in Section 4 for the app-wide skin.
+- **Restore/unarchive button money-green (RC3, D5 extension): FIXED 2026-07-10 (S4 follow-up).** The
+  drawer's "unarchive" control used `btn-outline-success` (money green on a non-money, reversible
+  action). Developer ruling: restore is a benign action in the same quiet tier as Edit, so it
+  becomes neutral `btn-outline-secondary`, keeping color reserved for the amber-caution and
+  red-danger controls. Swept app-wide across all five restore/reactivate controls (recurring drawer
+  x2, settings categories, settings companion reactivate, savings archived accounts); convention
+  added to `fable5-design-language.md`.
 
 ### Accounts (Net Worth Cockpit)
 
@@ -521,6 +526,13 @@ which needs a token proposal ratified on real-page mockups before their dependen
   pages (S9/S11) already render Steel tokens; those sessions now only need to reconsider any
   structural/semantic button choices, not re-skin. The grid full-edit popover's local
   `btn-outline-warning` -> credit override is unaffected (source-order win).
+  **RESTORE EXTENSION 2026-07-10 (S4 follow-up):** D5 never assigned a color to the inverse action
+  (restore / unarchive / reactivate), which had been left on `btn-outline-success` money green --
+  the same non-money-on-a-money-color class as the archive amber. Developer ruled restore = neutral
+  `btn-outline-secondary` (benign, reversible, same quiet tier as Edit; color stays reserved for the
+  caution and danger controls). Swept across all five occurrences (recurring drawer x2, settings
+  categories, companion reactivate, savings archived accounts); no new CSS (the class was already
+  themed).
 - **D6. Accounts cockpit de-busying (O17/O18).** Options: (a) tinted/ruled group banners (the
   recurring vocabulary, neutralized) + demote per-card Transfer buttons to the kebab; (b) collapse
   account cards to dense list rows per group, keeping cards only for the hero and summaries; (c)
