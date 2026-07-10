@@ -203,6 +203,30 @@ def _is_raise_run_start(pairs: list[PeriodPair], idx: int) -> bool:
     return raise_run_starts(pairs[idx][1].period.raise_event, prev)
 
 
+def raise_run_start_period_ids(pairs: list[PeriodPair]) -> set[int]:
+    """Return the ids of the periods that START a raise run.
+
+    For a surface that renders EVERY period (the projection ledger), this
+    marks only the paycheck where each raise takes effect -- its run start
+    (:func:`_is_raise_run_start`) -- so a raise the calculator badges on
+    every period of its month is flagged once, on the step, rather than
+    repeating a badge on every paycheck of the month (P-SA1, projection
+    surface).  The template checks ``period.id in`` this set.
+
+    Args:
+        pairs: The full ordered ``(period, breakdown)`` list.
+
+    Returns:
+        The set of ``period.id`` values that start a raise run (empty when
+        no period carries a raise event).
+    """
+    return {
+        pair[0].id
+        for idx, pair in enumerate(pairs)
+        if _is_raise_run_start(pairs, idx)
+    }
+
+
 def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:
     """Return the net of the nearest regular paycheck at the same salary.
 

@@ -191,6 +191,52 @@ class TestRaiseRunStarts:
         assert svc.raise_run_starts("COLA +3.0000%", "COLA +3.00%") is False
 
 
+class TestRaiseRunStartPeriodIds:
+    """raise_run_start_period_ids: run-start ids across the full ledger (P-SA1).
+
+    The projection ledger renders every period, so it flags the raise badge
+    only on each run's first paycheck -- this returns exactly those period ids.
+    """
+
+    def test_shared_scenario_single_raise(self):
+        """The shared 7-period scenario has one raise, at period id 14.
+
+        The only raise is the 07/01 merit (idx 4); its neighbours carry no
+        event, so it is a one-period run and its id is the only run start.
+        """
+        assert svc.raise_run_start_period_ids(_scenario()) == {14}
+
+    def test_collapses_multi_period_run_to_its_first(self):
+        """A 3-period COLA run + a following merit yields only the two starts.
+
+        The calculator badges "COLA +3.0000%" on three consecutive periods (a
+        July COLA hitting 07/02, 07/16, 07/30), then a January merit.  The set
+        holds only the first COLA period id (51) and the merit id (55) -- the
+        two run STARTS -- not the two COLA continuations (52, 53).
+        """
+        pairs = [
+            _pair(50, date(2026, 6, 1), date(2026, 6, 14), "50000", "1900", "1500"),
+            _pair(51, date(2026, 7, 2), date(2026, 7, 15), "51500", "1957", "1545",
+                  raise_event="COLA +3.0000%"),
+            _pair(52, date(2026, 7, 16), date(2026, 7, 29), "51500", "1957", "1545",
+                  raise_event="COLA +3.0000%"),
+            _pair(53, date(2026, 7, 30), date(2026, 8, 12), "51500", "1957", "1545",
+                  raise_event="COLA +3.0000%"),
+            _pair(54, date(2026, 8, 13), date(2026, 8, 26), "51500", "1957", "1545"),
+            _pair(55, date(2027, 1, 7), date(2027, 1, 20), "52800", "2007", "1584",
+                  raise_event="MERIT +2.5000%"),
+        ]
+        assert svc.raise_run_start_period_ids(pairs) == {51, 55}
+
+    def test_no_raise_events_is_empty(self):
+        """A ledger with no raise events yields the empty set."""
+        pairs = [
+            _pair(60, date(2026, 5, 1), date(2026, 5, 14), "50000", "1900", "1500"),
+            _pair(61, date(2026, 5, 15), date(2026, 5, 28), "50000", "1900", "1500"),
+        ]
+        assert svc.raise_run_start_period_ids(pairs) == set()
+
+
 class TestBaseRegularNet:
     """base_regular_net: nearest regular paycheck at the same salary."""
 

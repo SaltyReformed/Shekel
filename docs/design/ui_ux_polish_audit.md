@@ -277,9 +277,12 @@ Section 4.
   `_is_raise_run_start` now delegates to it, reused from the "next raise" chip); `cockpit`'s
   `_anatomy_context` computes the predecessor's event via `get_raise_event` and passes `raise_event`
   only on the run start (`_anatomy.html` unchanged). Tests: `TestRaiseRunStarts` (7) + two anatomy
-  route tests (banner shows on run start, hidden on continuation). **OUT OF SCOPE, flagged:**
-  `salary/projection.html` also badges every period of a run (`sal-badge-raise` per row) - the same
-  genus on a different (table) surface, not named in this finding; left for a separate call.
+  route tests (banner shows on run start, hidden on continuation).
+  **RELATED SURFACE FIXED 2026-07-10 (separate commit):** `salary/projection.html` also badged every
+  period of a run (`sal-badge-raise` + `sal-row-raise` per row); the ledger now flags only each
+  run's first paycheck via `salary_cockpit_service.raise_run_start_period_ids(pairs)` (route
+  computes the set of run-start period ids; the template checks `period.id in` it). Same genus as
+  the banner, a table surface.
 - **P-SA2 [consistency]** Edit-profile residue (O21): `table-light` thead strips (RC3), `bg-info`
   pre-tax badges + `text-info` icons (RC3), bare `h4` title over a header-less first card
   (stacked-card layout itself is the documented form_card exception - keep).
