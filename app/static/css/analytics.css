@@ -326,10 +326,11 @@
   font-weight: 600;
 }
 
-/* ── Spending trend deltas (movers + delta chips) ──────────────── */
-/* trend-up/down/flat map a trend direction to the money-state colours;
-   reused by the Spending tab's delta chips, movers, and sparkline strokes
-   (the sparkline stroke colours via currentColor from the direction class). */
+/* ── Spending change deltas (chips + ledger + surprises) ────────── */
+/* trend-up/down/flat map a signed month-over-month delta to the
+   money-state colours: up = spent more (danger), down = spent less
+   (done), flat = exactly equal (muted).  Shared by the hero chips, both
+   ledger lenses, and the surprises rail. */
 
 .trend-up {
   color: var(--shekel-danger);
@@ -343,15 +344,11 @@
   color: var(--shekel-text-muted);
 }
 
-/* ── Spending (slice-3 rebuild: hero + Where It Went + rail) ─────── */
+/* ── Spending (S14 "months lead" cockpit: canvas + merged ledger) ── */
 
-/* In-progress month caption + the "Where It Went" header note. */
+/* In-progress month caption. */
 .spend-inprogress {
   font-style: italic;
-}
-
-.spend-header-note {
-  font-size: 0.71875rem;
 }
 
 .spend-month-label {
@@ -359,14 +356,53 @@
   text-align: center;
 }
 
-/* Where It Went rows: one shared grid so the group head and its item rows
-   align column-for-column (marker / name / share bar / sparkline / delta /
-   figures).  The group head is a <button>, the items are <div>s, so the grid
-   template is applied to both via .spend-row. */
+/* In-canvas month chart: caption line + the Chart.js canvas region
+   (the .pulse-chart treatment at the spending band's height). */
+.spend-chart-note {
+  font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
+}
+
+.spend-chart {
+  height: 230px;
+  padding: 0.25rem 0.875rem 0.625rem;
+}
+
+/* Lens pill: the By size / By change toggle in the ledger card header.
+   Bootstrap's pill plugin drives the .active swap and the pane switch. */
+.spend-lens {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 99px;
+  padding: 2px;
+}
+
+.spend-lens button {
+  border: none;
+  background: transparent;
+  color: var(--shekel-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 99px;
+  padding: 2px 12px;
+  cursor: pointer;
+}
+
+.spend-lens button.active {
+  background: var(--shekel-accent);
+  color: var(--bs-white);
+}
+
+/* By-size rows: one shared grid so the group head and its item rows align
+   column-for-column (marker / name / capped bar / delta / figures).  The
+   group head is a <button> (collapsible) or a <div> (singleton group), the
+   items are <div>s, so the grid template is applied to all via .spend-row. */
 .spend-row {
   display: grid;
   grid-template-columns:
-    1.1rem minmax(4rem, 9rem) minmax(0, 1fr) 74px 66px minmax(5.5rem, auto);
+    1.1rem minmax(6rem, 12rem) minmax(0, 1fr) 6.5rem minmax(5.5rem, auto);
   align-items: center;
   gap: 0.5rem 0.75rem;
   padding: 0.5rem 1rem;
@@ -380,18 +416,21 @@
   border-bottom: none;
 }
 
-/* Group head: a full-width button that toggles its items' collapse. */
+/* Group head row; only the collapsible <button> form is interactive. */
 .spend-group__head {
   width: 100%;
   background: none;
   border: none;
   color: inherit;
   text-align: left;
+}
+
+button.spend-group__head {
   cursor: pointer;
 }
 
-.spend-group__head:hover,
-.spend-group__head:focus-visible {
+button.spend-group__head:hover,
+button.spend-group__head:focus-visible {
   background-color: var(--shekel-row-hover);
 }
 
@@ -410,6 +449,12 @@
   transition: transform 0.15s;
 }
 
+/* A singleton group has nothing to collapse: the chevron cell keeps its
+   grid slot but stays invisible so the name column lines up. */
+.spend-chevron--hidden {
+  visibility: hidden;
+}
+
 /* Default state is expanded (chevron-down); collapsed points right. */
 .spend-group__head[aria-expanded="false"] .spend-chevron {
   transform: rotate(-90deg);
@@ -422,8 +467,24 @@
   min-width: 0;
 }
 
-/* Share bar: proportion of the window total.  Fill width is applied by
-   progress_bar.js from data-progress-pct (CSP forbids inline style). */
+/* The singleton row's item name, and the change lens's group suffix. */
+.spend-kin {
+  color: var(--shekel-text-muted);
+  font-size: 0.71875rem;
+}
+
+/* A category with no prior-month spend: the whole amount is new, so the
+   row says so instead of faking a percent of zero. */
+.spend-badge-new {
+  font-size: 0.6875rem;
+  font-style: italic;
+  color: var(--shekel-text-muted);
+}
+
+/* Capped bar: length is the row's magnitude relative to the LARGEST row
+   (the largest group spans the full track); the % text stays
+   share-of-total.  Fill width is applied by progress_bar.js from
+   data-progress-pct (CSP forbids inline style). */
 .spend-bar {
   position: relative;
   height: 8px;
@@ -446,26 +507,8 @@
   background: color-mix(in srgb, var(--shekel-accent) 55%, transparent);
 }
 
-/* Sparkline cell: the per-period trend polyline, stroke coloured by the
-   direction class (trend-up / trend-down / trend-flat) via currentColor, so
-   the cell is theme-reactive with no JS. */
-.spend-spark {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.spend-spark-svg {
-  width: 100%;
-  height: 22px;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
 .spend-delta {
-  font-size: 0.75rem;
+  font-size: 0.78125rem;
   font-weight: 600;
   text-align: right;
   white-space: nowrap;
@@ -487,23 +530,65 @@
   color: var(--shekel-text-muted);
 }
 
-/* Rail: Top Movers + Estimate Surprises. */
-.spend-mover {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.5rem;
+/* By-change rows: name+kin / diverging minibar / signed delta / the shown
+   month's total. */
+.spend-chrow {
+  display: grid;
+  grid-template-columns: minmax(8rem, 16rem) minmax(0, 1fr) 7rem 6.5rem;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.4375rem 1rem;
+  border-bottom: 1px solid var(--shekel-border-subtle);
 }
 
-.spend-mover__name {
-  min-width: 0;
-  font-size: 0.8125rem;
+.spend-chrow:last-child {
+  border-bottom: none;
 }
 
-.spend-mover__abs {
-  font-size: 0.6875rem;
+/* Center-zeroed diverging minibar: less spending grows left of the center
+   line (done tint), more grows right (danger tint).  Fill widths come from
+   progress_bar.js (a full-magnitude row is 50% of the track = one half). */
+.spend-div-track {
+  position: relative;
+  height: 10px;
 }
 
+.spend-div-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--shekel-border-strong);
+}
+
+.spend-div-fill {
+  position: absolute;
+  top: 1px;
+  height: 8px;
+}
+
+.spend-div-fill--down {
+  right: 50%;
+  border-radius: 99px 0 0 99px;
+  background: color-mix(in srgb, var(--shekel-done) 70%, transparent);
+}
+
+.spend-div-fill--up {
+  left: 50%;
+  border-radius: 0 99px 99px 0;
+  background: color-mix(in srgb, var(--shekel-danger) 70%, transparent);
+}
+
+.spend-current {
+  color: var(--shekel-text-secondary);
+  font-size: 0.78125rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Rail: Estimate Surprises. */
 .spend-surprise__head {
   display: flex;
   justify-content: space-between;
@@ -522,17 +607,29 @@
   margin-top: 0.0625rem;
 }
 
-/* Mobile: drop the share bar and sparkline columns (the % and delta carry
-   the same signals in less space); the remaining four cells reflow into the
-   narrower grid in source order. */
+/* Mobile: both lenses reflow to name / delta / amount (the bars are the
+   dropped column -- the signed delta and % text carry the same signals in
+   less space), and the month chart compresses. */
 @media (max-width: 767.98px) {
   .spend-row {
     grid-template-columns: 1.1rem minmax(0, 1fr) auto auto;
     gap: 0.375rem 0.625rem;
   }
 
-  .spend-bar,
-  .spend-spark {
+  .spend-bar {
     display: none;
+  }
+
+  .spend-chrow {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .spend-div-track {
+    display: none;
+  }
+
+  .spend-chart {
+    height: 160px;
+    padding: 0.25rem 0.5rem 0.5rem;
   }
 }

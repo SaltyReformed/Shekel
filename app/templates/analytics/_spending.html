@@ -1,29 +1,29 @@
 {% from "_money_macros.html" import money %}
-{# Spending tab -- HTMX partial (Slice 3, S-P2), per the locked anatomy in
-   docs/design/analytics_audit.md: hero band (spent + vs-prior + vs-6-mo-avg +
-   payment-timing chips) over the "Where It Went" category breakdown (share
-   bars + per-period trend sparklines + delta chips) and the Top Movers /
-   Estimate Surprises rail.
+{# Spending tab -- HTMX partial (S14 "months lead" cockpit, per the D7 ruling
+   in docs/design/ui_ux_polish_audit.md): one pulse canvas (spent hero +
+   vs-prior / vs-average / payment-timing chips + the trailing-12 emphasis
+   month chart, click-to-navigate bars), the merged "Where It Went" ledger
+   with a By size / By change lens on a month-over-month basis, and the
+   Estimate Surprises rail.  The month picker is PAGE chrome (header top
+   right); Top Movers and the per-row sparklines are retired.
 
    Context contract (analytics.spending_tab):
      report            -- SpendingReport, or None (empty state).
      year, month       -- the shown calendar month.
-     display           -- route-computed hero comparison magnitudes/directions
+     display           -- route-computed display values
                           (analytics_view.build_spending_display; None when
-                          report is None).  Templates do no money math.
-     sparklines        -- {category_id: SVG polyline point string} for every
-                          trendable item (analytics_view.spending_sparklines).
+                          report is None): vs_prior / vs_average chip dicts
+                          (signed delta + baseline, the P-AN11 fix form) and
+                          the size_groups / change_rows lens rows with bar
+                          geometry.  Templates do no money math.
+     chart_json        -- the trailing-12 month series JSON for the chart
+                          canvas (analytics_view.serialize_spending_chart).
      month_name / prev_* / next_* / prev_month_name / is_current_month /
      can_go_next       -- the month-navigation context.
 
    Basis honesty: this surface is MEASURED (settled expenses on the user's
-   active checking account); the scope label states the account, and the
-   sparklines are captioned as the RECENT per-period trend (not the shown
-   month) so a back-navigated month never reads as disagreeing. #}
-
-{% macro fmt_pct(value) -%}
-  {%- if value is none -%}New{%- elif value > 0 -%}+{{ "{:.2f}".format(value) }}%{%- elif value < 0 -%}{{ "{:.2f}".format(value) }}%{%- else -%}0.00%{%- endif -%}
-{%- endmacro %}
+   active checking account); the scope label states the account, and every
+   change figure is month-over-month vs the named prior month. #}
 
 {% macro signed_pct(value) -%}
   {%- if value > 0 -%}+{% endif %}{{ "{:.1f}".format(value) }}%
@@ -33,12 +33,12 @@
   {%- if value > 0 -%}+{% endif %}{{ money(value) }}
 {%- endmacro %}
 
-{% macro dir_class(direction) -%}
-  {%- if direction == "up" -%}trend-up{%- elif direction == "down" -%}trend-down{%- else -%}trend-flat{%- endif -%}
-{%- endmacro %}
-
 {% macro dir_icon(direction) -%}
   {%- if direction == "up" -%}<i class="bi bi-arrow-up-right"></i>{%- elif direction == "down" -%}<i class="bi bi-arrow-down-right"></i>{%- else -%}<i class="bi bi-dash"></i>{%- endif -%}
+{%- endmacro %}
+
+{% macro new_badge() -%}
+  <span class="spend-badge-new">new</span>
 {%- endmacro %}
 
 {% if report is none %}
@@ -55,7 +55,7 @@
 
 {% else %}
 
-{# ── Header: title + basis chip + month nav ────────────────────── #}
+{# ── Page chrome: title + basis chip + month picker (top right) ── #}
 <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
   <div class="d-flex align-items-center gap-2">
     <h5 class="mb-0">Spending</h5>
@@ -88,7 +88,7 @@
   {%- if is_current_month %} <span class="spend-inprogress">{{ month_name }} is still in progress.</span>{% endif %}
 </p>
 
-{# ── Hero band: spent + comparison chips (read-only nw-sky vocabulary) ── #}
+{# ── Pulse canvas: hero + chips + trailing-12 month chart ────────── #}
 <div class="pulse-canvas mb-3">
   <div class="nw-sky">
     <div class="nw-hero">
@@ -100,22 +100,24 @@
       {% if display.vs_prior is not none %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">vs {{ prev_month_name }}</div>
-        <div class="pulse-chip__value font-mono {{ dir_class(display.vs_prior.direction) }}">
-          {{ dir_icon(display.vs_prior.direction) }} {{ money(display.vs_prior.amount) }}
+        <div class="pulse-chip__value font-mono trend-{{ display.vs_prior.direction }}">
+          {{ dir_icon(display.vs_prior.direction) }} {{ fmt_change(display.vs_prior.delta) }}
         </div>
         <div class="calendar-chip-cap">
-          {%- if display.vs_prior.pct is not none %}{{ signed_pct(display.vs_prior.pct) }} vs last month{% else %}vs an empty month{% endif -%}
+          {%- if display.vs_prior.pct is not none %}{{ signed_pct(display.vs_prior.pct) }} &middot; {% endif -%}
+          {{ prev_month_name }} total {{ money(display.vs_prior.baseline) }}
         </div>
       </div>
       {% endif %}
       {% if display.vs_average is not none %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">vs 6-mo avg</div>
-        <div class="pulse-chip__value font-mono {{ dir_class(display.vs_average.direction) }}">
-          {{ dir_icon(display.vs_average.direction) }} {{ money(display.vs_average.amount) }}
+        <div class="pulse-chip__value font-mono trend-{{ display.vs_average.direction }}">
+          {{ dir_icon(display.vs_average.direction) }} {{ fmt_change(display.vs_average.delta) }}
         </div>
         <div class="calendar-chip-cap">
-          {%- if display.vs_average.pct is not none %}{{ signed_pct(display.vs_average.pct) }} vs trailing avg{% else %}vs trailing average{% endif -%}
+          {%- if display.vs_average.pct is not none %}{{ signed_pct(display.vs_average.pct) }} &middot; {% endif -%}
+          avg {{ money(display.vs_average.baseline) }}
         </div>
       </div>
       {% endif %}
@@ -133,120 +135,124 @@
       {% endif %}
     </div>
   </div>
+  <div class="nw-chart-controls">
+    <span class="spend-chart-note">settled spending by month &middot; last 12 months &middot; click a bar to jump to that month</span>
+  </div>
+  <div class="spend-chart">
+    <canvas id="spending-months-canvas"
+            data-chart="{{ chart_json }}"
+            data-nav-url="{{ url_for('analytics.spending_tab') }}"
+            hx-indicator="#tab-spinner"
+            role="img"
+            aria-label="Monthly settled spending, last 12 months; the shown month is highlighted"></canvas>
+  </div>
 </div>
 
 <div class="row g-3">
-  {# ── Where It Went: category breakdown ───────────────────────── #}
+  {# ── Merged ledger: Where It Went with the By size / By change lens ── #}
   <div class="col-lg-8">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0">Where It Went</h6>
-        {% if report.scope.trend_sufficiency != "insufficient" %}
-        <span class="text-muted spend-header-note">sparklines: recent per-period trend</span>
-        {% endif %}
+        <div class="spend-lens" role="tablist" aria-label="Ledger lens">
+          <button class="active" type="button" data-bs-toggle="pill"
+                  data-bs-target="#spend-lens-size" role="tab"
+                  aria-controls="spend-lens-size" aria-selected="true">By size</button>
+          <button type="button" data-bs-toggle="pill"
+                  data-bs-target="#spend-lens-change" role="tab"
+                  aria-controls="spend-lens-change" aria-selected="false">By change</button>
+        </div>
       </div>
-      <div class="card-body p-0">
-        {% if report.breakdown %}
-        {% for group in report.breakdown %}
-        {% set gidx = loop.index %}
-        <div class="spend-group">
-          <button class="spend-row spend-group__head" type="button"
-                  data-bs-toggle="collapse" data-bs-target="#spend-g-{{ gidx }}"
-                  aria-expanded="true" aria-controls="spend-g-{{ gidx }}">
-            <i class="bi bi-chevron-down spend-chevron"></i>
-            <span class="spend-name fw-semibold">{{ group.group_name }}</span>
-            <span class="spend-bar" aria-hidden="true">
-              <span class="spend-bar__fill" data-progress-pct="{{ (group.share|to_percent)|round(2) }}"></span>
-            </span>
-            <span class="spend-spark"></span>
-            <span class="spend-delta {{ dir_class(group.direction) }}">
-              {%- if group.delta_pct is not none %}{{ dir_icon(group.direction) }} {{ fmt_pct(group.delta_pct) }}{% endif -%}
-            </span>
-            <span class="spend-figs">
-              <span class="font-mono fw-semibold">{{ money(group.amount) }}</span>
-              <span class="spend-share">{{ (group.share|to_percent)|round(0)|int }}%</span>
-            </span>
-          </button>
-          <div class="collapse show" id="spend-g-{{ gidx }}">
-            {% for item in group.items %}
-            <div class="spend-row spend-item">
-              <span class="spend-marker"></span>
-              <span class="spend-name">{{ item.item_name }}</span>
+      <div class="card-body p-0 tab-content">
+
+        {# By size: the group-to-item ledger; bars capped to the largest row. #}
+        <div class="tab-pane show active" id="spend-lens-size" role="tabpanel">
+          {% if display.size_groups %}
+          {% for group in display.size_groups %}
+          {% set gidx = loop.index %}
+          <div class="spend-group">
+            {% if group.item_rows %}
+            <button class="spend-row spend-group__head" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#spend-g-{{ gidx }}"
+                    aria-expanded="true" aria-controls="spend-g-{{ gidx }}">
+              <i class="bi bi-chevron-down spend-chevron"></i>
+              <span class="spend-name fw-semibold">{{ group.name }}{% if group.is_new %} {{ new_badge() }}{% endif %}</span>
               <span class="spend-bar" aria-hidden="true">
-                <span class="spend-bar__fill spend-bar__fill--item" data-progress-pct="{{ (item.share|to_percent)|round(2) }}"></span>
+                <span class="spend-bar__fill" data-progress-pct="{{ group.bar_pct }}"></span>
               </span>
-              <span class="spend-spark">
-                {% if item.trend is not none %}
-                <svg class="spend-spark-svg {{ dir_class(item.trend.direction) }}" viewBox="0 0 100 24"
-                     preserveAspectRatio="none" role="img"
-                     aria-label="{{ item.item_name }} recent per-period trend">
-                  <polyline points="{{ sparklines[item.category_id] }}" fill="none" vector-effect="non-scaling-stroke"/>
-                </svg>
-                {% endif %}
-              </span>
-              <span class="spend-delta {{ dir_class(item.trend.direction) if item.trend is not none else 'trend-flat' }}">
-                {%- if item.trend is not none %}{{ fmt_pct(item.trend.delta_pct) }}{% endif -%}
-              </span>
+              <span class="spend-delta {{ group.delta_class }}">{{ fmt_change(group.delta) }}</span>
               <span class="spend-figs">
-                <span class="font-mono">{{ money(item.amount) }}</span>
-                <span class="spend-share">{{ (item.share|to_percent)|round(0)|int }}%</span>
+                <span class="font-mono fw-semibold">{{ money(group.amount) }}</span>
+                <span class="spend-share">{{ (group.share|to_percent)|round(0)|int }}%</span>
+              </span>
+            </button>
+            <div class="collapse show" id="spend-g-{{ gidx }}">
+              {% for item in group.item_rows %}
+              <div class="spend-row spend-item">
+                <span class="spend-marker"></span>
+                <span class="spend-name">{{ item.name }}{% if item.is_new %} {{ new_badge() }}{% endif %}</span>
+                <span class="spend-bar" aria-hidden="true">
+                  <span class="spend-bar__fill spend-bar__fill--item" data-progress-pct="{{ item.bar_pct }}"></span>
+                </span>
+                <span class="spend-delta {{ item.delta_class }}">{{ fmt_change(item.delta) }}</span>
+                <span class="spend-figs">
+                  <span class="font-mono">{{ money(item.amount) }}</span>
+                  <span class="spend-share">{{ (item.share|to_percent)|round(0)|int }}%</span>
+                </span>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            {# Singleton group (grid D3 rule ported): one row, item name as kin. #}
+            <div class="spend-row spend-group__head">
+              <span class="spend-chevron spend-chevron--hidden"></span>
+              <span class="spend-name fw-semibold">{{ group.name }}{% if group.kin %} <span class="spend-kin">&middot; {{ group.kin }}</span>{% endif %}{% if group.is_new %} {{ new_badge() }}{% endif %}</span>
+              <span class="spend-bar" aria-hidden="true">
+                <span class="spend-bar__fill" data-progress-pct="{{ group.bar_pct }}"></span>
+              </span>
+              <span class="spend-delta {{ group.delta_class }}">{{ fmt_change(group.delta) }}</span>
+              <span class="spend-figs">
+                <span class="font-mono fw-semibold">{{ money(group.amount) }}</span>
+                <span class="spend-share">{{ (group.share|to_percent)|round(0)|int }}%</span>
               </span>
             </div>
-            {% endfor %}
+            {% endif %}
           </div>
+          {% endfor %}
+          {% else %}
+          <div class="p-4 text-center text-muted">
+            No settled spending in {{ report.scope.window_label }}.
+          </div>
+          {% endif %}
         </div>
-        {% endfor %}
-        {% else %}
-        <div class="p-4 text-center text-muted">
-          No settled spending in {{ report.scope.window_label }}.
+
+        {# By change: flat rows sorted by |delta| vs the prior month,
+           zero-current rows included. #}
+        <div class="tab-pane" id="spend-lens-change" role="tabpanel">
+          {% if display.change_rows %}
+          {% for row in display.change_rows %}
+          <div class="spend-chrow">
+            <span class="spend-name">{{ row.name }}{% if row.kin %} <span class="spend-kin">&middot; {{ row.kin }}</span>{% endif %}{% if row.is_new %} {{ new_badge() }}{% endif %}</span>
+            <span class="spend-div-track" aria-hidden="true">
+              {%- if row.side %}<span class="spend-div-fill spend-div-fill--{{ row.side }}" data-progress-pct="{{ row.bar_pct }}"></span>{% endif -%}
+            </span>
+            <span class="spend-delta {{ row.delta_class }}">{{ fmt_change(row.delta) }}</span>
+            <span class="spend-current font-mono">{{ money(row.current) }}</span>
+          </div>
+          {% endfor %}
+          {% else %}
+          <div class="p-4 text-center text-muted">
+            No settled spending in {{ report.scope.window_label }} or {{ prev_month_name }}.
+          </div>
+          {% endif %}
         </div>
-        {% endif %}
+
       </div>
     </div>
   </div>
 
-  {# ── Rail: Top Movers + Estimate Surprises ───────────────────── #}
+  {# ── Rail: Estimate Surprises ─────────────────────────────────── #}
   <div class="col-lg-4">
-    <div class="card mb-3">
-      <div class="card-header"><h6 class="mb-0">Top Movers</h6></div>
-      <div class="card-body p-0">
-        {% if report.movers.up or report.movers.down %}
-        <ul class="list-group list-group-flush">
-          {% for m in report.movers.up %}
-          <li class="list-group-item spend-mover">
-            <span class="spend-mover__name">
-              <span class="trend-up">{{ dir_icon("up") }}</span> {{ m.group_name }}: {{ m.item_name }}
-            </span>
-            <span class="text-end">
-              <span class="trend-up font-mono fw-semibold">{{ fmt_pct(m.pct_change) }}</span>
-              <span class="spend-mover__abs text-muted d-block">{{ fmt_change(m.absolute_change) }}/period</span>
-            </span>
-          </li>
-          {% endfor %}
-          {% for m in report.movers.down %}
-          <li class="list-group-item spend-mover">
-            <span class="spend-mover__name">
-              <span class="trend-down">{{ dir_icon("down") }}</span> {{ m.group_name }}: {{ m.item_name }}
-            </span>
-            <span class="text-end">
-              <span class="trend-down font-mono fw-semibold">{{ fmt_pct(m.pct_change) }}</span>
-              <span class="spend-mover__abs text-muted d-block">{{ fmt_change(m.absolute_change) }}/period</span>
-            </span>
-          </li>
-          {% endfor %}
-        </ul>
-        {% else %}
-        <div class="p-3 text-muted small">
-          {%- if report.scope.trend_sufficiency == "insufficient" -%}
-          Not enough completed pay periods yet to detect movers.
-          {%- else -%}
-          No categories moved past the alert threshold this window.
-          {%- endif -%}
-        </div>
-        {% endif %}
-      </div>
-    </div>
-
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0">Estimate Surprises</h6>

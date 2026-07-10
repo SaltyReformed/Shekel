@@ -11,9 +11,11 @@ Tests for the analytics page shell and HTMX tab endpoints:
   - Retired Variance / Trends / Year-End URLs redirect to the page
 """
 
+import json
 import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from html import unescape
 
 import pytest
 
@@ -84,190 +86,22 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     db.session.commit()
 
 
-def _seed_long_periods(db, seed_user, count):
-    """Generate pay periods starting ~8 months ago for trend tests.
+def _chart_payload(html):
+    """Parse the spending chart canvas's ``data-chart`` JSON from a page.
 
-    The spending trend service uses a window relative to today, so
-    periods must be recent enough to fall within that window.
+    The attribute value is HTML-escaped by Jinja autoescaping, so it is
+    unescaped before parsing.  Raises (failing the test) when the canvas
+    or its attribute is missing.
 
     Args:
-        db: Database session.
-        seed_user: User fixture dict.
-        count: Number of biweekly periods to generate.
+        html: The rendered Spending tab HTML.
 
     Returns:
-        List of PayPeriod objects.
+        The deserialized series dict.
     """
-    from app.services import pay_period_service
-    # Start 8 months before today to ensure 6-month window coverage.
-    today = date.today()
-    start_month = today.month - 8
-    start_year = today.year
-    while start_month < 1:
-        start_month += 12
-        start_year -= 1
-    start = date(start_year, start_month, 3)
-
-    periods = pay_period_service.generate_pay_periods(
-        user_id=seed_user["user"].id,
-        start_date=start,
-        num_periods=count,
-        cadence_days=14,
-    )
-    db.session.flush()
-    seed_user["account"].current_anchor_period_id = periods[0].id
-    db.session.commit()
-    return periods
-
-
-def _seed_increasing_trend(db, seed_user, periods):
-    """Create expenses in every period with increasing amounts.
-
-    The trend service runs linear regression on per-period data,
-    so we need one expense per period with a clear upward slope.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
-
-
-def _seed_decreasing_trend(db, seed_user, periods):
-    """Create expenses in every period with decreasing amounts.
-
-    Clear downward slope for the regression.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("600.00")
-    for p in periods:
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        amount = max(Decimal("50.00"), amount - Decimal("20.00"))
-    db.session.commit()
-
-
-def _seed_flat_expenses(db, seed_user, periods):
-    """Create expenses with consistent spending across 7+ months.
-
-    Creates one expense per period (not per month) with the same
-    amount so per-period averages remain stable.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    months_seen = set()
-    count = 0
-    for p in periods:
-        month_key = (p.start_date.year, p.start_date.month)
-        months_seen.add(month_key)
-        if len(months_seen) > 8:
-            break
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent P{count}",
-            estimated_amount=Decimal("400.00"),
-            actual_amount=Decimal("400.00"),
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        count += 1
-    db.session.commit()
-
-
-def _seed_increasing_trend_with_timing(db, seed_user, periods):
-    """Create increasing per-period expenses with paid_at for OP-3.
-
-    Payments made 3 days before due date.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        due = p.start_date
-        paid = datetime(due.year, due.month, max(1, due.day - 3),
-                        tzinfo=timezone.utc)
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=due,
-            paid_at=paid,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
-
-
-def _seed_increasing_trend_with_late_timing(db, seed_user, periods):
-    """Create increasing per-period expenses paid 5 days AFTER due.
-
-    Ensures avg_days_before_due is negative (late payments).
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        due = p.start_date
-        paid = datetime(due.year, due.month, min(28, due.day + 5),
-                        tzinfo=timezone.utc)
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=due,
-            paid_at=paid,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
+    match = re.search(r'data-chart="([^"]*)"', html)
+    assert match is not None, "spending chart data-chart attribute missing"
+    return json.loads(unescape(match.group(1)))
 
 
 # ── Auth Tests ──────────────────────────────────────────────────────
@@ -1959,8 +1793,11 @@ class TestSpendingTab:
 
             assert "$1,500.00" in html          # February spent hero
             assert "vs January" in html          # vs-prior chip label
-            assert "$500.00" in html             # |delta| = 1500 - 1000
-            assert "+50.0% vs last month" in html
+            assert "+$500.00" in html            # SIGNED delta (P-AN11 form)
+            assert "+50.0%" in html
+            # The caption names the prior month's total, so the delta can
+            # no longer read as January's total (P-AN11).
+            assert "January total $1,000.00" in html
             assert "trend-up" in html            # spent more -> danger dir
 
     def test_spending_tab_surprises(self, app, auth_client, seed_user,
@@ -1991,34 +1828,58 @@ class TestSpendingTab:
             # Net over ALL surprises = +45 (the est==actual row is excluded).
             assert "net +$45.00" in html
 
-    def test_spending_tab_sparklines_and_movers(self, app, auth_client,
-                                                seed_user, db):
-        """With 12+ completed periods, item rows carry sparklines and movers.
+    def test_spending_tab_chart_and_lens_rows(self, app, auth_client,
+                                              seed_user, seed_periods, db):
+        """The month chart serializes the series; the ledger carries both lenses.
 
-        ``_seed_long_periods(14)`` starts 2025-07-03; its last period
-        (index 13) is 2026-01-01..14 (January 2026).  A rising Rent series
-        makes Rent both trendable (sparkline) and a top mover.
+        January (period[0]): Rent 1000, then it stops.  February
+        (period[3], starts 2026-02-13): Groceries 460, brand new.  Viewing
+        February 2026: the chart's 12 bars end at Feb (index 11 = 460.0)
+        with Jan at index 10 (1000.0), pre-history 2025 months null, the
+        6-mo avg = 1000.0 (Jan is the only existing trailing month), and
+        the history note at Jan 2026.  The By-size lens collapses the
+        singleton Family group (Groceries as kin, "new" badge); the
+        By-change lens lists the stopped Rent at -$1,000.00.  Top Movers
+        and sparklines are retired (D7).
         """
         with app.app_context():
-            periods = _seed_long_periods(db, seed_user, 14)
-            _seed_increasing_trend(db, seed_user, periods)
+            _settled_spending_txn(db, seed_user, seed_periods[0], "JanRent",
+                                  "Rent", "1000.00")
+            _settled_spending_txn(db, seed_user, seed_periods[3], "FebFood",
+                                  "Groceries", "460.00")
+            db.session.commit()
 
             resp = auth_client.get(
-                "/analytics/spending?year=2026&month=1",
+                "/analytics/spending?year=2026&month=2",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Rent is trendable -> its row carries a sparkline polyline.
-            assert "spend-spark-svg" in html
-            assert "<polyline points=" in html
-            # Rising Rent is a top mover; sufficiency met -> the reliability
-            # note is shown, not the insufficient-data note.
-            assert "Top Movers" in html
-            assert "Rent" in html
-            assert "recent per-period trend" in html
-            assert "Not enough completed pay periods" not in html
+            # The in-canvas chart carries the trailing-12 series.
+            assert 'id="spending-months-canvas"' in html
+            chart = _chart_payload(html)
+            assert len(chart["values"]) == 12
+            assert chart["viewed_index"] == 11
+            assert chart["values"][11] == 460.0    # February (viewed)
+            assert chart["values"][10] == 1000.0   # January (comparison)
+            assert chart["values"][0] is None      # Mar 2025: pre-history
+            assert chart["nav"][11] == {"year": 2026, "month": 2}
+            # 6-mo avg: Jan is the only trailing month that exists -> 1000.
+            assert chart["avg"] == 1000.0
+            assert chart["history_note"] == "settled history begins Jan 2026"
+
+            # Lens pill; singleton Family collapses with Groceries as kin.
+            assert "By size" in html
+            assert "By change" in html
+            assert "spend-kin" in html
+            assert "spend-badge-new" in html
+            # By change: the stopped Rent appears as a zero-current row.
+            assert "spend-chrow" in html
+            assert "-$1,000.00" in html
+            # The retired surfaces are gone (D7).
+            assert "Top Movers" not in html
+            assert "spend-spark-svg" not in html
 
     def test_spending_tab_empty_month(self, app, auth_client, seed_user,
                                       seed_periods):

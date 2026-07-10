@@ -279,16 +279,17 @@ def taxes_tab():
 @login_required
 @require_owner
 def spending_tab():
-    """HTMX partial: the Spending tab (Slice 3, S-P2).
+    """HTMX partial: the Spending tab (S14 "months lead" cockpit, D7).
 
     Renders :func:`app.services.spending_report_service.compute_spending_report`
-    for one calendar month: the spent hero band with vs-prior / vs-average /
-    payment-timing chips, the "Where It Went" category breakdown (share bars,
-    per-period trend sparklines, and delta chips), and the Top Movers /
-    Estimate Surprises rail.  The surface is MEASURED (settled expenses on the
-    user's active checking account); the account scope and settled basis are
-    labeled on screen.  A user with no active checking account or no baseline
-    scenario gets the empty state.
+    for one calendar month: one pulse canvas (spent hero, vs-prior /
+    vs-average / payment-timing chips, and the trailing-12 emphasis month
+    chart with click-to-navigate bars), the merged "Where It Went" ledger
+    with its By size / By change lens on a month-over-month basis, and the
+    Estimate Surprises rail.  The surface is MEASURED (settled expenses on
+    the user's active checking account); the account scope and settled basis
+    are labeled on screen.  A user with no active checking account or no
+    baseline scenario gets the empty state.
 
     The producer accepts pay-period / month / year windows, but S-P2 exposes
     only the calendar-month picker (the S-P1 gate ruling).  The default is the
@@ -335,9 +336,9 @@ def spending_tab():
             analytics_view.build_spending_display(report)
             if report is not None else None
         ),
-        sparklines=(
-            analytics_view.spending_sparklines(report)
-            if report is not None else {}
+        chart_json=(
+            analytics_view.serialize_spending_chart(report)
+            if report is not None else None
         ),
         **analytics_view.build_spending_nav(today, year, month),
     )

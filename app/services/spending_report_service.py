@@ -1,38 +1,50 @@
 """
-Shekel Budget App -- Unified Spending Report Service (S-P1)
+Shekel Budget App -- Unified Spending Report Service (S-P1, rebuilt for D7)
 
-The producer behind the analytics Spending surface (S-P2 renders it).  It
-answers "where did the money actually go" for one chosen window
-(pay-period / month / year) and enriches each category with a drift signal:
+The producer behind the analytics Spending surface (the S14 "months lead"
+cockpit renders it).  It answers "where did the money actually go" for one
+chosen window (pay-period / month / year) on a window-over-window change
+basis (D7 ruling 2026-07-10: month-over-month for the exposed month picker):
 
+* **Trailing series** -- the chosen window plus its eleven predecessors of
+  the same type, each with its settled spend total (``None`` for a window
+  before the user's pay-period history).  The route serializes it for the
+  hero band's emphasis month chart, and the hero's vs-prior / vs-average
+  comparisons are DERIVED from this same series, so the chart and the chips
+  cannot disagree.
 * **Where It Went** -- settled expenses in the chosen window, grouped by
-  category group with drill-down items, each carrying its dollar amount and
-  its share of the window total (producer-computed; templates do no math).
-  Generalizes the year-end summary's Section 3 category breakdown to any
-  window.
-* **Trend cell per category** -- the per-period sparkline series and the
-  half-window delta chip, sourced from the SAME per-category series the
-  Trends engine (:mod:`spending_trend_service`) computes, so the visual and
-  the chip cannot disagree (the S-P1 build rule).  Each cell also carries a
-  flat-guard so a sub-percent wiggle is not auto-scaled to full height.
+  category group with drill-down items, each carrying its dollar amount,
+  its share of the window total, and its signed window-over-window dollar
+  delta (producer-computed; templates do no math).
+* **Changes** -- the flat By-change lens rows: every category with settled
+  spend in the chosen window OR its prior window, with both totals and the
+  signed delta, sorted by delta magnitude.  Categories with prior spend but
+  none in the chosen window appear as zero-current rows (the D7
+  zero-month-rows rider), so a bill that STOPPED is as visible as one that
+  grew.
 * **Estimate surprises** -- the settled rows whose entered actual differed
   from the estimate (the retired Variance tab's one real signal, reused via
   the shared :func:`spending_analysis.resolved_actual_amount` kernel), a
   capped ranked list plus the net.
-* **Top movers** -- the Trends engine's ranked up / down category lists.
-* **Hero band** -- window spent total, versus the prior window of the same
-  type, versus the trailing-window average, and payment timing (the
-  year-end timeliness rule scoped to the window).
+* **Hero band** -- window spent total, versus the prior window, versus the
+  trailing-window average, and payment timing (the year-end timeliness rule
+  scoped to the window).
+
+The former per-period trend enrichment (sparkline series, half-window delta
+chips, top movers) retired with D7: the per-period trend basis misled on a
+month-anchored page, so the surface's only change basis is now
+window-over-window.
 
 The Spending surface is MEASURED: settled-only, scoped to the user's active
 checking account (the audit's target-IA row).  It carries the account
-name / id and the settled-only flag so S-P2 can label the scope on screen.
+name / id and the settled-only flag so the template can label the scope on
+screen.
 
-Boundary discipline: no Flask import.  The route (S-P2) resolves the window
-from query params and passes a :class:`SpendingWindow`; every figure is a
-``Decimal`` (the sparkline series stays Decimal here -- ``float`` conversion
-is S-P2's Chart.js boundary).  DB reads live in the service layer, mirroring
-the sibling analytics producers.
+Boundary discipline: no Flask import.  The route resolves the window from
+query params and passes a :class:`SpendingWindow`; every figure is a
+``Decimal`` (``float`` conversion is the route layer's Chart.js boundary).
+DB reads live in the service layer, mirroring the sibling analytics
+producers.
 """
 
 from collections import defaultdict
@@ -43,27 +55,23 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import spending_analysis, spending_trend_service
+from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.spending_trend_service import ItemTrend, TrendReport
 from app.utils.money import ZERO, round_money
 
-# Sparkline flat-guard: a per-period series whose spread (max - min) is under
-# this fraction of its mean reads as flat, so S-P2 renders it centered rather
-# than auto-scaling sub-percent noise to full cell height (the audit's
-# Housing +0.4% exaggeration).  5% is a spread small enough that the drift is
-# visual noise, not a shape worth stretching; the delta chip still shows the
-# exact number, so nothing is hidden.
-_FLAT_SPARK_RANGE_RATIO = Decimal("0.05")
-
-# Longest surprises list the rail shows.  Matches the Trends engine's top-N
-# convention so the two ranked rail sections read at the same length.
+# Longest surprises list the rail shows, the ranked-rail top-N convention.
 _MAX_SURPRISES = 5
 
 # Number of prior same-type windows averaged for the hero's vs-average chip.
 _TRAILING_WINDOW_COUNT = 6
+
+# Bars on the hero chart: the chosen window plus its predecessors of the
+# same type (D7: a trailing-12 month chart for the exposed month picker).
+# Must exceed _TRAILING_WINDOW_COUNT so the vs-average baseline derives
+# from the same series the chart draws.
+_CHART_WINDOW_COUNT = 12
 
 _MONTHS_PER_YEAR = 12
 
@@ -172,33 +180,23 @@ class HeroFigures:
 
 
 @dataclass(frozen=True)
-class SparkTrend:
-    """One category's trend cell: the sparkline series and its delta chip.
-
-    ``series`` is the per-period spending series the Trends engine already
-    computed for this category, and ``delta_pct`` / ``delta_abs`` /
-    ``direction`` are the half-window metrics derived from THAT SAME series
-    -- one data source, so the sparkline and the chip cannot disagree (the
-    S-P1 build rule).  ``series`` stays ``Decimal`` here; S-P2 converts to
-    ``float`` only at the Chart.js boundary.
+class SeriesPoint:
+    """One bar of the hero chart's trailing same-type window series.
 
     Attributes:
-        series: The chronological per-period totals (zero-filled for empty
-            periods) -- the sparkline's y-values.
-        delta_pct: The half-window percent change, or ``None`` for an
-            emerging ("New") category with no prior-half baseline.
-        delta_abs: The half-window per-period dollar change (signed).
-        direction: ``"up"`` / ``"down"`` / ``"flat"``.
-        is_flat: ``True`` when the series spread is under
-            :data:`_FLAT_SPARK_RANGE_RATIO` of its mean, so S-P2 renders the
-            line flat/centered instead of auto-scaling noise.
+        window: The window this point covers, or ``None`` when the step
+            walked past the user's pay-period history (a ``"pay_period"``
+            window with no earlier period; calendar windows always shift).
+        total: The window's settled spend, or ``None`` when the window
+            overlaps no pay period (before the user's history) -- the chart
+            renders such a point as a baseline tick, and the vs-average
+            derivation excludes it.  A window with periods but no settled
+            spend is ``Decimal("0")`` (a real lean window that DOES count
+            toward the average).
     """
 
-    series: list[Decimal]
-    delta_pct: Decimal | None
-    delta_abs: Decimal
-    direction: str
-    is_flat: bool
+    window: SpendingWindow | None
+    total: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -211,16 +209,19 @@ class SpendingItemRow:
         amount: Settled spend for this category in the window.
         share: ``amount`` as a fraction of the window total (a full-precision
             ``Decimal`` in ``[0, 1]``; templates render, never compute).
-        trend: The category's :class:`SparkTrend`, or ``None`` when the
-            category is not trendable in the Trends engine's rolling window
-            (too little history, or below its materiality floor).
+        delta: ``amount`` minus the category's prior-window spend (signed;
+            the D7 window-over-window change basis).
+        is_new: ``True`` when the category had no prior-window spend, so the
+            whole amount is new spending (rendered as a "new" badge instead
+            of a percent of zero).
     """
 
     category_id: int
     item_name: str
     amount: Decimal
     share: Decimal
-    trend: SparkTrend | None
+    delta: Decimal
+    is_new: bool
 
 
 @dataclass(frozen=True)
@@ -231,19 +232,47 @@ class SpendingGroupRow:
         group_name: The category group label.
         amount: Settled spend for the whole group in the window.
         share: ``amount`` as a fraction of the window total.
+        delta: ``amount`` minus the group's prior-window spend (signed).
+            The prior side sums EVERY prior-window category in the group,
+            including categories with no spend in the chosen window, so a
+            group whose big bill stopped shows the drop.
+        is_new: ``True`` when the group had no prior-window spend at all.
         items: The group's :class:`SpendingItemRow` items, amount-descending.
-        delta_pct: The group's spending-weighted half-window percent change
-            from the Trends engine, or ``None`` when the group has no
-            measurable trend.
-        direction: The group's trend direction (``"flat"`` when no trend).
     """
 
     group_name: str
     amount: Decimal
     share: Decimal
+    delta: Decimal
+    is_new: bool
     items: list[SpendingItemRow]
-    delta_pct: Decimal | None
-    direction: str
+
+
+@dataclass(frozen=True)
+class ChangeRow:
+    """One By-change lens row: a category's window-over-window movement.
+
+    Every category with settled spend in the chosen window OR its prior
+    window gets a row -- including zero-current rows (prior spend, none
+    now; the D7 rider), so a stopped bill is as visible as a grown one.
+
+    Attributes:
+        category_id: The category's id (``0`` for the Uncategorized bucket).
+        group_name: The category group label.
+        item_name: The category item label.
+        current: The chosen window's settled spend (``0`` when none).
+        prior: The prior window's settled spend (``0`` when none).
+        delta: ``current - prior`` (signed).
+        is_new: ``True`` when ``prior`` is zero and ``current`` is not.
+    """
+
+    category_id: int
+    group_name: str
+    item_name: str
+    current: Decimal
+    prior: Decimal
+    delta: Decimal
+    is_new: bool
 
 
 @dataclass(frozen=True)
@@ -285,40 +314,23 @@ class Surprises:
 
 
 @dataclass(frozen=True)
-class Movers:
-    """The Trends engine's ranked category movers for the rail.
-
-    Attributes:
-        up: The top increasing categories (:class:`ItemTrend`).
-        down: The top decreasing categories (:class:`ItemTrend`).
-    """
-
-    up: list[ItemTrend]
-    down: list[ItemTrend]
-
-
-@dataclass(frozen=True)
 class SpendingScope:
-    """The page-context facts S-P2 renders as scope labels.
+    """The page-context facts the template renders as scope labels.
 
     Attributes:
         account_id: The checking account the report is scoped to.
         account_name: That account's display name (the on-screen scope
             label the audit's cross-cutting fix requires).
         settled_only: Always ``True`` -- the surface is measured
-            (settled-only); carried so S-P2's measured chip reads it rather
+            (settled-only); carried so the measured chip reads it rather
             than hard-coding the basis.
         window_label: The human window label (e.g. ``"January 2026"``).
-        trend_sufficiency: The Trends engine's banner state
-            (``"insufficient"`` / ``"preliminary"`` / ``"sufficient"``) for
-            the sparkline reliability caption.
     """
 
     account_id: int
     account_name: str
     settled_only: bool
     window_label: str
-    trend_sufficiency: str
 
 
 @dataclass(frozen=True)
@@ -326,18 +338,21 @@ class SpendingReport:
     """The complete Spending surface dataset for one window.
 
     Attributes:
-        scope: The account / basis / window / sufficiency page context.
+        scope: The account / basis / window page context.
         hero: The hero band (spent, vs-prior, vs-average, payment timing).
+        series: The trailing same-type window series, oldest first, with
+            the chosen window last (:data:`_CHART_WINDOW_COUNT` points).
         breakdown: The 'Where It Went' group rows, amount-descending.
+        changes: The By-change lens rows, delta-magnitude-descending.
         surprises: The capped estimate-surprises list and its net.
-        movers: The top up / down category movers.
     """
 
     scope: SpendingScope
     hero: HeroFigures
+    series: list[SeriesPoint]
     breakdown: list[SpendingGroupRow]
+    changes: list[ChangeRow]
     surprises: Surprises
-    movers: Movers
 
 
 @dataclass(frozen=True)
@@ -356,35 +371,55 @@ class _ResolvedWindow:
     label: str
 
 
+@dataclass(frozen=True)
+class _CategoryTotal:
+    """A category's settled spend in one window, with its display labels."""
+
+    group_name: str
+    item_name: str
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class _ScopeIds:
+    """The identifier triple every settled-spend window load is scoped by.
+
+    One cohesive concept -- WHOSE data a window reads (the user's periods,
+    the checking account, the baseline scenario) -- bundled so the window
+    loaders take the scope as one argument instead of three parallel ids.
+    """
+
+    user_id: int
+    account_id: int
+    scenario_id: int
+
+
 # ── Public API ──────────────────────────────────────────────────────
 
 
 def compute_spending_report(
     user_id: int,
     window: SpendingWindow,
-    *,
-    trend_threshold: Decimal = Decimal("0.1000"),
 ) -> SpendingReport | None:
     """Compute the Spending surface dataset for *user_id* over *window*.
 
     Resolves the user's active checking account and baseline scenario, then
-    builds the category breakdown, estimate surprises, hero band, and top
-    movers over the chosen window's settled expenses -- enriched with the
-    Trends engine's per-category series (over its own rolling window, scoped
-    to the same account and threshold).
+    builds the trailing window series, the category breakdown with
+    window-over-window deltas, the By-change rows, the estimate surprises,
+    and the hero band over the chosen window's settled expenses.  The
+    hero's vs-prior and vs-average baselines are derived from the series,
+    so the chart and the chips agree by construction.
 
     Args:
         user_id: The owning user (scopes every query).
         window: The chosen :class:`SpendingWindow`.
-        trend_threshold: The fractional flag threshold passed to the Trends
-            engine (0-1; default 0.10 = 10%).
 
     Returns:
         The populated :class:`SpendingReport`, or ``None`` when the user has
-        no active checking account or no baseline scenario (S-P2 renders an
-        empty state).  A resolvable user whose window simply has no settled
-        spend gets a populated report with an empty breakdown and a zero
-        spent total (the documented empty shape), never ``None``.
+        no active checking account or no baseline scenario (the template
+        renders an empty state).  A resolvable user whose window simply has
+        no settled spend gets a populated report with an empty breakdown and
+        a zero spent total (the documented empty shape), never ``None``.
 
     Raises:
         ValueError: If the window is an invalid type or omits a field its
@@ -402,12 +437,32 @@ def compute_spending_report(
     if scenario is None:
         return None
 
-    resolved = _resolve_window(user_id, window)
-    txns = _window_transactions(scenario.id, account.id, resolved)
-
-    trend_report = spending_trend_service.compute_trends(
-        user_id, trend_threshold, account.id,
+    ids = _ScopeIds(
+        user_id=user_id, account_id=account.id, scenario_id=scenario.id,
     )
+    resolved = _resolve_window(user_id, window)
+    txns = _window_transactions(ids, resolved)
+    viewed_total = _spent_total(txns) if resolved.period_ids else None
+
+    # The prior window loads once: its transactions feed the per-category
+    # deltas AND its total feeds both the series' step-1 point and the
+    # hero's vs-prior baseline (one load, three consumers that must agree).
+    prior_window = _shift_window(user_id, window, 1)
+    if prior_window is None:
+        prior_txns: list[Transaction] = []
+        prior_total = None
+    else:
+        prior_txns, prior_total = _load_window(ids, prior_window)
+
+    series = _build_series(
+        ids, window,
+        viewed_total=viewed_total,
+        prior_window=prior_window,
+        prior_total=prior_total,
+    )
+
+    current_by_cat = _totals_by_category(txns)
+    prior_by_cat = _totals_by_category(prior_txns)
 
     return SpendingReport(
         scope=SpendingScope(
@@ -415,15 +470,12 @@ def compute_spending_report(
             account_name=account.name,
             settled_only=True,
             window_label=resolved.label,
-            trend_sufficiency=trend_report.data_sufficiency,
         ),
-        hero=_build_hero(user_id, account.id, scenario.id, window, txns),
-        breakdown=_build_breakdown(txns, trend_report),
+        hero=_build_hero(txns, series),
+        series=series,
+        breakdown=_build_breakdown(current_by_cat, prior_by_cat),
+        changes=_build_changes(current_by_cat, prior_by_cat),
         surprises=_build_surprises(txns),
-        movers=Movers(
-            up=trend_report.top_increasing,
-            down=trend_report.top_decreasing,
-        ),
     )
 
 
@@ -494,7 +546,7 @@ def _window_label(window: SpendingWindow, period: PayPeriod | None) -> str:
 
 
 def _window_transactions(
-    scenario_id: int, account_id: int, resolved: _ResolvedWindow,
+    ids: _ScopeIds, resolved: _ResolvedWindow,
 ) -> list[Transaction]:
     """Load the settled expenses attributed to a resolved window.
 
@@ -506,15 +558,14 @@ def _window_transactions(
     window).
 
     Args:
-        scenario_id: The baseline scenario id.
-        account_id: The checking account id.
+        ids: The report's scope ids (account + scenario are read here).
         resolved: The resolved window (period ids + optional span).
 
     Returns:
         The window's settled expense :class:`Transaction` rows.
     """
     txns = spending_analysis.query_settled_expenses(
-        scenario_id, resolved.period_ids, account_id,
+        ids.scenario_id, resolved.period_ids, ids.account_id,
     )
     if resolved.first_day is None:
         return txns
@@ -542,270 +593,78 @@ def _attribution_day(txn: Transaction) -> date:
     return txn.pay_period.start_date
 
 
-# ── Breakdown ───────────────────────────────────────────────────────
-
-
-def _build_breakdown(
-    txns: list[Transaction], trend_report: TrendReport,
-) -> list[SpendingGroupRow]:
-    """Build the amount-descending 'Where It Went' group rows.
-
-    Sums settled spend per category, joins each category to its Trends-engine
-    :class:`ItemTrend` (for the sparkline + delta chip) and each group to its
-    ``GroupTrend`` (for the group delta), and computes every row's share of
-    the window total in the producer (templates do no math).
+def _load_window(
+    ids: _ScopeIds, window: SpendingWindow,
+) -> tuple[list[Transaction], Decimal | None]:
+    """Resolve and load a window's settled expenses plus its spend total.
 
     Args:
-        txns: The window's settled expenses.
-        trend_report: The Trends engine result supplying per-category series
-            and group deltas.
+        ids: The report's scope ids.
+        window: The window to load.
 
     Returns:
-        The group rows, amount-descending, each with amount-descending items.
+        ``(transactions, total)``.  ``total`` is ``None`` when the window
+        overlaps no pay period (before the user's history) so a caller
+        excludes it from an average; a window with periods but no spend
+        returns ``Decimal("0")`` (a real lean window that DOES count).
     """
-    total = _spent_total(txns)
-    item_trend_by_cat = {i.category_id: i for i in trend_report.all_items}
-    group_trend_by_name = {
-        g.group_name: g for g in trend_report.group_trends
-    }
-
-    items_by_group = _group_item_rows(txns, total, item_trend_by_cat)
-    rows = [
-        _group_row(group_name, items, total, group_trend_by_name.get(group_name))
-        for group_name, items in items_by_group.items()
-    ]
-    rows.sort(key=lambda row: row.amount, reverse=True)
-    return rows
+    resolved = _resolve_window(ids.user_id, window)
+    if not resolved.period_ids:
+        return [], None
+    txns = _window_transactions(ids, resolved)
+    return txns, _spent_total(txns)
 
 
-def _group_item_rows(
-    txns: list[Transaction],
-    total: Decimal,
-    item_trend_by_cat: dict[int, ItemTrend],
-) -> dict[str, list[SpendingItemRow]]:
-    """Sum settled spend per category into item rows, grouped by group name.
-
-    Args:
-        txns: The window's settled expenses.
-        total: The window total (each row's share denominator).
-        item_trend_by_cat: Per-category-id Trends-engine rows.
-
-    Returns:
-        ``group_name -> list[SpendingItemRow]`` (unsorted; the caller orders
-        each group).
-    """
-    # Flat (group, category id, item) -> summed amount, keyed so an
-    # Uncategorized row (category id 0) never collides with a real category.
-    totals: dict[tuple[str, int, str], Decimal] = defaultdict(lambda: ZERO)
-    for txn in txns:
-        group_name, item_name = spending_analysis.category_names(txn)
-        cat_id = txn.category_id if txn.category_id is not None else 0
-        totals[(group_name, cat_id, item_name)] += abs(txn.effective_amount)
-
-    items_by_group: dict[str, list[SpendingItemRow]] = defaultdict(list)
-    for (group_name, cat_id, item_name), amount in totals.items():
-        trend = item_trend_by_cat.get(cat_id)
-        items_by_group[group_name].append(SpendingItemRow(
-            category_id=cat_id,
-            item_name=item_name,
-            amount=amount,
-            share=_share(amount, total),
-            trend=_spark_trend(trend) if trend is not None else None,
-        ))
-    return items_by_group
+# ── Trailing series ─────────────────────────────────────────────────
 
 
-def _group_row(
-    group_name: str,
-    items: list[SpendingItemRow],
-    total: Decimal,
-    group_trend,
-) -> SpendingGroupRow:
-    """Assemble one group row from its (to-be-sorted) item rows.
-
-    Args:
-        group_name: The category group label.
-        items: The group's item rows (sorted in place, amount-descending).
-        total: The window total (the group share denominator).
-        group_trend: The group's Trends-engine ``GroupTrend``, or ``None``.
-
-    Returns:
-        The :class:`SpendingGroupRow`.
-    """
-    items.sort(key=lambda row: row.amount, reverse=True)
-    group_amount = sum((row.amount for row in items), ZERO)
-    return SpendingGroupRow(
-        group_name=group_name,
-        amount=group_amount,
-        share=_share(group_amount, total),
-        items=items,
-        delta_pct=group_trend.pct_change if group_trend else None,
-        direction=group_trend.trend_direction if group_trend else "flat",
-    )
-
-
-def _share(amount: Decimal, total: Decimal) -> Decimal:
-    """Return ``amount / total`` as a full-precision fraction, or zero.
-
-    Args:
-        amount: The row's spend.
-        total: The window's total spend (the share denominator).
-
-    Returns:
-        ``amount / total`` when ``total`` is positive, else ``Decimal("0")``
-        (an empty window has no shares to compute).
-    """
-    if total <= ZERO:
-        return ZERO
-    return amount / total
-
-
-def _spark_trend(item: ItemTrend) -> SparkTrend:
-    """Build a category's sparkline + delta cell from its ``ItemTrend``.
-
-    The series and the delta come from the SAME ``ItemTrend`` -- the series
-    is the one the half-window delta was computed from -- so the sparkline
-    and the chip cannot disagree.
-
-    Args:
-        item: The category's Trends-engine trend row.
-
-    Returns:
-        The :class:`SparkTrend` (series kept ``Decimal``; flat-guard applied).
-    """
-    return SparkTrend(
-        series=item.period_totals,
-        delta_pct=item.pct_change,
-        delta_abs=item.absolute_change,
-        direction=item.trend_direction,
-        is_flat=_is_flat_series(item.period_totals),
-    )
-
-
-def _is_flat_series(series: list[Decimal]) -> bool:
-    """Return ``True`` when a per-period series is visually flat.
-
-    Flat means the spread (``max - min``) is under
-    :data:`_FLAT_SPARK_RANGE_RATIO` of the series mean; an all-zero or
-    empty series is flat by definition.  The guard governs only the
-    sparkline's auto-scale (so sub-percent noise is not stretched to full
-    height); the delta chip still shows the exact number.
-
-    Args:
-        series: The chronological per-period totals.
-
-    Returns:
-        ``True`` when the series should render flat/centered.
-    """
-    if not series:
-        return True
-    total = sum(series, ZERO)
-    if total <= ZERO:
-        return True
-    mean = total / Decimal(len(series))
-    spread = max(series) - min(series)
-    return spread < mean * _FLAT_SPARK_RANGE_RATIO
-
-
-# ── Surprises ───────────────────────────────────────────────────────
-
-
-def _build_surprises(txns: list[Transaction]) -> Surprises:
-    """Build the estimate-surprises list and its net over the window.
-
-    A surprise is a settled row whose resolved actual (via the shared
-    :func:`spending_analysis.resolved_actual_amount` kernel) differs from its
-    estimate.  The list is ranked by ``abs(delta)`` descending and capped at
-    :data:`_MAX_SURPRISES`; the net sums EVERY surprise's delta so the
-    headline reflects the whole window, not just the shown rows.
-
-    Args:
-        txns: The window's settled expenses.
-
-    Returns:
-        The :class:`Surprises` (capped rows + full net).
-    """
-    surprises: list[Surprise] = []
-    net = ZERO
-    for txn in txns:
-        actual = spending_analysis.resolved_actual_amount(txn)
-        delta = actual - txn.estimated_amount
-        if delta == ZERO:
-            continue
-        group_name, item_name = spending_analysis.category_names(txn)
-        surprises.append(Surprise(
-            transaction_id=txn.id,
-            name=txn.name,
-            group_name=group_name,
-            item_name=item_name,
-            estimated=txn.estimated_amount,
-            actual=actual,
-            delta=delta,
-        ))
-        net += delta
-
-    surprises.sort(key=lambda s: abs(s.delta), reverse=True)
-    return Surprises(rows=surprises[:_MAX_SURPRISES], net=net)
-
-
-# ── Hero band ───────────────────────────────────────────────────────
-
-
-def _build_hero(
-    user_id: int,
-    account_id: int,
-    scenario_id: int,
+def _build_series(
+    ids: _ScopeIds,
     window: SpendingWindow,
-    txns: list[Transaction],
-) -> HeroFigures:
-    """Build the hero band: spent total, vs-prior, vs-average, timing.
+    *,
+    viewed_total: Decimal | None,
+    prior_window: SpendingWindow | None,
+    prior_total: Decimal | None,
+) -> list[SeriesPoint]:
+    """Build the trailing same-type window series, oldest first.
 
-    The vs-prior comparison uses the immediately preceding same-type window;
-    the vs-average uses the trailing :data:`_TRAILING_WINDOW_COUNT` same-type
-    windows that exist (a window with pay periods but zero spend counts as
-    zero; a window before the user's history is skipped).  Both degrade to a
-    ``None`` comparison when no baseline exists.
+    The series is :data:`_CHART_WINDOW_COUNT` points: the chosen window
+    (last) plus its predecessors, each stepped back with
+    :func:`_shift_window`.  A step past the user's pay-period history (a
+    ``"pay_period"`` walk that runs out of earlier periods) still occupies
+    its slot with an all-``None`` point, so index arithmetic on the series
+    is stable: the chosen window is always ``series[-1]`` and its prior is
+    always ``series[-2]``.
+
+    The chosen and prior windows' totals are passed in rather than
+    re-loaded: the caller already loaded both windows' transactions for the
+    breakdown and change rows, and reusing the totals keeps the chart bar,
+    the hero figure, and the ledger summing one dataset.
 
     Args:
-        user_id: The owning user.
-        account_id: The checking account id.
-        scenario_id: The baseline scenario id.
-        window: The chosen window.
-        txns: The chosen window's settled expenses (the spent-total source,
-            reused so the hero and the breakdown agree by construction).
+        ids: The report's scope ids.
+        window: The chosen window (the series' last point).
+        viewed_total: The chosen window's settled spend (``None`` when the
+            window overlaps no pay period).
+        prior_window: The step-1 window, or ``None`` when none exists.
+        prior_total: The step-1 window's settled spend, or ``None``.
 
     Returns:
-        The :class:`HeroFigures`.
+        The :class:`SeriesPoint` list, oldest first.
     """
-    spent_total = _spent_total(txns)
-
-    prior_window = _shift_window(user_id, window, 1)
-    prior_spent = (
-        _window_spent_total(user_id, account_id, scenario_id, prior_window)
-        if prior_window is not None else None
-    )
-
-    trailing: list[Decimal] = []
-    for step in range(1, _TRAILING_WINDOW_COUNT + 1):
-        shifted = _shift_window(user_id, window, step)
-        if shifted is None:
+    points: list[SeriesPoint] = []
+    for step in range(_CHART_WINDOW_COUNT - 1, 0, -1):
+        if step == 1:
+            points.append(SeriesPoint(window=prior_window, total=prior_total))
             continue
-        spent = _window_spent_total(
-            user_id, account_id, scenario_id, shifted,
-        )
-        if spent is not None:
-            trailing.append(spent)
-    avg_spent = (
-        round_money(sum(trailing, ZERO) / Decimal(len(trailing)))
-        if trailing else None
-    )
-
-    return HeroFigures(
-        spent_total=spent_total,
-        vs_prior=Comparison.of(spent_total, prior_spent),
-        vs_average=Comparison.of(spent_total, avg_spent),
-        payment_timing=spending_analysis.payment_timeliness_from_txns(txns),
-    )
+        shifted = _shift_window(ids.user_id, window, step)
+        if shifted is None:
+            points.append(SeriesPoint(window=None, total=None))
+            continue
+        _, total = _load_window(ids, shifted)
+        points.append(SeriesPoint(window=shifted, total=total))
+    points.append(SeriesPoint(window=window, total=viewed_total))
+    return points
 
 
 def _shift_window(
@@ -817,7 +676,7 @@ def _shift_window(
     ``steps`` and returns ``None`` when no such earlier period exists (before
     the user's first period).  For a ``"month"`` / ``"year"`` window the
     shift is pure calendar arithmetic and always yields a window (whether it
-    holds any data is decided by :func:`_window_spent_total`).
+    holds any data is decided by :func:`_load_window`).
 
     Args:
         user_id: The owning user (scopes the pay-period lookup).
@@ -866,32 +725,262 @@ def _shift_month(year: int, month: int, steps: int) -> tuple[int, int]:
     return absolute // _MONTHS_PER_YEAR, absolute % _MONTHS_PER_YEAR + 1
 
 
-def _window_spent_total(
-    user_id: int,
-    account_id: int,
-    scenario_id: int,
-    window: SpendingWindow,
-) -> Decimal | None:
-    """Return a comparison window's settled spend, or ``None``.
+# ── Category totals, breakdown, and change rows ─────────────────────
 
-    Resolves the window and sums its settled expenses.  Returns ``None``
-    when the window overlaps no pay period (before the user's history) so
-    the caller excludes it from an average; a window with periods but no
-    spend returns ``Decimal("0")`` (a real lean window that DOES count).
+
+def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
+    """Sum settled spend per category id, carrying the display labels.
+
+    Category id ``0`` is the Uncategorized bucket (rows with no category),
+    so an uncategorized row never collides with a real category.  Labels
+    come from the first row seen for the id: a real category id maps to
+    exactly one ``(group, item)`` pair, and the Uncategorized bucket's
+    labels are fixed by :func:`spending_analysis.category_names`.
 
     Args:
-        user_id: The owning user.
-        account_id: The checking account id.
-        scenario_id: The baseline scenario id.
-        window: The comparison window.
+        txns: One window's settled expenses.
 
     Returns:
-        The window's settled spend, or ``None`` when it has no periods.
+        ``category_id -> _CategoryTotal`` (labels + summed spend).
     """
-    resolved = _resolve_window(user_id, window)
-    if not resolved.period_ids:
-        return None
-    return _spent_total(_window_transactions(scenario_id, account_id, resolved))
+    amounts: dict[int, Decimal] = defaultdict(lambda: ZERO)
+    labels: dict[int, tuple[str, str]] = {}
+    for txn in txns:
+        cat_id = txn.category_id if txn.category_id is not None else 0
+        amounts[cat_id] += abs(txn.effective_amount)
+        if cat_id not in labels:
+            labels[cat_id] = spending_analysis.category_names(txn)
+    return {
+        cat_id: _CategoryTotal(
+            group_name=labels[cat_id][0],
+            item_name=labels[cat_id][1],
+            amount=amount,
+        )
+        for cat_id, amount in amounts.items()
+    }
+
+
+def _build_breakdown(
+    current_by_cat: dict[int, _CategoryTotal],
+    prior_by_cat: dict[int, _CategoryTotal],
+) -> list[SpendingGroupRow]:
+    """Build the amount-descending 'Where It Went' group rows.
+
+    Groups the chosen window's per-category totals by group name, computes
+    every row's share of the window total, and attaches the signed
+    window-over-window delta per item and per group (the D7 change basis).
+    A group's prior side sums EVERY prior-window category in that group --
+    including categories with no current spend -- so a stopped bill still
+    moves its group's delta.
+
+    Args:
+        current_by_cat: The chosen window's per-category totals.
+        prior_by_cat: The prior window's per-category totals.
+
+    Returns:
+        The group rows, amount-descending, each with amount-descending items.
+    """
+    total = sum((cat.amount for cat in current_by_cat.values()), ZERO)
+
+    items_by_group: dict[str, list[SpendingItemRow]] = defaultdict(list)
+    for cat_id, cat in current_by_cat.items():
+        prior = prior_by_cat.get(cat_id)
+        prior_amount = prior.amount if prior is not None else ZERO
+        items_by_group[cat.group_name].append(SpendingItemRow(
+            category_id=cat_id,
+            item_name=cat.item_name,
+            amount=cat.amount,
+            share=_share(cat.amount, total),
+            delta=cat.amount - prior_amount,
+            is_new=prior_amount == ZERO,
+        ))
+
+    prior_group_totals: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for cat in prior_by_cat.values():
+        prior_group_totals[cat.group_name] += cat.amount
+
+    rows = [
+        _group_row(
+            group_name, items, total, prior_group_totals[group_name],
+        )
+        for group_name, items in items_by_group.items()
+    ]
+    rows.sort(key=lambda row: row.amount, reverse=True)
+    return rows
+
+
+def _group_row(
+    group_name: str,
+    items: list[SpendingItemRow],
+    total: Decimal,
+    prior_group_amount: Decimal,
+) -> SpendingGroupRow:
+    """Assemble one group row from its (to-be-sorted) item rows.
+
+    Args:
+        group_name: The category group label.
+        items: The group's item rows (sorted in place, amount-descending).
+        total: The window total (the group share denominator).
+        prior_group_amount: The group's prior-window spend across ALL its
+            categories (zero when the group had none).
+
+    Returns:
+        The :class:`SpendingGroupRow`.
+    """
+    items.sort(key=lambda row: row.amount, reverse=True)
+    group_amount = sum((row.amount for row in items), ZERO)
+    return SpendingGroupRow(
+        group_name=group_name,
+        amount=group_amount,
+        share=_share(group_amount, total),
+        delta=group_amount - prior_group_amount,
+        is_new=prior_group_amount == ZERO,
+        items=items,
+    )
+
+
+def _share(amount: Decimal, total: Decimal) -> Decimal:
+    """Return ``amount / total`` as a full-precision fraction, or zero.
+
+    Args:
+        amount: The row's spend.
+        total: The window's total spend (the share denominator).
+
+    Returns:
+        ``amount / total`` when ``total`` is positive, else ``Decimal("0")``
+        (an empty window has no shares to compute).
+    """
+    if total <= ZERO:
+        return ZERO
+    return amount / total
+
+
+def _build_changes(
+    current_by_cat: dict[int, _CategoryTotal],
+    prior_by_cat: dict[int, _CategoryTotal],
+) -> list[ChangeRow]:
+    """Build the By-change rows over the union of both windows' categories.
+
+    Every category with settled spend in either window gets a row, so a
+    category that stopped (prior spend, zero current -- the D7 zero-month
+    rider) is as visible as one that grew.  Labels prefer the chosen
+    window's rows (a rename shows its current name); a zero-current row
+    falls back to the prior window's labels.
+
+    Args:
+        current_by_cat: The chosen window's per-category totals.
+        prior_by_cat: The prior window's per-category totals.
+
+    Returns:
+        The :class:`ChangeRow` list sorted by ``abs(delta)`` descending,
+        ties broken by current spend descending, then item name.
+    """
+    rows: list[ChangeRow] = []
+    for cat_id in current_by_cat.keys() | prior_by_cat.keys():
+        current = current_by_cat.get(cat_id)
+        prior = prior_by_cat.get(cat_id)
+        labels = current if current is not None else prior
+        current_amount = current.amount if current is not None else ZERO
+        prior_amount = prior.amount if prior is not None else ZERO
+        rows.append(ChangeRow(
+            category_id=cat_id,
+            group_name=labels.group_name,
+            item_name=labels.item_name,
+            current=current_amount,
+            prior=prior_amount,
+            delta=current_amount - prior_amount,
+            is_new=prior_amount == ZERO and current_amount > ZERO,
+        ))
+    rows.sort(key=lambda r: (-abs(r.delta), -r.current, r.item_name.lower()))
+    return rows
+
+
+# ── Surprises ───────────────────────────────────────────────────────
+
+
+def _build_surprises(txns: list[Transaction]) -> Surprises:
+    """Build the estimate-surprises list and its net over the window.
+
+    A surprise is a settled row whose resolved actual (via the shared
+    :func:`spending_analysis.resolved_actual_amount` kernel) differs from its
+    estimate.  The list is ranked by ``abs(delta)`` descending and capped at
+    :data:`_MAX_SURPRISES`; the net sums EVERY surprise's delta so the
+    headline reflects the whole window, not just the shown rows.
+
+    Args:
+        txns: The window's settled expenses.
+
+    Returns:
+        The :class:`Surprises` (capped rows + full net).
+    """
+    surprises: list[Surprise] = []
+    net = ZERO
+    for txn in txns:
+        actual = spending_analysis.resolved_actual_amount(txn)
+        delta = actual - txn.estimated_amount
+        if delta == ZERO:
+            continue
+        group_name, item_name = spending_analysis.category_names(txn)
+        surprises.append(Surprise(
+            transaction_id=txn.id,
+            name=txn.name,
+            group_name=group_name,
+            item_name=item_name,
+            estimated=txn.estimated_amount,
+            actual=actual,
+            delta=delta,
+        ))
+        net += delta
+
+    surprises.sort(key=lambda s: abs(s.delta), reverse=True)
+    return Surprises(rows=surprises[:_MAX_SURPRISES], net=net)
+
+
+# ── Hero band ───────────────────────────────────────────────────────
+
+
+def _build_hero(
+    txns: list[Transaction],
+    series: list[SeriesPoint],
+) -> HeroFigures:
+    """Build the hero band: spent total, vs-prior, vs-average, timing.
+
+    Both comparison baselines are DERIVED FROM THE SERIES so the hero chips
+    and the chart cannot disagree: vs-prior reads the step-1 point
+    (``series[-2]``), and vs-average averages the trailing
+    :data:`_TRAILING_WINDOW_COUNT` points before the chosen window that
+    exist (a point with pay periods but zero spend counts as zero; a point
+    before the user's history is skipped).  Both degrade to a ``None``
+    comparison when no baseline exists.
+
+    Args:
+        txns: The chosen window's settled expenses (the spent-total and
+            payment-timing source, reused so the hero and the breakdown
+            agree by construction).
+        series: The trailing window series (chosen window last).
+
+    Returns:
+        The :class:`HeroFigures`.
+    """
+    spent_total = _spent_total(txns)
+    prior_total = series[-2].total
+
+    trailing = [
+        point.total
+        for point in series[-(_TRAILING_WINDOW_COUNT + 1):-1]
+        if point.total is not None
+    ]
+    avg_spent = (
+        round_money(sum(trailing, ZERO) / Decimal(len(trailing)))
+        if trailing else None
+    )
+
+    return HeroFigures(
+        spent_total=spent_total,
+        vs_prior=Comparison.of(spent_total, prior_total),
+        vs_average=Comparison.of(spent_total, avg_spent),
+        payment_timing=spending_analysis.payment_timeliness_from_txns(txns),
+    )
 
 
 def _spent_total(txns: list[Transaction]) -> Decimal:
@@ -901,6 +990,6 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
         txns: Settled expense transactions.
 
     Returns:
-        The sum of ``abs(effective_amount)`` over ``txns``.
+        The sum of ``abs(txn.effective_amount)`` over ``txns``.
     """
     return sum((abs(txn.effective_amount) for txn in txns), ZERO)
