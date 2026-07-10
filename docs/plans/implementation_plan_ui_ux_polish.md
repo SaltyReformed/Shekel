@@ -80,7 +80,18 @@ Dark banner-tint specificity fix (two-class pattern documented at components.css
 input out of the btn-group sibling chain, RC3 badge swaps, toolbar field interiors, archive buttons
 to the S1 convention. All mechanical once S1 lands. Good Opus candidate to save Fable context. P-RC3
 (the cross-section column contract) is NOT here - it needs table-grammar judgment; it rides with
-S12's grid work (same table-design headspace).
+S12's grid work (same table-design headspace). **SESSION COMPLETE 2026-07-10** (run on Opus; full
+suite 7301 green, Biome CSS clean; both themes + mobile re-shot before/after via a git-stash
+baseline). Commits: ad90dcfb (D5 app-wide button skin), 5a035f24 (P-RC2 toggle corner), 475aeaaa
+(P-RC1 banner tints + P-RC4 flag chips + P-RC5 toolbar fields). P-RC1: both themes were flat (Wave
+1's light `.card-header` skin extended the dark clobber), re-asserted at two-class specificity.
+P-RC4: envelope/companion flags moved off cyan/money-green onto the accent `.recurring-flag` chip.
+P-RC5: bare-page search/sort interiors filled to `--shekel-surface`. Archive swap (D5) landed
+app-wide as a `base.css` token skin of `btn-outline-warning` / `btn-outline-danger` (the
+`btn-outline-primary` pattern) rather than a recurring-only rule, so the settings pages'
+not-yet-swept warning/danger buttons (S9/S11) already render Steel tokens -- a pure fidelity change
+flagged in the register's D5 note. Out-of-scope: the archived-drawer "unarchive" button still uses
+money-green (`btn-outline-success`) for a non-money restore; left as-is (D5 does not cover restore).
 
 ### S5. Analytics shell + calendar + taxes bundle -- FABLE preferred, OPUS capable, size M
 

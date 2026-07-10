@@ -40,8 +40,8 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O12 | Grid: "Projected E..." cut off | CONFIRMED; systemic (~12 labels truncate) | P-GR2 |
 | O13 | Grid: square corners | CONFIRMED | P-GR3 |
 | O14 | Recurring: columns misaligned across sections | CONFIRMED (three independent tables) | P-RC3 |
-| O15 | Recurring: Monthly toggle square corner | CONFIRMED, root cause found | P-RC2 |
-| O16 | Recurring: totals blend into headers | CONFIRMED; mostly caused by P-RC1 | P-RC1 |
+| O15 | Recurring: Monthly toggle square corner | FIXED 2026-07-10 (S4) | P-RC2 |
+| O16 | Recurring: totals blend into headers | FIXED 2026-07-10 (S4, via P-RC1) | P-RC1 |
 | O17 | Accounts: too many cards, busy | CONFIRMED (14 equal-weight surfaces) | D6 |
 | O18 | Accounts: sections hard to distinguish | CONFIRMED (11px muted labels only) | D6 |
 | O19 | Accounts: bar segment without legend | CONFIRMED; NOT a data bug (empty track) | P-AC1 |
@@ -228,22 +228,37 @@ Section 4.
 
 ### Recurring
 
-- **P-RC1 [bug]** Dark mode loses the income/expense banner tints entirely: the shared dark
-  `.card-header` skin (`base.css:161`, specificity 0,2,0) beats the single-class
-  `.recurring-banner--*` rules, so all three banners render neutral raised gray. Light mode is
-  correct. This is most of O16. The codebase already documents the dark-scoped two-class fix pattern
-  at `components.css:140-145`.
-- **P-RC2 [bug]** Monthly toggle square corner (O15): the hidden CSRF input is the first child of
-  the `.btn-group`, so Bootstrap's sibling selector strips the first button's left radius
-  (`templates/list.html:30-47`). Move the input out of the sibling chain.
+- **P-RC1 [bug - FIXED 2026-07-10 (S4), commit 475aeaaa]** Dark mode loses the income/expense banner
+  tints entirely: the shared dark `.card-header` skin (`base.css:161`, specificity 0,2,0) beats the
+  single-class `.recurring-banner--*` rules, so all three banners render neutral raised gray. This
+  is most of O16. (Light was "correct" at audit time, but Wave 1's light `.card-header` skin
+  extended the same clobber to light, so both themes were flat by S4.) Fixed by re-asserting each
+  tint at matching two-class specificity (`[data-bs-theme] .recurring-banner--*`, both themes at
+  once); recurring.css loads after base.css so the equal-specificity tie resolves in the banner's
+  favor -- the documented `components.css:140-145` mechanism.
+- **P-RC2 [bug - FIXED 2026-07-10 (S4), commit 5a035f24]** Monthly toggle square corner (O15): the
+  hidden CSRF input was the first child of the `.btn-group`, so Bootstrap's
+  `:not(.btn-check) + .btn` sibling rule stripped the first button's left radius
+  (`templates/list.html:30-47`). Fixed by wrapping the two buttons in an inner `.btn-group` with the
+  CSRF input as its sibling (still inside the form for the no-JS submit), so the outer corners round
+  as one pill.
 - **P-RC3 [consistency - FIXED 2026-07-09, commit d9d15028]** Income / Expenses / Transfers are
   three independent auto-layout tables, so no column lines up across sections (O14; measured up to
   280px drift). Needs a shared column contract (fixed widths or a single table grammar).
-- **P-RC4 [consistency]** Envelope/companion badges use cyan `bg-info-subtle` and money-green
-  `bg-success-subtle` for non-money flags - RC3.
-- **P-RC5 [polish]** Light-mode toolbar search/sort interiors sample identical to the page
-  background; only a hairline marks them as fields.
-- Archive button amber: RC3 / D5.
+- **P-RC4 [consistency - FIXED 2026-07-10 (S4), commit 475aeaaa]** Envelope/companion badges used
+  cyan `bg-info-subtle` and money-green `bg-success-subtle` for non-money flags (RC3). Fixed: both
+  ride a token `.recurring-flag` chip (accent, the only non-money chroma; grid status-chip shape),
+  told apart by icon + title rather than color.
+- **P-RC5 [polish - FIXED 2026-07-10 (S4), commit 475aeaaa]** Light-mode toolbar search/sort
+  interiors sampled identical to the page background; only a hairline marked them as fields. Fixed:
+  the bare-page search + sort interiors are filled with `--shekel-surface` and a strong border so
+  they read as raised fields in both themes.
+- **Archive button amber (RC3 / D5): FIXED 2026-07-10 (S4), commit ad90dcfb.** The active-row
+  archive button keeps `btn-outline-warning`, now skinned to `--shekel-warning` (deep, legible
+  amber) by the app-wide base.css token skin; the archived-drawer delete rides the matching
+  `btn-outline-danger` skin. See the D5 note in Section 4 for the app-wide skin. (Out-of-scope note:
+  the drawer's "unarchive" button still uses `btn-outline-success` money-green for a non-money
+  restore; D5 does not cover restore, so it was left as-is.)
 
 ### Accounts (Net Worth Cockpit)
 
@@ -495,7 +510,14 @@ which needs a token proposal ratified on real-page mockups before their dependen
   `--shekel-warning` amber outline; true delete = `--shekel-danger` outline; amber never appears on
   a control for any other reason. Convention written into `fable5-design-language.md` ("Credit /
   warning split"); the per-page `btn-outline-warning` sweeps execute in the page sessions (S4, S9,
-  S11).
+  S11). **SKIN LANDED 2026-07-10 (S4), commit ad90dcfb:** rather than a per-page template swap, the
+  convention is implemented as an app-wide token skin of `btn-outline-warning` -> `--shekel-warning`
+  and `btn-outline-danger` -> `--shekel-danger` in `base.css` (per theme, mirroring the existing
+  `btn-outline-primary` skin). This retires raw `#FFC107` / `#DC3545` everywhere at once (a pure
+  fidelity change -- amber stays amber), so the not-yet-swept warning/danger buttons on the settings
+  pages (S9/S11) already render Steel tokens; those sessions now only need to reconsider any
+  structural/semantic button choices, not re-skin. The grid full-edit popover's local
+  `btn-outline-warning` -> credit override is unaffected (source-order win).
 - **D6. Accounts cockpit de-busying (O17/O18).** Options: (a) tinted/ruled group banners (the
   recurring vocabulary, neutralized) + demote per-card Transfer buttons to the kebab; (b) collapse
   account cards to dense list rows per group, keeping cards only for the hero and summaries; (c)
