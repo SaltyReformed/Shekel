@@ -349,10 +349,14 @@
 /* =============================================
    TRACKS (position tier: savings goals + debt)
    ============================================= */
+/* Carded like its neighbor tiers -- it was the page's only bare
+   surface (polish audit D10). */
 .tracks {
   margin-top: 1.25rem;
-  border-top: 1px solid var(--shekel-border-subtle);
-  padding-top: 0.75rem;
+  background: var(--shekel-surface);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 0.75rem;
+  padding: 0.625rem 1.125rem 0.125rem;
 }
 
 .tracks__head {
@@ -453,31 +457,34 @@
   transform: translateX(-50%);
 }
 
+/* Secondary, not muted: the percent is load-bearing data (S16 ink
+   re-rank -- muted is for true de-emphasis only). */
 .track__here-label {
   position: absolute;
   top: -0.375rem;
   transform: translateX(-50%);
   font-size: 0.71875rem;
-  color: var(--shekel-text-muted);
+  color: var(--shekel-text-secondary);
   white-space: nowrap;
 }
 
-.track__here-label--static {
-  position: static;
-  transform: none;
-  line-height: 2.25rem;
-}
-
-.track__dest {
+/* Position column (D10 inversion): the CURRENT figure is the hero,
+   the destination is its caption. */
+.track__pos {
   text-align: right;
-  font-size: 0.78125rem;
-  color: var(--shekel-text-secondary);
 }
 
-.track__dest-sub {
+.track__pos-num {
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--shekel-number-ink);
+}
+
+.track__pos-sub {
   display: block;
   font-size: 0.75rem;
-  color: var(--shekel-text-muted);
+  color: var(--shekel-text-secondary);
 }
 
 /* =============================================
@@ -514,11 +521,14 @@
     padding: 0.75rem 0;
   }
 
-  .track__dest {
+  .track__pos {
     text-align: left;
   }
 
+  /* Stack order on one column: label, hero figure, then the rail --
+     the number stays the hero above its supporting bar. */
   .track__rail {
+    order: 1;
     margin-top: 0.875rem;
   }
 }
