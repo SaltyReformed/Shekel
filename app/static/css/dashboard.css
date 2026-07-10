@@ -1,7 +1,8 @@
 /* Shekel dashboard screen -- the Q "Terminal Road" rebuild.
    Anatomy (docs/design/dashboard_card_audit.md, "Rebuild decisions
-   (Loop A COMPLETE)"): pulse canvas (sky + chart band), magnification
-   bracket, current-period street band, due-soon list, position tracks.
+   (Loop A COMPLETE)"; magnification bracket removed by developer
+   ruling, polish audit P-DB3): pulse canvas (sky + chart band),
+   current-period street band, position tracks.
 
    Load-order contract (see base.html): after theme-steel-ink.css and
    base.css. Tokens only -- no raw hex. */
@@ -139,21 +140,10 @@
 }
 
 /* =============================================
-   BRACKET + STREET (current period, magnified)
+   STREET (current period, magnified)
    ============================================= */
-.pulse-bracket {
-  display: block;
-  width: 100%;
-  height: 26px;
-}
-
-.pulse-bracket path {
-  fill: var(--shekel-surface-raised);
-  stroke: var(--shekel-border-subtle);
-  stroke-width: 1;
-}
-
 .street {
+  margin-top: 1.25rem;
   background: color-mix(in srgb, var(--shekel-accent) 5%, var(--shekel-surface));
   border: 1px solid var(--shekel-border-subtle);
   border-radius: 0.75rem;
@@ -493,7 +483,6 @@
    due-soon list is its mobile representation (locked rule).
    ============================================= */
 @media (max-width: 767.98px) {
-  .pulse-bracket,
   .street {
     display: none;
   }
