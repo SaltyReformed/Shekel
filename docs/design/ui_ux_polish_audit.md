@@ -207,7 +207,9 @@ Section 4.
   neighboring surface is rounded (O13). Wrapper now clips at `--bs-border-radius`.
 - **P-GR4 [consistency]** Mobile This-Period/Plan pill raw blue - RC2.
 - **P-GR5 [polish]** Mobile header states the same period three times (heading, subtitle,
-  jump-select).
+  jump-select). **RULED 2026-07-09: delete the muted subtitle**
+  (`grid/_mobile_this_period.html:113-115`) - it is the only one of the three with no function; the
+  heading stays as the navigation label, the jump-select stays as fast-travel. Builds in S12 Loop B.
 - **P-GR6 [bug-adjacent, found during S1]** The SOLID `.badge-done` / `.badge-credit` pills
   (`grid.css` STATUS BADGES block; render bare in CC-payback rows and the mobile cards - the in-chip
   variant flattens to a glyph) set `color: #fff` on the raw state color: white-on-green is ~2.2:1
@@ -418,10 +420,30 @@ which needs a token proposal ratified on real-page mockups before their dependen
   **RULED 2026-07-09: Loop A approved**, with a developer-added candidate: make the category header
   row more distinctive so it breaks up the grid; noted that a category hierarchy treatment (D4) may
   itself solve tracking - run D3 and D4 as ONE combined Loop A.
+  **RESOLVED 2026-07-09 (S12 Loop A): direction f "category spine + whisper zebra."** Seven
+  candidates ran on the real 6M compact grid (status quo / boosted group headers only / inline child
+  / two-line label / two-line + zebra / spine / spine + zebra; disposable canvas per the visual
+  loop, ratified in a live direction-switching viewer). Data findings that shaped the ruling: the
+  compact view holds 31 rows, most child categories are singletons whose row name is more specific
+  than the category (Geico = Car Insurance), and Family is the pain case - 16 rows spanning 4 child
+  categories with runs of 7 and 6. The ruled form: child-category header rows ONLY where a category
+  has >= 2 rows (Salary, Payback, Birthday, Spending Money, Subscriptions); singleton rows show the
+  plain name - NO subline, NO inline kin (developer modification; the title tooltip keeps the
+  category); all row labels share one indented left edge (three ledger levels: group flush, item
+  header, rows); group headers boosted (12px, secondary ink, 2px top rule); the redundant "Income"
+  group header under the INCOME banner drops; zebra resets per group and the current-period column
+  stays continuous. Zebra polarity (developer): stripes step DARKER than the surface in dark mode,
+  never lighter; hover lightens - so bands and hover are structurally distinct (the round-2 mockup's
+  lighter bands sat too close to the hover tint and swallowed it). Loop B build: template + CSS only
+  (RowKey already carries item_name), plus riders P-RC3, P-GR6, P-GR5, and the mobile list adopting
+  the same item headers.
 - **D4. Grid category hierarchy (O11).** Child category exists only in a hover tooltip. Options: (a)
   two-line row label (child in muted subline); (b) indented child rows under parent group rows; (c)
   status quo + a visible affordance. Recommend (a) - preserves density, makes the data visible, no
   structural change. **RULED 2026-07-09: Loop A approved** (combined with D3, see above).
+  **RESOLVED 2026-07-09 (S12 Loop A): see the D3 ruling** - header rows for 2+ row categories,
+  nothing for singletons; the two-line label lost to the spine (repetition noise in Family, no
+  tracking help).
 - **D5. Archive/destructive button convention.** `btn-outline-warning` amber is used for
   archive/deactivate in 10+ templates, is off-palette, and is illegible on light paper. Recommend:
   neutral outline + archive icon for archive/deactivate; `--shekel-danger` outline reserved for true
@@ -503,6 +525,40 @@ which needs a token proposal ratified on real-page mockups before their dependen
   standardizing on the investment click-to-edit hero (the most discoverable), added to loan and cash
   in a later pass; not urgent.
   **RULED 2026-07-09: as recommended - standardize on the click-to-edit hero.**
+- **D15. Dark-theme neutral ladder + ink hierarchy (raised by the developer during S12,
+  2026-07-09).** Developer symptoms: "the dark grays everywhere blend in," muted text still reads
+  weak after the RC4 lift, grid dollar values stand out less than transaction names, "too many grays
+  or not enough contrast between them." Measured causes, all confirmed: (i) SEVEN distinct dark
+  surface grays (page/sticky/surface/group-header/raised/header/row-hover) packed into a 1.28:1
+  total span - adjacent tiers differ by 1.02-1.07:1, below reliable perception for large fills
+  (Material's smallest dark elevation step is ~1.11:1), so the tiers read as one mud; border-subtle
+  sits at 1.23:1 on surface, a hairline the eye cannot find. (ii) `--shekel-text-muted` (5.28:1
+  dark) is AA-legal but carries load-bearing data - the grid's Due dates - so functional content
+  reads de-emphasized. (iii) Ink-hierarchy inversion: row labels are `<th>` = browser-default BOLD
+  Inter; amounts are JetBrains Mono 400, same white - the label out-weighs the money figure,
+  violating principle 1. The vendored woff2s are variable fonts, so mono 500/600 costs no new
+  assets. Direction (needs its own token round, S16, ratified on the real grid + dashboard):
+  consolidate to fewer surface tiers with perceptible steps (target >= ~1.10:1 between adjacent
+  tiers, top of the range reserved for hover); lift secondary/muted one step and reassign data
+  captions (due dates) from muted to secondary; money figures get mono 500 and a brighter number ink
+  one step above text-primary, labels drop to 600 - "the number is the hero" applied to ink weight.
+  Dark first; light re-derives after. S12 Loop B is NOT blocked: it builds on tokens via vars and
+  re-skins automatically when the S16 values land.
+  **RESOLVED 2026-07-09 (S16 token round): "Graphite" ratified and LANDED.** Four AA-verified
+  candidate ladders ran (Carbon / Deep Field / Graphite / Warm Ink) on the live grid (interactive
+  A/B viewer) and live dashboard (per-candidate injected shots, charts re-themed); the developer
+  chose Graphite as "easiest to read everything" (page #101216, surface #1B1F26, raised #282E38,
+  header #2C323E, hover #374049; zebra room 1.13, hover 1.57, subtle border 1.42, span 1.78). Riders
+  ratified and landed with it: dark danger #F85149 -> #FB6D63 and dark credit #A87BF7 -> #B190F8
+  (every candidate's raised tier forced the lifts; chip-tint re-passed); the ink hierarchy
+  (--shekel-number-ink both themes, .font-mono 500 app-wide via a new variable-font weight stop,
+  grid labels 600, Due captions .cell-caption secondary); section banner tints re-based on the new
+  surface. Light neutrals unchanged. Values recorded in fable5-design-language.md ("Graphite
+  revision"). Full suite 7311 green post-change.
+  **Same session ruling: the grid's current-period column highlight is REMOVED** (developer:
+  redundant, "no period highlight is needed" - at default view the current period is the first
+  column). Implementation rides S12 Loop B (same templates: cur class emission, current-period
+  header rule, td.cur CSS, and the current_period_id macro threading).
 
 ---
 

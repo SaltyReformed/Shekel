@@ -123,12 +123,27 @@ halves already landed in Wave 1/S1.
 
 ### S12. Loop A: grid tracking + category hierarchy (D3+D4) -- FABLE (highest value), size L
 
-One combined round on the real grid: tracking candidates (hover-only status quo, banding, hairline
-group separators, sticky-label pairing) x hierarchy candidates (two-line label, indented child rows,
-distinctive category header rows - the developer's added direction). The hierarchy treatment may
-itself solve tracking; judge together. Loop B build follows the ruling. P-RC3 (the recurring column
-contract) rides along - same table-grammar decisions. P-GR5's which-copy-stays ruling can be taken
-during this session's mobile pass.
+**Loop A COMPLETE + RULED 2026-07-09** (seven candidates on the real 6M compact grid; ruling and
+data findings recorded inline at D3/D4 in the audit register). Ruled form: category spine (child
+header rows only for 2+ row categories, plain names for singletons, uniform indent, boosted group
+headers) + whisper zebra that steps DARKER in dark mode (hover lightens, so the two never collide).
+P-GR5 ruled the same day: delete the mobile subtitle line. Remaining: **S12 Loop B build** -
+template + CSS only (RowKey already carries item_name): spine + zebra in grid.html /
+_grid_row_macros.html / grid.css, cascade-ordered so hover beats bands without !important; the P-GR5
+subtitle deletion; P-GR6 badge chips to the tinted-bg treatment; mobile list adopts the item
+headers; P-RC3 recurring column contract per the ruled table grammar; PLUS the S16-session ruling to
+remove the current-period column highlight (cur class emission + current_period_id threading +
+td.cur / th.current-period CSS; any test-assertion edits happen in an Opus context per the model
+discipline). S16 tokens are landed, so the build happens directly on the Graphite values.
+
+### S16. Token round: dark neutral ladder + ink hierarchy (D15) -- FABLE (high value), size M
+
+**DONE 2026-07-09** (ruling + values recorded at D15 in the audit register and in
+fable5-design-language.md "Graphite revision"; full suite 7311 green). Graphite ladder ratified from
+four AA-verified candidates on the live grid + dashboard; dark danger/credit lifted; number ink +
+mono 500 + label/caption re-rank landed app-wide. Light neutrals unchanged. Two additions to S12
+Loop B came out of the round: the ruled removal of the current-period column highlight, and
+re-judging nothing else - the D3+D4 spine ruling stands as recorded.
 
 ### S13. Loop A: accounts de-busying (D6) -- FABLE (highest value), size M-L
 

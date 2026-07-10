@@ -95,10 +95,11 @@ introduce new raw hex. The Step 2a refactor consolidates the remaining inlined h
 | `--shekel-sticky-bg` | sticky column / header background |
 | `--shekel-header-bg` | grid header background |
 | `--shekel-summary-bg` | grid summary / total row background |
-| `--shekel-done` (`#2ECC71`) | settled / done / positive |
+| `--shekel-done` | settled / done / positive (values in the Steel Ink table) |
 | `--shekel-credit` | credit money state (violet; values in the Steel Ink table) |
 | `--shekel-warning` | caution / low-balance warning -- a non-money state (amber) |
-| `--shekel-danger` (`#E74C3C`) | danger / negative |
+| `--shekel-danger` | danger / negative (values in the Steel Ink table) |
+| `--shekel-number-ink` | money figures -- one step above body text, paired with mono 500 |
 | `--shekel-section-income-bg` / `--shekel-section-income-text` | income section banners |
 | `--shekel-section-expense-bg` / `--shekel-section-expense-text` | expense section banners |
 
@@ -121,31 +122,32 @@ now live in `app/static/css/theme-steel-ink.css`.
 
 | Token | Dark | Light |
 | ----- | ---- | ----- |
-| `--shekel-page-bg` (new; page behind surfaces) | `#0D0E11` | `#EFEDE8` |
-| `--shekel-surface` | `#14161A` | `#FBFAF7` |
-| `--shekel-surface-raised` | `#1B1E24` | `#EDEBE5` |
-| `--shekel-header-bg` | `#1E2128` | `#22242A` |
-| `--shekel-header-text` (new; header stays dark in light mode) | `#F0F1F3` | `#F0F1F3` |
-| `--shekel-sticky-bg` | `#101216` | `#EAE8E1` |
-| `--shekel-row-hover` | `#23262E` | `#E6E3DC` |
-| `--shekel-group-header-bg` | `#191C22` | `#F0EEE8` |
-| `--shekel-summary-bg` | `#101216` | `#ECEAE3` |
-| `--shekel-border-strong` | `#3A3F4A` | `#C8C5BD` |
-| `--shekel-border-subtle` | `#242832` | `#DDDAD2` |
-| `--shekel-text-primary` | `#ECEEF1` | `#1B1D22` |
-| `--shekel-text-secondary` | `#ADB3BD` | `#4A4E57` |
-| `--shekel-text-muted` | `#848B97` | `#63686F` |
+| `--shekel-page-bg` (page behind surfaces) | `#101216` | `#EFEDE8` |
+| `--shekel-surface` | `#1B1F26` | `#FBFAF7` |
+| `--shekel-surface-raised` | `#282E38` | `#EDEBE5` |
+| `--shekel-header-bg` | `#2C323E` | `#22242A` |
+| `--shekel-header-text` (header stays dark in light mode) | `#F0F1F3` | `#F0F1F3` |
+| `--shekel-sticky-bg` | `#161920` | `#EAE8E1` |
+| `--shekel-row-hover` | `#374049` | `#E6E3DC` |
+| `--shekel-group-header-bg` | `#222731` | `#F0EEE8` |
+| `--shekel-summary-bg` | `#161920` | `#ECEAE3` |
+| `--shekel-border-strong` | `#525A69` | `#C8C5BD` |
+| `--shekel-border-subtle` | `#323945` | `#DDDAD2` |
+| `--shekel-text-primary` | `#EDEFF2` | `#1B1D22` |
+| `--shekel-number-ink` (money figures) | `#F5F7FA` | `#0D0F13` |
+| `--shekel-text-secondary` | `#B9BFC9` | `#4A4E57` |
+| `--shekel-text-muted` | `#98A1AF` | `#63686F` |
 | `--shekel-accent` | `#4A9ECC` | `#25719F` |
 | `--shekel-accent-hover` | `#2878A8` | `#1C5E86` |
 | `--shekel-accent-light` | `#6BB8E0` | `#4A9ECC` |
 | `--shekel-accent-rgb` | `74, 158, 204` | `37, 113, 159` |
 | `--shekel-done` | `#3FB950` | `#1A7F37` |
-| `--shekel-credit` | `#A87BF7` | `#7443CC` |
+| `--shekel-credit` | `#B190F8` | `#7443CC` |
 | `--shekel-warning` | `#D29922` | `#855800` |
-| `--shekel-danger` | `#F85149` | `#CF222E` |
-| `--shekel-section-income-bg` | `#142219` | `#DCEBDD` |
+| `--shekel-danger` | `#FB6D63` | `#CF222E` |
+| `--shekel-section-income-bg` | `#1B2A20` | `#DCEBDD` |
 | `--shekel-section-income-text` | `#4CC368` | `#185C2C` |
-| `--shekel-section-expense-bg` | `#271619` | `#F3DCDF` |
+| `--shekel-section-expense-bg` | `#2E1F23` | `#F3DCDF` |
 | `--shekel-section-expense-text` | `#E5697E` | `#8E2336` |
 
 Notes: the accent now differs between modes (`#4A9ECC` dark, `#25719F` light) for contrast on the
@@ -161,15 +163,36 @@ surface tier while staying visibly quieter than the secondary tier. The light ac
 `#2878A8 -> #25719F` for the same reason (links on the bare page bg were 4.13:1). A type floor
 accompanies this: no text below `0.6875rem` (11px) anywhere in the app.
 
+### Dark neutral revision: "Graphite" (ratified 2026-07-09, S16 token round)
+
+The original dark ladder packed seven surface grays into a 1.28:1 total span; adjacent tiers
+differed by 1.02-1.07:1, below reliable perception for large fills, so the tiers read as one mud
+(polish audit D15, raised by the developer during S12). The ratified Graphite ladder (chosen over
+Carbon, Deep Field, and Warm Ink candidates on the live grid and dashboard) lifts the whole dark UI
+a step and spreads the working pairs: page-vs-surface 1.13:1, hover 1.57:1 above the surface, subtle
+border 1.42:1, total span 1.78:1. Light mode neutrals are unchanged. Two riders, both AA-forced by
+the new raised tier and verified with the S1 chip-tint method:
+
+- Dark `--shekel-danger` lifted `#F85149 -> #FB6D63` (the old red was already 4.51:1 on the old
+  hover tint) and dark `--shekel-credit` lifted `#A87BF7 -> #B190F8`.
+- **Ink hierarchy** ("the number is the hero" applied to ink): money figures render in
+  `--shekel-number-ink` (one step beyond body text in both themes) at JetBrains Mono 500
+  (`.font-mono` app-wide; the 500 face is a new weight stop on the existing variable font). Grid row
+  labels drop from th-default bold to 600, and data captions (the grid's Due dates) use secondary
+  ink, not muted (`.cell-caption`). Muted is for true de-emphasis only, never load-bearing data.
+- The grid's current-period column highlight was ruled REMOVED in the same session (redundant at
+  default view where the current period is the first column); the removal builds with S12 Loop B.
+
 ### Credit / warning split (ratified 2026-07-09, S1 token round)
 
 The credit money state and the caution role shared amber, making an informational state (paid by
 credit card) indistinguishable from a warning (low balance). The developer's D5+D11 ruling split
 them:
 
-- `--shekel-credit` is violet (`#A87BF7` dark / `#7443CC` light) and means EXACTLY the credit money
-  state: credit chips and glyphs, the mark-credit / undo-credit actions, the command palette's
-  credit action icon.
+- `--shekel-credit` is violet (`#B190F8` dark / `#7443CC` light; the dark value lifted from S1's
+  `#A87BF7` in the S16 Graphite revision, see above) and means EXACTLY the credit money state:
+  credit chips and glyphs, the mark-credit / undo-credit actions, the command palette's credit
+  action icon.
 - `--shekel-warning` keeps the amber caution role (`#D29922` dark / `#855800` light): the grid's
   low-but-positive balance, the low-balance threshold line, due-soon markers, stale-anchor captions,
   scheduled escrow changes, the ARM tag. The light value deepened from credit's old `#9A6700`, which
