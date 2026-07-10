@@ -55,6 +55,26 @@
 </form>
 {% endmacro %}
 
+{# Shared column contract (polish audit P-RC3, ruled with S12's table
+   grammar): the three section tables are independent <table>s, so
+   auto-layout gave each its own column widths and nothing lined up
+   across sections (measured up to 280px of drift, worst at Transfers).
+   One colgroup + table-layout:fixed (recurring.css .recurring-table)
+   pins every column to the same track in all three tables; the Name
+   column carries no width so it absorbs the remainder, exactly like
+   the grid's P-GR2 contract. #}
+{% macro recurring_colgroup() %}
+<colgroup>
+  <col class="rec-col-name">
+  <col class="rec-col-context">
+  <col class="rec-col-amount">
+  <col class="rec-col-recurrence">
+  <col class="rec-col-equiv">
+  <col class="rec-col-next">
+  <col class="rec-col-actions">
+</colgroup>
+{% endmacro %}
+
 {# One data-sort-* set per row, so recurring.js can search by name and sort by
    name / defined amount / monthly cost / next date without touching money as
    money. Empty keys (no equivalent / no next date) sort last. #}
@@ -76,8 +96,9 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
   </div>
   {% if section.rows %}
   <div class="table-responsive">
-    <table class="table table-hover table-sm align-middle mb-0">
+    <table class="table table-hover table-sm align-middle mb-0 recurring-table">
       <caption class="visually-hidden">{{ title }} recurring definitions</caption>
+      {{ recurring_colgroup() }}
       <thead>
         <tr>
           <th scope="col">Name</th>
@@ -139,8 +160,9 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
   </div>
   {% if section.rows %}
   <div class="table-responsive">
-    <table class="table table-hover table-sm align-middle mb-0">
+    <table class="table table-hover table-sm align-middle mb-0 recurring-table">
       <caption class="visually-hidden">Recurring transfer definitions</caption>
+      {{ recurring_colgroup() }}
       <thead>
         <tr>
           <th scope="col">Name</th>

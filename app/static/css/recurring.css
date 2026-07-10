@@ -32,6 +32,44 @@
 }
 
 /* =============================================
+   SHARED COLUMN CONTRACT (polish audit P-RC3)
+   The three section tables are independent <table>s; auto-layout let
+   each pick its own widths, so no column lined up across sections
+   (up to 280px of drift, worst at Transfers).  table-layout:fixed
+   honors the shared <colgroup> in _recurring_body.html: every fixed
+   column is pinned to the same track in all three tables and the
+   Name <col> (no width) absorbs the remainder -- the grid's P-GR2
+   contract applied to this surface.
+   ============================================= */
+.recurring-table {
+  table-layout: fixed;
+}
+
+.recurring-table col.rec-col-context {
+  width: 200px;
+}
+
+.recurring-table col.rec-col-amount {
+  width: 110px;
+}
+
+.recurring-table col.rec-col-recurrence {
+  width: 220px;
+}
+
+.recurring-table col.rec-col-equiv {
+  width: 190px;
+}
+
+.recurring-table col.rec-col-next {
+  width: 120px;
+}
+
+.recurring-table col.rec-col-actions {
+  width: 96px;
+}
+
+/* =============================================
    SECTION BANNERS
    A tinted card header carrying the kind name and its committed subtotal.
    Income / expense reuse the section tokens (their defined purpose);
