@@ -138,7 +138,7 @@
                 <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Unarchive {{ t.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
@@ -163,7 +163,7 @@
                 <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Unarchive {{ t.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>

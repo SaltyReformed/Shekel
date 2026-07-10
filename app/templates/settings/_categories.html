@@ -118,7 +118,7 @@
                       action="{{ url_for('categories.unarchive_category', category_id=cat.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success" title="Unarchive">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary" title="Unarchive">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
