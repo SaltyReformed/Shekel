@@ -507,7 +507,7 @@ which needs a token proposal ratified on real-page mockups before their dependen
   developer on a three-candidate mockup sheet (violet #A87BF7/#7443CC vs rose vs teal, both themes,
   against the full state set; rose rejected on taste, teal rejected as too close to done-green). All
   values AA-verified on every surface tier plus the chip's own 16% tint; the violet was tuned from
-  the plan's ~#A371F7/~#8250DF, which failed the chip tint (dark) and two light tiers. Bonus AA fix:
+  the plan's ~~A371F7~~#8250DF, which failed the chip tint (dark) and two light tiers. Bonus AA fix:
   the light warning amber deepened `#9A6700 -> #855800` (the old credit value was 4.16:1 on the page
   bg and 3.78:1 on its chip tint - the RC4 failure class). Landed with the split: every caution
   consumer re-pointed to `--shekel-warning` (balance-low, threshold-line inks in
