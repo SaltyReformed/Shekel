@@ -19,53 +19,70 @@
 /* =============================================
    STEEL INK COLOR SYSTEM (Dark Mode)
    ============================================= */
+/* Dark neutral ladder: "Graphite" (S16 token round, ratified 2026-07-09;
+   polish audit D15).  The previous ladder packed seven surface grays
+   into a 1.28:1 total span -- adjacent tiers differed by 1.02-1.07:1,
+   below reliable perception, so the tiers read as one mud.  Graphite
+   lifts the whole UI a step and spreads the working pairs: zebra room
+   (page vs surface) 1.13:1, hover 1.57:1 above the surface, subtle
+   border 1.42:1, total span 1.78:1.  Every ink was re-verified AA on
+   every tier it renders on plus the 16% chip tints (S1 method). */
 [data-bs-theme="dark"] {
-  --bs-body-bg: #0D0E11;
-  --bs-body-color: #ECEEF1;
+  --bs-body-bg: #101216;
+  --bs-body-color: #EDEFF2;
   --bs-primary: #4A9ECC;
   --bs-primary-rgb: 74, 158, 204;
   --bs-link-color: #4A9ECC;
   --bs-link-hover-color: #6BB8E0;
-  --bs-border-color: #242832;
-  --bs-tertiary-bg: #14161A;
-  --bs-secondary-bg: #1B1E24;
-  --shekel-page-bg: #0D0E11;
-  --shekel-surface: #14161A;
-  --shekel-surface-raised: #1B1E24;
+  --bs-border-color: #323945;
+  --bs-tertiary-bg: #1B1F26;
+  --bs-secondary-bg: #282E38;
+  --shekel-page-bg: #101216;
+  --shekel-surface: #1B1F26;
+  --shekel-surface-raised: #282E38;
   --shekel-accent: #4A9ECC;
   --shekel-accent-hover: #2878A8;
   --shekel-accent-light: #6BB8E0;
   --shekel-accent-rgb: 74, 158, 204;
-  --shekel-text-primary: #ECEEF1;
-  --shekel-text-secondary: #ADB3BD;
-  /* #848B97, was #757C88: the old value was 4.31:1 on the surface and
-     3.97:1 on the raised surface -- under WCAG AA (4.5:1) exactly where
-     muted text runs smallest (captions, chip labels).  Polish audit RC4;
-     now 4.87-5.63:1 across all three backgrounds. */
-  --shekel-text-muted: #848B97;
-  --shekel-border-strong: #3A3F4A;
-  --shekel-border-subtle: #242832;
-  --shekel-sticky-bg: #101216;
-  --shekel-header-bg: #1E2128;
+  --shekel-text-primary: #EDEFF2;
+  /* Money figures out-rank labels ("the number is the hero" applied to
+     ink): one step above text-primary, paired with JetBrains Mono 500
+     (base.css .font-mono).  S16 / polish audit D15. */
+  --shekel-number-ink: #F5F7FA;
+  --shekel-text-secondary: #B9BFC9;
+  /* Lifted twice: RC4 (#757C88 -> #848B97, the AA floor) and S16
+     (#848B97 -> #98A1AF) -- muted was AA-legal but still carried
+     load-bearing captions; now 5.23-7.10:1 across the tiers. */
+  --shekel-text-muted: #98A1AF;
+  --shekel-border-strong: #525A69;
+  --shekel-border-subtle: #323945;
+  --shekel-sticky-bg: #161920;
+  --shekel-header-bg: #2C323E;
   --shekel-header-text: #F0F1F3;
-  --shekel-row-hover: #23262E;
+  --shekel-row-hover: #374049;
   --shekel-done: #3FB950;
   /* Credit money state: violet, ratified 2026-07-09 (S1 token round,
-     polish audit D5+D11).  Brightened from the plan's ~#A371F7 so chip
-     text clears AA (4.5:1) on its own 16% tint, not just on the bare
-     surface tiers (4.71 on the chip, 5.44-6.29 on the tiers). */
-  --shekel-credit: #A87BF7;
+     polish audit D5+D11), then lifted #A87BF7 -> #B190F8 with the S16
+     ladder: the raised tier that makes the ladder perceptible squeezed
+     the S1 value to 4.45:1.  Now 4.91-5.98:1 including the chip tint. */
+  --shekel-credit: #B190F8;
   /* Caution / low-balance warning (non-money): amber, split from the
      credit money state per the same ruling -- the two roles shared
      amber and were indistinguishable. */
   --shekel-warning: #D29922;
-  --shekel-danger: #F85149;
-  --shekel-section-income-bg: #142219;
+  /* Lifted #F85149 -> #FB6D63 with the S16 ladder: the old red was
+     4.07:1 on the new raised tier and was ALREADY 4.51:1 on the old
+     hover tint.  Now 4.67-5.41:1 including the chip tint. */
+  --shekel-danger: #FB6D63;
+  /* Section banner tints re-based on the Graphite surface (S16) so the
+     banners keep sitting a shade above the field instead of sinking
+     below it: same 10-12% state-color mix, new base. */
+  --shekel-section-income-bg: #1B2A20;
   --shekel-section-income-text: #4CC368;
-  --shekel-section-expense-bg: #271619;
+  --shekel-section-expense-bg: #2E1F23;
   --shekel-section-expense-text: #E5697E;
-  --shekel-group-header-bg: #191C22;
-  --shekel-summary-bg: #101216;
+  --shekel-group-header-bg: #222731;
+  --shekel-summary-bg: #161920;
   /* Bootstrap semantic palette -> Steel Ink (polish audit RC3):
      success/danger track the money trio, warning tracks the caution
      amber (--shekel-warning, split from credit per D5+D11), info
@@ -80,8 +97,8 @@
   --bs-success-text-emphasis: #3FB950;
   --bs-success-bg-subtle: color-mix(in srgb, var(--shekel-done) 16%, var(--shekel-page-bg));
   --bs-success-border-subtle: color-mix(in srgb, var(--shekel-done) 38%, var(--shekel-page-bg));
-  --bs-danger: #F85149;
-  --bs-danger-text-emphasis: #F85149;
+  --bs-danger: #FB6D63;
+  --bs-danger-text-emphasis: #FB6D63;
   --bs-danger-bg-subtle: color-mix(in srgb, var(--shekel-danger) 16%, var(--shekel-page-bg));
   --bs-danger-border-subtle: color-mix(in srgb, var(--shekel-danger) 38%, var(--shekel-page-bg));
   --bs-warning: #D29922;
@@ -119,6 +136,9 @@
   --shekel-accent-light: #4A9ECC;
   --shekel-accent-rgb: 37, 113, 159;
   --shekel-text-primary: #1B1D22;
+  /* Money figures out-rank labels (S16 / D15): one step DARKER than
+     primary on paper, paired with JetBrains Mono 500. */
+  --shekel-number-ink: #0D0F13;
   --shekel-text-secondary: #4A4E57;
   /* #63686F, was #6E737D (4.07:1 on the page bg, 3.99:1 raised -- under
      AA at caption sizes).  Polish audit RC4; now 4.71-5.38:1. */

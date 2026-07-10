@@ -104,6 +104,9 @@ thead .sticky-col {
 
 .row-label {
   font-size: 0.8rem;
+  /* Down from the th browser-default bold: the label must not out-weigh
+     the money figure beside it (S16 ink hierarchy, polish audit D15). */
+  font-weight: 600;
 }
 
 /* Column contract (polish audit P-GR2).  table-layout:fixed sizes
@@ -187,6 +190,20 @@ thead .sticky-col {
   border: 1px solid transparent;
   border-radius: 999px;
   padding: 0 0.45rem;
+}
+
+/* The number is the hero: plain (projected) amounts render in the
+   number ink, one step above body text (S16 / D15).  Settled and
+   credit amounts keep their state colors -- the .st-done/.st-credit
+   rules below outrank this one on specificity. */
+.txn-chip .font-mono {
+  color: var(--shekel-number-ink);
+}
+
+/* Cell caption (the Due: date under an amount): supporting DATA, not
+   chrome -- secondary ink, not muted (S16 / D15 reassignment). */
+.cell-caption {
+  color: var(--shekel-text-secondary);
 }
 
 .txn-chip .txn-open {

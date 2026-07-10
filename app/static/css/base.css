@@ -362,6 +362,12 @@ body {
 .font-mono {
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-variant-numeric: tabular-nums;
+  /* Money figures carry medium weight app-wide (S16 ink hierarchy,
+     polish audit D15): mono 400 strokes read thinner than the bold
+     labels beside them, inverting "the number is the hero."  The 500
+     face is declared in vendor/fonts/fonts.css; heavier utilities
+     (fw-semibold/fw-bold) still override where already used. */
+  font-weight: 500;
 }
 
 /* Logo images preserve aspect ratio when only ``height`` is set.
