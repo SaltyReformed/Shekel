@@ -215,6 +215,27 @@
   --bs-btn-hover-color: #fff;
 }
 
+/* Archive/deactivate (amber warning) and true-delete (danger) controls on
+   the Steel palette, per the design language "Archive / delete button
+   convention" (D5): the raw Bootstrap outline hues (#FFC107 / #DC3545) are
+   retired in favor of the tokens, exactly as .btn-outline-primary is skinned
+   above. The dark tokens are bright, so the hover fill takes dark ink. */
+[data-bs-theme="dark"] .btn-outline-warning {
+  --bs-btn-color: var(--shekel-warning);
+  --bs-btn-border-color: var(--shekel-warning);
+  --bs-btn-hover-bg: var(--shekel-warning);
+  --bs-btn-hover-border-color: var(--shekel-warning);
+  --bs-btn-hover-color: #000;
+}
+
+[data-bs-theme="dark"] .btn-outline-danger {
+  --bs-btn-color: var(--shekel-danger);
+  --bs-btn-border-color: var(--shekel-danger);
+  --bs-btn-hover-bg: var(--shekel-danger);
+  --bs-btn-hover-border-color: var(--shekel-danger);
+  --bs-btn-hover-color: #000;
+}
+
 [data-bs-theme="dark"] .btn-primary {
   --bs-btn-bg: var(--shekel-accent);
   --bs-btn-border-color: var(--shekel-accent);
@@ -248,6 +269,24 @@
   --bs-btn-border-color: var(--shekel-accent);
   --bs-btn-hover-bg: var(--shekel-accent);
   --bs-btn-hover-border-color: var(--shekel-accent);
+  --bs-btn-hover-color: #fff;
+}
+
+/* D5 archive/delete convention on light paper (see the dark blocks above).
+   The light amber/red tokens are deep, so the hover fill takes light ink. */
+[data-bs-theme="light"] .btn-outline-warning {
+  --bs-btn-color: var(--shekel-warning);
+  --bs-btn-border-color: var(--shekel-warning);
+  --bs-btn-hover-bg: var(--shekel-warning);
+  --bs-btn-hover-border-color: var(--shekel-warning);
+  --bs-btn-hover-color: #fff;
+}
+
+[data-bs-theme="light"] .btn-outline-danger {
+  --bs-btn-color: var(--shekel-danger);
+  --bs-btn-border-color: var(--shekel-danger);
+  --bs-btn-hover-bg: var(--shekel-danger);
+  --bs-btn-hover-border-color: var(--shekel-danger);
   --bs-btn-hover-color: #fff;
 }
 
