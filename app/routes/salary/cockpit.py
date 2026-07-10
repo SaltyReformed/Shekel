@@ -140,17 +140,32 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
     Returns:
         A dict with ``profile``, ``focused_period``, ``is_third_paycheck``,
         ``raise_event``, ``composition``, ``deduction_rows``,
-        ``prev_period_id``, and ``next_period_id``.
+        ``prev_period_id``, and ``next_period_id``.  ``raise_event`` is the
+        run-start-collapsed banner value: the focused period's raw event
+        only when that period STARTS a raise run, else ``""`` -- so the
+        banner marks the paycheck where a raise takes effect rather than
+        repeating on every paycheck of the raise month (P-SA1).
     """
     period_ids = [p.id for p in periods]
     pos = period_ids.index(period.id)
     prev_id = period_ids[pos - 1] if pos > 0 else None
     next_id = period_ids[pos + 1] if pos < len(period_ids) - 1 else None
+    # Collapse the raise banner to the run's first paycheck: the calculator
+    # badges ``raise_event`` on EVERY period of a raise month, so compare the
+    # focused period against its predecessor's event (computed directly, no
+    # full projection) and show the banner only on the run start.
+    prev_raise_event = (
+        paycheck_calculator.get_raise_event(profile, periods[pos - 1])
+        if pos > 0 else None
+    )
+    show_raise = salary_cockpit_service.raise_run_starts(
+        breakdown.period.raise_event, prev_raise_event,
+    )
     return {
         "profile": profile,
         "focused_period": period,
         "is_third_paycheck": breakdown.period.is_third_paycheck,
-        "raise_event": breakdown.period.raise_event,
+        "raise_event": breakdown.period.raise_event if show_raise else "",
         "composition": salary_cockpit_service.build_composition(
             breakdown, calibration_active,
         ),

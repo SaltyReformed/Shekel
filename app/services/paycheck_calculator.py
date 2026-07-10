@@ -268,7 +268,7 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
 
     return PaycheckBreakdown(
         period=PeriodInfo(
-            period.id, ded_ctx.is_third_paycheck, _get_raise_event(profile, period),
+            period.id, ded_ctx.is_third_paycheck, get_raise_event(profile, period),
         ),
         earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
         taxes=taxes,
@@ -696,8 +696,16 @@ def _apply_single_raise(salary, raise_obj):
     return salary
 
 
-def _get_raise_event(profile, period):
-    """Return a description of any raise event occurring in this period."""
+def get_raise_event(profile, period):
+    """Return a description of any raise event occurring in this period.
+
+    Public because two consumers now need a period's raise event: this
+    module (when building each :class:`PeriodInfo`) and the salary cockpit
+    route, which compares the focused period's event against its
+    predecessor's to collapse the raise banner to one paycheck per run
+    (P-SA1) without projecting every period.  Pure over ``profile.raises``
+    and ``period.start_date`` -- no breakdown, no DB, no ``float``.
+    """
     if not profile.raises:
         return ""
 

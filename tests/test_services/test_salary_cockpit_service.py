@@ -99,7 +99,7 @@ def _scenario():
 class TestCleanRaiseLabel:
     """clean_raise_label: display cleaning of calculator raise_event strings.
 
-    Input shapes are exactly what _get_raise_event emits (verified against
+    Input shapes are exactly what get_raise_event emits (verified against
     app/services/paycheck_calculator.py): "{TYPE} +{pct}%" for percentage
     raises (pct = stored Numeric(5,4) percentage * 100, e.g. "2.5000"),
     "{TYPE} +${amount:,.2f}" for flat raises, multiple events joined with
@@ -137,6 +137,58 @@ class TestCleanRaiseLabel:
     def test_empty_string_passthrough(self):
         """No raise event (empty string) stays empty."""
         assert svc.clean_raise_label("") == ""
+
+
+class TestRaiseRunStarts:
+    """raise_run_starts: the shared run-start seam (chip, chart, banner).
+
+    The calculator badges the SAME raise_event on every paycheck of a raise
+    month, so this collapses a run to its first period (P-SA1).  A run
+    starts when the cleaned label is non-empty AND differs from the
+    predecessor's; ``None`` predecessor means no predecessor (first period).
+    """
+
+    def test_no_event_is_not_a_start(self):
+        """A period with no raise event never starts a run."""
+        assert svc.raise_run_starts("", "COLA +3.0000%") is False
+        assert svc.raise_run_starts("", None) is False
+
+    def test_first_period_with_event_is_a_start(self):
+        """A raise event with no predecessor (idx 0) starts a run."""
+        assert svc.raise_run_starts("MERIT +2.5000%", None) is True
+
+    def test_new_label_after_no_event_is_a_start(self):
+        """The first raised paycheck after a non-raise period starts a run."""
+        assert svc.raise_run_starts("COLA +3.0000%", "") is True
+
+    def test_same_label_as_predecessor_is_not_a_start(self):
+        """A later paycheck of the SAME run does not restart it.
+
+        07/16 carries the same "COLA +3.0000%" the calculator badged on
+        07/02, so it is inside the run, not a new start -- the exact
+        banner-repeat case P-SA1 fixes.
+        """
+        assert svc.raise_run_starts("COLA +3.0000%", "COLA +3.0000%") is False
+
+    def test_different_label_back_to_back_is_a_start(self):
+        """Two different raises in adjacent periods are two runs."""
+        assert svc.raise_run_starts("MERIT +2.5000%", "COLA +3.0000%") is True
+
+    def test_same_label_after_a_gap_is_a_fresh_start(self):
+        """Next year's COLA (same label, after a no-event gap) is a new run.
+
+        The predecessor of the fresh COLA is the intervening non-raise
+        period (empty event), so the label re-appearing starts a new run.
+        """
+        assert svc.raise_run_starts("COLA +3.0000%", "") is True
+
+    def test_precision_agnostic_match(self):
+        """Equal cleaned labels from different source precision are one run.
+
+        "COLA +3.0000%" and "COLA +3.00%" both clean to "Cola +3%", so a
+        precision change between adjacent periods is not a new run.
+        """
+        assert svc.raise_run_starts("COLA +3.0000%", "COLA +3.00%") is False
 
 
 class TestBaseRegularNet:
