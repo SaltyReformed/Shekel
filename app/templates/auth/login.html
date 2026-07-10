@@ -8,7 +8,7 @@
       <div class="card-body">
         <div class="d-flex align-items-center justify-content-center mb-4 shekel-auth-brand">
           <img src="{{ url_for('static', filename='img/shekel_coin.png') }}" alt="" height="40" class="logo-img shekel-brand-coin">
-          Shekel
+          <span class="shekel-wordmark">Shekel</span>
         </div>
         <form method="POST" action="{{ url_for('auth.login') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

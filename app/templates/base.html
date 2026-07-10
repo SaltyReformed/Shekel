@@ -91,7 +91,7 @@
     <div class="container-fluid">
       <a class="navbar-brand" href="{{ url_for('companion.index') if current_user.role_id == COMPANION_ROLE_ID else url_for('dashboard.page') }}">
         <img src="{{ url_for('static', filename='img/shekel_coin.png') }}" alt="" height="30" class="logo-img shekel-brand-coin">
-        Shekel
+        <span class="shekel-wordmark">Shekel</span>
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas"
               aria-controls="mainOffcanvas" aria-expanded="false" aria-label="Toggle navigation">
@@ -104,7 +104,7 @@
       <div class="offcanvas offcanvas-start" id="mainOffcanvas"
            tabindex="-1" aria-labelledby="mainOffcanvasLabel">
         <div class="offcanvas-header">
-          <h5 class="offcanvas-title" id="mainOffcanvasLabel">Shekel</h5>
+          <h5 class="offcanvas-title" id="mainOffcanvasLabel"><span class="shekel-wordmark">Shekel</span></h5>
           <button type="button" class="btn-close btn-close-white"
                   data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>

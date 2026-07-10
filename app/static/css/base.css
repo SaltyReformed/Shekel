@@ -42,6 +42,19 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--shekel-header-text) 14%, transparent);
 }
 
+/* Brand wordmark face (polish audit D2, ruled 2026-07-10): Besley 700,
+   a Clarendon slab -- the ledger/banknote genre -- so "Shekel" has a
+   voice of its own against the Inter UI text.  1.03em reproduces the
+   ratified mockup's optical size in both hosts (navbar 1rem context,
+   auth logo gate 1.4rem context); the tighter 0.005em tracking is the
+   serif's ratified fit (the navbar brand's default is 0.01em). */
+.shekel-wordmark {
+  font-family: 'Besley', Georgia, 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 1.03em;
+  letter-spacing: 0.005em;
+}
+
 /* Auth logo-gate brand (login / register / MFA / reauth cards): the same
    coin + text wordmark as the navbar, sized up and colored for a card
    surface instead of the ink band. */
