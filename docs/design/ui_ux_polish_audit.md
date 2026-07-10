@@ -171,23 +171,29 @@ Section 4.
 
 ### Dashboard
 
-- **P-DB1 [bug]** "Today" label overlaps the "Anytime this period" row - `.street__today-label` is
-  absolutely positioned into the shelf row with no reserved space (`dashboard.css:326`); the amount
-  under it is illegible. Both themes, desktop.
+- **P-DB1 [bug - FIXED 2026-07-09, commit 95a1820a]** "Today" label overlaps the "Anytime this
+  period" row - `.street__today-label` is absolutely positioned into the shelf row with no reserved
+  space (`dashboard.css:326`); the amount under it is illegible. Both themes, desktop. Fixed by
+  reserving the hanging label's lane: a 1.25rem bottom margin on `.street__axis`.
 - **P-DB2 [bug, re-verified]** Chart axis spine / gridlines - RC7 (confirmed post-fix: spine present
   in light only, gridlines invisible in light only).
-- **P-DB3 [polish]** `.pulse-bracket` SVG flare between chart and timeline renders as a skewed gray
-  sliver (light mode: a smear that reads as an artifact). Developer already wants it gone (O9):
-  remove.
-- **P-DB4 [polish]** Timeline station meta is 11px muted for the highest-urgency signal (OVERDUE);
-  the left overdue cluster stacks four stations on one dot (O8). Partly resolved by RC4/RC5; the
-  cluster layout itself is P-DB6.
-- **P-DB5 [decision -> D10]** Position tracks: the big right-aligned figure is the destination (or
-  $0), while the real answer sits in a small mid-bar label; also the only uncarded tier on the page.
-- **P-DB6 [polish]** Group OVERDUE tag renders under the last item of a multi-item day only, so it
-  reads as if only that item is overdue.
-- **P-DB7 [decision -> D11]** The dashed amber threshold line is unlabeled, sits on the y-min so it
-  reads as chrome, and borrows the credit token for a non-credit meaning.
+- **P-DB3 [polish - FIXED 2026-07-09, commit ec6d864a]** `.pulse-bracket` SVG flare between chart
+  and timeline renders as a skewed gray sliver (light mode: a smear that reads as an artifact).
+  Developer already wants it gone (O9): removed; the street now carries the tier gap itself.
+- **P-DB4 [polish - resolved 2026-07-09]** Timeline station meta is 11px muted for the
+  highest-urgency signal (OVERDUE); the left overdue cluster stacks four stations on one dot (O8).
+  Partly resolved by RC4/RC5; the cluster layout half closed with the P-DB6 fix.
+- **P-DB5 [decision -> D10 - BUILT 2026-07-09]** Position tracks: the big right-aligned figure is
+  the destination (or $0), while the real answer sits in a small mid-bar label; also the only
+  uncarded tier on the page. Built as ruled in S2 (commit 0c703538; debt-track test refit 9e3d6dce
+  in an Opus context per the model discipline).
+- **P-DB6 [polish - FIXED 2026-07-09, commit e52d1bb1]** Group OVERDUE tag renders under the last
+  item of a multi-item day only, so it reads as if only that item is overdue. Fixed: the tag heads
+  the station's stack as a day-level flag; the "+N more" overflow stays the footer line.
+- **P-DB7 [decision -> D11 - FIXED]** The dashed amber threshold line is unlabeled, sits on the
+  y-min so it reads as chrome, and borrows the credit token for a non-credit meaning. Color half
+  landed in S1 (warning token); label half FIXED 2026-07-09, commit 4756043d: an inline Chart.js
+  plugin paints "Low balance $N" at the line's right end in the shared warning ink.
 
 ### Grid
 
@@ -491,7 +497,10 @@ which needs a token proposal ratified on real-page mockups before their dependen
 - **D10. Dashboard position tracks.** The hero-sized figure is the destination (or $0 for debt
   payoff); the actual answer is a small mid-bar label; the tier is the page's only uncarded surface.
   Recommend: make current-progress the big figure, destination the caption, and card the tier like
-  its neighbors. **RULED 2026-07-09: as recommended.**
+  its neighbors. **RULED 2026-07-09: as recommended.** **BUILT 2026-07-09 in S2** (commit 0c703538):
+  current figure in number-ink mono as the hero, the destination of/to figure and arrival dates as
+  its caption, rail label percent-only, tier carded; mobile stacks label, hero, rail. The debt-track
+  test refit rode in an Opus context (9e3d6dce).
 - **D11. Non-money warning color policy.** Two symptoms: the dashboard threshold line borrows credit
   amber and is unlabeled (P-DB7); the calendar trough day borrows danger red for a healthy balance
   (P-AN6). Recommend one rule: money-state tokens ONLY when the state is true (negative,
@@ -513,8 +522,8 @@ which needs a token proposal ratified on real-page mockups before their dependen
   consumer re-pointed to `--shekel-warning` (balance-low, threshold-line inks in
   `dashboard_pulse.js` + `calendar_flow_strip.js`, due-soon, stale anchor, ARM tag, escrow
   scheduled, loan drift-up, salary post-tax/third-paycheck tints, `verdict-pill--credit` renamed
-  `--warning` since "Behind" is a pace caution). The label half of P-DB7 stays in S2 and the
-  calendar threshold behavior half of P-AN6 stays in S5.
+  `--warning` since "Behind" is a pace caution). The label half of P-DB7 landed in S2 (2026-07-09,
+  commit 4756043d); the calendar threshold behavior half of P-AN6 stays in S5.
 - **D12. Chart series-ramp policy (O24 + P-AC3).** Same-hue accent mixes are indistinguishable in
   dark. Recommend: adjacent series must differ by >=3:1 luminance or use a second achromatic
   treatment (pattern/gap + direct labels), applied to the retirement pair and the accounts

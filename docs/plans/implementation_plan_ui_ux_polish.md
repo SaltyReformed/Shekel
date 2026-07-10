@@ -47,6 +47,13 @@ Today-label overlap fix, pulse-bracket removal, group-OVERDUE tag placement, the
 (current progress becomes the hero figure, destination the caption, tier carded), and the threshold
 line in warning color with a label (after S1). D10 and P-DB1 are composition work - this is a Fable
 session; P-DB3/P-DB7 alone would be Opus-fine but do not split them out.
+**SESSION COMPLETE 2026-07-09** (commits ec6d864a -> 4756043d + the Opus debt-track test refit
+9e3d6dce; full suite 7311 green; both themes + mobile re-shot before/after). Landed: bracket removed
+with the street taking the tier gap; a reserved lane for the hanging Today label; OVERDUE as a
+day-level header over the station stack (+N-more stays the footer); the D10 inversion (current
+figure in number-ink as the hero, destination caption, percent-only rail label, carded tier, mobile
+stacks label/hero/rail); "Low balance $N" painted at the threshold line's right end in warning ink.
+Bonus resolution: P-DB4's remaining half (the cluster layout) closed with P-DB6.
 
 ### S3. Opus backend session (P-SA1, P-AN4, D13) -- OPUS (required), size M
 
