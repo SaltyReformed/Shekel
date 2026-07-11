@@ -61,8 +61,11 @@
 
 /* ---------------------------------------------
    Card grid under the band: composition spans both columns, the
-   deduction bar-list holds the left column, the salary-path card and
-   the calibration strip stack in the right column.
+   deduction bar-list holds the left column, and the right column is
+   ONE flex stack (salary-path card + calibration strip).  As loose
+   grid siblings the tall deduction list stretched the row heights and
+   opened a dead band between the two right-column pieces (polish
+   audit P-SA5); the stack pins the strip directly under the card.
    --------------------------------------------- */
 .salary-grid {
   display: grid;
@@ -77,15 +80,13 @@
 
 .salary-grid #anatomy-deductions {
   grid-column: 1;
-  grid-row: span 2;
 }
 
-.salary-grid .sal-path-card {
+.salary-grid .sal-right-col {
   grid-column: 2;
-}
-
-.salary-grid .sal-calstrip {
-  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 @media (max-width: 991.98px) {
@@ -94,10 +95,8 @@
   }
 
   .salary-grid #anatomy-deductions,
-  .salary-grid .sal-path-card,
-  .salary-grid .sal-calstrip {
+  .salary-grid .sal-right-col {
     grid-column: 1;
-    grid-row: auto;
   }
 }
 
@@ -116,13 +115,33 @@
   background: var(--shekel-summary-bg);
 }
 
+/* An 8px floor keeps every rendered segment discernible as a mark
+   (polish audit P-SA6: the 0.6% post-tax sliver was invisible at the
+   old 2px); the legend carries the exact figures, so the small
+   distortion is the capped-bars trade the S14 ruling already made.
+   Zero-value segments are not rendered at all (_anatomy.html). */
 .sal-comp-seg {
   flex: 0 0 auto;
-  min-width: 2px;
+  min-width: 0.5rem;
 }
 
 /* Segment tints: money-state colors softened against the surface so the
-   spine reads calm; the legend row pairs each with a text label. */
+   spine reads calm; the legend row pairs each with a text label.
+   Post-tax is the one segment with NO money state to borrow: it is
+   series identity only, so it wears an achromatic neutral (S7 ruling
+   on the S1 flag; the dataviz collision rule -- status colors are
+   never reused for "series 4").  Its old caution amber made routine
+   post-tax deductions read as a warning.  Per-theme mixes: both pass
+   CVD adjacency against the tax segment (protan dE 19.5 dark / 13.2
+   light) and >= 3:1 on the surface. */
+[data-bs-theme="dark"] {
+  --sal-post-tint: color-mix(in srgb, var(--shekel-text-secondary) 50%, var(--shekel-surface));
+}
+
+[data-bs-theme="light"] {
+  --sal-post-tint: color-mix(in srgb, var(--shekel-text-secondary) 65%, var(--shekel-surface));
+}
+
 .sal-comp-seg--net {
   background: color-mix(in srgb, var(--shekel-done) 70%, var(--shekel-surface));
 }
@@ -135,10 +154,8 @@
   background: color-mix(in srgb, var(--shekel-danger) 45%, var(--shekel-surface));
 }
 
-/* Post-tax is a categorical series tint riding the caution amber, not a
-   money state; re-judged with the salary visuals in the S7 session. */
 .sal-comp-seg--post {
-  background: color-mix(in srgb, var(--shekel-warning) 55%, var(--shekel-surface));
+  background: var(--sal-post-tint);
 }
 
 .sal-comp-leg {
@@ -232,13 +249,14 @@
 }
 
 /* Class suffixes come from the producer's timing key (the
-   DeductionTimingEnum value), generated -- not compared -- in Jinja. */
+   DeductionTimingEnum value), generated -- not compared -- in Jinja.
+   Post-tax mirrors the spine's neutral (see --sal-post-tint above). */
 .sal-ded-bar--pre_tax {
   background: color-mix(in srgb, var(--shekel-accent) 65%, var(--shekel-surface));
 }
 
 .sal-ded-bar--post_tax {
-  background: color-mix(in srgb, var(--shekel-warning) 55%, var(--shekel-surface));
+  background: var(--sal-post-tint);
 }
 
 .sal-ded-amt {
@@ -257,10 +275,11 @@
 
 /* ---------------------------------------------
    Salary-path card: forward annual-salary staircase sparkline over the
-   raise rules.
+   raise rules.  20px taller than the original axis-less sparkline so
+   the P-SA4 minimal axes do not squeeze the line itself.
    --------------------------------------------- */
 .sal-path-chart {
-  height: 120px;
+  height: 140px;
 }
 
 .sal-path-end {
@@ -352,8 +371,12 @@
   background: color-mix(in srgb, var(--shekel-done) 7%, transparent);
 }
 
+/* Third-paycheck periods are informational event markers, not cautions
+   (D11): accent, matching the staircase chart's accent third-paycheck
+   dots and the anatomy card's accent info banner (S7 ruling on the S1
+   flag).  The star icon + screen-reader text carry the meaning. */
 .sal-ledger tbody tr.sal-row-third td {
-  background: color-mix(in srgb, var(--shekel-warning) 7%, transparent);
+  background: color-mix(in srgb, var(--shekel-accent) 7%, transparent);
 }
 
 .sal-badge-raise {
@@ -369,5 +392,5 @@
 }
 
 .sal-third-flag {
-  color: var(--shekel-warning);
+  color: var(--shekel-accent);
 }

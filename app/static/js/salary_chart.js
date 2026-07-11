@@ -266,8 +266,12 @@
   }
 
   /**
-   * Build the salary-path sparkline config (axes hidden; the card's
-   * end-label carries the destination figure, the tooltip the rest).
+   * Build the salary-path staircase config with minimal labeled axes:
+   * start/end y ticks and first/last x dates only, no grid (polish
+   * audit P-SA4 -- the line IS the card's answer, so "labeled axes
+   * when the trend is the answer" applies, but a full grid would
+   * bury the sparkline feel).  Values are display floats from the
+   * route's serialization boundary; this only places ticks.
    * @returns {object|null} A Chart.js config, or null when no canvas/data.
    */
   function buildPathConfig() {
@@ -280,6 +284,9 @@
     var accent = style.getPropertyValue("--shekel-accent").trim();
     var surface = style.getPropertyValue("--shekel-surface").trim();
     var lastIndex = data.points.length - 1;
+    var annuals = data.points.map(function (p) { return p.annual; });
+    var dataMin = Math.min.apply(null, annuals);
+    var dataMax = Math.max.apply(null, annuals);
 
     return {
       type: "line",
@@ -314,10 +321,42 @@
             }
           }
         },
-        // A sparkline: the trend is the message, the tooltip the values.
+        // Minimal labeled axes (P-SA4): exactly the data's start/end
+        // salary on y and the first/last period date on x -- enough to
+        // read the staircase's span without a grid.
         scales: {
-          y: { display: false },
-          x: { display: false }
+          y: {
+            grid: { display: false },
+            afterBuildTicks: function (axis) {
+              // Ticks at the DATA extremes, not the padded axis
+              // bounds, so the labels are real salary figures.  A
+              // flat path (min == max) gets a single tick.
+              axis.ticks = dataMin === dataMax
+                ? [{ value: dataMin }]
+                : [{ value: dataMin }, { value: dataMax }];
+            },
+            ticks: {
+              font: { size: 10 },
+              callback: function (value) {
+                return ShekelChart.formatMoney(value, false);
+              }
+            }
+          },
+          x: {
+            grid: { display: false },
+            ticks: {
+              font: { size: 10 },
+              autoSkip: false,
+              maxRotation: 0,
+              // Edge labels shift inward instead of clipping at the
+              // canvas bounds.
+              align: "inner",
+              callback: function (value, index, ticks) {
+                if (index !== 0 && index !== ticks.length - 1) return "";
+                return this.getLabelForValue(value);
+              }
+            }
+          }
         }
       }
     };

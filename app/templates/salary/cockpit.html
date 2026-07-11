@@ -162,6 +162,11 @@
 <div class="salary-grid">
   {% include "salary/_anatomy.html" %}
 
+  {# The right column is one flex stack so the calibration strip sits
+     directly under the salary-path card; as loose grid siblings the
+     tall deductions column stretched row heights and opened a dead
+     band between them (polish audit P-SA5). #}
+  <div class="sal-right-col">
   <div class="card sal-path-card">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h6 class="mb-0"><i class="bi bi-signpost-2"></i> Salary path &middot; raises applied</h6>
@@ -232,6 +237,7 @@
       <i class="bi bi-bullseye"></i> Calibrate from pay stub
     </a>
     {% endif %}
+  </div>
   </div>
 </div>
 {% endif %}

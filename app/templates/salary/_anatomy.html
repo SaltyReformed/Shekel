@@ -62,13 +62,24 @@
     {% endif %}
 
     {# Composition spine: net kept + pre-tax + taxes + post-tax = gross,
-       with 2px surface gaps between segments. #}
+       with 2px surface gaps between segments.  A zero component renders
+       no segment at all (the retirement meter's rule): the CSS min-width
+       floor that keeps tiny segments discernible (P-SA6) would otherwise
+       paint a mark for $0.00. #}
     <div class="sal-comp-bar"
          aria-label="Net {{ composition.pct_net }} percent, pre-tax {{ composition.pct_pre_tax }} percent, taxes {{ composition.pct_taxes }} percent, post-tax {{ composition.pct_post_tax }} percent of gross">
+      {% if composition.pct_net > 0 %}
       <div class="sal-comp-seg sal-comp-seg--net" data-progress-pct="{{ composition.pct_net }}"></div>
+      {% endif %}
+      {% if composition.pct_pre_tax > 0 %}
       <div class="sal-comp-seg sal-comp-seg--pre" data-progress-pct="{{ composition.pct_pre_tax }}"></div>
+      {% endif %}
+      {% if composition.pct_taxes > 0 %}
       <div class="sal-comp-seg sal-comp-seg--tax" data-progress-pct="{{ composition.pct_taxes }}"></div>
+      {% endif %}
+      {% if composition.pct_post_tax > 0 %}
       <div class="sal-comp-seg sal-comp-seg--post" data-progress-pct="{{ composition.pct_post_tax }}"></div>
+      {% endif %}
     </div>
 
     <div class="sal-comp-leg">
