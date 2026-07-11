@@ -173,7 +173,20 @@ The one page-scale rebuild outside the Loop A queue: form_card adoption for Gene
 sidebar/section layout, Save button normalization, strength-meter and categories-page cleanup,
 archive buttons per S1. The form_card idiom is established, so Opus can execute most of it; the
 page-level composition (sidebar rhythm, section order) is where Fable helps. P-ST1/P-ST2/P-ST4 color
-halves already landed in Wave 1/S1.
+halves already landed in Wave 1/S1. **SESSION COMPLETE 2026-07-11** (run on Fable 5; commits
+96fa5998 -> 7951357e; full suite 7258 green, pylint 10.00/10). Four forks developer-ruled before
+build: three security cards, categories archive/delete into the edit drawer as labeled buttons,
+archived list to the rail, and the never-shot sections' same-genus sweeps IN scope. Landed:
+General/Security/MFA-flow form_cards, meter hidden-until-typing + token bar, categories
+one-Edit-per-row + drawer actions + rail move + the `_category_row.html` single-source DRY fix,
+account-types/pay-period/companion chips on the new shared `.flag-chip` (extracted from
+recurring.css), solid `.btn-danger` skin, pay-period generate form_card shared with the standalone
+page, Regenerate off amber per D5. Archive-button sweep verified: every settings archive/deactivate
+control already wore the S4 app-wide D5 skin; restore controls were already neutral. Behaviour
+live-verified by scripted Playwright on a seeded throwaway server (meter, drawer save round-trip via
+the HTML form attribute, archive round-trip, generate, full MFA enrol/disable with pyotp) +
+real-data re-shoots both themes + mobile. Full as-built record inline at the Settings section of the
+audit register.
 
 ### S12. Loop A: grid tracking + category hierarchy (D3+D4) -- FABLE (highest value), size L
 

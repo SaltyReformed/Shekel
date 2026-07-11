@@ -62,8 +62,8 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O34 | Spending: text where a chart would do | CONFIRMED | D7 |
 | O35 | Statements: color to distinguish sections | CONFIRMED achromatic today; options mapped | D8 |
 | O36 | Taxes: chart with levers? | Assessed; recommend NO | D9 |
-| O37 | Settings not rethemed | CONFIRMED (raw Bootstrap throughout) | P-ST* |
-| O38 | Settings layout inconsistent | CONFIRMED (bare h5+hr forms, no form_card) | P-ST* |
+| O37 | Settings not rethemed | FIXED 2026-07-11 (S11) | P-ST* |
+| O38 | Settings layout inconsistent | FIXED 2026-07-11 (S11; form_card throughout) | P-ST* |
 
 ---
 
@@ -457,17 +457,51 @@ Section 4.
 
 ### Settings (full retheme - the one page-scale rebuild)
 
-- **P-ST1 [bug]** Dark mode: selected sidebar section invisible (RC2 companion; `base.css:213`).
-- **P-ST2 [consistency]** Raw `#0D6EFD` active states beside the Steel accent Save button (RC2).
-- **P-ST3 [consistency]** No form_card anywhere: General/Security are bare `h5` + `hr` + fields on
-  the page background; MFA setup is a card but titles in the body.
-- **P-ST4 [bug]** `btn-outline-warning` controls ~1.4:1 on light paper (RC3 / D5).
-- **P-ST5 [consistency]** Magenta `code` manual key (RC3).
-- **P-ST6 [polish]** "Active Sessions" heading crammed against the 2FA button (missing separator);
-  full-width Save Settings button unlike the app's normal-width primaries; empty strength-meter
-  track stripe before input; categories page chroma noise (30 gray/yellow/red icon triplets, archive
-  vs delete distinguished by color+tooltip only); categories right rail empty below the small Add
-  card.
+**SESSION S11 COMPLETE 2026-07-11** (run on Fable 5; commits 96fa5998 shared chip/skins, b90b31b2
+general+security, a48450a8 MFA pages, f93540e3 categories, 7951357e section sweeps; full suite 7258
+green, pylint 10.00/10, biome + djlint clean). Verified end-to-end on a throwaway server seeded from
+the test template (scripted Playwright: meter reveal/re-hide, drawer open/cancel/save round-trip,
+archive-to-rail round-trip through the confirm modal, generate-periods 422-overlap + success, full
+MFA enrol/disable with pyotp) plus real-data re-shoots of every section on the dev app, both themes
+and mobile. Developer-ruled forks (2026-07-11): security = three cards; categories = archive/delete
+fold into the edit drawer as labeled buttons; archived list moves to the rail; the un-audited
+sections' same-genus sweeps are IN scope.
+
+- **P-ST1 [bug - FIXED 2026-07-09 (Wave 1)]** Dark mode: selected sidebar section invisible (RC2
+  companion; `base.css:213`).
+- **P-ST2 [consistency - FIXED 2026-07-09 (Wave 1)]** Raw `#0D6EFD` active states beside the Steel
+  accent Save button (RC2).
+- **P-ST3 [consistency - FIXED 2026-07-11 (S11)]** No form_card anywhere: General/Security were bare
+  `h5` + `hr` + fields on the page background; MFA setup was a card but titles in the body. General
+  is one form_card (Dashboard & Analytics as a `.form-section`); Security is three form_cards
+  (Change Password / Two-Factor Authentication / Sessions); the MFA setup, disable, and backup-codes
+  pages adopt form_card with titles in the header. Duplicate per-section `h5`s dropped wherever a
+  card header carries the same title (general, security, categories, account-types, pay-periods);
+  load-bearing headings (Companions, Tax Configuration, Manage Schedule) stay.
+- **P-ST4 [bug - FIXED 2026-07-10 (S4's app-wide D5 skin)]** `btn-outline-warning` controls ~1.4:1
+  on light paper (RC3 / D5). S11 rider: the SOLID `.btn-danger` (compiled `#DC3545` literal - MFA
+  disable, pay-period reset, confirm modal) gained the matching token skin in `base.css`.
+- **P-ST5 [consistency - FIXED 2026-07-09 (Wave 1 `--bs-code-color` remap)]** Magenta `code` manual
+  key (RC3). S11 closed the tail: the backup-codes box swapped raw `bg-dark` (codes were dark ink on
+  a near-black box in light mode - unreadable) for the raised-surface token box.
+- **P-ST6 [polish - FIXED 2026-07-11 (S11)]** All five sub-items: Active Sessions got its own titled
+  Sessions card; Save Settings is normal-width; the strength meter ships hidden and reveals on the
+  first keystroke (bar re-inked to `strength-bar--` tokens - danger/danger/warning/accent/accent,
+  Good vs Strong split by width + label); the categories row triplets collapsed to one quiet Edit
+  control with labeled Archive/Delete outline buttons inside the edit drawer (drawer = wrapper div,
+  Save submits via the HTML `form` attribute; `categories.js` cancel resolves the drawer by id); the
+  archived list moved to the rail under the Add card. DRY companion fix: `_category_row.html` became
+  the single row source included per row by the settings loop - the HTMX-fresh-row copy had drifted
+  (no archive action, shorter confirm text).
+- **S11 sweep of the never-shot sections (O37 tail):** account-types capability badges (raw
+  cyan/amber/money-green) -> accent `.flag-chip`s, Built-in neutral; pay-period lock badges re-inked
+  via the route display map (Editable = accent, Settled/Posted = caution amber, informational locks
+  neutral); the shared generate form adopted form_card (title serves both the settings tab and the
+  standalone page); Regenerate left amber for neutral outline per D5 (rebuild, not
+  archive/deactivate - the discard-confirm gate carries the caution); reset title
+  `text-danger-emphasis`; companion Deactivated badge -> neutral chip. The chip itself was extracted
+  from recurring.css to components.css (`.flag-chip` + `--neutral`/`--warning` variants, the
+  `.section-banner` precedent); recurring's two flag spans adopted the shared name.
 
 ### Detail pages (loan / investment / cash) - sibling consistency
 
