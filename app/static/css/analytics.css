@@ -112,8 +112,12 @@
   z-index: 1;
 }
 
+/* Opaque mix with the cell surface, not a translucent wash: the tint
+   sits over the calendar grid's gap backdrop (--shekel-border-subtle),
+   so a see-through payday cell rendered flat putty-gray in light mode
+   and read as disabled (P-AN5). */
 .calendar-paycheck {
-  background-color: rgba(var(--shekel-accent-rgb), 0.08);
+  background-color: color-mix(in srgb, var(--shekel-accent) 8%, var(--shekel-surface));
 }
 
 .calendar-day-head {
@@ -214,8 +218,17 @@
   font-weight: 500;
 }
 
+/* Money-state inks follow the grid's thresholds (D11, P-AN6): danger is
+   reserved for a NEGATIVE end-of-day balance; low-but-positive (below
+   the user's low-balance threshold) takes the caution token.  Being the
+   month's trough is a marker, not a money state, and no longer inks a
+   healthy figure red. */
 .calendar-day-balance--danger {
   color: var(--shekel-danger);
+}
+
+.calendar-day-balance--low {
+  color: var(--shekel-warning);
 }
 
 .calendar-day[data-day] {
@@ -235,6 +248,15 @@
   border-radius: 50%;
   background-color: var(--shekel-accent);
   display: none;
+}
+
+/* Notation legend under the grid (P-AN8): names the PAY / asterisk /
+   tilde / check glyphs on screen, so the asterisk's meaning is
+   reachable on touch (its cell tooltip is not).  Layout comes from
+   Bootstrap utilities on the container; only the check's money-state
+   ink needs a rule (the cell version is scoped to .calendar-flow-name). */
+.calendar-legend .bi-check2 {
+  color: var(--shekel-done);
 }
 
 #calendar-day-detail:empty {

@@ -453,6 +453,11 @@ def serialize_flow_strip(data, low_balance, today, year, month):
       source the grid and dashboard read -- Calendar rebuild decision 4).
     - ``payday_indices`` / ``trough_index``: 0-based day indices for the
       payday dots and the labeled trough dot.
+    - ``trough_state``: the trough's money state under the grid's
+      thresholds (D11, P-AN6) -- ``"negative"`` below zero, ``"low"``
+      below the threshold but positive, else ``"ok"`` -- so the strip
+      script picks the dot/label ink without comparing money client-side.
+      ``None`` when the month has no trough.
     - ``week_tick_indices``: the 1st of the month plus every Sunday
       (0-based), the strip's weekly gridline/tick positions -- Sundays
       match the calendar grid's week start.
@@ -488,6 +493,18 @@ def serialize_flow_strip(data, low_balance, today, year, month):
         if date(year, month, day).weekday() == cal_mod.SUNDAY
     })
 
+    # The trough's money state under the grid's thresholds (D11, P-AN6);
+    # the comparison lives here so the strip script never compares money.
+    trough_balance = data.daily.trough_balance
+    if trough_balance is None:
+        trough_state = None
+    elif trough_balance < 0:
+        trough_state = "negative"
+    elif trough_balance < low_balance:
+        trough_state = "low"
+    else:
+        trough_state = "ok"
+
     balances = data.daily.daily_balances
     return json.dumps({
         "labels": [
@@ -504,6 +521,7 @@ def serialize_flow_strip(data, low_balance, today, year, month):
             data.daily.trough_day - 1
             if data.daily.trough_day is not None else None
         ),
+        "trough_state": trough_state,
         "week_tick_indices": week_ticks,
     })
 

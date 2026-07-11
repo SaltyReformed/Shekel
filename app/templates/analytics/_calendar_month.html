@@ -117,8 +117,11 @@
         <div class="calendar-chip-cap">projected, last day</div>
       </div>
       {% endif %}
+      {# Chip state follows the grid's thresholds (D11, P-AN6): danger
+         only when the trough goes NEGATIVE; warning when low but
+         positive; plain when healthy. #}
       {% if data.daily.trough_balance is not none %}
-      <div class="pulse-chip{% if data.daily.trough_balance < low_balance_threshold %} pulse-chip--danger{% endif %}">
+      <div class="pulse-chip{% if data.daily.trough_balance < 0 %} pulse-chip--danger{% elif data.daily.trough_balance < low_balance_threshold %} pulse-chip--warning{% endif %}">
         <div class="pulse-chip__label">Month trough</div>
         <div class="pulse-chip__value font-mono">{{ money(data.daily.trough_balance) }}</div>
         <div class="calendar-chip-cap">{{ month_name }} {{ trough_day }} &middot; lowest projected day</div>
@@ -189,11 +192,14 @@
     </div>
     {% endif %}
     {% if day.daily_balance is not none %}
-    {# Hero: projected end-of-day balance. Danger when below the user's
-       low-balance threshold or on the month-trough day (rebuild decision
-       4); modeled (after today) renders secondary ink + leading tilde. #}
+    {# Hero: projected end-of-day balance, inked by the grid's money-state
+       thresholds (D11, P-AN6): danger only when negative, warning when
+       low but positive; being the trough day alone no longer reddens a
+       healthy figure. Modeled (after today) renders secondary ink + the
+       leading tilde. #}
     <div class="calendar-day-balance font-mono
-      {%- if day.daily_balance < low_balance_threshold or day.number == trough_day %} calendar-day-balance--danger
+      {%- if day.daily_balance < 0 %} calendar-day-balance--danger
+      {%- elif day.daily_balance < low_balance_threshold %} calendar-day-balance--low
       {%- elif day.is_modeled %} calendar-day-balance--modeled{% endif %}">
       {%- if day.is_modeled %}~{% endif %}{{ money(day.daily_balance, cents=false) -}}
     </div>
@@ -202,6 +208,15 @@
   {% endif %}
   {% endfor %}
   {% endfor %}
+</div>
+
+{# Notation legend (P-AN8): the grid's glyphs named on screen, so the
+   asterisk's meaning is reachable on touch (its tooltip is not). #}
+<div class="calendar-legend d-flex flex-wrap column-gap-3 row-gap-1 small text-muted mb-3">
+  <span><span class="calendar-pay-tag">PAY</span> payday</span>
+  <span><i class="bi bi-asterisk calendar-infreq"></i> includes an infrequent item (quarterly or less often)</span>
+  <span>~ projected (after today)</span>
+  <span><i class="bi bi-check2"></i> paid</span>
 </div>
 
 {# Day detail -- shown when a day cell is clicked #}

@@ -1042,6 +1042,25 @@ class TestCalendarMonthView:
             assert resp.status_code == 200
             assert b"calendar-day--today" in resp.data
 
+    def test_calendar_notation_legend(self, app, auth_client, seed_user, seed_periods):
+        """Month view names its notation glyphs on screen (P-AN8).
+
+        The PAY / asterisk / tilde / check glyphs previously relied on a
+        cell tooltip for the asterisk's meaning, unreachable on touch; the
+        legend under the grid states all four.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?view=month",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "calendar-legend" in html
+            assert "payday" in html
+            assert "includes an infrequent item" in html
+            assert "projected (after today)" in html
+
 
 # ── Calendar Year View Tests ─────────────────────────────────────────
 
@@ -1317,20 +1336,31 @@ class TestCalendarFlowStrip:
             assert payload["payday_indices"] == [1, 15, 29]
             # Flat series: the trough is the earliest minimum, day 1.
             assert payload["trough_index"] == 0
+            # $1,000.00 >= the $500 threshold: a healthy trough (D11,
+            # P-AN6) -- "ok" state, and no state ink anywhere on the
+            # board (being the trough alone no longer colors a figure).
+            assert payload["trough_state"] == "ok"
+            assert "calendar-day-balance--danger" not in html
+            assert "calendar-day-balance--low" not in html
+            assert "pulse-chip--danger" not in html
+            assert "pulse-chip--warning" not in html
             assert payload["week_tick_indices"] == [0, 3, 10, 17, 24]
             assert len(payload["labels"]) == 31
             assert payload["labels"][0] == "Jan 1"
 
-    def test_flow_strip_trough_and_danger_cells(self, app, auth_client, seed_user, seed_periods, db):
-        """A below-threshold trough renders the danger chip, cells, and index.
+    def test_flow_strip_low_trough_warning_cells(self, app, auth_client, seed_user, seed_periods, db):
+        """A low-but-positive trough renders the WARNING chip and cells.
 
         Hand-computed: anchor $1,000.00; one projected $600.00 expense due
         Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4 =
         $1,000.00; Jan 5-31 = 1000 - 600 = $400.00.  The trough is Jan 5
-        (0-based index 4) at $400.00, below the default $500 threshold, so
-        the Month trough chip takes the danger variant and the below-
-        threshold day cells take the danger hero class.  January 2026 is
-        wholly past, so no modeled tilde renders anywhere.
+        (0-based index 4) at $400.00 -- below the default $500 threshold
+        but positive, so under the D11 ruling (the calendar adopts the
+        grid's thresholds: danger only for a NEGATIVE balance, the caution
+        token for low-but-positive) the Month trough chip takes the
+        warning variant, the below-threshold day cells take the low hero
+        class, and neither danger class renders.  January 2026 is wholly
+        past, so no modeled tilde renders anywhere.
         """
         with app.app_context():
             from app import ref_cache
@@ -1361,16 +1391,68 @@ class TestCalendarFlowStrip:
 
             payload = _extract_flow_strip_payload(html)
             assert payload["trough_index"] == 4
+            assert payload["trough_state"] == "low"
             assert payload["values"][3] == 1000.0
             assert payload["values"][4] == 400.0
             assert payload["values"][30] == 400.0
 
             assert "Month trough" in html
             assert "$400.00" in html
-            assert "pulse-chip--danger" in html
-            assert "calendar-day-balance--danger" in html
+            assert "pulse-chip--warning" in html
+            assert "calendar-day-balance--low" in html
+            assert "pulse-chip--danger" not in html
+            assert "calendar-day-balance--danger" not in html
             # Wholly past month: measured treatment only, no modeled tilde.
             assert "~$" not in html
+
+    def test_flow_strip_negative_trough_danger_cells(self, app, auth_client, seed_user, seed_periods, db):
+        """A negative trough renders the DANGER chip and cells.
+
+        Hand-computed: anchor $1,000.00; one projected $1,600.00 expense
+        due Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4
+        = $1,000.00; Jan 5-31 = 1000 - 1600 = -$600.00.  The trough is
+        Jan 5 (0-based index 4) at -$600.00 -- a true negative money
+        state, so the Month trough chip takes the danger variant and the
+        negative day cells take the danger hero class (D11: danger is
+        reserved for negative).  Jan 1-4 stay healthy at $1,000.00, so
+        the low/warning classes do not render.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Overdraft Expense",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("1600.00"),
+                due_date=date(2026, 1, 5),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            payload = _extract_flow_strip_payload(html)
+            assert payload["trough_index"] == 4
+            assert payload["trough_state"] == "negative"
+            assert payload["values"][4] == -600.0
+
+            assert "pulse-chip--danger" in html
+            assert "calendar-day-balance--danger" in html
+            assert "pulse-chip--warning" not in html
+            assert "calendar-day-balance--low" not in html
 
     def test_future_month_modeled_treatment(self, app, auth_client, seed_user, seed_periods):
         """A wholly future month renders all-modeled heroes and no measured chips.

@@ -119,6 +119,18 @@
   color: var(--shekel-danger);
 }
 
+/* ...and warning-tinted when it is low but still positive (below the
+   user's low-balance threshold) -- the D11 split: danger is reserved
+   for a true negative money state. */
+.pulse-chip--warning {
+  background: color-mix(in srgb, var(--shekel-warning) 12%, var(--shekel-surface));
+  border-color: color-mix(in srgb, var(--shekel-warning) 35%, transparent);
+}
+
+.pulse-chip--warning .pulse-chip__value {
+  color: var(--shekel-warning);
+}
+
 .pulse-chip--done {
   background: color-mix(in srgb, var(--shekel-done) 10%, var(--shekel-surface));
   border-color: color-mix(in srgb, var(--shekel-done) 30%, transparent);
