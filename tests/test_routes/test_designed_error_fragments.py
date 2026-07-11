@@ -17,8 +17,9 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.ref import Status, TransactionType
+from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
+from app.services import account_service, transfer_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 
@@ -167,6 +168,105 @@ class TestMobileCardErrorFragment:
             assert f'id="card-tp-{txn.id}"' in body
             assert "alert-danger" in body
             assert "Cancelled" in body
+
+
+def _create_transfer(seed_user, seed_periods_today):
+    """Create a projected transfer (with shadows) via the service.
+
+    Mirrors the ``test_transfers`` helper: a second Savings account
+    plus one ad-hoc transfer between it and the seeded checking
+    account.
+    """
+    savings_type = (
+        db.session.query(AccountType).filter_by(name="Savings").one()
+    )
+    savings = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=savings_type.id,
+            name="Fragment Savings",
+            anchor_balance=Decimal("0"),
+        ),
+    )
+    db.session.add(savings)
+    db.session.flush()
+    xfer = transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            pay_period_id=seed_periods_today[0].id,
+            scenario_id=seed_user["scenario"].id,
+            amount=Decimal("200.00"),
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            category_id=seed_user["categories"]["Rent"].id,
+            name="Fragment Transfer",
+        ),
+    )
+    db.session.commit()
+    return xfer
+
+
+class TestTransferErrorFragment:
+    """Transfer-route rejections return the marked cell fragment."""
+
+    def test_illegal_patch_status_renders_transfer_cell(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH status_id=Credit returns the marked transfer cell.
+
+        Credit is a transaction-only status (the transfer map excludes
+        it); the 400 body used to be a JSON errors dict the client
+        dropped -- now it is the transfer cell re-rendered with the
+        rejection in its hint.
+        """
+        with app.app_context():
+            xfer = _create_transfer(seed_user, seed_periods_today)
+            credit_id = ref_cache.status_id(StatusEnum.CREDIT)
+
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(credit_id)},
+            )
+            assert resp.status_code == 400
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            body = resp.data.decode()
+            assert "bi-exclamation-octagon" in body
+            assert "Invalid transfer status transition" in body
+
+            db.session.refresh(xfer)
+            assert xfer.status_id == ref_cache.status_id(
+                StatusEnum.PROJECTED,
+            )
+
+    def test_cancel_settled_transfer_designed_400_not_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Cancelling a settled transfer is a designed 400, not a crash.
+
+        Before session 4 the transfer mark-done/cancel routes did not
+        catch the state machine's ValidationError at all, so this
+        stale-surface race crashed the request as a 500.
+        """
+        with app.app_context():
+            xfer = _create_transfer(seed_user, seed_periods_today)
+            # Walk the parent to Settled through legal edges, bypassing
+            # the route layer; the cancel below is verified against the
+            # PARENT's status before any shadow is touched.
+            xfer.status_id = ref_cache.status_id(StatusEnum.DONE)
+            db.session.commit()
+            xfer.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            db.session.commit()
+
+            resp = auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
+            assert resp.status_code == 400
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            body = resp.data.decode()
+            assert "Invalid transfer status transition" in body
+            assert "Settled" in body
+
+            db.session.refresh(xfer)
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.SETTLED)
 
 
 class TestEntryListErrorFragment:

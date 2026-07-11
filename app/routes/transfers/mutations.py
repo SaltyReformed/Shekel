@@ -33,8 +33,13 @@ from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
 from app.utils.db_errors import is_unique_violation
+from app.utils.error_fragments import (
+    INVALID_REFERENCE_MSG,
+    flatten_schema_errors,
+)
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
+    _error_transfer_response,
     _get_owned_transfer,
     _render_post_mutation_cell,
     _stale_transfer_response,
@@ -79,9 +84,9 @@ def _reject_finalised_transfer_edit(xfer, data):
         data: The loaded :class:`TransferUpdateSchema` payload.
 
     Returns:
-        A ``(json_body, 400)`` Flask response tuple when a locked field
-        is edited on a finalised transfer not being reverted to a
-        mutable status, or ``None`` when the edit may proceed.
+        A designed 400 error-fragment response when a locked field is
+        edited on a finalised transfer not being reverted to a mutable
+        status, or ``None`` when the edit may proceed.
     """
     if not _LOCKED_EDIT_FIELDS & data.keys():
         return None
@@ -95,7 +100,7 @@ def _reject_finalised_transfer_edit(xfer, data):
     )
     if message is None:
         return None
-    return jsonify(errors={"_schema": [message]}), 400
+    return _error_transfer_response(xfer.id, message)
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
@@ -137,7 +142,12 @@ def update_transfer(xfer_id):
 
     errors = _xfer_update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 422
+        # Designed fragment (marker-header convention): the requesting
+        # cell re-rendered with the flattened field errors in its hint
+        # instead of a JSON body the client silently drops.
+        return _error_transfer_response(
+            xfer.id, flatten_schema_errors(errors), status=422,
+        )
 
     data = _xfer_update_schema.load(request.form)
 
@@ -381,9 +391,15 @@ def mark_done(xfer_id):
             "Stale-data conflict on transfer mark_done id=%d", xfer_id,
         )
         return _stale_transfer_response(xfer_id), 409
+    except ShekelValidationError as exc:
+        # The state machine rejecting an illegal transition (e.g. a
+        # stale surface marking a settled/cancelled transfer done).
+        # Previously UNCAUGHT here -- the rejection crashed the request
+        # as a 500 instead of rendering a response (found during the
+        # session-4 D2 sweep); now a designed 400 fragment.
+        return _error_transfer_response(xfer_id, str(exc))
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
 
     # Grid shadow context renders the transaction cell with gridRefresh;
@@ -418,9 +434,13 @@ def cancel_transfer(xfer_id):
             "Stale-data conflict on cancel_transfer id=%d", xfer_id,
         )
         return _stale_transfer_response(xfer_id), 409
+    except ShekelValidationError as exc:
+        # Same previously-uncaught state-machine rejection as
+        # :func:`mark_done` -- e.g. cancelling a settled transfer from
+        # a stale surface crashed as a 500; now a designed 400.
+        return _error_transfer_response(xfer_id, str(exc))
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
 
     # Grid shadow context renders the transaction cell with gridRefresh;
@@ -439,8 +459,8 @@ def _execute_transfer_update(xfer, data):
     both shadow transactions) and commits, translating each failure mode into
     the HTTP response :func:`update_transfer` would otherwise inline: a
     stale-form/flush race to a 409 conflict cell, a missing or unowned
-    reference to 404, a domain validation error to a 400 JSON body, and a
-    foreign-key ``IntegrityError`` to a 400.
+    reference to 404, and a domain validation error or foreign-key
+    ``IntegrityError`` to a designed 400 error fragment.
 
     Args:
         xfer: The owned Transfer being edited.
@@ -460,10 +480,12 @@ def _execute_transfer_update(xfer, data):
     except NotFoundError:
         return "Not found", 404
     except ShekelValidationError as exc:
-        return jsonify(errors={"_schema": [str(exc)]}), 400
+        # State-machine and domain rejections (e.g. an illegal status
+        # transition from the grid transfer card) render as designed
+        # fragments so the reason is visible (grid audit D2).
+        return _error_transfer_response(xfer.id, str(exc))
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transfer_response(xfer.id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d updated transfer %d", current_user.id, xfer.id)
     return None
 
