@@ -837,9 +837,9 @@ class TestMarkPaidButtonVisibility:
         ``status.is_settled`` row (see ``_grid_row_macros.html:166-170``)
         instead of the legacy companion ``<i class="bi
         bi-check-circle-fill"></i> Paid`` rendering; the action bar's
-        Mark Paid button is suppressed by the
-        ``txn.status and not txn.status.is_settled`` guard at
-        ``_mobile_card_actions.html:60``.
+        Mark Paid button renders only for Projected rows (the
+        ``txn.status_id == STATUS_PROJECTED`` guard in
+        ``_mobile_card_actions.html``, tightened by grid audit D2).
         """
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
@@ -858,6 +858,31 @@ class TestMarkPaidButtonVisibility:
         assert "badge-done" in html
         # The Mark Paid button must not appear -- the action bar guards
         # against rendering it for settled statuses.
+        assert "Mark Paid" not in html
+
+    def test_credit_transaction_hides_mark_paid_button(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """A Credit-status card offers no Mark Paid button.
+
+        Credit -> Paid is an illegal transition (Credit only reverts to
+        Projected), yet the old not-is_settled guard still rendered the
+        button on Credit cards -- a tap then 400ed invisibly.  The
+        projected-only guard (grid audit D2, ruled 2026-07-11) removes
+        the dead affordance; the CC chip still marks the state.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn.status_id = ref_cache.status_id(StatusEnum.CREDIT)
+        db.session.commit()
+
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "badge-credit" in html
         assert "Mark Paid" not in html
 
 

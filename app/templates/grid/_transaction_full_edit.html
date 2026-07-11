@@ -40,11 +40,12 @@
 
   {# Frequent status actions first -- these target the cell by ID #}
   <div class="d-flex gap-1 flex-wrap mb-2">
-    {# Status.is_settled is the canonical "already paid" boolean (Paid /
-       Received / Settled); a settled expense has status_id != STATUS_DONE,
-       so the old check left Paid showing on settled rows where mark_done is
-       an invalid transition (route 400).  Mirrors _mobile_card_actions.html. #}
-    {% if txn.is_expense and txn.status and not txn.status.is_settled %}
+    {# Paid renders ONLY from Projected -- the exact precondition of the
+       projected -> done transition (grid audit D2, ruled 2026-07-11).
+       The previous not-is_settled check left Paid showing on Credit and
+       Cancelled rows, where mark_done is an invalid transition (route
+       400).  Mirrors _mobile_card_actions.html and the cell's paybtn. #}
+    {% if txn.is_expense and txn.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
@@ -148,12 +149,27 @@
     </button>
 
     <div class="collapse{{ ' show' if locked else '' }}" id="txn-card-more-{{ txn.id }}">
-      {# Status selector #}
+      {# Status selector.  Pre-hint (grid audit D2, ruled 2026-07-11):
+         options the state machine would reject from the CURRENT status
+         render disabled, so an illegal transition cannot be picked
+         instead of failing as a 400 after Save.  Credit is also
+         disabled for purchase-tracking rows (credit is per-entry, the
+         same predicate as the Credit quick-action above).  The
+         allowed_status_ids default keeps legacy render sites without
+         the context permissive. #}
+      {% set allowed_ids = allowed_status_ids if allowed_status_ids is defined else none %}
       <div class="mb-2">
         <label class="form-label mb-0 small">Status</label>
         <select name="status_id" class="form-select form-select-sm">
           {% for s in statuses %}
-          <option value="{{ s.id }}" {{ 'selected' if txn.status_id == s.id else '' }}>
+          {% set illegal = allowed_ids is not none and s.id not in allowed_ids %}
+          {% set credit_blocked = s.id == STATUS_CREDIT and txn.tracks_purchases %}
+          <option value="{{ s.id }}"
+                  {{ 'selected' if txn.status_id == s.id else '' }}
+                  {% if illegal %}disabled
+                  title="Not reachable from {{ txn.status.name if txn.status else 'the current status' }}"
+                  {% elif credit_blocked %}disabled
+                  title="Credit is recorded per purchase entry on tracked rows"{% endif %}>
             {{ s.name }}
           </option>
           {% endfor %}

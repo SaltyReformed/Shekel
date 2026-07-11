@@ -176,6 +176,34 @@ def _build_transitions(context):
     )
 
 
+def allowed_transitions(current_status_id, context="transaction"):
+    """Return the set of status ids legally reachable from the current one.
+
+    The template-facing half of the state machine (grid audit D2, ruled
+    2026-07-11): the action cards' status dropdowns disable options this
+    set excludes, so the user is pre-hinted instead of discovering an
+    illegal transition through a 400.  :func:`verify_transition` remains
+    the enforcement seam -- this helper is display guidance only, and a
+    crafted request that ignores it is still rejected there.
+
+    Args:
+        current_status_id: Integer PK of the row's current status.
+        context: ``"transaction"`` or ``"transfer"`` -- selects that
+            entity's transition map.
+
+    Returns:
+        frozenset of legal successor status ids (identity included).
+        Empty for a current status the map does not recognise (a
+        corrupt row -- the dropdown then offers nothing rather than
+        guessing).
+
+    Raises:
+        ValueError: If *context* is not a recognised entity label
+            (programming error at the call site).
+    """
+    return frozenset(_build_transitions(context).get(current_status_id, ()))
+
+
 def _status_labels():
     """Return ``{status_id: "Name (id)"}`` for every StatusEnum member.
 

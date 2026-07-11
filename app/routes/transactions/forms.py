@@ -20,6 +20,7 @@ from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.services import pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
@@ -90,6 +91,11 @@ def get_full_edit(txn_id):
             categories=categories,
             source_txn_id=txn.id,
             periods=periods,
+            # Pre-hint (grid audit D2): the status dropdown disables
+            # transitions the state machine would reject.
+            allowed_status_ids=allowed_transitions(
+                xfer.status_id, context="transfer",
+            ),
         )
 
     statuses = db.session.query(Status).all()
@@ -108,6 +114,10 @@ def get_full_edit(txn_id):
         txn=txn,
         statuses=statuses,
         periods=periods,
+        # Pre-hint (grid audit D2): the status dropdown disables
+        # transitions the state machine would reject from the row's
+        # current status.
+        allowed_status_ids=allowed_transitions(txn.status_id),
     )
 
 
