@@ -406,3 +406,36 @@
 .form-section--accent .form-section__title {
   color: var(--shekel-accent);
 }
+
+/* =============================================
+   TOKEN TABLE HEAD (shared data-table column headers)
+   Quiet uppercase column labels over a strong hairline -- the
+   retirement accounts table's grammar (its audit V3: never Bootstrap's
+   .table-light literals), extracted here when the salary and pension
+   tables adopted it (polish audit S7, P-RT1/P-SA2).  The salary
+   projection ledger layers its sticky background on top.
+   ============================================= */
+.table-token thead th {
+  color: var(--shekel-text-muted);
+  font-weight: 600;
+  font-size: 0.71875rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--shekel-border-strong);
+}
+
+/* =============================================
+   STICKY ACTION COLUMN (horizontally scrolling tables)
+   Right-edge mirror of the grid's .sticky-col: row actions pin to the
+   card edge on narrow viewports instead of clipping behind an
+   unindicated horizontal scroll (polish audit P-SA3; P-RT1's mobile
+   overflow).  The solid surface background lets data columns slide
+   beneath the pinned cell -- the sliding itself is the scroll
+   affordance.  Apply to the action <th> and <td>.
+   ============================================= */
+.table-sticky-actions {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background-color: var(--shekel-surface);
+}

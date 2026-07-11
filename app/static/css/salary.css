@@ -341,13 +341,10 @@
    raise chip.  Color is never the only signal: raise rows carry the chip,
    third-paycheck rows the flag icon + screen-reader text.
    --------------------------------------------- */
+/* The header grammar itself is the shared components.css .table-token;
+   the ledger adds only the opaque sticky background its scrolling
+   thead needs. */
 .sal-ledger thead th {
-  color: var(--shekel-text-muted);
-  font-weight: 600;
-  font-size: 0.71875rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--shekel-border-strong);
   background: var(--shekel-sticky-bg);
 }
 

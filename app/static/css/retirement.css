@@ -355,18 +355,10 @@
 }
 
 /* =============================================
-   ACCOUNTS TABLE (token-based header treatment;
-   fixes audit V3's table-light dark-mode band)
+   ACCOUNTS TABLE (the token-based header treatment that fixed audit
+   V3's table-light dark-mode band now lives app-wide as components.css
+   .table-token, extracted in the S7 polish session)
    ============================================= */
-.retire-table thead th {
-  color: var(--shekel-text-muted);
-  font-weight: 600;
-  font-size: 0.71875rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--shekel-border-strong);
-}
-
 .retire-chip {
   display: inline-block;
   font-size: 0.6875rem;
