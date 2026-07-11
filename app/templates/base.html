@@ -32,10 +32,15 @@
      cell, mobile card, transfer cell) built for the request's own
      hx-target, so 409 swaps.  Entries are matched IN ORDER and the meta
      override REPLACES the whole key, so the default 204 / 2xx / 4xx-5xx
-     entries are restated around it.  422 and the other 4xx stay
-     non-swapping deliberately: those bodies are raw strings or JSON
-     (str(errors), jsonify(...)), and the carry-forward modal's
-     htmx:responseError handler (app.js) relies on 4xx not swapping.
+     entries are restated around it.  Other 4xx/5xx stay non-swapping BY
+     DEFAULT: raw-string and JSON bodies must never land in the DOM, and
+     the carry-forward modal's htmx:responseError handler (app.js)
+     relies on that.  A route that deliberately renders a DESIGNED error
+     fragment opts back in per response by stamping the
+     Shekel-Designed-Fragment marker header (app/utils/error_fragments
+     .py); the global htmx:beforeSwap listener in app.js swaps any
+     response carrying it (the marker-header convention, ruled
+     2026-07-11).
 
      attributesToSettle: htmx's default list includes "style", which the
      settle phase copies between id-matched old/new nodes with

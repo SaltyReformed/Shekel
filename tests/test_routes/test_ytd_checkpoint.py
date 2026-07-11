@@ -15,10 +15,14 @@ the posts omit the token; the card template still emits it for production.
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
+from app.routes.salary import checkpoint as checkpoint_module
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 _VALID_FORM = {
     "as_of_date": "2026-06-30",
@@ -162,13 +166,20 @@ class TestValidationFailures:
         )
 
     def test_negative_amount_rejected(self, app, auth_client, seed_user):
-        """A negative gross is a 422 and inserts nothing."""
+        """A negative gross is a 422 and inserts nothing.
+
+        The 422 body is a designed fragment (the card re-rendered with
+        field errors), so it must carry the marker header that opts it
+        back into swapping (the app-wide htmx config drops unmarked 4xx
+        bodies; the header replaced the tax_checkpoint.js shim).
+        """
         with app.app_context():
             profile = _make_profile(seed_user)
             response = self._post_invalid(
                 auth_client, profile.id, {"ytd_gross": "-5.00"},
             )
             assert response.status_code == 422
+            assert response.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
             assert _count_checkpoints(profile.id) == 0
 
     def test_component_exceeds_gross_rejected(self, app, auth_client, seed_user):
@@ -215,6 +226,42 @@ class TestValidationFailures:
                 headers={"HX-Request": "true"},
             )
             assert response.status_code == 422
+            assert _count_checkpoints(profile.id) == 0
+
+
+class TestHandledDbFailure:
+    """The DB-tier failure path renders a designed 500 banner card."""
+
+    def test_save_failure_returns_designed_500_card(
+        self, app, auth_client, seed_user, monkeypatch,
+    ):
+        """A SQLAlchemyError save renders the card + banner, marked to swap.
+
+        Before the marker convention this handled 500 was DEAD UI: the
+        client could not tell the designed banner card from an unhandled
+        crash page, so the body was dropped and the failure was silent
+        (flagged in the S5 as-built).  The marker header is what makes
+        an unhandled crash page distinguishable -- it never carries one.
+        """
+        with app.app_context():
+            profile = _make_profile(seed_user)
+
+            def _boom(_profile_id, _figures):
+                raise SQLAlchemyError("connection lost")
+
+            monkeypatch.setattr(
+                checkpoint_module.tax_withholding_service,
+                "save_checkpoint",
+                _boom,
+            )
+            response = auth_client.post(
+                f"/salary/{profile.id}/checkpoint",
+                data=dict(_VALID_FORM),
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 500
+            assert response.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            assert b"Failed to save checkpoint" in response.data
             assert _count_checkpoints(profile.id) == 0
 
 
