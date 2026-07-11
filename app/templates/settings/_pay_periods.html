@@ -1,11 +1,9 @@
-{# Settings-tab Generate Pay Periods card.  The form body is shared with
-   the standalone pay_periods/generate.html page via _pay_periods_form.html
-   (polyglot audit TPLB/TPL-09) -- only the section heading differs. #}
-<h5 class="mb-3"><i class="bi bi-calendar-range"></i> Generate Pay Periods</h5>
-
+{# Settings-tab pay-periods section.  The Generate form card is shared
+   with the standalone pay_periods/generate.html page via
+   _pay_periods_form.html (polyglot audit TPLB/TPL-09); the form_card
+   title inside it is the section heading on both surfaces (S11). #}
 {% include "settings/_pay_periods_form.html" %}
 
 {% if pp_periods %}
-<hr class="my-4">
 {% include "settings/_pay_periods_manage.html" %}
 {% endif %}

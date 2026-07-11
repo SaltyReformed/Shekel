@@ -50,7 +50,7 @@
           <td>{{ row.period.period_index }}</td>
           <td>{{ row.period.label }}</td>
           <td>
-            <span class="badge {{ row.badge_class }}">{{ row.badge_label }}</span>
+            <span class="{{ row.badge_class }}">{{ row.badge_label }}</span>
           </td>
         </tr>
         {% endfor %}
@@ -132,7 +132,11 @@
           {{ render_field("cadence_days", "Days between paydays",
                           type="number", value="14", required=true,
                           input_attrs='min="1" max="365"') }}
-          <button type="submit" class="btn btn-outline-warning btn-sm w-100">
+          {# Neutral outline: rebuilding the tail is not an archive /
+             deactivate action, so it may not wear amber (D5); the
+             discard-confirm gate carries the caution when hand-entered
+             rows would be lost. #}
+          <button type="submit" class="btn btn-outline-secondary btn-sm w-100">
             <i class="bi bi-arrow-repeat"></i> Regenerate
           </button>
         </form>
@@ -191,7 +195,9 @@
    points to Regenerate instead. #}
 <div class="card mt-3 border-danger-subtle">
   <div class="card-body">
-    <h6 class="card-title text-danger">
+    {# text-danger-emphasis rides the remapped token; raw text-danger
+       reads the un-remapped *-rgb variable (polish audit RC3 / S11). #}
+    <h6 class="card-title text-danger-emphasis">
       <i class="bi bi-exclamation-octagon"></i> Reset entire schedule
     </h6>
     {% if pp_can_reset %}

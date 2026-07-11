@@ -155,7 +155,7 @@
             {{ comp.display_name or comp.email }}
           </div>
           <div class="text-muted small">{{ comp.email }}</div>
-          <span class="badge text-bg-secondary mt-1">Deactivated</span>
+          <span class="flag-chip flag-chip--neutral mt-1">Deactivated</span>
         </div>
         <form method="POST"
               action="{{ url_for('settings.companion_reactivate', companion_id=comp.id) }}"
