@@ -50,7 +50,7 @@
     <span class="font-mono">{{ money(meter.withdrawals_net_monthly) }}</span>
   </div>
   <div class="retire-income-row">
-    <span>Uncovered</span>
+    <span><span class="retire-swatch retire-swatch--uncovered"></span>Uncovered</span>
     <span class="font-mono{% if meter.uncovered_monthly > 0 %} retire-neg fw-bold{% endif %}">
       {{- money(meter.uncovered_monthly) -}}
     </span>

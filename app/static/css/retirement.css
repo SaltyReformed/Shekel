@@ -284,12 +284,18 @@
    mark specs.  Widths applied by progress_bar.js from
    data-progress-pct.
    ============================================= */
+/* The meter track and the "Uncovered" legend swatch share one color:
+   the uncovered remainder IS the track (polish audit P-RT4). */
+.retire-meter,
+.retire-swatch--uncovered {
+  background: color-mix(in srgb, var(--retire-cov-1) 14%, var(--shekel-surface));
+}
+
 .retire-meter {
   display: flex;
   height: 18px;
   border-radius: 0.3125rem;
   overflow: hidden;
-  background: color-mix(in srgb, var(--retire-cov-1) 14%, var(--shekel-surface));
 }
 
 .retire-meter__seg {
@@ -327,6 +333,11 @@
 
 .retire-swatch--withdrawals {
   background: var(--retire-cov-2);
+}
+
+/* A hairline keeps the near-surface track tint legible as a swatch. */
+.retire-swatch--uncovered {
+  border: 1px solid var(--shekel-border-subtle);
 }
 
 .retire-income-row {

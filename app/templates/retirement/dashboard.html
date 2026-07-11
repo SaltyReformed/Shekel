@@ -126,9 +126,12 @@
         {% set r = levers.retire_later %}
         <div class="retire-lever-pair">
           <div class="retire-lever-opt">
+            {# Cents precision matches the stepper prefill and the outcome
+               line below -- a rounded hero beside an exact stepper made
+               the figure and its caption disagree (polish audit P-RT5). #}
             <div class="retire-lever-num">
               {%- if c.state == 'solved' -%}
-              +{{ money(c.solved_amount, cents=false) }}<span class="retire-lever-unit"> /paycheck</span>
+              +{{ money(c.solved_amount) }}<span class="retire-lever-unit"> /paycheck</span>
               {%- else -%}
               --
               {%- endif -%}
