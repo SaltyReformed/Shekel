@@ -45,11 +45,17 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 
 ### B. Flagged during polish sessions, not registered as findings
 
-4. **Designed error-fragment convention for handled 4xx/5xx over HTMX** (Opus + one design ruling).
-   htmx drops 4xx/5xx response bodies by default; S5 shimmed only the taxes checkpoint's 422 path
-   (`tax_checkpoint.js`). Still dead UI: that card's handled-500 banner, and the grid's 422 error
-   partials. Needs one ruled convention (which statuses swap, what the fragment looks like); the
-   wiring afterward is mechanical.
+4. **Designed error-fragment convention for handled 4xx/5xx over HTMX** (Opus). htmx drops 4xx/5xx
+   response bodies by default; S5 shimmed only the taxes checkpoint's 422 path
+   (`tax_checkpoint.js`). Still dead UI: that card's handled-500 banner, and the grid's 422/400
+   error paths. **RULED 2026-07-11: marker-header convention.** Every route returning a deliberately
+   designed error fragment stamps a marker response header via a small helper; ONE global
+   `htmx:beforeSwap` handler in `app.js` swaps any 4xx/5xx response carrying it. The two per-surface
+   shims (`tax_checkpoint.js` swap half, `retirement_controls.js` swap half) are deleted; the
+   handled-500 banner works because an unhandled crash page never carries the marker; the 409
+   app-wide swap stays as-is. Fragment grammar per the checkpoint precedent: the same partial
+   re-rendered in place with inline field errors + danger banner. Unhandled errors keep today's
+   non-swap behavior.
 5. **Analytics year-view month cards** (size S, mechanical). Raw `border/text-success/danger` + cyan
    `bg-info` badges; flagged in the S5 as-built as out-of-register residue; same-genus token sweep.
 
@@ -58,9 +64,12 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 6. **A5 - grid quick-create name field** (Opus: schema/route/template). Verified 2026-07-11:
    `_transaction_quick_create.html` still posts `estimated_amount` plus hidden ids only, so an
    ad-hoc row cannot be named at the Tier-1 entry point.
-7. **Grid D1/D2 (noted-not-prioritized in `grid_audit.md`):** period-nav simplification (three
-   mechanisms); friendlier invalid-status-transition errors (pairs naturally with item 4's
-   fragments). Decide at the acceptance drive: schedule or formally drop.
+7. **Grid D1/D2 (noted-not-prioritized in `grid_audit.md`) - RULED 2026-07-11** (recorded at D1/D2
+   in `grid_audit.md`). D1 (period-nav simplification): DROPPED - the three mechanisms serve three
+   distinct jobs and daily use since the rebuild surfaced zero findings. D2 (invalid status
+   transitions): SCHEDULED into session 4, both halves - the entries.py 400/422 paths return
+   designed fragments under the item-4 convention, AND the action card disables transitions the
+   current status does not allow (allowed-transition map exposed to the template).
 8. **Manifest icon versioning residue** (size XS). `css_architecture_audit.md`: manifest icon paths
    are unversioned strings (the icons themselves were re-baked silver 2026-07-06).
 
@@ -88,18 +97,18 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 | 1 | S8          | item 1                            | Opus            | S-M      |
 | 2 | S9+         | items 2, 5, 8                     | Fable preferred | S        |
 | 3 | S10         | item 3                            | Opus            | M (solo) |
-| 4 | Errors + A5 | items 4, 6, 9 (+ D2 if kept)      | Opus            | M        |
-| 5 | Ship        | items 10-12 (+ the D1/D2 call)    | developer-led   | -        |
+| 4 | Errors + A5 | items 4, 6, 9 + grid D2 (item 7)  | Opus            | M        |
+| 5 | Ship        | items 10-12                       | developer-led   | -        |
 
 Sessions 1, 2, and 4 are order-free among themselves; session 3 runs solo (it brushes ~24 templates,
-so nothing else mid-flight); session 5 is last. Session 4's error-fragment convention needs its
-design ruling before build (a STOP, not a license to build).
+so nothing else mid-flight); session 5 is last.
 
-## Open developer decisions
+## Developer rulings (2026-07-11; the plan's two open decisions, closed)
 
-- **Error-fragment convention (item 4):** which handled statuses swap a designed fragment, and what
-  the fragment looks like. Blocks the error half of session 4.
-- **Grid D1/D2 (item 7):** schedule or formally drop.
+- **Error-fragment convention (item 4): marker header.** Full spec inline at item 4. Session 4 is
+  unblocked.
+- **Grid D1: DROPPED; grid D2: SCHEDULED into session 4 with the pre-hint half** (card disables
+  disallowed transitions). Recorded at D1/D2 in `grid_audit.md`.
 
 ## Adjacent open items (outside these two docs; triage at the acceptance drive)
 

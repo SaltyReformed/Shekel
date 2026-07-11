@@ -89,8 +89,16 @@ spreadsheet that grew a real interface; the forward, period-by-period view is th
 ### D. Lower priority (noted, not prioritized)
 
 - **D1.** Period navigation has three mechanisms (offset arrows, preset-count buttons, and the
-  mobile jump-select) that could be simplified.
+  mobile jump-select) that could be simplified. **RULED 2026-07-11: DROPPED.** The three mechanisms
+  serve three distinct jobs (step, window size, jump) and the nav survived the rebuild plus the
+  S12/S16 polish rounds and daily use with zero register findings. Revive only if daily use actually
+  hurts.
 - **D2.** Invalid status transitions surface as raw 400s with no pre-hint about what is allowed.
+  **RULED 2026-07-11: SCHEDULED, both halves** - rides session 4 of
+  `docs/plans/implementation_plan_ui_closeout.md`: the invalid-transition 400/422 paths return
+  designed error fragments under the marker-header convention ruled there, AND the action card
+  disables transitions the current status does not allow (allowed-transition map exposed to the
+  template).
 
 ## Prioritized fix list for the rebuild
 

@@ -129,7 +129,8 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
 - A5 (grid audit): quick-create has no name field for ad-hoc rows -- Opus scope (create
   schema/route).
 - D1/D2 (grid audit, noted-not-prioritized): period-nav simplification; friendlier
-  invalid-status-transition errors.
+  invalid-status-transition errors. RULED 2026-07-11: D1 dropped, D2 scheduled (both halves) -- see
+  `grid_audit.md` D1/D2 and `../plans/implementation_plan_ui_closeout.md` session 4.
 - After the grid PR merges: run `/update-docs` so `../progress.md` and the README reflect the
   overhaul.
 
