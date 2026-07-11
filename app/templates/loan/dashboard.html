@@ -569,9 +569,12 @@
   </div>
 </div>
 
-{# ── Footer: full amortization schedule (demoted to its own route) ───── #}
+{# ── Footer: full amortization schedule (demoted to its own route).
+   An accent outline at full size so the deep view reads as a real
+   control, not a footnote (polish audit P-DT9 / O3); the footer
+   placement itself is the locked anatomy. #}
 <div class="text-center my-4">
-  <a href="{{ url_for('loan.schedule', account_id=account.id) }}" class="btn btn-outline-secondary btn-sm">
+  <a href="{{ url_for('loan.schedule', account_id=account.id) }}" class="btn btn-outline-primary">
     <i class="bi bi-table"></i> View full amortization schedule
   </a>
 </div>
