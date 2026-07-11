@@ -50,11 +50,11 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O22 | Salary Path chart unlabeled axes | CONFIRMED (deliberate sparkline config) | P-SA4 |
 | O23 | Pension Profiles not rethemed | CONFIRMED + a real mobile overflow bug | P-RT1 |
 | O24 | Retirement income bar blues too close | CONFIRMED (~1.6:1 in dark) | P-RT2 |
-| O25 | Analytics: dead space at top | CONFIRMED (~80px reserved by hidden spinner) | P-AN1 |
+| O25 | Analytics: dead space at top | FIXED 2026-07-10 (S5) | P-AN1 |
 | O26 | Analytics: bright blue tabs off-palette | CONFIRMED (`#0D6EFD` both themes) | RC2 |
-| O27 | Analytics: tabs vs tab header redundant | CONFIRMED (title appears up to 5 times) | P-AN2 |
-| O28 | Analytics: tabs don't read as tabs | CONFIRMED (structural too: URL never changes) | P-AN2 |
-| O29 | Calendar: almost-cockpit | CONFIRMED (no hero; scattered month nav) | P-AN3 |
+| O27 | Analytics: tabs vs tab header redundant | FIXED 2026-07-10 (S5; h4 dropped, D1 breadcrumb rides S10) | P-AN2 |
+| O28 | Analytics: tabs don't read as tabs | FIXED (D13 in S3; visual in Wave 1 RC2) | P-AN2 |
+| O29 | Calendar: almost-cockpit | FIXED 2026-07-10 (S5) | P-AN3 |
 | O30 | Calendar: remove CSV export | FIXED 2026-07-10 (S3) | P-AN4 |
 | O31 | Spending: not quite cockpit | PARTLY (hero band is cockpit; below is not) | D7 |
 | O32 | Where It Went disjointed | CONFIRMED (4 encodings pile into right 30%) | D7 |
@@ -341,18 +341,32 @@ Section 4.
 - **P-AN1 [bug]** ~80px of permanent dead space: the idle `#tab-spinner` (`py-3`) is hidden with
   `opacity: 0`, so it reserves layout space between the pills and every tab (O25). Hide it without
   reserving space (absolute overlay or `display` toggle honoring `.htmx-request`).
+  **FIXED 2026-07-10 (S5, commit d2f06fd7):** the spinner is an absolute overlay pinned to a
+  position-relative tab-body wrapper; the initial auto-load div also dropped its `hx-indicator` (its
+  own placeholder spinner already shows, so page load no longer stacked two spinners).
 - **P-AN2 [consistency + decision -> D13]** Tab treatment (O26/O27/O28): active pill raw blue (RC2);
   five-deep title stack (navbar + breadcrumb + h4 + pill + tab heading); pills read as buttons; URL
   never changes on switch and direct tab GETs redirect to the shell which auto-loads Calendar.
   Visual fix is RC2 + collapsing the redundant headings; making tabs navigational (push-url) is D13.
+  **FIXED 2026-07-10 (S5, commit d2f06fd7):** the page-level "Analytics" h4 removed (the navbar
+  active state and the pills carry the identity; the per-tab h5 stays as the basis-chip anchor). RC2
+  landed in Wave 1, D13 in S3; the breadcrumb layer retires app-wide in S10 (D1).
 - **P-AN7 [polish]** Mobile: pill row clips "Taxes" to "Taxe" with no scroll affordance.
+  **FIXED 2026-07-10 (S5, commit d2f06fd7):** `.shekel-scroll-pills` mobile horizontal padding 1rem
+  -> 0.65rem so the four analytics pills fit a 390px viewport; longer pill rows keep the swipe
+  scroll.
 
 ### Analytics - Calendar
 
 - **P-AN3 [consistency]** Almost-cockpit (O29): five equal-weight chips, no hero; month nav is a
   full-width scattered row unlike any other page (and unlike Spending's own picker - three month-nav
   idioms exist inside one Analytics page). Consolidate on one shared picker component; give the
-  strip a hero.
+  strip a hero. **FIXED 2026-07-10 (S5, commit f4ee04cc):** one pulse canvas (nw-sky) with a balance
+  hero - Balance today inside the current month, Month end otherwise - the remaining chips, and the
+  flow strip; the new `analytics/_picker_macros.html` `period_picker` (chevrons + fixed-width label
+  as page chrome) is the ONE idiom, adopted by calendar month, calendar year, and spending
+  (`.spend-month-label` generalized to `.analytics-picker-label`). One redesign-coupled test pin
+  refit (`calendar-summary` -> nw-sky anatomy).
 - **P-AN4 [approved removal - FIXED 2026-07-10 (S3)]** CSV export (O30) removed root-and-branch: the
   two calendar buttons, the `format=csv` branch + the `_csv_response` helper + the
   `csv_export_service`/`make_response` imports in `analytics.py`, the whole `csv_export_service.py`
@@ -362,13 +376,23 @@ Section 4.
   IDOR CSV tests reworked onto the non-HTMX path.
 - **P-AN5 [bug]** Payday cell tint is translucent over the grid-gap backdrop, not the cell surface
   (`analytics.css:95-97`), so light-mode paydays render flat putty-gray and read as disabled. Use an
-  opaque `color-mix` with the surface.
+  opaque `color-mix` with the surface. **FIXED 2026-07-10 (S5, commit be341f4f):**
+  `color-mix(in srgb, var(--shekel-accent) 8%, var(--shekel-surface))`.
 - **P-AN6 [decision -> D11]** Trough-day balance renders danger red purely for being the lowest day,
   even at $1,979 against a $500 threshold - the only red figure on the board, screaming "problem"
-  where none exists.
+  where none exists. **FIXED 2026-07-10 (S5, commit be341f4f), per the D11 ruling:** the calendar
+  adopts the grid's thresholds - danger only when an end-of-day balance is NEGATIVE, warning
+  (`--low` cell ink, new `pulse-chip--warning` variant) when below the threshold but positive,
+  nothing for merely being the trough. The flow strip serializes a server-computed `trough_state` so
+  the dot/label ink is picked without client-side money comparison; a healthy trough renders as a
+  muted marker. The below-threshold trough test pin refit to warning (developer-confirmed by the D11
+  ruling) plus a new negative-trough danger pin.
 - **P-AN8 [polish]** Calendar notation (`~`, `*`, `PAY`) has no on-screen legend; `*` meaning is
-  tooltip-only and unreachable on touch.
+  tooltip-only and unreachable on touch. **FIXED 2026-07-10 (S5, commit be341f4f):** legend line
+  under the grid names PAY / asterisk / tilde / paid-check.
 - **P-AN9 [polish]** Mobile month-nav cramped (cyan badge wedged between title and buttons).
+  **FIXED 2026-07-10 (S5, commit f4ee04cc):** the cyan badge retired; the 3rd-paycheck note rides
+  the scope caption line as italic month metadata (the Spending in-progress caption pattern).
 
 ### Analytics - Spending
 
@@ -400,12 +424,23 @@ Section 4.
 - **P-AN16 [bug]** Refund/owed money-state coloring is dead in the derivation ledger: Bootstrap's
   `.table>:not(caption)>*>*` color (0,1,1) beats `.tax-refund`/`.tax-owed` (0,1,0), so refund rows
   render plain - and if the estimate flips to owed, totals will NOT go red. Specificity fix in
-  `analytics.css:281` region.
+  `analytics.css:281` region. **FIXED 2026-07-10 (S5, commit 2656c76c):**
+  `.tax-ledger td.tax-refund` / `td.tax-owed` two-class selectors (0,2,1) added beside the bare
+  classes.
 - **P-AN17 [polish]** Assumptions card stretched ~500px past content by `h-100` pairing with the
   always-open 7-field checkpoint form; collapse the form behind its summary.
+  **FIXED 2026-07-10 (S5, commit 2656c76c):** form collapses behind an "Update from a pay stub"
+  toggle; it opens when no checkpoint is measured yet and on an error re-render. Root-cause
+  companion found while verifying the error-open state: the save route's 422 card render was DEAD UI
+  app-wide (htmx config drops 4xx bodies; this designed fragment never opted back in) - new
+  `tax_checkpoint.js` beforeSwap shim (the retirement assumptions-panel precedent) makes validation
+  errors actually swap in. The handled-500 banner path has the same genus but stays non-swapping (an
+  unhandled 500 is a full error document); it belongs to the open app-wide 4xx/5xx designed-fragment
+  follow-up.
 - **P-AN18 [polish]** Two ambiguous captions: hero ends "...modeled after" (reads truncated);
   Effective-rate chip is combined fed+NC but captioned only "of Box 1 wages" next to a
-  federal-bracket chip.
+  federal-bracket chip. **FIXED 2026-07-10 (S5, commit 2656c76c):** "modeled after that date"; "fed
+  - NC combined, of Box 1 wages".
 - Lever chart: D9 (recommend no).
 
 ### Settings (full retheme - the one page-scale rebuild)
@@ -678,7 +713,8 @@ which needs a token proposal ratified on real-page mockups before their dependen
   `dashboard_pulse.js` + `calendar_flow_strip.js`, due-soon, stale anchor, ARM tag, escrow
   scheduled, loan drift-up, salary post-tax/third-paycheck tints, `verdict-pill--credit` renamed
   `--warning` since "Behind" is a pace caution). The label half of P-DB7 landed in S2 (2026-07-09,
-  commit 4756043d); the calendar threshold behavior half of P-AN6 stays in S5.
+  commit 4756043d); the calendar threshold behavior half of P-AN6 landed in S5 (2026-07-10, commit
+  be341f4f - see the P-AN6 record).
 - **D12. Chart series-ramp policy (O24 + P-AC3).** Same-hue accent mixes are indistinguishable in
   dark. Recommend: adjacent series must differ by >=3:1 luminance or use a second achromatic
   treatment (pattern/gap + direct labels), applied to the retirement pair and the accounts

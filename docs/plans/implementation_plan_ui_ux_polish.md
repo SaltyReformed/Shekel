@@ -100,7 +100,19 @@ Calendar: P-AN5 payday tint, P-AN6 trough-red only below threshold (threshold al
 P-AN8 notation legend, P-AN9 mobile nav, P-AN3 calendar hero + ONE shared month-picker idiom. Taxes:
 P-AN16 specificity, P-AN17 collapse form, P-AN18 captions. The judgment item is P-AN3 (cockpit hero
 plus picker consolidation) - defer it if running on Opus. Sequence with S3 (shared shell templates):
-either order, not simultaneous.
+either order, not simultaneous. **SESSION COMPLETE 2026-07-10** (run on Fable 5; commits d2f06fd7
+shell, f4ee04cc cockpit+picker, be341f4f calendar inks/tint/legend, 2656c76c taxes; full suite 7258
+green, pylint 10.00/10, biome clean; both themes + mobile shot before/after per slice;
+year-view/spending picker, spinner geometry, and the checkpoint 422 error path live-verified by
+script). P-AN3 built as the cockpit: one pulse canvas (Balance today hero in the current month,
+Month end otherwise + chips + flow strip) with the new `period_picker` macro as the single
+period-nav idiom across calendar month/year and spending. P-AN6 landed per D11 (danger only
+negative, warning below threshold, healthy trough = muted marker; `trough_state` serialized
+server-side). Bonus root-cause fix: the YTD checkpoint card's 422 error render was dead UI (htmx
+drops 4xx bodies; no opt-in shim existed) - `tax_checkpoint.js` now swaps it, so P-AN17's error-open
+state actually shows errors. Flagged, not fixed (out of scope): the same card's handled-500 banner
+still cannot swap (app-wide 4xx/5xx designed-fragment convention pending); the year view's month
+cards still use raw `border/text-success/danger` + cyan `bg-info` badges (not in the register).
 
 ### S6. Statements restructure (D8; subsumes P-AN12/13/14/15) -- FABLE (high value), size M
 
