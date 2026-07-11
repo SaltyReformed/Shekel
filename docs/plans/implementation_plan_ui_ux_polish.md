@@ -208,6 +208,18 @@ Inventory first: every sub-page whose only way back is the breadcrumb (forms, sc
 sub-pages, detail pages) gets a top-right "Back to <parent>" button on the amortization-schedule
 pattern; then delete breadcrumbs everywhere (~24 templates). Fully specified, pattern exists - save
 Fable. Run it when no other session is mid-flight (it brushes many templates).
+**SESSION COMPLETE 2026-07-11** (run on Opus 4.8; full suite 7304 green, pylint 10.00/10, djlint +
+biome clean; representative pages re-shot both themes + mobile on real dev data). Inventory =
+exactly 24 breadcrumb templates (7 navbar-level, 16 sub-pages, base.html's slot). All breadcrumbs
+deleted (blocks, base.html slot, dead `.breadcrumb` CSS, stale comments); one shared
+`back_link(href, label)` macro (new `app/templates/_nav_macros.html`) is the single source for the
+button, byte-identical to the two shipped precedents (`loan/schedule` content pattern, `loan/setup`
+form pattern). 16 sub-pages carry it: content/detail pages in the title flex row, form_card pages
+in-column above the card, the two raw-h4 forms paired with the h4. Two forks developer-ruled
+pre-build: calibrate pages -> "Back to Profile" (breadcrumb parent + confirm redirect), and the two
+non-standard existing controls normalized (pension_form "Back" -> "Back to Retirement", projection
+"Salary cockpit" -> "Back to Salary"). debt_strategy's now-redundant empty-state "Back to Accounts"
+CTA dropped. Full as-built at D1 in the audit register.
 
 ### S11. Settings retheme (P-ST3-P-ST6, mini Loop B) -- FABLE preferred, OPUS workable, size M-L
 

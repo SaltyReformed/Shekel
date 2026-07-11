@@ -1,22 +1,11 @@
 {% extends "base.html" %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}Amortization Schedule -- {{ account.name }} -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item"><a href="{{ url_for('loan.dashboard', account_id=account.id) }}">{{ account.name }} {{ account_type.name }}</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Amortization Schedule</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4><i class="bi bi-table"></i> {{ account.name }} Amortization Schedule</h4>
-  <a href="{{ url_for('loan.dashboard', account_id=account.id) }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back to Loan
-  </a>
+  <h4 class="mb-0"><i class="bi bi-table"></i> {{ account.name }} Amortization Schedule</h4>
+  {{ back_link(url_for('loan.dashboard', account_id=account.id), 'Loan') }}
 </div>
 
 {% if amortization_schedule %}

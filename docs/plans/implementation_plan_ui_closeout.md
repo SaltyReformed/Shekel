@@ -42,6 +42,15 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 3. **S10 - breadcrumb removal + back buttons (D1)** (Opus recommended, size M). Inventory the
    sub-pages whose only way back is the breadcrumb; add a top-right "Back to <parent>" on the
    amortization-schedule pattern; then delete breadcrumbs everywhere (~24 templates). Run solo.
+   **COMPLETE 2026-07-11 (session 3; run on Opus 4.8; full suite 7304 green, pylint 10.00/10, djlint
+   and biome clean; representative pages re-shot both themes + mobile).** Exactly 24 breadcrumb
+   templates found (7 navbar-level, 16 sub-pages, base.html slot). All breadcrumbs deleted (blocks,
+   base.html slot, dead `.breadcrumb` CSS + comments); one shared `back_link` macro in the new
+   `app/templates/_nav_macros.html` is the single source, byte-identical to the two shipped
+   precedents (`loan/schedule`, `loan/setup`). 16 sub-pages carry the button (title-row for detail
+   pages, in-column for form_card pages, h4-paired for the two raw-h4 forms). Two forks ruled
+   pre-build: calibrate pages -> "Back to Profile"; the two non-standard existing controls
+   normalized. Full as-built at D1 in the polish register.
 
 ### B. Flagged during polish sessions, not registered as findings
 
@@ -126,6 +135,12 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 | 3 | S10         | item 3                            | Opus            | M (solo) |
 | 4 | Errors + A5 | items 4, 6, 9 + grid D2 (item 7)  | Opus            | M        |
 | 5 | Ship        | items 10-12                       | developer-led   | -        |
+
+**Session 3 (S10) COMPLETE 2026-07-11** (run on Opus 4.8; full suite 7304 green, pylint 10.00/10,
+djlint + biome clean; representative pages re-shot both themes + mobile on real dev data). 24
+breadcrumb templates deleted; one shared `back_link` macro (new `app/templates/_nav_macros.html`)
+byte-identical to the shipped `loan/schedule` + `loan/setup` precedents; 16 sub-pages carry a "Back
+to <parent>" button. Full as-built at item 3 above and at D1 in the polish register.
 
 **Session 4 COMPLETE 2026-07-11** (run on Fable 5, the S3 precedent; commits 02c4000d -> 10d28499, 7
 commits; full suite 7277 green, pylint 10.00/10; live-verified on a seeded throwaway server via

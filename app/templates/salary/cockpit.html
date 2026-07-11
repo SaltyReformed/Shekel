@@ -10,15 +10,6 @@
    and the calibration strip.  Every figure arrives precomputed from the
    route/producers -- this template does no money math. #}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Salary</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 {% if empty_state == "no_profiles" %}
 {# No active salary profiles: lead with a create CTA rather than a hero. #}

@@ -2,15 +2,6 @@
 {% from "_money_macros.html" import money %}
 {% block title %}Retirement Planning -- Shekel{% endblock title %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Retirement</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 {# The page's partial-state blocker: no planned retirement date, or no
    projectable take-home pay.  Each dependent card names the missing

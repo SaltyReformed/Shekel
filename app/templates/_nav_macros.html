@@ -1,0 +1,19 @@
+{# Shared page-navigation macros.
+
+   Usage:
+     {% from "_nav_macros.html" import back_link %}
+     {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
+
+   ``back_link`` is the ONE "Back to <parent>" control for sub-pages (D1,
+   the breadcrumb-removal ruling). Breadcrumbs were deleted app-wide; a
+   sub-page whose only way back was the breadcrumb carries this button
+   top-right of its title row instead (the amortization-schedule pattern).
+   ``label`` is the short parent name ("Accounts", "Salary"), so the
+   button reads "Back to Accounts". Style, icon, and wording live here
+   only, so the whole app's back controls stay identical. #}
+
+{%- macro back_link(href, label) -%}
+<a href="{{ href }}" class="btn btn-outline-secondary btn-sm">
+  <i class="bi bi-arrow-left"></i> Back to {{ label }}
+</a>
+{%- endmacro -%}

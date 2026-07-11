@@ -1,19 +1,14 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if goal else 'New' }} Savings Goal -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Savings</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Goal' if goal else 'New Goal' }}</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
+    <div class="d-flex justify-content-end mb-3">
+      {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
+    </div>
     {% call form_card(('Edit' if goal else 'New') ~ ' Savings Goal', 'bi-bullseye') %}
     <form method="POST"
           action="{{ url_for('savings.update_goal', goal_id=goal.id) if goal else url_for('savings.create_goal') }}">

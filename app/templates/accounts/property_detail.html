@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
 {% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ account.name }} -- Property Detail -- Shekel{% endblock title %}
 
 {# Property detail page, rebuilt in the account-detail band grammar
@@ -15,19 +16,13 @@
    Context (accounts.property_detail): account, params, equity,
    secured_loans. #}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
-<div class="d-flex align-items-center gap-2 mb-3">
-  <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
-  <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+  </div>
+  {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
 </div>
 
 {% if request.args.get('setup') == '1' %}

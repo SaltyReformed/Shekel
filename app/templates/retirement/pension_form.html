@@ -1,25 +1,15 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('retirement.dashboard') }}">Retirement</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Pensions</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4>
+  <h4 class="mb-0">
     <i class="bi bi-shield-check"></i>
     {% if pension %}Edit Pension: {{ pension.name }}{% else %}Pension Profiles{% endif %}
   </h4>
-  <a href="{{ url_for('retirement.dashboard') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back
-  </a>
+  {{ back_link(url_for('retirement.dashboard'), 'Retirement') }}
 </div>
 
 {# --- Existing Pensions List --- #}

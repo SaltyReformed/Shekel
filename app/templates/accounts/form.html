@@ -1,19 +1,14 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if account else 'New' }} Account -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit Account' if account else 'New Account' }}</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
+    <div class="d-flex justify-content-end mb-3">
+      {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
+    </div>
     {% call form_card(('Edit' if account else 'New') ~ ' Account', 'bi-bank') %}
     <form method="POST"
           action="{{ url_for('accounts.update_account', account_id=account.id) if account else url_for('accounts.create_account') }}">

@@ -1,7 +1,7 @@
 /* Shekel base styles -- app-wide chrome present on every page via
    base.html: themed Bootstrap component skins, document typography,
    accessibility (skip link, focus rings), HTMX loading states, toasts,
-   breadcrumbs, the navbar offcanvas drawer, and the onboarding banner.
+   the navbar offcanvas drawer, and the onboarding banner.
    Bootstrap 5 handles most layout; custom CSS is a last resort.
 
    Load-order contract (see base.html): after bootstrap.min.css and
@@ -561,22 +561,6 @@ td.htmx-loading::after {
    ============================================= */
 .toast-container {
   z-index: 11000;
-}
-
-/* =============================================
-   BREADCRUMB STYLING
-   ============================================= */
-.breadcrumb {
-  font-size: 0.85rem;
-  margin-bottom: 0;
-  padding: 0.25rem 0;
-}
-
-@media (max-width: 359.98px) {
-  /* Tighter breadcrumbs on very small screens */
-  .breadcrumb {
-    font-size: 0.75rem;
-  }
 }
 
 /* =============================================

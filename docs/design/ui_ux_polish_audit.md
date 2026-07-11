@@ -31,8 +31,8 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O3 | Muted gray buttons don't read as buttons | CONFIRMED (worst: ghost buttons on cards) | D5 |
 | O4 | Shekel wordmark needs a unique font | CONFIRMED (plain UI sans today) | D2 |
 | O5 | White vs off-white light backgrounds inconsistent | CONFIRMED, root cause found | RC1 |
-| O6 | Are breadcrumbs necessary? | Redundant on navbar pages, needed on detail pages | D1 |
-| O7 | Dashboard breadcrumb | CONFIRMED (one-item, links nowhere) | D1 |
+| O6 | Are breadcrumbs necessary? | FIXED 2026-07-11 (S10; deleted app-wide, sub-pages get a Back button) | D1 |
+| O7 | Dashboard breadcrumb | FIXED 2026-07-11 (S10; deleted, navbar Dashboard pill is the way back) | D1 |
 | O8 | Timeline text cramped | CONFIRMED + a real overlap bug | P-DB1, P-DB6 |
 | O9 | Chart/timeline divider unnecessary | CONFIRMED (decorative `.pulse-bracket` flare) | P-DB3 |
 | O10 | Grid: no alternating rows, hard to track | CONFIRMED; prior Loop A rejected banding | D3 |
@@ -52,7 +52,7 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O24 | Retirement income bar blues too close | FIXED 2026-07-11 (S7, per ruled D12) | P-RT2 |
 | O25 | Analytics: dead space at top | FIXED 2026-07-10 (S5) | P-AN1 |
 | O26 | Analytics: bright blue tabs off-palette | CONFIRMED (`#0D6EFD` both themes) | RC2 |
-| O27 | Analytics: tabs vs tab header redundant | FIXED 2026-07-10 (S5; h4 dropped, D1 breadcrumb rides S10) | P-AN2 |
+| O27 | Analytics: tabs vs tab header redundant | FIXED 2026-07-10 (S5; h4 dropped) + 2026-07-11 (S10; breadcrumb deleted) | P-AN2 |
 | O28 | Analytics: tabs don't read as tabs | FIXED (D13 in S3; visual in Wave 1 RC2) | P-AN2 |
 | O29 | Calendar: almost-cockpit | FIXED 2026-07-10 (S5) | P-AN3 |
 | O30 | Calendar: remove CSV export | FIXED 2026-07-10 (S3) | P-AN4 |
@@ -419,7 +419,7 @@ Section 4.
   Visual fix is RC2 + collapsing the redundant headings; making tabs navigational (push-url) is D13.
   **FIXED 2026-07-10 (S5, commit d2f06fd7):** the page-level "Analytics" h4 removed (the navbar
   active state and the pills carry the identity; the per-tab h5 stays as the basis-chip anchor). RC2
-  landed in Wave 1, D13 in S3; the breadcrumb layer retires app-wide in S10 (D1).
+  landed in Wave 1, D13 in S3; the breadcrumb layer retired app-wide 2026-07-11 in S10 (D1).
 - **P-AN7 [polish]** Mobile: pill row clips "Taxes" to "Taxe" with no scroll affordance.
   **FIXED 2026-07-10 (S5, commit d2f06fd7):** `.shekel-scroll-pills` mobile horizontal padding 1rem
   -> 0.65rem so the four analytics pills fit a 390px viewport; longer pill rows keep the swipe
@@ -638,6 +638,34 @@ which needs a token proposal ratified on real-page mockups before their dependen
   amortization-schedule pattern - a top-right "Back to <parent>" button - and the navbar covers
   one-level-deep pages. Scope grows beyond the mechanical sweep: every sub-page whose only way back
   was the breadcrumb gets a Back button added in the same pass (inventory needed before the sweep).
+  **BUILT 2026-07-11 (S10, run on Opus 4.8; full suite green, pylint 10.00/10, djlint + biome clean;
+  representative pages re-shot both themes + mobile on real dev data - navbar page, loan/investment
+  detail heroes, account form, debt-strategy).** Inventory: exactly 24 templates carried breadcrumbs
+  (7 navbar-level pages + 16 sub-pages + base.html's block slot). Deletions: the breadcrumb block
+  from all 23 content templates, the `{% block breadcrumbs %}` slot + comment from base.html, the
+  now dead `.breadcrumb` CSS (base.css) + its header-comment mention, and a stale "before
+  breadcrumbs" note in base.html's MFA-nag comment. No JS referenced breadcrumbs; no test asserted
+  breadcrumb or Back-link HTML (the one test hit was a docstring false-positive). DRY: one shared
+  `back_link(href, label)` macro in the new `app/templates/_nav_macros.html` (the topic-macro-file
+  convention) is the single source for the button (style, icon, wording); its output is
+  byte-identical to the two pre-existing hand-rolled precedents (`loan/schedule.html` content
+  pattern, `loan/setup.html` form pattern). Sub-page placement: content/detail pages carry the
+  back_link in their title flex row (title group wrapped left, button right via
+  justify-content-between); form_card pages carry it in-column, right-aligned above the card (aligns
+  with the card's right edge); the two raw-h4 form pages (salary/form, salary/calibrate_confirm)
+  pair the h4 with the button in a justify-content-between row. Labels are the short parent name:
+  "Back to Accounts" (savings.dashboard) for the account-area pages, "Back to Loan" (schedule),
+  "Back to Recurring", "Back to Salary", "Back to Retirement", "Back to Budget" (pay-period
+  generate), "Back to Profile" (salary.edit_profile) for the two calibrate pages. Two developer
+  forks ruled pre-build (AskUserQuestion): calibrate/calibrate_confirm point to "Back to Profile"
+  (matches the old breadcrumb parent AND the confirm-success redirect at calibration.py:258); and
+  the two existing non-standard controls were NORMALIZED (retirement/pension_form "Back" -> "Back to
+  Retirement"; salary/projection "Salary cockpit" -> "Back to Salary"). One in-scope de-duplication:
+  debt_strategy had an empty-state "Back to Accounts" CTA that the new header button duplicates, so
+  the empty-state copy was dropped (one back path). The investment header's conditional "Retirement
+  outlook" forward link now sits in a right-side group beside the Back button (its ms-auto dropped).
+  Out of scope (flagged, not touched): loan/setup.html keeps its hand-rolled button (no breadcrumb,
+  so out of the sweep) - it renders identically and can adopt the macro whenever it is next touched.
 - **D2. Brand wordmark font.** Today: coin PNG + plain Inter. CSP requires a vendored woff2 (Inter +
   JetBrains Mono are already vendored, so the pipeline exists). Recommend a short Loop A: 3-4
   candidate faces on the navbar + auth logo-gate mockup. **RULED 2026-07-09: Loop A approved** -

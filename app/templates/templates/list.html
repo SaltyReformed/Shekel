@@ -3,15 +3,6 @@
 {% from "_recurrence_macros.html" import recurrence_cell with context %}
 {% block title %}Recurring -- Shekel{% endblock title %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Recurring</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 <div data-recurring-page>
 
