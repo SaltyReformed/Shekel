@@ -256,87 +256,87 @@
 </div>
 {% endif %}
 
-{# ── Parameters (demoted: the last card -- lived-workflow ruling) ───── #}
-<div class="row">
-  <div class="col-lg-6">
-    <div class="card mb-4">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
+{# ── Parameters (demoted: the last card -- lived-workflow ruling).
+   A measured-width card (the cash-detail .acctd-params idiom, widened
+   for this form's two-column field grid) instead of a half-page
+   column, so the page does not end on a row with an empty right half
+   (polish audit P-DT6). #}
+<div class="card acctd-params acctd-params--wide mb-4">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
+  </div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('investment.update_params', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3">
+        <div class="col-sm-6">
+          <label class="form-label" for="assumed_annual_return">Assumed annual return (%)</label>
+          <input type="number" step="0.01" name="assumed_annual_return" id="assumed_annual_return"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.assumed_annual_return|to_percent) if params else '7.00' }}"
+                 required>
+          <div class="form-text">Enter as percentage (e.g. 7 for 7%)</div>
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label" for="annual_contribution_limit">Annual contribution limit</label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text">$</span>
+            <input type="number" step="0.01" name="annual_contribution_limit" id="annual_contribution_limit"
+                   class="form-control"
+                   value="{{ params.annual_contribution_limit if params and params.annual_contribution_limit else '' }}">
+          </div>
+          <div class="form-text">Leave blank for no limit</div>
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label" for="contribution_limit_year">Limit year</label>
+          <input type="number" name="contribution_limit_year" id="contribution_limit_year"
+                 class="form-control form-control-sm"
+                 value="{{ params.contribution_limit_year if params and params.contribution_limit_year else '' }}">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label" for="employer_contribution_type_id">Employer type</label>
+          <select name="employer_contribution_type_id" id="employer_contribution_type_id" class="form-select form-select-sm">
+            {% for ect in employer_contribution_types %}
+            <option value="{{ ect.id }}" data-name="{{ ect.name }}" {{ 'selected' if (params and params.employer_contribution_type_id == ect.id) or (not params and ect.id == default_employer_contribution_type_id) }}>{{ ect.name | replace('_', ' ') | title }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
-      <div class="card-body">
-        <form method="POST" action="{{ url_for('investment.update_params', account_id=account.id) }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <div class="row g-3">
-            <div class="col-sm-6">
-              <label class="form-label" for="assumed_annual_return">Assumed annual return (%)</label>
-              <input type="number" step="0.01" name="assumed_annual_return" id="assumed_annual_return"
-                     class="form-control form-control-sm"
-                     value="{{ "%.2f"|format(params.assumed_annual_return|to_percent) if params else '7.00' }}"
-                     required>
-              <div class="form-text">Enter as percentage (e.g. 7 for 7%)</div>
-            </div>
-            <div class="col-sm-6">
-              <label class="form-label" for="annual_contribution_limit">Annual contribution limit</label>
-              <div class="input-group input-group-sm">
-                <span class="input-group-text">$</span>
-                <input type="number" step="0.01" name="annual_contribution_limit" id="annual_contribution_limit"
-                       class="form-control"
-                       value="{{ params.annual_contribution_limit if params and params.annual_contribution_limit else '' }}">
-              </div>
-              <div class="form-text">Leave blank for no limit</div>
-            </div>
-            <div class="col-sm-6">
-              <label class="form-label" for="contribution_limit_year">Limit year</label>
-              <input type="number" name="contribution_limit_year" id="contribution_limit_year"
-                     class="form-control form-control-sm"
-                     value="{{ params.contribution_limit_year if params and params.contribution_limit_year else '' }}">
-            </div>
-            <div class="col-sm-6">
-              <label class="form-label" for="employer_contribution_type_id">Employer type</label>
-              <select name="employer_contribution_type_id" id="employer_contribution_type_id" class="form-select form-select-sm">
-                {% for ect in employer_contribution_types %}
-                <option value="{{ ect.id }}" data-name="{{ ect.name }}" {{ 'selected' if (params and params.employer_contribution_type_id == ect.id) or (not params and ect.id == default_employer_contribution_type_id) }}>{{ ect.name | replace('_', ' ') | title }}</option>
-                {% endfor %}
-              </select>
-            </div>
-          </div>
-          <div class="row g-3 mt-0" id="employer-fields-container">
-            <div class="col-sm-4">
-              <label class="form-label" for="employer_flat_percentage">Employer flat %</label>
-              <input type="number" step="0.01" name="employer_flat_percentage" id="employer_flat_percentage"
-                     class="form-control form-control-sm"
-                     value="{{ "%.2f"|format(params.employer_flat_percentage|to_percent) if params and params.employer_flat_percentage else '' }}">
-            </div>
-            <div class="col-sm-4">
-              <label class="form-label" for="employer_match_percentage">Match %</label>
-              <input type="number" step="0.01" name="employer_match_percentage" id="employer_match_percentage"
-                     class="form-control form-control-sm"
-                     value="{{ "%.0f"|format(params.employer_match_percentage|to_percent) if params and params.employer_match_percentage else '' }}">
-            </div>
-            <div class="col-sm-4">
-              <label class="form-label" for="employer_match_cap_percentage">Match cap %</label>
-              <input type="number" step="0.01" name="employer_match_cap_percentage" id="employer_match_cap_percentage"
-                     class="form-control form-control-sm"
-                     value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
-            </div>
-          </div>
-          {% if employer_params %}
-          <div class="form-text mt-2">
-            {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
-            Employer contributes {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross salary each pay period, regardless of employee contribution.
-            {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
-            Employer matches {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% of contributions up to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}% of gross salary.
-            {%- endif -%}
-          </div>
-          {% endif %}
-          <div class="mt-3">
-            <button type="submit" class="btn btn-primary btn-sm">
-              <i class="bi bi-check-lg"></i> Save parameters
-            </button>
-          </div>
-        </form>
+      <div class="row g-3 mt-0" id="employer-fields-container">
+        <div class="col-sm-4">
+          <label class="form-label" for="employer_flat_percentage">Employer flat %</label>
+          <input type="number" step="0.01" name="employer_flat_percentage" id="employer_flat_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.employer_flat_percentage|to_percent) if params and params.employer_flat_percentage else '' }}">
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label" for="employer_match_percentage">Match %</label>
+          <input type="number" step="0.01" name="employer_match_percentage" id="employer_match_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.0f"|format(params.employer_match_percentage|to_percent) if params and params.employer_match_percentage else '' }}">
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label" for="employer_match_cap_percentage">Match cap %</label>
+          <input type="number" step="0.01" name="employer_match_cap_percentage" id="employer_match_cap_percentage"
+                 class="form-control form-control-sm"
+                 value="{{ "%.2f"|format(params.employer_match_cap_percentage|to_percent) if params and params.employer_match_cap_percentage else '' }}">
+        </div>
       </div>
-    </div>
+      {% if employer_params %}
+      <div class="form-text mt-2">
+        {%- if employer_params.type_id == EMPLOYER_TYPE_FLAT_PERCENTAGE %}
+        Employer contributes {{ "%.2f"|format(employer_params.flat_percentage|to_percent) }}% of gross salary each pay period, regardless of employee contribution.
+        {%- elif employer_params.type_id == EMPLOYER_TYPE_MATCH %}
+        Employer matches {{ "%.0f"|format(employer_params.match_percentage|to_percent) }}% of contributions up to {{ "%.2f"|format(employer_params.match_cap_percentage|to_percent) }}% of gross salary.
+        {%- endif -%}
+      </div>
+      {% endif %}
+      <div class="mt-3">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="bi bi-check-lg"></i> Save parameters
+        </button>
+      </div>
+    </form>
   </div>
 </div>
 {% endblock content %}

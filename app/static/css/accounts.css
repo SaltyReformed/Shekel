@@ -529,6 +529,14 @@ a.acct-cell__link:focus-visible {
   max-width: 26.25rem;
 }
 
+/* Investment's parameters form runs two field columns (plus the
+   employer-fields triplet), so its card takes a wider measure than the
+   cash page's single-column form -- still a deliberate measured card,
+   not a half-page column (polish audit P-DT6). */
+.acctd-params--wide {
+  max-width: 36rem;
+}
+
 /* =============================================
    RESPONSIVE
    ============================================= */
