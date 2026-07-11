@@ -186,6 +186,21 @@ reshape that whole section. P-AC1 is the judgment item.
 cell rebuild. Remaining here: P-AC1 (allocation-bar track + center tick), P-AC4 (liability red on
 the cell balances), and the archive-button sweep (the cockpit has no on-card archive button left -
 verify the account edit form and archived list against the S1 convention).
+**SESSION COMPLETE 2026-07-11** (run on Opus 4.8; full suite green; live-verified both themes on
+real dev data). P-AC4 shipped: the id-based `is_liability_account` classifier sets an `is_liability`
+flag on each account's projection dict at the single per-account builder (`_project_one_account`),
+read by both the grid include and the `compute_account_balance_cell` revert producer, so the
+liability cell balances take the danger ink the chip / group subtotal / bar segment already do (new
+`.acct-card__num--liability` token, keyed on category not sign); 4 new tests, pylint 10.00, biome
+clean. Archive-button sweep: verified compliant, NO change - every archive/delete/restore control in
+the accounts + savings surface already wears the S1/D5 convention (Delete = `btn-outline-danger`,
+Unarchive = `btn-outline-secondary`, and the cockpit Archive is a kebab dropdown item by the D6-F
+ruling, not a standalone outline button; no raw warning/success controls remain).
+**P-AC1 DEFERRED:** the judgment item was scoped and mocked (three track candidates + the visible
+center tick, both themes, real diverging-bar geometry), but on seeing the annotated bar the
+developer ruled the diverging idiom itself wrong (it re-encodes the net-worth hero as an ambiguous
+empty gap and does not label which side is which); P-AC1 is deferred to a future session to decide
+REDESIGN vs REMOVE the allocation bar. Detail recorded at P-AC1/P-AC4 in the audit register.
 
 ### S10. Breadcrumb removal + back buttons (D1) -- OPUS recommended, size M
 

@@ -267,10 +267,17 @@ Section 4.
 
 ### Accounts (Net Worth Cockpit)
 
-- **P-AC1 [bug-adjacent]** The "mystery segment" (O19) is the unfilled remainder of the liability
-  half of the diverging allocation bar, styled `--shekel-border-subtle` - dark enough to read as a
-  fourth data series whose width happens to encode net worth. Presentational fix: make the track
-  visibly a track (or label the gap), and make the center tick visible.
+- **P-AC1 [bug-adjacent - DEFERRED 2026-07-11 (S9): redesign-or-remove the whole bar]** The "mystery
+  segment" (O19) is the unfilled remainder of the liability half of the diverging allocation bar,
+  styled `--shekel-border-subtle` - dark enough to read as a fourth data series whose width happens
+  to encode net worth. The presentational fix (recede the empty track + make the center tick
+  visible) was scoped and mocked in S9 (three track candidates, both themes, real geometry).
+  Developer ruling on seeing the annotated bar: the diverging bar is the wrong idiom -- it
+  re-encodes net worth (already the band's hero figure) as an ambiguous empty gap and does not label
+  which side is which, so recoloring the gap does not make it self-explaining. **P-AC1 is deferred
+  to a future session where the developer decides between REDESIGNING the allocation visual or
+  REMOVING it.** No bar change shipped in S9. (Scope note: this is the bar only; the liability CELL
+  balances were a separate finding, P-AC4 below, and shipped.)
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
@@ -281,8 +288,18 @@ Section 4.
   100/76/56/42, light 100/80/64/49 accent mixes, theme-scoped custom properties) pass the dataviz
   ordinal ramp checks - monotone lightness, adjacent OKLCH dL >= 0.06, deepest step >= 2:1 on the
   surface. Legend labels + per-segment title tooltips remain the identity channel.
-- **P-AC4 [consistency]** Liability red applied to chip, subtotal, and bar segment but not to the
-  loan card balances themselves - one quantity, two treatments on one screen.
+- **P-AC4 [consistency - FIXED 2026-07-11 (S9)]** Liability red applied to chip, subtotal, and bar
+  segment but not to the loan card balances themselves - one quantity, two treatments on one screen.
+  Fixed: the id-based `is_liability_account` classifier now sets an `is_liability` flag on each
+  account's projection dict in `_project_one_account` (the single per-account builder), consumed by
+  BOTH render paths (the grid include and the `compute_account_balance_cell` Cancel/409-revert
+  producer, which reads the same computed value), so a reverted liability cell keeps its ink.
+  `_cockpit_balance.html` applies a new `.acct-card__num--liability` token (danger ink) keyed on the
+  account's category, never the figure's sign (a loan/credit-card owed balance is a positive number,
+  the same display-keyed-on-category rule the subtotal already uses). Tests: two service
+  (`compute_account_balance_cell` flags loan True / Checking False) + two route (the standalone cell
+  renders the class for a loan, omits it for an asset). The "Liabilities" card banner and
+  credit-card glyph carry the non-color signal.
 - **P-AC5 [consistency - FIXED 2026-07-10 (S13 Loop B)]** Savings Goals + Emergency Fund keep
   pre-cockpit anatomy (legacy progress-bar cards, accent-colored money, badge grammar) below the new
   cockpit cards. Fixed: both re-housed into the "Savings" group card per the D6-F ruling (goals as
