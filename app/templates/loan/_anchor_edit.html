@@ -1,0 +1,58 @@
+{# Loan hero dated true-up editor (the D14 click-to-edit idiom's edit
+   mode).  Swapped in place of loan/_balance_hero.html by its hx-get;
+   Cancel (and Escape, via the global anchor_edit.js handler reading
+   data-action / data-revert-url) swaps the hero back through
+   loan.balance_hero WITHOUT writing anything.
+
+   The save path is deliberately NOT an HTMX swap: the form posts the
+   existing loan.true_up_balance redirect flow (a dated ``user_trueup``
+   append), because a loan true-up moves nearly every figure on the
+   page (band chart, payoff chip, YTD chips, drift scorecard) -- the
+   full-page re-render keeps them all consistent, and the route's
+   flash messages render normally.
+
+   Field ids are hero_-prefixed so they never collide with the
+   parameters card's "Record balance" form on the same page.
+
+   Context: account (Account), params (LoanParams -- origination_date
+   floors the date input), current_principal_display (Decimal --
+   prefills the balance), today_iso (str -- caps and prefills the
+   date). #}
+<form method="POST" action="{{ url_for('loan.true_up_balance', account_id=account.id) }}"
+      class="d-inline-flex align-items-end gap-2 flex-wrap">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div>
+    <label for="hero_anchor_date" class="form-label form-label-sm mb-0">As of</label>
+    <input type="date" class="form-control form-control-sm"
+           id="hero_anchor_date" name="anchor_date"
+           min="{{ params.origination_date.isoformat() }}"
+           max="{{ today_iso }}"
+           value="{{ today_iso }}"
+           required
+           data-action="anchor-cancel-on-escape"
+           data-revert-url="{{ url_for('loan.balance_hero', account_id=account.id) }}">
+  </div>
+  <div>
+    <label for="hero_anchor_balance" class="form-label form-label-sm mb-0">Balance</label>
+    <div class="input-group input-group-sm mw-px-200">
+      <span class="input-group-text">$</span>
+      <input type="number" class="form-control"
+             id="hero_anchor_balance" name="anchor_balance"
+             step="0.01" min="0" inputmode="decimal"
+             value="{{ "%.2f"|format(current_principal_display) }}"
+             required autofocus
+             aria-label="{{ account.name }} lender-reported balance"
+             data-action="anchor-cancel-on-escape"
+             data-revert-url="{{ url_for('loan.balance_hero', account_id=account.id) }}">
+    </div>
+  </div>
+  <button type="submit" class="btn btn-sm btn-primary" aria-label="Record balance">
+    <i class="bi bi-check"></i>
+  </button>
+  <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Cancel editing"
+          hx-get="{{ url_for('loan.balance_hero', account_id=account.id) }}"
+          hx-target="closest form"
+          hx-swap="outerHTML">
+    <i class="bi bi-x"></i>
+  </button>
+</form>

@@ -77,8 +77,9 @@
       <div class="pulse-hero__label">Balance owed</div>
       {# E-18 / read switch: resolver-derived current_balance (ledger
          authoritative) -- the same figure as the /savings debt card and the
-         net-worth liability, never the stored LoanParams.current_principal. #}
-      <div class="nw-hero__num font-mono">{{ money(current_principal_display) }}</div>
+         net-worth liability, never the stored LoanParams.current_principal.
+         The hero doubles as the click-to-edit dated-true-up control (D14). #}
+      {% include "loan/_balance_hero.html" %}
       <div class="nw-hero__cap">
         {%- set last_payment = payment_history[-1] if payment_history else none -%}
         {%- set last_anchor = balance_anchors[-1] if balance_anchors else none -%}

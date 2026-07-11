@@ -570,27 +570,10 @@ a.acct-cell__link:focus-visible {
    strip (docs/design/investment_audit.md, locked anatomy).
    ============================================= */
 
-/* The hero figure doubles as the click-to-edit anchor control (the
-   dashboard .pulse-hero__num affordance, applied to the band hero). */
-.invd-hero-edit {
-  cursor: pointer;
-  padding: 0.1rem 0.4rem;
-  margin-left: -0.4rem;
-  border-radius: 0.375rem;
-  transition: background-color 0.15s;
-}
-
-.invd-hero-edit:hover,
-.invd-hero-edit:focus-visible {
-  background-color: rgba(var(--shekel-accent-rgb), 0.12);
-}
-
-.invd-hero-edit__pencil {
-  font-size: 0.9rem;
-  color: var(--shekel-text-muted);
-  margin-left: 0.4rem;
-  vertical-align: 0.5em;
-}
+/* The click-to-edit hero affordance moved to components.css as
+   .hero-edit / .hero-edit__pencil when the D14 port made loan and cash
+   detail the second and third consumers (it began here as
+   .invd-hero-edit). */
 
 .invd-chip__cap {
   font-size: 0.71875rem;

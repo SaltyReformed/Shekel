@@ -223,6 +223,10 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/accounts/99999/loan/escrow/99999/delete"),
     # loan.payoff_calculate
     ("POST", "/accounts/99999/loan/payoff"),
+    # loan.balance_hero
+    ("GET", "/accounts/99999/loan/balance-hero"),
+    # loan.anchor_form
+    ("GET", "/accounts/99999/loan/anchor-form"),
 
     # -- investment blueprint --
     # investment.dashboard
