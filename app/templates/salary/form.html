@@ -30,6 +30,11 @@
       <input type="hidden" name="version_id" value="{{ profile.version_id }}">
       {% endif %}
       <div class="card mb-3">
+        {# Titled header matching the sibling cards -- the first card was
+           the page's one header-less card (polish audit P-SA2). #}
+        <div class="card-header">
+          <h6 class="mb-0"><i class="bi bi-person-badge"></i> Profile</h6>
+        </div>
         <div class="card-body">
           <div class="mb-3">
             <label for="name" class="form-label">Profile Name</label>
@@ -147,15 +152,18 @@
         </div>
       </div>
 
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <div>
+      {# flex-wrap + gaps keep the two button groups intact when the row
+         wraps on phones -- without them Cancel orphaned onto its own line
+         under Update Profile (polish audit P-SA3). #}
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+        <div class="d-flex gap-2">
           <button type="submit" class="btn btn-primary">
             <i class="bi bi-check-circle"></i> {{ 'Update Profile' if profile else 'Create Profile' }}
           </button>
           <a href="{{ url_for('salary.cockpit') }}" class="btn btn-outline-secondary">Cancel</a>
         </div>
         {% if profile %}
-        <div class="d-flex gap-2">
+        <div class="d-flex flex-wrap gap-2">
           <a href="{{ url_for('salary.cockpit', profile=profile.id) }}"
              class="btn btn-outline-secondary btn-sm">
             <i class="bi bi-cash-coin"></i> Open cockpit
@@ -186,7 +194,10 @@
       <div class="card-header d-flex justify-content-between align-items-center">
         <h6 class="mb-0"><i class="bi bi-bullseye"></i> Pay Stub Calibration</h6>
         {% if profile.calibration and profile.calibration.is_active %}
-        <span class="badge bg-success">Calibrated</span>
+        {# The cockpit's calibrated marker (.sal-cal), not a raw
+           bg-success badge -- same state, same treatment (P-SA2 genus:
+           the solid bg-* utilities read un-remapped Bootstrap hues). #}
+        <span class="sal-cal"><i class="bi bi-check-circle"></i> Calibrated</span>
         {% endif %}
       </div>
       <div class="card-body">

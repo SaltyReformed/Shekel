@@ -11,8 +11,8 @@
   <div class="card-body">
     {% if profile.deductions %}
     <div class="table-responsive">
-    <table class="table table-hover table-sm mb-0">
-      <thead class="table-light">
+    <table class="table table-hover table-sm table-token mb-0">
+      <thead>
         <tr>
           <th>Name</th>
           <th>Timing</th>
@@ -21,7 +21,7 @@
           <th>Frequency</th>
           <th class="text-end">Cap</th>
           <th>Target Account</th>
-          <th></th>
+          <th class="table-sticky-actions"></th>
         </tr>
       </thead>
       <tbody>
@@ -29,12 +29,17 @@
         <tr>
           <td>{{ d.name }}</td>
           <td>
-            <span class="badge {{ 'bg-info' if d.deduction_timing_id == TIMING_PRE_TAX else 'bg-secondary' }}">
+            {# Timing chip on the shared flag-chip (P-SA2 / RC3): pre-tax
+               wears the accent -- matching the cockpit's accent pre-tax
+               bars -- and post-tax the neutral variant; the label, not
+               the color, carries the meaning.  ID comparison, never the
+               ref name string. #}
+            <span class="flag-chip {{ '' if d.deduction_timing_id == TIMING_PRE_TAX else 'flag-chip--neutral' }}">
               {{ d.deduction_timing.name|replace('_', '-') }}
             </span>
           </td>
           <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
-          <td class="text-end">
+          <td class="text-end font-mono">
             {% if d.calc_method_id == CALC_PERCENTAGE %}
               {{ "%.2f"|format((d.amount|to_percent)) }}%
             {% else %}
@@ -52,7 +57,7 @@
               {{ d.deductions_per_year }}x/yr
             {% endif %}
           </td>
-          <td class="text-end">
+          <td class="text-end font-mono">
             {{ money(d.annual_cap) if d.annual_cap else '--' }}
           </td>
           <td>
@@ -62,7 +67,7 @@
               --
             {% endif %}
           </td>
-          <td class="text-nowrap">
+          <td class="text-nowrap text-end table-sticky-actions">
             <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
                     data-ded-edit="{{ d.id }}"
                     data-ded-name="{{ d.name }}"
