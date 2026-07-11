@@ -121,7 +121,7 @@
         <div class="form-text">Enter as percentage (e.g. 4.5 for 4.5%)</div>
       </div>
       <div class="mb-3">
-        <label for="compounding_frequency_id" class="form-label">Compounding Frequency</label>
+        <label for="compounding_frequency_id" class="form-label">Compounding frequency</label>
         <select class="form-select" id="compounding_frequency_id" name="compounding_frequency_id">
           {% for cf in compounding_frequencies %}
           <option value="{{ cf.id }}" {% if params.compounding_frequency_id == cf.id %}selected{% endif %}>{{ cf.name|capitalize }}</option>
@@ -129,7 +129,7 @@
         </select>
       </div>
       <button type="submit" class="btn btn-primary btn-sm">
-        <i class="bi bi-check-lg"></i> Update Parameters
+        <i class="bi bi-check-lg"></i> Save parameters
       </button>
       <div class="form-text mt-2">Projections recompute from the anchored balance.</div>
     </form>

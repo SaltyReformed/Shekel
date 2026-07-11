@@ -3725,7 +3725,7 @@ class TestPaymentBreakdown:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Breakdown card renders.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
         assert "to interest" in html
         assert "to escrow" in html
@@ -3740,7 +3740,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
         assert "to interest" in html
         # Escrow line should not appear.
@@ -3792,7 +3792,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         # Without params, renders setup page (no breakdown).
         assert resp.status_code == 200
-        assert b"Payment Allocation" not in resp.data
+        assert b"Payment allocation" not in resp.data
 
     def test_breakdown_with_extra_payment(
         self, auth_client, seed_user, db, seed_periods,
@@ -3814,7 +3814,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
 
     def test_breakdown_confirmed_row_labeled(
@@ -3837,7 +3837,7 @@ class TestPaymentBreakdown:
         html = resp.data.decode()
         # The first non-confirmed (projected) row is shown, but
         # the confirmed payment's row would show "Confirmed" badge.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
 
     def test_breakdown_escrow_zero_hidden(
         self, auth_client, seed_user, db, seed_periods,
@@ -3852,7 +3852,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to escrow" not in html
 
     def test_breakdown_uses_committed_schedule(
@@ -3875,7 +3875,7 @@ class TestPaymentBreakdown:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Breakdown renders from committed data.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
 
     def test_breakdown_escrow_inflation_note(
