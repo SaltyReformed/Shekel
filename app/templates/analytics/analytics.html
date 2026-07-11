@@ -11,7 +11,9 @@
 {% endblock breadcrumbs %}
 
 {% block content %}
-<h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
+{# No page-level "Analytics" heading (P-AN2 heading collapse): the navbar
+   already marks Analytics active and each pill names its surface, so the
+   old h4 was the redundant middle title of a five-deep stack. #}
 
 {# Four pills (Slice-4 shell collapse): Calendar, Spending, Statements, Taxes.
    Each pill pushes its own URL (D13: hx-push-url) so a tab is a real,
@@ -45,26 +47,32 @@
 
 {# Loading indicator for subsequent tab switches -- survives content swaps
    because it lives outside #tab-content.  HTMX toggles visibility via the
-   htmx-request class when a request targeting #tab-content is in flight. #}
-<div id="tab-spinner" class="htmx-indicator text-center py-3">
-  <div class="spinner-border spinner-border-sm text-secondary" role="status">
-    <span class="visually-hidden">Loading...</span>
-  </div>
-</div>
-
-<div id="tab-content">
-  {# The active tab auto-loads on page load from HERE, not from the pill (D13):
-     the load lives on this soon-to-be-replaced spinner so the initial fetch
-     never pushes a URL (only pill CLICKS push).  That keeps the Back button
-     from restoring a stale pre-load snapshot.  ``active_tab`` (default
-     "calendar") selects which partial loads. #}
-  <div hx-get="{{ (tabs | selectattr('key', 'equalto', active_tab) | first).url }}"
-       hx-trigger="load"
-       hx-target="#tab-content" hx-swap="innerHTML"
-       hx-indicator="#tab-spinner"
-       class="d-flex justify-content-center py-5">
-    <div class="spinner-border text-secondary" role="status">
+   htmx-request class when a request targeting #tab-content is in flight.
+   Overlaid on the tab body (the position-relative wrapper) instead of
+   rendered in flow: an idle .htmx-indicator is transparent but still
+   reserved ~80px of layout between the pills and every tab (P-AN1). #}
+<div class="position-relative">
+  <div id="tab-spinner" class="htmx-indicator analytics-tab-spinner">
+    <div class="spinner-border spinner-border-sm text-secondary" role="status">
       <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <div id="tab-content">
+    {# The active tab auto-loads on page load from HERE, not from the pill (D13):
+       the load lives on this soon-to-be-replaced spinner so the initial fetch
+       never pushes a URL (only pill CLICKS push).  That keeps the Back button
+       from restoring a stale pre-load snapshot.  ``active_tab`` (default
+       "calendar") selects which partial loads.  No #tab-spinner indicator on
+       this first fetch -- this placeholder IS the visible spinner, and wiring
+       both would stack two spinners on page load. #}
+    <div hx-get="{{ (tabs | selectattr('key', 'equalto', active_tab) | first).url }}"
+         hx-trigger="load"
+         hx-target="#tab-content" hx-swap="innerHTML"
+         class="d-flex justify-content-center py-5">
+      <div class="spinner-border text-secondary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
     </div>
   </div>
 </div>

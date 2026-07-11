@@ -6,6 +6,24 @@
    calendar base rules. */
 
 /* =============================================
+   SHELL (four-pill tab loader)
+   ============================================= */
+
+/* Tab-switch spinner: pinned to the tab body's top center (the shell
+   wraps #tab-spinner + #tab-content in a position-relative div) so the
+   idle indicator holds no layout space -- as an in-flow block its
+   transparent-but-present state reserved ~80px between the pills and
+   every tab (P-AN1).  Visibility still comes from the shared
+   .htmx-indicator opacity rules in base.css. */
+.analytics-tab-spinner {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+/* =============================================
    CALENDAR (slice-1 flagship rebuild)
    Summary strip (reuses the shared .pulse-chip vocabulary from
    dashboard.css, the accounts-cockpit precedent), month flow strip,
