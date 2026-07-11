@@ -117,12 +117,12 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
           <td>
             {{ t.name }}
             {% if t.is_envelope %}
-            <span class="recurring-flag ms-1" title="Tracks purchases">
+            <span class="flag-chip ms-1" title="Tracks purchases">
               <i class="bi bi-cart"></i>
             </span>
             {% endif %}
             {% if t.companion_visible %}
-            <span class="recurring-flag ms-1" title="Companion visible">
+            <span class="flag-chip ms-1" title="Companion visible">
               <i class="bi bi-eye"></i>
             </span>
             {% endif %}

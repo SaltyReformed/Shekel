@@ -272,6 +272,47 @@
 }
 
 /* =============================================
+   FLAG CHIP (shared non-money chip)
+   Non-money boolean flags and status markers: recurring envelope /
+   companion flags, account-type capability flags, the MFA Enabled
+   marker, pay-period lock badges.  Steel Ink commits the accent as the
+   only non-money chroma (design language), so the default chip rides
+   the accent, never the off-palette cyan / money-green raw Bootstrap
+   badges it replaces (polish audit P-RC4 / P-ST6 / RC3).  Chips are
+   told apart by their label, icon, or title, never by color alone.
+   Shape mirrors the grid's tinted status chip (.badge-done /
+   .badge-credit): state-colored text on the state's own 16% tint (the
+   S1 chip-tint method, AA-verified per token).  Extracted from
+   recurring.css's .recurring-flag when settings adopted it (S11), the
+   .section-banner precedent.
+   ============================================= */
+.flag-chip {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 10px;
+  vertical-align: middle;
+  line-height: 1.3;
+  background-color: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-surface));
+  color: var(--shekel-accent);
+}
+
+/* Neutral variant: informational markers with no state to signal
+   (a built-in account type, a past pay period). */
+.flag-chip--neutral {
+  background-color: color-mix(in srgb, var(--shekel-text-secondary) 14%, var(--shekel-surface));
+  color: var(--shekel-text-secondary);
+}
+
+/* Caution variant: a locked / hands-off marker (a settled or posted
+   pay period) -- the D11 caution role, not a money state. */
+.flag-chip--warning {
+  background-color: color-mix(in srgb, var(--shekel-warning) 16%, var(--shekel-surface));
+  color: var(--shekel-warning);
+}
+
+/* =============================================
    Password strength meter (audit F-089 / C-11)
    =============================================
    Bootstrap's .progress is 16 px tall by default which dominates a
@@ -281,6 +322,25 @@
    from Bootstrap. */
 .password-strength-meter .progress {
   height: 6px;
+}
+
+/* Strength-bar fills (polish audit P-ST6 / RC3).  The raw Bootstrap
+   bg-danger / bg-warning / bg-info / bg-success utilities read their
+   un-remapped *-rgb variables, so the bar showed off-palette cyan and
+   raw red/green.  Token scale: weak = danger, fair = warning (both
+   carry non-money caution roles app-wide), good / strong = accent (the
+   only non-money chroma; the two are distinguished by bar width and
+   the text label, never by color alone). */
+.strength-bar--danger {
+  background-color: var(--shekel-danger);
+}
+
+.strength-bar--warning {
+  background-color: var(--shekel-warning);
+}
+
+.strength-bar--accent {
+  background-color: var(--shekel-accent);
 }
 
 /* Show/hide password toggle (audit F-090 / C-11)

@@ -56,26 +56,9 @@
   width: 96px;
 }
 
-/* =============================================
-   ROW FLAGS (envelope / companion)
-   Non-money boolean flags on an expense row. Steel Ink commits the accent as
-   the only non-money chroma (design language), so these ride the accent, not
-   the off-palette cyan / money-green they used before (polish audit P-RC4 /
-   RC3). The two flags are told apart by their icon and title, never by color
-   alone. Shape mirrors the grid's tinted status chip (.badge-done /
-   .badge-credit): state-colored text on the state's own 16% tint.
-   ============================================= */
-.recurring-flag {
-  display: inline-block;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  padding: 0.1rem 0.35rem;
-  border-radius: 10px;
-  vertical-align: middle;
-  line-height: 1.3;
-  background-color: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-surface));
-  color: var(--shekel-accent);
-}
+/* Row flags (envelope / companion) render via the shared .flag-chip in
+   components.css -- extracted there when the settings retheme adopted
+   the same chip (polish audit S11), the .section-banner precedent. */
 
 /* =============================================
    SHARE-OF-COMMITTED BAR
