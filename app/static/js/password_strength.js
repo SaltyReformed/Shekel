@@ -7,21 +7,28 @@
  * updates on every keystroke in a password <input>.  Strength is
  * scored 0..4 by the vendored zxcvbn library
  * (``app/static/vendor/zxcvbn/zxcvbn.js``).  Score thresholds and the
- * resulting bar/text appearance:
+ * resulting bar/text appearance (token classes from components.css --
+ * the raw Bootstrap bg-* utilities read un-remapped *-rgb variables
+ * and rendered off-palette; polish audit P-ST6 / RC3.  Good and
+ * Strong share the accent and are distinguished by bar width and the
+ * label, never by color alone):
  *
- *    Score | Label       | Bar class           | Bar width
- *    ------|-------------|---------------------|----------
- *      0   | Very weak   | bg-danger           | 20%
- *      1   | Weak        | bg-danger           | 40%
- *      2   | Fair        | bg-warning          | 60%
- *      3   | Good        | bg-info             | 80%
- *      4   | Strong      | bg-success          | 100%
+ *    Score | Label       | Bar class              | Bar width
+ *    ------|-------------|------------------------|----------
+ *      0   | Very weak   | strength-bar--danger   | 20%
+ *      1   | Weak        | strength-bar--danger   | 40%
+ *      2   | Fair        | strength-bar--warning  | 60%
+ *      3   | Good        | strength-bar--accent   | 80%
+ *      4   | Strong      | strength-bar--accent   | 100%
  *
  * Wiring uses data attributes so the CSP forbids no inline JS and
- * templates do not need to re-import zxcvbn:
+ * templates do not need to re-import zxcvbn.  The container ships
+ * hidden (``d-none``) so no empty track stripe renders before the
+ * user types (polish audit P-ST6); this module reveals it on the
+ * first keystroke and re-hides it when the field is cleared:
  *
  *    <input id="password" data-password-input ...>
- *    <div data-password-meter-for="password">
+ *    <div data-password-meter-for="password" class="d-none">
  *      <div class="progress" style="height: 6px;">
  *        <div class="progress-bar" data-password-meter-bar></div>
  *      </div>
@@ -37,7 +44,7 @@
  *
  *   - When zxcvbn is not loaded (e.g. the vendored asset failed to
  *     download), the module attaches no listener and the meter
- *     elements simply remain empty.  Failing closed (blocking the
+ *     container simply stays hidden.  Failing closed (blocking the
  *     form) would be worse for users than failing silent because the
  *     server still validates the password.
  *
@@ -54,14 +61,18 @@
 
   /** @type {Array<{label: string, barClass: string, widthPct: number}>} */
   var SCORE_TO_DISPLAY = [
-    { label: "Very weak", barClass: "bg-danger", widthPct: 20 },
-    { label: "Weak", barClass: "bg-danger", widthPct: 40 },
-    { label: "Fair", barClass: "bg-warning", widthPct: 60 },
-    { label: "Good", barClass: "bg-info", widthPct: 80 },
-    { label: "Strong", barClass: "bg-success", widthPct: 100 },
+    { label: "Very weak", barClass: "strength-bar--danger", widthPct: 20 },
+    { label: "Weak", barClass: "strength-bar--danger", widthPct: 40 },
+    { label: "Fair", barClass: "strength-bar--warning", widthPct: 60 },
+    { label: "Good", barClass: "strength-bar--accent", widthPct: 80 },
+    { label: "Strong", barClass: "strength-bar--accent", widthPct: 100 },
   ];
 
-  var ALL_BAR_CLASSES = ["bg-danger", "bg-warning", "bg-info", "bg-success"];
+  var ALL_BAR_CLASSES = [
+    "strength-bar--danger",
+    "strength-bar--warning",
+    "strength-bar--accent",
+  ];
 
   /**
    * Locate the meter container element associated with a password
@@ -79,13 +90,16 @@
   }
 
   /**
-   * Reset the meter to a "no input yet" state: zero-width bar, empty
-   * label.  Used when the input is cleared and on initial setup so
-   * the meter never shows a stale score from a previous render.
+   * Reset the meter to a "no input yet" state: hidden container,
+   * zero-width bar, empty label.  Used when the input is cleared and
+   * on initial setup so the meter never shows a stale score from a
+   * previous render, and so no empty track stripe renders before the
+   * user types (polish audit P-ST6).
    *
    * @param {Element} container
    */
   function clearMeter(container) {
+    container.classList.add("d-none");
     var bar = container.querySelector("[data-password-meter-bar]");
     var text = container.querySelector("[data-password-meter-text]");
     if (bar) {
@@ -109,6 +123,7 @@
   function renderScore(container, score) {
     var clamped = Math.max(0, Math.min(4, score));
     var display = SCORE_TO_DISPLAY[clamped];
+    container.classList.remove("d-none");
     var bar = container.querySelector("[data-password-meter-bar]");
     var text = container.querySelector("[data-password-meter-text]");
     if (bar) {
@@ -136,9 +151,9 @@
       return;
     }
     if (typeof window.zxcvbn !== "function") {
-      // Vendored asset failed to load.  Leave the meter blank so the
-      // form does not show a stuck "Very weak" indicator.  Server-
-      // side validation still enforces minimums.
+      // Vendored asset failed to load.  Leave the meter hidden so the
+      // form shows neither an empty track nor a stuck "Very weak"
+      // indicator.  Server-side validation still enforces minimums.
       clearMeter(container);
       return;
     }
