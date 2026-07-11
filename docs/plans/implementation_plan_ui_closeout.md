@@ -55,7 +55,19 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    handled-500 banner works because an unhandled crash page never carries the marker; the 409
    app-wide swap stays as-is. Fragment grammar per the checkpoint precedent: the same partial
    re-rendered in place with inline field errors + danger banner. Unhandled errors keep today's
-   non-swap behavior.
+   non-swap behavior. **BUILT 2026-07-11 (session 4; commits 02c4000d infra, f9cb3166 grid/entries,
+   58aab29d transfers).** As-built: header = `Shekel-Designed-Fragment: 1`;
+   `app/utils/error_fragments.py` owns the constant, `designed_error()`, and
+   `flatten_schema_errors()`. Grid rejections re-render the request's own surface: the desktop cell
+   mirrors the C-18 conflict icon/title grammar in danger ink; the mobile card gets an in-wrapper
+   danger banner (a cancelled row's stale card gets a banner-only wrapper, since the card lists
+   filter cancelled rows); the entry list gets a banner over current data. Transition messages now
+   lead with status NAMES (ids stay in parens - the `str(id) in msg` test contract holds). Bug found
+   and fixed in the sweep: the transfers `mark_done` / `cancel_transfer` routes never caught the
+   state machine's ValidationError, so a stale-surface illegal transition crashed as an unhandled
+   500. Deliberate residue: the ad-hoc CREATE paths (`create_ad_hoc`, `create_inline` 422) keep
+   their JSON contract - they are not grid mutation surfaces and browser input constraints make them
+   UI-unreachable; either can adopt the marker mechanically if a surface ever needs it.
 5. **Analytics year-view month cards** (size S, mechanical). Raw `border/text-success/danger` + cyan
    `bg-info` badges; flagged in the S5 as-built as out-of-register residue; same-genus token sweep.
 
@@ -64,12 +76,24 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 6. **A5 - grid quick-create name field** (Opus: schema/route/template). Verified 2026-07-11:
    `_transaction_quick_create.html` still posts `estimated_amount` plus hidden ids only, so an
    ad-hoc row cannot be named at the Tier-1 entry point.
+   **BUILT 2026-07-11 (session 4; commits 53211095 + 10d28499).** Optional name input above the
+   amount (placeholder = the category default; autofocus stays on the amount so the everyday
+   amount-Enter loop is unchanged); a typed name wins, blank falls back to `category.display_name`.
+   Live-loop catch worth remembering: HTML implicit submission only fires on single-field forms, so
+   the second input silently killed Enter-to-save - a hidden default submit button restores it
+   (10d28499).
 7. **Grid D1/D2 (noted-not-prioritized in `grid_audit.md`) - RULED 2026-07-11** (recorded at D1/D2
    in `grid_audit.md`). D1 (period-nav simplification): DROPPED - the three mechanisms serve three
    distinct jobs and daily use since the rebuild surfaced zero findings. D2 (invalid status
    transitions): SCHEDULED into session 4, both halves - the entries.py 400/422 paths return
    designed fragments under the item-4 convention, AND the action card disables transitions the
    current status does not allow (allowed-transition map exposed to the template).
+   **D2 BUILT 2026-07-11 (session 4; commit 858029e2 + the item-4 fragments).**
+   `state_machine.allowed_transitions()` feeds both action cards' status dropdowns (illegal options
+   disabled with a reason; Credit also disabled on purchase-tracking rows; the transfer dropdown
+   permanently grays Credit/Received). The Paid / Mark Paid buttons tightened from not-is_settled to
+   projected-only, removing the documented dead affordance on Credit and Cancelled cards (desktop
+   card + mobile action bar; the cell paybtn already complied).
 8. **Manifest icon versioning residue** (size XS). `css_architecture_audit.md`: manifest icon paths
    are unversioned strings (the icons themselves were re-baked silver 2026-07-06).
 
@@ -79,7 +103,10 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    from `1bdf0485`) and neither `scripts/test.sh` nor the fixtures pin the test value, so
    `test_stale_activity_rejected` fails suite-wide unless run with `IDLE_TIMEOUT_MINUTES=720`. Root
    fix: pin the session-lifetime config in the test fixture so the suite is independent of the
-   ambient `.env`.
+   ambient `.env`. **BUILT 2026-07-11 (session 4; commit 9c370901).**
+   `TestConfig.IDLE_TIMEOUT_MINUTES = 720` (the RATELIMIT_STORAGE_URI hermetic-override precedent);
+   verified by running the step-up suite with `IDLE_TIMEOUT_MINUTES=10080` exported - 94 passed.
+   Suite runs no longer need the env prefix.
 
 ### E. Ship
 
@@ -99,6 +126,12 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 | 3 | S10         | item 3                            | Opus            | M (solo) |
 | 4 | Errors + A5 | items 4, 6, 9 + grid D2 (item 7)  | Opus            | M        |
 | 5 | Ship        | items 10-12                       | developer-led   | -        |
+
+**Session 4 COMPLETE 2026-07-11** (run on Fable 5, the S3 precedent; commits 02c4000d -> 10d28499, 7
+commits; full suite 7277 green, pylint 10.00/10; live-verified on a seeded throwaway server via
+scripted Playwright, both themes: A5 named-cell create, the disabled-dropdown pre-hint, a forced
+illegal transition swapping the designed 400 into the cell, and the retirement rail 422 swapping
+inline through the new global listener after its shim was deleted).
 
 Sessions 1, 2, and 4 are order-free among themselves; session 3 runs solo (it brushes ~24 templates,
 so nothing else mid-flight); session 5 is last.
@@ -129,6 +162,6 @@ review's 422 error partials are item 4 above. Verify each still reproduces, then
 
 Unchanged from the polish plan: load the `shekel-design` skill; before/after shots in both themes (+
 mobile where the surface renders there); targeted tests per change with the full suite once as the
-session gate (until item 9 lands, run it with `IDLE_TIMEOUT_MINUTES=720`); logical commits per
-finding; update the register; model discipline (`services/`/`routes/`/test-assertion edits happen in
-an Opus context).
+session gate (item 9 landed 2026-07-11, so no `IDLE_TIMEOUT_MINUTES` prefix is needed anymore);
+logical commits per finding; update the register; model discipline (`services/`/`routes/`/test-
+assertion edits happen in an Opus context).
