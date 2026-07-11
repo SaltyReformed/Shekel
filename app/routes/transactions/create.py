@@ -38,9 +38,11 @@ logger = logging.getLogger(__name__)
 def create_inline():
     """Create a transaction from inline grid interaction.
 
-    Auto-derives the name from the category.  Returns the new
-    transaction cell wrapped in a div with a unique ID for HTMX
-    targeting.
+    The quick-create form's optional name field wins when provided
+    (grid audit A5: ad-hoc rows are nameable at the Tier-1 entry
+    point); otherwise the name is auto-derived from the category.
+    Returns the new transaction cell wrapped in a div with a unique ID
+    for HTMX targeting.
 
     Double-submit handling (F-102 / C-22): unlike the ad-hoc
     transfer create path (F-050), no database-level uniqueness
@@ -88,8 +90,9 @@ def create_inline():
     # dropped; assign Projected unconditionally.
     data["status_id"] = ref_cache.status_id(StatusEnum.PROJECTED)
 
-    # Set the name from the category display name.
-    data["name"] = category.display_name
+    # A typed name wins; an omitted or blank one (the pre_load hook
+    # drops empty submits) falls back to the category display name.
+    data.setdefault("name", category.display_name)
 
     txn = Transaction(**data)
     db.session.add(txn)

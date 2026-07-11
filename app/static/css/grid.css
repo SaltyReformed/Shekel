@@ -644,6 +644,15 @@ thead .sticky-col {
   height: 28px;
 }
 
+/* Quick-create optional name input (grid audit A5): same compact
+   footprint as the amount input, regular UI face -- a name is not a
+   money figure, so no mono / right-align. */
+.txn-quick-name {
+  font-size: 12px;
+  padding: 2px 4px;
+  height: 28px;
+}
+
 .txn-expand-btn {
   color: var(--shekel-text-muted);
   font-size: 14px;

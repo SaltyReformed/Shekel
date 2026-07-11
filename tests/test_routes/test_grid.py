@@ -1909,6 +1909,68 @@ class TestAccountIdColumn:
         assert txn is not None
         assert txn.account_id == account.id
 
+    def test_inline_create_honors_typed_name(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A typed quick-create name wins over the category default.
+
+        Grid audit A5 (closeout plan session 4): the Tier-1 entry point
+        accepts an optional name so an ad-hoc row does not need the
+        full form just to be named.
+        """
+        account = seed_user["account"]
+        category = seed_user["categories"]["Groceries"]
+        scenario = seed_user["scenario"]
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+
+        resp = auth_client.post("/transactions/inline", data={
+            "account_id": account.id,
+            "category_id": category.id,
+            "pay_period_id": seed_periods_today[0].id,
+            "scenario_id": scenario.id,
+            "transaction_type_id": expense_type.id,
+            "estimated_amount": "12.50",
+            "name": "Farmers market",
+        })
+        assert resp.status_code == 201
+
+        txn = Transaction.query.filter_by(name="Farmers market").first()
+        assert txn is not None
+        assert txn.estimated_amount == Decimal("12.50")
+
+    def test_inline_create_blank_name_falls_back_to_category(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An empty name submit keeps the category-derived default.
+
+        HTML forms submit every rendered input, so an untouched name
+        field arrives as "" -- the schema's strip_empty_strings hook
+        drops it and the route falls back to category.display_name.
+        """
+        account = seed_user["account"]
+        category = seed_user["categories"]["Groceries"]
+        scenario = seed_user["scenario"]
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+
+        resp = auth_client.post("/transactions/inline", data={
+            "account_id": account.id,
+            "category_id": category.id,
+            "pay_period_id": seed_periods_today[0].id,
+            "scenario_id": scenario.id,
+            "transaction_type_id": expense_type.id,
+            "estimated_amount": "20.00",
+            "name": "",
+        })
+        assert resp.status_code == 201
+
+        txn = Transaction.query.filter_by(name=category.display_name).first()
+        assert txn is not None
+        assert txn.estimated_amount == Decimal("20.00")
+
     def test_inline_create_rejects_missing_account_id(
         self, app, auth_client, seed_user, seed_periods_today
     ):
