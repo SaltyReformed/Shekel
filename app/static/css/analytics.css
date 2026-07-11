@@ -318,12 +318,18 @@
 
 /* Money-state mapping for refund vs owed: positive/refund = done,
    negative/owed = danger; always paired with the "refund"/"owed" word
-   (color is never the only signal). */
-.tax-refund {
+   (color is never the only signal).  The .tax-ledger td selectors exist
+   because Bootstrap's `.table>:not(caption)>*>*` color declaration
+   (0,1,1) beats a bare class (0,1,0) on ledger cells -- without them
+   refund rows render plain and a flipped estimate would never go red
+   (P-AN16); the two-class form (0,2,1) outranks it. */
+.tax-refund,
+.tax-ledger td.tax-refund {
   color: var(--shekel-done);
 }
 
-.tax-owed {
+.tax-owed,
+.tax-ledger td.tax-owed {
   color: var(--shekel-danger);
 }
 

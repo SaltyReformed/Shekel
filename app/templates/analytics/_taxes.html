@@ -59,10 +59,12 @@
       <div class="nw-hero__num font-mono {{ 'tax-refund' if display.hero_is_refund else 'tax-owed' }}">
         {{ money(display.hero_amount) }}
       </div>
+      {# "modeled after that date", not the dangling "modeled after"
+         (P-AN18: the caption read as truncated). #}
       <div class="nw-hero__cap">
         {{ year }} federal + NC combined &middot;
         {%- if report.withholding.measured_through %}
-        withholding measured through {{ report.withholding.measured_through.strftime('%b %-d') }}, modeled after
+        withholding measured through {{ report.withholding.measured_through.strftime('%b %-d') }}, modeled after that date
         {%- else %}
         withholding fully modeled
         {%- endif %}
@@ -83,11 +85,13 @@
         </div>
         <div class="calendar-chip-cap">{{ "refund" if display.state_is_refund else "owed" }}</div>
       </div>
+      {# Caption names the combined basis (P-AN18: bare "of Box 1 wages"
+         beside the federal-bracket marginal chip read as federal-only). #}
       {% if display.effective_pct is not none %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">Effective rate</div>
         <div class="pulse-chip__value font-mono">{{ display.effective_pct }}%</div>
-        <div class="calendar-chip-cap">of Box 1 wages</div>
+        <div class="calendar-chip-cap">fed + NC combined, of Box 1 wages</div>
       </div>
       {% endif %}
       <div class="pulse-chip">

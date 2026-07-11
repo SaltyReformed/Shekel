@@ -53,6 +53,20 @@
     {% endif %}
     {{ render_errors(errors) }}
 
+    {# The 7-field update form collapses behind its toggle (P-AN17: kept
+       always-open it stretched the card ~500px past the paired
+       Assumptions card).  It opens when nothing is measured yet (the
+       form IS the card's purpose) and on an error re-render (the field
+       errors and repopulated values must be visible). #}
+    {% set form_open = checkpoint is none or save_error or errors or form_values %}
+    <button class="btn btn-sm btn-outline-secondary{% if not form_open %} collapsed{% endif %}"
+            type="button" data-bs-toggle="collapse"
+            data-bs-target="#ytd-checkpoint-form"
+            aria-expanded="{{ 'true' if form_open else 'false' }}"
+            aria-controls="ytd-checkpoint-form">
+      <i class="bi bi-pencil"></i> Update from a pay stub
+    </button>
+    <div class="collapse{% if form_open %} show{% endif %} mt-3" id="ytd-checkpoint-form">
     <form hx-post="{{ url_for('salary.save_ytd_checkpoint', profile_id=profile.id) }}"
           hx-target="#ytd-checkpoint-card"
           hx-swap="outerHTML"
@@ -82,5 +96,6 @@
                       value=form_values.get('notes', ''), errors=errors) }}
       <button type="submit" class="btn btn-primary btn-sm">Save Checkpoint</button>
     </form>
+    </div>
   </div>
 </div>
