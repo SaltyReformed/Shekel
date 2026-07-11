@@ -315,11 +315,14 @@ Section 4.
   right-aligned mono amounts; the timing badge became the shared flag-chip (accent pre-tax / neutral
   post-tax, keyed on the timing ID); the recurring icon moved to `text-accent`; the same-genus solid
   `bg-success` Calibrated badge became the cockpit's `.sal-cal` marker; the first card gained a
-  Profile header. **Same-genus residue found, NOT fixed (out of S7 scope):**
-  `salary/calibrate_confirm.html:56` still carries a `table-light` thead (never-shot sub-page), as
-  do `settings/_pay_periods_manage.html`, `settings/_categories.html`, and the two
-  `debt_strategy/_results.html` tables - all render tokenized through Wave 1's CSS skin; the
-  template-grammar swap to `.table-token` awaits their page sessions.
+  Profile header. **Same-genus residue swept 2026-07-11 (S7 follow-up, developer-directed; commits
+  67c6b21f calibrate-confirm, 58ce5aec settings pay-periods + archived categories, bfe3e7a9
+  debt-strategy results x2):** the five remaining `table-light` heads moved onto `.table-token`,
+  making the class extinct in templates, so Wave 1's `.table-light` CSS skin was retired as dead
+  code (cf78ed25; `.table-dark` stays - the grid uses it). Live-verified both themes: the pay-period
+  list, the debt calculate flow, and the calibrate form walked to its read-only confirm page; the
+  archived-categories table renders only with archived rows (none on dev), so its render is pinned
+  by the categories route tests.
 - **P-SA3 [bug - FIXED 2026-07-11 (S7, commit 252aa11c)]** Mobile edit page: action row collapsed
   into a cramped jumble (Cancel orphaned under Update Profile); row-action delete buttons clipped at
   the viewport edge behind an unindicated scroll. Fixed: the action row wraps with flex gaps

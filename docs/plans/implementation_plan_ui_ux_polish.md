@@ -147,10 +147,12 @@ stops passing the dataviz ordinal checks. The S1 amber flag was ruled: post-tax 
 neutral (CVD-validated), third-paycheck ledger tint/star -> accent (matches the chart's event dots;
 D11 - not a caution). P-SA4 was JS-only as predicted. Two shared components extracted to
 components.css en route: `.table-token` (the token thead, deduped from retirement.css + salary.css)
-and `.table-sticky-actions` (right-pinned row actions - the P-SA3/P-RT1 mobile fix). Out of scope,
-flagged in the register at P-SA2: `calibrate_confirm.html` and three settings/debt-strategy tables
-still carry `table-light` head rows (render tokenized via the Wave 1 skin; the swap awaits their
-sessions).
+and `.table-sticky-actions` (right-pinned row actions - the P-SA3/P-RT1 mobile fix). **Follow-up
+swept same day at the developer's direction (commits 67c6b21f -> cf78ed25; full suite 7258 green):**
+the five out-of-scope `table-light` heads flagged at P-SA2 (calibrate-confirm, settings pay-periods
+
+- archived categories, debt-strategy results x2) moved onto `.table-token`, and the now-consumerless
+Wave 1 `.table-light` skin was retired from base.css (`.table-dark` stays - the grid uses it).
 
 ### S8. Detail pages + anchor idiom (P-DT2/3/5/6/7/9, D14) -- OPUS recommended, size S-M
 
