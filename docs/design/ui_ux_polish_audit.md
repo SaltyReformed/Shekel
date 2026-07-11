@@ -46,10 +46,10 @@ Every item from `ui_ux_observations.md`, with verdict and where it is handled be
 | O18 | Accounts: sections hard to distinguish | CONFIRMED (11px muted labels only) | D6 |
 | O19 | Accounts: bar segment without legend | CONFIRMED; NOT a data bug (empty track) | P-AC1 |
 | O20 | Salary: raise banner repeats every paycheck | FIXED 2026-07-10 (S3) | P-SA1 |
-| O21 | Edit Salary Profile not rethemed | CONFIRMED (residue, not wholesale) | P-SA2 |
-| O22 | Salary Path chart unlabeled axes | CONFIRMED (deliberate sparkline config) | P-SA4 |
-| O23 | Pension Profiles not rethemed | CONFIRMED + a real mobile overflow bug | P-RT1 |
-| O24 | Retirement income bar blues too close | CONFIRMED (~1.6:1 in dark) | P-RT2 |
+| O21 | Edit Salary Profile not rethemed | FIXED 2026-07-11 (S7) | P-SA2 |
+| O22 | Salary Path chart unlabeled axes | FIXED 2026-07-11 (S7) | P-SA4 |
+| O23 | Pension Profiles not rethemed | FIXED 2026-07-11 (S7; incl. the mobile overflow) | P-RT1 |
+| O24 | Retirement income bar blues too close | FIXED 2026-07-11 (S7, per ruled D12) | P-RT2 |
 | O25 | Analytics: dead space at top | FIXED 2026-07-10 (S5) | P-AN1 |
 | O26 | Analytics: bright blue tabs off-palette | CONFIRMED (`#0D6EFD` both themes) | RC2 |
 | O27 | Analytics: tabs vs tab header redundant | FIXED 2026-07-10 (S5; h4 dropped, D1 breadcrumb rides S10) | P-AN2 |
@@ -274,8 +274,13 @@ Section 4.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
-- **P-AC3 [polish]** Asset vs Retirement bar blues are adjacent same-hue mixes (`rgb(70,147,190)` vs
-  `rgb(58,117,151)`) - same genus as P-RT2; fix together (D12 covers the ramp policy).
+- **P-AC3 [polish - FIXED 2026-07-11 (S7, commit 04b98f62)]** Asset vs Retirement bar blues were
+  adjacent same-hue mixes (`rgb(70,147,190)` vs `rgb(58,117,151)`) - same genus as P-RT2. Fixed per
+  ruled D12's second arm (a 3:1 step is impossible four times in one hue): 2px surface gaps now
+  carry the boundary between same-hue neighbours, and the ramp's per-theme color-mix stops (dark
+  100/76/56/42, light 100/80/64/49 accent mixes, theme-scoped custom properties) pass the dataviz
+  ordinal ramp checks - monotone lightness, adjacent OKLCH dL >= 0.06, deepest step >= 2:1 on the
+  surface. Legend labels + per-segment title tooltips remain the identity channel.
 - **P-AC4 [consistency]** Liability red applied to chip, subtotal, and bar segment but not to the
   loan card balances themselves - one quantity, two treatments on one screen.
 - **P-AC5 [consistency - FIXED 2026-07-10 (S13 Loop B)]** Savings Goals + Emergency Fund keep
@@ -303,38 +308,82 @@ Section 4.
   run's first paycheck via `salary_cockpit_service.raise_run_start_period_ids(pairs)` (route
   computes the set of run-start period ids; the template checks `period.id in` it). Same genus as
   the banner, a table surface.
-- **P-SA2 [consistency]** Edit-profile residue (O21): `table-light` thead strips (RC3), `bg-info`
-  pre-tax badges + `text-info` icons (RC3), bare `h4` title over a header-less first card
-  (stacked-card layout itself is the documented form_card exception - keep).
-- **P-SA3 [bug]** Mobile edit page: action row collapses into a cramped jumble (Cancel orphaned
-  under Update Profile); row-action delete buttons clip at the viewport edge behind an unindicated
-  scroll.
-- **P-SA4 [consistency]** Salary Path chart has zero axes by explicit sparkline config while being a
-  half-width card whose line IS the answer (O22): add minimal labeled axes (start/end y ticks,
-  first/last x dates) rather than full grid - keeps the sparkline feel and satisfies "labeled axes
-  when the trend is the answer".
-- **P-SA5 [polish]** Cockpit right column dead band between Salary path and Calibrated strip.
-- **P-SA6 [polish]** Composition-bar legend lists a "Post-tax" entry whose segment is an invisible
-  0.6% sliver (same genus as P-AC1 / P-RT4: legend entries without discernible marks).
+- **P-SA2 [consistency - FIXED 2026-07-11 (S7, commit 252aa11c)]** Edit-profile residue (O21):
+  `table-light` thead strips (RC3), `bg-info` pre-tax badges + `text-info` icons (RC3), bare `h4`
+  title over a header-less first card (stacked-card layout itself is the documented form_card
+  exception - kept). Fixed: raises/deductions tables adopt the shared `.table-token` head with
+  right-aligned mono amounts; the timing badge became the shared flag-chip (accent pre-tax / neutral
+  post-tax, keyed on the timing ID); the recurring icon moved to `text-accent`; the same-genus solid
+  `bg-success` Calibrated badge became the cockpit's `.sal-cal` marker; the first card gained a
+  Profile header. **Same-genus residue found, NOT fixed (out of S7 scope):**
+  `salary/calibrate_confirm.html:56` still carries a `table-light` thead (never-shot sub-page), as
+  do `settings/_pay_periods_manage.html`, `settings/_categories.html`, and the two
+  `debt_strategy/_results.html` tables - all render tokenized through Wave 1's CSS skin; the
+  template-grammar swap to `.table-token` awaits their page sessions.
+- **P-SA3 [bug - FIXED 2026-07-11 (S7, commit 252aa11c)]** Mobile edit page: action row collapsed
+  into a cramped jumble (Cancel orphaned under Update Profile); row-action delete buttons clipped at
+  the viewport edge behind an unindicated scroll. Fixed: the action row wraps with flex gaps
+  (Update+Cancel stay one unit, the three nav links wrap as another); both tables' action cells pin
+  to the right edge via the new components.css `.table-sticky-actions` (a right-hand mirror of the
+  grid's sticky-col) so row controls stay reachable while data columns slide beneath - the sliding
+  itself indicates the scroll.
+- **P-SA4 [consistency - FIXED 2026-07-11 (S7, commit 8e225382)]** Salary Path chart had zero axes
+  by explicit sparkline config while being a half-width card whose line IS the answer (O22). Fixed
+  as specified: minimal labeled axes - y ticks at the data's start/end salaries (afterBuildTicks
+  pins them to the data extremes, not the padded bounds; a flat path gets one tick), first/last
+  period dates on x (align inner so edge labels never clip), no grid; chart region 120px -> 140px so
+  the axes do not squeeze the line. JS-only, as predicted - the data was already client-side.
+- **P-SA5 [polish - FIXED 2026-07-11 (S7, commit 8e225382)]** Cockpit right column dead band between
+  Salary path and Calibrated strip. Root cause: the two were loose grid siblings, and the tall
+  deduction list (grid-row: span 2) stretched the row heights apart. Fixed: they are one flex stack
+  (`.sal-right-col`) in grid column 2.
+- **P-SA6 [polish - FIXED 2026-07-11 (S7, commit 8e225382)]** Composition-bar legend listed a
+  "Post-tax" entry whose segment was an invisible 0.6% sliver (same genus as P-AC1 / P-RT4). Fixed:
+  segments carry an 8px min-width floor (the S14 capped-bars trade - the legend holds the exact
+  figures), and a zero-value component renders NO segment at all (the retirement meter's rule), so
+  the floor can never paint a mark for $0.00.
+- **[S7 ruling 2026-07-11 on the S1 amber flag (commit 8e225382)]** Post-tax composition/deduction
+  marks are series identity with no money state to borrow: they moved off the caution amber onto a
+  per-theme achromatic neutral (`--sal-post-tint`, text-secondary/surface mixes; CVD-adjacency
+  validated against the tax segment at protan dE 19.5 dark / 13.2 light, >= 3:1 on surface),
+  matching the P-SA2 timing chips (accent pre-tax / neutral post-tax everywhere). The projection
+  ledger's third-paycheck row tint and star moved from amber to accent: a third paycheck is an
+  informational event marker, not a caution (D11), and the staircase chart's event dots and the
+  anatomy card's info banner were already accent - one concept, one color. The hero band's
+  3rd-paycheck chip keeps the done ink: a positive money delta, the same grammar as the raise chip.
 
 ### Retirement
 
-- **P-RT1 [bug + consistency]** Pension Profiles page (O23): `table-light` thead (RC3), legacy card
-  grammar, left-aligned proportional figures; PLUS a real mobile bug - the table has no responsive
-  wrapper, so the thead strip and action buttons render outside the card and force horizontal page
-  scroll. The Add form half already uses form_card correctly.
-- **P-RT2 [consistency]** Income in Retirement stacked bar: Pension `#2878A8` vs Withdrawals
-  `#4A9ECC`, ~1.6:1 in dark (O24). Fix the pair in `retirement.css:17-24`; policy at D12.
+- **P-RT1 [bug + consistency - FIXED 2026-07-11 (S7, commit 27518f93)]** Pension Profiles page
+  (O23): `table-light` thead (RC3), legacy card grammar, left-aligned proportional figures; PLUS a
+  real mobile bug - the table had no responsive wrapper, so the thead strip and action buttons
+  rendered outside the card and forced horizontal page scroll. Fixed: table-responsive wrapper, the
+  token head, right-aligned mono numerics, and the action column pinned via `.table-sticky-actions`.
+  **DRY extraction in the same commit:** the token thead grammar existed twice (`.retire-table` in
+  retirement.css, `.sal-ledger` in salary.css); with a third consumer it moved to components.css as
+  `.table-token` (the .section-banner precedent) - the retirement accounts table and projection
+  ledger consume it and re-shot pixel-identical.
+- **P-RT2 [consistency - FIXED 2026-07-11 (S7, commit 04b98f62)]** Income in Retirement stacked bar:
+  Pension `#2878A8` vs Withdrawals `#4A9ECC`, ~1.6:1 in dark (O24). Fixed per ruled D12's luminance
+  arm: dark keeps pension `#2878A8` and lifts withdrawals to `#B0D8F0` (3.21:1, each fill >= 3.4:1
+  on surface); light keeps withdrawals `#3E92C2` and deepens pension to `#113A5C` (3.42:1). Pension
+  reads as the deep ink blue and withdrawals as the light steel blue in BOTH themes; the ratios are
+  recorded in the retirement.css ramp comment.
 - **P-RT3 [consistency - FIXED 2026-07-09 (S1)]** "none linked" warning used the credit money token
   deliberately (`retirement.css:95`). Fixed: `.retire-flag` is accent - the flags mark setup gaps
   (actionable, two are links), not money states and not low-balance cautions.
-- **P-RT4 [polish]** "Uncovered" legend row has no swatch while its siblings do.
-- **[note, found during S1]** Salary's post-tax composition/deduction segments and the
-  third-paycheck row tint are categorical series colors riding the caution amber (now
-  `--shekel-warning`, pixels unchanged); whether amber is the right categorical hue for them is an
-  S7 judgment item.
-- **P-RT5 [polish]** "Close the Gap" hero says +$7 while the stepper says +$6.71 - rounding puts
-  principle 2 on a hair trigger; render both at the same precision.
+- **P-RT4 [polish - FIXED 2026-07-11 (S7, commit 2dc59e37)]** "Uncovered" legend row had no swatch
+  while its siblings did. Fixed: it carries a swatch in the meter's own track tint (one shared color
+  definition - the uncovered remainder IS the track) with a hairline border keeping the near-surface
+  tint legible.
+- **[note, found during S1 - RULED + LANDED 2026-07-11 (S7, commit 8e225382)]** Salary's post-tax
+  composition/deduction segments and the third-paycheck row tint were categorical series colors
+  riding the caution amber. S7 ruling: post-tax -> per-theme achromatic neutral; third-paycheck
+  markers -> accent. Full rationale recorded at the Salary section's S7-ruling entry.
+- **P-RT5 [polish - FIXED 2026-07-11 (S7, commit 2dc59e37)]** "Close the Gap" hero said
+  +$7 while the stepper said +$6.71 - rounding put principle 2 on a hair trigger. Fixed: the hero
+  renders cents, so hero, stepper prefill, and outcome line all show the producer's same round_money
+  value (no service change).
 
 ### Analytics (shell)
 
@@ -788,6 +837,11 @@ which needs a token proposal ratified on real-page mockups before their dependen
   dark. Recommend: adjacent series must differ by >=3:1 luminance or use a second achromatic
   treatment (pattern/gap + direct labels), applied to the retirement pair and the accounts
   allocation bar together. **RULED 2026-07-09: as recommended.**
+  **IMPLEMENTED 2026-07-11 (S7, commit 04b98f62):** the two-series retirement pair took the
+  luminance arm (dark 3.21:1, light 3.42:1 - values at P-RT2); the four-step allocation ramp took
+  the achromatic arm (2px surface gaps + the existing legend/tooltips), since a 3:1 step compounds
+  to ~27:1 across four steps - impossible inside one hue - with the stops re-spread per theme to
+  pass the dataviz ordinal ramp checks (details at P-AC3).
 - **D13. Analytics tabs as navigation.** Visual fixes (RC2, heading collapse) are decided by the
   design language; the structural half - hx-push-url so each tab is a real URL and direct GETs load
   their own tab - changes route behavior. Recommend yes, in the Opus wave.

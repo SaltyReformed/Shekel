@@ -139,7 +139,18 @@ P-RT2/P-AC3 ramp fix per ruled D12 (>=3:1 luminance, applied to the retirement p
 allocation bar together), P-RT4 legend swatch, P-RT5 precision agreement. Salary: P-SA2 edit residue
 swaps, P-SA3 mobile action row, P-SA4 minimal sparkline axes (Chart.js config; likely JS-only -
 verify data is already client-side), P-SA5 dead band, P-SA6 legend sliver. Mostly pattern
-application; P-SA3 and the D12 value choice carry the judgment.
+application; P-SA3 and the D12 value choice carry the judgment. **SESSION COMPLETE 2026-07-11** (run
+on Fable 5; commits 04b98f62 -> 8e225382; full suite 7258 green, pylint 10.00/10, biome + djlint
+clean; both themes + mobile shot before/after per slice on real dev data). D12 landed both arms: the
+retirement pair by luminance (dark 3.21:1 / light 3.42:1), the alloc ramp by 2px gaps + per-theme
+stops passing the dataviz ordinal checks. The S1 amber flag was ruled: post-tax marks -> achromatic
+neutral (CVD-validated), third-paycheck ledger tint/star -> accent (matches the chart's event dots;
+D11 - not a caution). P-SA4 was JS-only as predicted. Two shared components extracted to
+components.css en route: `.table-token` (the token thead, deduped from retirement.css + salary.css)
+and `.table-sticky-actions` (right-pinned row actions - the P-SA3/P-RT1 mobile fix). Out of scope,
+flagged in the register at P-SA2: `calibrate_confirm.html` and three settings/debt-strategy tables
+still carry `table-light` head rows (render tokenized via the Wave 1 skin; the swap awaits their
+sessions).
 
 ### S8. Detail pages + anchor idiom (P-DT2/3/5/6/7/9, D14) -- OPUS recommended, size S-M
 
