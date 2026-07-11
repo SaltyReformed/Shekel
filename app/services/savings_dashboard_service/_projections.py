@@ -22,6 +22,7 @@ from app.services.account_projection import (
 from app.services.loan_loaders import load_loan_anchor_facts
 from app.services.loan_payment_service import load_loan_context
 from app.services.loan_resolution import resolve_loan_seeded
+from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
 
@@ -232,8 +233,8 @@ def _project_one_account(acct, ctx, balance_maps):
 
     Returns:
         A dict with keys: account, current_balance, projected,
-        needs_setup, is_paid_off, plus optional type-specific params
-        (interest_params / investment_params / loan_params +
+        needs_setup, is_paid_off, is_liability, plus optional type-specific
+        params (interest_params / investment_params / loan_params +
         monthly_payment + current_rate + payoff_date).
     """
     kind = classify_account(acct)
@@ -276,6 +277,11 @@ def _project_one_account(acct, ctx, balance_maps):
         "projected": projected,
         "needs_setup": needs_setup,
         "is_paid_off": loan_result.is_paid_off if loan_result else False,
+        # Category-keyed liability flag (the id-based canonical classifier),
+        # so the cockpit cell balance can take the danger token the group
+        # subtotal, chip, and bar segment already do -- one quantity, one
+        # treatment (polish audit P-AC4).
+        "is_liability": is_liability_account(acct),
     }
     if acct_interest_params:
         ad["interest_params"] = acct_interest_params

@@ -3507,3 +3507,35 @@ class TestCockpitBalance:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
+
+    def test_cockpit_balance_loan_cell_takes_liability_ink(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan (liability) balance cell renders the danger-ink class.
+
+        P-AC4: the owed balance is colored like the liabilities chip, group
+        subtotal, and diverging-bar segment -- keyed on the account's
+        category, never the figure's sign -- so a reverted loan cell keeps
+        its danger ink.  The asset-cell contrast is asserted below.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user)
+            resp = auth_client.get(
+                f"/savings/cockpit/{loan.id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "acct-card__num--liability" in resp.data.decode()
+
+    def test_cockpit_balance_asset_cell_omits_liability_ink(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A Checking (asset) balance cell omits the liability danger-ink class."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "acct-card__num--liability" not in resp.data.decode()

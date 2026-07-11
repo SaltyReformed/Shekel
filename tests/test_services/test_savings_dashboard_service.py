@@ -3981,3 +3981,40 @@ class TestAccountBalanceCell:
                 seed_user["user"].id, acct_id,
             )
             assert cell is None
+
+    def test_cell_flags_liability_for_loan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan (LIABILITY category) cell carries is_liability=True.
+
+        The cell contract feeds ``_cockpit_balance.html`` the flag that
+        paints the owed balance in the danger token -- the same treatment
+        the liabilities chip, group subtotal, and diverging-bar segment
+        already use -- keyed on the account's category id, never the
+        figure's sign (polish audit P-AC4).  A reverted liability cell
+        therefore keeps its danger ink.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session)
+
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                seed_user["user"].id, loan.id,
+            )
+            assert cell is not None
+            assert cell["is_liability"] is True
+
+    def test_cell_flags_asset_as_non_liability(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A Checking account (non-LIABILITY category) cell is_liability=False.
+
+        The seed_user account is a Checking type (ASSET category), so its
+        balance keeps the plain number ink -- the danger token is reserved
+        for the liability side (polish audit P-AC4).
+        """
+        with app.app_context():
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                seed_user["user"].id, seed_user["account"].id,
+            )
+            assert cell is not None
+            assert cell["is_liability"] is False

@@ -6,7 +6,12 @@
 
    Context: account (Account), current_balance (Decimal | None -- the
    resolver as-of-today balance the card shows; None when no current
-   period resolves a figure, rendered as a non-editable dash).
+   period resolves a figure, rendered as a non-editable dash),
+   is_liability (bool -- the account's category is LIABILITY, so the
+   figure takes the danger token the group subtotal / chip / bar segment
+   already do; keyed on category, never the figure's sign -- polish audit
+   P-AC4).  Both render paths (the grid include and the standalone
+   savings.cockpit_balance revert) pass is_liability.
 
    Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
    account-scoped because the cockpit is multi-card):
@@ -24,7 +29,7 @@
    opens the editor instead of following the card link. #}
 {% if current_balance is not none %}
 <div id="acct-balance-{{ account.id }}"
-     class="acct-card__num acct-card__num--edit font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}"
+     class="acct-card__num acct-card__num--edit font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}{% if is_liability %} acct-card__num--liability{% endif %}"
      hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='accounts') }}"
      hx-target="this"
      hx-swap="outerHTML"

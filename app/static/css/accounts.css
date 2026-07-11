@@ -405,6 +405,16 @@ a.acct-cell__link:focus-visible {
   color: var(--shekel-danger);
 }
 
+/* Liability cell balances render in the danger token, keyed on the
+   account's category -- not the figure's sign, since a loan / credit-card
+   owed balance is a positive number.  Matches the liabilities chip, group
+   subtotal, and diverging-bar segment so one quantity gets one treatment
+   across the cockpit (polish audit P-AC4); the "Liabilities" card banner
+   and credit-card glyph carry the non-color signal. */
+.acct-card__num--liability {
+  color: var(--shekel-danger);
+}
+
 /* The balance wrapper is raised above the cell's .stretched-link overlay
    (the same raised-sibling treatment as .acct-cell__menu) so BOTH the
    click-to-edit cell AND the inline editor that replaces it (input + Save /

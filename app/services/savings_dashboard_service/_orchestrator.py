@@ -349,10 +349,12 @@ def compute_account_balance_cell(
         account_id: Integer ID of the account whose balance cell to render.
 
     Returns:
-        A dict ``{"account": Account, "current_balance": Decimal | None}``,
-        or ``None`` when *account_id* is not among the user's active
-        accounts (e.g. it was archived between page load and the revert),
-        which the caller turns into a 404.
+        A dict ``{"account": Account, "current_balance": Decimal | None,
+        "is_liability": bool}`` (the ``_cockpit_balance.html`` contract, so a
+        reverted liability cell keeps the danger ink), or ``None`` when
+        *account_id* is not among the user's active accounts (e.g. it was
+        archived between page load and the revert), which the caller turns
+        into a 404.
     """
     core = _load_dashboard_core_data(user_id)
     acct = next(
@@ -370,6 +372,7 @@ def compute_account_balance_cell(
     return {
         "account": acct,
         "current_balance": account_dict["current_balance"],
+        "is_liability": account_dict["is_liability"],
     }
 
 

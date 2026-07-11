@@ -193,7 +193,7 @@
          that REPLACES it (input + Save / Cancel) is also lifted above the
          cell's .stretched-link overlay and stays clickable. #}
       <div class="acct-cell__balance">
-        {% with account=ad.account, current_balance=ad.current_balance %}
+        {% with account=ad.account, current_balance=ad.current_balance, is_liability=ad.is_liability %}
         {% include "savings/_cockpit_balance.html" %}
         {% endwith %}
       </div>
