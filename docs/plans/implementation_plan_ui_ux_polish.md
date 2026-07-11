@@ -160,7 +160,21 @@ RC3 swaps on the loan allocation bar and badges, mono-caption one-liner, casing 
 half-width row, ARM tag floor case, amortization link promoted to a real control, and the D14 port
 of the investment click-to-edit hero to loan and cash. Cash currently has no on-page anchor
 recording, so the port may touch a route/form - Opus fits the whole session; the pattern being
-copied already exists on investment.
+copied already exists on investment. **SESSION COMPLETE 2026-07-11** (run on Fable 5, the S3
+precedent; commits 6e3f6fad -> 640aeb1e; full suite 7300 green, pylint 10.00/10, biome + djlint
+clean; all five detail pages re-shot both themes + mobile; both D14 flows live-verified on dev -
+loan write-free, cash on an archived-afterward throwaway account). Two forks developer-ruled before
+build: the P/I/E bar took the D12 ordinal accent ramp (not a semantic re-ink), and the loan "Record
+balance" form card STAYS alongside the new click-to-edit hero (keep both). P-DT7 turned out already
+fixed (Wave 1 RC5 + S1 re-ink) - verified and closed in the register. Shared components extracted en
+route (the S6 precedent): `.alloc-bar`/`.alloc-swatch` + the `--shekel-alloc-a*` ramp stops to
+components.css (cockpit re-pointed, pixel-diff verified), and `.invd-hero-edit` -> `.hero-edit`
+(three consumers). The cash port added `revert=cash` to the shared anchor editor plus
+`accounts.cash_band` / `accounts.cash_balance_hero` fragments sharing the page's context builder;
+the loan port added `loan.anchor_form` / `loan.balance_hero` with a dated editor posting the
+existing true-up flow. Two out-of-scope findings recorded at the register's detail section: the
+cockpit's loan cells offer the raw-anchor editor whose save is a structural no-op for loans, and the
+amortization schedule page still wears raw RC3 badges.
 
 ### S9. Accounts bundle (P-AC1, P-AC4, P-AC6, P-AC2, D6 kebab move) -- FABLE preferred, size S
 

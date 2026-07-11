@@ -561,21 +561,48 @@ Overall verdict: structurally consistent siblings (identical header pattern, sha
 pulse-canvas/chip vocabulary, one ShekelChart grammar). Divergences:
 
 - **P-DT1 [bug]** Loan pay-off lever pill + range slider raw blue in both themes (RC2).
-- **P-DT2 [consistency]** Loan Payment Allocation bar + "4 confirmed" badge use raw
-  `bg-success/bg-warning/bg-info` (RC3).
-- **P-DT3 [consistency]** Investment hero caption inherits `font-mono` (nested inside the mono hero
-  div); loan and cash captions are sans - one-line template fix.
+- **P-DT2 [consistency - FIXED 2026-07-11 (S8), commit 6e3f6fad]** Loan Payment Allocation bar + "4
+  confirmed" badge used raw `bg-success/bg-warning/bg-info` (RC3). Fixed per the developer's S8
+  ruling: the P/I/E bar moved onto the D12 ordinal accent ramp (composition is not a money state);
+  the bar shell + segment base + 2px gap + swatch dims + ramp stops were EXTRACTED to components.css
+  as `.alloc-bar`/`.alloc-swatch`/`--shekel-alloc-a*` and the cockpit's nw-alloc bar re-pointed at
+  them (pixel-diff verified - only Chart.js canvas jitter). In-bar percent labels dropped (the
+  legend names, values, and percents every segment). The "Confirmed" / "N confirmed" badges became
+  `.badge-done` tint chips - ledger-confirmed IS the settled money state. Consumerless
+  `.progress-h-22` retired.
+- **P-DT3 [consistency - FIXED 2026-07-11 (S8), commit 2a1591d2]** Investment hero caption inherited
+  `font-mono` (nested inside the mono hero div). Root fix at the shared class: `.nw-hero__cap` pins
+  the body face + 400 weight (no-op for the already-sans loan/cash captions); the Inter stack is now
+  declared once by remapping `--bs-body-font-family` in base.css. Verified by computed style
+  (caption = Inter 400).
 - **P-DT4 [consistency - FIXED 2026-07-09 (S1)]** Retirement marker in `growth_chart.js` borrowed
   the credit token. Fixed: muted ink - the chart's landmark grammar is gray text inks (the Today
   marker is `textSecondary`), so the farther milestone sits one step quieter, both labeled.
-- **P-DT5 [polish]** Casing drift: "Payment Allocation" Title Case; save buttons read "Update
-  parameters" / "Update Parameters" / "Save parameters" across the three siblings.
-- **P-DT6 [polish]** Investment ends on a half-width row with an empty right column.
-- **P-DT7 [polish]** ARM tag inside the rate chip is 10px amber-on-amber-tint (RC5 floor case).
-- **P-DT8 [decision -> D14]** Three anchor-recording idioms: investment = click-to-edit hero, loan =
-  form card, cash = no on-page way at all.
-- **P-DT9 [polish]** Loan's "View full amortization schedule" floats alone at page bottom and reads
-  as a footnote, not a control (O3 instance).
+- **P-DT5 [polish - FIXED 2026-07-11 (S8), commit 63c465f0]** Casing drift: "Payment Allocation" ->
+  "Payment allocation"; the three sibling save buttons converged on investment's "Save parameters"
+  (loan read "Update parameters", cash "Update Parameters"); cash's "Compounding Frequency" label
+  dropped to sentence case. Seven redesign-coupled header assertions refitted (string-only).
+- **P-DT6 [polish - FIXED 2026-07-11 (S8), commit 20b0ba30]** Investment ended on a half-width row
+  with an empty right column. The Parameters card adopted the cash `.acctd-params` measured-card
+  idiom with a `--wide` 36rem modifier sized for its two-column field grid.
+- **P-DT7 [polish - FIXED pre-S8; verified + closed 2026-07-11]** ARM tag inside the rate chip was
+  10px amber-on-amber-tint (RC5 floor case). Already fixed by the Wave 1 RC5 floor sweep (4ff69bb0,
+  0.6875rem) and the S1 re-ink to `--shekel-warning` on its 16% tint (472d591c, AA-verified per the
+  S1 chip-tint method); verified on the live page this session - no further change needed.
+- **P-DT8 [decision -> D14 - RESOLVED 2026-07-11 (S8)]** Three anchor-recording idioms: investment =
+  click-to-edit hero, loan = form card, cash = no on-page way at all. See D14 for the as-built.
+- **P-DT9 [polish - FIXED 2026-07-11 (S8), commit 229f3a1c]** Loan's "View full amortization
+  schedule" floated as a small muted ghost (O3). Promoted to a full-size accent outline
+  (`btn-outline-primary`); the footer placement is the locked anatomy and stays.
+- **S8 out-of-scope findings (reported, not fixed):** (i) the cockpit offers the shared RAW-anchor
+  editor on LOAN cells (`_cockpit.html` includes `_cockpit_balance.html` unconditionally), but
+  `anchor_service.apply_anchor_true_up` is a structural no-op for amortizing loans (loans true-up
+  through `apply_loan_anchor_true_up`) - saving from a loan cell writes an inert
+  `AccountAnchorHistory` row and the displayed resolver balance never moves. The S8 loan hero
+  (loan.anchor_form / loan.balance_hero) is the correct pattern to re-point those cells at. (ii) The
+  amortization schedule page's per-row `badge bg-success">Confirmed` / `bg-secondary">Projected`
+  badges are raw Bootstrap (same RC3 genus, never-audited surface; ~6 test assertions pin the
+  markup).
 
 ---
 
@@ -859,6 +886,23 @@ which needs a token proposal ratified on real-page mockups before their dependen
   standardizing on the investment click-to-edit hero (the most discoverable), added to loan and cash
   in a later pass; not urgent.
   **RULED 2026-07-09: as recommended - standardize on the click-to-edit hero.**
+  **IMPLEMENTED 2026-07-11 (S8, commits 61ad6d52 loan + 640aeb1e cash).** The `.invd-hero-edit`
+  affordance was extracted to components.css as `.hero-edit` (investment re-pointed) once the second
+  consumer appeared. LOAN: the hero swaps in a loan-specific dated editor (as-of date + balance;
+  loan true-ups are dated LoanAnchorEvents) via new HTMX partials `loan.anchor_form` /
+  `loan.balance_hero`; a SAVE posts the existing `loan.true_up_balance` redirect flow so the whole
+  page re-renders together, and Cancel/Escape revert through the hero partial. Developer-ruled same
+  session: the parameters card's "Record balance" form STAYS (keep both surfaces; the "Tracking
+  start" form was never in question). CASH: the hero adopts the shared grid anchor editor via a new
+  allowlisted `revert=cash` surface (`accounts.cash_balance_hero` is the Cancel/Escape/409 revert
+  target); a save fires `balanceChanged` and the page's `#cash-band-region` re-fetches
+  `accounts.cash_band` - the WHOLE band (hero, horizon chips, interest chip, trend chart) recomputes
+  from the new anchor together, with `cash_detail` and the fragment sharing one
+  `_cash_detail_context` builder so the render paths cannot diverge; `account_detail.js` re-creates
+  the chart on `htmx:afterSettle`. The success response skips the `#anchor-as-of` OOB for
+  `revert=cash` (no singleton target). Both flows live-verified on dev (loan: no-write
+  open/prefill/bounds/Escape/Cancel/keyboard; cash: full save round-trip on a throwaway account,
+  then archived). The L6 oracle's `data-current-balance` hook stays on the cash hero cell.
 - **D15. Dark-theme neutral ladder + ink hierarchy (raised by the developer during S12,
   2026-07-09).** Developer symptoms: "the dark grays everywhere blend in," muted text still reads
   weak after the RC4 lift, grid dollar values stand out less than transaction names, "too many grays
