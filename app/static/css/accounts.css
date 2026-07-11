@@ -151,7 +151,35 @@
    chroma) so the composition is visible while staying monochrome; the
    legend names each.  a0..a3 = asset, retirement, investment, other in
    display order.  Each color is defined once for both the bar segment and
-   its legend swatch. */
+   its legend swatch.
+
+   Ramp re-derived 2026-07-11 per the ruled D12 chart-ramp policy (polish
+   audit P-AC3/O24): a 3:1 luminance step is impossible four times within
+   one hue, so this bar takes D12's second arm -- the 2px surface gaps
+   below carry the boundary between same-hue neighbours, and the legend
+   names and values every segment.  The per-theme color-mix stops pass
+   the dataviz ordinal ramp checks (monotone lightness, adjacent OKLCH
+   delta-L >= 0.06, deepest step >= 2:1 on the surface); do not
+   substitute without re-running them. */
+[data-bs-theme="dark"] {
+  --nw-alloc-a1: color-mix(in srgb, var(--shekel-accent) 76%, var(--shekel-surface));
+  --nw-alloc-a2: color-mix(in srgb, var(--shekel-accent) 56%, var(--shekel-surface));
+  --nw-alloc-a3: color-mix(in srgb, var(--shekel-accent) 42%, var(--shekel-surface));
+}
+
+[data-bs-theme="light"] {
+  --nw-alloc-a1: color-mix(in srgb, var(--shekel-accent) 80%, var(--shekel-surface));
+  --nw-alloc-a2: color-mix(in srgb, var(--shekel-accent) 64%, var(--shekel-surface));
+  --nw-alloc-a3: color-mix(in srgb, var(--shekel-accent) 49%, var(--shekel-surface));
+}
+
+/* 2px surface gap between adjacent segments inside a half (the halves
+   already meet at the center tick): the D12 achromatic boundary, and
+   the dataviz stacked-fill mark spec. */
+.nw-alloc__seg + .nw-alloc__seg {
+  border-left: 2px solid var(--shekel-surface);
+}
+
 .nw-alloc__seg--liab,
 .nw-alloc__swatch--liab {
   background: var(--shekel-danger);
@@ -159,22 +187,22 @@
 
 .nw-alloc__seg--a0,
 .nw-alloc__swatch--a0 {
-  background: color-mix(in srgb, var(--shekel-accent) 92%, var(--shekel-surface));
+  background: var(--shekel-accent);
 }
 
 .nw-alloc__seg--a1,
 .nw-alloc__swatch--a1 {
-  background: color-mix(in srgb, var(--shekel-accent) 70%, var(--shekel-surface));
+  background: var(--nw-alloc-a1);
 }
 
 .nw-alloc__seg--a2,
 .nw-alloc__swatch--a2 {
-  background: color-mix(in srgb, var(--shekel-accent) 52%, var(--shekel-surface));
+  background: var(--nw-alloc-a2);
 }
 
 .nw-alloc__seg--a3,
 .nw-alloc__swatch--a3 {
-  background: color-mix(in srgb, var(--shekel-accent) 38%, var(--shekel-surface));
+  background: var(--nw-alloc-a3);
 }
 
 /* Legend: each segment paired with its label and Decimal value. */

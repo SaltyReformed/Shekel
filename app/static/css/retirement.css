@@ -13,14 +13,22 @@
 /* =============================================
    COVERAGE RAMP (validated per theme; the two
    income-meter segments and their legend swatches)
+
+   Re-derived 2026-07-11 for the ruled D12 chart-ramp policy (polish
+   audit P-RT2/O24): adjacent same-hue series must differ by >= 3:1
+   WCAG luminance.  Pension stays the deep ink blue, withdrawals the
+   light steel blue, in both themes.  Measured pairs: dark 3.21:1
+   (each fill >= 3.4:1 on the surface), light 3.42:1 (light fill
+   3.3:1 on the surface).  Do not substitute without re-running the
+   luminance math.
    ============================================= */
 [data-bs-theme="dark"] {
   --retire-cov-1: #2878A8;
-  --retire-cov-2: #4A9ECC;
+  --retire-cov-2: #B0D8F0;
 }
 
 [data-bs-theme="light"] {
-  --retire-cov-1: #0A5A96;
+  --retire-cov-1: #113A5C;
   --retire-cov-2: #3E92C2;
 }
 
