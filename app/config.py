@@ -438,6 +438,14 @@ class TestConfig(BaseConfig):
     LOGIN_DISABLED = False
     RATELIMIT_ENABLED = False
 
+    # Pin the idle window regardless of any IDLE_TIMEOUT_MINUTES in the
+    # developer's shell or .env (same hermetic-suite rationale as the
+    # RATELIMIT_STORAGE_URI override below).  The dev environment runs a
+    # 7-day window for the persistent Playwright auth state, which made
+    # test_stale_activity_rejected (13h-stale session vs the 12h
+    # default) fail suite-wide whenever the suite inherited it.
+    IDLE_TIMEOUT_MINUTES = 720
+
     # Force the in-memory backend in the test suite regardless of any
     # ``RATELIMIT_STORAGE_URI`` set in the developer's shell or .env.
     # The few tests that flip ``RATELIMIT_ENABLED`` back on (test_errors,
