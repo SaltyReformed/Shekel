@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "analytics/_picker_macros.html" import period_picker %}
 {# Spending tab -- HTMX partial (S14 "months lead" cockpit, per the D7 ruling
    in docs/design/ui_ux_polish_audit.md): one pulse canvas (spent hero +
    vs-prior / vs-average / payment-timing chips + the trailing-12 emphasis
@@ -61,31 +62,16 @@
     <h5 class="mb-0">Spending</h5>
     <span class="analytics-basis-chip" title="Settled expenses only; these amounts are measured, not projected.">measured</span>
   </div>
-  <div class="d-flex align-items-center gap-2">
-    <button class="btn btn-sm btn-outline-secondary"
-            hx-get="{{ url_for('analytics.spending_tab', year=prev_year, month=prev_month) }}"
-            hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
-            aria-label="Previous month">
-      <i class="bi bi-chevron-left"></i>
-    </button>
-    <span class="fw-semibold spend-month-label">{{ month_name }} {{ year }}</span>
-    {% if can_go_next %}
-    <button class="btn btn-sm btn-outline-secondary"
-            hx-get="{{ url_for('analytics.spending_tab', year=next_year, month=next_month) }}"
-            hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
-            aria-label="Next month">
-      <i class="bi bi-chevron-right"></i>
-    </button>
-    {% else %}
-    <button class="btn btn-sm btn-outline-secondary" disabled aria-label="Next month (none)">
-      <i class="bi bi-chevron-right"></i>
-    </button>
-    {% endif %}
-  </div>
+  {{ period_picker(
+       url_for('analytics.spending_tab', year=prev_year, month=prev_month),
+       url_for('analytics.spending_tab', year=next_year, month=next_month),
+       month_name ~ " " ~ year,
+       can_next=can_go_next,
+     ) }}
 </div>
 <p class="text-muted small mb-3">
   Settled spending from your {{ report.scope.account_name }} account.
-  {%- if is_current_month %} <span class="spend-inprogress">{{ month_name }} is still in progress.</span>{% endif %}
+  {%- if is_current_month %} <span class="fst-italic">{{ month_name }} is still in progress.</span>{% endif %}
 </p>
 
 {# ── Pulse canvas: hero + chips + trailing-12 month chart ────────── #}

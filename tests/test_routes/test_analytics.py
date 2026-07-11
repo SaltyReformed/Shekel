@@ -956,15 +956,16 @@ class TestCalendarMonthView:
             assert "view=year" in html
 
     def test_calendar_month_summary_strip_displayed(self, app, auth_client, seed_user, seed_periods, db):
-        """Month view shows the summary strip per the slice-1 rebuild anatomy.
+        """Month view shows the cockpit band per the S5 recomposition (P-AN3).
 
-        Redesign pin (analytics_audit.md, Gate A + "Calendar rebuild
-        decisions" 6, developer-locked 2026-07-04): the old
-        Income/Expenses/Net totals row was replaced by the summary strip --
-        So far / Remaining income+expense pairs plus Month end and Month
-        trough chips.  January 2026 is wholly past relative to any display-tz
-        today after 2026-01-31, so the So far chip renders (captioned "full
-        month") and the future-only Remaining chip does not.
+        Redesign pin (analytics_audit.md Gate A locked the summary figures
+        2026-07-04; ui_ux_polish_audit.md P-AN3 recomposed them as a cockpit
+        in S5): one .nw-sky band carries a balance hero plus the summary
+        chips.  January 2026 is wholly past relative to any display-tz today
+        after 2026-01-31, so the hero is Month end (Balance today only
+        renders inside the current month), the So far chip renders
+        (captioned "full month"), and the future-only Remaining chip does
+        not.
         """
         with app.app_context():
             from app import ref_cache
@@ -992,7 +993,7 @@ class TestCalendarMonthView:
             )
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "calendar-summary" in html
+            assert "nw-sky" in html
             assert "So far" in html
             assert "Income" in html
             assert "Expenses" in html

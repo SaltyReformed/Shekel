@@ -1,24 +1,22 @@
 {% from "_money_macros.html" import money %}
-{# Year overview -- 12 month cards in responsive grid with totals. #}
+{% from "analytics/_picker_macros.html" import period_picker %}
+{# Year overview -- 12 month cards in responsive grid with totals.  The year
+   picker is page chrome (title row, top right) built from the shared
+   period_picker idiom (P-AN3), with the Month view toggle beside it. #}
 
-{# Navigation #}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <button class="btn btn-sm btn-outline-secondary"
-          hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year - 1) }}"
-          hx-target="#tab-content" hx-swap="innerHTML">
-    <i class="bi bi-chevron-left"></i> {{ year - 1 }}
-  </button>
-  <h5 class="mb-0">{{ year }}</h5>
-  <div class="d-flex gap-2">
-    <button class="btn btn-sm btn-outline-primary"
-            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
-            hx-target="#tab-content" hx-swap="innerHTML">
-      <i class="bi bi-calendar"></i> Month
-    </button>
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <h5 class="mb-0">Calendar</h5>
+  <div class="d-flex align-items-center gap-2">
+    {{ period_picker(
+         url_for('analytics.calendar_tab', view='year', year=year - 1),
+         url_for('analytics.calendar_tab', view='year', year=year + 1),
+         year,
+         unit="year",
+       ) }}
     <button class="btn btn-sm btn-outline-secondary"
-            hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year + 1) }}"
-            hx-target="#tab-content" hx-swap="innerHTML">
-      {{ year + 1 }} <i class="bi bi-chevron-right"></i>
+            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
+            hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner">
+      <i class="bi bi-calendar"></i> Month
     </button>
   </div>
 </div>

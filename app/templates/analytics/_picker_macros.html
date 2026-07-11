@@ -1,0 +1,40 @@
+{# Shared analytics period picker -- the ONE period-nav idiom (P-AN3).
+
+   Before this macro the Analytics page carried three different month-nav
+   idioms (calendar month, calendar year, spending); every tab now renders
+   the same compact control as page chrome in its title row: two chevron
+   buttons flanking a fixed-width centered label.  Pure display markup --
+   the caller computes the target URLs.
+
+   Args:
+     prev_url:  hx-get target for the previous-period chevron.
+     next_url:  hx-get target for the next-period chevron.
+     label:     the shown period ("July 2026", or 2026 for a year view).
+     unit:      "month" or "year" -- aria-label wording only.
+     can_next:  render the next chevron disabled when false (the spending
+                tab caps forward navigation at the current month).
+#}
+{% macro period_picker(prev_url, next_url, label, unit="month", can_next=true) %}
+<div class="d-flex align-items-center gap-2">
+  <button class="btn btn-sm btn-outline-secondary"
+          hx-get="{{ prev_url }}"
+          hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
+          aria-label="Previous {{ unit }}">
+    <i class="bi bi-chevron-left"></i>
+  </button>
+  <span class="fw-semibold analytics-picker-label">{{ label }}</span>
+  {% if can_next %}
+  <button class="btn btn-sm btn-outline-secondary"
+          hx-get="{{ next_url }}"
+          hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
+          aria-label="Next {{ unit }}">
+    <i class="bi bi-chevron-right"></i>
+  </button>
+  {% else %}
+  <button class="btn btn-sm btn-outline-secondary" disabled
+          aria-label="Next {{ unit }} (none)">
+    <i class="bi bi-chevron-right"></i>
+  </button>
+  {% endif %}
+</div>
+{% endmacro %}

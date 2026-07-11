@@ -23,19 +23,21 @@
   z-index: 10;
 }
 
-/* =============================================
-   CALENDAR (slice-1 flagship rebuild)
-   Summary strip (reuses the shared .pulse-chip vocabulary from
-   dashboard.css, the accounts-cockpit precedent), month flow strip,
-   and ledger day cells with an end-of-day balance hero.
-   ============================================= */
-
-/* Summary strip: chip row above the flow strip. */
-.calendar-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+/* Shared period picker (P-AN3, _picker_macros.html): the fixed-width
+   centered label between the chevrons, so adjacent month names do not
+   shift the buttons as their widths differ. */
+.analytics-picker-label {
+  min-width: 7.5rem;
+  text-align: center;
 }
+
+/* =============================================
+   CALENDAR (slice-1 flagship rebuild; S5 cockpit recomposition)
+   One pulse canvas (the shared .nw-sky / .pulse-chip vocabulary from
+   dashboard.css + accounts.css) holding the balance hero, summary
+   chips, and the month flow strip; then ledger day cells with an
+   end-of-day balance hero.
+   ============================================= */
 
 .calendar-chip-cap {
   font-size: 0.71875rem;
@@ -363,16 +365,6 @@
 }
 
 /* ── Spending (S14 "months lead" cockpit: canvas + merged ledger) ── */
-
-/* In-progress month caption. */
-.spend-inprogress {
-  font-style: italic;
-}
-
-.spend-month-label {
-  min-width: 7.5rem;
-  text-align: center;
-}
 
 /* In-canvas month chart: caption line + the Chart.js canvas region
    (the .pulse-chart treatment at the spending band's height). */
