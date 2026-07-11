@@ -120,7 +120,17 @@ Ruled hybrid: Net Income becomes the Income Statement hero and the Balance Sheet
 income/expense sections tint with existing banner tokens; Assets/Liabilities/Equity get the neutral
 accent-tinted structure banners; money-state green/red stays on figures. Hero composition is the
 point - spend Fable here. Data is already on the page; if any figure needs re-plumbing, that slice
-is Opus per discipline.
+is Opus per discipline. **SESSION COMPLETE 2026-07-10** (run on Fable 5, the S3 precedent; commits
+0a84f543 shared section-banner/verdict-ink extraction + 6e41a97e restructure; full suite 7258 green,
+pylint 10.00/10, biome + djlint clean; both themes + mobile shot before/after; window switching, the
+statement toggle, and the as-of swap live-verified - the headless date-fill quirk reproduces
+identically on the pre-S6 template, so it is pre-existing, not a regression). No figure needed
+re-plumbing (zero route/service changes). DRY note: the "new" structure banner already existed as
+recurring's transfer banner, so the component was extracted to components.css (.section-banner) and
+shared, not duplicated - recurring re-shot pixel-identical. Two redesign-coupled test refits rode
+along, one of which exposed and corrected a route test that never exercised the fallback branch its
+docstring claimed (detail in the D8 as-built record). Full as-built record inline at D8 and
+P-AN12/13/14/15 in the audit register.
 
 ### S7. Retirement + salary visual bundle -- FABLE preferred, OPUS capable, size M
 

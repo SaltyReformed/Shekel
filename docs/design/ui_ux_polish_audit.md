@@ -414,10 +414,22 @@ Section 4.
 - **P-AN12 [consistency]** Negative Net Income is raw `text-danger` and "In balance" raw
   `bg-success` instead of the Steel trio (RC3); sibling conventions also disagree (Income Statement
   colors its negative result, Balance Sheet leaves negative Equity lines plain).
-- **P-AN13 [decision -> D8]** Section tinting (O35).
+  **FIXED 2026-07-10 (S6, commit 6e41a97e):** one convention for both statements - a contra-natural
+  (negative) line or total amount takes `.statement-amount--neg` danger ink beside its minus sign
+  (the sheet's negative Opening equity lines now read as the anomalies they are); the net-income
+  hero takes the shared verdict ink (`.nw-hero__num--pos/--neg`); the in/out-of-balance verdict is a
+  done-/danger-tinted pulse chip. No raw contextual classes remain on the tab.
+- **P-AN13 [decision -> D8]** Section tinting (O35). **FIXED 2026-07-10 (S6, commit 6e41a97e)** per
+  the D8 ruling - see the D8 as-built record.
 - **P-AN14 [polish]** Window label duplicated verbatim under the period select.
+  **FIXED 2026-07-10 (S6, commit 6e41a97e):** the bare caption line is deleted; the window label
+  captions the Net Income hero (where it anchors the figure), and the empty state names its window
+  too - which the balance sheet's as-of empty state already did, and which un-hid a route-test
+  assertion that had never verified WHICH window the pay-period fallback chose (see the D8 record).
 - **P-AN15 [polish]** ~1,200px of empty leader between labels and amounts at 1440px - constrain the
-  statement body width or the amount column.
+  statement body width or the amount column. **FIXED 2026-07-10 (S6, commit 6e41a97e):** section
+  detail sits in a 44rem `.statement-body` document column; the hero band above stays full width
+  (the page's cockpit chrome, like every other tab's band).
 
 ### Analytics - Taxes
 
@@ -678,6 +690,29 @@ which needs a token proposal ratified on real-page mockups before their dependen
   accent-tinted banner variant from (b)); AND the tab's hierarchy inverts - Net Income becomes the
   Income Statement's hero instead of a bottom line, and the Balance Sheet totals become its hero.
   This is a statements-tab restructure (hero band + sections), not a class swap.
+  **BUILT 2026-07-10 in S6 (commits 0a84f543 prep + 6e41a97e restructure).** As-built record:
+  - The "neutral accent-tinted banner variant" needed NO new component: recurring.css already
+    carried the identical banner (its transfer variant IS the accent tint), so 0a84f543 extracted it
+    to components.css as the shared `.section-banner` family (`--income/--expense/--accent`) and
+    folded recurring's private verdict-ink pair into `.nw-hero__num--pos/--neg` (accounts.css)
+    - recurring re-shot pixel-identical (0 differing pixels, both themes). Both statements render
+  sections through one `statement_section` macro (`_statement_macros.html`).
+  - Income Statement band: Net income hero (verdict ink by sign), window-label caption, Income /
+    Expenses chips; the three-row control stack (toggle row, selector row, duplicated label) is one
+    right-aligned chrome row. Balance Sheet band: Total Assets hero ("as of" caption), Liabilities
+    chip in danger ink (money owed, the accounts-cockpit precedent), Equity chip ("incl. retained
+    earnings"), Trial balance verdict chip.
+  - Explicit consolidation: the in-balance Trial Balance card is GONE - its verdict lives in the
+    done-tinted chip captioned "assets = liabilities + equity", and its two figures were fully
+    redundant with the band (assets = the hero; L+E = the two chips, equal to assets when closed).
+    The figure-by-figure card (both totals + raw ledger net, danger-bordered) renders ONLY when the
+    ledger does not close, where the detail localizes which half of the tie-out broke.
+  - Test findings while refitting: the "no periods falls back to month" route test never exercised
+    that branch - seed_user always carries the 2024 bootstrap anchor period, so the route picks the
+    most-recent period; the old "this window" empty-state assertion masked it. The test is renamed
+    to what it proves (most-recent-period fallback, pinned via the now-named empty-state window);
+    the true no-periods month branch of `_resolve_window_params` remains uncovered by route tests
+    (unreachable through existing fixtures - every seeded account requires an anchor period).
 - **D9. Taxes lever chart (O36).** Recommend NO. The tab is a scalar (refund) plus its derivation
   and a calibration input; there is no trajectory to bend, and sliders would fight the tab's
   measured-vs-modeled honesty stance. Cockpit consistency is already carried by the hero band. The
