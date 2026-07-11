@@ -18,11 +18,12 @@ concerns (form validation, version_id pre-flush check, HTMX-fragment
 rendering, HX-Trigger header composition) and delegates the database
 mutation to the shared service.
 
-The editor opens from four surfaces -- the grid cell, the dashboard
-balance card, the cockpit per-card cell, and the investment / retirement
-detail page's balance hero -- each threaded through as a normalized
-``revert`` token so Cancel / Escape and a 409 conflict re-render the
-correct opener (see :func:`_normalize_revert_context`).
+The editor opens from five surfaces -- the grid cell, the dashboard
+balance card, the cockpit per-card cell, the investment / retirement
+detail page's balance hero, and the cash detail page's balance hero --
+each threaded through as a normalized ``revert`` token so Cancel /
+Escape and a 409 conflict re-render the correct opener (see
+:func:`_normalize_revert_context`).
 """
 
 import logging
@@ -50,20 +51,22 @@ logger = logging.getLogger(__name__)
 # The opener names its surface via the ``revert`` query token; only these
 # canonical values are honored (see :func:`_normalize_revert_context`).
 # Each maps to a revert endpoint in :func:`_anchor_revert_url`.  ``investment``
-# is the investment / retirement detail page's balance hero (Loop B P1 C4).
-_REVERT_SURFACES = frozenset({"dashboard", "accounts", "investment"})
+# is the investment / retirement detail page's balance hero (Loop B P1 C4);
+# ``cash`` is the cash detail page's balance hero (the S8 / D14 port).
+_REVERT_SURFACES = frozenset({"dashboard", "accounts", "investment", "cash"})
 
 
 def _normalize_revert_context(raw_revert: str | None) -> str | None:
     """Allowlist-validate the raw ``revert`` token to a canonical value.
 
     The anchor editor is opened from more than one surface, and the
-    opener names its surface via the ``revert`` query token.  Three
+    opener names its surface via the ``revert`` query token.  Four
     non-default surfaces are recognized -- ``dashboard`` (the dashboard
     hero balance card), ``accounts`` (the Net Worth Cockpit's per-card
-    balance cell), and ``investment`` (the investment / retirement detail
-    page's balance hero); every other value (unset, unknown, an attacker's
-    probe) collapses to ``None`` so the grid's default revert target is used.
+    balance cell), ``investment`` (the investment / retirement detail
+    page's balance hero), and ``cash`` (the cash detail page's balance
+    hero); every other value (unset, unknown, an attacker's probe)
+    collapses to ``None`` so the grid's default revert target is used.
     Centralizing the allowlist here means the token is validated against
     :data:`_REVERT_SURFACES` in exactly one place -- :func:`_anchor_revert_url`
     (the Cancel / Escape target), the edit form's ``hx-patch`` round-trip
@@ -119,10 +122,11 @@ def _true_up_success_response(
     (both render the updated display cell and fire ``balanceChanged`` so
     other surfaces recompute).  The single-account grid and dashboard
     surfaces append an out-of-band ``#anchor-as-of`` snippet dating the
-    edit; the cockpit (``revert=accounts``) and the investment detail hero
-    (``revert=investment``) have no such singleton element and re-render
-    their region on the ``balanceChanged`` trigger instead, so emitting the
-    OOB there would orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
+    edit; the cockpit (``revert=accounts``), the investment detail hero
+    (``revert=investment``), and the cash detail hero (``revert=cash``)
+    have no such singleton element and re-render their region on the
+    ``balanceChanged`` trigger instead, so emitting the OOB there would
+    orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
 
     Args:
         account: The post-commit account (its ``updated_at`` dates the
@@ -136,7 +140,7 @@ def _true_up_success_response(
     html = render_template(
         "grid/_anchor_edit.html", account=account, editing=False,
     )
-    if revert_context in ("accounts", "investment"):
+    if revert_context in ("accounts", "investment", "cash"):
         return html, 200, {"HX-Trigger": "balanceChanged"}
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
@@ -260,6 +264,9 @@ def _anchor_revert_url(account_id, revert_context):
     * ``investment`` -- the investment / retirement detail page's balance
       hero re-renders via ``investment.balance_hero`` (restores the
       model-from-anchor balance the detail headline shows; Loop B P1 C4).
+    * ``cash`` -- the cash detail page's balance hero re-renders via
+      ``accounts.cash_balance_hero`` (restores the resolver
+      current-period balance the detail headline shows; S8 / D14 port).
     * default / grid -- ``accounts.anchor_display`` (the grid cell).
 
     Args:
@@ -275,6 +282,8 @@ def _anchor_revert_url(account_id, revert_context):
         return url_for("savings.cockpit_balance", account_id=account_id)
     if revert_context == "investment":
         return url_for("investment.balance_hero", account_id=account_id)
+    if revert_context == "cash":
+        return url_for("accounts.cash_balance_hero", account_id=account_id)
     return url_for("accounts.anchor_display", account_id=account_id)
 
 

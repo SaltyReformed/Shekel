@@ -111,6 +111,10 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/accounts/99999/anchor-display"),
     # accounts.cash_detail -- the merged cash-account detail page
     ("GET", "/accounts/99999/details"),
+    # accounts.cash_band
+    ("GET", "/accounts/99999/details/band"),
+    # accounts.cash_balance_hero
+    ("GET", "/accounts/99999/details/balance-hero"),
     # accounts.checking_detail -- redirect stub to cash_detail
     ("GET", "/accounts/99999/checking"),
     # accounts.interest_detail -- redirect stub to cash_detail

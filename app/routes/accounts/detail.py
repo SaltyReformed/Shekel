@@ -310,40 +310,47 @@ def _cash_detail_wrong_type(account: Account) -> bool:
 # ── Cash Detail (checking + interest + plain cash) ────────────────
 
 
-@accounts_bp.route("/accounts/<int:account_id>/details")
-@login_required
-@require_owner
-def cash_detail(account_id):
-    """Unified cash-account detail page (checking / interest / plain cash).
+def _load_cash_account_or_404(account_id: int) -> Account:
+    """Load a cash-detail-served account for the current user, or 404.
 
-    Shows the account's balance hero with an honest anchored caption, the
-    3 / 6 / 12-month horizon chips, and a trend chart; interest-bearing
-    accounts additionally get an APY / compounding parameters card, a
-    "next 12 months" projected-interest chip, and their interest-accrued
-    balances.  Serves every cash account kind (see
-    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
-    assets, and retirement / investment accounts 404 out.
-
-    Balance production is preserved verbatim from the two pre-merge routes:
-    interest accounts read the kind-correct ``balance_at.balance_map`` plus
-    the kernel's ``interest_by_period_for_account`` accessor; plain cash
-    accounts read the cash-flow ``balance_at.cash_balance_map``.  Both seam
-    entries delegate to the canonical entries-aware producers (Level-1
-    Commit 8), so this route calls no balance producer directly.  The
-    anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
-    Commit 4) for the hero caption and the current-period fallback; the
-    ``scenario is None`` / ``no pay periods`` empty-state guards are kept
-    (a fixture without a baseline scenario, a freshly-registered user with
-    no generated periods) and the template renders cleanly when
-    ``balances`` is empty.
+    The shared gate for :func:`cash_detail` and its two HTMX fragments
+    (:func:`cash_band`, :func:`cash_balance_hero`): ``get_or_404``
+    resolves cross-owner / non-existent accounts to ``None`` (the
+    project's "404 for not-found and not-yours" rule), and
+    :func:`_cash_detail_wrong_type` 404s the kinds this page does not
+    serve (loans, physical assets, retirement / investment).
     """
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
-
     if _cash_detail_wrong_type(account):
         abort(404)
+    return account
 
+
+def _cash_detail_context(account: Account) -> dict:
+    """Assemble the cash detail template context (page AND band fragments).
+
+    Extracted from :func:`cash_detail` when the D14 click-to-edit port
+    added the band-refresh fragment (:func:`cash_band`): both render
+    paths must compute the hero balance, horizon chips, interest chip,
+    and chart from the same producers or a band refresh could disagree
+    with the page render.
+
+    Balance production is preserved verbatim from the two pre-merge
+    routes: interest accounts read the kind-correct
+    ``balance_at.balance_map`` plus the kernel's
+    ``interest_by_period_for_account`` accessor; plain cash accounts
+    read the cash-flow ``balance_at.cash_balance_map``.  Both seam
+    entries delegate to the canonical entries-aware producers (Level-1
+    Commit 8), so this module calls no balance producer directly.  The
+    anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
+    Commit 4) for the hero caption and the current-period fallback; the
+    ``scenario is None`` / ``no pay periods`` empty-state guards are
+    kept (a fixture without a baseline scenario, a freshly-registered
+    user with no generated periods) and the templates render cleanly
+    when ``balances`` is empty.
+    """
     is_interest = bool(
         account.account_type and account.account_type.has_interest
     )
@@ -369,12 +376,11 @@ def cash_detail(account_id):
     current_balance = _current_period_balance(balances, current_period, anchor)
     chart_json, has_chart = _build_chart(all_periods, balances, current_period)
 
-    return render_template(
-        "accounts/cash_detail.html",
-        account=account,
-        is_interest=is_interest,
-        current_balance=current_balance,
-        current_period=current_period,
+    return {
+        "account": account,
+        "is_interest": is_interest,
+        "current_balance": current_balance,
+        "current_period": current_period,
         # ``anchor_as_of`` is the anchor EVENT instant
         # (``AnchorPoint.created_at``, the dated ``AccountAnchorHistory`` row),
         # NOT the anchor period's start date -- fixing the audit's finding #2
@@ -383,21 +389,101 @@ def cash_detail(account_id):
         # UTC-day ``as_of_date``) so the template renders it in the user's
         # display timezone via ``local_datetime`` -- a late-evening-Eastern
         # anchor otherwise shows on the next UTC day.
-        anchor_as_of=anchor.created_at if anchor is not None else None,
-        horizons=_build_horizons(
+        "anchor_as_of": anchor.created_at if anchor is not None else None,
+        "horizons": _build_horizons(
             current_balance, current_period, all_periods, balances,
         ),
         # The next-year interest chip is interest-only; a plain account
         # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
         # is a legitimate value for a zero-APY interest account.
-        interest_next_year=(
+        "interest_next_year": (
             _interest_next_year(interest_by_period, current_period, all_periods)
             if is_interest and current_period is not None else None
         ),
-        params=params,
-        compounding_frequencies=compounding_frequencies,
-        chart_json=chart_json,
-        has_chart=has_chart,
+        "params": params,
+        "compounding_frequencies": compounding_frequencies,
+        "chart_json": chart_json,
+        "has_chart": has_chart,
+    }
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details")
+@login_required
+@require_owner
+def cash_detail(account_id):
+    """Unified cash-account detail page (checking / interest / plain cash).
+
+    Shows the account's balance hero (the D14 click-to-edit anchor
+    control) with an honest anchored caption, the 3 / 6 / 12-month
+    horizon chips, and a trend chart; interest-bearing accounts
+    additionally get an APY / compounding parameters card, a "next 12
+    months" projected-interest chip, and their interest-accrued
+    balances.  Serves every cash account kind (see
+    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
+    assets, and retirement / investment accounts 404 out.  The balance
+    production contract lives on :func:`_cash_detail_context` (shared
+    with the band fragment).
+    """
+    account = _load_cash_account_or_404(account_id)
+    return render_template(
+        "accounts/cash_detail.html", **_cash_detail_context(account),
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details/band")
+@login_required
+@require_owner
+def cash_band(account_id):
+    """HTMX partial: re-render the cash detail band (D14 click-to-edit port).
+
+    The ``balanceChanged`` refresh target: after an anchor save through
+    the hero's inline editor, the page's ``#cash-band-region`` re-fetches
+    this fragment so the hero, the horizon chips, the interest chip, AND
+    the trend chart all recompute from the new anchor together -- a
+    hero-only refresh would leave the chips and chart disagreeing with
+    it (``account_detail.js`` re-creates the chart when the canvas
+    returns).  Renders ``accounts/_cash_band.html`` with the same
+    context builder the page uses, so the swapped-in band reads the
+    identical contract.
+
+    Non-HTMX requests redirect to the detail page (the band is a
+    fragment, not a standalone page).
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
+    account = _load_cash_account_or_404(account_id)
+    return render_template(
+        "accounts/_cash_band.html", **_cash_detail_context(account),
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details/balance-hero")
+@login_required
+@require_owner
+def cash_balance_hero(account_id):
+    """HTMX partial: the cash balance hero cell (D14 click-to-edit port).
+
+    The Cancel / Escape and 409-conflict revert target for the cash
+    detail page's click-to-edit anchor editor:
+    ``accounts._anchor_revert_url`` maps ``revert=cash`` here, mirroring
+    how the cockpit's ``revert=accounts`` maps to
+    ``savings.cockpit_balance``.  Renders
+    ``accounts/_cash_balance_hero.html`` with the resolver
+    current-period balance the detail headline shows, so a reverted
+    cell restores the exact figure.  (A SAVE does not land here -- the
+    editor's success response fires ``balanceChanged`` and the whole
+    band re-renders via :func:`cash_band`.)
+
+    Non-HTMX requests redirect to the detail page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
+    account = _load_cash_account_or_404(account_id)
+    ctx = _cash_detail_context(account)
+    return render_template(
+        "accounts/_cash_balance_hero.html",
+        account=account,
+        current_balance=ctx["current_balance"],
     )
 
 

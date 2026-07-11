@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_money_macros.html" import money %}
 {% from "_acct_macros.html" import acct_glyph %}
 {% block title %}{{ account.name }} -- Account Detail -- Shekel{% endblock title %}
 
@@ -41,64 +40,15 @@
 </div>
 {% endif %}
 
-{# ── Hero band: balance + horizon chips + trend ─────────────────────── #}
-<div class="pulse-canvas mb-4">
-  <div class="nw-sky">
-    <div class="nw-hero">
-      <div class="pulse-hero__label">Balance</div>
-      <div class="nw-hero__num font-mono{% if current_balance is not none and current_balance < 0 %} nw-hero__num--neg{% endif %}"
-        {%- if current_balance is not none %} data-current-balance="{{ current_balance }}"{% endif %}>
-        {% if current_balance is not none %}{{ money(current_balance) }}{% else %}--{% endif %}
-      </div>
-      <div class="nw-hero__cap">
-        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}{% endif %}
-        {%- elif anchor_as_of %}anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}
-        {%- else %}no pay periods yet
-        {%- endif -%}
-      </div>
-    </div>
-
-    {% if horizons or (is_interest and interest_next_year is not none) %}
-    <div class="pulse-statrow nw-statrow">
-      {% for h in horizons %}
-      <div class="pulse-chip">
-        <div class="pulse-chip__label">In {{ h.label }}</div>
-        <div class="pulse-chip__value font-mono">{{ money(h.value, cents=false) }}</div>
-        <div class="acctd-chip__delta font-mono{% if h.delta < 0 %} acctd-chip__delta--neg{% endif %}">
-          {%- if h.delta >= 0 %}+{% endif %}{{ money(h.delta, cents=false) -}}
-        </div>
-      </div>
-      {% endfor %}
-      {% if is_interest and interest_next_year is not none %}
-      <div class="pulse-chip pulse-chip--done">
-        <div class="pulse-chip__label">Interest, next 12 mo</div>
-        <div class="pulse-chip__value font-mono">+{{ money(interest_next_year, cents=false) }}</div>
-      </div>
-      {% endif %}
-    </div>
-    {% endif %}
-
-    {% if account.account_type and account.account_type_id == ACCT_TYPE_CHECKING %}
-    {# The grid is checking's per-period detail home (decision 3 amendment). #}
-    <a href="{{ url_for('grid.index') }}"
-       class="btn btn-outline-secondary btn-sm acctd-open-grid">
-      <i class="bi bi-grid-3x3"></i> Open Grid
-    </a>
-    {% endif %}
-  </div>
-
-  {% if has_chart %}
-  <div class="pulse-chart">
-    <canvas id="account-detail-chart-canvas" data-chart='{{ chart_json }}'
-            role="img"
-            aria-label="{{ account.name }} balance projection: solid history, dashed projection, Today marker"></canvas>
-  </div>
-  {% else %}
-  <div class="acctd-empty">
-    No projection to chart yet. Balances project forward once this account
-    has an anchored balance and pay periods exist.
-  </div>
-  {% endif %}
+{# ── Hero band: balance + horizon chips + trend (accounts/_cash_band.html).
+   The region re-renders the whole band after an anchor save through the
+   hero's click-to-edit editor (D14 port): the editor's success response
+   fires balanceChanged, and the chips + chart must move with the hero. #}
+<div id="cash-band-region"
+     hx-get="{{ url_for('accounts.cash_band', account_id=account.id) }}"
+     hx-trigger="balanceChanged from:body"
+     hx-swap="innerHTML">
+  {% include "accounts/_cash_band.html" %}
 </div>
 
 {# ── Parameters card, below the band (decision 7) ───────────────────── #}
