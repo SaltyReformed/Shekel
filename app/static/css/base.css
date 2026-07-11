@@ -421,9 +421,14 @@
    ============================================= */
 /* Default body font-family.  Replaces an inline body
    ``style="font-family: ..."`` in base.html (C-02 inline-style
-   migration, audit finding F-036). */
-body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+   migration, audit finding F-036).  Declared by remapping Bootstrap's
+   own token -- its body rule consumes var(--bs-body-font-family) -- so
+   the Inter stack is defined ONCE and components that must reset to
+   the body face inside a mono context (e.g. .nw-hero__cap, polish
+   audit P-DT3) can reference the same variable instead of copying the
+   stack. */
+:root {
+  --bs-body-font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
 
 .font-mono {
