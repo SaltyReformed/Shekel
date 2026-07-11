@@ -7,29 +7,16 @@
 
    Reuse, not reinvention: the band is the shared cockpit grammar
    (.pulse-canvas / .nw-sky / .nw-hero* / .pulse-statrow / .pulse-chip* from
-   dashboard.css + accounts.css) and the share bars are driven by
-   progress_bar.js (data-progress-pct), exactly like the Spending tab. Only
-   the surface-specific pieces below live here.
+   dashboard.css + accounts.css, the net hero coloured by the shared
+   .nw-hero__num--pos/--neg verdict ink), the tinted section banners are the
+   shared .section-banner component (components.css), and the share bars are
+   driven by progress_bar.js (data-progress-pct), exactly like the Spending
+   tab. Only the surface-specific pieces below live here.
 
    Load-order contract (see base.html): this file loads AFTER dashboard.css
    and accounts.css (whose band vocabulary it reuses) and BEFORE
    utilities.css (which must stay last). Tokens only -- no raw hex, no
    !important. */
-
-/* =============================================
-   NET-COMMITTED VERDICT HERO
-   The band answers one question -- do the recurring rules leave a monthly
-   margin? -- so the net figure is the hero, coloured by sign. Colour is
-   never the only signal: the caption always states "surplus" / "shortfall"
-   / "balanced" beside it.
-   ============================================= */
-.recurring-net--pos {
-  color: var(--shekel-done);
-}
-
-.recurring-net--neg {
-  color: var(--shekel-danger);
-}
 
 /* =============================================
    SHARED COLUMN CONTRACT (polish audit P-RC3)
@@ -67,74 +54,6 @@
 
 .recurring-table col.rec-col-actions {
   width: 96px;
-}
-
-/* =============================================
-   SECTION BANNERS
-   A tinted card header carrying the kind name and its committed subtotal.
-   Income / expense reuse the section tokens (their defined purpose);
-   transfers take a neutral accent tint because a transfer moves money
-   between the user's own accounts rather than into or out of the budget.
-   The 3px left rule echoes the grid's section banners so a "section" reads
-   the same across screens.
-   ============================================= */
-.recurring-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  border-left: 3px solid transparent;
-}
-
-.recurring-banner--income {
-  border-left-color: var(--shekel-section-income-text);
-}
-
-.recurring-banner--income .recurring-banner__title {
-  color: var(--shekel-section-income-text);
-}
-
-.recurring-banner--expense {
-  border-left-color: var(--shekel-section-expense-text);
-}
-
-.recurring-banner--expense .recurring-banner__title {
-  color: var(--shekel-section-expense-text);
-}
-
-.recurring-banner--transfer {
-  border-left-color: var(--shekel-accent);
-}
-
-.recurring-banner--transfer .recurring-banner__title {
-  color: var(--shekel-accent);
-}
-
-.recurring-banner__title {
-  font-size: 0.9375rem;
-  font-weight: 600;
-  margin: 0;
-}
-
-/* The dark AND light .card-header skins (base.css) set background-color at
-   two-class specificity ([data-bs-theme="..."] .card-header), which outranks
-   the single-class banner rules above and flattens all three tints to raised
-   gray (polish audit P-RC1: dark was originally flagged; the Wave 1 light
-   .card-header skin extended the same clobber to light). Re-assert each tint
-   with the theme attribute so the selectors match that specificity;
-   [data-bs-theme] scopes both themes at once, and recurring.css loads after
-   base.css, so the equal-specificity tie resolves in the banner's favor --
-   the same mechanism documented at components.css .category-group-header. */
-[data-bs-theme] .recurring-banner--income {
-  background-color: var(--shekel-section-income-bg);
-}
-
-[data-bs-theme] .recurring-banner--expense {
-  background-color: var(--shekel-section-expense-bg);
-}
-
-[data-bs-theme] .recurring-banner--transfer {
-  background-color: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
 }
 
 /* =============================================

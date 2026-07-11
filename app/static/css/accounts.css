@@ -42,9 +42,17 @@
   color: var(--shekel-text-primary);
 }
 
-/* Net worth below zero is a real financial warning, paired with the
-   leading minus sign the money macro renders (color is never the only
-   signal). */
+/* Money-state ink on the band hero, always paired with the sign the
+   money macro renders or a stating caption (color is never the only
+   signal).  --neg is a real financial warning (net worth below zero, a
+   deficit net income).  --pos exists for VERDICT heroes only -- surfaces
+   whose one question is "am I ahead or behind?" (the recurring page's
+   net committed, the income statement's net income); calm position
+   heroes like this net-worth figure stay plain when positive. */
+.nw-hero__num--pos {
+  color: var(--shekel-done);
+}
+
 .nw-hero__num--neg {
   color: var(--shekel-danger);
 }

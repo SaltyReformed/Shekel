@@ -1,7 +1,8 @@
 /* Shekel shared components -- reusable widgets used by more than one
    screen: the Ctrl+K command palette (grid today, intended to spread
    app-wide per the overhaul plan), horizontally scrollable nav pills,
-   the categories group header, the password strength meter/toggle, and
+   the categories group header, the tinted section-banner card header
+   (recurring + statements), the password strength meter/toggle, and
    the small close-button variant.
 
    Load-order contract (see base.html): after theme-steel-ink.css and
@@ -147,6 +148,76 @@
 .category-group-header + .list-group .list-group-item {
   padding-top: 0.65rem;
   padding-bottom: 0.65rem;
+}
+
+/* =============================================
+   SECTION BANNER (shared tinted card header)
+   A section card's header: a 3px left rule and tinted title over the
+   section's own background tint, carrying whatever the caller puts in
+   it (a subtotal, actions).  Income / expense reuse the section tokens
+   (their defined purpose); --accent is the neutral variant for sections
+   that are structure rather than money direction (recurring transfers;
+   the balance sheet's Assets / Liabilities / Equity, polish audit D8).
+   The 3px left rule echoes the grid's section banners so a "section"
+   reads the same across screens.  Extracted from recurring.css in S6 so
+   the Recurring page and the Statements tab share one component.
+   ============================================= */
+.section-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-left: 3px solid transparent;
+}
+
+.section-banner--income {
+  border-left-color: var(--shekel-section-income-text);
+}
+
+.section-banner--income .section-banner__title {
+  color: var(--shekel-section-income-text);
+}
+
+.section-banner--expense {
+  border-left-color: var(--shekel-section-expense-text);
+}
+
+.section-banner--expense .section-banner__title {
+  color: var(--shekel-section-expense-text);
+}
+
+.section-banner--accent {
+  border-left-color: var(--shekel-accent);
+}
+
+.section-banner--accent .section-banner__title {
+  color: var(--shekel-accent);
+}
+
+.section-banner__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* The dark AND light .card-header skins (base.css) set background-color at
+   two-class specificity ([data-bs-theme="..."] .card-header), which outranks
+   the single-class banner rules above and would flatten all three tints to
+   raised gray (polish audit P-RC1). Re-assert each tint with the theme
+   attribute so the selectors match that specificity; [data-bs-theme] scopes
+   both themes at once, and components.css loads after base.css, so the
+   equal-specificity tie resolves in the banner's favor -- the same mechanism
+   as .category-group-header above. */
+[data-bs-theme] .section-banner--income {
+  background-color: var(--shekel-section-income-bg);
+}
+
+[data-bs-theme] .section-banner--expense {
+  background-color: var(--shekel-section-expense-bg);
+}
+
+[data-bs-theme] .section-banner--accent {
+  background-color: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
 }
 
 /* =============================================
