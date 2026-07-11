@@ -27,6 +27,13 @@
   <input type="hidden" name="pay_period_id" value="{{ period.id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
   <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
+  {# Hidden default submit button: with TWO text-entry fields and no
+     submit control, the browser's implicit-submission rule stops
+     firing on Enter (it only applies to single-field forms), so this
+     button restores Enter-to-save from either input.  display:none is
+     fine -- implicit submission clicks the default button even when
+     it is not rendered. #}
+  <button type="submit" class="d-none" aria-hidden="true" tabindex="-1"></button>
   <input type="text"
          name="name"
          maxlength="200"
