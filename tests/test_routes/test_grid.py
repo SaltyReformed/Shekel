@@ -25,6 +25,7 @@ from app.services import (
     pay_period_service,
     posting_service,
 )
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 from tests._test_helpers import (
     create_hysa_account,
@@ -1576,12 +1577,12 @@ class TestTransactionNegativePaths:
 
         Pre-C-27: the route caught ``InvalidOperation`` and returned
         the literal string ``"Invalid actual amount"`` with status
-        400.  Post-C-27 (commit C-27 of the 2026-04-15 security
-        remediation plan): :class:`MarkDoneSchema` rejects the
-        value at the schema tier and the route returns
-        ``jsonify(errors=...)`` so HTMX form callers can render
-        the per-field message.  The status code stays 400; only
-        the body shape and message text changed.
+        400.  Post-C-27: :class:`MarkDoneSchema` rejects the value at
+        the schema tier.  Refit 2026-07-11 for the marker-header
+        convention (closeout plan session 4, developer-ruled): the 422
+        body changed from a JSON errors dict to a DESIGNED fragment --
+        the requesting cell re-rendered with the flattened field
+        message -- carrying the marker header so htmx swaps it.
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
@@ -1592,9 +1593,10 @@ class TestTransactionNegativePaths:
                 data={"actual_amount": "not_a_number"},
             )
             assert resp.status_code == 422
-            payload = resp.get_json()
-            assert payload is not None
-            assert "actual_amount" in payload["errors"]
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            body = resp.data.decode()
+            assert "actual_amount" in body
+            assert "txn-chip" in body
 
             # ``MarkDoneSchema`` runs before the route's status
             # mutation (commit C-27 reordered the parse to the

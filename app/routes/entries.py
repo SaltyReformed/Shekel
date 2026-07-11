@@ -26,6 +26,11 @@ from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.db_errors import is_unique_violation
+from app.utils.error_fragments import (
+    INVALID_REFERENCE_MSG,
+    designed_error,
+    flatten_schema_errors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,7 @@ def _render_entry_list(
     editing_id: int | None = None,
     conflict: bool = False,
     host: str = "",
+    error: str | None = None,
 ) -> str:
     """Render the entry list partial for a transaction.
 
@@ -116,6 +122,10 @@ def _render_entry_list(
         conflict: When True, surface a warning banner that the
             most recent edit was rejected by the optimistic-lock
             check.  See commit C-18.
+        error: Optional rejection message.  When set, the template
+            surfaces a danger banner naming why the last submission
+            was refused (the designed error-fragment path; see
+            :func:`_error_entry_response`).
 
     Returns:
         Rendered HTML string.
@@ -139,8 +149,41 @@ def _render_entry_list(
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
         conflict=conflict,
+        error=error,
         entry_list_host=host,
         entry_list_host_id=_entry_list_host_id(txn.id, host),
+    )
+
+
+def _error_entry_response(
+    txn: Transaction, message: str, host: str, status: int = 400,
+) -> ResponseReturnValue:
+    """Roll back and render the entry list as a designed error fragment.
+
+    The rejected-mutation twin of :func:`_stale_entry_response` (the
+    marker-header convention, closeout plan session 4): every
+    entries-CRUD 400/422 a user can reach re-renders the requesting
+    surface's entry list with current data plus a danger banner naming
+    the rejection, and stamps the designed-fragment header so the body
+    swaps instead of being silently dropped by the app-wide htmx
+    config.  The rollback discards any changes the service staged
+    before rejecting; SQLAlchemy re-loads the expired ``txn`` on
+    attribute access, so the re-render reads committed state.
+
+    Args:
+        txn: The parent Transaction whose entry list is re-rendered.
+        message: The user-facing rejection message for the banner.
+        host: The validated host prefix from :func:`_request_host`, so
+            the re-render reconstructs the requesting surface's id.
+        status: The HTTP error status (400 domain rejection, 422
+            validation failure).
+
+    Returns:
+        A designed-fragment Flask response tuple.
+    """
+    db.session.rollback()
+    return designed_error(
+        _render_entry_list(txn, error=message, host=host), status,
     )
 
 
@@ -227,7 +270,10 @@ def _credit_payback_idempotent_response(
     """
     db.session.rollback()
     if not is_unique_violation(exc, _CREDIT_PAYBACK_UNIQUE_INDEX):
-        return "Invalid reference. Check that all referenced records exist.", 400
+        rejected = get_accessible_transaction(txn_id)
+        if rejected is None:
+            return "Not found", 404
+        return _error_entry_response(rejected, INVALID_REFERENCE_MSG, host)
     logger.info(
         "Duplicate CC payback prevented on %s (idempotent success)",
         log_context,
@@ -340,7 +386,9 @@ def create_entry(txn_id):
 
     errors = _create_schema.validate(request.form)
     if errors:
-        return str(errors), 422
+        return _error_entry_response(
+            txn, flatten_schema_errors(errors), host, status=422,
+        )
 
     data = _create_schema.load(request.form)
     try:
@@ -357,8 +405,7 @@ def create_entry(txn_id):
             exc, txn.id, f"create_entry txn_id={txn.id}", host,
         )
     except (NotFoundError, ValidationError) as exc:
-        db.session.rollback()
-        return str(exc), 400
+        return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)
 
@@ -393,8 +440,7 @@ def _execute_entry_update(
             exc, txn.id, f"update_entry id={entry_id}", host,
         )
     except (NotFoundError, ValidationError) as exc:
-        db.session.rollback()
-        return str(exc), 400
+        return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)
 
@@ -428,7 +474,9 @@ def update_entry(txn_id, entry_id):
 
     errors = _update_schema.validate(request.form)
     if errors:
-        return str(errors), 422
+        return _error_entry_response(
+            txn, flatten_schema_errors(errors), host, status=422,
+        )
 
     data = _update_schema.load(request.form)
 

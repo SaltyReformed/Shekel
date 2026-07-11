@@ -176,6 +176,26 @@ def _build_transitions(context):
     )
 
 
+def _status_labels():
+    """Return ``{status_id: "Name (id)"}`` for every StatusEnum member.
+
+    Used to compose the user-facing rejection message: the designed
+    error fragments (closeout plan session 4) surface
+    ``verify_transition``'s message directly in the UI, where a bare
+    integer PK reads as noise.  The id stays in parentheses because it
+    is still the debugging handle (and the message contract several
+    tests pin).  An id outside the enum set falls back to the bare
+    integer via the caller's ``.get`` default.
+
+    Returns:
+        dict mapping each seeded status id to its display label.
+    """
+    return {
+        ref_cache.status_id(member): f"{member.value} ({ref_cache.status_id(member)})"
+        for member in StatusEnum
+    }
+
+
 def verify_transition(current_status_id, new_status_id, context="transaction"):
     """Raise ``ValidationError`` when the proposed transition is illegal.
 
@@ -227,9 +247,15 @@ def verify_transition(current_status_id, new_status_id, context="transaction"):
             "(allowed: %s).",
             context, current_status_id, new_status_id, sorted(allowed),
         )
+        # Status NAMES lead the message because the designed error
+        # fragments show it to the user verbatim; the ids stay in
+        # parentheses as the debugging handle (and the contract the
+        # route/service tests pin with ``str(id) in msg``).
+        labels = _status_labels()
         raise ValidationError(
             f"Invalid {context} status transition from "
-            f"{current_status_id} to {new_status_id}."
+            f"{labels.get(current_status_id, current_status_id)} to "
+            f"{labels.get(new_status_id, new_status_id)}."
         )
 
 

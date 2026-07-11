@@ -13,6 +13,11 @@
                           was rejected by the optimistic-lock check.
                           See commit C-18 of the 2026-04-15 security
                           remediation plan.
+     error             -- str, optional -- rejection message.  When set,
+                          surface a danger banner naming why the last
+                          submission was refused; the route wraps the
+                          response in designed_error() so the 4xx body
+                          swaps (the marker-header convention).
 
    HTMX swap target: #{entry_list_host_id} with outerHTML.
 
@@ -31,7 +36,15 @@
 {% set entry_list_host_id = entry_list_host_id | default("entry-list-" ~ txn.id) %}
 {% set entry_list_host = entry_list_host | default("") %}
 <div id="{{ entry_list_host_id }}">
-  {% if conflict is defined and conflict %}
+  {% if error is defined and error %}
+  {# Designed rejection banner: the route re-rendered this list with
+     current data plus the reason the last submission was refused. #}
+  <div class="alert alert-danger py-1 px-2 mb-2 small d-flex align-items-center gap-1"
+       role="alert">
+    <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+  </div>
+  {% elif conflict is defined and conflict %}
   {# Stale-form / StaleDataError banner.  Refreshes are pulled
      in by the inline add/edit forms below; this banner just
      tells the user why their last submission did not stick. #}

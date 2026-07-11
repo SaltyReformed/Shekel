@@ -35,6 +35,7 @@ from app.services.entry_service import (
 )
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.db_errors import is_unique_violation
+from app.utils.error_fragments import INVALID_REFERENCE_MSG, designed_error
 
 # Name of the partial unique index that backstops commit C-19's
 # duplicate CC Payback fix.  Mirrors the literal in
@@ -42,6 +43,10 @@ from app.utils.db_errors import is_unique_violation
 # ``app.models.transaction.Transaction.__table_args__``; renaming
 # the index requires a coordinated edit across all three sites.
 _CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
+
+# Package-local alias of the shared foreign-key rejection message so the
+# mutation handlers import it alongside the other private helpers.
+_INVALID_REFERENCE_MSG = INVALID_REFERENCE_MSG
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +81,7 @@ class _RenderTarget:
     can_edit: bool
 
 
-def _render_mobile_card(txn, *, card_prefix, can_edit):
+def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     """Render a single mobile transaction card for an HTMX swap.
 
     The mobile / companion Mark Paid form targets the card wrapper
@@ -101,6 +106,10 @@ def _render_mobile_card(txn, *, card_prefix, can_edit):
             prefix-less direct renders).  Drives the wrapper id so the
             outerHTML swap resolves.
         can_edit: ``True`` for the owner card, ``False`` for companion.
+        error: Optional rejection message.  When set, the card renders
+            a danger banner naming why the mutation was refused (the
+            designed error-fragment path; see
+            :func:`_error_transaction_response`).
 
     Returns:
         Rendered HTML string for one ``grid/_mobile_card_single.html``.
@@ -116,10 +125,19 @@ def _render_mobile_card(txn, *, card_prefix, can_edit):
         [txn], categories, is_income_section=txn.is_income,
     )
     # A just-settled transaction is neither cancelled nor deleted, so
-    # build_row_keys always yields its row; guard defensively so an
-    # unexpected empty result degrades to the desktop cell rather than
-    # raising IndexError.
+    # the SUCCESS path always yields a row key; the guard degrades to
+    # the desktop cell rather than raising IndexError.  The ERROR path
+    # can genuinely land here: the card lists filter cancelled rows
+    # out, so a stale card's rejected action (e.g. Mark Paid after
+    # another device cancelled) has no card to re-render -- swap in a
+    # banner-only wrapper that keeps the requesting card's id and says
+    # why the action was refused.
     if not row_keys:
+        if error is not None:
+            return render_template(
+                "grid/_mobile_card_error.html",
+                txn=txn, id_prefix=card_prefix, error=error,
+            )
         return render_transaction_cell(txn)
     return render_template(
         "grid/_mobile_card_single.html",
@@ -131,6 +149,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit):
         can_edit=can_edit,
         id_prefix=card_prefix,
         today=date.today(),
+        error=error,
     )
 
 
@@ -196,7 +215,7 @@ def _credit_payback_idempotent_response(exc, txn_id):
     """
     db.session.rollback()
     if not is_unique_violation(exc, _CREDIT_PAYBACK_UNIQUE_INDEX):
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transaction_response(txn_id, _INVALID_REFERENCE_MSG)
     logger.info(
         "Duplicate CC payback prevented on mark_credit id=%d "
         "(idempotent success)", txn_id,
@@ -262,6 +281,58 @@ def _stale_transaction_response(txn_id, target=None):
     if txn is None:
         return "Not found", 404
     return render_transaction_cell(txn, conflict=True), 409
+
+
+def _error_transaction_response(txn_id, message, target=None, status=400):
+    """Roll back and render the request's surface as a designed error.
+
+    The rejected-mutation twin of :func:`_stale_transaction_response`
+    (the marker-header convention, closeout plan session 4): every
+    transaction-mutation 400/422 that a user can reach re-renders the
+    surface the request targeted -- the desktop cell, or the mobile /
+    companion card when the request carried ``render=mobile_card`` --
+    with CURRENT data plus the rejection message, and stamps the
+    designed-fragment header so the body swaps instead of being
+    silently dropped by the app-wide htmx config.
+
+    Rolls back unconditionally: some callers reject before any mutation
+    (a no-op rollback), others after the service staged changes; one
+    rollback here keeps every caller safe and the re-fetch below then
+    reads committed state.
+
+    Args:
+        txn_id: Primary key of the transaction the route was trying to
+            mutate.  Re-fetched under the same ownership rules as the
+            stale-conflict helper (accessible for the mobile-card path,
+            owner-only for the desktop cell).
+        message: The user-facing rejection message (shown in the cell's
+            title/aria hint or the card's danger banner).
+        target: The :class:`_RenderTarget` for the mobile/companion
+            path, or ``None`` for the desktop cell.
+        status: The HTTP error status (400 domain rejection, 422
+            validation failure).
+
+    Returns:
+        A designed-fragment Flask response tuple, or
+        ``("Not found", 404)`` when the row vanished.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    if target is not None and target.render_mode == "mobile_card":
+        txn = get_accessible_transaction(txn_id)
+        if txn is None:
+            return "Not found", 404
+        return designed_error(
+            _render_mobile_card(
+                txn, card_prefix=target.card_prefix,
+                can_edit=target.can_edit, error=message,
+            ),
+            status,
+        )
+    txn = _get_owned_transaction(txn_id)
+    if txn is None:
+        return "Not found", 404
+    return designed_error(render_transaction_cell(txn, error=message), status)
 
 
 def _get_owned_transaction(txn_id):

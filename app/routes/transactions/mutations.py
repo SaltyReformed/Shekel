@@ -19,7 +19,7 @@ whole mutation concern keeps that intentional parallel code in one file.
 
 import logging
 
-from flask import request, jsonify
+from flask import request
 from flask_login import current_user, login_required
 from marshmallow import ValidationError as MarshmallowValidationError
 from sqlalchemy.exc import IntegrityError
@@ -45,7 +45,9 @@ from app.routes.transactions._bp import transactions_bp
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
+    _error_transaction_response,
     _get_owned_transaction,
+    _INVALID_REFERENCE_MSG,
     _mark_done_schema,
     _mark_done_success_response,
     _RenderTarget,
@@ -53,6 +55,7 @@ from app.routes.transactions._helpers import (
     _update_schema,
     _verify_owned_fks_in_update,
 )
+from app.utils.error_fragments import flatten_schema_errors
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +109,7 @@ def _finalised_edit_response(txn, data):
             popped by the caller).
 
     Returns:
-        A ``(message, 400)`` Flask response tuple when a locked field is
+        A designed 400 error-fragment response when a locked field is
         edited on a finalised row not being reverted to a mutable
         status, or ``None`` when the edit may proceed.
     """
@@ -120,7 +123,9 @@ def _finalised_edit_response(txn, data):
     message = finalised_edit_rejection(
         current_status, new_status, context="transaction",
     )
-    return (message, 400) if message is not None else None
+    if message is None:
+        return None
+    return _error_transaction_response(txn.id, message)
 
 
 def _apply_shadow_update(txn, txn_id, data):
@@ -184,10 +189,10 @@ def _apply_shadow_update(txn, txn_id, data):
         # shadows' estimated_amount in-memory BEFORE running the status
         # transition through the state machine, so a rejected
         # amount+illegal-status PATCH leaves dirty mutations staged on
-        # the session.  Roll back so they cannot reach the DB, matching
-        # the sibling shadow handlers (_mark_done_shadow, _cancel_shadow).
-        db.session.rollback()
-        return str(exc), 400
+        # the session.  The error helper rolls back so they cannot
+        # reach the DB, matching the sibling shadow handlers
+        # (_mark_done_shadow, _cancel_shadow).
+        return _error_transaction_response(txn_id, str(exc))
 
     db.session.refresh(txn)
     logger.info(
@@ -234,16 +239,16 @@ def _resolve_status_change(txn, data):
             txn.status_id, data["status_id"], context="transaction",
         )
     except ValidationError as exc:
-        return str(exc), 400
+        return _error_transaction_response(txn.id, str(exc))
 
     # Block Credit status on entry-capable transactions -- credit
     # handling is per-entry, not per-transaction (scope doc section 5.2).
     credit_id = ref_cache.status_id(StatusEnum.CREDIT)
     if data["status_id"] == credit_id and txn.tracks_purchases:
-        return (
+        return _error_transaction_response(
+            txn.id,
             "Cannot set Credit status on transactions with individual "
             "purchase tracking. Use entry-level credit instead.",
-            400,
         )
 
     return None
@@ -295,7 +300,9 @@ def _apply_regular_update(txn, txn_id, data):
     # on an income transaction.  Checked against the stored type because
     # TransactionUpdateSchema carries no transaction_type_id.
     if data.get("is_envelope") and txn.is_income:
-        return "Purchase tracking is only available for expenses.", 400
+        return _error_transaction_response(
+            txn.id, "Purchase tracking is only available for expenses.",
+        )
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -384,8 +391,7 @@ def _apply_regular_update(txn, txn_id, data):
         )
         return _stale_transaction_response(txn_id)
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transaction_response(txn_id, _INVALID_REFERENCE_MSG)
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # A period move needs a full grid refresh so the row appears under
@@ -453,7 +459,13 @@ def update_transaction(txn_id):
     # Parse and validate input.
     errors = _update_schema.validate(request.form)
     if errors:
-        return jsonify(errors=errors), 422
+        # Designed fragment (marker-header convention): the cell
+        # re-rendered with the flattened field errors in its hint,
+        # so a rejected card Save is visible instead of silently
+        # dropped by the app-wide htmx config.
+        return _error_transaction_response(
+            txn.id, flatten_schema_errors(errors), status=422,
+        )
 
     data = _update_schema.load(request.form)
 
@@ -614,15 +626,15 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         )
         return _stale_transaction_response(txn_id, target)
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transaction_response(
+            txn_id, _INVALID_REFERENCE_MSG, target,
+        )
     except ValidationError as exc:
         # transfer_service.update_transfer runs the transition through
         # the state machine (commit C-21).  A mark-done request against
-        # a Cancelled or Settled transfer shadow surfaces here as 400
-        # instead of crashing the request.
-        db.session.rollback()
-        return str(exc), 400
+        # a Cancelled or Settled transfer shadow surfaces here as a
+        # designed 400 fragment instead of crashing the request.
+        return _error_transaction_response(txn_id, str(exc), target)
     db.session.refresh(txn)
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -672,7 +684,7 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         try:
             transaction_service.settle_from_entries(txn)
         except ValidationError as exc:
-            return str(exc), 400
+            return _error_transaction_response(txn_id, str(exc), target)
     else:
         # Manual settle: route the status flip through the single status seam
         # (state-machine check + status_id + paid_at stamp + status expire).  The
@@ -684,7 +696,11 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         try:
             status_seam.apply_status_change(txn, status_id)
         except ValidationError as exc:
-            return str(exc), 400
+            # The illegal-transition case a stale surface can still
+            # reach (e.g. a Mark Paid tap on a card another device
+            # just cancelled) -- the designed fragment shows current
+            # state plus the reason (grid audit D2, ruled 2026-07-11).
+            return _error_transaction_response(txn_id, str(exc), target)
         # Accept an optional manual actual amount from the form.  Applied AFTER
         # the seam so Commit 6's posting reconcile (the last step) reads the
         # final actual_amount, not the pre-edit estimate.
@@ -712,8 +728,9 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         )
         return _stale_transaction_response(txn_id, target)
     except IntegrityError:
-        db.session.rollback()
-        return "Invalid reference. Check that all referenced records exist.", 400
+        return _error_transaction_response(
+            txn_id, _INVALID_REFERENCE_MSG, target,
+        )
     logger.info(
         "user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id
     )
@@ -752,6 +769,20 @@ def mark_done(txn_id):
     if txn is None:
         return "Not found", 404
 
+    # Rendering surface for the response.  The mobile / companion card
+    # action bar posts ``render=mobile_card`` plus the per-tab
+    # ``card_prefix`` and the ``can_edit`` flag so the response is a
+    # single re-rendered card (in-place swap, no reload); the desktop
+    # grid and full-edit popover omit these, so the response defaults
+    # to the cell + gridRefresh reload.  Read off ``request.form``
+    # directly -- these are render-routing fields, not part of the
+    # money-only ``MarkDoneSchema``.  Resolved BEFORE schema validation
+    # so the 422 below can render the correct surface too.
+    render_mode = request.form.get("render", "")
+    card_prefix = request.form.get("card_prefix", "")
+    card_can_edit = request.form.get("can_edit") == "1"
+    target = _RenderTarget(render_mode, card_prefix, card_can_edit)
+
     # Validate the optional ``actual_amount`` form field once,
     # before branching on transfer detection, so both code paths
     # apply identical validation.  ``MarkDoneSchema`` strips empty
@@ -762,21 +793,13 @@ def mark_done(txn_id):
     try:
         mark_done_data = _mark_done_schema.load(request.form)
     except MarshmallowValidationError as exc:
-        return jsonify(errors=exc.messages), 422
+        # Designed fragment: the requesting surface (cell or mobile
+        # card) re-rendered with the per-field message in its hint /
+        # banner instead of a JSON body the client silently drops.
+        return _error_transaction_response(
+            txn.id, flatten_schema_errors(exc.messages), target, status=422,
+        )
     actual_amount = mark_done_data.get("actual_amount")
-
-    # Rendering surface for the response.  The mobile / companion card
-    # action bar posts ``render=mobile_card`` plus the per-tab
-    # ``card_prefix`` and the ``can_edit`` flag so the response is a
-    # single re-rendered card (in-place swap, no reload); the desktop
-    # grid and full-edit popover omit these, so the response defaults
-    # to the cell + gridRefresh reload.  Read off ``request.form``
-    # directly -- these are render-routing fields, not part of the
-    # money-only ``MarkDoneSchema``.
-    render_mode = request.form.get("render", "")
-    card_prefix = request.form.get("card_prefix", "")
-    card_can_edit = request.form.get("can_edit") == "1"
-    target = _RenderTarget(render_mode, card_prefix, card_can_edit)
 
     # Income uses 'received', expenses use 'done'.
     if txn.is_income:
@@ -830,7 +853,7 @@ def mark_credit(txn_id):
         # ``_credit_payback_idempotent_response`` docstring.
         return _credit_payback_idempotent_response(exc, txn_id)
     except (NotFoundError, ValidationError) as exc:
-        return str(exc), 400
+        return _error_transaction_response(txn_id, str(exc))
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -865,10 +888,9 @@ def unmark_credit(txn_id):
         # Raised when the bespoke source-state guard or the
         # state-machine verification in
         # ``credit_workflow.unmark_credit`` rejects the request --
-        # e.g. attempting to unmark a Paid row.  The body names the
-        # offending status so the user understands why.
-        db.session.rollback()
-        return str(exc), 400
+        # e.g. attempting to unmark a Paid row.  The fragment names
+        # the offending status so the user understands why.
+        return _error_transaction_response(txn_id, str(exc))
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
@@ -905,11 +927,10 @@ def _cancel_shadow(txn, txn_id, cancelled_id):
     except ValidationError as exc:
         # transfer_service runs the transition through the state
         # machine.  An attempt to cancel a Paid/Received/Settled
-        # transfer surfaces here as 400 instead of crashing the request
-        # -- the transfer-service path was already wired by commit C-21;
-        # this except clause is the route's corresponding translation.
-        db.session.rollback()
-        return str(exc), 400
+        # transfer surfaces here as a designed 400 fragment instead of
+        # crashing the request -- the transfer-service path was wired
+        # by commit C-21; this clause is the route's translation.
+        return _error_transaction_response(txn_id, str(exc))
     db.session.refresh(txn)
     response = render_transaction_cell(txn)
     return response, 200, {"HX-Trigger": "gridRefresh"}
@@ -947,7 +968,7 @@ def cancel_transaction(txn_id):
     try:
         status_seam.apply_status_change(txn, cancelled_id)
     except ValidationError as exc:
-        return str(exc), 400
+        return _error_transaction_response(txn_id, str(exc))
 
     # Posting ledger reconcile (Build-Order Step 3): reconcile to the new
     # status's settled sense as the final step, mirroring the transfer pattern

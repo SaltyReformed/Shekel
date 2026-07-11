@@ -22,6 +22,13 @@
                  refresh the user's view with current data.  See
                  commit C-18 of the 2026-04-15 security remediation
                  plan.
+     error    -- optional message string.  Same grammar as conflict
+                 (danger icon + the message in the title/aria hint)
+                 for a rejected mutation: the route re-renders the
+                 cell with CURRENT data and says why the request was
+                 refused.  Responses carrying it are wrapped in
+                 designed_error() so the 4xx body swaps (the
+                 marker-header convention, closeout plan session 4).
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
@@ -38,6 +45,7 @@
   {% set over_budget = es.over_budget %}
 {% endif %}
 {% set is_conflict = conflict is defined and conflict %}
+{% set error_msg = error if error is defined and error else none %}
 {# C3 "Month Spine" cell (rebuild decisions 1, docs/design/grid_audit.md):
    the amount renders inside a status chip -- filled for settled /
    credit, plain for projected.  The chip splits into two siblings so
@@ -49,7 +57,7 @@
 {% set chip_state = 'done' if (t.status and t.status.is_settled)
    else ('credit' if t.status_id == STATUS_CREDIT else 'projected') %}
 {% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}"{% if wrap_oob is defined and wrap_oob %} hx-swap-oob="true"{% endif %}>{% endif %}
-<div class="txn-chip st-{{ chip_state }}{% if is_conflict %} text-warning{% endif %}">
+<div class="txn-chip st-{{ chip_state }}{% if error_msg %} text-danger{% elif is_conflict %} text-warning{% endif %}">
   {# Clicking the amount opens the anchored action card (rebuild
      decision 2): grid_edit.js's delegated handler reads data-txn-id
      and fetches the full-edit partial into #txn-popover, anchored to
@@ -71,9 +79,12 @@
         {% if t.tracks_purchases %}data-envelope="1"{% endif %}
         role="button"
         tabindex="0"
-        aria-label="{% if is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{{ t.name }}: {{ detail }}"
-        title="{% if is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{{ detail }}">
-    {% if is_conflict %}
+        aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{{ t.name }}: {{ detail }}"
+        title="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transaction was changed by another action -- click to retry. {% endif %}{{ detail }}">
+    {% if error_msg %}
+    <i class="bi bi-exclamation-octagon text-danger small me-1"
+       aria-label="Action rejected"></i>
+    {% elif is_conflict %}
     <i class="bi bi-exclamation-triangle text-warning small me-1"
        aria-label="Edit conflict"></i>
     {% endif %}

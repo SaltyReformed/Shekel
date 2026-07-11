@@ -1,0 +1,22 @@
+{# Mobile card rejection fallback -- HTMX error fragment.
+
+   Rendered by ``_render_mobile_card`` when a card-targeted mutation is
+   refused AND the row no longer yields a card row-key (e.g. a
+   Cancelled row: the card lists filter cancelled rows out, so the
+   stale card that fired the request has nothing to re-render into).
+   The wrapper keeps the requesting card's ``#card-<prefix-><id>`` id
+   so the outerHTML swap resolves, and the banner replaces the card
+   body: the row is gone from this surface, and the banner says why
+   the action was refused.  A page refresh (or the next tab switch)
+   drops the wrapper along with the rest of the stale list.
+
+   Expected context: txn, id_prefix, error.
+#}
+{% set _cardns = (id_prefix ~ "-" if id_prefix else "") %}
+<div class="mobile-card-wrapper" id="card-{{ _cardns }}{{ txn.id }}">
+  <div class="alert alert-danger py-1 px-2 mb-0 small d-flex align-items-center gap-1"
+       role="alert">
+    <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+  </div>
+</div>

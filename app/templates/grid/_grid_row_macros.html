@@ -113,8 +113,17 @@
 {% endfor %}
 {%- endmacro %}
 
-{% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
+{% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
 {#- Render exactly one mobile transaction card.
+
+    error (default none): optional message string.  When set, a danger
+    banner renders as the wrapper's first child: a rejected mutation
+    (e.g. a Mark Paid the state machine refuses) re-renders THIS card
+    with current data plus the reason, wrapped in designed_error() so
+    the 4xx body swaps (the marker-header convention, closeout plan
+    session 4).  The banner lives INSIDE the `#card-...` wrapper
+    because that id is the swap target -- a sibling banner outside it
+    would be orphaned by the next successful swap.
 
     The per-transaction body extracted out of `render_row_card`: that
     macro looks up the matched list for a (row-key, period) cell and
@@ -225,6 +234,13 @@
   {% set _cardns = (id_prefix ~ "-" if id_prefix else "") %}
   {% set _aid = "card-expansion-" ~ _cardns ~ txn.id %}
   <div class="mobile-card-wrapper" id="card-{{ _cardns }}{{ txn.id }}">
+    {% if error %}
+    <div class="alert alert-danger py-1 px-2 mb-0 small d-flex align-items-center gap-1"
+         role="alert">
+      <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>
+      <span>{{ error }}</span>
+    </div>
+    {% endif %}
     <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 mobile-txn-card"
         data-mobile-txn-id="{{ txn.id }}"
         {% if can_edit and txn.transfer_id %}data-mobile-xfer-id="{{ txn.transfer_id }}"{% endif %}

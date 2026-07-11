@@ -26,6 +26,13 @@ from flask.typing import ResponseReturnValue
 # listener in app/static/js/app.js -- the two names must stay in sync.
 DESIGNED_FRAGMENT_HEADER = "Shekel-Designed-Fragment"
 
+# The uniform user-facing message for a foreign-key ``IntegrityError`` --
+# one definition shared by the transaction, entries, and transfer
+# mutation handlers whose designed fragments surface it.
+INVALID_REFERENCE_MSG = (
+    "Invalid reference. Check that all referenced records exist."
+)
+
 
 def designed_error(body: str, status: int) -> ResponseReturnValue:
     """Wrap a rendered error fragment so htmx swaps it despite the status.
