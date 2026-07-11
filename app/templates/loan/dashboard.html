@@ -257,7 +257,10 @@
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Payment history</h6>
-    <span class="badge bg-success">{{ payment_history|length }} confirmed</span>
+    {# Ledger-confirmed count: a true settled/done money state, so the
+       done chip-tint badge (grid grammar), not raw Bootstrap green
+       (polish audit P-DT2 / RC3). #}
+    <span class="badge-done">{{ payment_history|length }} confirmed</span>
   </div>
   <div class="card-body p-0">
     <div class="loan-history-scroll">

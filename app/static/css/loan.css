@@ -25,6 +25,27 @@
 }
 
 /* =============================================
+   PAYMENT ALLOCATION BAR (polish audit P-DT2)
+   ============================================= */
+/* Composition-bar colors: principal / interest / escrow in display
+   order on the shared D12 ordinal ramp (.alloc-bar shell + the
+   --shekel-alloc-a* stops live in components.css).  One class per part
+   colors both its bar segment and its legend swatch, so the pair can
+   never disagree.  Composition is not a money state, so the ramp --
+   never the money trio -- carries it (D11). */
+.loan-alloc--principal {
+  background: var(--shekel-accent);
+}
+
+.loan-alloc--interest {
+  background: var(--shekel-alloc-a1);
+}
+
+.loan-alloc--escrow {
+  background: var(--shekel-alloc-a2);
+}
+
+/* =============================================
    WHAT-IF LEVERS (pay off sooner / refinance)
    ============================================= */
 /* The result area is separated from the form only once a result swaps in. */

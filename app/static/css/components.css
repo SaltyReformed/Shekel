@@ -313,6 +313,69 @@
 }
 
 /* =============================================
+   ALLOCATION BAR (shared composition-bar shell)
+   =============================================
+   A stacked composition bar -- parts of one whole, NOT progress:
+   graduated accent tints on the D12 ordinal ramp, 2px surface gaps
+   carrying the boundary between same-hue neighbours, and a legend that
+   names and values every segment (color is never the only signal).
+   Extracted from the cockpit's nw-alloc bar when the loan
+   payment-allocation bar became the second consumer (polish audit
+   P-DT2; the .section-banner precedent).  accounts.css keeps the
+   cockpit-only structure (diverging halves, center tick, its segment
+   colors); loan.css keeps the loan's segment colors.  Segment widths
+   are applied by progress_bar.js from data-progress-pct (CSP forbids
+   inline style). */
+.alloc-bar {
+  display: flex;
+  height: 0.875rem;
+  border-radius: 0.3125rem;
+  overflow: hidden;
+  background: var(--shekel-border-subtle);
+}
+
+.alloc-bar__seg {
+  height: 100%;
+  /* width: applied by progress_bar.js from data-progress-pct */
+}
+
+/* The 2px achromatic boundary between same-hue neighbours (D12's second
+   arm; the dataviz stacked-fill mark spec). */
+.alloc-bar__seg + .alloc-bar__seg {
+  border-left: 2px solid var(--shekel-surface);
+}
+
+/* Legend swatch: a small rounded square keyed to its segment's color
+   class, paired with the segment's label and value. */
+.alloc-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 0.1875rem;
+}
+
+/* The D12-ratified ordinal ramp stops, per theme (polish audit
+   P-AC3/O24; re-derived 2026-07-11).  A 3:1 luminance step is
+   impossible several times within one hue, so ramp bars take D12's
+   second arm: these graduated stops plus the 2px gaps above.  The
+   per-theme color-mix stops pass the dataviz ordinal ramp checks
+   (monotone lightness, adjacent OKLCH delta-L >= 0.06, deepest step
+   >= 2:1 on the surface); do not substitute without re-running them.
+   The ramp's strongest step is the full accent itself. */
+[data-bs-theme="dark"] {
+  --shekel-alloc-a1: color-mix(in srgb, var(--shekel-accent) 76%, var(--shekel-surface));
+  --shekel-alloc-a2: color-mix(in srgb, var(--shekel-accent) 56%, var(--shekel-surface));
+  --shekel-alloc-a3: color-mix(in srgb, var(--shekel-accent) 42%, var(--shekel-surface));
+}
+
+[data-bs-theme="light"] {
+  --shekel-alloc-a1: color-mix(in srgb, var(--shekel-accent) 80%, var(--shekel-surface));
+  --shekel-alloc-a2: color-mix(in srgb, var(--shekel-accent) 64%, var(--shekel-surface));
+  --shekel-alloc-a3: color-mix(in srgb, var(--shekel-accent) 49%, var(--shekel-surface));
+}
+
+/* =============================================
    Password strength meter (audit F-089 / C-11)
    =============================================
    Bootstrap's .progress is 16 px tall by default which dominates a
