@@ -444,7 +444,9 @@ class TestIncomeStatementTab:
 
         The seed Checking's $1000 opening is an Equity correction, so it
         never reaches the Income/Expense filter -- the current period is
-        genuinely empty on the income statement.
+        genuinely empty on the income statement.  S6/D8: the empty state
+        names the window (the old "this window" wording predates the
+        window-label caption's removal, P-AN14).
         """
         with app.app_context():
             resp = auth_client.get(
@@ -453,18 +455,29 @@ class TestIncomeStatementTab:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"No income or expenses in this window" in resp.data
+            assert b"No income or expenses in" in resp.data
 
-    def test_income_statement_no_periods_falls_back(self, app, auth_client,
-                                                    seed_user):
-        """With no pay periods, the default window degrades to a month window."""
+    def test_income_statement_no_current_period_falls_back(self, app, auth_client,
+                                                           seed_user):
+        """Outside every period, a bare pay_period window uses the most recent.
+
+        The frozen today (2026-03-20) sits outside seed_user's only period
+        (the 2024-01-05 bootstrap anchor period), so ``_resolve_window_params``
+        falls back from "current period" to the user's most recent one.  The
+        S6/D8 empty state names its window, which pins WHICH period the
+        fallback chose -- the old "this window" wording only proved that
+        something empty rendered, and hid that this test never reached the
+        no-periods-at-all month fallback its docstring used to claim (every
+        seeded account requires a bootstrap anchor period, so that branch is
+        unreachable through fixtures).
+        """
         with app.app_context():
             resp = auth_client.get(
                 "/analytics/income-statement?window=pay_period",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"No income or expenses in this window" in resp.data
+            assert b"No income or expenses in Jan 05 - Jan 18, 2024" in resp.data
 
     def test_income_statement_pay_period_content(self, app, auth_client,
                                                  seed_user, seed_periods, db):
@@ -496,7 +509,9 @@ class TestIncomeStatementTab:
             assert "Expenses" in html
             assert "$2,000.00" in html
             assert "$300.00" in html
-            assert "Net Income" in html
+            # S6/D8: Net income is the band hero (sentence-case label,
+            # like every other band hero), no longer a bottom-line card.
+            assert "Net income" in html
             assert "$1,700.00" in html
 
     def test_income_statement_monthly_window(self, app, auth_client, seed_user,

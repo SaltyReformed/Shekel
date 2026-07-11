@@ -1,0 +1,40 @@
+{% from "_money_macros.html" import money %}
+{# Shared statement-section card (S6 / D8 restructure).
+
+   One labeled group of statement lines with its total, rendered as a card
+   whose header is the shared tinted section banner (components.css): the
+   Income Statement passes the income / expense variants (the money-direction
+   tints), the Balance Sheet passes the neutral accent variant, because
+   Assets / Liabilities / Equity are structure, not money state (D8).
+
+   Amounts arrive natural-signed from ledger_report_service; a NEGATIVE
+   (contra-natural) amount takes danger ink beside the minus sign the money
+   macro renders -- the one line-level money-state convention both statements
+   share (P-AN12). The total keeps the bottom-line row (the adding-machine
+   reading of a financial statement), marked computed by the divider grammar. #}
+
+{% macro statement_section(title, section, icon, variant, empty_text="None") %}
+<div class="card mb-3">
+  <div class="card-header section-banner section-banner--{{ variant }}">
+    <h6 class="section-banner__title"><i class="bi {{ icon }}"></i> {{ title }}</h6>
+  </div>
+  <div class="card-body p-0">
+    <table class="table mb-0">
+      <tbody>
+        {% for line in section.lines %}
+        <tr>
+          <td>{{ line.label }}</td>
+          <td class="text-end font-mono{% if line.amount < 0 %} statement-amount--neg{% endif %}">{{ money(line.amount) }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="text-muted" colspan="2">{{ empty_text }}</td></tr>
+        {% endfor %}
+        <tr class="table-group-divider">
+          <td class="fw-bold">Total {{ title }}</td>
+          <td class="text-end font-mono fw-bold{% if section.total < 0 %} statement-amount--neg{% endif %}">{{ money(section.total) }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endmacro %}

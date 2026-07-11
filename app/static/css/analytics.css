@@ -374,6 +374,32 @@
   font-weight: 600;
 }
 
+/* ── Statements (S6 / D8 restructure: hero band + tinted sections) ── */
+
+/* The statement detail reads as a document column: full-bleed, the
+   two-column label/amount tables left ~1,200px of empty leader at
+   1440px (P-AN15). The hero band above stays full width -- it is the
+   page's cockpit chrome, like every other tab's band. */
+.statement-body {
+  max-width: 44rem;
+}
+
+/* A contra-natural (negative) statement amount -- a deficit income
+   chip, a negative equity line, the out-of-balance verdict -- takes
+   danger ink beside the minus sign the money macro renders (P-AN12:
+   the Steel trio instead of raw Bootstrap contextual classes). */
+.statement-amount--neg {
+  color: var(--shekel-danger);
+}
+
+/* Out-of-balance tie-out detail card: a danger border marks what is an
+   app defect, not a user state. [data-bs-theme] matches the base.css
+   .card border skin's two-class specificity; analytics.css loads after
+   base.css, so the tie resolves in this rule's favor. */
+[data-bs-theme] .statement-tieout-broken {
+  border-color: var(--shekel-danger);
+}
+
 /* ── Spending change deltas (chips + ledger + surprises) ────────── */
 /* trend-up/down/flat map a signed month-over-month delta to the
    money-state colours: up = spent more (danger), down = spent less

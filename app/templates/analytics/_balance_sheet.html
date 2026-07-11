@@ -1,37 +1,20 @@
 {% from "_money_macros.html" import money %}
-{# Balance Sheet -- HTMX partial (Build-Order Step 5).
+{% from "analytics/_statement_macros.html" import statement_section %}
+{# Balance Sheet -- HTMX partial (Build-Order Step 5; S6 / D8 restructure).
    Rendered by analytics.balance_sheet_tab() into #tab-content.
    The posted ledger's position as of a date: Assets, Liabilities, and
    Equity (with a derived Retained Earnings line) plus a two-part
    trial-balance tie-out.  This is the posted ledger's statement -- it
    excludes modeled growth / appreciation / interest between anchor
-   true-ups (that projection is Net Worth's job). #}
+   true-ups (that projection is Net Worth's job).
 
-{% macro section_card(title, section, icon) %}
-<div class="card mb-3">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi {{ icon }}"></i> {{ title }}</h6>
-  </div>
-  <div class="card-body p-0">
-    <table class="table mb-0">
-      <tbody>
-        {% for line in section.lines %}
-        <tr>
-          <td>{{ line.label }}</td>
-          <td class="text-end font-mono">{{ money(line.amount) }}</td>
-        </tr>
-        {% else %}
-        <tr><td class="text-muted" colspan="2">None</td></tr>
-        {% endfor %}
-        <tr class="table-group-divider">
-          <td class="fw-bold">Total {{ title }}</td>
-          <td class="text-end font-mono fw-bold">{{ money(section.total) }}</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endmacro %}
+   D8 hierarchy: the sheet's totals lead as the band -- Total Assets is
+   the hero, with Liabilities / Equity / trial-balance chips beside it --
+   and the accent-tinted (structure, not money-state) section cards carry
+   the per-account detail as a document column (P-AN15).  The tie-out
+   verdict lives in its chip; the figure-by-figure card renders only when
+   the ledger does NOT close, because the failure needs detail and the
+   pass does not (P-AN12 retires the raw bg-success badge). #}
 
 {# ── Statements header (shared toggle) & As-Of Selector ────────── #}
 
@@ -61,47 +44,90 @@
 {# ── Empty State ────────────────────────────────────────────────── #}
 <div class="text-center py-5 text-muted">
   <i class="bi bi-clipboard-x fs-display"></i>
-  <p class="mt-2">No posted balances as of {{ as_of.strftime('%b %d, %Y') }}.</p>
+  <p class="mt-2">No posted balances as of {{ as_of.strftime('%b %-d, %Y') }}.</p>
 </div>
 
 {% else %}
 
-{{ section_card('Assets', report.assets, 'bi-wallet2') }}
-{{ section_card('Liabilities', report.liabilities, 'bi-credit-card') }}
-{{ section_card('Equity', report.equity, 'bi-graph-up-arrow') }}
-
-{# ── Trial-Balance Tie-Out ──────────────────────────────────────── #}
-<div class="card mb-3">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <span class="fw-bold">Trial Balance</span>
+{# ── Hero band: the balance sheet totals (D8).  Liabilities are money
+      owed, so the chip figure takes the danger ink the accounts cockpit
+      uses, paired with its label; the equity chip only goes danger when
+      equity itself is negative (contra-natural). #}
+<div class="pulse-canvas mb-3">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Total assets</div>
+      <div class="nw-hero__num font-mono{% if report.assets.total < 0 %} nw-hero__num--neg{% endif %}">
+        {{ money(report.assets.total) }}
+      </div>
+      <div class="nw-hero__cap">as of {{ as_of.strftime('%b %-d, %Y') }} &middot; posted ledger</div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Liabilities</div>
+        <div class="pulse-chip__value font-mono{% if report.liabilities.total > 0 %} nw-amount--neg{% endif %}">{{ money(report.liabilities.total) }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Equity</div>
+        <div class="pulse-chip__value font-mono{% if report.equity.total < 0 %} statement-amount--neg{% endif %}">{{ money(report.equity.total) }}</div>
+        <div class="calendar-chip-cap">incl. retained earnings</div>
+      </div>
       {% if report.tie_out.in_balance %}
-      <span class="badge bg-success">In balance</span>
+      <div class="pulse-chip pulse-chip--done">
+        <div class="pulse-chip__label">Trial balance</div>
+        <div class="pulse-chip__value">In balance</div>
+        <div class="calendar-chip-cap">assets = liabilities + equity</div>
+      </div>
       {% else %}
-      <span class="badge bg-danger">Out of balance</span>
+      <div class="pulse-chip pulse-chip--danger">
+        <div class="pulse-chip__label">Trial balance</div>
+        <div class="pulse-chip__value">Out of balance</div>
+        <div class="calendar-chip-cap">figures below</div>
+      </div>
       {% endif %}
     </div>
-    <div class="d-flex justify-content-between small">
-      <span class="text-muted">Assets</span>
-      <span class="font-mono">{{ money(report.tie_out.assets) }}</span>
-    </div>
-    <div class="d-flex justify-content-between small">
-      <span class="text-muted">Liabilities + Equity</span>
-      <span class="font-mono">{{ money(report.tie_out.liabilities_plus_equity) }}</span>
-    </div>
-    {% if not report.tie_out.in_balance %}
-    <div class="d-flex justify-content-between small text-danger mt-1">
-      <span>Unbalanced ledger net</span>
-      <span class="font-mono">{{ money(report.tie_out.ledger_net) }}</span>
-    </div>
-    {% endif %}
   </div>
 </div>
 
-<p class="text-muted small">
-  This is the posted ledger's statement. It reflects asserted anchor
-  facts and settled activity; it excludes modeled growth, appreciation,
-  and interest between anchor true-ups (that projection is Net Worth's).
-</p>
+{# ── Section detail (document column, P-AN15) ───────────────────── #}
+<div class="statement-body">
+  {{ statement_section('Assets', report.assets, 'bi-wallet2', 'accent') }}
+  {{ statement_section('Liabilities', report.liabilities, 'bi-credit-card', 'accent') }}
+  {{ statement_section('Equity', report.equity, 'bi-graph-up-arrow', 'accent') }}
+
+  {% if not report.tie_out.in_balance %}
+  {# ── Trial-Balance failure detail: an out-of-balance ledger is an app
+        defect, not a user state.  The two presented totals and the raw
+        posting net localize which half of the tie-out broke (a totals
+        mismatch with a zero ledger net is a classification bug; a
+        non-zero net is a raw unbalanced leg). #}
+  <div class="card statement-tieout-broken mb-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="fw-bold">Trial balance</span>
+        <span class="fw-bold statement-amount--neg">Out of balance</span>
+      </div>
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Assets</span>
+        <span class="font-mono">{{ money(report.tie_out.assets) }}</span>
+      </div>
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Liabilities + Equity</span>
+        <span class="font-mono">{{ money(report.tie_out.liabilities_plus_equity) }}</span>
+      </div>
+      <div class="d-flex justify-content-between small statement-amount--neg mt-1">
+        <span>Unbalanced ledger net</span>
+        <span class="font-mono">{{ money(report.tie_out.ledger_net) }}</span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <p class="text-muted small">
+    This is the posted ledger's statement. It reflects asserted anchor
+    facts and settled activity; it excludes modeled growth, appreciation,
+    and interest between anchor true-ups (that projection is Net Worth's).
+  </p>
+</div>
 
 {% endif %}
