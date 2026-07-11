@@ -1,72 +1,95 @@
-{# Category row partial for HTMX-appended creation.
+{# Category row: the single row source, rendered per row by
+   settings/_categories.html AND returned standalone by the HTMX
+   create_category path (the two copies used to drift -- fresh rows
+   lacked the archive button -- so the settings loop now includes this
+   partial; polish audit P-ST6 / S11).
 
-   Inline ``onclick=`` / ``onchange=`` / ``oninput=`` handlers were
-   removed when CSP was tightened to ``script-src 'self'`` (audit
-   F-036, F-037 closure in commit C-02).  The interactive behaviour
-   is now in app/static/js/categories.js, wired up via delegated
-   event listeners on document.body and ``data-action`` attributes
-   on the trigger elements.
-#}
+   Anatomy: the display row shows the name and ONE quiet Edit control;
+   the labeled Archive / Delete actions live inside the edit drawer so
+   thirty rows stop shouting ninety buttons and the two destructive
+   actions are told apart by their full-word labels, never by color +
+   tooltip alone (P-ST6).  The drawer is a wrapper <div> (not the edit
+   <form>) because the archive / delete POSTs are sibling forms --
+   forms cannot nest -- so Save submits the edit form from outside it
+   via the HTML ``form`` attribute.
+
+   Interactive behaviour is in app/static/js/categories.js, wired via
+   delegated listeners and ``data-action`` attributes (CSP forbids
+   inline handlers). #}
 <li class="list-group-item">
   <div class="d-flex justify-content-between align-items-center"
        id="cat-display-{{ category.id }}">
     {{ category.item_name }}
-    <div>
-      <button type="button" class="btn btn-sm btn-outline-secondary"
-              title="Edit"
-              data-action="cat-edit-show"
-              data-display-id="cat-display-{{ category.id }}"
-              data-edit-id="cat-edit-{{ category.id }}">
-        <i class="bi bi-pencil"></i>
-      </button>
-      <form method="POST"
-            action="{{ url_for('categories.delete_category', category_id=category.id) }}"
-            class="d-inline"
-            data-confirm="Delete this category?">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
-          <i class="bi bi-trash"></i>
+    <button type="button" class="btn btn-sm btn-outline-secondary"
+            title="Edit" aria-label="Edit {{ category.item_name }}"
+            data-action="cat-edit-show"
+            data-display-id="cat-display-{{ category.id }}"
+            data-edit-id="cat-edit-{{ category.id }}">
+      <i class="bi bi-pencil"></i>
+    </button>
+  </div>
+  <div id="cat-edit-{{ category.id }}" class="d-none mt-2">
+    <form method="POST" id="cat-edit-form-{{ category.id }}"
+          action="{{ url_for('categories.edit_category', category_id=category.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="mb-2">
+        <label class="form-label small">Group</label>
+        <select id="edit-group-select-{{ category.id }}"
+                class="form-select form-select-sm"
+                data-action="cat-group-change"
+                data-custom-id="edit-group-custom-{{ category.id }}"
+                data-hidden-id="edit-group-name-{{ category.id }}">
+          {% for g in group_names %}
+          <option value="{{ g }}" {% if g == category.group_name %}selected{% endif %}>{{ g }}</option>
+          {% endfor %}
+          <option value="__new__">+ Add new group</option>
+        </select>
+        <div id="edit-group-custom-{{ category.id }}" class="mt-1 d-none">
+          <input type="text" class="form-control form-control-sm"
+                 placeholder="New group name"
+                 data-action="cat-group-name-input"
+                 data-hidden-id="edit-group-name-{{ category.id }}">
+        </div>
+        <input type="hidden" id="edit-group-name-{{ category.id }}" name="group_name"
+               value="{{ category.group_name }}">
+      </div>
+      <div class="mb-2">
+        <label class="form-label small">Item Name</label>
+        <input type="text" name="item_name" class="form-control form-control-sm"
+               value="{{ category.item_name }}" required>
+      </div>
+    </form>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-1">
+      <div class="d-flex gap-1">
+        <button type="submit" form="cat-edit-form-{{ category.id }}"
+                class="btn btn-sm btn-primary">Save</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                data-action="cat-edit-cancel"
+                data-display-id="cat-display-{{ category.id }}"
+                data-edit-id="cat-edit-{{ category.id }}">
+          Cancel
         </button>
-      </form>
+      </div>
+      <div class="d-flex gap-1">
+        <form method="POST"
+              action="{{ url_for('categories.archive_category', category_id=category.id) }}"
+              class="d-inline"
+              data-confirm="Archive this category?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-warning">
+            <i class="bi bi-archive"></i> Archive
+          </button>
+        </form>
+        <form method="POST"
+              action="{{ url_for('categories.delete_category', category_id=category.id) }}"
+              class="d-inline"
+              data-confirm="Permanently delete this category? If it's in use, it will be archived instead.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger">
+            <i class="bi bi-trash"></i> Delete
+          </button>
+        </form>
+      </div>
     </div>
   </div>
-  <form method="POST" id="cat-edit-{{ category.id }}"
-        action="{{ url_for('categories.edit_category', category_id=category.id) }}"
-        class="d-none mt-2">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="mb-2">
-      <label class="form-label small">Group</label>
-      <select id="edit-group-select-{{ category.id }}"
-              class="form-select form-select-sm"
-              data-action="cat-group-change"
-              data-custom-id="edit-group-custom-{{ category.id }}"
-              data-hidden-id="edit-group-name-{{ category.id }}">
-        {% for g in group_names %}
-        <option value="{{ g }}" {% if g == category.group_name %}selected{% endif %}>{{ g }}</option>
-        {% endfor %}
-        <option value="__new__">+ Add new group</option>
-      </select>
-      <div id="edit-group-custom-{{ category.id }}" class="mt-1 d-none">
-        <input type="text" class="form-control form-control-sm"
-               placeholder="New group name"
-               data-action="cat-group-name-input"
-               data-hidden-id="edit-group-name-{{ category.id }}">
-      </div>
-      <input type="hidden" id="edit-group-name-{{ category.id }}" name="group_name"
-             value="{{ category.group_name }}">
-    </div>
-    <div class="mb-2">
-      <label class="form-label small">Item Name</label>
-      <input type="text" name="item_name" class="form-control form-control-sm"
-             value="{{ category.item_name }}" required>
-    </div>
-    <div class="d-flex gap-1">
-      <button type="submit" class="btn btn-sm btn-primary">Save</button>
-      <button type="button" class="btn btn-sm btn-outline-secondary"
-              data-action="cat-edit-cancel"
-              data-display-id="cat-display-{{ category.id }}">
-        Cancel
-      </button>
-    </div>
-  </form>
 </li>

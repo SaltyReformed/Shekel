@@ -1,5 +1,9 @@
-<h5 class="mb-3"><i class="bi bi-tags"></i> Categories</h5>
-
+{# Categories section.  The main column is purely the active taxonomy
+   (one card per group; each row renders through the shared
+   categories/_category_row.html partial -- the single row source, also
+   returned by the HTMX create path).  The rail carries the Add card
+   and the collapsed archived list so it no longer dead-ends below the
+   small Add card (polish audit P-ST6 / S11). #}
 <div class="row">
   <div class="col-md-8">
     {# ── Active Categories (grouped by group_name) ──────────────────── #}
@@ -8,86 +12,55 @@
       <div class="card-header fw-semibold category-group-header">{{ group_name }}</div>
       <ul class="list-group list-group-flush">
         {% for cat in cats %}
-        <li class="list-group-item">
-          <div class="d-flex justify-content-between align-items-center"
-               id="cat-display-{{ cat.id }}">
-            {{ cat.item_name }}
-            <div>
-              <button type="button" class="btn btn-sm btn-outline-secondary"
-                      title="Edit"
-                      data-action="cat-edit-show"
-                      data-display-id="cat-display-{{ cat.id }}"
-                      data-edit-id="cat-edit-{{ cat.id }}">
-                <i class="bi bi-pencil"></i>
-              </button>
-              <form method="POST"
-                    action="{{ url_for('categories.archive_category', category_id=cat.id) }}"
-                    class="d-inline"
-                    data-confirm="Archive this category?">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-sm btn-outline-warning" title="Archive">
-                  <i class="bi bi-archive"></i>
-                </button>
-              </form>
-              <form method="POST"
-                    action="{{ url_for('categories.delete_category', category_id=cat.id) }}"
-                    class="d-inline"
-                    data-confirm="Permanently delete this category? If it's in use, it will be archived instead.">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
-                  <i class="bi bi-trash"></i>
-                </button>
-              </form>
-            </div>
-          </div>
-          <form method="POST" id="cat-edit-{{ cat.id }}"
-                action="{{ url_for('categories.edit_category', category_id=cat.id) }}"
-                class="d-none mt-2">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <div class="mb-2">
-              <label class="form-label small">Group</label>
-              <select id="edit-group-select-{{ cat.id }}"
-                      class="form-select form-select-sm"
-                      data-action="cat-group-change"
-                      data-custom-id="edit-group-custom-{{ cat.id }}"
-                      data-hidden-id="edit-group-name-{{ cat.id }}">
-                {% for g in group_names %}
-                <option value="{{ g }}" {% if g == cat.group_name %}selected{% endif %}>{{ g }}</option>
-                {% endfor %}
-                <option value="__new__">+ Add new group</option>
-              </select>
-              <div id="edit-group-custom-{{ cat.id }}" class="mt-1 d-none">
-                <input type="text" class="form-control form-control-sm"
-                       placeholder="New group name"
-                       data-action="cat-group-name-input"
-                       data-hidden-id="edit-group-name-{{ cat.id }}">
-              </div>
-              <input type="hidden" id="edit-group-name-{{ cat.id }}" name="group_name"
-                     value="{{ cat.group_name }}">
-            </div>
-            <div class="mb-2">
-              <label class="form-label small">Item Name</label>
-              <input type="text" name="item_name" class="form-control form-control-sm"
-                     value="{{ cat.item_name }}" required>
-            </div>
-            <div class="d-flex gap-1">
-              <button type="submit" class="btn btn-sm btn-primary">Save</button>
-              <button type="button" class="btn btn-sm btn-outline-secondary"
-                      data-action="cat-edit-cancel"
-                      data-display-id="cat-display-{{ cat.id }}">
-                Cancel
-              </button>
-            </div>
-          </form>
-        </li>
+        {% with category = cat %}
+        {% include "categories/_category_row.html" %}
+        {% endwith %}
         {% endfor %}
       </ul>
     </div>
     {% else %}
     <div class="alert alert-info">No active categories.</div>
     {% endfor %}
+  </div>
 
-    {# ── Archived Categories ────────────────────────────────────────── #}
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header fw-semibold">Add Category</div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('categories.create_category') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-3">
+            <label for="add-group-select" class="form-label">Group</label>
+            <select id="add-group-select" class="form-select"
+                    data-action="cat-group-change"
+                    data-custom-id="add-group-custom"
+                    data-hidden-id="add-group-name">
+              {% for g in group_names %}
+              <option value="{{ g }}">{{ g }}</option>
+              {% endfor %}
+              <option value="__new__">+ Add new group</option>
+            </select>
+            <div id="add-group-custom" class="mt-2 {% if group_names %}d-none{% endif %}">
+              <input type="text" class="form-control" placeholder="New group name"
+                     data-action="cat-group-name-input"
+                     data-hidden-id="add-group-name">
+            </div>
+            <input type="hidden" id="add-group-name" name="group_name"
+                   value="{{ group_names[0] if group_names else '' }}">
+          </div>
+          <div class="mb-3">
+            <label for="item_name" class="form-label">Item Name</label>
+            <input type="text" id="item_name" name="item_name" class="form-control"
+                   required placeholder="e.g. Car Payment, Electricity">
+          </div>
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-plus-circle"></i> Add
+          </button>
+        </form>
+      </div>
+    </div>
+
+    {# ── Archived Categories (collapsed; lives in the rail) ─────────── #}
     {% if archived_categories %}
     <div class="mt-4">
       <h6>
@@ -139,43 +112,5 @@
       </div>
     </div>
     {% endif %}
-  </div>
-
-  <div class="col-md-4">
-    <div class="card">
-      <div class="card-header fw-semibold">Add Category</div>
-      <div class="card-body">
-        <form method="POST" action="{{ url_for('categories.create_category') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <div class="mb-3">
-            <label for="add-group-select" class="form-label">Group</label>
-            <select id="add-group-select" class="form-select"
-                    data-action="cat-group-change"
-                    data-custom-id="add-group-custom"
-                    data-hidden-id="add-group-name">
-              {% for g in group_names %}
-              <option value="{{ g }}">{{ g }}</option>
-              {% endfor %}
-              <option value="__new__">+ Add new group</option>
-            </select>
-            <div id="add-group-custom" class="mt-2 {% if group_names %}d-none{% endif %}">
-              <input type="text" class="form-control" placeholder="New group name"
-                     data-action="cat-group-name-input"
-                     data-hidden-id="add-group-name">
-            </div>
-            <input type="hidden" id="add-group-name" name="group_name"
-                   value="{{ group_names[0] if group_names else '' }}">
-          </div>
-          <div class="mb-3">
-            <label for="item_name" class="form-label">Item Name</label>
-            <input type="text" id="item_name" name="item_name" class="form-control"
-                   required placeholder="e.g. Car Payment, Electricity">
-          </div>
-          <button type="submit" class="btn btn-primary w-100">
-            <i class="bi bi-plus-circle"></i> Add
-          </button>
-        </form>
-      </div>
-    </div>
   </div>
 </div>
