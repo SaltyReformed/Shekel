@@ -318,7 +318,20 @@ Section 4.
   carries. (3) Horizon domain = last loan payoff + 1 year, rounded to year end (2049 on current
   data), adapting as loans change; loan-free users get a fixed 10-year fallback. (4) Milestone flags
   = each loan payoff, debt-free, and every `$500k` net-worth crossing inside the domain, flag count
-  capped for lane readability.
+  capped for lane readability. **As-mocked C1 anatomy (the P2 visual reference; approved mock +
+  generator + real-data series + engine probe preserved at `~/projects/shekel_theme/pac1_loop_a/`,
+  keep until Loop B ships):** band fills at ~30% opacity (danger ~22%) so they stay quiet at panel
+  scale, each band's top boundary stroked 1.75px in its own solid color, the internal asset-band
+  boundary underlaid with a ~3.5px surface stroke (the 2px-gap mark spec applied to areas); the zero
+  line re-emphasized in `--shekel-border-strong` over the fills; net line 2.25px
+  `--shekel-number-ink`, solid to the Today marker then 6-5 dashed at 0.85 opacity, endpoint dot
+  plus a `$1.50M`-style direct label in the right margin; legend = existing swatch/label/value
+  grammar plus a line-sample swatch for Net worth; milestone flags = surface-raised chips (subtle
+  border, secondary ink) on two staggered lanes with a dashed accent drop-line to the zero axis;
+  hairline solid gridlines, sparse x labels, axis/money labels in mono at 11.5px or larger
+  (JetBrains Mono's dotted zero reads as an 8 below that -- found in render review). Hover (P2): the
+  existing Chart.js crosshair tooltip listing every band + net at the hovered point. Scale-up: five
+  groups = four ramp bands above zero + danger below, same gaps and legend.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
