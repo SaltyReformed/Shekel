@@ -370,12 +370,35 @@ Section 4.
   `$192,941.56` equals the hero), the range toggle + theme re-render are clean, zero console errors.
   Full suite 7340 green, pylint 10.00/10, biome + djlint clean, independent adversarial review
   addressed (color-mix to an rgba resolver; a stray `.nw-chart-controls` consumer in analytics
-  re-homed to `.spend-chart-controls`; a per-band legend/chart reconciliation test added). NOTE
-  (pre-existing, reported): the `2 years` range's liability band is the loan's contractual schedule
-  (decision 11), which equals the legend's `current_balance` figure on reconciled data (verified
-  live) but drifts when a loan's anchor is a stale true-up: a cockpit-wide seam (the hero / chips /
-  subtotals all read `current_balance`), not this element's; the default Horizon view reconciles per
-  band always. NEXT = developer acceptance drive + the Loop-B dev->main prod ship.
+  re-homed to `.spend-chart-controls`; a per-band legend/chart reconciliation test added).
+  **REPORTED SEAM (pre-existing, NOT a P2 defect) -- the loan liability figure has two producers.**
+  The cockpit derives a loan's "today" owed two ways: (1) `current_balance`, the per-account
+  resolver figure from `_project_one_account`, which the net-worth hero, the Total-liabilities chip,
+  the group subtotals, the grid cells, AND this element's legend all read; and (2) the net-worth
+  composition maps (`build_account_net_worth_maps`, the `balance_at` seam), which the `2 years`
+  series liability band reads -- for an amortizing loan that map IS the contractual amortization
+  schedule (decision 11: the resolver schedule is today-forward). On reconciled data the two paths
+  agree to the cent -- at the current period the schedule equals `current_balance`, so the 2-year
+  band's today point, the legend, the hero, and the Horizon band all match (verified live on real
+  dev data: all four read `$192,941.56`). They diverge ONLY when a loan's stored anchor is a stale
+  true-up that no longer equals its own contractual schedule; then `current_balance` (the anchor)
+  and the schedule-based band differ by that staleness. Two consequences follow. First, the drift is
+  between the two PRODUCERS, so it shows across the whole cockpit (hero / chips / subtotals / grid
+  cells, all `current_balance`, versus the 2-year band, the schedule) -- it is not introduced by
+  this element, and the P2 legend stays internally consistent with every other `current_balance`
+  figure on the screen. Second, the DEFAULT Horizon view is immune: its index-0 band is built from
+  `current_balance` too, so it reconciles per band always (locked by
+  `test_group_subtotal_equals_horizon_band_at_today`); only the non-default 2-year band can show the
+  drift, and it is bounded by how stale the true-up is (imperceptible on maintained data). A proper
+  fix is loan-balance-architecture scope, not presentation: the two producers must agree at the
+  current period, i.e. the stored loan anchor must be reconciled with the contractual schedule so
+  `current_balance` and the `balance_at` map return the same figure there. That is the loan true-up
+  seam (a true-up is meant to be a rare opening anchor, not a recurring monthly correction -- see
+  the balance-at / posting-ledger arc and the loan-read-switch work); until it is closed,
+  presentation should keep reading `current_balance` consistently (as it does) rather than paper
+  over the divergence in the chart, because the honest resolution is to make the producers agree,
+  not to hide which one a given surface trusts. NEXT = developer acceptance drive + the Loop-B
+  dev->main prod ship.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
