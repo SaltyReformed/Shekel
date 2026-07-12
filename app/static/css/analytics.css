@@ -274,6 +274,20 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
+/* Net-sign border: a surplus / deficit month tints its whole card edge with
+   the money-state tokens (paired with the signed Net figure below, so colour
+   is never the only signal).  Replaces raw Bootstrap .border-success /
+   .border-danger, which used the un-themed Bootstrap palette.  The compound
+   .card selector matches the per-theme `[data-bs-theme] .card` border rule's
+   specificity and wins on source order (analytics.css loads after base.css). */
+.card.calendar-month-card--surplus {
+  border-color: var(--shekel-done);
+}
+
+.card.calendar-month-card--deficit {
+  border-color: var(--shekel-danger);
+}
+
 @media (max-width: 767.98px) {
   .calendar-day {
     min-height: 56px;

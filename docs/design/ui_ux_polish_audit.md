@@ -462,6 +462,18 @@ Section 4.
 - **P-AN9 [polish]** Mobile month-nav cramped (cyan badge wedged between title and buttons).
   **FIXED 2026-07-10 (S5, commit f4ee04cc):** the cyan badge retired; the 3rd-paycheck note rides
   the scope caption line as italic month metadata (the Spending in-progress caption pattern).
+- **Year view token residue [consistency - closeout item 5]** The 12-month year overview
+  (`_calendar_year.html`) still carried raw Bootstrap `border-success` / `border-danger` card edges,
+  `text-success`/`text-danger` income/expense/net figures, and cyan `bg-info` "3rd check" badges,
+  flagged out-of-register in the S5 as-built. **FIXED 2026-07-11:** same-genus token sweep - the
+  income/expense/net figures (per-card and the annual totals) adopt the calendar money-state classes
+  `calendar-day-income` / `calendar-day-expense` (matching the month sibling, so the Month/Year
+  toggle stays consistent); the net-sign card border moves onto new
+  `.card.calendar-month-card--surplus` / `--deficit` token modifiers (`--shekel-done` /
+  `--shekel-danger`, specificity-matched to the `[data-bs-theme] .card` rule so they win on source
+  order); the "3rd check" badge adopts the shared accent `.flag-chip` per D11 + the S7 event-marker
+  ruling (a 3rd-paycheck month is a structural marker, not a caution). Template + CSS only, no
+  figures changed; both themes re-shot and computed colors verified against the tokens.
 
 ### Analytics - Spending
 
