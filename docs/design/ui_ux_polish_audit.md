@@ -348,6 +348,34 @@ Section 4.
   amortizes to zero at payoff. Full suite green, pylint 10.00/10, independent adversarial review
   clean after fixes (H1 non-loan liability inclusion, M1 the standalone projects only non-engine
   accounts; H2 confirmed the constant base is correct). Next = Loop B P2 (the Fable page element).
+  **Loop B P2 BUILT 2026-07-12 (Opus 4.8, developer-ruled to build the visual layer too; on dev).**
+  The page element: `net_worth_cockpit.js` rewritten to a Chart.js stacked-area stream (asset bands
+  up from zero on the D12 accent ramp, the liability band negated below zero in danger, the net line
+  in its own stack group so it rides the difference at its raw value, solid-into-dashed with the
+  Today marker via the shared `splitSegment` / `todayMarkerPlugin`), a `2 years` / `Horizon` range
+  toggle (Horizon default; delegated clicks survive the balanceChanged swap and the chosen range is
+  re-asserted on the fresh controls), and two inline canvas plugins: the end-of-line net label and
+  the milestone flags (two staggered lanes with dashed accent drop-lines, positioned via a new
+  server-computed fractional `x` from `savings._milestone_axis_x`). `_cockpit.html` swaps the bar
+  block + old controls for the toggle, the canvas, and a server-rendered legend (each present band's
+  today subtotal + a Net-worth line sample, via the money macro); `accounts.css` retires
+  `nw-alloc`/`nw-chart-controls`, adds the `--nw-band-*` color tokens (the chart resolves each
+  token, including the color-mix ramp stops, to rgba via a 1x1-canvas resolver so Chart.js gets rgba
+  the way every other chart does), the range toggle, the legend, and the taller `.nw-stream`.
+  RETIRED root-and-branch: `compute_allocation`, `_serialize_allocation_bar`, the `allocation`
+  context key, and their tests (the shared `.alloc-bar` component stays -- the loan page consumes
+  it). Live-verified on real dev data in BOTH themes: net worth `$236,184.51`, milestones land where
+  the P1 oracle predicted (Van '29 / 500k '33 / 1M '42 / 1.5M '47 / Debt-free '48), the legend
+  reconciles to the cent (Assets `$358,034.92` plus Retirement `$71,091.15` minus Liabilities
+  `$192,941.56` equals the hero), the range toggle + theme re-render are clean, zero console errors.
+  Full suite 7340 green, pylint 10.00/10, biome + djlint clean, independent adversarial review
+  addressed (color-mix to an rgba resolver; a stray `.nw-chart-controls` consumer in analytics
+  re-homed to `.spend-chart-controls`; a per-band legend/chart reconciliation test added). NOTE
+  (pre-existing, reported): the `2 years` range's liability band is the loan's contractual schedule
+  (decision 11), which equals the legend's `current_balance` figure on reconciled data (verified
+  live) but drifts when a loan's anchor is a stale true-up: a cockpit-wide seam (the hero / chips /
+  subtotals all read `current_balance`), not this element's; the default Horizon view reconciles per
+  band always. NEXT = developer acceptance drive + the Loop-B dev->main prod ship.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.

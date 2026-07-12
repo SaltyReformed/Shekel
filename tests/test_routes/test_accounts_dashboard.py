@@ -233,7 +233,11 @@ class TestDashboardGrouping:
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
-        assert b"Liability" in resp.data
+        # The liability group surfaces as "Liabilities" (the group header and
+        # the stream legend both render category_labels['liability']).  The
+        # prior singular "Liability" substring came from the diverging
+        # allocation bar's legend (seg.label|title), retired with P-AC1.
+        assert b"Liabilities" in resp.data
 
     def test_dashboard_no_accounts(self, app, db, seed_user):
         """Empty state renders the dashboard page with navigation elements.

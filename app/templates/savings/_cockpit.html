@@ -22,6 +22,24 @@
    Savings / Credit Card / custom) to accounts.cash_detail, so every cell
    has a Details destination (account_detail_audit.md, decision 2). #}
 
+{# Display microcopy keyed on the producer's id-based category keys (grouping
+   logic stays in the service).  Defined once here so the net-worth stream's
+   legend and the account-group headers below read one label + icon set. #}
+{% set category_icons = {
+  'asset': 'bi-bank',
+  'liability': 'bi-credit-card',
+  'retirement': 'bi-briefcase',
+  'investment': 'bi-graph-up',
+  'other': 'bi-wallet',
+} %}
+{% set category_labels = {
+  'asset': 'Assets',
+  'liability': 'Liabilities',
+  'retirement': 'Retirement',
+  'investment': 'Investment',
+  'other': 'Other',
+} %}
+
 {# ── Net-worth hero band: headline + chips + forward trend ──────────── #}
 <div class="pulse-canvas mb-4">
   <div class="nw-sky">
@@ -50,83 +68,51 @@
     </div>
   </div>
 
-  {# ── Allocation: a diverging assets-vs-liabilities bar (decision 8) ────
-     Asset-category subtotals stack rightward from the center, the liability
-     total extends left, both scaled to one shared max so the net-worth gap
-     reads as the difference in their extents.  Widths come from the route's
-     float pct via progress_bar.js (data-progress-pct); the values stay
-     Decimal through the money macro.  Asset categories are graduated accent
-     tints, liabilities the danger token, and the legend names + values each
-     segment (decision 8: "each segment paired with a label and value"). #}
-  {% if allocation.assets or allocation.liabilities %}
-  <div class="nw-alloc">
-    {# Bar shell + segment base + swatch dims are the shared .alloc-bar
-       component (components.css, P-DT2 extraction); the nw-alloc__*
-       classes keep the cockpit-only structure (halves, center tick)
-       and this bar's segment colors. #}
-    <div class="alloc-bar nw-alloc__bar" role="img"
-         aria-label="Assets versus liabilities allocation">
-      <div class="nw-alloc__half nw-alloc__half--liab">
-        {% for seg in allocation.liabilities %}
-        <div class="alloc-bar__seg nw-alloc__seg--liab" data-progress-pct="{{ seg.pct }}"
-             title="{{ seg.label|title }}: {{ money(seg.value) }}"></div>
-        {% endfor %}
-      </div>
-      <div class="nw-alloc__half nw-alloc__half--asset">
-        {% for seg in allocation.assets %}
-        <div class="alloc-bar__seg nw-alloc__seg--a{{ loop.index0 }}"
-             data-progress-pct="{{ seg.pct }}"
-             title="{{ seg.label|title }}: {{ money(seg.value) }}"></div>
-        {% endfor %}
-      </div>
-    </div>
-    <div class="nw-alloc__legend">
-      {% for seg in allocation.assets %}
-      <span class="nw-alloc__legend-item">
-        <i class="alloc-swatch nw-alloc__swatch--a{{ loop.index0 }}"></i>
-        {{ seg.label|title }} <span class="font-mono">{{ money(seg.value) }}</span>
-      </span>
-      {% endfor %}
-      {% for seg in allocation.liabilities %}
-      <span class="nw-alloc__legend-item">
-        <i class="alloc-swatch nw-alloc__swatch--liab"></i>
-        {{ seg.label|title }} <span class="font-mono">{{ money(seg.value) }}</span>
-      </span>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
   {% if net_worth.series.periods %}
-  {# Trend controls: the Net vs Assets-and-Liabilities series toggle and the
-     6 / 13 / 26 / All forward-horizon picker (default 13).  Both are pure
-     view state -- net_worth_cockpit.js slices and restyles the already
-     money-precise series the canvas carries; no figure is recomputed in
-     JS.  The history tail is always shown; the horizon picks the forward
-     reach. #}
-  <div class="nw-chart-controls">
-    <div class="btn-group btn-group-sm nw-series-toggle" role="group"
-         aria-label="Net worth series">
+  {# ── Net-worth stream: composition bands + net trajectory (P-AC1) ──────
+     ONE element replacing the old net-worth trend chart AND the diverging
+     allocation bar (ui_ux_polish_audit.md P-AC1, ruled 2026-07-11).  A
+     two-mode range toggle swaps the series the canvas draws -- `2 years`
+     (engine-real biweekly, current_index solid/dashed boundary) or
+     `Horizon` (annual, out to the last loan payoff; the default) -- both
+     already serialized into net_worth_chart_json (the 2-year keys plus the
+     nested `horizon`).  net_worth_cockpit.js reads that payload and draws
+     the stacked composition bands (asset groups up from zero on the accent
+     ramp, liabilities down in danger), the net line (solid history into
+     dashed projection with a Today marker), the milestone flags, and the
+     end-of-line label; no money is computed in JS. #}
+  <div class="nw-range" role="group" aria-label="Net worth range">
+    <div class="btn-group btn-group-sm" role="group">
+      <button type="button" class="btn btn-outline-secondary"
+              data-nw-range="2yr" aria-pressed="false">2 years</button>
       <button type="button" class="btn btn-outline-secondary active"
-              data-nw-series="net" aria-pressed="true">Net</button>
-      <button type="button" class="btn btn-outline-secondary"
-              data-nw-series="split" aria-pressed="false">Assets &amp; Liabilities</button>
-    </div>
-    <div class="btn-group btn-group-sm nw-horizon-picker" role="group"
-         aria-label="Trend horizon (pay periods ahead)">
-      <button type="button" class="btn btn-outline-secondary"
-              data-nw-horizon="6" aria-pressed="false">6</button>
-      <button type="button" class="btn btn-outline-secondary active"
-              data-nw-horizon="13" aria-pressed="true">13</button>
-      <button type="button" class="btn btn-outline-secondary"
-              data-nw-horizon="26" aria-pressed="false">26</button>
-      <button type="button" class="btn btn-outline-secondary"
-              data-nw-horizon="all" aria-pressed="false">All</button>
+              data-nw-range="horizon" aria-pressed="true">Horizon</button>
     </div>
   </div>
-  <div class="pulse-chart">
+  <div class="pulse-chart nw-stream">
     <canvas id="net-worth-chart-canvas" data-chart='{{ net_worth_chart_json }}'
-            role="img" aria-label="Net worth trend: solid history, dashed projection"></canvas>
+            role="img"
+            aria-label="Net worth stream: asset composition above zero, liabilities below, net-worth trajectory through the middle"></canvas>
+  </div>
+  {# Legend: each present category band + its today subtotal, then a
+     line-sample for the net-worth trajectory.  Band order matches the
+     stack (asset groups up the ramp, then liabilities); the swatch colors
+     are the same --nw-band-* tokens the chart reads.  Every figure is
+     producer-computed (group_subtotals + the net-worth hero), never in JS. #}
+  {% set nw_band_order = ['asset', 'retirement', 'investment', 'other', 'liability'] %}
+  <div class="nw-legend">
+    {% for band_key in nw_band_order if band_key in group_subtotals %}
+    <span class="nw-legend__item">
+      <span class="nw-legend__swatch nw-legend__swatch--{{ band_key }}"></span>
+      {{ category_labels.get(band_key, band_key|title) }}
+      <span class="font-mono nw-legend__value">{{ money(group_subtotals[band_key]) }}</span>
+    </span>
+    {% endfor %}
+    <span class="nw-legend__item">
+      <span class="nw-legend__line"></span>
+      Net worth
+      <span class="font-mono nw-legend__value">{{ money(net_worth.net_worth) }}</span>
+    </span>
   </div>
   {% endif %}
 </div>
@@ -139,21 +125,8 @@
    siblings), click-to-edit balance, one caption line, a muted sparkline,
    and a corner kebab carrying Transfer / Edit / Archive.  The labels
    dict is display microcopy keyed on the producer's category keys --
-   grouping logic itself stays in the service. #}
-{% set category_icons = {
-  'asset': 'bi-bank',
-  'liability': 'bi-credit-card',
-  'retirement': 'bi-briefcase',
-  'investment': 'bi-graph-up',
-  'other': 'bi-wallet',
-} %}
-{% set category_labels = {
-  'asset': 'Assets',
-  'liability': 'Liabilities',
-  'retirement': 'Retirement',
-  'investment': 'Investment',
-  'other': 'Other',
-} %}
+   grouping logic itself stays in the service (category_icons /
+   category_labels are defined once at the top of this partial). #}
 {% for category_name, category_accounts in grouped_accounts.items() %}
 <section class="acct-group">
   <div class="acct-group__head">

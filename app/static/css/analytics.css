@@ -436,6 +436,20 @@
 
 /* In-canvas month chart: caption line + the Chart.js canvas region
    (the .pulse-chart treatment at the spending band's height). */
+
+/* Caption row above the spending chart.  Owns its layout here rather than
+   borrowing the accounts cockpit's control row, which P-AC1 retired (the
+   net-worth stream replaced the old trend chart's controls); the padding /
+   flex is carried over verbatim so the caption renders unchanged. */
+.spend-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.25rem 1.375rem 0.5rem;
+}
+
 .spend-chart-note {
   font-size: 0.71875rem;
   color: var(--shekel-text-muted);

@@ -3405,10 +3405,13 @@ class TestHorizonSerialization:
         assert all(
             isinstance(v, float) for v in out["composition"]["liability"]
         )
-        # The milestone date serializes to an ISO string (the client
-        # positions the flag); label + kind pass through.
+        # The milestone serializes its ISO date, label, and kind, plus a
+        # fractional axis position ``x``.  Its date (2048) is beyond the two
+        # sample dates (ending 2026-12-31), so ``x`` clamps to the last
+        # index (1.0) -- the flag pins to the right edge.
         assert out["milestones"] == [
-            {"date": "2048-12-01", "label": "Debt-free", "kind": "debt_free"},
+            {"date": "2048-12-01", "label": "Debt-free", "kind": "debt_free",
+             "x": 1.0},
         ]
         assert out["current_index"] == 0
 
@@ -3419,60 +3422,84 @@ class TestHorizonSerialization:
         assert _serialize_horizon(None) is None
 
 
-class TestAllocationBar:
-    """Tests for the diverging allocation bar's width serialization + render."""
+class TestMilestoneAxisX:
+    """Tests for the milestone fractional-index helper (P-AC1 Loop B P2).
 
-    def test_widths_scale_to_the_larger_side(self):
-        """Each segment's pct is value/scale*100 with scale = the max side.
+    ``_milestone_axis_x`` places a milestone (an exact date) on the Horizon
+    stream's annual category axis as a fractional index, so the client's flag
+    plugin can position the flag between the year-end samples via
+    ``getPixelForValue``.
+    """
 
-        Assets total 50,000 and liabilities 100,000, so the scale is
-        100,000: the liability fills its half (100%) and the assets read
-        proportionally shorter (20% + 30% of their half).  ``float`` only at
-        this boundary; the values stay ``Decimal``.
+    def test_positions_a_milestone_between_annual_samples(self):
+        """A mid-year milestone maps to a fractional index between samples.
+
+        Samples 2026-01-01 / 2026-12-31 / 2027-12-31; a milestone on
+        2027-07-01 falls in the index-1..2 bracket, 182 of the 365 days from
+        the index-1 sample, so x = 1 + 182 / 365.
         """
         # pylint: disable=import-outside-toplevel
-        from app.routes.savings import _serialize_allocation_bar
-        allocation = {
-            "assets": [
-                {"label": "asset", "value": Decimal("20000.00")},
-                {"label": "retirement", "value": Decimal("30000.00")},
-            ],
-            "liabilities": [
-                {"label": "liability", "value": Decimal("100000.00")},
-            ],
-        }
+        from datetime import date
+        from app.routes.savings import _milestone_axis_x
+        dates = [date(2026, 1, 1), date(2026, 12, 31), date(2027, 12, 31)]
+        assert _milestone_axis_x(dates, date(2027, 7, 1)) == 1 + 182 / 365
 
-        result = _serialize_allocation_bar(allocation)
-
-        # scale = max(50000, 100000) = 100000
-        assert result["assets"][0]["pct"] == 20.0   # 20000/100000*100
-        assert result["assets"][1]["pct"] == 30.0   # 30000/100000*100
-        assert result["liabilities"][0]["pct"] == 100.0
-        assert all(isinstance(s["pct"], float) for s in result["assets"])
-        # values pass through unchanged as Decimal.
-        assert result["assets"][0]["value"] == Decimal("20000.00")
-
-    def test_empty_allocation_is_no_segments(self):
-        """With no segments the serializer returns empty lists (no div/0)."""
+    def test_exact_sample_and_out_of_range_dates_clamp(self):
+        """A date on a sample lands on its index; out-of-range dates clamp."""
         # pylint: disable=import-outside-toplevel
-        from app.routes.savings import _serialize_allocation_bar
-        assert _serialize_allocation_bar(
-            {"assets": [], "liabilities": []},
-        ) == {"assets": [], "liabilities": []}
+        from datetime import date
+        from app.routes.savings import _milestone_axis_x
+        dates = [date(2026, 1, 1), date(2026, 12, 31), date(2027, 12, 31)]
+        # The last sample -> the last index; the middle sample -> index 1.
+        assert _milestone_axis_x(dates, date(2027, 12, 31)) == 2.0
+        assert _milestone_axis_x(dates, date(2026, 12, 31)) == 1.0
+        # Before the first sample -> 0.0; after the last -> the last index.
+        assert _milestone_axis_x(dates, date(2020, 1, 1)) == 0.0
+        assert _milestone_axis_x(dates, date(2030, 1, 1)) == 2.0
 
-    def test_renders_bar_and_legend_in_page(
+
+class TestNetWorthStreamRender:
+    """The /savings page renders the P-AC1 net-worth stream element.
+
+    The diverging allocation bar and the old trend chart (with its
+    6/13/26/All picker) were replaced by ONE element: a range toggle over a
+    stream canvas plus a composition legend.
+    """
+
+    def test_renders_range_toggle_canvas_and_legend(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """The /savings page renders the allocation bar + legend.
+        """The stream's range toggle, canvas, and legend render on the page.
 
-        The seed Checking ($1,000) is an asset, so the bar has at least one
-        asset segment and the legend tier is present.
+        With the seed Checking ($1,000) plus an added Savings ($4,000) there
+        is a current period, so the chart region renders: the page carries
+        the `2 years` / `Horizon` range toggle (Horizon default), the stream
+        canvas with its serialized data-chart, and the composition legend
+        with an Assets band swatch (the two accounts are assets).  The
+        retired diverging-bar markup is gone.
         """
         with app.app_context():
+            _create_savings_account(
+                seed_user, name="Savings",
+                anchor_balance=Decimal("4000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
+            db.session.commit()
+
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"nw-alloc__bar" in resp.data
-            assert b"nw-alloc__legend" in resp.data
+            html = resp.data.decode()
+            # The two-mode range toggle replacing the old picker + net/split.
+            assert 'data-nw-range="horizon"' in html
+            assert 'data-nw-range="2yr"' in html
+            # The stream canvas carrying the serialized both-ranges payload.
+            assert 'id="net-worth-chart-canvas"' in html
+            assert "data-chart=" in html
+            # The composition legend with the Assets band swatch.
+            assert "nw-legend" in html
+            assert "nw-legend__swatch--asset" in html
+            # The retired diverging bar is gone.
+            assert "nw-alloc__bar" not in html
 
 
 class TestSparklines:

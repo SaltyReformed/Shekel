@@ -82,125 +82,95 @@
   color: var(--shekel-danger);
 }
 
-/* Trend controls: the Net vs Assets-and-Liabilities series toggle and the
-   6 / 13 / 26 / All horizon picker sit in a row above the chart, pushed to
-   opposite ends on a wide band and wrapping on a narrow one.  The buttons
-   themselves are Bootstrap ``.btn-group-sm`` outline buttons (their active
-   state is Bootstrap's ``.active``); only the row layout is bespoke. */
-.nw-chart-controls {
+/* Range toggle: the `2 years` / `Horizon` two-mode switch above the chart
+   (P-AC1: the 6 / 13 / 26 / All picker and the Net-vs-split toggle retired
+   with the old trend chart).  The buttons are Bootstrap ``.btn-group-sm``
+   outline buttons (active state is Bootstrap's ``.active``); only the row
+   layout is bespoke. */
+.nw-range {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
+  justify-content: flex-end;
   padding: 0.25rem 1.375rem 0.5rem;
 }
 
-.nw-chart-controls .btn-group {
-  flex: 0 0 auto;
+/* The stream chart is taller than the dashboard pulse chart: the stacked
+   composition bands plus the milestone-flag lanes reserved above them (a
+   canvas layout padding, set in net_worth_cockpit.js) need the extra room. */
+.nw-stream {
+  height: 360px;
 }
 
 /* =============================================
-   ALLOCATION BAR (diverging assets vs liabilities)
-   A single bar split at the center: the liability total grows left, the
-   asset-category subtotals stack right, both scaled to one shared max so
-   the net-worth gap reads as the difference in extents (decision 8).
-   Segment widths are applied by progress_bar.js from data-progress-pct.
+   NET-WORTH STREAM (P-AC1: composition + trajectory in one element)
+   Ruled 2026-07-11 (ui_ux_polish_audit.md P-AC1): asset category bands
+   stack up from zero on the D12 accent ramp, the liability band hangs below
+   in the danger token, and the net-worth line rides the difference.  The
+   chart, its milestone flags, and the end-of-line label are drawn by
+   net_worth_cockpit.js; this block supplies the per-band colors and the
+   HTML legend below the canvas.
    ============================================= */
-.nw-alloc {
-  padding: 0 1.375rem 0.625rem;
+
+/* Per-band chart color: each band's solid stop, used for the area's top
+   border, its translucent fill (net_worth_cockpit.js resolves the token to
+   rgba and applies the per-band alpha, the way every ShekelChart consumer
+   does), and its legend swatch.  Defined once here from the theme tokens --
+   the accent, the D12 ordinal ramp (--shekel-alloc-a1/-a2/-a3 from
+   components.css), and the danger money-state token -- so the chart and its
+   legend read ONE source and a theme stays a single block of variable
+   values.  asset / retirement / investment / other match the composition
+   band order. */
+:root {
+  --nw-band-asset: var(--shekel-accent);
+  --nw-band-retirement: var(--shekel-alloc-a1);
+  --nw-band-investment: var(--shekel-alloc-a2);
+  --nw-band-other: var(--shekel-alloc-a3);
+  --nw-band-liability: var(--shekel-danger);
 }
 
-/* The bar shell (flex row, height, radius, track) is the shared
-   .alloc-bar component (components.css, extracted for P-DT2); this
-   class keeps only the cockpit-specific positioning context for the
-   center tick below. */
-.nw-alloc__bar {
-  position: relative;
-}
-
-/* The two halves meet at the center (50%); liabilities fill from the center
-   leftward, assets from the center rightward. */
-.nw-alloc__half {
-  flex: 1 1 50%;
-  display: flex;
-  min-width: 0;
-}
-
-.nw-alloc__half--liab {
-  justify-content: flex-end;
-}
-
-.nw-alloc__half--asset {
-  justify-content: flex-start;
-}
-
-/* A faint tick where the two sides meet. */
-.nw-alloc__bar::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--shekel-surface);
-  transform: translateX(-0.5px);
-}
-
-/* Liabilities: money owed -> the danger token.  Asset categories are
-   graduated tints of the accent (the Steel Ink accent is the only non-money
-   chroma) so the composition is visible while staying monochrome; the
-   legend names each.  a0..a3 = asset, retirement, investment, other in
-   display order.  Each color is defined once for both the bar segment and
-   its legend swatch.
-
-   The ramp stops themselves (--shekel-alloc-a1/-a2/-a3) and the 2px
-   segment-gap rule moved to components.css with the shared .alloc-bar
-   shell (P-DT2 extraction); the D12 provenance and the do-not-substitute
-   note live there. */
-.nw-alloc__seg--liab,
-.nw-alloc__swatch--liab {
-  background: var(--shekel-danger);
-}
-
-.nw-alloc__seg--a0,
-.nw-alloc__swatch--a0 {
-  background: var(--shekel-accent);
-}
-
-.nw-alloc__seg--a1,
-.nw-alloc__swatch--a1 {
-  background: var(--shekel-alloc-a1);
-}
-
-.nw-alloc__seg--a2,
-.nw-alloc__swatch--a2 {
-  background: var(--shekel-alloc-a2);
-}
-
-.nw-alloc__seg--a3,
-.nw-alloc__swatch--a3 {
-  background: var(--shekel-alloc-a3);
-}
-
-/* Legend: each segment paired with its label and Decimal value. */
-.nw-alloc__legend {
+/* Legend: each present band paired with its label and today's Decimal
+   subtotal, plus a line-sample row for the net-worth trajectory.  The
+   swatch colors are the same --nw-band-* tokens the chart bands use. */
+.nw-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem 1rem;
-  margin-top: 0.4375rem;
+  padding: 0 1.375rem 0.625rem;
   font-size: 0.75rem;
   color: var(--shekel-text-secondary);
 }
 
-.nw-alloc__legend-item {
+.nw-legend__item {
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
+  white-space: nowrap;
 }
 
-/* Swatch dimensions are the shared .alloc-swatch (components.css); only
-   the --aN / --liab color variants above are cockpit-specific. */
+/* Square band swatch; the net trajectory's sample is a short rule in the
+   money ink, matching the on-canvas net line. */
+.nw-legend__swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 0.1875rem;
+  flex: 0 0 auto;
+}
+
+.nw-legend__line {
+  width: 0.875rem;
+  height: 0;
+  border-top: 2.5px solid var(--shekel-number-ink);
+  flex: 0 0 auto;
+}
+
+.nw-legend__swatch--asset { background: var(--nw-band-asset); }
+.nw-legend__swatch--retirement { background: var(--nw-band-retirement); }
+.nw-legend__swatch--investment { background: var(--nw-band-investment); }
+.nw-legend__swatch--other { background: var(--nw-band-other); }
+.nw-legend__swatch--liability { background: var(--nw-band-liability); }
+
+.nw-legend__value {
+  color: var(--shekel-text-primary);
+}
 
 /* =============================================
    ACCOUNT GROUPS (D6-F "group cells", ruled 2026-07-10)
