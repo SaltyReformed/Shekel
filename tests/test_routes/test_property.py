@@ -10,6 +10,7 @@ the equity-over-time chart producer + its route context contract
 """
 
 import json
+from collections import namedtuple
 from datetime import date
 from decimal import Decimal
 
@@ -690,6 +691,82 @@ class TestPropertyEquityChartProducer:
             )
             assert seam == first_tracked - 1
             assert chart.debt[seam] != series.schedule[0].remaining_balance
+
+    def test_gap_month_carries_prior_balance_not_zero(self, app):
+        """A calendar month with no schedule row carries the prior balance.
+
+        The resolver's biweekly-to-monthly redistribution can leave a calendar
+        month with no row of its own (real data does: a June and an August row
+        bracket a rowless July), while the contiguous axis still has a slot for
+        that month.  The loan's balance there is unchanged from the prior
+        payment -- NOT ``$0.00``.  This reproduces the production defect where
+        the real mortgage's debt line collapsed to zero exactly at today (a
+        rowless month), fabricating a debt cliff and a phantom full-equity
+        spike, and breaking the chart-vs-hero reconciliation by the whole loan
+        balance.  The bracketing months keep their own balances; the gap month
+        carries the prior balance and its tier, so the debt line stays
+        continuous.
+        """
+        row_cls = namedtuple(
+            "Row", ["payment_date", "remaining_balance", "is_confirmed"],
+        )
+        with app.app_context():
+            today = date.today()
+            # A prior month and a next month bracket a rowless today (the gap).
+            schedule = [
+                row_cls(add_months(today, -1), Decimal("900.00"), True),
+                row_cls(add_months(today, 1), Decimal("700.00"), True),
+            ]
+            series = property_equity_chart.SecuredLoanSeries(
+                back_projection=[], schedule=schedule,
+                current_balance=Decimal("700.00"),
+            )
+            chart = property_equity_chart.build_property_equity_chart(
+                [series], _FOUR_HUNDRED_K, Decimal("0"), today,
+            )
+            # Axis is today-1, today, today+1 -> today's month is index 1.
+            assert chart.today_index == 1
+            # The gap month (today) carries the prior 900.00, never 0.00.
+            assert chart.debt[1] == Decimal("900.00")
+            assert chart.debt_tier[1] == "confirmed"
+            # The whole line is continuous: prior, carried, next.
+            assert chart.debt == [
+                Decimal("900.00"), Decimal("900.00"), Decimal("700.00"),
+            ]
+            # Equity nets the carried debt, never spiking to the full value.
+            assert chart.equity[1] == _FOUR_HUNDRED_K - Decimal("900.00")
+
+    def test_gap_month_after_today_carries_projected_tier(self, app):
+        """A gap in the projected (forward) region carries the prior projected row.
+
+        The forward-fill is direction-uniform: a rowless month AFTER today, in
+        the committed-projection region, carries the prior projected balance and
+        the ``projected`` tier -- never the NEXT row and never ``$0.00``.  Locks
+        the carry direction on the forward side (the confirmed side is pinned by
+        the gap-at-today test above).
+        """
+        row_cls = namedtuple(
+            "Row", ["payment_date", "remaining_balance", "is_confirmed"],
+        )
+        with app.app_context():
+            today = date.today()
+            # All projected (no confirmed history); a rowless month at today+1.
+            schedule = [
+                row_cls(today, Decimal("800.00"), False),
+                row_cls(add_months(today, 2), Decimal("600.00"), False),
+            ]
+            series = property_equity_chart.SecuredLoanSeries(
+                back_projection=[], schedule=schedule,
+                current_balance=Decimal("800.00"),
+            )
+            chart = property_equity_chart.build_property_equity_chart(
+                [series], _FOUR_HUNDRED_K, Decimal("0"), today,
+            )
+            # Axis is today, today+1, today+2 -> the gap is index 1.
+            assert chart.debt == [
+                Decimal("800.00"), Decimal("800.00"), Decimal("600.00"),
+            ]
+            assert chart.debt_tier[1] == "projected"
 
 
 class TestPropertyDetailChartContext:

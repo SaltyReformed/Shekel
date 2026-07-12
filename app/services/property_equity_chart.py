@@ -297,6 +297,54 @@ def _fallback_chart(
     )
 
 
+def _dense_month_balances(
+    tiers: dict[tuple[int, int], tuple[Decimal, str]],
+    axis_keys: list[tuple[int, int]],
+) -> list[tuple[Decimal, str] | None]:
+    """Forward-fill one loan's sparse month map across the whole axis.
+
+    A loan's resolved rows are NOT guaranteed one per calendar month: the
+    resolver's biweekly-to-monthly redistribution can leave a calendar month
+    with no row of its own (real data does -- a payment folds into the following
+    month, so e.g. a June and an August row bracket a rowless July), while the
+    contiguous axis has a slot for every month regardless.  Within the loan's
+    active span (its first row's month through its last), a month with no row
+    carries the most recent prior balance forward: the balance is unchanged
+    until the next payment posts, so the debt line stays continuous
+    (piecewise-constant between payments) instead of collapsing to ``$0.00`` on
+    a gap month -- which would fabricate a debt cliff and a phantom equity spike
+    mid-line, and (when the gap lands on today) break the chart-vs-hero
+    reconciliation by the loan's whole balance.  Outside the span (before the
+    loan's first month, after its last) the loan contributes nothing (``None``),
+    so a younger loan never adds a balance to a month before it existed and a
+    paid-off loan drops out cleanly.
+
+    Args:
+        tiers: The loan's sparse month-keyed ``(balance, tier)`` map
+            (:func:`_loan_month_tiers`).
+        axis_keys: The ``(year, month)`` key of each axis month.
+
+    Returns:
+        Per axis month, the loan's carried ``(balance, tier)`` within its span,
+        or ``None`` outside it.  Parallel to ``axis_keys``.
+    """
+    if not tiers:
+        return [None] * len(axis_keys)
+    first_key, last_key = min(tiers), max(tiers)
+    dense: list[tuple[Decimal, str] | None] = []
+    carried: tuple[Decimal, str] | None = None
+    for key in axis_keys:
+        if key < first_key or key > last_key:
+            dense.append(None)
+            continue
+        # ``first_key`` is always present (it is ``min(tiers)``), so ``carried``
+        # is set before the first in-span month; later gap months reuse it.
+        if key in tiers:
+            carried = tiers[key]
+        dense.append(carried)
+    return dense
+
+
 def _debt_series(
     loan_tiers: list[dict[tuple[int, int], tuple[Decimal, str]]],
     axis_keys: list[tuple[int, int]],
@@ -304,12 +352,15 @@ def _debt_series(
 ) -> tuple[list[Decimal], list[str]]:
     """Sum the loans' per-calendar-month balances into one debt line + tier line.
 
-    For each axis month, each loan contributes the balance its rows give for
-    that calendar month, or ``$0.00`` for a month outside its
-    origination-to-payoff span (so a younger loan never adds a balance to a
-    month before it existed -- the H2 fix).  The month's ``debt_tier`` is the
-    least-confident contributing loan's tier; a month with no contributor
-    (``$0.00`` debt, e.g. a gap between two non-overlapping loans) is tagged
+    Each loan's sparse rows are first forward-filled across the axis within the
+    loan's active span (:func:`_dense_month_balances`), so a gap month carries
+    the prior balance rather than dropping to ``$0.00``.  Then, for each axis
+    month, the in-span loans' balances sum into the debt line and their
+    least-confident tier sets the month's ``debt_tier`` (an estimated dollar and
+    a confirmed dollar read as estimated).  A loan contributes ``$0.00`` only
+    for months outside its origination-to-payoff span (so a younger loan never
+    adds a balance to a month before it existed -- the H2 fix); a month with no
+    contributor at all (e.g. a gap between two non-overlapping loans) is tagged
     ``confirmed`` up to today and ``projected`` after, purely to style its
     zero-line segment.
 
@@ -322,14 +373,16 @@ def _debt_series(
     Returns:
         ``(debt, debt_tier)`` -- parallel lists, one entry per axis month.
     """
+    dense = [_dense_month_balances(tiers, axis_keys) for tiers in loan_tiers]
     debt: list[Decimal] = []
     debt_tier: list[str] = []
-    for index, key in enumerate(axis_keys):
+    for index in range(len(axis_keys)):
         total = _ZERO_MONEY
         tiers_present: list[str] = []
-        for tiers in loan_tiers:
-            if key in tiers:
-                balance, tier = tiers[key]
+        for loan_dense in dense:
+            cell = loan_dense[index]
+            if cell is not None:
+                balance, tier = cell
                 total += balance
                 tiers_present.append(tier)
         debt.append(total)
