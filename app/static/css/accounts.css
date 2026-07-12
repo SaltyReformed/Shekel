@@ -535,6 +535,16 @@ a.acct-cell__link:focus-visible {
   color: var(--shekel-text-muted);
 }
 
+/* Footnote under the property equity chart: the honest flat-carry /
+   state caption the Loop A lock requires (account_detail_audit.md,
+   Loop A lock item 3 and 6) plus the market-value edit pointer that
+   used to live in the band's helper copy. */
+.acctd-chart-cap {
+  padding: 0 1.375rem 0.875rem;
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
 .acctd-params {
   max-width: 26.25rem;
 }

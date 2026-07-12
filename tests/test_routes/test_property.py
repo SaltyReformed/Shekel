@@ -819,6 +819,8 @@ class TestPropertyDetailChartContext:
         context = self._context(app, auth_client, prop_id)
         assert context["has_equity_chart"] is True
         assert context["chart_state"] == "standard"
+        # A loan originated today has no pre-tracking gap, so no estimated tier.
+        assert context["has_estimated_debt"] is False
         chart = json.loads(context["chart_json"])
         assert set(chart) == {
             "labels", "value", "debt", "equity", "today_index", "debt_tier",
@@ -829,6 +831,42 @@ class TestPropertyDetailChartContext:
         )
         # The value line anchors at the $400,000 market value at today.
         assert chart["value"][chart["today_index"]] == 400000.0
+
+    def test_context_flags_estimated_debt_for_tracking_start_loan(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """A mid-life-imported loan sets ``has_estimated_debt`` True end to end.
+
+        A loan originated 60 months ago but tracked only from 24 months ago has
+        a pre-tracking contractual back-projection (the ``estimated`` tier), so
+        the route exposes ``has_estimated_debt`` True -- the flag the caption's
+        dotted pre-tracking clause renders on.  Wires the producer's tier through
+        the route context (the tier math itself is pinned by the producer test).
+        """
+        with app.app_context():
+            today = date.today()
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported",
+                principal=Decimal("300000.00"), term=360,
+                origination_date=add_months(today, -60), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            params = load_loan_params(loan.id)
+            insert_tracking_start_event(
+                params, Decimal("260000.00"), add_months(today, -24),
+            )
+            db.session.commit()
+            prop_id = prop.id
+
+        context = self._context(app, auth_client, prop_id)
+        assert context["has_equity_chart"] is True
+        assert context["has_estimated_debt"] is True
+        # The dotted clause is present exactly when the flag is set.
+        chart = json.loads(context["chart_json"])
+        assert "estimated" in chart["debt_tier"]
 
     def test_resolves_each_secured_loan_once(
         self, app, auth_client, db, seed_user, seed_periods_today, monkeypatch,
@@ -879,6 +917,7 @@ class TestPropertyDetailChartContext:
 
         context = self._context(app, auth_client, prop_id)
         assert context["has_equity_chart"] is False
+        assert context["has_estimated_debt"] is False
         chart = json.loads(context["chart_json"])
         assert chart["value"] == []
         assert chart["debt"] == []

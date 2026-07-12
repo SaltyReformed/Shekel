@@ -700,7 +700,10 @@ def _property_chart_context(
     template hands to ``property_detail.js``; ``chart_state`` drives the caption
     variant (``standard`` / ``zero_rate`` / ``no_loans``), ``today_index`` the
     Today boundary, and ``debt_tier`` the per-month estimated / confirmed /
-    projected styling.
+    projected styling.  ``has_estimated_debt`` -- ``True`` when any month is the
+    ``estimated`` contractual back-projection tier -- gates the caption's dotted
+    pre-tracking clause so the copy names a texture only when the chart draws it
+    (the "a figure and its caption never disagree" design principle).
 
     Args:
         params: The Property's :class:`AssetAppreciationParams` (the rate).
@@ -723,6 +726,7 @@ def _property_chart_context(
                 "today_index": 0, "debt_tier": [],
             }),
             "chart_state": property_equity_chart.CHART_STATE_NO_LOANS,
+            "has_estimated_debt": False,
         }
     chart = property_equity_chart.build_property_equity_chart(
         _secured_loan_series(resolved_loans),
@@ -741,6 +745,9 @@ def _property_chart_context(
             "debt_tier": chart.debt_tier,
         }),
         "chart_state": chart.chart_state,
+        "has_estimated_debt": (
+            property_equity_chart.TIER_ESTIMATED in chart.debt_tier
+        ),
     }
 
 
