@@ -201,6 +201,10 @@ center tick, both themes, real diverging-bar geometry), but on seeing the annota
 developer ruled the diverging idiom itself wrong (it re-encodes the net-worth hero as an ambiguous
 empty gap and does not label which side is which); P-AC1 is deferred to a future session to decide
 REDESIGN vs REMOVE the allocation bar. Detail recorded at P-AC1/P-AC4 in the audit register.
+**P-AC1 RULED 2026-07-11 (Loop A):** replace the bar AND the trend chart with one C1 diverging
+stream + milestone flags (Horizon default, two-mode range toggle, net line in number ink); full
+record at P-AC1 in the register; Loop B P1 (Opus data) + P2 (Fable page) tracked in the closeout
+plan, item 2.
 
 ### S10. Breadcrumb removal + back buttons (D1) -- OPUS recommended, size M
 

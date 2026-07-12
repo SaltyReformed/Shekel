@@ -39,6 +39,13 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    (the judgment item); P-AC4 liability red on the loan-cell balances; verify the account edit form
    and archived list against the D5 archive convention (the cockpit has no on-card archive button
    left after D6-F).
+   **P-AC1 RULED 2026-07-11 (Loop A round 1, run after everything else here closed):** scope widened
+   to replace the bar AND the whole trend chart with ONE element - C1 diverging stream + milestone
+   flags, Horizon default, two-mode range toggle (`2 years` / `Horizon`), picker + series toggle
+   retired, net line in number ink. Full record at P-AC1 in the polish register +
+   `accounts_audit.md` amendment. Remaining build = Loop B: **P1 (Opus)** long-horizon annual
+   producer + per-category composition split of the 2-year series; **P2 (Fable)** the page element.
+   This is the last build item before the ship arc (items 10-12).
 3. **S10 - breadcrumb removal + back buttons (D1)** (Opus recommended, size M). Inventory the
    sub-pages whose only way back is the breadcrumb; add a top-right "Back to <parent>" on the
    amortization-schedule pattern; then delete breadcrumbs everywhere (~24 templates). Run solo.
@@ -152,7 +159,7 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 | # | Session     | Contents                          | Model           | Size     |
 |---|-------------|-----------------------------------|-----------------|----------|
 | 1 | S8          | item 1                            | Opus            | S-M      |
-| 2 | S9+         | items 2, 5, 8 (all done 2026-07-11; P-AC1 still deferred) | Fable preferred | S        |
+| 2 | S9+         | items 2, 5, 8 (all done 2026-07-11; P-AC1 ruled, Loop B P1+P2 remain) | Fable preferred | S        |
 | 3 | S10         | item 3                            | Opus            | M (solo) |
 | 4 | Errors + A5 | items 4, 6, 9 + grid D2 (item 7)  | Opus            | M        |
 | 5 | Ship        | items 10-12                       | developer-led   | -        |

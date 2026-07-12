@@ -267,17 +267,43 @@ Section 4.
 
 ### Accounts (Net Worth Cockpit)
 
-- **P-AC1 [bug-adjacent - DEFERRED 2026-07-11 (S9): redesign-or-remove the whole bar]** The "mystery
-  segment" (O19) is the unfilled remainder of the liability half of the diverging allocation bar,
-  styled `--shekel-border-subtle` - dark enough to read as a fourth data series whose width happens
-  to encode net worth. The presentational fix (recede the empty track + make the center tick
-  visible) was scoped and mocked in S9 (three track candidates, both themes, real geometry).
-  Developer ruling on seeing the annotated bar: the diverging bar is the wrong idiom -- it
-  re-encodes net worth (already the band's hero figure) as an ambiguous empty gap and does not label
-  which side is which, so recoloring the gap does not make it self-explaining. **P-AC1 is deferred
-  to a future session where the developer decides between REDESIGNING the allocation visual or
-  REMOVING it.** No bar change shipped in S9. (Scope note: this is the bar only; the liability CELL
-  balances were a separate finding, P-AC4 below, and shipped.)
+- **P-AC1 [bug-adjacent - RULED 2026-07-11 (Loop A round 1): C1 diverging stream + milestone flags
+  replaces the bar AND the trend chart]** The "mystery segment" (O19) is the unfilled remainder of
+  the liability half of the diverging allocation bar, styled `--shekel-border-subtle` - dark enough
+  to read as a fourth data series whose width happens to encode net worth. The presentational fix
+  (recede the empty track + make the center tick visible) was scoped and mocked in S9 (three track
+  candidates, both themes, real geometry). Developer ruling on seeing the annotated bar: the
+  diverging bar is the wrong idiom -- it re-encodes net worth (already the band's hero figure) as an
+  ambiguous empty gap and does not label which side is which, so recoloring the gap does not make it
+  self-explaining. P-AC1 was deferred from S9 for a redesign-vs-remove decision. No bar change
+  shipped in S9. (Scope note: this is the bar only; the liability CELL balances were a separate
+  finding, P-AC4 below, and shipped.) **Loop A (2026-07-11, Fable).** On review the developer
+  WIDENED the scope: the bar and the trend chart's Assets-and-Liabilities mode carry the same
+  information, and neither communicates it -- the bar has composition without time and lacks the
+  context to interpret it; the chart has totals without composition and its honest range makes it
+  near-useless for a loan-holder (decision 11 gives them an empty history tail, and "All" reaches
+  only the ~2-year rolling window, over which a mortgage-heavy distribution shifts ~4 points).
+  Scoping rulings (pre-mock): ONE element replaces BOTH the bar and the whole trend chart; it must
+  carry composition over time AND the net trajectory; granularity = category groups; mock BOTH
+  ranges (2-year engine-real and a decades horizon) to judge whether 2 years is too static. Loop A
+  round 1 (real dev data, both themes, both ranges; palette computed via the dataviz validator --
+  ordinal accent pair passes all checks both themes; the categorical triple passes CVD dark 12.4 and
+  sits at the legal-with-secondary-encoding floor light 11.8, satisfied by fixed stacking order +
+  2px surface gaps + legend) presented four candidates: C1 diverging stream (asset bands stacked up
+  the D12 ramp, liability band below zero in danger, net line riding the difference), C2 ledger
+  columns, C3 split panel (net panel + 100% share stream; forced split -- % and $ cannot share one
+  axis), W milestone-flag overlay (loan payoffs, net-worth crossings, debt-free; D11 structural
+  markers, accent + text, never amber). **RULING: C1 with the W flags, defaulting to the HORIZON
+  view. Range control = a two-mode toggle (`2 years` biweekly engine-real / `Horizon` annual
+  long-horizon producer). The 6/13/26/All picker and the Net-vs-split series toggle RETIRE with this
+  element. Net line in number ink** ("the number is the hero" applied to the line; the accent
+  already colors the asset bands). Retires with the build: the diverging bar (`nw-alloc__*`
+  structure; the shared `.alloc-bar` shell stays -- the loan page consumes it), `compute_allocation`
+  and `_serialize_allocation_bar`, and `net_worth_cockpit.js`'s view/horizon logic. Build splits per
+  the established pattern -- Loop B P1 (Opus): the long-horizon annual producer (loan schedules to
+  payoff plus per-account growth params) and the per-category composition split of the existing
+  2-year series; Loop B P2 (Fable): the page element. Supersedes accounts_audit.md rebuild decisions
+  7 and 8 (amendment recorded there).
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.

@@ -311,7 +311,16 @@ Decided 2026-06-25 while building the P3 trend (slice 3a), after tracing the dat
     analytics Year-End net-worth chart, so its pre-today points likely carry the original-principal
     artifact too -- flagged, separate follow-up.
 
-Decided 2026-06-25 (developer ruling on the P4 hard-delete fork). Locked.
+**Amended 2026-07-11 (P-AC1 Loop A ruling; supersedes decisions 7 and 8, revises 11's picker).** The
+diverging allocation bar (decision 8) and the trend chart's two modes (decision 7) are replaced by
+ONE element: a diverging stream chart -- asset category bands stacked above zero on the D12 ordinal
+accent ramp, the liability band below zero in danger, and the net-worth line (number ink,
+solid-into-dashed with the Today marker) riding the difference -- with milestone flags (loan
+payoffs, net-worth crossings, debt-free; accent + text structural markers). The 6/13/26/All horizon
+picker and the Net vs Assets-and-Liabilities toggle retire, replaced by a two-mode range toggle:
+`2 years` (biweekly, the engine-real window; decision 11's honest-history gate unchanged) and
+`Horizon` (annual steps to payoff via a new long-horizon producer), with Horizon the default. Full
+ruling record at P-AC1 in `ui_ux_polish_audit.md`.
 
 12. **Hard-delete's home: the shared edit form's danger zone.** When P4 retires the `/accounts`
     table, permanent hard-delete moves into a "Danger Zone" section at the bottom of the shared
