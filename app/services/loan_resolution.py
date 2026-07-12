@@ -2,7 +2,7 @@
 
 The read switch's seeding layer.  The pure :mod:`app.services.loan_resolver`
 takes plain data and returns a :class:`~app.services.loan_resolver.LoanState`; the
-two functions here are the db-facing entry points every SUMMARY surface (net
+two db-facing wrappers here are the entry points every SUMMARY surface (net
 worth, year-end, /savings tile, debt-strategy, home equity, the loan route card,
 loan recurrence-sync) resolves a loan account through.  They load the loan's
 genesis-ledger confirmed view AND its standing overpayment, then delegate to the
@@ -16,15 +16,25 @@ ceiling; the resolver-seeding wrappers are a distinct concern (they compose the
 loaders + the pure resolver), so they live here and import what they need.  This
 module imports FROM ``loan_payment_service``; ``loan_payment_service`` does not
 import back, so there is no cycle.
+
+It also hosts one PURE (no-I/O) producer, :func:`contractual_schedule_from_origination`:
+the property equity chart's from-origination contractual schedule, which seeds the
+same resolver composer with a synthesized origination anchor instead of a confirmed
+view.  It lives here beside :func:`resolve_account_loan` because it too composes the
+loaders' anchor synthesis with the pure resolver; the caller supplies its one loaded
+input (the rate-change feed), so the function itself stays I/O-free.
 """
 
 from datetime import date
+from decimal import Decimal
 
 from app.models.loan_params import LoanParams
 from app.services import loan_resolver
+from app.services.amortization_engine import AmortizationRow, RateChangeRecord
 from app.services.loan_loaders import (
     load_loan_anchor_facts,
     load_loan_params,
+    synthesize_origination_anchor,
 )
 from app.services.loan_payment_service import (
     confirmed_loan_view,
@@ -132,3 +142,64 @@ def resolve_account_loan(
         account_id, scenario_id, today,
     )
     return params, state
+
+
+def contractual_schedule_from_origination(
+    loan_params: LoanParams,
+    rate_changes: list[RateChangeRecord] | None,
+) -> list[AmortizationRow]:
+    """Return a loan's pure contractual amortization schedule FROM ORIGINATION.
+
+    The property equity chart's pre-tracking debt line (the (a) contractual
+    back-projection,
+    ``docs/plans/implementation_plan_property_equity_chart_rebuild.md``): a
+    mid-life-imported loan's confirmed ledger opens at its ``tracking_start``, so
+    :func:`resolve_account_loan`'s schedule begins there and the
+    origination-to-tracking-start months are absent.  This producer supplies
+    them as the contractual schedule the loan's origination terms imply
+    (``original_principal`` amortized over ``term_months`` at the rate-period
+    rates), so the chart can draw the pre-tracking debt as an ``estimated`` tier
+    and clip it at the tracking-start seam.
+
+    Forks NO amortization math: it seeds
+    :func:`loan_resolver.compute_payoff_scenarios` with a synthesized ORIGINATION
+    anchor (:func:`loan_loaders.synthesize_origination_anchor`) and an empty
+    payment feed, evaluated as of ``origination_date``, and returns its
+    ``original_forward`` -- the pure contractual reference (no override, no
+    extra).  Seeding through the composer inherits the resolver's EXACT
+    first-payment-date and remaining-term convention (``next_pay_date`` one month
+    after origination on ``payment_day``, the full ``term_months`` remaining), so
+    the back-projection lands on the same monthly grid as the resolved schedule
+    and the two cannot drift at the seam.
+
+    Pure: takes loaded data (the caller supplies ``rate_changes`` via
+    :func:`loan_loaders.load_rate_changes`); performs no I/O.
+
+    Args:
+        loan_params: The loan's :class:`LoanParams` (its immutable
+            ``origination_date`` / ``original_principal`` / ``term_months`` /
+            ``payment_day`` / ARM cadence).
+        rate_changes: The loan's :class:`RateChangeRecord` feed (the origination
+            row plus any ARM adjustments), so each pre-tracking month is governed
+            by its correct per-period rate.  Must contain the origination row
+            (:func:`loan_resolver.resolve_periods` raises on an empty feed).
+
+    Returns:
+        The contractual :class:`AmortizationRow` list from origination to payoff,
+        each ``is_confirmed=False`` (a contractual estimate, never recorded
+        fact).  The caller clips it to the months before the loan's tracking
+        start.
+    """
+    scenarios = loan_resolver.compute_payoff_scenarios(
+        loan_inputs=loan_resolver.LoanInputs(
+            loan_params,
+            [synthesize_origination_anchor(loan_params)],
+            None,
+            rate_changes,
+        ),
+        extra_monthly=Decimal("0.00"),
+        as_of=loan_params.origination_date,
+        confirmed_view=None,
+        extra_principal=Decimal("0.00"),
+    )
+    return list(scenarios.original_forward)

@@ -215,6 +215,34 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
     return facts
 
 
+def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
+    """Return a loan's ORIGINATION anchor, synthesized from its immutable params.
+
+    The origination-dated opening -- ``(origination_date, original_principal)``
+    -- ALWAYS, regardless of any ``tracking_start`` event.  This is deliberately
+    NOT :func:`load_loan_anchor_facts`' opening fact, which a mid-life import's
+    ``tracking_start`` supersedes (:func:`_opening_anchor_fact`): a caller that
+    needs the loan's schedule FROM ORIGINATION -- the contractual back-projection
+    that fills a tracking-start loan's pre-tracking months
+    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`)
+    -- must seed from origination, not the recent tracking-start balance, or the
+    pre-tracking debt would be a flat plateau instead of a real amortization
+    curve.  Reuses the origination synthesis by passing NO tracking-start events,
+    so the origination anchor stays defined in exactly one place.
+
+    Pure: reads only the immutable *params* fields, no query.
+
+    Args:
+        params: The loan's :class:`LoanParams` row (supplies the account id and
+            the immutable ``origination_date`` / ``original_principal``).
+
+    Returns:
+        The origination :class:`LoanAnchorFact` (``is_opening=True``,
+        ``is_tracking_start=False``).
+    """
+    return _opening_anchor_fact(params, [])
+
+
 def _rate_change_records_from(
     rate_history_records: list,
 ) -> list[RateChangeRecord] | None:
