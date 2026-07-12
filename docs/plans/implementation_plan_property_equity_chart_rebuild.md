@@ -198,13 +198,25 @@ Data first (Opus), visual second (Fable), each resumable from this plan.
    DONE: `contractual_schedule_from_origination` + `synthesize_origination_anchor` +
    `tests/test_services/test_loan_resolution.py` (3 tests: exact 12-month amortization, 360-month
    span, tracking-start-independence). pylint 10.00; 329-test consumer regression green.
-2. **`build_property_equity_chart` -> pure, date-anchored**: date-keyed value, future-debt fallback,
-   date-aligned merge, `today_index` + `debt_tier` contract. Convert the 3 reproductions + add the
-   back-projection and internal-identity tests.
-3. **Route rewire to resolve-once** (D1): one resolution feeding both `compute_home_equity` and the
-   pure chart; one `today`; the reconciliation + single-resolution spy tests.
-4. **Shared primitive generalization** (8), gated by the unchanged loan-band suite.
-5. **Fable visual** (Loop B): render `debt_tier`'s estimated region distinctly; captions state the
+2 + 3. **Pure date-anchored producer + route resolve-once** (MERGED -- the producer's new pure
+signature and its sole caller must change together, rule 7, to keep the tree green). DONE:
+`build_property_equity_chart` rewritten pure/date-anchored (date-keyed value, future-debt fallback
+owned by the producer, calendar-month merge, `today_index` + `debt_tier` contract, per-loan
+`SecuredLoanSeries` input); `property_detail` resolves each loan ONCE and feeds both
+`compute_home_equity` and the chart (one `today`); `_secured_loan_series` builds the clipped
+back-projection. Tests (`tests/test_routes/test_property.py`, 16): fallback, H1
+(zero-balance-with-nonempty-schedule -> fallback), H2 (date-aligned merge), H3 (past months flat),
+value/equity identity, zero-rate, route context contract, resolve-once spy. Fixed a C7-2 dead
+anchor-NULL fork the rewire briefly introduced. pylint 10.00; full route suite 2727 green. STILL
+PENDING: the chart-vs-hero reconciliation test with real CONFIRMED history (needs settled loan
+payments; the design guarantees it -- last confirmed row balance == `current_balance` -- and the
+identity test already covers `equity == value - debt`) and the back-projection `estimated`-tier +
+tracking-start-seam test (both need a settled-payment / tracking-start fixture).
+2. **Shared primitive generalization** (8), gated by the unchanged loan-band suite. NOTE: the pure
+   producer no longer imports `chart_series.build_chart_series` (it builds its own date-aligned
+   merge), so this step is now DE-RISKED to "hoist the property merge as the shared date-aligned
+   primitive and retire the loan band's front-align" rather than a mutation both depend on.
+3. **Fable visual** (Loop B): render `debt_tier`'s estimated region distinctly; captions state the
    pre-tracking estimate honestly; both themes / viewports; live-verify.
 
 ## 12. Open sub-decisions (decide at the gate, do not block the plan)
