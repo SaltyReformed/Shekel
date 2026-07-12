@@ -182,31 +182,30 @@ DONE (commit 2, 16 tests):
   compounds only after; `today_index > 0`.
 - **Value/equity identity, zero-rate, route context contract, D1 resolve-once spy.**
 
-OWED (still pending -- cold-resumable recipe below). Both need a fixture the current tests lack.
+DONE (commit 3, 2 tests -- both green, both empirically probed):
 
-- **Reconciliation with real confirmed history** (closes review finding M1). Recipe: create a cash
-  account + a loan linked to the property, then settle N monthly payments with the
-  `create_settled_transfer` helper (`from_account=cash`, `to_account=loan`, a seeded `period`, an
-  `amount`) -- a settled transfer INTO the loan books a confirmed shadow-income payment the resolver
-  replays. After settling, `resolve_account_loan(...).current_balance` equals the LAST confirmed
-  schedule row's `remaining_balance`. Build the chart + `compute_home_equity` from that one
-  resolution and assert `debt[i] == hero.total_debt` and `equity[i] == hero.equity` at
-  `i = the axis index of the last confirmed month`. **CAVEAT (learned building this):** the
-  reconciliation index is the LAST CONFIRMED month, NOT necessarily `today_index` -- and a loan with
-  NO confirmed history does NOT reconcile, because its schedule projects contractual reductions from
-  the anchor while `current_balance` stays at the anchor/principal. So the test MUST use settled
-  payments; do not try to reconcile a no-confirmed loan.
-- **Estimated tier + tracking-start seam** (proves the (a) back-projection end to end). Recipe:
-  `create_loan_account(..., origination_date=add_months(today, -60))`, then
-  `insert_tracking_start_event(params, tracking_balance, add_months(today, -24))` with a
-  `tracking_balance` deliberately OFF the contractual (so the seam is visible). Build the series via
-  the route path (`_series_for` in the test, or `detail._secured_loan_series`); the
-  `back_projection` is non-empty (the origination..tracking-start months). Assert: `debt_tier` for
-  the pre-tracking months is `"estimated"`; those `debt` values equal
-  `contractual_schedule_from_origination(params, rate_changes)` clipped to
-  `payment_date < tracking_start` (independent oracle); the confirmed region is `"confirmed"`; and
-  the seam gap is present (contractual balance the month before tracking start differs from the
-  actual `tracking_balance` -- assert the gap, do not hide it).
+- **`test_chart_reconciles_with_hero_at_last_confirmed_month`** (closes review finding M1). Settles
+  two real monthly payments (`create_settled_transfer`, `from_account=seed_user["account"]`,
+  `to_account=loan`, `seed_periods[1]`/`[3]`), resolves ONCE, and feeds that one resolution to both
+  `compute_home_equity` and the chart. Asserts `debt[i] == hero.total_debt` and
+  `equity[i] == hero.equity` at `i = the last confirmed month's label index`, and -- with today
+  frozen to April, last confirmed in March -- proves today's month is NOT the reconciliation point
+  (`index < today_index`; `debt_tier[today_index] == "projected"`;
+  `debt[today_index] < current_balance`). **Learned + corrected against the recipe:** an
+  origination-anchored loan's resolved schedule opens at its FIRST CONFIRMED payment, so the
+  origination-to-first-payment months become a real (non-empty) `estimated` back-projection here --
+  NOT the empty prefix the recipe assumed. The reconciliation still keys off the `confirmed` tier,
+  so the test is correct; the assumption was refined.
+- **`test_back_projection_estimated_tier_and_tracking_start_seam`** (proves the (a) back-projection
+  end to end). `create_loan_account(..., origination_date=add_months(today, -60))` +
+  `insert_tracking_start_event(params, Decimal("260000.00"), add_months(today, -24))` (260k is well
+  below the ~285k contractual, so the seam gap is unmistakable). Builds via `_series_for`. Asserts:
+  every pre-tracking month is `"estimated"` with `debt` equal to
+  `contractual_schedule_from_origination(...)` clipped to `payment_date < tracking_start`; the
+  tracked region (no settled payments) is `"projected"`; and the seam sits on ADJACENT axis months
+  (`seam == first_tracked - 1`) with the estimated contractual balance differing from the recorded
+  opening -- the gap is asserted, never smoothed. (The `"confirmed"` region the original recipe
+  mentioned needs settled payments and is covered by the M1 test above, not this one.)
 
 Gates: `pylint app/` 10.00 with the full `--fail-on` set; the 53 loan-chart tests unchanged (commit
 4); full suite green.
@@ -228,17 +227,30 @@ owned by the producer, calendar-month merge, `today_index` + `debt_tier` contrac
 back-projection. Tests (`tests/test_routes/test_property.py`, 16): fallback, H1
 (zero-balance-with-nonempty-schedule -> fallback), H2 (date-aligned merge), H3 (past months flat),
 value/equity identity, zero-rate, route context contract, resolve-once spy. Fixed a C7-2 dead
-anchor-NULL fork the rewire briefly introduced. pylint 10.00; full route suite 2727 green. STILL
-PENDING: the chart-vs-hero reconciliation test with real CONFIRMED history (needs settled loan
-payments; the design guarantees it -- last confirmed row balance == `current_balance` -- and the
-identity test already covers `equity == value - debt`) and the back-projection `estimated`-tier +
-tracking-start-seam test (both need a settled-payment / tracking-start fixture).
-2. **Shared primitive generalization** (8), gated by the unchanged loan-band suite. NOTE: the pure
-   producer no longer imports `chart_series.build_chart_series` (it builds its own date-aligned
-   merge), so this step is now DE-RISKED to "hoist the property merge as the shared date-aligned
-   primitive and retire the loan band's front-align" rather than a mutation both depend on.
-3. **Fable visual** (Loop B): render `debt_tier`'s estimated region distinctly; captions state the
-   pre-tracking estimate honestly; both themes / viewports; live-verify.
+anchor-NULL fork the rewire briefly introduced. pylint 10.00; full route suite 2727 green.
+2. **The 2 owed producer tests** (M1 reconciliation + estimated-tier/seam) -- DONE, see section 10
+   above (18 property tests green; both empirically probed; the M1 test proves today's month is NOT
+   the reconciliation point).
+3. **Shared primitive generalization** (8) -- **DROPPED (developer decision, 2026-07-12).** Commit 2
+   made the producer self-contained (its own date-aligned calendar merge, no `chart_series` import),
+   which orphaned the working-tree `chart_series.py` hoist (one consumer, the loan band, and a
+   docstring falsely claiming the property chart shared it). Rather than unify, the hoist was
+   DISCARDED: the two merges are genuinely different operations (the band front-aligns by index and
+   picks one series; the property date-aligns by calendar, sums, and tiers per month), so unifying
+   them would be a leaky abstraction risking the 258 band tests for no real DRY gain. Reverted
+   `app/routes/loan/_helpers.py` and `calculators.py` to HEAD, deleted `app/utils/chart_series.py`.
+   Loan band keeps its local merge; property keeps its own. Both suites green post-revert (258 loan
+   tests, 18 property tests).
+4. **Fable visual** (Loop B) --
+   **HELD for a dedicated design session (developer decision, 2026-07-12).** The working-tree
+   `property_detail.js` still reads the retired `current_index` (the producer emits `today_index`)
+   and renders no `debt_tier`, so the browser chart is broken + incomplete. Commit 5 must rewire the
+   JS to `today_index`, render `debt_tier`'s estimated region distinctly, style the tracking-start
+   seam (the open Loop B sub-decision in section 12 -- dotted vs wash + optional annotated marker),
+   reword the `no_loans` caption, and live-verify both themes / viewports. The held working-tree
+   files (`property_detail.js`, `property_detail.html`, `accounts.css`) + the audit doc's Loop B
+   contract (still `current_index`/hoist-worded, pre-rebuild) are the starting point; the audit
+   doc's Loop A lock is correct and stays.
 
 ## 12. Open sub-decisions (decide at the gate, do not block the plan)
 

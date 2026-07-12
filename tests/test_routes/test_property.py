@@ -20,15 +20,24 @@ from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.investment_params import InvestmentParams
 from app.models.ref import AccountType
 from app.routes.accounts import detail as property_detail_module
-from app.services import account_service, property_equity_chart
-from app.services.loan_loaders import load_rate_changes
+from app.services import (
+    account_service,
+    home_equity_service,
+    property_equity_chart,
+)
+from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.loan_resolution import (
     contractual_schedule_from_origination,
     resolve_account_loan,
 )
 from app.utils.dates import add_months
 from app.utils.money import round_money
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import (
+    create_loan_account,
+    create_settled_transfer,
+    freeze_today,
+    insert_tracking_start_event,
+)
 
 
 def _property_type_id(db):
@@ -498,6 +507,189 @@ class TestPropertyEquityChartProducer:
             )
             assert chart.chart_state == "zero_rate"
             assert all(value == _FOUR_HUNDRED_K for value in chart.value)
+
+    def test_chart_reconciles_with_hero_at_last_confirmed_month(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Chart debt/equity == the equity hero at the LAST CONFIRMED month.
+
+        Review finding M1: the reconciliation guarantee the value/equity
+        identity test cannot reach.  A loan's last confirmed schedule row
+        carries ``remaining_balance == current_balance``, so at that month's
+        axis index the summed debt equals ``home_equity.total_debt`` and the
+        equity band equals ``home_equity.equity`` to the cent -- both read from
+        the SAME single resolution.  This needs REAL confirmed history: settling
+        monthly payments INTO the loan books confirmed shadow-income the resolver
+        replays.  The reconciliation month is the LAST CONFIRMED month, NOT
+        ``today_index`` -- a still-projected current month sits one payment below
+        ``current_balance``, which is exactly why the identity test alone is not
+        enough.  Today is frozen to April with the last confirmed payment in
+        March, so the reconciliation month strictly PRECEDES today's month and
+        the test can prove today's month does not reconcile.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        today = date(2026, 4, 20)
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            prop = _make_property(
+                db, seed_user, seed_periods, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("240000.00"), term=360,
+                origination_date=date(2025, 11, 1), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            # Two confirmed monthly payments, both historical (Jan/Feb periods).
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[1], amount=Decimal("1500.00"),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[3], amount=Decimal("1500.00"),
+            )
+            db.session.commit()
+
+            # ONE resolution feeds both the equity hero and the chart (D1).
+            params, state = resolve_account_loan(loan.id, scenario_id, today)
+            confirmed = [row for row in state.schedule if row.is_confirmed]
+            assert confirmed, "settled payments must produce confirmed history"
+            last_confirmed = confirmed[-1]
+            # The resolver guarantee the whole reconciliation rests on: the last
+            # confirmed schedule row IS the current balance the hero nets.
+            assert last_confirmed.remaining_balance == state.current_balance
+
+            # Build the loan's series exactly as ``detail._secured_loan_series``
+            # does, off the one resolution.  The resolved schedule opens at the
+            # FIRST confirmed payment, so the months from origination to that
+            # payment become the estimated back-projection (a real, non-empty
+            # prefix here); the reconciliation still keys off the confirmed tier.
+            full_contractual = contractual_schedule_from_origination(
+                params, load_rate_changes(loan.id),
+            )
+            tracking_start = (
+                state.schedule[0].payment_date if state.schedule else None
+            )
+            back_projection = [
+                row for row in full_contractual
+                if tracking_start is None or row.payment_date < tracking_start
+            ]
+            series = property_equity_chart.SecuredLoanSeries(
+                back_projection=back_projection,
+                schedule=state.schedule,
+                current_balance=state.current_balance,
+            )
+            equity = home_equity_service.compute_home_equity(
+                _FOUR_HUNDRED_K, [state.current_balance],
+            )
+            chart = property_equity_chart.build_property_equity_chart(
+                [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
+            )
+
+            # Reconcile at the LAST CONFIRMED month, found by its label.
+            index = chart.labels.index(
+                last_confirmed.payment_date.strftime("%b %Y"),
+            )
+            assert chart.debt_tier[index] == "confirmed"
+            assert chart.debt[index] == state.current_balance
+            assert chart.debt[index] == equity.total_debt
+            assert chart.equity[index] == equity.equity
+            # The last confirmed month is at/before today, so value holds the
+            # flat anchor there -- equity == market_value - total_debt.
+            assert chart.value[index] == _FOUR_HUNDRED_K
+
+            # The M1 point: today's month is NOT the reconciliation month.  This
+            # month's payment is still projected, so its balance sits one payment
+            # below current_balance and would MIS-reconcile against the hero.
+            assert index < chart.today_index
+            assert chart.debt_tier[chart.today_index] == "projected"
+            assert chart.debt[chart.today_index] < state.current_balance
+
+    def test_back_projection_estimated_tier_and_tracking_start_seam(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Pre-tracking months are an honest 'estimated' contractual estimate.
+
+        Proves the (a) contractual back-projection end to end.  A loan originated
+        60 months ago but tracked only from 24 months ago (with a tracking
+        balance deliberately OFF the contractual curve) gets a non-empty
+        ``back_projection`` for its origination..tracking-start months.  Those
+        months carry the ``estimated`` tier and EXACTLY the
+        ``contractual_schedule_from_origination`` balances (re-derived here to
+        pin the chart's month-mapping and tiering -- the amortization math itself
+        is pinned by ``test_loan_resolution.py``, not this test); the resolved
+        region that follows -- no settled payments -- is ``projected``; and the
+        tracking-start seam (the contractual balance the month before tracking vs
+        the recorded opening) is shown honestly, on adjacent axis months, never
+        smoothed into a reconciled curve.
+        """
+        with app.app_context():
+            today = date.today()
+            scenario_id = seed_user["scenario"].id
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported",
+                principal=Decimal("300000.00"), term=360,
+                origination_date=add_months(today, -60), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            params = load_loan_params(loan.id)
+            # 260k at 24 months in is well below the ~285k contractual balance,
+            # so the seam gap is unmistakable.
+            insert_tracking_start_event(
+                params, Decimal("260000.00"), add_months(today, -24),
+            )
+            db.session.commit()
+
+            series = _series_for(loan, scenario_id, today)
+            assert series.back_projection, (
+                "a tracking-start loan must have a pre-tracking back-projection"
+            )
+            chart = property_equity_chart.build_property_equity_chart(
+                [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
+            )
+
+            # Re-derive the expected pre-tracking rows from the same contractual
+            # producer the route feeds in, clipped to the months before tracking
+            # begins.  This pins the chart's month-mapping and tiering of those
+            # rows (not the amortization math -- that is test_loan_resolution.py).
+            tracking_start = series.schedule[0].payment_date
+            oracle_pre = [
+                row for row in contractual_schedule_from_origination(
+                    params, load_rate_changes(loan.id),
+                )
+                if row.payment_date < tracking_start
+            ]
+            assert oracle_pre, "the oracle must have pre-tracking rows too"
+
+            # Every pre-tracking month is 'estimated' and equals the contractual
+            # balance to the cent.
+            for row in oracle_pre:
+                month_index = chart.labels.index(
+                    row.payment_date.strftime("%b %Y"),
+                )
+                assert chart.debt_tier[month_index] == "estimated"
+                assert chart.debt[month_index] == row.remaining_balance
+
+            # The first tracked month is 'projected' (no confirmed payments).
+            first_tracked = chart.labels.index(
+                tracking_start.strftime("%b %Y"),
+            )
+            assert chart.debt_tier[first_tracked] == "projected"
+
+            # The seam sits on the month immediately before the first tracked
+            # month (no gap), and the estimated contractual balance there (pinned
+            # by the loop above) differs from the recorded opening -- the producer
+            # does NOT reconcile it.
+            seam = chart.labels.index(
+                oracle_pre[-1].payment_date.strftime("%b %Y"),
+            )
+            assert seam == first_tracked - 1
+            assert chart.debt[seam] != series.schedule[0].remaining_balance
 
 
 class TestPropertyDetailChartContext:
