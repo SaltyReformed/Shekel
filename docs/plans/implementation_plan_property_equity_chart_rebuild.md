@@ -106,12 +106,18 @@ series and three contiguous tiers.
 
 ## 6. Reconciliation guarantees (pin them with tests)
 
-- **Chart vs hero at today.** The `today` column sums each loan's confirmed balance at today, which
-  is `state.current_balance`, so `debt[today_index] == home_equity.total_debt` to the cent, and
-  `equity[today_index] == home_equity.equity`. This is the promise the current producer's docstring
-  makes but does not keep; make it a test (the reconciliation gap flagged in the review).
-- **Value continuity.** `value[today_index] == market_value` exactly (flat region includes today).
-- **Internal identity.** `equity[i] == value[i] - debt[i]` for every `i` (already holds; keep).
+- **Chart vs hero at the LAST CONFIRMED month** (corrected during the build -- NOT `today_index`). A
+  loan's last confirmed schedule row carries `remaining_balance == state.current_balance`, so at
+  that month's axis index `debt == sum(current_balance) == home_equity.total_debt` and
+  `equity == home_equity.equity`, to the cent. `today_index` (today's calendar month) is NOT the
+  reconciliation point: if this month's payment is not yet confirmed, today's month holds a
+  projected balance one payment below `current_balance`. A no-confirmed-history loan therefore does
+  not reconcile at all (its schedule projects contractual reductions the hero does not reflect).
+  This is review finding M1; the test recipe is in section 10.
+- **Value continuity.** `value[today_index] == market_value` exactly (the flat region includes
+  today).
+- **Internal identity.** `equity[i] == value[i] - debt[i]` for every `i` (holds; tested in commit
+  2).
 
 ## 7. Purity and single resolution (folds D1)
 
@@ -162,33 +168,48 @@ generalization (one primitive) but do not force it against a band regression.
 
 ## 10. Test plan
 
-Convert the three reproductions in `property_detail_followups.md` into permanent regression tests
-(they currently document the pre-fix trap; after the fix they assert the corrected behavior):
+All in `tests/test_routes/test_property.py`. Loans dated relative to `today` so CI is date-robust,
+but deliberately spanning past origination / tracking-start / paid-off, which the pre-rebuild suite
+never exercised. Exact-`Decimal` assertions throughout.
 
-- **H1:** a property whose single secured loan is fully paid off -> `chart_state == "no_loans"`,
-  `debt == []`, 120-month value arc.
-- **H2:** a mortgage (old) + HELOC (young) -> every debt column equals the per-calendar-month sum (0
-  before a loan's origination), and `debt[today_index] == hero.total_debt` to the cent.
-- **H3:** a loan with past-dated projected months -> every `value[m <= today] == market_value`
-  exactly; `today_index` is the last month `<= today`, never in the past.
+DONE (commit 2, 16 tests):
 
-Plus:
+- **H1:** a zero-balance loan WITH a non-empty schedule -> `chart_state == "no_loans"`,
+  `debt == []`, 120-month arc (proves the fix keys on the balance, not schedule emptiness).
+- **H2:** old $300k (36mo) + new $50k (1mo) -> `debt[0]` (earliest = old's first month) == the OLD
+  loan's balance ALONE, `!= old + new` (the new loan is not summed into a pre-origination month).
+- **H3:** an 18mo-old loan with no confirmed history -> every `value[m <= today] == market_value`;
+  compounds only after; `today_index > 0`.
+- **Value/equity identity, zero-rate, route context contract, D1 resolve-once spy.**
 
-- **Contractual back-projection:** a loan with a tracking-start true-up after origination -> the
-  pre-tracking debt rows equal an independent hand-computed contractual amortization from
-  origination terms, tier `estimated`; the confirmed region tier `confirmed`; the seam discontinuity
-  is present and equals `contractual_at(tracking_start - 1) - actual_anchor_balance` (assert the
-  gap, do not hide it).
-- **Reconciliation (new, closes the review gap):** `debt[today_index] == home_equity.total_debt` and
-  `equity[today_index] == home_equity.equity` for a loan WITH confirmed history.
-- **D1 single resolution:** a call-counting spy asserts exactly one `resolve_account_loan` per
-  secured loan per `property_detail` GET, and one `date.today()`.
-- Exact-`Decimal` assertions throughout (testing standard); loans dated relative to `today` so CI is
-  date-robust, but now deliberately spanning past origination / tracking-start / paid-off, which the
-  current suite never exercises.
+OWED (still pending -- cold-resumable recipe below). Both need a fixture the current tests lack.
 
-Gates: `pylint app/` 10.00 with the full `--fail-on` set; the 53 loan-chart tests unchanged; full
-suite green.
+- **Reconciliation with real confirmed history** (closes review finding M1). Recipe: create a cash
+  account + a loan linked to the property, then settle N monthly payments with the
+  `create_settled_transfer` helper (`from_account=cash`, `to_account=loan`, a seeded `period`, an
+  `amount`) -- a settled transfer INTO the loan books a confirmed shadow-income payment the resolver
+  replays. After settling, `resolve_account_loan(...).current_balance` equals the LAST confirmed
+  schedule row's `remaining_balance`. Build the chart + `compute_home_equity` from that one
+  resolution and assert `debt[i] == hero.total_debt` and `equity[i] == hero.equity` at
+  `i = the axis index of the last confirmed month`. **CAVEAT (learned building this):** the
+  reconciliation index is the LAST CONFIRMED month, NOT necessarily `today_index` -- and a loan with
+  NO confirmed history does NOT reconcile, because its schedule projects contractual reductions from
+  the anchor while `current_balance` stays at the anchor/principal. So the test MUST use settled
+  payments; do not try to reconcile a no-confirmed loan.
+- **Estimated tier + tracking-start seam** (proves the (a) back-projection end to end). Recipe:
+  `create_loan_account(..., origination_date=add_months(today, -60))`, then
+  `insert_tracking_start_event(params, tracking_balance, add_months(today, -24))` with a
+  `tracking_balance` deliberately OFF the contractual (so the seam is visible). Build the series via
+  the route path (`_series_for` in the test, or `detail._secured_loan_series`); the
+  `back_projection` is non-empty (the origination..tracking-start months). Assert: `debt_tier` for
+  the pre-tracking months is `"estimated"`; those `debt` values equal
+  `contractual_schedule_from_origination(params, rate_changes)` clipped to
+  `payment_date < tracking_start` (independent oracle); the confirmed region is `"confirmed"`; and
+  the seam gap is present (contractual balance the month before tracking start differs from the
+  actual `tracking_balance` -- assert the gap, do not hide it).
+
+Gates: `pylint app/` 10.00 with the full `--fail-on` set; the 53 loan-chart tests unchanged (commit
+4); full suite green.
 
 ## 11. Sequencing (commits, model discipline)
 
