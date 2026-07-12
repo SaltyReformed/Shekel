@@ -291,19 +291,34 @@ Section 4.
   sits at the legal-with-secondary-encoding floor light 11.8, satisfied by fixed stacking order +
   2px surface gaps + legend) presented four candidates: C1 diverging stream (asset bands stacked up
   the D12 ramp, liability band below zero in danger, net line riding the difference), C2 ledger
-  columns, C3 split panel (net panel + 100% share stream; forced split -- % and $ cannot share one
-  axis), W milestone-flag overlay (loan payoffs, net-worth crossings, debt-free; D11 structural
-  markers, accent + text, never amber). **RULING: C1 with the W flags, defaulting to the HORIZON
-  view. Range control = a two-mode toggle (`2 years` biweekly engine-real / `Horizon` annual
-  long-horizon producer). The 6/13/26/All picker and the Net-vs-split series toggle RETIRE with this
-  element. Net line in number ink** ("the number is the hero" applied to the line; the accent
-  already colors the asset bands). Retires with the build: the diverging bar (`nw-alloc__*`
-  structure; the shared `.alloc-bar` shell stays -- the loan page consumes it), `compute_allocation`
-  and `_serialize_allocation_bar`, and `net_worth_cockpit.js`'s view/horizon logic. Build splits per
-  the established pattern -- Loop B P1 (Opus): the long-horizon annual producer (loan schedules to
-  payoff plus per-account growth params) and the per-category composition split of the existing
-  2-year series; Loop B P2 (Fable): the page element. Supersedes accounts_audit.md rebuild decisions
-  7 and 8 (amendment recorded there).
+  columns, C3 split panel (net panel + 100% share stream; forced split -- a percent and a dollar
+  scale cannot share one axis), W milestone-flag overlay (loan payoffs, net-worth crossings,
+  debt-free; D11 structural markers, accent + text, never amber). **RULING: C1 with the W flags,
+  defaulting to the HORIZON view. Range control = a two-mode toggle (`2 years` biweekly engine-real
+  / `Horizon` annual long-horizon producer). The 6/13/26/All picker and the Net-vs-split series
+  toggle RETIRE with this element. Net line in number ink** ("the number is the hero" applied to the
+  line; the accent already colors the asset bands). Retires with the build: the diverging bar
+  (`nw-alloc__*` structure; the shared `.alloc-bar` shell stays -- the loan page consumes it),
+  `compute_allocation` and `_serialize_allocation_bar`, and `net_worth_cockpit.js`'s view/horizon
+  logic. Build splits per the established pattern -- Loop B P1 (Opus): the long-horizon annual
+  producer (loan schedules to payoff plus per-account growth params) and the per-category
+  composition split of the existing 2-year series; Loop B P2 (Fable): the page element. Supersedes
+  accounts_audit.md rebuild decisions 7 and 8 (amendment recorded there).
+  **Loop B P1 model forks RULED 2026-07-11 (worked examples on real data):** (1) Retirement and
+  Investment bands REUSE the /retirement engine -- `build_projection_context` +
+  `project_retirement_accounts` over synthetic biweekly periods to the horizon end
+  (`growth_engine.generate_projection_periods` takes any end date; the P2b probe seam
+  `project_accounts_with_batch` takes an arbitrary axis), sampled annually. One engine, so the
+  cockpit band equals /retirement by construction. Worked check: at 2049-12-31 the real engine
+  projects Roth `$292,890.53` + 401(k) `$772,724.86` + Trad IRA `$122,130.44` = `$1,187,745.83` --
+  vs `$800k` for a constant-contribution sketch (no raise-aware employer match, no caps) and `$3.0M`
+  for a fitted-growth-rate extrapolation; the deltas are why inventing a parallel model was
+  rejected. (2) Asset band = per-account params: property at its annual appreciation rate, interest
+  accounts compounding at APY, plain cash held flat -- every figure traceable to a param the account
+  carries. (3) Horizon domain = last loan payoff + 1 year, rounded to year end (2049 on current
+  data), adapting as loans change; loan-free users get a fixed 10-year fallback. (4) Milestone flags
+  = each loan payoff, debt-free, and every `$500k` net-worth crossing inside the domain, flag count
+  capped for lane readability.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
