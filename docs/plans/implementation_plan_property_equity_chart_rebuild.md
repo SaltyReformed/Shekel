@@ -241,24 +241,43 @@ anchor-NULL fork the rewire briefly introduced. pylint 10.00; full route suite 2
    `app/routes/loan/_helpers.py` and `calculators.py` to HEAD, deleted `app/utils/chart_series.py`.
    Loan band keeps its local merge; property keeps its own. Both suites green post-revert (258 loan
    tests, 18 property tests).
-4. **Fable visual** (Loop B) --
-   **HELD for a dedicated design session (developer decision, 2026-07-12).** The working-tree
-   `property_detail.js` still reads the retired `current_index` (the producer emits `today_index`)
-   and renders no `debt_tier`, so the browser chart is broken + incomplete. Commit 5 must rewire the
-   JS to `today_index`, render `debt_tier`'s estimated region distinctly, style the tracking-start
-   seam (the open Loop B sub-decision in section 12 -- dotted vs wash + optional annotated marker),
-   reword the `no_loans` caption, and live-verify both themes / viewports. The held working-tree
-   files (`property_detail.js`, `property_detail.html`, `accounts.css`) + the audit doc's Loop B
-   contract (still `current_index`/hoist-worded, pre-rebuild) are the starting point; the audit
-   doc's Loop A lock is correct and stays.
+4. **Fable visual** (Loop B) -- **DONE (2026-07-12, commit `7946d68f`).** The design session ran the
+   section 12 sub-decisions (all resolved below) and the JS was rewired: `property_detail.js` reads
+   `today_index` (value flat/compound split + Today marker), renders the debt line by per-month
+   `debt_tier` -- solid `confirmed`, dashed `projected`, and faint dots (`[2,3]` at 45% danger) for
+   the `estimated` back-projection, reusing the value line's assumption texture so dots always mean
+   estimate -- and the confirmed/projected split is data-driven, NOT keyed to today. A faint
+   "Tracking start" seam marker draws at each `estimated -> non-estimated` transition, suppressed
+   within `SEAM_TODAY_MIN_GAP_PX` (100px) of the Today marker so a near-today seam (the real
+   single-mortgage case, records begin ~3 months before today) yields to Today. Captions name all
+   three textures (the dotted clause gated on a new `has_estimated_debt` route flag) and the
+   `no_loans` caption is reworded to stay accurate for a paid-off-but-still-linked loan; the
+   aria-label is kept in parity. Live-verified on the real property page (203 Chalmers Dr) in both
+   themes and both viewports; shots at `shots-live/property_rebuilt__*`.
+5. **Post-build correctness fix -- debt line gap months** --
+   **DONE (2026-07-12, commit `936db7df`; found at the live accept-check).** Tracing the real
+   mortgage exposed a defect the synthetic tests never hit: a loan's resolved `schedule` is NOT
+   one-row-per-calendar-month (the biweekly-to- monthly redistribution left the real mortgage a
+   July-less gap between a June and an August row), and `_debt_series` contributed `$0.00` for any
+   axis month a loan had no row in -- so the debt line collapsed to `$0` exactly at today,
+   fabricating a debt cliff + phantom full-equity spike and breaking chart-vs-hero reconciliation by
+   the whole balance. Fixed at the root: `_dense_month_balances` forward-fills the prior balance
+   across gap months WITHIN a loan's active span (a debt balance is piecewise-constant between
+   payments); gap-free schedules are unchanged. Two regression tests pin a confirmed gap at today
+   and a projected gap after. Re-verified on real data: debt@today `177,554.69` (carried June),
+   continuous line, reconciles at the last confirmed month (Aug: `177,277.97` == `current_balance`).
 
-## 12. Open sub-decisions (decide at the gate, do not block the plan)
+## 12. Sub-decisions (RESOLVED at the Loop B gate, 2026-07-12)
 
-- **Seam rendering (Loop B).** How the `estimated` pre-tracking region is styled (dotted vs a wash)
-  and whether the seam discontinuity gets an annotated marker. Data contract is fixed (`debt_tier`);
-  only the pixels are open.
-- **Multi-loan mixed-tier month styling (Loop B).** How a month mixing `estimated` and `confirmed`
-  loans reads. Default: least-confident tier wins.
-- **Fallback caption for paid-off vs never-secured (Low).** The `no_loans` caption currently says
-  "Nothing is secured by this property," which is inaccurate for a paid-off-but-still-linked loan;
-  reword when H1 lands.
+- **Seam rendering (Loop B) -- RESOLVED: faint dots + a faint marker.** The `estimated` pre-tracking
+  region is styled as faint dots (`[2,3]` at 45% danger), reusing the value line's assumption
+  texture (dots always mean estimate). The seam discontinuity gets a faint "Tracking start" vertical
+  marker (muted, finer-dashed than Today), suppressed when it would collide with the Today marker
+  (developer pick, from previewed options).
+- **Multi-loan mixed-tier month styling (Loop B) -- RESOLVED: least-confident tier wins.** Kept the
+  default; the merged month renders the least-confident contributing tier's texture (already the
+  data-layer behavior in `_debt_series`).
+- **Fallback caption for paid-off vs never-secured (Low) -- RESOLVED: no flag needed.** The
+  `no_loans` caption was reworded to "This property has no outstanding secured debt, so equity is
+  the full market value," which is accurate for both a never-secured and a paid-off-but-still-linked
+  property, so no paid-off/never-secured flag is required.
