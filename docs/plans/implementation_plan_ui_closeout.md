@@ -79,6 +79,17 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    UI-unreachable; either can adopt the marker mechanically if a surface ever needs it.
 5. **Analytics year-view month cards** (size S, mechanical). Raw `border/text-success/danger` + cyan
    `bg-info` badges; flagged in the S5 as-built as out-of-register residue; same-genus token sweep.
+   **COMPLETE 2026-07-11 (run on Opus 4.8; full suite 7304 green, djlint + biome clean; year view
+   re-shot both themes + computed colors probed against the tokens).** `_calendar_year.html`: the
+   income/expense/net figures (per-card and annual totals) adopt the calendar money-state classes
+   `calendar-day-income` / `calendar-day-expense` (matching the month sibling so the Month/Year
+   toggle stays consistent); the net-sign card border moves onto new
+   `.card.calendar-month-card--surplus` / `--deficit` token modifiers in `analytics.css`
+   (`--shekel-done` / `--shekel-danger`, the compound `.card` selector specificity-matched to the
+   `[data-bs-theme] .card` border rule so they win on source order); the "3rd check" badge adopts
+   the shared accent `.flag-chip` per D11 + S7's event-marker ruling (a 3rd-paycheck month is a
+   structural marker, not a caution). Template + CSS only, figures unchanged. As-built recorded at
+   the Calendar section of the polish register.
 
 ### C. Overhaul-plan small follow-ups (verified still open today)
 
@@ -104,7 +115,17 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    projected-only, removing the documented dead affordance on Credit and Cancelled cards (desktop
    card + mobile action bar; the cell paybtn already complied).
 8. **Manifest icon versioning residue** (size XS). `css_architecture_audit.md`: manifest icon paths
-   are unversioned strings (the icons themselves were re-baked silver 2026-07-06).
+   are unversioned strings (the icons themselves were re-baked silver 2026-07-06). **COMPLETE
+   2026-07-11 (run on Opus 4.8; pylint 10.00/10, biome + djlint clean; live-verified on the dev
+   app).** The manifest now serves through the new `static_pass.web_manifest` route
+   (`/manifest.json`), mirroring the `/sw.js` precedent: it reads `app/static/manifest.json` and
+   rewrites each icon `src` through `url_for('static', ...)`, so the icons carry the same
+   `?v=<content hash>` every other asset gets (verified the manifest's icon hash equals the
+   apple-touch-icon's for the same file). `base.html` points at the route; the now-defunct
+   `/static/manifest.json` was removed from the SW cache list (`_CACHED_STATIC_FILES`) and
+   `STATIC_PREFIXES` (the SW invariant is untouched -- caching only narrowed). Route is `no-store`
+   via the app-wide non-static hook. 4 new tests (`TestWebManifest`). Residue note in
+   `css_architecture_audit.md` section 5 marked RESOLVED.
 
 ### D. Housekeeping
 
@@ -131,7 +152,7 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
 | # | Session     | Contents                          | Model           | Size     |
 |---|-------------|-----------------------------------|-----------------|----------|
 | 1 | S8          | item 1                            | Opus            | S-M      |
-| 2 | S9+         | items 2, 5, 8                     | Fable preferred | S        |
+| 2 | S9+         | items 2, 5, 8 (all done 2026-07-11; P-AC1 still deferred) | Fable preferred | S        |
 | 3 | S10         | item 3                            | Opus            | M (solo) |
 | 4 | Errors + A5 | items 4, 6, 9 + grid D2 (item 7)  | Opus            | M        |
 | 5 | Ship        | items 10-12                       | developer-led   | -        |

@@ -277,8 +277,17 @@ alternate palettes are genuinely wanted.
    comment in app/**init**.py and the matching test docstring were corrected. The service worker
    composes cleanly (it caches by full URL and its cache name is already content-versioned). Tests:
    TestStaticFileVersion (test_static_pass.py) + 4 cache-header tests (test_cache_control.py).
-   RESIDUE (accepted): icon paths inside app/static/manifest.json are plain strings the hook cannot
-   version; a changed icon can stay stale up to 7 days for non-SW clients in bundled mode.
+   RESIDUE (RESOLVED 2026-07-11, UI closeout item 8): the manifest icon paths were plain strings the
+   `url_for` hook could not version, so a re-baked icon could stay stale up to the static cache
+   lifetime for non-SW clients in bundled mode. Fixed by serving the manifest through the new
+   `static_pass.web_manifest` route (`/manifest.json`), which reads `app/static/manifest.json` and
+   rewrites each icon `src` through `url_for('static', ...)` so it carries the same `?v=<hash>` as
+   every other asset (verified: the manifest's icon hash equals the apple-touch-icon's for the same
+   file). The manifest link in `base.html` now points at the route; the manifest was removed from
+   the SW cache list (`_CACHED_STATIC_FILES`) and `STATIC_PREFIXES`, mirroring the `sw.js` pattern
+   (a static/ file served only via its route). The route is `no-store` (the app-wide non-static
+   hook), so the browser re-reads it to observe a changed icon URL. Tests: `TestWebManifest`
+   (test_static_pass.py).
 4. Minor items: `settings/settings.html` orphan DELETED 2026-06-12; the `.cell-focused` comment
    fixed with the split; `meta theme-color` not tracking the theme remains DEFERRED to the Scope B
    selector work (the real fix is server-rendered theme awareness); dead CSS deleted with the split
@@ -294,4 +303,5 @@ alternate palettes are genuinely wanted.
 3. Findings 1-3 in section 5: FIXED 2026-06-12 (chart factory API + static URL versioning; details
    and verification in section 5). All app.css path references, including the test_grid.py docstring
    and the grid_edit.js comment, were updated with the split. Remaining from this audit: only the
-   section-5 residue notes (manifest icon paths; meta theme-color deferred to Scope B).
+   `meta theme-color` deferral to Scope B (the manifest icon-path residue was RESOLVED 2026-07-11,
+   UI closeout item 8; see section 5 finding 3).

@@ -10,12 +10,16 @@ asset) and the per-file ``v=`` URL parameter
 ``url_for('static', ...)`` URL by ``_register_static_versioning``
 in ``app/__init__.py``).
 
-The only root-scope entry is ``/sw.js`` -- the browser scopes a
-service worker to the directory its file is served from, so a
-worker at ``/static/sw.js`` would only see ``/static/...`` requests
+Two root-scope entries are served here.  ``/sw.js`` -- the browser
+scopes a service worker to the directory its file is served from, so
+a worker at ``/static/sw.js`` would only see ``/static/...`` requests
 and could not intercept app-route fetches.  Hosting the worker at
 ``/sw.js`` widens the scope to ``/`` so the static-asset cache also
-covers requests issued from any page in the app.
+covers requests issued from any page in the app.  ``/manifest.json``
+-- the PWA manifest, rendered rather than served static so its icon
+``src`` URLs carry the same content-hash ``?v=`` parameter every
+other static asset URL gets (see :func:`web_manifest`); a plain
+string inside the static JSON is invisible to the versioning hook.
 
 The route is exempt from Flask-Limiter for the same reason
 ``/health`` is: the browser may request ``/sw.js`` on every page
@@ -35,9 +39,10 @@ cache-name bump.
 """
 
 import hashlib
+import json
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app
+from flask import Blueprint, Response, current_app, url_for
 from werkzeug.security import safe_join
 
 from app.extensions import limiter
@@ -53,9 +58,11 @@ _VERSION_PLACEHOLDER = "__ASSET_VERSION__"
 # service worker caches.  These MUST mirror STATIC_PREFIXES in
 # app/static/sw.js: the version hash covers exactly the files the
 # worker will cache, so a change to any cached asset (and nothing
-# else) changes the cache name.
+# else) changes the cache name.  No root-level files are SW-cached
+# today: the PWA manifest moved to the /manifest.json route (which
+# versions its icon URLs) and is served fresh, not from the SW cache.
 _CACHED_STATIC_DIRS = ("vendor", "css", "js", "img", "fonts")
-_CACHED_STATIC_FILES = ("manifest.json",)
+_CACHED_STATIC_FILES: tuple[str, ...] = ()
 
 # Hex-digest prefix length used as the version token.  48 bits is
 # ample to keep an accidental collision between two distinct asset
@@ -198,3 +205,48 @@ def service_worker() -> Response:
     source = (Path(static_folder) / "sw.js").read_text(encoding="utf-8")
     body = source.replace(_VERSION_PLACEHOLDER, version)
     return Response(body, mimetype="application/javascript")
+
+
+@static_pass_bp.route("/manifest.json")
+@limiter.exempt
+def web_manifest() -> Response:
+    """Serve the PWA manifest with content-versioned icon URLs.
+
+    Reads ``app/static/manifest.json`` and rewrites each icon ``src``
+    through ``url_for('static', ...)`` so the URL carries the same
+    ``?v=<content hash>`` parameter ``_register_static_versioning``
+    appends to every other static asset (see
+    :func:`static_file_version`).  A plain-string ``src`` inside the
+    static JSON is invisible to that hook, so a re-baked icon could be
+    pinned stale for up to the static cache lifetime; routing the
+    manifest through ``url_for`` closes that gap (the accepted residue
+    in ``docs/design/css_architecture_audit.md`` section 5).
+
+    Mirrors :func:`service_worker`: the body is a transform of an
+    on-disk file, so it is built directly rather than served static.
+    The app-wide after-request hook adds ``Cache-Control: no-store`` to
+    this non-``static`` endpoint, so the browser re-reads the manifest
+    and picks up a changed icon URL rather than caching the manifest
+    itself.  Exempt from Flask-Limiter for the same reason as
+    :func:`service_worker`: a public, no-user-data asset the browser
+    fetches on its own, where a 429 would surface as PWA-install
+    flakiness rather than protect anything.
+
+    Returns:
+        A Flask ``Response`` with the icon-versioned manifest and the
+        ``application/manifest+json`` MIME type.
+    """
+    static_folder = current_app.static_folder
+    manifest = json.loads(
+        (Path(static_folder) / "manifest.json").read_text(encoding="utf-8")
+    )
+    # static_url_path is '/static'; the trailing slash gives the URL
+    # prefix to strip so each icon src maps back to the filename its
+    # ?v= content hash is keyed on.
+    static_prefix = f"{current_app.static_url_path}/"
+    for icon in manifest.get("icons", []):
+        src = icon.get("src", "")
+        if src.startswith(static_prefix):
+            icon["src"] = url_for("static", filename=src[len(static_prefix):])
+    body = json.dumps(manifest, indent=2)
+    return Response(body, mimetype="application/manifest+json")
