@@ -22,6 +22,10 @@ from app.services.savings_dashboard_service._data import (
     _load_archived_accounts,
     _load_dashboard_core_data,
 )
+from app.services.savings_dashboard_service._horizon import (
+    _ENGINE_BANDS,
+    build_horizon,
+)
 from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
     build_trend_periods,
@@ -34,6 +38,8 @@ from app.services.savings_dashboard_service._net_worth import (
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
     _group_accounts_by_category,
+    account_category_key,
+    category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
     _compute_goal_progress,
@@ -320,6 +326,54 @@ def compute_goal_progress(user_id: int) -> list[dict]:
     )
 
 
+def compute_net_worth_horizon(user_id: int) -> dict | None:
+    """Compute the cockpit's long-horizon annual net-worth series (P-AC1).
+
+    The narrow producer behind the Net Worth Cockpit's ``Horizon`` range: an
+    annual net-worth composition + net-trajectory series out to the last loan
+    payoff plus a year (a loan-free user gets a fixed forward decade), plus
+    the milestone flags (loan payoffs, debt-free, ``$500k`` net crossings).
+    Loads the same core data, account-type params, and per-account
+    projections ``compute_dashboard_data`` runs (so the horizon's today point
+    equals the page's net-worth hero), classifies each account by the shared
+    id-based category key, and delegates to
+    :func:`~app.services.savings_dashboard_service._horizon.build_horizon` --
+    which reuses the /retirement engine for the retirement / investment
+    bands, per-account growth params for the asset band, and the loan
+    resolver schedules for the liability band.
+
+    Args:
+        user_id: Integer ID of the current user.
+
+    Returns:
+        The horizon series dict (see
+        :func:`~app.services.savings_dashboard_service._horizon.build_horizon`),
+        or ``None`` when the user has no pay periods (no axis to project
+        over).
+    """
+    core = _load_dashboard_core_data(user_id)
+    if not core.all_periods:
+        return None
+    # Classify every account (the category key needs only the account type,
+    # never a balance), then project ONLY the accounts the asset + liability
+    # bands read.  The retirement / investment bands come from the
+    # /retirement engine, which projects those accounts itself; projecting
+    # them here too would build their balance_at maps a second time this
+    # request (a redundant producer call), so they are excluded from the
+    # per-account projection while still classified for the engine bands.
+    category = {
+        acct.id: account_category_key(acct) for acct in core.accounts
+    }
+    non_engine_accounts = [
+        acct for acct in core.accounts
+        if category[acct.id] not in _ENGINE_BANDS
+    ]
+    params = _load_account_params(non_engine_accounts)
+    ctx = _build_projection_context(core, params)
+    account_data = _compute_account_projections(non_engine_accounts, ctx)
+    return build_horizon(user_id, core, account_data, category)
+
+
 def compute_account_balance_cell(
     user_id: int, account_id: int,
 ) -> dict | None:
@@ -376,66 +430,26 @@ def compute_account_balance_cell(
     }
 
 
-def _compute_net_worth_section(
-    core: _DashboardCoreData,
-    params: _AccountParams,
-    account_data: list[dict],
-) -> dict:
-    """Assemble the cockpit's net-worth region + the per-account sparklines.
+def _build_trend_window(
+    core: _DashboardCoreData, params: _AccountParams,
+) -> tuple[list, int, int]:
+    """Build the net-worth trend window and its honest-history gate.
 
-    One producer over a single build of the dense per-account balance maps
-    (Loop B Phase 1 net worth + slice 3c sparklines): the today figures
-    (from the already-projected ``account_data``), the net-worth trend
-    series (an honest history tail plus the forward projection, from
-    :func:`build_trend_periods`), and the per-account forward sparklines all
-    derive from that one projection so they cannot drift onto two copies of
-    the math.
-
-    The maps are built once over ALL periods (so the entries-aware
-    resolver always has its anchor seed) via
-    :func:`build_account_net_worth_maps`, which routes through the
-    :mod:`app.services.balance_at` seam -- the same per-kind math the
-    year-end net-worth trend uses, including the investment growth
-    sub-chain.  The seam owns its input assembly, so it re-loads the
-    investment params, deductions, engine gross, and loan schedules that
-    ``params`` already carries for these accounts; that duplicated read is
-    the deliberate, correctness-neutral cost of the single-source-of-truth
-    invariant the seam enforces (threading pre-assembled inputs back in
-    would re-leak the assembly the seam exists to centralize).  The
-    amortization schedules generated below therefore feed only the
-    honest-history gate (:func:`build_trend_periods`), which reads each
-    loan's first-payment date -- the data the balance maps do not carry.
-
-    Degrades gracefully with no current period: the today figures still
-    come from ``account_data``, the series is empty (``current_index`` 0),
-    the change is ``None`` (a missing comparison, not a zero), and the
-    sparklines are empty (no forward window).
+    Generates the loan amortization schedules the honest-history gate reads
+    -- each loan's first-payment date, the data the balance maps do NOT carry
+    -- then delegates to :func:`build_trend_periods`.  The schedules feed
+    ONLY the gate; the dense-map build assembles its own inside the
+    :mod:`app.services.balance_at` seam.
 
     Args:
-        core: The loaded :class:`_DashboardCoreData` (accounts,
-            scenario, all periods, current period).
-        params: The batch-loaded :class:`_AccountParams` (loan params
-            map, investment params map, deductions, engine gross-biweekly).
-        account_data: The per-account projection dicts already computed
-            for the page (the source of the today figures).
+        core: The loaded core data (accounts, scenario, periods).
+        params: The batch-loaded params (its loan-params map selects the
+            loan accounts).
 
     Returns:
-        ``(net_worth, sparklines)``.  ``net_worth`` is a dict with
-        ``net_worth``, ``total_assets``, ``total_liabilities``, ``liquid``,
-        and ``series`` (the trend dict -- history tail plus forward
-        projection, carrying the ``current_index`` solid/dashed boundary --
-        with empty lists when there is no current period).  ``sparklines``
-        is ``{account_id:
-        [Decimal, ...]}`` -- the forward series for each informative account,
-        which the route normalizes to SVG geometry.
+        ``(trend_periods, current_index, honest_start)`` from
+        :func:`build_trend_periods`.
     """
-    today = compute_net_worth_today(account_data)
-
-    # The honest-history gate (build_trend_periods ->
-    # _loan_schedule_start_index) reads each loan's first-payment date out of
-    # its schedule rows -- data the balance maps do not carry -- so generate
-    # the loan schedules here for the gate.  (The dense-map build assembles
-    # its own inside the seam; see this function's docstring.)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
@@ -444,32 +458,105 @@ def _compute_net_worth_section(
         net_worth_kernel.generate_debt_schedules(loan_accounts, scenario_id)
         if scenario_id is not None else {}
     )
-
-    account_maps = build_account_net_worth_maps(
-        core.accounts, core.scenario, core.all_periods,
-    )
-
-    trend_periods, current_index, _ = build_trend_periods(
+    return build_trend_periods(
         core.accounts, core.all_periods, core.current_period, debt_schedules,
     )
-    series = compute_net_worth_series(account_maps, trend_periods)
-    # The solid-history / dashed-projection boundary (and the "Today"
-    # marker): the index of the current period within the trend window.
-    series["current_index"] = current_index
 
-    # Per-account sparklines (slice 3c) reuse these dense maps -- one
-    # projection for the net-worth math AND the card trends.  The forward
-    # window is the same current-period-onward run the trend projects.
+
+def _compute_card_sparklines(
+    core: _DashboardCoreData, account_maps: list[dict],
+) -> dict:
+    """Build the per-account forward card sparklines (slice 3c).
+
+    Reuses the dense per-account balance maps already built for the net-worth
+    trend, so the sparklines and the net-worth math read ONE projection.  The
+    forward window is the current-period-onward run the trend projects.
+
+    Args:
+        core: The loaded core data (its periods define the forward window).
+        account_maps: The dense maps from
+            :func:`build_account_net_worth_maps`.
+
+    Returns:
+        ``{account_id: [Decimal, ...]}`` for each informative account.
+    """
     forward_periods = [
         p for p in core.all_periods
         if core.current_period is not None
         and p.period_index >= core.current_period.period_index
     ]
-    sparklines = compute_sparklines(account_maps, forward_periods)
+    return compute_sparklines(account_maps, forward_periods)
+
+
+def _compute_net_worth_section(
+    core: _DashboardCoreData,
+    params: _AccountParams,
+    account_data: list[dict],
+    user_id: int,
+) -> dict:
+    """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
+
+    One producer over a single build of the dense per-account balance maps:
+    the today figures (from the already-projected ``account_data``), the
+    ``2 years`` net-worth trend series with its per-category composition
+    split, the per-account forward sparklines, AND the ``Horizon`` range
+    (P-AC1 Loop B P1) all derive from that ONE dashboard load -- so the
+    /savings request pays for one load, not two (no redundant standalone
+    horizon-producer call), and every figure reads one projection.
+
+    The maps are built once over ALL periods (so the entries-aware resolver
+    always has its anchor seed) via :func:`build_account_net_worth_maps`,
+    which routes through the :mod:`app.services.balance_at` seam.  The
+    per-category composition split reads each account's band off the SAME
+    id-based classifier the grid grouping uses, so a trend band and its grid
+    group cannot disagree.  The Horizon range reuses the /retirement engine,
+    so it re-projects the retirement / investment accounts -- the accepted
+    cost of the single-engine invariant, the same the dense-map rebuild pays.
+
+    Degrades gracefully with no current period: the today figures still come
+    from ``account_data``, the series is empty (``current_index`` 0), the
+    sparklines are empty; the horizon is still built (its axis is date-driven)
+    unless there are no pay periods at all
+    (:func:`~app.services.savings_dashboard_service._horizon.build_horizon`
+    returns ``None`` then).
+
+    Args:
+        core: The loaded :class:`_DashboardCoreData`.
+        params: The batch-loaded :class:`_AccountParams`.
+        account_data: The per-account projection dicts already computed for
+            the page (the today figures + the asset / liability horizon
+            bands).
+        user_id: The current user's id (for the Horizon range's /retirement
+            engine reuse).
+
+    Returns:
+        ``(net_worth, sparklines)``.  ``net_worth`` carries ``net_worth``,
+        ``total_assets``, ``total_liabilities``, ``liquid``, ``series`` (the
+        ``2 years`` trend + its ``composition`` split, carrying
+        ``current_index``), and ``horizon`` (the annual composition +
+        trajectory + milestones, or ``None`` with no periods).  ``sparklines``
+        is ``{account_id: [Decimal, ...]}``.
+    """
+    today = compute_net_worth_today(account_data)
+    category = category_key_by_account_id(account_data)
+
+    account_maps = build_account_net_worth_maps(
+        core.accounts, core.scenario, core.all_periods,
+    )
+
+    trend_periods, current_index, _ = _build_trend_window(core, params)
+    series = compute_net_worth_series(account_maps, trend_periods, category)
+    # The solid-history / dashed-projection boundary (and the "Today"
+    # marker): the index of the current period within the trend window.
+    series["current_index"] = current_index
+
+    sparklines = _compute_card_sparklines(core, account_maps)
+    horizon = build_horizon(user_id, core, account_data, category)
 
     return {
         **today,
         "series": series,
+        "horizon": horizon,
     }, sparklines
 
 
@@ -590,9 +677,11 @@ def compute_dashboard_data(user_id):
 
     # ── Net-worth cockpit region + per-account sparklines ──────
     # One producer over the build-once dense maps: the net-worth region
-    # (Loop B Phase 1) and the per-account card sparklines (slice 3c).
+    # (the 2-year trend + composition split), the per-account card sparklines
+    # (slice 3c), AND the Horizon range (P-AC1 Loop B P1) -- all from this one
+    # dashboard load, so the /savings request never re-loads for the horizon.
     net_worth, sparklines = _compute_net_worth_section(
-        core, params, account_data,
+        core, params, account_data, user_id,
     )
 
     return {

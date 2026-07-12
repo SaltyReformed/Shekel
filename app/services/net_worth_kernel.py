@@ -46,6 +46,7 @@ from app.services import (
 )
 from app.services.account_projection import (
     AccountProjectionKind,
+    balance_from_schedule_at_date,
     classify_account,
     compute_loan_period_balance_map,
     splice_confirmed_and_projected_loan_balances,
@@ -184,6 +185,69 @@ def generate_debt_schedules(
         )
 
     return schedules
+
+
+def loan_owed_at_dates(
+    loan_accounts: list,
+    scenario_id: int,
+    sample_dates: list[date],
+) -> dict[int, list[Decimal]]:
+    """Return each loan's owed balance at each of several calendar dates.
+
+    The batch, multi-date loan-owed reader the long-horizon net-worth
+    producer (:mod:`app.services.savings_dashboard_service._horizon`) reads:
+    it needs every loan's owed balance at ~25 annual sample dates, and the
+    scalar per-date accessors would regenerate each loan's resolver schedule
+    once per date.  This generates every loan's schedule ONCE (via
+    :func:`generate_debt_schedules`, the same resolver output the debt card
+    and the ``2 years`` liability series consume) and walks each schedule to
+    every date through the ONE boundary rule
+    (:func:`~app.services.account_projection.balance_from_schedule_at_date`:
+    the remaining balance after the last payment on or before the date,
+    falling back to the resolver current balance before the first payment),
+    so the horizon liability band cannot drift from the loan balance the rest
+    of the app reports.  Lives in the kernel -- inside the balance-seam
+    cluster, beside :func:`generate_debt_schedules` whose output it walks --
+    so the schedule-to-date rule stays fenced with the per-period
+    :func:`~app.services.account_projection.compute_loan_period_balance_map`
+    it is the multi-date sibling of.
+
+    A loan the resolver returns nothing for (no anchor event yet) is absent
+    from the result, mirroring how the per-period map skips it; the caller
+    then holds that loan flat at its own current balance.
+
+    Args:
+        loan_accounts: The amortizing loan accounts to value.
+        scenario_id: The baseline scenario id (scopes the resolver).
+        sample_dates: The calendar dates to value each loan at, in the
+            desired output order.
+
+    Returns:
+        ``{account_id: [Decimal owed at each sample date]}`` -- one list per
+        loan with a resolvable schedule, aligned with *sample_dates*.
+    """
+    schedules = generate_debt_schedules(loan_accounts, scenario_id)
+    result: dict[int, list[Decimal]] = {}
+    for account in loan_accounts:
+        schedule_info = schedules.get(account.id)
+        if schedule_info is None:
+            continue
+        # Defensive sort before the walk, mirroring the per-period
+        # ``compute_loan_period_balance_map``: the resolver emits
+        # chronological schedules, but ``balance_from_schedule_at_date``'s
+        # ``else: break`` REQUIRES ascending ``payment_date`` order.  Returned
+        # verbatim -- the schedule rows and current_balance are already
+        # cent-quantized by the resolver.
+        sorted_schedule = sorted(
+            schedule_info.schedule, key=lambda row: row.payment_date,
+        )
+        result[account.id] = [
+            balance_from_schedule_at_date(
+                sorted_schedule, sample_date, schedule_info.current_balance,
+            )
+            for sample_date in sample_dates
+        ]
+    return result
 
 
 def _account_interest_projection(

@@ -44,47 +44,99 @@ _create_schema = SavingsGoalCreateSchema()
 _update_schema = SavingsGoalUpdateSchema()
 
 
-def _serialize_net_worth_chart(net_worth_series: dict) -> str:
-    """Serialize the net-worth trend series to a Chart.js JSON string.
+# Chart.js x-axis label format for the Horizon range: month + full year
+# (e.g. "Dec 2049") -- the annual samples span decades, so the year matters.
+_HORIZON_LABEL_FORMAT = "%b %Y"
 
-    The single Chart.js serialization boundary for the cockpit's
-    net-worth region (coding-standards: ``float`` lives only here, never
-    in a calculation).  Maps the producer's parallel ``Decimal`` lists
-    (``net`` / ``assets`` / ``liabilities``, computed money-precise in
-    :mod:`app.services.savings_dashboard_service._net_worth`) to ``float``
-    arrays and the period descriptors' ``end_date`` to ``%b %-d`` labels.
 
-    ``current_index`` (from
-    :func:`~app.services.savings_dashboard_service._net_worth.build_trend_periods`,
-    passed straight through) is the position of the current period within
-    the series: the leading ``current_index`` points are the honest history
-    tail the client draws solid, and the rest are the forward projection it
-    draws dashed and lighter from a "Today" marker at the boundary.  It is
-    also the anchor the client slices the 6 / 13 / 26 / All forward horizon
-    from, always keeping the full history tail.
+def _serialize_horizon(horizon: dict | None) -> dict | None:
+    """Serialize the Horizon-range producer output to Chart.js-ready data.
+
+    The presentation boundary for the cockpit's ``Horizon`` range (P-AC1
+    Loop B P1): maps the producer's parallel ``Decimal`` band series
+    (``composition``) and net trajectory to ``float`` arrays, the annual
+    sample dates to ``%b %Y`` labels, and each milestone's ``date`` to an ISO
+    string (the client positions the flag; display formatting is its call).
+    ``None`` (the user has no pay periods) passes straight through so the
+    client hides the range.
 
     Args:
-        net_worth_series: The ``net_worth["series"]`` dict, with keys
-            ``periods`` (list of ``{end_date, period_index}``), ``net``,
-            ``assets``, ``liabilities``, and ``current_index``.
+        horizon: The ``net_worth["horizon"]`` dict from
+            :func:`~app.services.savings_dashboard_service._horizon.build_horizon`
+            (``dates`` / ``net`` / ``composition`` / ``milestones`` /
+            ``current_index``), or ``None``.
 
     Returns:
-        A JSON string ``{"labels": [str], "net": [float], "assets":
-        [float], "liabilities": [float], "current_index": int}`` for the
-        ``data-chart`` attribute.
+        A dict ``{"labels", "net", "composition", "milestones",
+        "current_index"}`` for the ``data-chart`` payload, or ``None``.
     """
-    periods = net_worth_series["periods"]
+    if horizon is None:
+        return None
+    return {
+        "labels": [
+            point.strftime(_HORIZON_LABEL_FORMAT) for point in horizon["dates"]
+        ],
+        "net": [float(value) for value in horizon["net"]],
+        "composition": {
+            band: [float(value) for value in band_series]
+            for band, band_series in horizon["composition"].items()
+        },
+        "milestones": [
+            {
+                "date": milestone["date"].isoformat(),
+                "label": milestone["label"],
+                "kind": milestone["kind"],
+            }
+            for milestone in horizon["milestones"]
+        ],
+        "current_index": horizon["current_index"],
+    }
+
+
+def _serialize_net_worth_chart(net_worth: dict) -> str:
+    """Serialize BOTH net-worth ranges into one Chart.js JSON payload.
+
+    The single Chart.js serialization boundary for the cockpit's net-worth
+    region (coding-standards: ``float`` lives only here, never in a
+    calculation).  Emits ONE payload carrying both ranges the element toggles
+    between (P-AC1): the ``2 years`` engine-real series (its ``net`` /
+    ``assets`` / ``liabilities`` totals AND the per-category ``composition``
+    split) with the ``current_index`` solid/dashed boundary, plus the nested
+    ``horizon`` range from :func:`_serialize_horizon`.  Every money figure is
+    mapped from the producer's money-precise ``Decimal`` to ``float`` here.
+
+    ``current_index`` is the position of the current period within the
+    ``2 years`` series: the leading points are the honest history tail the
+    client draws solid, the rest the forward projection.  The top-level
+    ``net`` / ``assets`` / ``liabilities`` / ``current_index`` keys keep their
+    prior shape so the current chart script renders unchanged until the P2
+    element replaces it; ``composition`` and ``horizon`` are additive fields
+    that script ignores.
+
+    Args:
+        net_worth: The ``compute_dashboard_data`` ``net_worth`` dict, with
+            ``series`` (``periods`` / ``net`` / ``assets`` / ``liabilities`` /
+            ``composition`` / ``current_index``) and ``horizon``.
+
+    Returns:
+        A JSON string for the ``data-chart`` attribute.
+    """
+    series = net_worth["series"]
+    periods = series["periods"]
     return json.dumps({
         "labels": [
             point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
             for point in periods
         ],
-        "net": [float(value) for value in net_worth_series["net"]],
-        "assets": [float(value) for value in net_worth_series["assets"]],
-        "liabilities": [
-            float(value) for value in net_worth_series["liabilities"]
-        ],
-        "current_index": net_worth_series["current_index"],
+        "net": [float(value) for value in series["net"]],
+        "assets": [float(value) for value in series["assets"]],
+        "liabilities": [float(value) for value in series["liabilities"]],
+        "current_index": series["current_index"],
+        "composition": {
+            band: [float(value) for value in band_series]
+            for band, band_series in series["composition"].items()
+        },
+        "horizon": _serialize_horizon(net_worth["horizon"]),
     })
 
 
@@ -260,7 +312,7 @@ def _cockpit_context(user_id: int) -> dict:
     """
     ctx = savings_dashboard_service.compute_dashboard_data(user_id)
     ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
-        ctx["net_worth"]["series"]
+        ctx["net_worth"]
     )
     ctx["allocation"] = _serialize_allocation_bar(ctx["allocation"])
     ctx["sparkline_points"] = _serialize_sparklines(ctx["sparklines"])

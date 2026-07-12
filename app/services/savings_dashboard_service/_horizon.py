@@ -1,0 +1,739 @@
+"""
+Shekel Budget App -- Savings Cockpit: long-horizon net-worth producer.
+
+The server-side data producer for the Accounts / Net-Worth cockpit's
+``Horizon`` range (P-AC1 Loop B P1): an ANNUAL net-worth composition +
+net-trajectory series that runs from today out to the horizon domain end
+(the last loan payoff plus one year, rounded to year end; a loan-free user
+gets a fixed :data:`_LOAN_FREE_HORIZON_YEARS`-year window), plus the
+milestone flags a long chart raises (loan payoffs, debt-free, and every
+``$500k`` net-worth crossing).
+
+Where the ``2 years`` range (:func:`.._net_worth.compute_net_worth_series`)
+sums the engine-real biweekly period balances, this range models a distance
+the real pay-period calendar does not reach, so each band uses the model
+the P-AC1 ruling fixed on worked real-data examples:
+
+* **Retirement and Investment bands REUSE the /retirement engine** verbatim
+  (:func:`app.services.retirement_projection.build_projection_context` plus
+  the ``project_accounts_with_batch`` probe seam over synthetic biweekly
+  periods to the horizon end), sampled annually -- so the band is the
+  engine's own projection (the constant-employer-base path every net-worth
+  consumer uses, the ruled oracle), never a parallel model.  See
+  :func:`_retirement_investment_bands` for why the constant base -- not the
+  /retirement readiness page's salary-basis refinement -- is the reuse here.
+* **Asset band** = per-account param growth: a Property compounds at its
+  ``annual_appreciation_rate``, an interest account at its ``apy``, and plain
+  cash holds flat -- every figure traceable to a parameter the account
+  carries, all through the ONE :func:`app.services.growth_engine.project_balance`
+  compound formula (no parallel math).
+* **Liability band** = the loan resolver schedules
+  (:func:`app.services.net_worth_kernel.generate_debt_schedules` read via
+  :func:`app.services.account_projection.balance_from_schedule_at_date`) --
+  the same amortization the ``2 years`` band and the debt card consume.
+
+The today point (index 0) is each band's real today balance, so the horizon
+net at index 0 equals the net-worth hero and the ``2 years`` series' current
+point by construction.
+
+No Flask imports; every function takes plain data (the loaded core data,
+the projected account dicts, the id-based category map) and returns plain
+``Decimal`` / ``dict`` data the route serializes at the presentation
+boundary.
+"""
+
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
+from typing import TYPE_CHECKING
+
+from app.services import growth_engine, net_worth_kernel, retirement_projection
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
+from app.services.savings_dashboard_service._net_worth import (
+    _ASSET_BANDS,
+    _COMPOSITION_BANDS,
+    _LIABILITY_BAND,
+    ZERO,
+)
+
+if TYPE_CHECKING:
+    from app.services.savings_dashboard_service._types import _DashboardCoreData
+
+# The horizon window for a user with no active amortizing loans: with no
+# payoff to anchor the "last payoff + 1 year" domain, the chart shows a fixed
+# forward decade so it still reads as a long-term view.
+_LOAN_FREE_HORIZON_YEARS = 10
+
+# Net-worth milestone flags fire at each whole multiple of this step the net
+# trajectory crosses inside the domain (D11 structural markers).
+_MILESTONE_NET_STEP = Decimal("500000")
+_ONE_MILLION = Decimal("1000000")
+_ONE_THOUSAND = Decimal("1000")
+
+# The most milestone flags the chart's two staggered lanes stay readable
+# with (P-AC1 ruling: "flag count capped for lane readability").  The cap
+# bounds the net-worth crossings -- the only unbounded set, since a very
+# wealthy trajectory crosses many $500k levels; the structural flags (loan
+# payoffs + debt-free) are naturally bounded by the user's loan count and
+# are always shown in full, filled first.
+_MILESTONE_CAP = 8
+
+# The two category bands the /retirement engine owns; the rest of the
+# accounts (asset / other / liability) are projected here.
+_ENGINE_BANDS = ("retirement", "investment")
+
+
+@dataclass(frozen=True)
+class _HorizonFrame:
+    """The horizon's shared time frame, threaded through the band builders.
+
+    A cohesive value object bundling the four axis-related inputs every band
+    builder reads, so each helper takes one ``frame`` argument rather than
+    four parallel ones.  All fields derive from ``today`` and the resolved
+    ``horizon_end``.
+
+    Attributes:
+        today: The producer's as-of date (the index-0 "Today" sample and the
+            projection axis start); equals ``sample_dates[0]``.
+        horizon_end: The domain end (a year end); equals ``sample_dates[-1]``.
+        sample_dates: The annual sample dates -- ``today`` followed by each
+            calendar year end through ``horizon_end`` -- the output columns.
+        axis: The synthetic biweekly period axis
+            (:func:`app.services.growth_engine.generate_projection_periods`)
+            the row-based bands project over and are sampled from; the same
+            axis the /retirement engine generates for this horizon.
+    """
+
+    today: date
+    horizon_end: date
+    sample_dates: list[date]
+    axis: list
+
+
+def _resolve_horizon_domain(
+    account_data: list[dict], today: date,
+) -> tuple[date, date | None, bool]:
+    """Resolve the horizon domain end, debt-free date, and loan-free flag.
+
+    The domain runs to the last active loan payoff plus one year, rounded up
+    to that year's end (so the final sample lands on a year end).  Only
+    FUTURE payoffs of active (not paid-off) loans count; a user whose loans
+    are all retired or dated in the past is treated as loan-free and gets the
+    fixed :data:`_LOAN_FREE_HORIZON_YEARS`-year forward window.
+
+    Args:
+        account_data: The per-account projection dicts (loans carry
+            ``loan_params``, ``payoff_date``, and ``is_paid_off``).
+        today: The producer's as-of date.
+
+    Returns:
+        ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
+        domain end, the last future payoff date (``None`` when loan-free),
+        and whether the fixed fallback window was used.
+    """
+    payoff_dates = [
+        ad["payoff_date"]
+        for ad in account_data
+        if ad.get("loan_params")
+        and ad.get("payoff_date") is not None
+        and not ad.get("is_paid_off")
+        and ad["payoff_date"] > today
+    ]
+    debt_free_date = max(payoff_dates) if payoff_dates else None
+    if debt_free_date is not None:
+        return date(debt_free_date.year + 1, 12, 31), debt_free_date, False
+    return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, True
+
+
+def _build_sample_dates(today: date, horizon_end: date) -> list[date]:
+    """Build the annual sample dates: today, then each year end to the domain.
+
+    ``today`` anchors the series at the real current net worth (the hero);
+    the subsequent points are the December 31 of each year through
+    ``horizon_end``, so the final point coincides with the domain end (a year
+    end) and, for the retirement bands, the /retirement projection horizon.
+    A year end that is not strictly after ``today`` is dropped, so a run
+    exactly on December 31 does not duplicate the anchor.
+
+    Args:
+        today: The anchor date (index 0).
+        horizon_end: The domain end (a December 31).
+
+    Returns:
+        The chronological sample dates, ``today`` first and ``horizon_end``
+        last.
+    """
+    year_ends = [
+        date(year, 12, 31)
+        for year in range(today.year, horizon_end.year + 1)
+    ]
+    return [today] + [d for d in year_ends if d > today]
+
+
+def _period_id_at(axis: list, target: date) -> int | None:
+    """Return the axis period id whose interval contains *target*.
+
+    The synthetic axis periods tile the calendar without gaps, so the period
+    containing *target* is the last one whose ``start_date`` is on or before
+    it (a *target* past the axis end resolves to the final period).  Kept
+    local because the axis periods are
+    :class:`~app.services.growth_engine.SyntheticPeriod` namedtuples, which
+    carry no ``period_index`` for the general
+    :func:`app.services.account_projection.find_period_containing_date`.
+
+    Args:
+        axis: The chronological synthetic period axis.
+        target: The date to locate.
+
+    Returns:
+        The containing period's ``id``, or ``None`` when *target* precedes
+        the first period's start.
+    """
+    chosen = None
+    for period in axis:
+        if period.start_date <= target:
+            chosen = period
+        else:
+            break
+    return chosen.id if chosen is not None else None
+
+
+def _sample_projection(
+    pid_to_balance: dict[int, Decimal],
+    today_value: Decimal,
+    frame: _HorizonFrame,
+) -> list[Decimal]:
+    """Sample a per-axis-period balance map at the annual sample dates.
+
+    The shared sampler for the row-based bands (retirement / investment /
+    asset): the today point is the account's real *today_value* (so the
+    series starts at the hero), and each later point reads the projected
+    end balance of the axis period containing that year end.  An axis period
+    absent from *pid_to_balance* (a non-projecting account, whose engine
+    rows are empty) falls back to *today_value* -- a flat carry.
+
+    These bands are therefore period-granular: a year-end sample reads the
+    biweekly period's END balance (a few days past December 31), where the
+    liability band reads the loan schedule at the exact December 31.  At
+    annual granularity the few-day offset is immaterial to the dollar
+    figures, and ``net`` is derived from these SAME sampled band values
+    (:func:`_net_series`), so the reconciliation is exact regardless.
+
+    Args:
+        pid_to_balance: ``{axis_period_id: Decimal end balance}`` for one
+            account's projection over ``frame.axis``.
+        today_value: The account's real balance today (the index-0 point and
+            the flat-carry fallback).
+        frame: The horizon time frame.
+
+    Returns:
+        The account's balance sampled at each of ``frame.sample_dates``.
+    """
+    series: list[Decimal] = []
+    for sample_date in frame.sample_dates:
+        if sample_date <= frame.today:
+            series.append(today_value)
+            continue
+        pid = _period_id_at(frame.axis, sample_date)
+        series.append(
+            pid_to_balance.get(pid, today_value)
+            if pid is not None else today_value
+        )
+    return series
+
+
+def _add_into(target: list[Decimal], series: list[Decimal]) -> None:
+    """Accumulate *series* into *target* element-wise (in place)."""
+    for index, value in enumerate(series):
+        target[index] += value
+
+
+def _zero_series(frame: _HorizonFrame) -> list[Decimal]:
+    """Return a zero band series aligned with the sample dates."""
+    return [ZERO] * len(frame.sample_dates)
+
+
+def _retirement_investment_bands(
+    user_id: int,
+    core: "_DashboardCoreData",
+    category_by_account_id: dict[int, str],
+    frame: _HorizonFrame,
+) -> dict[str, list[Decimal]]:
+    """Project the retirement and investment bands via the /retirement engine.
+
+    Reuses the retirement dashboard's own context builder and the
+    ``project_accounts_with_batch`` probe seam over the horizon axis, so the
+    band is the engine's projection, never a parallel model -- it equals the
+    ret_probe oracle the P-AC1 ruling anchored on ($1,187,745.83 at
+    2049-12-31 on the developer's data).  Each account's per-period rows are
+    sampled annually and summed into its category band; the today point is
+    the account's model-from-anchor displayed balance, so the band starts at
+    the hero's retirement / investment subtotal.
+
+    The employer-contribution base is held CONSTANT (``employer_salary_basis``
+    is ``None``), which is what the ruled oracle used and what every
+    net-worth consumer does -- the ``2 years`` band's investment growth
+    (``net_worth_investment._forward_project_rows`` ->
+    ``growth_engine.project_balance`` with no ``salary_basis``) keeps the
+    constant base too, so the Horizon retirement band and the ``2 years``
+    retirement band agree at their shared today point and share one growth
+    model.  Only the /retirement READINESS page grows the employer base with
+    the projected salary path (its own fork F3 refinement, documented at
+    ``retirement_dashboard_service`` as "every other engine consumer keeps
+    the constant base"); applying it here would diverge the Horizon range
+    from the ``2 years`` range of the same chart.
+
+    The engine is skipped entirely (returning zero bands) when the user has
+    no retirement or investment account, so a loan- or cash-only user pays
+    for none of its queries.
+
+    Args:
+        user_id: The authenticated user's id (the engine loads its own
+            retirement / investment accounts for this user).
+        core: The loaded dashboard core data (periods + current period).
+        category_by_account_id: Each account's id-based category key.
+        frame: The horizon time frame (its ``horizon_end`` is the projection
+            horizon, its ``axis`` the explicit period axis).
+
+    Returns:
+        ``{"retirement": [...], "investment": [...]}`` -- each band's Decimal
+        series over ``frame.sample_dates``.
+    """
+    bands = {band: _zero_series(frame) for band in _ENGINE_BANDS}
+    if not any(
+        band in _ENGINE_BANDS for band in category_by_account_id.values()
+    ):
+        return bands
+
+    # The last two args are return_rate_override and employer_salary_basis,
+    # both None: no slider override, and the constant employer base every
+    # net-worth consumer uses (the ruled oracle; see the docstring).
+    ctx = retirement_projection.build_projection_context(
+        user_id, core.all_periods, core.current_period,
+        frame.horizon_end, None, None,
+    )
+    batch = retirement_projection.load_projection_batch(ctx)
+    projections = retirement_projection.project_accounts_with_batch(
+        ctx, batch, frame.axis,
+    )
+    for projection in projections:
+        account = projection["account"]
+        band = category_by_account_id.get(account.id)
+        if band not in _ENGINE_BANDS:
+            # Defensive: the engine loads only retirement / investment types,
+            # so this cannot fire; it keeps a mis-typed account out of the
+            # asset bands rather than silently mis-banding it.
+            continue
+        pid_to_balance = {
+            row.period_id: row.end_balance
+            for row in projection["projection_rows"]
+        }
+        _add_into(bands[band], _sample_projection(
+            pid_to_balance, projection["current_balance"], frame,
+        ))
+    return bands
+
+
+def _horizon_growth_rate(account, kind: AccountProjectionKind) -> Decimal:
+    """Return the annual compound rate for a non-retirement asset account.
+
+    Property (APPRECIATING) grows at its
+    :attr:`~app.models.asset_appreciation_params.AssetAppreciationParams.annual_appreciation_rate`;
+    an interest account (INTEREST) at its
+    :attr:`~app.models.interest_params.InterestParams.apy`; plain cash (and
+    any account whose parameter row is not yet set) holds flat at ``0`` --
+    every rate is a value the account carries, never an invented growth
+    assumption.
+
+    Args:
+        account: The asset-side account.
+        kind: The account's :class:`AccountProjectionKind`.
+
+    Returns:
+        The annual rate as a ``Decimal`` fraction (``0`` for flat carry).
+    """
+    if kind is AccountProjectionKind.APPRECIATING:
+        params = getattr(account, "asset_appreciation_params", None)
+        return params.annual_appreciation_rate if params is not None else ZERO
+    if kind is AccountProjectionKind.INTEREST:
+        params = getattr(account, "interest_params", None)
+        return params.apy if params is not None else ZERO
+    return ZERO
+
+
+def _asset_bands(
+    account_data: list[dict],
+    category_by_account_id: dict[int, str],
+    frame: _HorizonFrame,
+) -> dict[str, list[Decimal]]:
+    """Project the asset and other bands from each account's growth param.
+
+    Every asset-category (and degenerate "other") account is seeded from its
+    real today balance and compounded forward over the horizon axis at its
+    own rate (:func:`_horizon_growth_rate`) through the one
+    :func:`app.services.growth_engine.project_balance` formula: a Property
+    appreciates, an interest account earns its APY, plain cash stays flat.
+    Retirement / investment accounts are handled by
+    :func:`_retirement_investment_bands`, and loans by
+    :func:`_liability_band`, so they are skipped here.
+
+    Args:
+        account_data: The per-account projection dicts (the ``current_balance``
+            seeds each account's growth).
+        category_by_account_id: Each account's id-based category key.
+        frame: The horizon time frame.
+
+    Returns:
+        ``{"asset": [...], "other": [...]}`` -- each band's Decimal series
+        over ``frame.sample_dates``.
+    """
+    bands = {"asset": _zero_series(frame), "other": _zero_series(frame)}
+    for ad in account_data:
+        account = ad["account"]
+        band = category_by_account_id.get(account.id)
+        if band not in bands:
+            continue
+        today_value = ad["current_balance"] or ZERO
+        rate = _horizon_growth_rate(account, classify_account(account))
+        rows = growth_engine.project_balance(
+            current_balance=today_value,
+            assumed_annual_return=rate,
+            periods=frame.axis,
+        )
+        pid_to_balance = {row.period_id: row.end_balance for row in rows}
+        _add_into(bands[band], _sample_projection(
+            pid_to_balance, today_value, frame,
+        ))
+    return bands
+
+
+def _liability_band(
+    account_data: list[dict],
+    core: "_DashboardCoreData",
+    frame: _HorizonFrame,
+) -> list[Decimal]:
+    """Project the liability band from EVERY liability account.
+
+    Every ``is_liability`` account contributes its owed magnitude
+    (``abs`` of its current balance, the same sign convention the net-worth
+    hero's ``total_liabilities`` uses) so no debt can silently vanish from
+    the horizon -- the band must include a revolving Credit Card (no
+    amortization schedule), not just amortizing loans, or the today point
+    would not reconcile to the hero.  Two forward models:
+
+    * **Amortizing loans** (those carrying ``loan_params``) follow their
+      resolver schedule, read at the future sample dates through the
+      kernel's batch multi-date reader
+      (:func:`app.services.net_worth_kernel.loan_owed_at_dates`, which walks
+      the seam-fenced
+      :func:`~app.services.account_projection.balance_from_schedule_at_date`
+      boundary rule), so the band amortizes to zero as each loan retires and
+      cannot drift from the debt card or the ``2 years`` liability series.
+    * **Non-amortizing liabilities** (a revolving Credit Card, or a loan
+      with no resolvable schedule / no baseline scenario) have no forward
+      model, so they hold flat at their current owed magnitude.
+
+    The today point (index 0) is every liability's own current owed
+    magnitude, so the horizon starts at the net-worth hero's liability
+    total.
+
+    Args:
+        account_data: The per-account projection dicts (each carrying
+            ``is_liability`` and ``current_balance``; loans also carry
+            ``loan_params``).
+        core: The loaded dashboard core data (its ``scenario`` scopes the
+            resolver).
+        frame: The horizon time frame.
+
+    Returns:
+        The liability band's Decimal series over ``frame.sample_dates`` (a
+        positive owed total per point).
+    """
+    band = _zero_series(frame)
+    liability_ads = [ad for ad in account_data if ad.get("is_liability")]
+    if not liability_ads:
+        return band
+
+    # sample_dates[0] is today (the hero point); the rest are all future.
+    future_dates = frame.sample_dates[1:]
+    loan_accounts = [
+        ad["account"] for ad in liability_ads if ad.get("loan_params")
+    ]
+    scenario_id = core.scenario.id if core.scenario else None
+    owed_by_loan = (
+        net_worth_kernel.loan_owed_at_dates(
+            loan_accounts, scenario_id, future_dates,
+        )
+        if scenario_id is not None and loan_accounts else {}
+    )
+    for ad in liability_ads:
+        current = abs(ad["current_balance"] or ZERO)
+        loan_future = owed_by_loan.get(ad["account"].id)
+        if loan_future is not None:
+            _add_into(band, [current] + loan_future)
+        else:
+            # Non-amortizing liability (or no schedule): flat owed magnitude.
+            _add_into(band, [current] * len(frame.sample_dates))
+    return band
+
+
+def _net_series(
+    composition: dict[str, list[Decimal]], count: int,
+) -> list[Decimal]:
+    """Derive the net-worth line from the composition bands.
+
+    ``net[k]`` is the sum of the asset-side bands minus the liability band at
+    each sample, so the trajectory reconciles to the bands it rides on by
+    construction.
+
+    Args:
+        composition: The per-band Decimal series map.
+        count: The number of sample points.
+
+    Returns:
+        The net-worth Decimal series.
+    """
+    return [
+        sum((composition[band][k] for band in _ASSET_BANDS), ZERO)
+        - composition[_LIABILITY_BAND][k]
+        for k in range(count)
+    ]
+
+
+def _format_net_milestone(amount: Decimal) -> str:
+    """Format a net-worth crossing amount as a compact milestone label.
+
+    ``$500k`` under a million; ``$1M`` / ``$1.5M`` / ``$10M`` at or above
+    (a whole-million multiple drops its ``.0``), matching the horizon mock's
+    flag labels.  The integral case is formatted through ``int`` rather than
+    ``Decimal.normalize`` so a round ten-million reads ``$10M`` and not
+    ``Decimal.normalize``'s scientific ``1E+1``.
+
+    Args:
+        amount: The whole ``$500k`` multiple the net crossed.
+
+    Returns:
+        A label such as ``"Net $500k"``, ``"Net $1.5M"``, or ``"Net $10M"``.
+    """
+    if amount >= _ONE_MILLION:
+        millions = amount / _ONE_MILLION
+        if millions == millions.to_integral_value():
+            return f"Net ${int(millions)}M"
+        # A $500k step gives only half-million residues (1.5, 2.5, ...); the
+        # fractional Decimal formats without an exponent.
+        return f"Net ${millions.normalize()}M"
+    thousands = int(amount / _ONE_THOUSAND)
+    return f"Net ${thousands}k"
+
+
+def _structural_milestones(
+    account_data: list[dict],
+    debt_free_date: date | None,
+    frame: _HorizonFrame,
+) -> list[dict]:
+    """Build the loan-payoff and debt-free milestone flags.
+
+    One "paid off" flag per active loan that retires BEFORE the final one
+    (its payoff strictly precedes ``debt_free_date``), then one "Debt-free"
+    flag at ``debt_free_date`` -- so the last loan's payoff is not
+    double-flagged as both its own payoff and the debt-free moment.  Empty
+    for a loan-free user (``debt_free_date`` is ``None``).
+
+    Args:
+        account_data: The per-account projection dicts.
+        debt_free_date: The last future loan payoff, or ``None``.
+        frame: The horizon time frame (its ``today`` bounds the payoffs).
+
+    Returns:
+        The structural milestone dicts (unsorted, unbounded -- the caller
+        caps and orders them).
+    """
+    if debt_free_date is None:
+        return []
+    result: list[dict] = []
+    for ad in account_data:
+        payoff = ad.get("payoff_date")
+        if (ad.get("loan_params")
+                and payoff is not None
+                and not ad.get("is_paid_off")
+                and frame.today < payoff < debt_free_date):
+            result.append({
+                "date": payoff,
+                "label": f"{ad['account'].name} paid off",
+                "kind": "payoff",
+            })
+    result.append({
+        "date": debt_free_date, "label": "Debt-free", "kind": "debt_free",
+    })
+    return result
+
+
+def _net_crossing_milestones(
+    net: list[Decimal], frame: _HorizonFrame,
+) -> list[dict]:
+    """Build a milestone flag at each ``$500k`` net-worth crossing.
+
+    For every whole :data:`_MILESTONE_NET_STEP` multiple the net trajectory
+    reaches inside the domain, flags the first sample date it reaches it --
+    but only for a level the net STARTS below (a level already exceeded today
+    is not a future crossing).
+
+    Args:
+        net: The net-worth series over ``frame.sample_dates``.
+        frame: The horizon time frame.
+
+    Returns:
+        The net-crossing milestone dicts, ascending by threshold.
+    """
+    result: list[dict] = []
+    if not net:
+        return result
+    peak = max(net)
+    multiple = _MILESTONE_NET_STEP
+    while multiple <= peak:
+        if net[0] < multiple:
+            for k in range(1, len(net)):
+                if net[k] >= multiple:
+                    result.append({
+                        "date": frame.sample_dates[k],
+                        "label": _format_net_milestone(multiple),
+                        "kind": "net_crossing",
+                    })
+                    break
+        multiple += _MILESTONE_NET_STEP
+    return result
+
+
+def _build_milestones(
+    account_data: list[dict],
+    net: list[Decimal],
+    debt_free_date: date | None,
+    frame: _HorizonFrame,
+) -> list[dict]:
+    """Assemble the capped, date-ordered milestone flags.
+
+    Structural flags (loan payoffs + debt-free) are kept first; net-worth
+    crossings fill the remaining slots up to :data:`_MILESTONE_CAP` so the
+    two staggered flag lanes stay readable.  The combined list is ordered by
+    date for the chart's left-to-right layout.
+
+    Args:
+        account_data: The per-account projection dicts.
+        net: The net-worth series over ``frame.sample_dates``.
+        debt_free_date: The last future loan payoff, or ``None``.
+        frame: The horizon time frame.
+
+    Returns:
+        The milestone dicts (``{date, label, kind}``), ascending by date.
+    """
+    structural = _structural_milestones(account_data, debt_free_date, frame)
+    crossings = _net_crossing_milestones(net, frame)
+    remaining = max(_MILESTONE_CAP - len(structural), 0)
+    combined = structural + crossings[:remaining]
+    combined.sort(key=lambda milestone: milestone["date"])
+    return combined
+
+
+def _assemble_composition(
+    user_id: int,
+    core: "_DashboardCoreData",
+    account_data: list[dict],
+    category_by_account_id: dict[int, str],
+    frame: _HorizonFrame,
+) -> dict[str, list[Decimal]]:
+    """Assemble the per-band composition series over the horizon frame.
+
+    Sums each band from its producer: the retirement / investment bands from
+    the /retirement engine (:func:`_retirement_investment_bands`), the asset
+    and other bands from per-account param growth (:func:`_asset_bands`), and
+    the liability band from the loan schedules (:func:`_liability_band`).
+
+    Args:
+        user_id: The authenticated user's id.
+        core: The loaded dashboard core data.
+        account_data: The per-account projection dicts.
+        category_by_account_id: Each account's id-based category key.
+        frame: The horizon time frame.
+
+    Returns:
+        The ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`.
+    """
+    composition = {band: _zero_series(frame) for band in _COMPOSITION_BANDS}
+    engine_bands = _retirement_investment_bands(
+        user_id, core, category_by_account_id, frame,
+    )
+    asset_bands = _asset_bands(account_data, category_by_account_id, frame)
+    for band, series in {**engine_bands, **asset_bands}.items():
+        _add_into(composition[band], series)
+    _add_into(
+        composition[_LIABILITY_BAND],
+        _liability_band(account_data, core, frame),
+    )
+    return composition
+
+
+def build_horizon(
+    user_id: int,
+    core: "_DashboardCoreData",
+    account_data: list[dict],
+    category_by_account_id: dict[int, str],
+) -> dict | None:
+    """Build the long-horizon annual net-worth composition + milestones.
+
+    The reusable core of the ``Horizon`` range producer: it takes the loaded
+    core data, the already-projected account dicts, and the id-based category
+    map (so a caller that has already run the dashboard build threads them in
+    rather than re-projecting), resolves the domain, and assembles every
+    band on one annual sample axis.  The bands reconcile to ``net`` by
+    construction (:func:`_net_series`), and index 0 is each band's real today
+    balance (so the horizon starts at the net-worth hero).
+
+    Args:
+        user_id: The authenticated user's id (for the /retirement engine
+            reuse).
+        core: The loaded dashboard core data.
+        account_data: The per-account projection dicts from
+            ``_compute_account_projections``.
+        category_by_account_id: Each account's id-based category key from
+            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
+
+    Returns:
+        A dict with ``dates`` (the sample dates), ``current_index`` (always
+        ``0`` -- the whole horizon is forward from today), ``composition``
+        (the ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`),
+        ``net`` (the trajectory), ``milestones`` (the ``{date, label, kind}``
+        flags), ``horizon_end``, and ``is_loan_free``.  ``None`` when the
+        user has no pay periods (no axis to project over).
+    """
+    if not core.all_periods:
+        return None
+
+    today = date.today()
+    horizon_end, debt_free_date, is_loan_free = _resolve_horizon_domain(
+        account_data, today,
+    )
+    frame = _HorizonFrame(
+        today=today,
+        horizon_end=horizon_end,
+        sample_dates=_build_sample_dates(today, horizon_end),
+        axis=growth_engine.generate_projection_periods(today, horizon_end),
+    )
+
+    composition = _assemble_composition(
+        user_id, core, account_data, category_by_account_id, frame,
+    )
+    net = _net_series(composition, len(frame.sample_dates))
+    milestones = _build_milestones(account_data, net, debt_free_date, frame)
+
+    return {
+        "dates": frame.sample_dates,
+        "current_index": 0,
+        "composition": composition,
+        "net": net,
+        "milestones": milestones,
+        "horizon_end": horizon_end,
+        "is_loan_free": is_loan_free,
+    }

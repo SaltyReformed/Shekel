@@ -3283,13 +3283,14 @@ class TestDashboardNetWorthContext:
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """net_worth_chart_json parses to the labeled float series shape.
+        """net_worth_chart_json carries both ranges as float series.
 
-        The route serializes the Decimal trend to a JSON string with
-        parallel ``net`` / ``assets`` / ``liabilities`` float arrays, one
-        ``%b %-d`` label per period, and an integer ``current_index``.  With
+        The route serializes ONE payload with the ``2 years`` totals (parallel
+        ``net`` / ``assets`` / ``liabilities`` float arrays + the per-category
+        ``composition`` split) and the nested ``horizon`` range (P-AC1).  With
         the seed Checking ($1,000) plus an added Savings ($4,000) and flat
-        balances, every ``net`` point is ``5000.0`` (the float boundary).
+        balances, every ``2 years`` ``net`` point is ``5000.0`` (the float
+        boundary), and the horizon starts there too.
         """
         # pylint: disable=import-outside-toplevel
         import json
@@ -3306,8 +3307,11 @@ class TestDashboardNetWorthContext:
             )
             chart = json.loads(context["net_worth_chart_json"])
 
+            # The prior keys stay (so the current chart script keeps working)
+            # plus the two additive P-AC1 fields.
             assert set(chart.keys()) == {
                 "labels", "net", "assets", "liabilities", "current_index",
+                "composition", "horizon",
             }
             series = context["net_worth"]["series"]
             n = len(series["periods"])
@@ -3328,6 +3332,28 @@ class TestDashboardNetWorthContext:
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] <= n
 
+            # The 2-year composition: each band a float list of length n, the
+            # asset-side bands summing to the assets total at every point.
+            comp = chart["composition"]
+            asset_bands = ("asset", "retirement", "investment", "other")
+            for band in (*asset_bands, "liability"):
+                assert len(comp[band]) == n
+                assert all(isinstance(v, float) for v in comp[band])
+            for i in range(n):
+                asset_side = sum(comp[band][i] for band in asset_bands)
+                assert asset_side == chart["assets"][i]
+                assert comp["liability"][i] == chart["liabilities"][i]
+
+            # The horizon range: a float net series that starts at the hero
+            # ($5,000), plus composition bands + milestone list.
+            horizon = chart["horizon"]
+            assert horizon is not None
+            assert horizon["net"][0] == 5000.0
+            assert all(isinstance(v, float) for v in horizon["net"])
+            assert isinstance(horizon["composition"], dict)
+            assert isinstance(horizon["milestones"], list)
+            assert horizon["current_index"] == 0
+
     def test_dashboard_still_renders_with_net_worth_wired(
         self, app, auth_client, seed_user, seed_periods,
     ):
@@ -3340,6 +3366,57 @@ class TestDashboardNetWorthContext:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             assert b"Accounts" in resp.data
+
+
+class TestHorizonSerialization:
+    """Unit tests for the Horizon-range Chart.js serializer (P-AC1 Loop B P1).
+
+    ``_serialize_horizon`` is the float boundary for the horizon range: it
+    maps the producer's ``Decimal`` band series + net trajectory to floats,
+    the annual dates to ``%b %Y`` labels, and each milestone's ``date`` to an
+    ISO string.
+    """
+
+    def test_maps_decimals_dates_and_milestones(self):
+        """Decimals become floats, dates become labels, milestone dates ISO."""
+        # pylint: disable=import-outside-toplevel
+        from datetime import date
+        from app.routes.savings import _serialize_horizon
+        horizon = {
+            "dates": [date(2026, 7, 12), date(2026, 12, 31)],
+            "net": [Decimal("236184.51"), Decimal("240000.00")],
+            "composition": {
+                "asset": [Decimal("358034.92"), Decimal("360000.00")],
+                "liability": [Decimal("192941.56"), Decimal("190000.00")],
+            },
+            "milestones": [
+                {"date": date(2048, 12, 1), "label": "Debt-free",
+                 "kind": "debt_free"},
+            ],
+            "current_index": 0,
+        }
+
+        out = _serialize_horizon(horizon)
+
+        assert out["labels"] == ["Jul 2026", "Dec 2026"]
+        assert out["net"] == [236184.51, 240000.0]
+        assert all(isinstance(v, float) for v in out["net"])
+        assert out["composition"]["asset"] == [358034.92, 360000.0]
+        assert all(
+            isinstance(v, float) for v in out["composition"]["liability"]
+        )
+        # The milestone date serializes to an ISO string (the client
+        # positions the flag); label + kind pass through.
+        assert out["milestones"] == [
+            {"date": "2048-12-01", "label": "Debt-free", "kind": "debt_free"},
+        ]
+        assert out["current_index"] == 0
+
+    def test_none_passes_through(self):
+        """A ``None`` horizon (no pay periods) serializes to ``None``."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_horizon
+        assert _serialize_horizon(None) is None
 
 
 class TestAllocationBar:

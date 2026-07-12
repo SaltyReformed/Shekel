@@ -3459,13 +3459,16 @@ class TestNetWorthProducerEdgeCases:
         """With no account maps and no forward periods the series is empty."""
         # pylint: disable=import-outside-toplevel
         from app.services.savings_dashboard_service._net_worth import (
+            _COMPOSITION_BANDS,
             compute_net_worth_series,
         )
-        series = compute_net_worth_series([], [])
+        series = compute_net_worth_series([], [], {})
         assert series["periods"] == []
         assert series["net"] == []
         assert series["assets"] == []
         assert series["liabilities"] == []
+        # Every composition band is present but empty (no periods to sum).
+        assert series["composition"] == {band: [] for band in _COMPOSITION_BANDS}
 
     def test_liabilities_only_today_is_negative(self):
         """An accounts-set of only liabilities yields negative net worth.
@@ -3546,6 +3549,443 @@ class TestNetWorthProducerEdgeCases:
         assert today["net_worth"] == Decimal("600.00")
         assert today["total_assets"] == Decimal("600.00")
         assert today["liquid"] == Decimal("600.00")
+
+
+class TestCategoryClassifier:
+    """Tests for the shared id-based category classifier (P-AC1 Loop B P1).
+
+    ``account_category_key`` is the ONE per-account classifier both the grid
+    grouping and the net-worth composition split read, so a band and the grid
+    group cannot disagree.  It classifies by the account type's integer
+    ``category_id`` (IDs for logic, never a ``.name`` string).
+    """
+
+    def test_key_by_category_id(self, app):
+        """Each real category id maps to its display key; else 'other'."""
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from types import SimpleNamespace
+            from app.enums import AcctCategoryEnum
+            from app.services.savings_dashboard_service._display import (
+                account_category_key,
+            )
+            cases = [
+                (AcctCategoryEnum.ASSET, "asset"),
+                (AcctCategoryEnum.LIABILITY, "liability"),
+                (AcctCategoryEnum.RETIREMENT, "retirement"),
+                (AcctCategoryEnum.INVESTMENT, "investment"),
+            ]
+            for enum, expected in cases:
+                acct = SimpleNamespace(account_type=SimpleNamespace(
+                    category_id=ref_cache.acct_category_id(enum),
+                ))
+                assert account_category_key(acct) == expected
+            # A degenerate account (no type, or a type with no category id)
+            # is the only path to "other".
+            assert account_category_key(
+                SimpleNamespace(account_type=None),
+            ) == "other"
+            assert account_category_key(SimpleNamespace(
+                account_type=SimpleNamespace(category_id=None),
+            )) == "other"
+
+
+class TestNetWorthComposition:
+    """Tests for the 2-year net-worth series' per-category composition split.
+
+    ``compute_net_worth_series`` now also emits ``composition`` -- one Decimal
+    band series per category (asset / retirement / investment / other /
+    liability).  The split shares ONE per-period sum with the ``assets`` /
+    ``liabilities`` / ``net`` totals, so it reconciles to them by
+    construction, and each band reads the same balance the grid renders.
+    """
+
+    def test_bands_reconcile_to_totals_each_point(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Composition bands sum to assets / liabilities / net at every point.
+
+        With Checking ($1,000) + Savings ($4,000) as assets, a 401(k) as the
+        retirement band, and a $240,000 mortgage as the liability band, the
+        asset-side bands must sum to ``assets`` and the liability band must
+        equal ``liabilities`` at every trend point -- the split cannot drift
+        from the totals it is derived from.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+
+            series = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["net_worth"]["series"]
+            comp = series["composition"]
+            asset_bands = ("asset", "retirement", "investment", "other")
+
+            assert len(series["net"]) > 0
+            for i in range(len(series["net"])):
+                asset_side = sum(
+                    (comp[band][i] for band in asset_bands), Decimal("0"),
+                )
+                # asset-side bands sum to the asset total; the liability band
+                # is the liability total; net is their difference.
+                assert asset_side == series["assets"][i]
+                assert comp["liability"][i] == series["liabilities"][i]
+                assert series["net"][i] == (
+                    series["assets"][i] - series["liabilities"][i]
+                )
+
+    def test_bands_place_each_account_in_its_category(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The 401(k) lands in the retirement band, not the asset band.
+
+        A reconciliation test alone cannot catch a mis-banding (a 401(k) in
+        the asset band still sums into ``assets``); this pins that the
+        retirement band at the current period equals the 401(k)'s own current
+        balance, and the empty investment / other bands stay zero.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            k401 = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            series = data["net_worth"]["series"]
+            comp = series["composition"]
+            current = series["current_index"]
+
+            k401_balance = next(
+                ad["current_balance"] for ad in data["account_data"]
+                if ad["account"].id == k401.id
+            )
+            # The 401(k) is the only retirement account, so the retirement
+            # band at the current period IS its balance -- proving it is not
+            # summed into the asset band.
+            assert comp["retirement"][current] == k401_balance
+            assert comp["retirement"][current] > Decimal("0.00")
+            assert comp["investment"][current] == Decimal("0.00")
+            assert comp["other"][current] == Decimal("0.00")
+
+
+class TestNetWorthHorizon:
+    """Tests for the long-horizon annual net-worth producer (P-AC1 Loop B P1).
+
+    ``compute_net_worth_horizon`` builds an annual net-worth composition +
+    net-trajectory series to the horizon domain (last loan payoff + 1 year, or
+    a fixed decade for a loan-free user), reusing the /retirement engine for
+    the retirement / investment bands, per-account growth params for the asset
+    band, and the loan resolver schedules for the liability band.
+    """
+
+    def test_none_without_periods(self, app, db, seed_user):
+        """No pay periods -> the horizon producer returns None (no axis)."""
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from app.services.savings_dashboard_service._horizon import (
+                build_horizon,
+            )
+            from app.services.savings_dashboard_service._types import (
+                _DashboardCoreData,
+            )
+            core = _DashboardCoreData(
+                accounts=[], scenario=None, all_periods=[], current_period=None,
+            )
+            assert build_horizon(seed_user["user"].id, core, [], {}) is None
+
+    def test_dashboard_data_carries_horizon_matching_standalone(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """compute_dashboard_data carries the horizon == the standalone producer.
+
+        The /savings page reads the horizon out of the ONE dashboard build (no
+        second load per request); it must equal the standalone narrow producer
+        since both route through ``build_horizon`` -- the full-build
+        ``account_data`` (all accounts) and the standalone's (non-engine only)
+        yield the same horizon, since the asset / liability bands filter
+        ``account_data`` and the engine loads its own accounts.
+        """
+        with app.app_context():
+            periods = seed_periods_today
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            uid = seed_user["user"].id
+
+            wired = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["net_worth"]["horizon"]
+            standalone = savings_dashboard_service.compute_net_worth_horizon(uid)
+
+            assert wired is not None
+            assert wired == standalone
+
+    def test_loan_free_uses_fixed_decade_window(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A user with no loans gets the fixed 10-year forward window.
+
+        The domain end is December 31 of ``today.year + 10``; index 0 is today
+        (the "Today" marker), and the final sample is the domain end.
+        """
+        with app.app_context():
+            horizon = savings_dashboard_service.compute_net_worth_horizon(
+                seed_user["user"].id,
+            )
+            assert horizon is not None
+            assert horizon["is_loan_free"] is True
+            assert horizon["horizon_end"] == date(date.today().year + 10, 12, 31)
+            assert horizon["dates"][0] == date.today()
+            assert horizon["dates"][-1] == horizon["horizon_end"]
+            assert horizon["current_index"] == 0
+
+    def test_today_point_equals_net_worth_hero(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The horizon's index-0 figures equal the page's net-worth hero.
+
+        Checking ($1,000) + Savings ($4,000) + a 401(k) as assets and a
+        $240,000 mortgage: the horizon starts at the same net worth, total
+        assets, and total liabilities the cockpit hero shows.  The 401(k)
+        pins that the /retirement-engine today balance the horizon reads for
+        the retirement band agrees with the account_data balance the hero
+        sums (both the model-from-anchor balance_at figure).
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            uid = seed_user["user"].id
+
+            hero = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["net_worth"]
+            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+
+            asset_bands = ("asset", "retirement", "investment", "other")
+            asset0 = sum(
+                (horizon["composition"][band][0] for band in asset_bands),
+                Decimal("0"),
+            )
+            assert horizon["net"][0] == hero["net_worth"]
+            assert asset0 == hero["total_assets"]
+            assert horizon["composition"]["liability"][0] == (
+                hero["total_liabilities"]
+            )
+
+    def test_non_amortizing_liability_stays_in_the_band(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A revolving Credit Card debt appears in the liability band, flat.
+
+        A liability with no amortization schedule (Credit Card, no
+        ``loan_params``) has no forward model, so it holds flat at its owed
+        magnitude -- but it must NOT vanish from the horizon: the today point
+        still reconciles to the net-worth hero, and the $3,000 debt does not
+        disappear when the range toggles from ``2 years`` to ``Horizon``.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from app.models.ref import AccountType
+            from app.services import account_service
+            periods = seed_periods_today
+            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card").one()
+            )
+            card = account_service.create_account(account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cc_type.id,
+                name="Visa",
+                anchor_balance=Decimal("3000.00"),
+                anchor_period_id=periods[0].id,
+            ))
+            db.session.add(card)
+            db.session.commit()
+            uid = seed_user["user"].id
+
+            hero = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["net_worth"]
+            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            liability = horizon["composition"]["liability"]
+
+            # Checking $1,000 + Savings $4,000 assets, $3,000 card liability:
+            #   total_liabilities = 3000.00 ; net = 5000 - 3000 = 2000.
+            assert hero["total_liabilities"] == Decimal("3000.00")
+            assert horizon["net"][0] == hero["net_worth"]
+            # The card is in the band at index 0 and holds flat (no schedule).
+            assert liability[0] == Decimal("3000.00")
+            assert liability[-1] == Decimal("3000.00")
+            # A card-only horizon has no payoff, so the fixed decade is used.
+            assert horizon["is_loan_free"] is True
+
+    def test_composition_reconciles_to_net_each_point(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """net[k] == sum(asset bands) - liability band at every horizon point."""
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+
+            horizon = savings_dashboard_service.compute_net_worth_horizon(
+                seed_user["user"].id,
+            )
+            comp = horizon["composition"]
+            asset_bands = ("asset", "retirement", "investment", "other")
+            for k in range(len(horizon["net"])):
+                asset_side = sum(
+                    (comp[band][k] for band in asset_bands), Decimal("0"),
+                )
+                assert horizon["net"][k] == asset_side - comp["liability"][k]
+
+    def test_retirement_band_equals_retirement_engine_at_horizon(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The final retirement band equals the /retirement projection (oracle).
+
+        The P-AC1 ruling's "the cockpit band equals /retirement by
+        construction": re-running the SAME engine
+        (``build_projection_context`` + ``project_retirement_accounts``) at
+        the horizon end and summing the projected balances must equal the
+        horizon retirement band's final sample.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            from app.services import pay_period_service, retirement_projection
+            periods = seed_periods_today
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("50000.00"),
+            )
+            uid = seed_user["user"].id
+
+            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+
+            all_periods = pay_period_service.get_all_periods(uid)
+            current = pay_period_service.get_current_period(uid)
+            ctx = retirement_projection.build_projection_context(
+                uid, all_periods, current, horizon["horizon_end"], None, None,
+            )
+            projections = retirement_projection.project_retirement_accounts(ctx)
+            expected = sum(
+                (p["projected_balance"] for p in projections), Decimal("0"),
+            )
+            # 50k at 7% over a decade grows well past 50k.
+            assert expected > Decimal("50000.00")
+            assert horizon["composition"]["retirement"][-1] == expected
+
+    def test_liability_amortizes_toward_zero_and_sets_domain(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A mortgage sets the domain to payoff + 1 year and amortizes to zero.
+
+        The liability band starts at the loan's current balance ($240,000) and
+        the final sample -- past the payoff -- is zero owed; the domain end
+        year is the payoff year plus one.
+        """
+        with app.app_context():
+            periods = seed_periods_today
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            uid = seed_user["user"].id
+
+            payoff = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["debt_summary"]["projected_debt_free_date"]
+            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            liability = horizon["composition"]["liability"]
+
+            assert horizon["is_loan_free"] is False
+            assert horizon["horizon_end"].year == payoff.year + 1
+            assert liability[0] == Decimal("240000.00")
+            assert liability[-1] == Decimal("0.00")
+            assert liability[-1] < liability[0]
+
+    def test_debt_free_milestone_at_payoff(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan yields exactly one 'Debt-free' flag at the debt-free date."""
+        with app.app_context():
+            periods = seed_periods_today
+            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            uid = seed_user["user"].id
+
+            payoff = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["debt_summary"]["projected_debt_free_date"]
+            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+
+            debt_free = [
+                m for m in horizon["milestones"] if m["kind"] == "debt_free"
+            ]
+            assert len(debt_free) == 1
+            assert debt_free[0]["date"] == payoff
+            assert debt_free[0]["label"] == "Debt-free"
+
+    def test_net_crossing_milestone(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A net trajectory crossing $500k yields a 'Net $500k' flag.
+
+        A $300,000 401(k) at 7% over the decade window grows the net worth
+        (~$301k today) past $500k, so exactly one $500k crossing flag fires at
+        the first sample that reaches it.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("300000.00"),
+            )
+
+            horizon = savings_dashboard_service.compute_net_worth_horizon(
+                seed_user["user"].id,
+            )
+            assert horizon["net"][0] < Decimal("500000")
+            assert horizon["net"][-1] >= Decimal("500000")
+            crossings = [
+                m for m in horizon["milestones"]
+                if m["kind"] == "net_crossing" and m["label"] == "Net $500k"
+            ]
+            assert len(crossings) == 1
+
+    def test_net_milestone_label_formatting(self):
+        """The $500k-step crossing labels format without scientific notation.
+
+        A whole-million multiple reads ``$NM`` (int-formatted, so a round
+        ten-million is ``$10M`` and never ``Decimal.normalize``'s ``1E+1``);
+        a half-million residue keeps its ``.5``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._horizon import (
+            _format_net_milestone,
+        )
+        assert _format_net_milestone(Decimal("500000")) == "Net $500k"
+        assert _format_net_milestone(Decimal("1000000")) == "Net $1M"
+        assert _format_net_milestone(Decimal("1500000")) == "Net $1.5M"
+        assert _format_net_milestone(Decimal("10000000")) == "Net $10M"
+        assert _format_net_milestone(Decimal("2500000")) == "Net $2.5M"
 
 
 class TestGroupSubtotals:

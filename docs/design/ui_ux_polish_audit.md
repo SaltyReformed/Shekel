@@ -332,6 +332,22 @@ Section 4.
   (JetBrains Mono's dotted zero reads as an 8 below that -- found in render review). Hover (P2): the
   existing Chart.js crosshair tooltip listing every band + net at the hovered point. Scale-up: five
   groups = four ramp bands above zero + danger below, same gaps and legend.
+  **Loop B P1 BUILT 2026-07-12 (Opus; data producers plus route serialization; on dev).** One
+  id-based category classifier (`_display.account_category_key`) now backs both the grid grouping
+  and the split; `compute_net_worth_series` emits a reconciling `composition` band map.
+  `_horizon.build_horizon` (public `compute_net_worth_horizon`) builds the annual composition, net
+  trajectory, and milestones: retirement/investment bands reuse the /retirement engine at a constant
+  employer base (so they match the 2-year band and the ruled oracle), the asset band grows each
+  account by its own param via one `project_balance` call, and the liability band covers every
+  liability (loans amortize through the new fenced `net_worth_kernel.loan_owed_at_dates`;
+  non-amortizing debts stay flat). The horizon wires into `compute_dashboard_data`, and
+  `savings._serialize_net_worth_chart` emits one Chart.js payload for both ranges (the prior 2-year
+  keys unchanged, plus additive `composition` and a nested `horizon`). Verified to the cent on real
+  dev data: the retirement band at 2049 equals `project_retirement_accounts` (the ruled oracle), the
+  horizon's today point equals the hero, the composition reconciles to net, and the liability
+  amortizes to zero at payoff. Full suite green, pylint 10.00/10, independent adversarial review
+  clean after fixes (H1 non-loan liability inclusion, M1 the standalone projects only non-engine
+  accounts; H2 confirmed the constant base is correct). Next = Loop B P2 (the Fable page element).
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.

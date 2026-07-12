@@ -46,6 +46,18 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    `accounts_audit.md` amendment. Remaining build = Loop B: **P1 (Opus)** long-horizon annual
    producer + per-category composition split of the 2-year series; **P2 (Fable)** the page element.
    This is the last build item before the ship arc (items 10-12).
+   **Loop B P1 BUILT 2026-07-12 (Opus; data producers plus route serialization; on dev).**
+   `_display.account_category_key` is now the one id-based classifier the grid grouping and the
+   composition split share; `compute_net_worth_series` emits a reconciling `composition` band map;
+   `_horizon.build_horizon` (public `compute_net_worth_horizon`) builds the annual composition, net
+   trajectory, and milestones, reusing the /retirement engine (constant employer base), per-account
+   growth params, and the loan schedules (via the new fenced `net_worth_kernel.loan_owed_at_dates`).
+   The horizon wires into `compute_dashboard_data` and `savings._serialize_net_worth_chart` emits
+   one Chart.js payload for both ranges (the prior 2-year keys unchanged, plus additive
+   `composition` and a nested `horizon`). Verified on real dev data (the retirement band at 2049
+   equals the ruled oracle); full suite green, pylint 10.00/10, adversarial review clean. Full
+   as-built at P-AC1 in the register. **Remaining: P2 (Fable)** -- the page element (template, JS,
+   CSS) consuming the payload.
 3. **S10 - breadcrumb removal + back buttons (D1)** (Opus recommended, size M). Inventory the
    sub-pages whose only way back is the breadcrumb; add a top-right "Back to <parent>" on the
    amortization-schedule pattern; then delete breadcrumbs everywhere (~24 templates). Run solo.

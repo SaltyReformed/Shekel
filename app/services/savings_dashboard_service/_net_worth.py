@@ -43,6 +43,16 @@ from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 
 ZERO = Decimal("0.00")
 
+# The net-worth composition bands, keyed by the cockpit category
+# (:func:`~app.services.savings_dashboard_service._display.account_category_key`).
+# The asset-side bands sum to the asset total, the liability band is the
+# liability total, and net worth is their difference -- so the composition
+# split reconciles to the ``assets`` / ``liabilities`` / ``net`` totals by
+# construction (P-AC1 Loop B P1).
+_ASSET_BANDS = ("asset", "retirement", "investment", "other")
+_LIABILITY_BAND = "liability"
+_COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
+
 
 def compute_net_worth_today(account_data: list[dict]) -> dict:
     """Compute the today net-worth figures from the projected account data.
@@ -108,7 +118,7 @@ def build_account_net_worth_maps(
 
     Returns the same ``{account_id, balances, is_liability}`` shape
     :func:`compute_net_worth_series` (via
-    :func:`_sum_assets_and_liabilities_at_period`) and
+    :func:`_sum_composition_at_period`) and
     :func:`compute_sparklines` consume.  Accounts with no anchor period (no
     dense map) are omitted by the seam, matching the year-end section's
     ``balances is None`` skip.
@@ -137,37 +147,50 @@ def build_account_net_worth_maps(
     return to_net_worth_account_data(accounts, balance_maps)
 
 
-def _sum_assets_and_liabilities_at_period(
-    period_id: int, account_maps: list[dict],
-) -> tuple[Decimal, Decimal]:
-    """Sum asset balances and liability magnitudes at one period.
+def _sum_composition_at_period(
+    period_id: int,
+    account_maps: list[dict],
+    category_by_account_id: dict[int, str],
+) -> dict[str, Decimal]:
+    """Sum each category band's balance at one period.
 
-    The asset total adds each non-liability account's balance; the
-    liability total accumulates each liability account's POSITIVE
-    magnitude (``abs(bal)``).  Their difference equals
-    :func:`app.services.net_worth_kernel.sum_net_worth_at_period` for the
-    same period and maps (asset ``+bal`` / liability ``-abs(bal)``), so
-    the series' ``assets - liabilities`` reconciles to its ``net`` by
-    construction.
+    The per-band generalization of the old asset/liability split: each
+    non-liability account adds its balance to its category band (asset /
+    retirement / investment / other, keyed by *category_by_account_id*),
+    and each liability account accumulates its POSITIVE magnitude
+    (``abs(bal)``) into the liability band.  The liability flag -- not the
+    category key -- decides the sign, so a liability always lands in the
+    liability band with a positive magnitude even if its category map entry
+    were missing.
+
+    Summing the asset-side bands and subtracting the liability band
+    reproduces :func:`app.services.net_worth_kernel.sum_net_worth_at_period`
+    for the same period and maps (asset ``+bal`` / liability ``-abs(bal)``),
+    so the composition split reconciles to the series' ``assets`` /
+    ``liabilities`` / ``net`` by construction.
 
     Args:
         period_id: The pay period id to read balances at.
-        account_maps: The dense ``{balances, is_liability}`` maps from
-            :func:`build_account_net_worth_maps`.
+        account_maps: The dense ``{account_id, balances, is_liability}``
+            maps from :func:`build_account_net_worth_maps`.
+        category_by_account_id: Each account's cockpit category key, from
+            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`
+            (built from the SAME classifier the grid grouping uses).  An
+            account absent from the map falls to ``"other"`` (defensive; the
+            producer passes a total map).
 
     Returns:
-        ``(assets, liabilities)`` -- the asset sum and the liability
-        magnitude sum at the period, both ``Decimal``.
+        ``{band: Decimal}`` for every band in :data:`_COMPOSITION_BANDS`.
     """
-    assets = ZERO
-    liabilities = ZERO
+    sums = {band: ZERO for band in _COMPOSITION_BANDS}
     for data in account_maps:
         bal = data["balances"].get(period_id, ZERO)
         if data["is_liability"]:
-            liabilities += abs(bal)
+            sums[_LIABILITY_BAND] += abs(bal)
         else:
-            assets += bal
-    return assets, liabilities
+            band = category_by_account_id.get(data["account_id"], "other")
+            sums[band] += bal
+    return sums
 
 
 # Recent-history cap for the net-worth trend's leading "actual" segment.
@@ -379,16 +402,20 @@ def build_trend_periods(
 def compute_net_worth_series(
     account_maps: list[dict],
     trend_periods: list[PayPeriod],
+    category_by_account_id: dict[int, str],
 ) -> dict:
     """Build the net-worth trend over the trend window.
 
     Reads each trend period's id out of the pre-built dense maps (built
     over ALL periods by :func:`build_account_net_worth_maps`) and produces
-    parallel ``net`` / ``assets`` / ``liabilities`` series plus the period
-    descriptors the route serializes.  ``net[i]`` equals ``assets[i] -
-    liabilities[i]`` for every ``i`` by construction (the asset-plus /
-    liability-minus split shares one sum with the kernel's net-worth
-    reduction).
+    parallel ``net`` / ``assets`` / ``liabilities`` series, the per-category
+    ``composition`` split (P-AC1 Loop B P1), and the period descriptors the
+    route serializes.  ``net[i]`` equals ``assets[i] - liabilities[i]`` for
+    every ``i`` by construction, and ``assets[i]`` equals the sum of the
+    asset-side ``composition`` bands while ``liabilities[i]`` equals the
+    ``composition["liability"]`` band -- the split and the totals share one
+    per-period sum (:func:`_sum_composition_at_period`), so they cannot
+    drift.
 
     The ``trend_periods`` window (from :func:`build_trend_periods`) is the
     honest history tail followed by the full forward projection; this
@@ -403,26 +430,36 @@ def compute_net_worth_series(
     both.
 
     Args:
-        account_maps: The dense ``{balances, is_liability}`` maps from
-            :func:`build_account_net_worth_maps`.
+        account_maps: The dense ``{account_id, balances, is_liability}``
+            maps from :func:`build_account_net_worth_maps`.
         trend_periods: The trend window (history tail + current + forward),
             chronological; each must appear in the dense maps' domain.
+        category_by_account_id: Each account's cockpit category key, from
+            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`,
+            driving the per-category ``composition`` split.
 
     Returns:
         dict with ``periods`` (list of ``{end_date, period_index}``),
-        ``net``, ``assets``, and ``liabilities`` (parallel ``Decimal``
-        lists, one entry per trend period).  The orchestrator adds
+        ``net``, ``assets``, ``liabilities`` (parallel ``Decimal`` lists,
+        one entry per trend period), and ``composition`` (a
+        ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
+        band's series parallel to ``periods``).  The orchestrator adds
         ``current_index`` (the solid/dashed boundary) to this dict.
     """
     periods: list[dict] = []
     net: list[Decimal] = []
     assets: list[Decimal] = []
     liabilities: list[Decimal] = []
+    composition: dict[str, list[Decimal]] = {
+        band: [] for band in _COMPOSITION_BANDS
+    }
 
     for period in trend_periods:
-        period_assets, period_liabilities = _sum_assets_and_liabilities_at_period(
-            period.id, account_maps,
+        sums = _sum_composition_at_period(
+            period.id, account_maps, category_by_account_id,
         )
+        period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
+        period_liabilities = sums[_LIABILITY_BAND]
         periods.append({
             "end_date": period.end_date,
             "period_index": period.period_index,
@@ -430,12 +467,15 @@ def compute_net_worth_series(
         net.append(period_assets - period_liabilities)
         assets.append(period_assets)
         liabilities.append(period_liabilities)
+        for band in _COMPOSITION_BANDS:
+            composition[band].append(sums[band])
 
     return {
         "periods": periods,
         "net": net,
         "assets": assets,
         "liabilities": liabilities,
+        "composition": composition,
     }
 
 
