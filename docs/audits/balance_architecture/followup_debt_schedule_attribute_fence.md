@@ -1,8 +1,20 @@
 # Follow-up: `DebtSchedule.current_balance` is a balance-at-T no fence can see
 
-**Status:** OPEN (not started). Raised 2026-07-13 by the adversarial review of the W9909 fail-closed
-fence work (`followup_fence_loan_owed_at_dates.md`). Not a live bug -- it is a HOLE in the fence, of
-the same shape as the two the fence was built to close, one axis over.
+**Status:** RESOLVED 2026-07-13 (commit `84c6e066`), via the recommended **option 1**.
+
+`net_worth_kernel.debt_schedule_rows` now returns the rows with NO balance attached, and all five
+out-of-cluster consumers take it -- they each wanted the `AmortizationRow` list and nothing else, as the
+table below records.  `generate_debt_schedules` joined `_BALANCE_PRODUCERS`; its remaining callers are
+all inside the cluster.  A consumer that wants a loan's balance now has no choice but
+`balance_at.balance_at`, which was the point.  Two checker tests
+(`test_flags_generate_debt_schedules_from_consumer`, `test_allows_debt_schedule_rows_from_consumer`)
+lock both halves.
+
+The sibling hole this document's reasoning applies to one axis over -- `LoanState.current_balance`,
+reachable through the loan RESOLVER -- was closed in the same arc (`7b7c909b`): consumers take
+`balance_at.loan_figures`, which carries the rich detail with the balance deliberately absent.
+
+Original filing follows.
 
 **Severity:** latent. Nothing renders the wrong number today (verified below). The problem is that
 nothing STOPS it, and the thing standing between the codebase and the bug is "a human will remember"

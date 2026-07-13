@@ -1,12 +1,22 @@
 # Follow-up: the horizon answers "is this a loan?" two different ways
 
-**Status:** OPEN (not started). Introduced 2026-07-13 by the liability-seam work
-(`followup_fence_loan_owed_at_dates.md`) and caught by its adversarial review. Disclosed rather than
-fixed on the spot because unifying the predicate means touching the horizon's domain and milestone
-producers, which is outside that change's scope.
+**Status:** CLOSED 2026-07-13 -- **FALSE ALARM.** The three producers already agree; the divergence
+described below is not reachable.
 
-**Severity:** low, but it is a REGRESSION in one reachable state, not merely a latent smell -- before
-that change the three producers agreed with each other. See "What actually changed" below.
+The premise is that the domain / milestones select loans by `ad["loan_params"]` while the band asks the
+canonical classifier, so a type-drifted account (a Mortgage re-typed to Credit Card, keeping its orphan
+`LoanParams` row) would enter one set and not the other.  But `account_data` never carries `loan_params`
+for such an account: `_data._load_loan_params_and_escrow` builds `loan_params_map` from the accounts
+whose TYPE carries `has_amortization` (`_data.py:92-95`) -- the SAME flag `classify_account` branches on
+(`account_projection.py:102`).  A drifted account never enters the map, so it gets no `loan_params`, no
+`payoff_date`, and no `is_paid_off`, and the domain and the milestones skip it exactly as the band does.
+One flag, one answer, three consumers.
+
+This document correctly noted "there is no such test today, which is why the divergence was invisible."
+There is now: `TestTypeDriftedLoanParamsRow` (commit `84c6e066`) builds the drifted account exactly as
+the edit route would and asserts all three producers agree.
+
+Original filing follows.
 
 ---
 

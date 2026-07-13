@@ -1,5 +1,93 @@
 # Follow-up: each loan is resolved 4x per `/savings` render
 
+**Status:** RESOLVED 2026-07-13 (commits `b61aee9c`, `866e30b0`, `84c6e066`, `7b7c909b`).
+
+**The original filing was directionally right, materially undercounted, and wrong on its central
+claim.**  Kept in full below for the record; the corrections come first.
+
+---
+
+## What was actually true
+
+**The count was 11, not 8.**  Instrumenting the real producers against the dev database (user 1:
+Mortgage + Van Loan) showed ONE `compute_dashboard_data` running the loan resolver **eleven times for
+two loans** -- 321 SQL queries, ~630 ms.  The filing missed two callers: `compute_property_equity` ->
+`resolve_home_equity` -> `resolve_account_loan`, and `_loan_ever_paid_off` ->
+`resolve_loan(as_of=date.max)`.  It was also not a `/savings` quirk: `/dashboard`'s tracks section ran
+8, the standalone horizon 6.
+
+**"Not a correctness bug" was FALSE.**  The filing said "every resolution returns the same answer --
+all four paths seed from the same genesis ledger."  Two of them could not seed from the ledger and
+never did.  `_loan_ever_paid_off` resolved with no `confirmed_view`, and `confirmed_loan_view` returns
+`None` for any `as_of` after today *by contract* -- so the probe was structurally pinned to the
+pre-read-switch anchor replay, which is **blind to money**: `_replay_from_anchor` feeds the engine
+`ConfirmedPayment(period_start, due_date)` with NO AMOUNT, advancing one SCHEDULED step per confirmed
+payment and discarding the cash actually paid.
+
+`is_paid_off` gates the debt card's `total_debt`, the principal-paid fraction, the Horizon's domain
+and debt-free date, the payoff milestones, and the "Paid off" badge.  Both failure directions were
+reachable through the production settle path:
+
+* Retire a $1,000 loan with one settled $1,100 payment.  The ledger books the real principal and reads
+  $0.00; the hero shows $0.  The replay took a single ~$40 scheduled step, still owed ~$960, and the
+  loan was never marked paid off -- no badge, still active debt on the Horizon, "Debt-free" pushed
+  years out.  This is why the app *required* a manual balance true-up to $0 after a lump-sum payoff: a
+  band-aid for a producer that could not see the cash.
+* Pay a 2-month loan SHORT.  The replay exhausts the term and reaches $0.00 while the ledger still
+  owes ~$810.  `is_paid_off` went True and the loan **vanished from `total_debt`**, its full original
+  principal counted as paid.  Real, still-owed debt left the debt card.
+
+The ten resolutions that agreed are what made the eleventh invisible.  **Redundant derivation is not a
+performance smell; it is where a divergence hides.**
+
+## The root cause, and the fix
+
+A loan's resolved state was not a first-class, as-of-pinned, read-pass-scoped value.  With no single
+"the loan, resolved" object, every consumer re-derived it off a hidden clock -- some outside the seam,
+one with a retired producer that could not read the ledger.  The DRY violation and the correctness
+holes were one defect seen from two sides, and the "waste, not a wrong number" framing is what kept
+the holes invisible.
+
+A cache was therefore the wrong fix.  `flask.g` would break the Flask-free service boundary and go
+stale across the write-then-render paths (`loan_recurrence_sync` and the transfer posting sync resolve
+loans mid-mutation).  Threading raw `debt_schedules` into the seam -- this document's own
+recommendation -- would have fixed only `/savings`, added an optional input that corrupts silently
+when stale, and fixed none of the correctness holes.
+
+**Shipped instead:** `app/services/resolution_context.py` -- a `BalanceContext` built ONCE per read
+pass, carrying the pinned `as_of`, the baseline scenario, and a lazy memo of each loan's
+`ResolvedLoan`, threaded into the `balance_at` seam in place of the bare scenario.  Plus: `is_paid_off`
+onto the genesis ledger; the loan's displayed balance rerouted through the seam (`loan_figures` carries
+the rich detail with the balance DELIBERATELY ABSENT); the resolver entries fenced; and the
+phantom-paydown defect that reroute exposed in the seam's own scalar (see below).
+
+## Measured result
+
+| producer | resolutions | SQL queries |
+|---|---|---|
+| `/savings` | 11 -> **2** | 321 -> 209 |
+| `/dashboard` tracks | 8 -> **2** | 113 -> 92 |
+| `/savings` horizon | 6 -> **2** | 145 -> 118 |
+
+Exactly one resolution per loan, and `TestOneResolutionPerLoanPerReadPass` makes it a deterministic
+gate rather than a hope.  Every figure across all ten producers on the dev database is byte-identical
+to the pre-change snapshot.
+
+## What it exposed on the way
+
+Routing the loan tile's balance through the seam made the scalar and the resolver disagree -- and the
+**seam was wrong**.  On its no-ledger fallback, `amortizing_balance_at` walked the FULL schedule, so
+UNCONFIRMED rows dated on or before the valuation date reduced the balance by principal the borrower
+never paid: a $240,000 loan originated 18 months ago and never paid read as **$236,853.27** owed, as
+though 17 unpaid installments had been made.  It is the identical defect `loan_owed_at_dates`
+explicitly refuses to commit at its own boundary, and the fallback's own comment always claimed it read
+the confirmed rows.  Now it does.  Unreachable in production (every production loan is opened in the
+ledger), but it silently corrupted the un-opened case everywhere.
+
+---
+
+## Original filing (for the record)
+
 **Status:** OPEN (not started). Found 2026-07-12 while closing the W9906 fence hole on
 `loan_owed_at_dates` (`followup_fence_loan_owed_at_dates.md`). Deliberately NOT fixed there: it is a
 distinct concern (DRY / performance, not the fence), it needs its own design decision, and folding it
