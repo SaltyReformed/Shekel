@@ -7,6 +7,8 @@ legitimate form is NOT flagged), because a checker that over-fires creates the
 cargo-cult-disable noise the rules exist to prevent.
 """
 
+from pathlib import Path
+
 import astroid
 from astroid import nodes
 from pylint.testutils import CheckerTestCase, MessageTest
@@ -14,10 +16,13 @@ from pylint.testutils import CheckerTestCase, MessageTest
 from shekel_checkers import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
+    _ENGINE_CLUSTER_MODULES,
+    _FENCED_MODULE_RULINGS,
     _LEDGER_LEAF_MODULE_NAMES,
     _LEDGER_MODEL_ALLOWLIST,
     _LEDGER_MODEL_MODULES,
     _LEDGER_MODEL_NAMES,
+    _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _STATUS_SEAM_MODULES,
@@ -29,6 +34,34 @@ from shekel_checkers import (
     ShekelRefNameChecker,
     ShekelTransactionStatusBypassChecker,
 )
+
+# repo root: this file is <root>/tools/pylint/tests/test_*.py
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _fenced_module_sources(module_name: str) -> list[Path]:
+    """Return every source file a fenced *module_name* scope covers.
+
+    A flat module (``app.services.net_worth_kernel``) is one file.  A PACKAGE
+    (``app.services.loan_posting_service``) is every ``.py`` file inside it --
+    because the checker scopes a package by prefix, so a producer born in ANY
+    submodule (``_reader``, ``_display``, ``_walk``) is in scope and must be
+    classified.  Enumerating them here is what makes the registry-vs-reality
+    test see the same surface the checker does.
+
+    Reads the source with astroid rather than importing ``app``, keeping the
+    checker's unit tests free of the Flask/SQLAlchemy import graph.
+    """
+    relative = Path(*module_name.split("."))
+    flat = _REPO_ROOT / relative.with_suffix(".py")
+    if flat.is_file():
+        return [flat]
+    package = _REPO_ROOT / relative
+    assert package.is_dir(), (
+        f"fenced module {module_name} is neither a module nor a package -- the "
+        f"scope names something that does not exist"
+    )
+    return sorted(package.glob("*.py"))
 
 
 class TestShekelMoneyChecker(CheckerTestCase):
@@ -1035,6 +1068,178 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
+
+    # ── W9909: the fail-closed completeness half of the fence ──────────
+
+    @staticmethod
+    def _function_def(source: str, module_name: str) -> nodes.FunctionDef:
+        """Return the FunctionDef for *source* parsed inside *module_name*.
+
+        The enclosing module's name drives the fenced-surface scoping, so it is
+        set explicitly (as in :meth:`_producer_call`). The snippet defines
+        exactly one top-level function, so the module body's first statement is
+        the node under test.
+        """
+        module = astroid.parse(source, module_name=module_name)
+        return module.body[0]
+
+    def test_flags_unclassified_public_function_in_engine_cluster(self) -> None:
+        """A NEW public function in the kernel, classified as neither, is flagged.
+
+        This is the regression test for the fence's fail-open default: it is
+        exactly the shape of ``loan_owed_at_dates`` (born inside the cluster,
+        never listed, silently reachable) and of ``investment_base_balance_map``
+        before it. It must fail the moment the function is DEFINED.
+        """
+        node = self._function_def(
+            "def owed_at_some_dates(accounts, scenario_id):\n    return {}\n",
+            "app.services.net_worth_kernel",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("owed_at_some_dates",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_flags_unclassified_public_function_in_ledger_reader(self) -> None:
+        """The same completeness rule binds on the genesis loan-ledger _reader."""
+        node = self._function_def(
+            "def confirmed_loan_balance_somewhere(loan_id, scenario_id):\n"
+            "    return None\n",
+            "app.services.loan_posting_service._reader",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("confirmed_loan_balance_somewhere",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_allows_every_classified_name_in_its_fenced_surface(self) -> None:
+        """EVERY classified name -- producer or non-producer -- is exempt.
+
+        Register-bound over both fenced surfaces, so a name added to (or dropped
+        from) either set is automatically covered. Asserts the completeness check
+        never fires on a function the project has already ruled on.
+        """
+        for module_name, (producers, non_producers) in _FENCED_MODULE_RULINGS.items():
+            for name in sorted(producers | non_producers):
+                node = self._function_def(
+                    f"def {name}(account, scenario):\n    return None\n",
+                    module_name,
+                )
+                with self.assertNoMessages():
+                    self.checker.visit_functiondef(node)
+
+    def test_ignores_private_function_in_fenced_module(self) -> None:
+        """A private (underscore) cluster function is not part of the export surface."""
+        node = self._function_def(
+            "def _build_amortizing_balance_map(account, scenario):\n    return {}\n",
+            "app.services.net_worth_kernel",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_public_function_in_consumer_module(self) -> None:
+        """A consumer's own public functions are not the fence's business."""
+        node = self._function_def(
+            "def compute_net_worth_horizon(user_id):\n    return {}\n",
+            "app.services.savings_dashboard_service._horizon",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_public_function_in_the_seam_package(self) -> None:
+        """The seam's OWN public entries are what consumers call; never flagged.
+
+        ``balance_at`` is deliberately outside every scoped surface: its public
+        functions ARE the fence-compliant entry points, so "unclassified" is
+        meaningless there. Uses a submodule name to also pin that the seam's
+        package split does not drag its entries into the cluster scope.
+        """
+        node = self._function_def(
+            "def liability_owed_at_dates(liabilities, scenario, dates, current):\n"
+            "    return {}\n",
+            "app.services.balance_at._liability",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_nested_function_in_fenced_module(self) -> None:
+        """A nested def is not part of the module's export surface."""
+        module = astroid.parse(
+            "def generate_debt_schedules(accounts, scenario_id):\n"
+            "    def owed_at_some_dates(dates):\n"
+            "        return {}\n"
+            "    return owed_at_some_dates\n",
+            module_name="app.services.net_worth_kernel",
+        )
+        nested = module.body[0].body[0]
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(nested)
+
+    def test_rulings_cover_every_producer_defining_module(self) -> None:
+        """The ruling registry scopes EXACTLY the producer-defining modules.
+
+        The completeness check can only protect a module it scopes, so the scope
+        itself needs a guard: if an engine-cluster module (or the loan-ledger
+        package) were added to the fence but not given a ruling, W9909 would
+        silently stop covering it -- the fail-open hole one level up. Pins the
+        registry's key set against the two module scopes the fence is built from.
+        """
+        expected = _ENGINE_CLUSTER_MODULES | _LOAN_LEDGER_DEFINING_MODULES
+        assert set(_FENCED_MODULE_RULINGS) == expected
+
+    def test_classification_sets_match_the_real_fenced_modules(self) -> None:
+        """The sets EXACTLY partition the fenced modules' real public surface.
+
+        The checker enforces completeness against whatever the sets say; this
+        pins the sets against the actual source on disk, in both directions:
+
+        * every public top-level function really defined in a fenced module is
+          classified (no hole the checker itself could not see -- e.g. if a
+          module were dropped from the scope), and
+        * every classified name really exists (no stale entry silently
+          un-fencing a name that was renamed).
+
+        Parses the source with astroid rather than importing ``app`` so the
+        checker's unit tests stay free of the Flask/SQLAlchemy import graph.
+        """
+        for module, (producers, non_producers) in _FENCED_MODULE_RULINGS.items():
+            classified = producers | non_producers
+            defined: set[str] = set()
+            for source_path in _fenced_module_sources(module):
+                tree = astroid.parse(
+                    source_path.read_text(encoding="utf-8"), module_name=module,
+                )
+                for child in tree.body:
+                    if (
+                        isinstance(child, nodes.FunctionDef)
+                        and not child.name.startswith("_")
+                    ):
+                        defined.add(child.name)
+                        assert child.name in classified, (
+                            f"{module}.{child.name} is an UNCLASSIFIED public "
+                            f"function in a fenced module: add it to the producer "
+                            f"set (it answers balance-at-T) or the non-producer "
+                            f"set (it does not)"
+                        )
+            # Only the module's OWN non-producer rulings are pinned for staleness:
+            # the producer set is shared across the cluster (a producer defined in
+            # balance_resolver is legitimately absent from net_worth_kernel).
+            stale = non_producers - defined
+            assert not stale, (
+                f"{module}: non-producer rulings for functions it no longer "
+                f"defines: {sorted(stale)} -- a rename or deletion left a stale "
+                f"entry, which would un-fence the name it was renamed to"
+            )
 
 
 class TestShekelTransactionStatusBypassChecker(CheckerTestCase):

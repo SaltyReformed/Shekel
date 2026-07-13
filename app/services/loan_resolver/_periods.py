@@ -24,6 +24,7 @@ from app.services.amortization_engine import (
 )
 from app.services.rate_period_engine import (
     BalanceAnchor,
+    ConfirmedPayment,
     LoanTerms,
     RatePeriod,
     ScheduleReplay,
@@ -396,8 +397,11 @@ def _replay_from_anchor(
             balance=Decimal(str(anchor.anchor_balance)),
             as_of_date=anchor.anchor_date,
         ),
-        confirmed_payment_dates=[
-            payment.payment_date
+        confirmed_payments=[
+            ConfirmedPayment(
+                period_start=payment.payment_date,
+                due_date=payment.due_date,
+            )
             for payment in (loan_inputs.payments or [])
             if payment.is_confirmed
         ],

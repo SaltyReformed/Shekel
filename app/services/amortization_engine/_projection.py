@@ -43,11 +43,34 @@ class PaymentRecord:
     schedule so projections reflect real payment history rather than
     assuming the contractual amount every month.
 
+    A loan payment carries TWO dates with DISTINCT jobs, and conflating them
+    is a financial-correctness bug:
+
+    * ``payment_date`` -- the CASH basis: which pay period the payment is
+      booked in.  Drives the "has this payment's period begun?" replay cap and
+      the rate lookup, and it is the basis the posting ledger sums on
+      (``PayPeriod.start_date <= as_of``), so the resolver and the ledger agree
+      on WHICH payments are historical.
+    * ``due_date`` -- the INSTALLMENT basis: which contractual monthly payment
+      this satisfies.  Drives the anchor boundary, the replayed row's date, and
+      ``next_pay_date``.
+
+    They differ whenever a payment is settled LATE (past its due date, into the
+    next biweekly pay period -- routine over a weekend or holiday).  Deriving
+    the due date FROM the pay period (the pre-fix behaviour) then reports the
+    NEXT month's installment, mis-dating the row and desyncing the replay from
+    the genesis walk.
+
     Attributes:
-        payment_date: The date the payment was made or is projected.
+        payment_date: The payment's pay-period start (the cash basis above).
             Matched to the schedule by year-month, not exact day, so
             biweekly payment dates (e.g. 2026-03-06) correctly map to
             the monthly schedule period (2026-03).
+        due_date: The monthly installment this payment satisfies (the
+            installment basis above).  Supplied by
+            :func:`app.services.loan_loaders.loan_payment_due_date` -- the one
+            derivation the genesis write walk uses too, so the posted ledger
+            and the replay can never drift on a payment's due date.
         amount: The total payment amount (principal + interest).  Must
             be >= 0.  A zero amount represents a missed payment where
             only interest accrues (negative amortization).
@@ -56,6 +79,7 @@ class PaymentRecord:
     """
 
     payment_date: date
+    due_date: date
     amount: Decimal
     is_confirmed: bool
 
@@ -66,13 +90,17 @@ class PaymentRecord:
         results deep in the schedule loop.
 
         Raises:
-            TypeError: If payment_date is not a date, amount is not a
-                Decimal, or is_confirmed is not a bool.
+            TypeError: If payment_date or due_date is not a date, amount is
+                not a Decimal, or is_confirmed is not a bool.
             ValueError: If amount is negative.
         """
         if not isinstance(self.payment_date, date):
             raise TypeError(
                 f"payment_date must be a date, got {type(self.payment_date).__name__}"
+            )
+        if not isinstance(self.due_date, date):
+            raise TypeError(
+                f"due_date must be a date, got {type(self.due_date).__name__}"
             )
         if not isinstance(self.amount, Decimal):
             raise TypeError(

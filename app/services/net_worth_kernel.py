@@ -46,8 +46,11 @@ from app.services import (
 )
 from app.services.account_projection import (
     AccountProjectionKind,
+    balance_from_schedule_at_date,
     classify_account,
+    compute_forward_loan_period_balance_map,
     compute_loan_period_balance_map,
+    forward_balance_at_date,
     splice_confirmed_and_projected_loan_balances,
 )
 from app.services.loan_resolution import resolve_account_loan
@@ -184,6 +187,178 @@ def generate_debt_schedules(
         )
 
     return schedules
+
+
+def loan_owed_at_dates(
+    loan_accounts: list,
+    scenario_id: int,
+    sample_dates: list[date],
+    today: date,
+) -> dict[int, list[Decimal]]:
+    """Return each loan's PROJECTED owed balance at several FUTURE dates.
+
+    The batch, multi-date forward loan projection behind the seam's
+    :func:`app.services.balance_at.liability_owed_at_dates`: a long-horizon
+    liability band needs every loan's owed balance at ~25 annual sample dates,
+    and the scalar per-date accessors would regenerate each loan's resolver
+    schedule once per date.  This generates every loan's schedule ONCE (via
+    :func:`generate_debt_schedules`, the same resolver output the debt card
+    and the ``2 years`` liability series consume) and projects each loan to
+    every date through the ONE forward rule
+    (:func:`~app.services.account_projection.forward_balance_at_date`: the
+    ledger-seeded confirmed balance today, reduced by the scheduled payments
+    still to come by that date), so a liability band cannot drift from the loan
+    balance the rest of the app reports.  Lives in the kernel -- inside the
+    balance-seam cluster, beside :func:`generate_debt_schedules` whose output it
+    projects -- so the rule stays fenced with the per-period
+    :func:`~app.services.account_projection.compute_forward_loan_period_balance_map`
+    it is the multi-date sibling of.  Consumers reach it ONLY through the seam
+    entry (the W9906 fence).
+
+    **Domain: STRICTLY FUTURE dates -- enforced, not merely documented.**  This
+    is a projection, not a history reader, and a date at or before today is
+    REJECTED rather than answered.  Two distinct reasons, both fatal:
+
+    * The PAST belongs to the genesis ledger
+      (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`, via
+      :func:`amortizing_balance_at`), which alone books the balance events --
+      true-ups above all -- that never appear as schedule rows.
+    * The answer here would not even be the confirmed balance held flat.
+      :func:`~app.services.account_projection.forward_balance_at_date` walks the
+      schedule's UNCONFIRMED rows, and an OVERDUE payment (past due, still
+      unpaid) is deliberately among them (the project's due-basis treatment).  A
+      past-or-today date would therefore report the balance net of a payment that
+      was never made -- silently UNDERSTATING the debt.  ``today`` itself is
+      excluded for exactly this reason: the confirmed present is the resolver's
+      ``current_balance``, which the seam entry supplies, not a schedule walk.
+
+    A loan the resolver returns nothing for (no ``LoanParams``) is absent from
+    the result, mirroring how the per-period map skips it; the seam then holds
+    that loan flat at its own current balance (the no-forward-model rule).
+
+    Args:
+        loan_accounts: The amortizing loan accounts to value.
+        scenario_id: The baseline scenario id (scopes the resolver).
+        sample_dates: The calendar dates to value each loan at, in the desired
+            output order.  Every date must be STRICTLY AFTER *today*.
+        today: The caller's as-of date -- the present/future boundary.  Passed
+            in rather than read here so the seam entry, its sample axis, and this
+            guard share ONE clock (a midnight crossing between two independent
+            ``date.today()`` reads would otherwise reject the caller's own
+            index-0 sample).  The RESOLVER keeps its own as-of for deciding which
+            payments are confirmed; that is a separate concern.
+
+    Returns:
+        ``{account_id: [Decimal owed at each sample date]}`` -- one list per
+        loan with a resolvable schedule, aligned with *sample_dates*.
+
+    Raises:
+        ValueError: When any sample date is on or before *today*.  The past (and
+            the present) is the ledger's; see the domain note above.
+    """
+    past = sorted({d for d in sample_dates if d <= today})
+    if past:
+        raise ValueError(
+            "loan_owed_at_dates projects STRICTLY FORWARD; it cannot answer a "
+            "date on or before today (an overdue unconfirmed payment would "
+            "understate the debt). Read the past through the genesis ledger "
+            "(balance_at.balance_at / amortizing_balance_at). Rejected dates: "
+            f"{[d.isoformat() for d in past]} (today={today.isoformat()})"
+        )
+    schedules = generate_debt_schedules(loan_accounts, scenario_id)
+    result: dict[int, list[Decimal]] = {}
+    for account in loan_accounts:
+        schedule_info = schedules.get(account.id)
+        if schedule_info is None:
+            continue
+        # Returned verbatim -- the schedule rows and current_balance are
+        # already cent-quantized by the resolver.
+        result[account.id] = [
+            forward_balance_at_date(
+                schedule_info.schedule,
+                sample_date,
+                schedule_info.current_balance,
+            )
+            for sample_date in sample_dates
+        ]
+    return result
+
+
+def amortizing_balance_at(
+    account: Account, scenario: Scenario, as_of: date,
+) -> Decimal:
+    """Return an amortizing loan's balance at *as_of*: ledger past, projected future.
+
+    The scalar sibling of :func:`_build_amortizing_balance_map` (per-period) and
+    :func:`loan_owed_at_dates` (multi-date), and the producer the seam's
+    :func:`app.services.balance_at.balance_at` dispatches an AMORTIZING account
+    to.  All three split on the one boundary the loan architecture turns on:
+
+    * **``as_of`` at or before today: the genesis ledger.**
+      :func:`app.services.loan_posting_service.confirmed_loan_balance_at` -- the
+      SAME producer the loan card, the net-worth hero, and the ``2 years`` band's
+      begun periods read, so this scalar cannot disagree with them.  The ledger is
+      the only COMPLETE record of the past: it books every balance event, where
+      the schedule carries payment rows only.  Walking the schedule here (the
+      pre-fix behaviour) missed a true-up dated after the last payment row and
+      reported a balance the loan does not owe -- a real $3.94 divergence between
+      year-end debt progress and the loan card on production data.
+    * **``as_of`` after today: the forward projection.**
+      :func:`app.services.account_projection.forward_balance_at_date` -- the
+      confirmed balance today, reduced by the payments scheduled by *as_of*.  The
+      ledger cannot answer a future date (its reader raises), and this keeps the
+      scalar DATE-precise, which the year-end debt-progress (a Dec 31 as_of,
+      generally mid-period) depends on: it walks to the exact date rather than
+      rounding to a period-end map value.  Do NOT "simplify" it to read the
+      period map.
+
+    Falls back to the schedule-only walk when the ledger cannot answer (a loan
+    with no OPENING posting: unconfigured, un-backfilled, or a what-if never
+    posted into) -- exactly the pre-switch behaviour, safe by construction -- and
+    to the cash producer when the loan has no resolvable schedule at all.
+
+    Args:
+        account: The amortizing loan account (the caller owns the ownership
+            check).
+        scenario: The baseline scenario (scopes the ledger and the resolver).
+        as_of: The date to value the loan at.
+
+    Returns:
+        The ``Decimal`` balance owed at *as_of*.
+    """
+    if as_of <= date.today():
+        # Pylint: ``import-outside-toplevel`` -- imported from the defining
+        # ``_reader`` submodule rather than the package, so the static import
+        # graph carries no ``net_worth_kernel -> loan_posting_service`` cycle at
+        # module load (the same lazy-seam pattern ``_build_amortizing_balance_map``
+        # uses for the map reader).
+        from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
+            confirmed_loan_balance_at,
+        )
+        confirmed = confirmed_loan_balance_at(account.id, scenario.id, as_of)
+        if confirmed is not None:
+            return confirmed
+
+    debt_schedule = generate_debt_schedules(
+        [account], scenario.id,
+    ).get(account.id)
+    if debt_schedule is None:
+        # No resolvable schedule: degrade to the cash producer over the loan's
+        # own transaction rows (the seam's documented AMORTIZING fallback).
+        return balance_resolver.balance_as_of_date(
+            account, scenario.id, as_of,
+        )
+    if as_of > date.today():
+        return forward_balance_at_date(
+            debt_schedule.schedule, as_of, debt_schedule.current_balance,
+        )
+    # A past date the ledger cannot answer (no OPENING posting): the pre-switch
+    # schedule-only walk, over the FULL schedule -- its confirmed rows are then
+    # the only history there is.
+    return balance_from_schedule_at_date(
+        sorted(debt_schedule.schedule, key=lambda row: row.payment_date),
+        as_of, debt_schedule.current_balance,
+    )
 
 
 def _account_interest_projection(
@@ -592,9 +767,6 @@ def _build_amortizing_balance_map(
         re-seeded projection after; schedule-only when the loan is not opened
         in the ledger.
     """
-    projected_map = compute_loan_period_balance_map(
-        debt_schedule.schedule, periods, debt_schedule.current_balance,
-    )
     # Pylint: ``import-outside-toplevel`` -- imported from the defining
     # ``_reader`` submodule (which imports nothing back from here) rather than
     # the package, so the static import graph carries no
@@ -607,7 +779,16 @@ def _build_amortizing_balance_map(
         account.id, scenario.id, periods,
     )
     if confirmed_map is None:
-        return projected_map
+        # No ledger to be authoritative: the whole map falls back to the
+        # schedule-only walk, byte-identical to the pre-switch behaviour.
+        return compute_loan_period_balance_map(
+            debt_schedule.schedule, periods, debt_schedule.current_balance,
+        )
     return splice_confirmed_and_projected_loan_balances(
-        periods, confirmed_map, projected_map, date.today(),
+        periods,
+        confirmed_map,
+        compute_forward_loan_period_balance_map(
+            debt_schedule.schedule, periods, debt_schedule.current_balance,
+        ),
+        date.today(),
     )

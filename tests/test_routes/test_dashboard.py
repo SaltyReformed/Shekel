@@ -651,11 +651,22 @@ class TestDashboardTracks:
     def test_debt_track_renders_marker_and_debt_free(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """A loan renders the debt track: 'left' balance, marker pct, debt-free.
+        """A loan renders the D10 debt track: hero figure, caption, percent rail.
 
-        A $1,000.00 auto loan (create_loan_account) gives a debt summary
-        with a total-debt 'left' figure and a 'debt-free' arrival caption;
-        the rail marker positions from the route-added principal_paid_pct.
+        The D10 ruling (2026-07-09) INVERTED the track's presentation:
+        the CURRENT total debt is now the hero figure (``track__pos-num``),
+        the destination is its caption ("to $0 . debt-free <Mon YYYY>"),
+        and the rail's here-label carries only the percent ("N% paid").
+        The old anatomy (a "$X left" rail mid-label under a "$0" hero) is
+        retired; the word "left" no longer appears in the track.
+
+        A $1,000.00 auto loan (create_loan_account) with no recorded
+        payments keeps its ledger-derived balance at the origination
+        principal regardless of the wall-clock date (the balance is
+        payment-record-driven, not schedule-elapsed), so the hero renders
+        exactly $1,000.00 and the principal-paid fraction is exactly 0,
+        making the rail label read "0% paid".  seed_user has no savings
+        goals, so the debt hero is the page's only ``track__pos-num``.
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import create_loan_account
@@ -668,8 +679,16 @@ class TestDashboardTracks:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "Debt payoff" in html
-            assert "left" in html
+            # D10 hero: the CURRENT figure leads, in the pos-num slot
+            # (asserted glued to its class so the pulse hero's identical
+            # $1,000.00 elsewhere on the page cannot satisfy it).
+            assert 'track__pos-num font-mono">$1,000.00' in html
+            # D10 caption: the destination, then the projected arrival.
+            assert "to $0" in html
             assert "debt-free" in html
+            # D10 rail label: only the percent -- exactly 0% with no
+            # payments recorded against the $1,000.00 principal.
+            assert "0% paid" in html
             # The route scales the principal-paid fraction to a percent on
             # the rail marker's data attribute.
             assert "data-rail-pct=" in html

@@ -1,28 +1,22 @@
 {% from "_money_macros.html" import money %}
-{# Year overview -- 12 month cards in responsive grid with totals. #}
+{% from "analytics/_picker_macros.html" import period_picker %}
+{# Year overview -- 12 month cards in responsive grid with totals.  The year
+   picker is page chrome (title row, top right) built from the shared
+   period_picker idiom (P-AN3), with the Month view toggle beside it. #}
 
-{# Navigation #}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <button class="btn btn-sm btn-outline-secondary"
-          hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year - 1) }}"
-          hx-target="#tab-content" hx-swap="innerHTML">
-    <i class="bi bi-chevron-left"></i> {{ year - 1 }}
-  </button>
-  <h5 class="mb-0">{{ year }}</h5>
-  <div class="d-flex gap-2">
-    <button class="btn btn-sm btn-outline-primary"
-            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
-            hx-target="#tab-content" hx-swap="innerHTML">
-      <i class="bi bi-calendar"></i> Month
-    </button>
-    <a href="{{ url_for('analytics.calendar_tab', view='year', year=year, format='csv') }}"
-       class="btn btn-sm btn-outline-secondary" download>
-      <i class="bi bi-download"></i> CSV
-    </a>
+<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+  <h5 class="mb-0">Calendar</h5>
+  <div class="d-flex align-items-center gap-2">
+    {{ period_picker(
+         url_for('analytics.calendar_tab', view='year', year=year - 1),
+         url_for('analytics.calendar_tab', view='year', year=year + 1),
+         year,
+         unit="year",
+       ) }}
     <button class="btn btn-sm btn-outline-secondary"
-            hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year + 1) }}"
-            hx-target="#tab-content" hx-swap="innerHTML">
-      {{ year + 1 }} <i class="bi bi-chevron-right"></i>
+            hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
+            hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner">
+      <i class="bi bi-calendar"></i> Month
     </button>
   </div>
 </div>
@@ -32,7 +26,7 @@
   {% for card in month_cards %}
   <div class="col">
     <div class="card calendar-month-card h-100
-                {% if card.summary.net > 0 %}border-success{% elif card.summary.net < 0 %}border-danger{% endif %}"
+                {% if card.summary.net > 0 %}calendar-month-card--surplus{% elif card.summary.net < 0 %}calendar-month-card--deficit{% endif %}"
          hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year, month=card.summary.month) }}"
          hx-target="#tab-content" hx-swap="innerHTML"
          role="button" tabindex="0" data-keyboard-activate>
@@ -40,21 +34,21 @@
         <div class="d-flex justify-content-between align-items-center mb-1">
           <strong class="small">{{ card.name }}</strong>
           {% if card.summary.is_third_paycheck_month %}
-          <span class="badge bg-info fs-mini">3rd check</span>
+          <span class="flag-chip">3rd check</span>
           {% endif %}
         </div>
         <div class="d-flex justify-content-between">
           <small class="text-muted">Income</small>
-          <small class="font-mono text-success">{{ money(card.summary.total_income, cents=false) }}</small>
+          <small class="font-mono calendar-day-income">{{ money(card.summary.total_income, cents=false) }}</small>
         </div>
         <div class="d-flex justify-content-between">
           <small class="text-muted">Expenses</small>
-          <small class="font-mono text-danger">{{ money(card.summary.total_expenses, cents=false) }}</small>
+          <small class="font-mono calendar-day-expense">{{ money(card.summary.total_expenses, cents=false) }}</small>
         </div>
         <hr class="my-1">
         <div class="d-flex justify-content-between">
           <small class="text-muted">Net</small>
-          <small class="font-mono fw-bold {% if card.summary.net >= 0 %}text-success{% else %}text-danger{% endif %}">
+          <small class="font-mono fw-bold {% if card.summary.net >= 0 %}calendar-day-income{% else %}calendar-day-expense{% endif %}">
             {{ money(card.summary.net, cents=false) }}
           </small>
         </div>
@@ -68,15 +62,15 @@
 <div class="row g-2 text-center">
   <div class="col-4">
     <small class="text-muted d-block">Annual Income</small>
-    <span class="font-mono text-success">{{ money(data.annual_income) }}</span>
+    <span class="font-mono calendar-day-income">{{ money(data.annual_income) }}</span>
   </div>
   <div class="col-4">
     <small class="text-muted d-block">Annual Expenses</small>
-    <span class="font-mono text-danger">{{ money(data.annual_expenses) }}</span>
+    <span class="font-mono calendar-day-expense">{{ money(data.annual_expenses) }}</span>
   </div>
   <div class="col-4">
     <small class="text-muted d-block">Annual Net</small>
-    <span class="font-mono fw-bold {% if data.annual_net >= 0 %}text-success{% else %}text-danger{% endif %}">
+    <span class="font-mono fw-bold {% if data.annual_net >= 0 %}calendar-day-income{% else %}calendar-day-expense{% endif %}">
       {{ money(data.annual_net) }}
     </span>
   </div>

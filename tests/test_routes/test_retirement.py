@@ -13,6 +13,7 @@ from app.models.category import Category
 from app.models.pension_profile import PensionProfile
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
@@ -1151,6 +1152,10 @@ class TestRetirementNegativePaths:
             "safe_withdrawal_rate": "abc",
         })
         assert resp.status_code == 422
+        # Designed fragment: the assumptions rail re-rendered with field
+        # errors must carry the marker header so the global app.js
+        # listener swaps it (replaced the retirement_controls.js shim).
+        assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
 
         db.session.expire_all()
         after = db.session.query(UserSettings).filter_by(

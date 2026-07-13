@@ -24,9 +24,8 @@ from datetime import date
 from decimal import Decimal
 
 from app.enums import LedgerAccountKindEnum
-from app.services.loan_loaders import load_loan_params
+from app.services.loan_loaders import load_loan_params, loan_payment_due_date
 from app.services.posting_service import _ledger_account_for
-from app.services.rate_period_engine import monthly_due_date
 from app.utils.money import round_money
 
 from ._reader import (
@@ -61,9 +60,11 @@ class LoanPaymentHistoryRow:
     :func:`app.services.loan_posting_service._walk._split_one_payment`.
 
     Attributes:
-        due_date: The payment's true monthly due date
-            (:func:`app.services.rate_period_engine.monthly_due_date` of its
-            pay-period start) -- the same date the amortization schedule rows it.
+        due_date: The monthly installment the payment satisfies
+            (:func:`app.services.loan_loaders.loan_payment_due_date` -- the
+            shadow's own stored ``due_date``) -- the same date the amortization
+            schedule rows it.  NOT derived from the pay period, so a payment
+            settled late still reports the installment it actually paid.
         cash: The full cash paid (the income shadow's ``effective_amount``),
             cent-quantized.
         principal: The real debt paid down (the payment's net on the loan's
@@ -226,11 +227,24 @@ def confirmed_loan_payment_history(
     escrow_by_shadow = _net_by_shadow_for_kind(
         loan_account_id, scenario_id, LedgerAccountKindEnum.LOAN_ESCROW,
     )
+    # Sorted by the INSTALLMENT the payment satisfies, matching how the ledger
+    # history reader (:func:`confirmed_loan_history_rows`) orders its rows and
+    # how the amortization table reads.  The shadows arrive in PAY-PERIOD order,
+    # which is a different sequence once settlement timing is a first-class case:
+    # a payment pre-paid for a later installment sits in an earlier period than
+    # one paid late for an earlier installment, so iterating the shadows verbatim
+    # would render the due dates out of order and disagree with the schedule.
+    # ``shadow.id`` breaks a tie (two payments against one installment) with the
+    # stable recording order.
+    by_installment = sorted(
+        shadows,
+        key=lambda shadow: (
+            loan_payment_due_date(shadow, params.payment_day), shadow.id,
+        ),
+    )
     return [
         LoanPaymentHistoryRow(
-            due_date=monthly_due_date(
-                shadow.pay_period.start_date, params.payment_day,
-            ),
+            due_date=loan_payment_due_date(shadow, params.payment_day),
             cash=round_money(shadow.effective_amount),
             principal=round_money(
                 principal_by_shadow.get(shadow.id, _ZERO_MONEY)
@@ -242,7 +256,7 @@ def confirmed_loan_payment_history(
                 escrow_by_shadow.get(shadow.id, _ZERO_MONEY)
             ),
         )
-        for shadow in shadows
+        for shadow in by_installment
     ]
 
 

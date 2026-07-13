@@ -14,6 +14,7 @@ import pytest
 from app.services.amortization_engine import RateChangeRecord
 from app.services.rate_period_engine import (
     BalanceAnchor,
+    ConfirmedPayment,
     LoanTerms,
     build_rate_periods,
     monthly_due_date,
@@ -23,6 +24,21 @@ from app.services.rate_period_engine import (
 )
 
 ORIGINATION = date(2020, 1, 1)
+
+
+def _confirmed(period_start: date, payment_day: int) -> ConfirmedPayment:
+    """An ON-TIME confirmed payment: its pay period contains its due date.
+
+    Derives the due date from the pay-period start, which is correct exactly
+    while the payment's period still contains that due date -- the on-time case
+    these replay tests exercise.  A payment settled LATE breaks that assumption
+    and must carry its own stored due date; see
+    ``TestReplayScheduleLatePayment``.
+    """
+    return ConfirmedPayment(
+        period_start=period_start,
+        due_date=monthly_due_date(period_start, payment_day),
+    )
 
 
 def _fixed_loan_periods():
@@ -240,7 +256,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payment_dates=[date(2026, 2, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2026, 2, 15)]
+            ],
             payment_day=15,
             as_of=date(2026, 2, 28),
         )
@@ -268,7 +287,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payment_dates=[date(2026, 2, 15), date(2026, 3, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2026, 2, 15), date(2026, 3, 15)]
+            ],
             payment_day=15,
             as_of=date(2026, 3, 31),
         )
@@ -303,7 +325,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("380000.00"), as_of_date=date(2024, 11, 1),
             ),
-            confirmed_payment_dates=[date(2024, 12, 15), date(2025, 2, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2024, 12, 15), date(2025, 2, 15)]
+            ],
             payment_day=15,
             as_of=date(2025, 3, 1),
         )
@@ -334,7 +359,10 @@ class TestReplaySchedule:
         )
         common = dict(
             periods=periods,
-            confirmed_payment_dates=[date(2026, 2, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2026, 2, 15)]
+            ],
             payment_day=15,
             as_of=date(2026, 6, 1),
         )
@@ -368,7 +396,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("100.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payment_dates=[date(2026, 2, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2026, 2, 15)]
+            ],
             payment_day=15,
             as_of=date(2026, 2, 28),
         )
@@ -384,7 +415,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payment_dates=[],
+            confirmed_payments=[],
             payment_day=15,
             as_of=date(2026, 1, 20),
         )
@@ -400,7 +431,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 15),
             ),
-            confirmed_payment_dates=[date(2026, 1, 1), date(2026, 1, 15)],
+            confirmed_payments=[
+                _confirmed(d, 15)
+                for d in [date(2026, 1, 1), date(2026, 1, 15)]
+            ],
             payment_day=15,
             as_of=date(2026, 2, 1),
         )
@@ -433,7 +467,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 22),
             ),
-            confirmed_payment_dates=[date(2026, 5, 21)],
+            confirmed_payments=[
+                _confirmed(d, 1)
+                for d in [date(2026, 5, 21)]
+            ],
             payment_day=1,
             as_of=date(2026, 6, 2),
         )
@@ -464,7 +501,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payment_dates=[date(2026, 5, 21)],
+            confirmed_payments=[
+                _confirmed(d, 1)
+                for d in [date(2026, 5, 21)]
+            ],
             payment_day=1,
             as_of=date(2026, 5, 31),
         )
@@ -485,7 +525,10 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payment_dates=[date(2026, 6, 15)],
+            confirmed_payments=[
+                _confirmed(d, 1)
+                for d in [date(2026, 6, 15)]
+            ],
             payment_day=1,
             as_of=date(2026, 6, 2),
         )
@@ -541,3 +584,110 @@ class TestMonthlyDueDate:
         """A December period start rolls the due date into January."""
         # Period begins 12-20; payment_day 1 -> 2027-01-01.
         assert monthly_due_date(date(2026, 12, 20), 1) == date(2027, 1, 1)
+
+
+class TestReplayScheduleLatePayment:
+    """A payment settled LATE replays at the installment it actually paid.
+
+    ``_confirmed`` (above) derives a due date from the pay-period start, which is
+    correct only while the period still CONTAINS that due date.  A payment paid a
+    few days late -- routine over a weekend or a holiday -- lands in the NEXT
+    biweekly period, and that assumption breaks: deriving from the period start
+    then returns the FOLLOWING month's installment.
+
+    ``ConfirmedPayment`` therefore carries both dates, and the replay reads each
+    for its own job: the DUE date for the anchor boundary and the row's date, the
+    PERIOD START for the rate and the ``as_of`` cap (the basis the posting ledger
+    sums on).
+    """
+
+    def test_row_is_dated_at_the_due_date_not_the_period_derivation(self):
+        """A payment due 2026-05-15, paid late into the 2026-05-21 period.
+
+        The pay period starting 2026-05-21 does NOT contain the 2026-05-15 due
+        date.  Deriving from it (``monthly_due_date(2026-05-21, 15)``) yields
+        2026-06-15 -- June's installment, a month late -- while the payment
+        actually paid May's.  The replayed row must carry 2026-05-15.
+        """
+        periods = _fixed_loan_periods()
+        anchor = BalanceAnchor(
+            balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+        )
+        # The derivation the engine used to perform lands a month later.
+        assert monthly_due_date(date(2026, 5, 21), 15) == date(2026, 6, 15)
+
+        result = replay_schedule(
+            periods=periods,
+            anchor=anchor,
+            confirmed_payments=[
+                ConfirmedPayment(
+                    period_start=date(2026, 5, 21),
+                    due_date=date(2026, 5, 15),
+                ),
+            ],
+            payment_day=15,
+            as_of=date(2026, 6, 1),
+        )
+
+        assert len(result.rows) == 1
+        assert result.rows[0].payment_date == date(2026, 5, 15)
+        # next_pay_date advances one month from the row it actually replayed.
+        assert result.next_pay_date == date(2026, 6, 15)
+
+    def test_as_of_cap_reads_the_period_start_not_the_due_date(self):
+        """The "has this period begun?" cap stays on the PAY PERIOD.
+
+        A payment due 2026-05-15 but PRE-PAID in the period starting 2026-05-07:
+        its period has begun by an as_of of 2026-05-08, so it is historical and
+        replays -- even though its due date is still ahead.  This is the bound the
+        posting ledger sums on (``PayPeriod.start_date <= as_of``), and the replay
+        must match it or the two disagree on which payments are confirmed.
+        """
+        periods = _fixed_loan_periods()
+        anchor = BalanceAnchor(
+            balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+        )
+        result = replay_schedule(
+            periods=periods,
+            anchor=anchor,
+            confirmed_payments=[
+                ConfirmedPayment(
+                    period_start=date(2026, 5, 7),
+                    due_date=date(2026, 5, 15),
+                ),
+            ],
+            payment_day=15,
+            as_of=date(2026, 5, 8),
+        )
+
+        assert len(result.rows) == 1
+        assert result.rows[0].payment_date == date(2026, 5, 15)
+
+    def test_anchor_boundary_reads_the_due_date_not_the_period_start(self):
+        """The anchor boundary stays on the DUE date.
+
+        A true-up dated 2026-05-10 sits between the payment's pay-period start
+        (2026-05-07) and its due date (2026-05-15).  The payment came due AFTER
+        the balance was verified, so it is NOT baked into the anchor and must
+        still replay -- the mid-period-true-up rule.  Comparing the period start
+        against the anchor would strand it.
+        """
+        periods = _fixed_loan_periods()
+        anchor = BalanceAnchor(
+            balance=Decimal("300000.00"), as_of_date=date(2026, 5, 10),
+        )
+        result = replay_schedule(
+            periods=periods,
+            anchor=anchor,
+            confirmed_payments=[
+                ConfirmedPayment(
+                    period_start=date(2026, 5, 7),
+                    due_date=date(2026, 5, 15),
+                ),
+            ],
+            payment_day=15,
+            as_of=date(2026, 6, 1),
+        )
+
+        assert len(result.rows) == 1
+        assert result.rows[0].payment_date == date(2026, 5, 15)

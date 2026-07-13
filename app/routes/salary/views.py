@@ -90,6 +90,14 @@ def projection(profile_id):
     # Pair periods with breakdowns
     projection_data = list(zip(periods, breakdowns))
 
+    # The calculator badges raise_event on every period of a raise month, so
+    # the ledger flags the raise badge/row-tint only on each run's first
+    # paycheck -- the step -- not on every paycheck of the month (P-SA1,
+    # projection surface).  The template checks ``period.id in`` this set.
+    raise_run_start_ids = salary_cockpit_service.raise_run_start_period_ids(
+        projection_data,
+    )
+
     # Summary framing above the ledger (restyled in P3): the next raise,
     # the next third paycheck, and the per-calendar-year net totals.  All
     # Decimal, derived from the same breakdowns the table renders (DRY).
@@ -108,4 +116,5 @@ def projection(profile_id):
         profile=profile,
         projection_data=projection_data,
         projection_summary=projection_summary,
+        raise_run_start_ids=raise_run_start_ids,
     )

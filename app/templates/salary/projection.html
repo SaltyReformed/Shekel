@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}Projection Ledger -- {{ profile.name }} -- Shekel{% endblock title %}
 
 {# The salary section's forward ledger (locked Gate A ruling 2,
@@ -11,25 +12,13 @@
    table-info bands are retired.  Period labels link into the cockpit
    focused on that period. #}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('salary.cockpit', profile=profile.id) }}">Salary</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Projection ledger</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
   <div class="d-flex align-items-center gap-2">
     <h4 class="mb-0"><i class="bi bi-table"></i> Projection ledger</h4>
     <span class="sal-profile-tag">{{ profile.name }}</span>
   </div>
-  <a href="{{ url_for('salary.cockpit', profile=profile.id) }}"
-     class="btn btn-sm btn-outline-secondary">
-    <i class="bi bi-cash-coin"></i> Salary cockpit
-  </a>
+  {{ back_link(url_for('salary.cockpit', profile=profile.id), 'Salary') }}
 </div>
 
 {# ── Summary framing: the events worth knowing without scanning ───── #}
@@ -64,7 +53,7 @@
 </div>
 
 <div class="table-responsive">
-  <table class="table table-hover table-sm sal-ledger">
+  <table class="table table-hover table-sm table-token sal-ledger">
     <caption class="visually-hidden">Salary projection by pay period</caption>
     <thead class="sticky-top">
       <tr>
@@ -81,7 +70,8 @@
     </thead>
     <tbody>
       {% for period, bd in projection_data %}
-      <tr class="{{ 'sal-row-raise' if bd.period.raise_event }}{{ ' sal-row-third' if bd.period.is_third_paycheck and not bd.period.raise_event }}">
+      {% set is_raise_start = period.id in raise_run_start_ids %}
+      <tr class="{{ 'sal-row-raise' if is_raise_start }}{{ ' sal-row-third' if bd.period.is_third_paycheck and not is_raise_start }}">
         <td>
           <a href="{{ url_for('salary.cockpit', profile=profile.id, period=period.id) }}">
             {{ period.label }}
@@ -90,7 +80,7 @@
         </td>
         <td class="text-end font-mono">{{ money(bd.earnings.annual_salary) }}</td>
         <td>
-          {% if bd.period.raise_event %}
+          {% if is_raise_start %}
           <span class="sal-badge-raise">{{ bd.period.raise_event|raise_label }}</span>
           {% endif %}
         </td>

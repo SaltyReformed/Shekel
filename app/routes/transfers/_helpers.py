@@ -23,6 +23,7 @@ from app.schemas.validation import (
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
+from app.utils.error_fragments import designed_error
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,60 @@ def _stale_transfer_response(xfer_id):
     return render_template(
         "transfers/_transfer_cell.html",
         xfer=xfer, account=account, conflict=True,
+    )
+
+
+def _error_transfer_response(xfer_id, message, status=400):
+    """Roll back and render the request's surface as a designed error.
+
+    The rejected-mutation twin of :func:`_stale_transfer_response`
+    (the marker-header convention, closeout plan session 4): every
+    transfer-mutation 400/422 a user can reach re-renders the surface
+    the request targeted -- the shadow's grid transaction cell when
+    ``source_txn_id`` marks a grid-origin request, the transfer cell
+    otherwise -- with CURRENT data plus the rejection message, and
+    stamps the designed-fragment header so the body swaps instead of
+    being silently dropped by the app-wide htmx config.
+
+    Args:
+        xfer_id: Primary key of the transfer the route was trying to
+            mutate.  Re-fetched after the rollback so the fragment
+            shows committed state.
+        message: The user-facing rejection message (the cell's
+            title/aria hint).
+        status: The HTTP error status (400 domain rejection, 422
+            validation failure).
+
+    Returns:
+        A designed-fragment Flask response tuple, or
+        ``("Not found", 404)`` when the row vanished.
+    """
+    db.session.rollback()
+    db.session.expire_all()
+    xfer = _get_owned_transfer(xfer_id)
+    if xfer is None:
+        return "Not found", 404
+
+    shadow = _resolve_shadow_context(xfer)
+    if shadow is not None:
+        db.session.refresh(shadow)
+        return designed_error(
+            render_template(
+                "grid/_transaction_cell.html",
+                txn=shadow,
+                entry_sums=build_entry_sums_dict([shadow]),
+                error=message,
+            ),
+            status,
+        )
+
+    account = resolve_grid_account(current_user.id, current_user.settings)
+    return designed_error(
+        render_template(
+            "transfers/_transfer_cell.html",
+            xfer=xfer, account=account, error=message,
+        ),
+        status,
     )
 
 

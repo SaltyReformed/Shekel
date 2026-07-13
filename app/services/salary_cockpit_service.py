@@ -102,7 +102,7 @@ def _calibration_zero_federal(breakdown: PaycheckBreakdown, calibration_active: 
 def clean_raise_label(raw_label: str) -> str:
     """Return a display-clean version of a calculator ``raise_event`` string.
 
-    :func:`app.services.paycheck_calculator._get_raise_event` emits raw
+    :func:`app.services.paycheck_calculator.get_raise_event` emits raw
     labels in exactly two shapes, joined with ``", "`` when several raises
     land in one period: ``"{TYPE} +{pct}%"`` (percentage, e.g.
     ``"MERIT +2.5000%"`` -- the trailing places follow the stored
@@ -145,34 +145,86 @@ def clean_raise_label(raw_label: str) -> str:
     return ", ".join(cleaned_events)
 
 
+def raise_run_starts(current_raise_event: str, prev_raise_event: str | None) -> bool:
+    """Return True when a period STARTS a raise run.
+
+    The run-start seam shared by every consumer that must collapse the
+    calculator's badge-every-period behavior down to one event per raise:
+    the "next raise" chip and the chart's per-run labels (via the
+    pairs-indexed :func:`_is_raise_run_start`) and the paycheck-anatomy
+    raise banner (the cockpit route passes the focused and preceding
+    periods' raw ``raise_event`` strings directly, so the banner shows on
+    the paycheck where a raise takes effect rather than repeating on every
+    paycheck of the raise month -- P-SA1).
+
+    A period starts a run when its display-cleaned label
+    (:func:`clean_raise_label`) is non-empty AND differs from the
+    immediately-preceding period's: a label change starts a new run, a
+    no-event period ends any run, and the same label recurring after a gap
+    (next year's COLA) starts a fresh run.
+
+    Args:
+        current_raise_event: The period's raw ``raise_event`` string (empty
+            when it carries no raise event).
+        prev_raise_event: The immediately-preceding period's raw
+            ``raise_event`` string, or ``None`` when there is no
+            predecessor (the first period).
+
+    Returns:
+        True iff the period carries a raise event whose cleaned label
+        differs from the immediately-preceding period's (or it has no
+        predecessor).
+    """
+    label = clean_raise_label(current_raise_event)
+    if not label:
+        return False
+    if prev_raise_event is None:
+        return True
+    return clean_raise_label(prev_raise_event) != label
+
+
 def _is_raise_run_start(pairs: list[PeriodPair], idx: int) -> bool:
     """Return True when ``pairs[idx]`` is the FIRST period of a raise run.
 
-    The paycheck calculator marks ``raise_event`` on EVERY period of a
-    raise month (live data: 07/02, 07/16, and 07/30 all carry
-    ``"COLA +3.0000%"`` for one July COLA), so consumers that want one
-    event per raise must collapse each run -- consecutive periods
-    (adjacent in ``pairs``) carrying the same cleaned label -- down to
-    its first period.  A label change starts a new run, so two
-    back-to-back DIFFERENT raises are two runs; a period with no raise
-    event ends any run, so the same label recurring after a gap (next
-    year's COLA) starts a fresh run.
+    Pairs-indexed adapter over :func:`raise_run_starts`: it lifts the
+    focused and preceding periods' ``raise_event`` strings out of the
+    ordered ``(period, breakdown)`` pairs (the predecessor is ``None`` at
+    index 0).  Used by :func:`next_raise_after` and
+    :func:`build_chart_series`, which scan the full pairs list.
 
     Args:
         pairs: The full ordered ``(period, breakdown)`` list.
         idx: Index into ``pairs`` of the period under test.
 
     Returns:
-        True iff the period carries a raise event whose cleaned label
-        differs from the immediately preceding period's (or the period
-        has no predecessor).
+        True iff the period at ``idx`` starts a raise run.
     """
-    label = clean_raise_label(pairs[idx][1].period.raise_event)
-    if not label:
-        return False
-    if idx == 0:
-        return True
-    return clean_raise_label(pairs[idx - 1][1].period.raise_event) != label
+    prev = pairs[idx - 1][1].period.raise_event if idx > 0 else None
+    return raise_run_starts(pairs[idx][1].period.raise_event, prev)
+
+
+def raise_run_start_period_ids(pairs: list[PeriodPair]) -> set[int]:
+    """Return the ids of the periods that START a raise run.
+
+    For a surface that renders EVERY period (the projection ledger), this
+    marks only the paycheck where each raise takes effect -- its run start
+    (:func:`_is_raise_run_start`) -- so a raise the calculator badges on
+    every period of its month is flagged once, on the step, rather than
+    repeating a badge on every paycheck of the month (P-SA1, projection
+    surface).  The template checks ``period.id in`` this set.
+
+    Args:
+        pairs: The full ordered ``(period, breakdown)`` list.
+
+    Returns:
+        The set of ``period.id`` values that start a raise run (empty when
+        no period carries a raise event).
+    """
+    return {
+        pair[0].id
+        for idx, pair in enumerate(pairs)
+        if _is_raise_run_start(pairs, idx)
+    }
 
 
 def base_regular_net(pairs: list[PeriodPair], idx: int) -> Decimal:

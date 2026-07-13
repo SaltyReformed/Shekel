@@ -1,7 +1,8 @@
 /* Shekel shared components -- reusable widgets used by more than one
    screen: the Ctrl+K command palette (grid today, intended to spread
    app-wide per the overhaul plan), horizontally scrollable nav pills,
-   the categories group header, the password strength meter/toggle, and
+   the categories group header, the tinted section-banner card header
+   (recurring + statements), the password strength meter/toggle, and
    the small close-button variant.
 
    Load-order contract (see base.html): after theme-steel-ink.css and
@@ -150,6 +151,76 @@
 }
 
 /* =============================================
+   SECTION BANNER (shared tinted card header)
+   A section card's header: a 3px left rule and tinted title over the
+   section's own background tint, carrying whatever the caller puts in
+   it (a subtotal, actions).  Income / expense reuse the section tokens
+   (their defined purpose); --accent is the neutral variant for sections
+   that are structure rather than money direction (recurring transfers;
+   the balance sheet's Assets / Liabilities / Equity, polish audit D8).
+   The 3px left rule echoes the grid's section banners so a "section"
+   reads the same across screens.  Extracted from recurring.css in S6 so
+   the Recurring page and the Statements tab share one component.
+   ============================================= */
+.section-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-left: 3px solid transparent;
+}
+
+.section-banner--income {
+  border-left-color: var(--shekel-section-income-text);
+}
+
+.section-banner--income .section-banner__title {
+  color: var(--shekel-section-income-text);
+}
+
+.section-banner--expense {
+  border-left-color: var(--shekel-section-expense-text);
+}
+
+.section-banner--expense .section-banner__title {
+  color: var(--shekel-section-expense-text);
+}
+
+.section-banner--accent {
+  border-left-color: var(--shekel-accent);
+}
+
+.section-banner--accent .section-banner__title {
+  color: var(--shekel-accent);
+}
+
+.section-banner__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* The dark AND light .card-header skins (base.css) set background-color at
+   two-class specificity ([data-bs-theme="..."] .card-header), which outranks
+   the single-class banner rules above and would flatten all three tints to
+   raised gray (polish audit P-RC1). Re-assert each tint with the theme
+   attribute so the selectors match that specificity; [data-bs-theme] scopes
+   both themes at once, and components.css loads after base.css, so the
+   equal-specificity tie resolves in the banner's favor -- the same mechanism
+   as .category-group-header above. */
+[data-bs-theme] .section-banner--income {
+  background-color: var(--shekel-section-income-bg);
+}
+
+[data-bs-theme] .section-banner--expense {
+  background-color: var(--shekel-section-expense-bg);
+}
+
+[data-bs-theme] .section-banner--accent {
+  background-color: color-mix(in srgb, var(--shekel-accent) 12%, var(--shekel-surface));
+}
+
+/* =============================================
    EXTRA SMALL CLOSE BUTTON
    ============================================= */
 .btn-close-sm {
@@ -185,13 +256,153 @@
      The base .shekel-scroll-pills .nav-link rule above keeps
      white-space: nowrap at every width; the 44 px floor + flex
      centering apply only at <= 767.98 px so desktop pills retain
-     Bootstrap's default. */
+     Bootstrap's default.
+     Horizontal padding tightens from Bootstrap's 1rem to 0.65rem so
+     the widest pill row (analytics: Calendar / Spending / Statements /
+     Taxes) fits a 390px viewport instead of clipping "Taxes" behind
+     the hidden scrollbar with no scroll affordance (P-AN7); rows that
+     still overflow (more or longer pills) keep the swipe scroll. */
   .shekel-scroll-pills .nav-link {
     min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0.5rem 0.65rem;
   }
+}
+
+/* =============================================
+   FLAG CHIP (shared non-money chip)
+   Non-money boolean flags and status markers: recurring envelope /
+   companion flags, account-type capability flags, the MFA Enabled
+   marker, pay-period lock badges.  Steel Ink commits the accent as the
+   only non-money chroma (design language), so the default chip rides
+   the accent, never the off-palette cyan / money-green raw Bootstrap
+   badges it replaces (polish audit P-RC4 / P-ST6 / RC3).  Chips are
+   told apart by their label, icon, or title, never by color alone.
+   Shape mirrors the grid's tinted status chip (.badge-done /
+   .badge-credit): state-colored text on the state's own 16% tint (the
+   S1 chip-tint method, AA-verified per token).  Extracted from
+   recurring.css's .recurring-flag when settings adopted it (S11), the
+   .section-banner precedent.
+   ============================================= */
+.flag-chip {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 10px;
+  vertical-align: middle;
+  line-height: 1.3;
+  background-color: color-mix(in srgb, var(--shekel-accent) 16%, var(--shekel-surface));
+  color: var(--shekel-accent);
+}
+
+/* Neutral variant: informational markers with no state to signal
+   (a built-in account type, a past pay period). */
+.flag-chip--neutral {
+  background-color: color-mix(in srgb, var(--shekel-text-secondary) 14%, var(--shekel-surface));
+  color: var(--shekel-text-secondary);
+}
+
+/* Caution variant: a locked / hands-off marker (a settled or posted
+   pay period) -- the D11 caution role, not a money state. */
+.flag-chip--warning {
+  background-color: color-mix(in srgb, var(--shekel-warning) 16%, var(--shekel-surface));
+  color: var(--shekel-warning);
+}
+
+/* =============================================
+   CLICK-TO-EDIT HERO (the D14 anchor-recording idiom)
+   =============================================
+   The band hero figure doubles as the click-to-edit balance-recording
+   control on the detail pages (investment / loan / cash; the dashboard
+   .pulse-hero__num affordance applied to the band hero).  Pair with
+   role="button" tabindex="0" data-keyboard-activate and an aria-label
+   naming the action.  Extracted from accounts.css's .invd-hero-edit
+   when the D14 port standardized the gesture across the detail
+   siblings (polish audit P-DT8/D14). */
+.hero-edit {
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+  margin-left: -0.4rem;
+  border-radius: 0.375rem;
+  transition: background-color 0.15s;
+}
+
+.hero-edit:hover,
+.hero-edit:focus-visible {
+  background-color: rgba(var(--shekel-accent-rgb), 0.12);
+}
+
+.hero-edit__pencil {
+  font-size: 0.9rem;
+  color: var(--shekel-text-muted);
+  margin-left: 0.4rem;
+  vertical-align: 0.5em;
+}
+
+/* =============================================
+   ALLOCATION BAR (shared composition-bar shell)
+   =============================================
+   A stacked composition bar -- parts of one whole, NOT progress:
+   graduated accent tints on the D12 ordinal ramp, 2px surface gaps
+   carrying the boundary between same-hue neighbours, and a legend that
+   names and values every segment (color is never the only signal).
+   Extracted from the cockpit's nw-alloc bar when the loan
+   payment-allocation bar became the second consumer (polish audit
+   P-DT2; the .section-banner precedent).  accounts.css keeps the
+   cockpit-only structure (diverging halves, center tick, its segment
+   colors); loan.css keeps the loan's segment colors.  Segment widths
+   are applied by progress_bar.js from data-progress-pct (CSP forbids
+   inline style). */
+.alloc-bar {
+  display: flex;
+  height: 0.875rem;
+  border-radius: 0.3125rem;
+  overflow: hidden;
+  background: var(--shekel-border-subtle);
+}
+
+.alloc-bar__seg {
+  height: 100%;
+  /* width: applied by progress_bar.js from data-progress-pct */
+}
+
+/* The 2px achromatic boundary between same-hue neighbours (D12's second
+   arm; the dataviz stacked-fill mark spec). */
+.alloc-bar__seg + .alloc-bar__seg {
+  border-left: 2px solid var(--shekel-surface);
+}
+
+/* Legend swatch: a small rounded square keyed to its segment's color
+   class, paired with the segment's label and value. */
+.alloc-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 0.1875rem;
+}
+
+/* The D12-ratified ordinal ramp stops, per theme (polish audit
+   P-AC3/O24; re-derived 2026-07-11).  A 3:1 luminance step is
+   impossible several times within one hue, so ramp bars take D12's
+   second arm: these graduated stops plus the 2px gaps above.  The
+   per-theme color-mix stops pass the dataviz ordinal ramp checks
+   (monotone lightness, adjacent OKLCH delta-L >= 0.06, deepest step
+   >= 2:1 on the surface); do not substitute without re-running them.
+   The ramp's strongest step is the full accent itself. */
+[data-bs-theme="dark"] {
+  --shekel-alloc-a1: color-mix(in srgb, var(--shekel-accent) 76%, var(--shekel-surface));
+  --shekel-alloc-a2: color-mix(in srgb, var(--shekel-accent) 56%, var(--shekel-surface));
+  --shekel-alloc-a3: color-mix(in srgb, var(--shekel-accent) 42%, var(--shekel-surface));
+}
+
+[data-bs-theme="light"] {
+  --shekel-alloc-a1: color-mix(in srgb, var(--shekel-accent) 80%, var(--shekel-surface));
+  --shekel-alloc-a2: color-mix(in srgb, var(--shekel-accent) 64%, var(--shekel-surface));
+  --shekel-alloc-a3: color-mix(in srgb, var(--shekel-accent) 49%, var(--shekel-surface));
 }
 
 /* =============================================
@@ -204,6 +415,25 @@
    from Bootstrap. */
 .password-strength-meter .progress {
   height: 6px;
+}
+
+/* Strength-bar fills (polish audit P-ST6 / RC3).  The raw Bootstrap
+   bg-danger / bg-warning / bg-info / bg-success utilities read their
+   un-remapped *-rgb variables, so the bar showed off-palette cyan and
+   raw red/green.  Token scale: weak = danger, fair = warning (both
+   carry non-money caution roles app-wide), good / strong = accent (the
+   only non-money chroma; the two are distinguished by bar width and
+   the text label, never by color alone). */
+.strength-bar--danger {
+  background-color: var(--shekel-danger);
+}
+
+.strength-bar--warning {
+  background-color: var(--shekel-warning);
+}
+
+.strength-bar--accent {
+  background-color: var(--shekel-accent);
 }
 
 /* Show/hide password toggle (audit F-090 / C-11)
@@ -268,4 +498,37 @@
 
 .form-section--accent .form-section__title {
   color: var(--shekel-accent);
+}
+
+/* =============================================
+   TOKEN TABLE HEAD (shared data-table column headers)
+   Quiet uppercase column labels over a strong hairline -- the
+   retirement accounts table's grammar (its audit V3: never Bootstrap's
+   .table-light literals), extracted here when the salary and pension
+   tables adopted it (polish audit S7, P-RT1/P-SA2).  The salary
+   projection ledger layers its sticky background on top.
+   ============================================= */
+.table-token thead th {
+  color: var(--shekel-text-muted);
+  font-weight: 600;
+  font-size: 0.71875rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--shekel-border-strong);
+}
+
+/* =============================================
+   STICKY ACTION COLUMN (horizontally scrolling tables)
+   Right-edge mirror of the grid's .sticky-col: row actions pin to the
+   card edge on narrow viewports instead of clipping behind an
+   unindicated horizontal scroll (polish audit P-SA3; P-RT1's mobile
+   overflow).  The solid surface background lets data columns slide
+   beneath the pinned cell -- the sliding itself is the scroll
+   affordance.  Apply to the action <th> and <td>.
+   ============================================= */
+.table-sticky-actions {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background-color: var(--shekel-surface);
 }

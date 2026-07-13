@@ -109,3 +109,6 @@ state/
 # directory holds per-run artefacts.  Both are operator-private.
 tests/manual/.dev_session_state.json
 tests/manual/screenshots/
+
+# Playwright dev auth state (live dev session cookie -- never commit)
+tools/playwright/.auth/

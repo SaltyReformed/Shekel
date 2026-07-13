@@ -81,18 +81,30 @@ logger = logging.getLogger(__name__)
 # ``pay_period_id`` moves the entry's period, so a settled period move
 # reconciles R2-correctly (the per-(account, period) reconcile reverses the old
 # period and posts the new) AND fires the effect-time self-heal for the Step-5
-# account-anchor corrections (F1).  The remaining kwargs (``category_id`` /
-# ``name`` / ``notes`` / ``due_date`` / ``is_override``) move none of these, so
-# they raise no reconcile.  ``paid_at`` is deliberately NOT here: it moves the
-# Step-5 walk's attribution INSTANT without changing any leg, so a
-# reconcile-to-target would write nothing and its self-heal would never fire; a
-# settled ``paid_at`` edit instead resyncs the two endpoint accounts' anchor
+# account-anchor corrections (F1).
+#
+# ``due_date`` IS here, and its inclusion is load-bearing: on a LOAN payment the
+# due date is the installment the payment satisfies, which the genesis write walk
+# (``loan_posting_service._walk._merge_anchor_and_payment_events``) orders
+# payments by AND applies its strict ``anchor_date < due_date`` post-anchor
+# boundary against -- so moving it changes which payments an anchor SUBSUMES, and
+# therefore the POSTED balance.  Editing it without a reconcile would leave the
+# posted ledger disagreeing with every live reader (the history rows, the payment
+# table, the resolver's replay), silently, until an unrelated chokepoint happened
+# to fire.  On a NON-loan transfer the cash reconcile is reconcile-to-target and
+# writes nothing, so listing it costs one idempotent no-op round-trip.
+#
+# The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
+# move none of these, so they raise no reconcile.  ``paid_at`` is deliberately NOT
+# here: it moves the Step-5 walk's attribution INSTANT without changing any leg,
+# so a reconcile-to-target would write nothing and its self-heal would never fire;
+# a settled ``paid_at`` edit instead resyncs the two endpoint accounts' anchor
 # corrections directly (see ``update_transfer``, F1).  The reconcile is
 # idempotent, so listing a field that did not move the effect is a harmless
 # no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
 # pure metadata edit.
 _POSTING_RELEVANT_FIELDS = frozenset(
-    {"status_id", "amount", "actual_amount", "pay_period_id"}
+    {"status_id", "amount", "actual_amount", "pay_period_id", "due_date"}
 )
 
 

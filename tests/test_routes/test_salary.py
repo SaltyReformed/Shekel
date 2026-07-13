@@ -1437,6 +1437,36 @@ class TestBreakdown:
             assert b"Day Job" in response.data
             assert b"Annual Salary" in response.data
 
+    def test_projection_collapses_raise_badge_to_run_start(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The ledger badges a raise only on the paycheck where it takes effect.
+
+        A MERIT raise effective March 2026 badges BOTH March paychecks
+        (seed_periods[5] on 2026-03-13 and [6] on 2026-03-27; the calculator
+        marks every period of the raise month).  The projection ledger shows
+        the sal-badge-raise exactly once -- on the run start (period 5) -- not
+        again on the continuation (period 6) (P-SA1, projection surface).
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0250"),
+            ))
+            db.session.commit()
+
+            response = auth_client.get(f"/salary/{profile.id}/projection")
+            assert response.status_code == 200
+            html = response.data.decode()
+            # Exactly one raise badge: the run start, not every March paycheck.
+            assert html.count("sal-badge-raise") == 1
+            assert "Merit +2.5%" in html
+
     def test_breakdown_no_current_period(self, app, auth_client, seed_user):
         """GET /salary/<id>/breakdown with no periods lands on the cockpit blocker.
 
@@ -3579,6 +3609,70 @@ class TestAnatomyFragment:
             profile = _create_profile(seed_user)
             resp = auth_client.get(f"/salary/{profile.id}/anatomy/999999")
             assert resp.status_code == 404
+
+    def test_anatomy_raise_banner_shows_on_run_start(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The raise banner shows on the paycheck where a raise takes effect.
+
+        A MERIT raise effective March 2026 badges BOTH March paychecks
+        (seed_periods[5] on 2026-03-13 and [6] on 2026-03-27; get_raise_event
+        marks every period of the raise month).  Period 5 is the run START --
+        its predecessor (period 4, 2026-02-27) carries no raise -- so its
+        anatomy fragment shows the "Raise: Merit +2.5%" banner (P-SA1).
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0250"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[5].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Raise:" in html
+            assert "Merit +2.5%" in html
+
+    def test_anatomy_raise_banner_hidden_on_run_continuation(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The raise banner does NOT repeat on a later paycheck of the run.
+
+        seed_periods[6] (2026-03-27) carries the same "MERIT +2.5000%" the
+        calculator badged on [5] (2026-03-13), so it is inside the run, not a
+        new raise -- its anatomy fragment omits the banner (P-SA1) while the
+        composition card still renders.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            raise_type = db.session.query(RaiseType).filter_by(name="merit").one()
+            db.session.add(SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=raise_type.id,
+                effective_month=3,
+                effective_year=2026,
+                percentage=Decimal("0.0250"),
+            ))
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/salary/{profile.id}/anatomy/{seed_periods[6].id}"
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The banner is collapsed to the run start (period 5), so period 6
+            # shows no "Raise:" alert even though it carries the badged event.
+            assert "Raise:" not in html
+            # Sanity: the fragment still rendered its composition card.
+            assert "Where this paycheck goes" in html
 
 
 class TestReactivate:

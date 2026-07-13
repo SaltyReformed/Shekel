@@ -155,14 +155,14 @@
             {{ comp.display_name or comp.email }}
           </div>
           <div class="text-muted small">{{ comp.email }}</div>
-          <span class="badge text-bg-secondary mt-1">Deactivated</span>
+          <span class="flag-chip flag-chip--neutral mt-1">Deactivated</span>
         </div>
         <form method="POST"
               action="{{ url_for('settings.companion_reactivate', companion_id=comp.id) }}"
               class="d-inline"
               data-confirm="Reactivate this companion? They will be able to log in again with their existing password.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="btn btn-sm btn-outline-success"
+          <button type="submit" class="btn btn-sm btn-outline-secondary"
                   title="Reactivate">
             <i class="bi bi-person-check"></i> Reactivate
           </button>

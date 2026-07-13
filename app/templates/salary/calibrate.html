@@ -1,20 +1,14 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}Calibrate Paycheck -- {{ profile.name }} -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('salary.cockpit') }}">Salary</a></li>
-    <li class="breadcrumb-item"><a href="{{ url_for('salary.edit_profile', profile_id=profile.id) }}">{{ profile.name }}</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Calibrate</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-lg-6 col-md-8">
+    <div class="d-flex justify-content-end mb-3">
+      {{ back_link(url_for('salary.edit_profile', profile_id=profile.id), 'Profile') }}
+    </div>
     {% call form_card('Calibrate from Pay Stub', 'bi-bullseye') %}
     <p class="text-muted">
       Enter the actual withholding amounts from a recent pay stub. The app will

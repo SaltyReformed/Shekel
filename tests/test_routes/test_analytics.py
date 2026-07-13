@@ -5,14 +5,17 @@ Tests for the analytics page shell and HTMX tab endpoints:
   - Authentication required for all endpoints
   - Main page renders with nav-pills and tab-content div
   - Tab endpoints return placeholders/content with HX-Request header
-  - Tab endpoints redirect without HX-Request header
+  - A direct (non-HTMX) tab GET renders the shell with that tab active (D13)
   - Nav bar shows Analytics link with correct active state
   - Statements pill groups the income statement + balance sheet toggle
   - Retired Variance / Trends / Year-End URLs redirect to the page
 """
 
+import json
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from html import unescape
 
 import pytest
 
@@ -31,11 +34,27 @@ def _freeze_today_inside_seed_range(monkeypatch):
     This module relies on calendar-anchored seed_periods (Jan-May 2026)
     and asserts on tax_year=2026, calendar 2026 due_dates, and other
     calendar-anchored values.  Auto-discovery patches every loaded
-    module's ``date``/``datetime`` symbols so production services
-    (e.g. spending_trend_service) consuming ``date.today()`` agree
-    with the test's view of "today" regardless of wall-clock date.
+    module's ``date``/``datetime`` symbols so production code
+    (e.g. the statement routes in app.routes.analytics) consuming
+    ``date.today()`` agrees with the test's view of "today" regardless
+    of wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
+
+
+def _shell_autoload_target(html):
+    """Return the hx-get URL of the shell's single auto-loading element.
+
+    D13: the analytics shell auto-loads its active tab from the #tab-content
+    spinner (the one element carrying ``hx-trigger="load"``).  Tests use this
+    to assert WHICH tab a direct (non-HTMX) GET pre-selected, since the
+    active-tab discriminator drives both that loader's target and the active
+    pill.  Returns ``None`` when no auto-loader is present.
+    """
+    before_load = html.split('hx-trigger="load"')[0]
+    loader = before_load[before_load.rfind("<div"):]
+    match = re.search(r'hx-get="([^"]+)"', loader)
+    return match.group(1) if match else None
 
 
 def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
@@ -68,190 +87,22 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     db.session.commit()
 
 
-def _seed_long_periods(db, seed_user, count):
-    """Generate pay periods starting ~8 months ago for trend tests.
+def _chart_payload(html):
+    """Parse the spending chart canvas's ``data-chart`` JSON from a page.
 
-    The spending trend service uses a window relative to today, so
-    periods must be recent enough to fall within that window.
+    The attribute value is HTML-escaped by Jinja autoescaping, so it is
+    unescaped before parsing.  Raises (failing the test) when the canvas
+    or its attribute is missing.
 
     Args:
-        db: Database session.
-        seed_user: User fixture dict.
-        count: Number of biweekly periods to generate.
+        html: The rendered Spending tab HTML.
 
     Returns:
-        List of PayPeriod objects.
+        The deserialized series dict.
     """
-    from app.services import pay_period_service
-    # Start 8 months before today to ensure 6-month window coverage.
-    today = date.today()
-    start_month = today.month - 8
-    start_year = today.year
-    while start_month < 1:
-        start_month += 12
-        start_year -= 1
-    start = date(start_year, start_month, 3)
-
-    periods = pay_period_service.generate_pay_periods(
-        user_id=seed_user["user"].id,
-        start_date=start,
-        num_periods=count,
-        cadence_days=14,
-    )
-    db.session.flush()
-    seed_user["account"].current_anchor_period_id = periods[0].id
-    db.session.commit()
-    return periods
-
-
-def _seed_increasing_trend(db, seed_user, periods):
-    """Create expenses in every period with increasing amounts.
-
-    The trend service runs linear regression on per-period data,
-    so we need one expense per period with a clear upward slope.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
-
-
-def _seed_decreasing_trend(db, seed_user, periods):
-    """Create expenses in every period with decreasing amounts.
-
-    Clear downward slope for the regression.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("600.00")
-    for p in periods:
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        amount = max(Decimal("50.00"), amount - Decimal("20.00"))
-    db.session.commit()
-
-
-def _seed_flat_expenses(db, seed_user, periods):
-    """Create expenses with consistent spending across 7+ months.
-
-    Creates one expense per period (not per month) with the same
-    amount so per-period averages remain stable.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    months_seen = set()
-    count = 0
-    for p in periods:
-        month_key = (p.start_date.year, p.start_date.month)
-        months_seen.add(month_key)
-        if len(months_seen) > 8:
-            break
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent P{count}",
-            estimated_amount=Decimal("400.00"),
-            actual_amount=Decimal("400.00"),
-            category_id=cat.id,
-            due_date=p.start_date,
-        )
-        db.session.add(txn)
-        count += 1
-    db.session.commit()
-
-
-def _seed_increasing_trend_with_timing(db, seed_user, periods):
-    """Create increasing per-period expenses with paid_at for OP-3.
-
-    Payments made 3 days before due date.
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        due = p.start_date
-        paid = datetime(due.year, due.month, max(1, due.day - 3),
-                        tzinfo=timezone.utc)
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=due,
-            paid_at=paid,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
-
-
-def _seed_increasing_trend_with_late_timing(db, seed_user, periods):
-    """Create increasing per-period expenses paid 5 days AFTER due.
-
-    Ensures avg_days_before_due is negative (late payments).
-    """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    paid_status_id = ref_cache.status_id(StatusEnum.DONE)
-    cat = seed_user["categories"]["Rent"]
-    amount = Decimal("100.00")
-    for p in periods:
-        due = p.start_date
-        paid = datetime(due.year, due.month, min(28, due.day + 5),
-                        tzinfo=timezone.utc)
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            pay_period_id=p.id,
-            status_id=paid_status_id,
-            transaction_type_id=expense_type_id,
-            name=f"Rent {p.start_date.strftime('%b %d')}",
-            estimated_amount=amount,
-            actual_amount=amount,
-            category_id=cat.id,
-            due_date=due,
-            paid_at=paid,
-        )
-        db.session.add(txn)
-        amount += Decimal("20.00")
-    db.session.commit()
+    match = re.search(r'data-chart="([^"]*)"', html)
+    assert match is not None, "spending chart data-chart attribute missing"
+    return json.loads(unescape(match.group(1)))
 
 
 # ── Auth Tests ──────────────────────────────────────────────────────
@@ -343,22 +194,37 @@ class TestAnalyticsPage:
             assert b'id="tab-content"' in resp.data
 
     def test_calendar_tab_is_default_load(self, app, auth_client, seed_user):
-        """Calendar pill has hx-trigger containing 'load' so it auto-loads."""
+        """The shell auto-loads Calendar by default from inside #tab-content.
+
+        D13 moved the auto-load off the pill onto the #tab-content spinner
+        (so the initial fetch never pushes a URL); on the bare /analytics page
+        (active_tab="calendar") that loader targets the calendar tab.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
-            assert 'hx-trigger="click, load"' in html
+            # Exactly one element auto-loads on page load, and it fetches the
+            # Calendar partial.
+            assert 'hx-trigger="load"' in html
+            loader = html.split('hx-trigger="load"')[0].rsplit("<div", 1)[1]
+            assert "/analytics/calendar" in loader
 
     def test_other_tabs_no_auto_load(self, app, auth_client, seed_user):
-        """Only the Calendar pill auto-loads; the other pills load on click."""
+        """Only one element auto-loads; the pills are click-only (D13).
+
+        The pills push their URL on click (hx-push-url) and no longer carry a
+        'load' trigger -- the single auto-load lives on the #tab-content
+        spinner -- so exactly one 'load' trigger exists on the page.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics")
             html = resp.data.decode()
-            # Only the Calendar pill should have the 'load' trigger.
-            load_triggers = html.count('hx-trigger="click, load"')
+            load_triggers = html.count('hx-trigger="load"')
             assert load_triggers == 1, (
-                f"Expected exactly 1 pill with 'load' trigger, found {load_triggers}"
+                f"Expected exactly 1 'load' trigger, found {load_triggers}"
             )
+            # Every pill pushes its own URL (D13).
+            assert html.count('hx-push-url="true"') == 4
 
     def test_tab_content_has_spinner(self, app, auth_client, seed_user):
         """The #tab-content div contains spinner markup as initial content."""
@@ -392,12 +258,19 @@ class TestCalendarTab:
             # Calendar replaced the placeholder; month view renders by default.
             assert b"calendar-grid" in resp.data
 
-    def test_calendar_tab_no_htmx_redirects(self, app, auth_client, seed_user):
-        """GET /analytics/calendar without HX-Request redirects to /analytics."""
+    def test_calendar_tab_no_htmx_renders_shell(self, app, auth_client, seed_user):
+        """GET /analytics/calendar without HX-Request renders the shell (D13).
+
+        A direct navigation to the tab URL now serves the analytics shell with
+        Calendar active (which then auto-loads the calendar partial), instead
+        of redirecting to the page and defaulting to Calendar the long way.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/calendar")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/calendar"
 
     def test_calendar_tab_404_when_account_unresolvable(
         self, app, auth_client, seed_user, monkeypatch,
@@ -452,22 +325,6 @@ class TestCalendarTab:
             resp = auth_client.get(
                 "/analytics/calendar?view=year",
                 headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 404
-
-    def test_calendar_tab_csv_404_when_scenario_unresolvable(
-        self, app, auth_client, seed_user, monkeypatch,
-    ):
-        """C11-1/C11-2 (route, CSV branch): CSV path also 404s."""
-        from app.services import calendar_service as cs
-        monkeypatch.setattr(
-            cs, "get_baseline_scenario",
-            lambda _user_id: None,
-        )
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month"
-                "&year=2026&month=1",
             )
             assert resp.status_code == 404
 
@@ -528,13 +385,19 @@ class TestIncomeStatementTab:
             assert resp.status_code == 302
             assert "/login" in resp.headers["Location"]
 
-    def test_income_statement_no_htmx_redirects(self, app, auth_client,
-                                                seed_user):
-        """Non-HTMX request redirects to /analytics."""
+    def test_income_statement_no_htmx_renders_shell(self, app, auth_client,
+                                                    seed_user):
+        """Non-HTMX request renders the shell with Statements active (D13).
+
+        The Statements pill's default half is the income statement, so a
+        direct GET auto-loads /analytics/income-statement inside the shell.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/income-statement")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/income-statement"
 
     def test_income_statement_htmx_renders(self, app, auth_client, seed_user,
                                            seed_periods):
@@ -581,7 +444,9 @@ class TestIncomeStatementTab:
 
         The seed Checking's $1000 opening is an Equity correction, so it
         never reaches the Income/Expense filter -- the current period is
-        genuinely empty on the income statement.
+        genuinely empty on the income statement.  S6/D8: the empty state
+        names the window (the old "this window" wording predates the
+        window-label caption's removal, P-AN14).
         """
         with app.app_context():
             resp = auth_client.get(
@@ -590,18 +455,29 @@ class TestIncomeStatementTab:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"No income or expenses in this window" in resp.data
+            assert b"No income or expenses in" in resp.data
 
-    def test_income_statement_no_periods_falls_back(self, app, auth_client,
-                                                    seed_user):
-        """With no pay periods, the default window degrades to a month window."""
+    def test_income_statement_no_current_period_falls_back(self, app, auth_client,
+                                                           seed_user):
+        """Outside every period, a bare pay_period window uses the most recent.
+
+        The frozen today (2026-03-20) sits outside seed_user's only period
+        (the 2024-01-05 bootstrap anchor period), so ``_resolve_window_params``
+        falls back from "current period" to the user's most recent one.  The
+        S6/D8 empty state names its window, which pins WHICH period the
+        fallback chose -- the old "this window" wording only proved that
+        something empty rendered, and hid that this test never reached the
+        no-periods-at-all month fallback its docstring used to claim (every
+        seeded account requires a bootstrap anchor period, so that branch is
+        unreachable through fixtures).
+        """
         with app.app_context():
             resp = auth_client.get(
                 "/analytics/income-statement?window=pay_period",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"No income or expenses in this window" in resp.data
+            assert b"No income or expenses in Jan 05 - Jan 18, 2024" in resp.data
 
     def test_income_statement_pay_period_content(self, app, auth_client,
                                                  seed_user, seed_periods, db):
@@ -633,7 +509,9 @@ class TestIncomeStatementTab:
             assert "Expenses" in html
             assert "$2,000.00" in html
             assert "$300.00" in html
-            assert "Net Income" in html
+            # S6/D8: Net income is the band hero (sentence-case label,
+            # like every other band hero), no longer a bottom-line card.
+            assert "Net income" in html
             assert "$1,700.00" in html
 
     def test_income_statement_monthly_window(self, app, auth_client, seed_user,
@@ -703,12 +581,19 @@ class TestBalanceSheetTab:
             assert resp.status_code == 302
             assert "/login" in resp.headers["Location"]
 
-    def test_balance_sheet_no_htmx_redirects(self, app, auth_client, seed_user):
-        """Non-HTMX request redirects to /analytics."""
+    def test_balance_sheet_no_htmx_renders_shell(self, app, auth_client, seed_user):
+        """Non-HTMX request renders the shell with Statements active (D13).
+
+        Balance Sheet is the Statements pill's second half (reached by its
+        internal toggle), so a direct GET lands on the Statements tab, which
+        auto-loads its income-statement default.
+        """
         with app.app_context():
             resp = auth_client.get("/analytics/balance-sheet")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/income-statement"
 
     def test_balance_sheet_htmx_renders(self, app, auth_client, seed_user):
         """HTMX request renders the balance sheet heading and as-of input."""
@@ -835,145 +720,75 @@ class TestBalanceSheetTab:
 # ── CSV Export Tests ──────────────────────────────────────────────
 
 
-class TestCsvExport:
-    """Tests for the calendar CSV export (the only surviving export).
+class TestCsvExportRetired:
+    """The calendar CSV export was removed root-and-branch (P-AN4).
 
-    The Slice-4 shell collapse retired the year-end, variance, trends,
-    income-statement, and balance-sheet CSV exports with their tabs; only
-    the calendar month/year CSV still ships (Calendar decision 9).
+    The calendar month/year CSV was the last surviving analytics export (the
+    Slice-4 shell collapse had already retired the year-end, variance, trends,
+    income-statement, and balance-sheet exports).  With P-AN4 no analytics
+    export remains: neither calendar view offers a CSV button, and a stale
+    ``?format=csv`` is now an inert query arg that renders the normal calendar
+    rather than a download.
     """
 
-    def test_calendar_csv_export(self, app, auth_client, seed_user,
-                                  seed_periods):
-        """C17-1: Calendar CSV returns 200 with text/csv content type."""
+    def test_calendar_month_has_no_csv_button(self, app, auth_client, seed_user,
+                                              seed_periods):
+        """The calendar month view offers no CSV download control."""
         with app.app_context():
             resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
+                "/analytics/calendar?view=month",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
+            html = resp.data.decode()
+            assert "format=csv" not in html
+            assert "bi-download" not in html
 
-    def test_calendar_csv_content(self, app, auth_client, seed_user,
-                                   seed_periods, db):
-        """C17-2: Calendar CSV body contains transaction names."""
+    def test_calendar_year_has_no_csv_button(self, app, auth_client, seed_user,
+                                             seed_periods):
+        """The calendar year view offers no CSV download control."""
         with app.app_context():
-            _create_paid_expense_for_route_test(
-                db, seed_user, seed_periods,
-                "January Rent", Decimal("1200.00"), "Rent",
-            )
             resp = auth_client.get(
-                f"/analytics/calendar?format=csv&view=month&year=2026&month=1"
-                f"&period_id={seed_periods[0].id}",
+                "/analytics/calendar?view=year&year=2026",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
-            assert b"January Rent" in resp.data
+            html = resp.data.decode()
+            assert "format=csv" not in html
+            assert "bi-download" not in html
 
-    def test_calendar_csv_has_eod_balance_column(
-        self, app, auth_client, seed_user, seed_periods, db,
-    ):
-        """The month CSV carries the end-of-day running-balance column.
+    def test_format_csv_is_inert_on_htmx_request(self, app, auth_client,
+                                                 seed_user, seed_periods):
+        """A stale ?format=csv on an HTMX calendar GET renders the grid.
 
-        Anchor $1000 (period 0); a projected -$250 expense due Jan 8 leaves
-        the projected end-of-day balance at $750 on that day.
+        The format arg has no branch anymore, so it is ignored: the request
+        returns the normal calendar partial, never a text/csv attachment.
         """
         with app.app_context():
-            from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
-            from datetime import date
-            from decimal import Decimal
-            db.session.add(Transaction(
-                account_id=seed_user["account"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Groceries",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("250.00"),
-                due_date=date(2026, 1, 8),
-            ))
-            db.session.commit()
             resp = auth_client.get(
                 "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            assert resp.status_code == 200
-            body = resp.data.decode()
-            assert "End-of-Day Balance ($)" in body
-            # The Groceries row carries the day's projected EOD balance ($750).
-            assert "750.00" in body
-
-    def test_csv_requires_auth(self, app, client):
-        """C17-8: CSV export requires authentication."""
-        with app.app_context():
-            resp = client.get("/analytics/calendar?format=csv")
-            assert resp.status_code == 302
-            assert "/login" in resp.headers["Location"]
-
-    def test_csv_content_disposition(self, app, auth_client, seed_user,
-                                      seed_periods):
-        """C17-9: CSV has Content-Disposition with attachment and .csv."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            cd = resp.headers.get("Content-Disposition", "")
-            assert "attachment" in cd
-            assert ".csv" in cd
-
-    def test_csv_does_not_require_htmx(self, app, auth_client, seed_user,
-                                        seed_periods):
-        """C17-extra12: the calendar CSV works without an HX-Request header."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
-            )
-            # Should NOT redirect -- CSV bypasses the HTMX guard.
-            assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
-
-    def test_csv_filename_includes_context(self, app, auth_client,
-                                            seed_user, seed_periods):
-        """C17-extra14: Calendar CSV filename contains year and month."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=month&year=2026&month=4",
-            )
-            cd = resp.headers.get("Content-Disposition", "")
-            assert "2026_04" in cd
-
-    def test_calendar_year_csv_export(self, app, auth_client, seed_user,
-                                       seed_periods):
-        """C17-extra15: Calendar year CSV returns year overview data."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar?format=csv&view=year&year=2026",
-            )
-            assert resp.status_code == 200
-            assert b"January" in resp.data
-
-    def test_html_still_works_without_format(self, app, auth_client,
-                                              seed_user, seed_periods):
-        """C17-extra16: Without format=csv, normal HTMX HTML is returned."""
-        with app.app_context():
-            resp = auth_client.get(
-                "/analytics/calendar",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
             assert b"calendar-grid" in resp.data
             assert "text/csv" not in resp.headers.get("Content-Type", "")
 
-    def test_calendar_has_export_button(self, app, auth_client, seed_user,
-                                         seed_periods):
-        """C17-extra17: Calendar tab contains CSV export link."""
+    def test_format_csv_non_htmx_renders_shell_not_csv(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A stale ?format=csv on a direct (non-HTMX) GET serves the shell.
+
+        With the CSV branch gone, format=csv no longer bypasses the HTMX
+        guard; a non-HTMX hit renders the analytics shell (Calendar active,
+        D13), never a CSV attachment.
+        """
         with app.app_context():
             resp = auth_client.get(
-                "/analytics/calendar?view=month",
-                headers={"HX-Request": "true"},
+                "/analytics/calendar?format=csv&view=month&year=2026&month=1",
             )
-            html = resp.data.decode()
-            assert "format=csv" in html
-            assert "bi-download" in html
+            assert resp.status_code == 200
+            assert "text/csv" not in resp.headers.get("Content-Type", "")
+            assert "shekel-scroll-pills" in resp.data.decode()
 
 
 # ── Retired Tab Redirect Tests ────────────────────────────────────
@@ -1156,15 +971,16 @@ class TestCalendarMonthView:
             assert "view=year" in html
 
     def test_calendar_month_summary_strip_displayed(self, app, auth_client, seed_user, seed_periods, db):
-        """Month view shows the summary strip per the slice-1 rebuild anatomy.
+        """Month view shows the cockpit band per the S5 recomposition (P-AN3).
 
-        Redesign pin (analytics_audit.md, Gate A + "Calendar rebuild
-        decisions" 6, developer-locked 2026-07-04): the old
-        Income/Expenses/Net totals row was replaced by the summary strip --
-        So far / Remaining income+expense pairs plus Month end and Month
-        trough chips.  January 2026 is wholly past relative to any display-tz
-        today after 2026-01-31, so the So far chip renders (captioned "full
-        month") and the future-only Remaining chip does not.
+        Redesign pin (analytics_audit.md Gate A locked the summary figures
+        2026-07-04; ui_ux_polish_audit.md P-AN3 recomposed them as a cockpit
+        in S5): one .nw-sky band carries a balance hero plus the summary
+        chips.  January 2026 is wholly past relative to any display-tz today
+        after 2026-01-31, so the hero is Month end (Balance today only
+        renders inside the current month), the So far chip renders
+        (captioned "full month"), and the future-only Remaining chip does
+        not.
         """
         with app.app_context():
             from app import ref_cache
@@ -1192,7 +1008,7 @@ class TestCalendarMonthView:
             )
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "calendar-summary" in html
+            assert "nw-sky" in html
             assert "So far" in html
             assert "Income" in html
             assert "Expenses" in html
@@ -1240,6 +1056,25 @@ class TestCalendarMonthView:
             )
             assert resp.status_code == 200
             assert b"calendar-day--today" in resp.data
+
+    def test_calendar_notation_legend(self, app, auth_client, seed_user, seed_periods):
+        """Month view names its notation glyphs on screen (P-AN8).
+
+        The PAY / asterisk / tilde / check glyphs previously relied on a
+        cell tooltip for the asterisk's meaning, unreachable on touch; the
+        legend under the grid states all four.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/calendar?view=month",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "calendar-legend" in html
+            assert "payday" in html
+            assert "includes an infrequent item" in html
+            assert "projected (after today)" in html
 
 
 # ── Calendar Year View Tests ─────────────────────────────────────────
@@ -1516,20 +1351,31 @@ class TestCalendarFlowStrip:
             assert payload["payday_indices"] == [1, 15, 29]
             # Flat series: the trough is the earliest minimum, day 1.
             assert payload["trough_index"] == 0
+            # $1,000.00 >= the $500 threshold: a healthy trough (D11,
+            # P-AN6) -- "ok" state, and no state ink anywhere on the
+            # board (being the trough alone no longer colors a figure).
+            assert payload["trough_state"] == "ok"
+            assert "calendar-day-balance--danger" not in html
+            assert "calendar-day-balance--low" not in html
+            assert "pulse-chip--danger" not in html
+            assert "pulse-chip--warning" not in html
             assert payload["week_tick_indices"] == [0, 3, 10, 17, 24]
             assert len(payload["labels"]) == 31
             assert payload["labels"][0] == "Jan 1"
 
-    def test_flow_strip_trough_and_danger_cells(self, app, auth_client, seed_user, seed_periods, db):
-        """A below-threshold trough renders the danger chip, cells, and index.
+    def test_flow_strip_low_trough_warning_cells(self, app, auth_client, seed_user, seed_periods, db):
+        """A low-but-positive trough renders the WARNING chip and cells.
 
         Hand-computed: anchor $1,000.00; one projected $600.00 expense due
         Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4 =
         $1,000.00; Jan 5-31 = 1000 - 600 = $400.00.  The trough is Jan 5
-        (0-based index 4) at $400.00, below the default $500 threshold, so
-        the Month trough chip takes the danger variant and the below-
-        threshold day cells take the danger hero class.  January 2026 is
-        wholly past, so no modeled tilde renders anywhere.
+        (0-based index 4) at $400.00 -- below the default $500 threshold
+        but positive, so under the D11 ruling (the calendar adopts the
+        grid's thresholds: danger only for a NEGATIVE balance, the caution
+        token for low-but-positive) the Month trough chip takes the
+        warning variant, the below-threshold day cells take the low hero
+        class, and neither danger class renders.  January 2026 is wholly
+        past, so no modeled tilde renders anywhere.
         """
         with app.app_context():
             from app import ref_cache
@@ -1560,16 +1406,68 @@ class TestCalendarFlowStrip:
 
             payload = _extract_flow_strip_payload(html)
             assert payload["trough_index"] == 4
+            assert payload["trough_state"] == "low"
             assert payload["values"][3] == 1000.0
             assert payload["values"][4] == 400.0
             assert payload["values"][30] == 400.0
 
             assert "Month trough" in html
             assert "$400.00" in html
-            assert "pulse-chip--danger" in html
-            assert "calendar-day-balance--danger" in html
+            assert "pulse-chip--warning" in html
+            assert "calendar-day-balance--low" in html
+            assert "pulse-chip--danger" not in html
+            assert "calendar-day-balance--danger" not in html
             # Wholly past month: measured treatment only, no modeled tilde.
             assert "~$" not in html
+
+    def test_flow_strip_negative_trough_danger_cells(self, app, auth_client, seed_user, seed_periods, db):
+        """A negative trough renders the DANGER chip and cells.
+
+        Hand-computed: anchor $1,000.00; one projected $1,600.00 expense
+        due Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4
+        = $1,000.00; Jan 5-31 = 1000 - 1600 = -$600.00.  The trough is
+        Jan 5 (0-based index 4) at -$600.00 -- a true negative money
+        state, so the Month trough chip takes the danger variant and the
+        negative day cells take the danger hero class (D11: danger is
+        reserved for negative).  Jan 1-4 stay healthy at $1,000.00, so
+        the low/warning classes do not render.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum, TxnTypeEnum
+            from app.models.transaction import Transaction
+            from datetime import date
+            from decimal import Decimal
+
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Overdraft Expense",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("1600.00"),
+                due_date=date(2026, 1, 5),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            payload = _extract_flow_strip_payload(html)
+            assert payload["trough_index"] == 4
+            assert payload["trough_state"] == "negative"
+            assert payload["values"][4] == -600.0
+
+            assert "pulse-chip--danger" in html
+            assert "calendar-day-balance--danger" in html
+            assert "pulse-chip--warning" not in html
+            assert "calendar-day-balance--low" not in html
 
     def test_future_month_modeled_treatment(self, app, auth_client, seed_user, seed_periods):
         """A wholly future month renders all-modeled heroes and no measured chips.
@@ -1875,12 +1773,14 @@ class TestTaxesTab:
             assert "No active salary profile" in html
             assert "Set up salary" in html
 
-    def test_taxes_tab_non_htmx_redirects(self, app, auth_client, seed_user):
-        """A non-HTMX GET redirects to the analytics page."""
+    def test_taxes_tab_non_htmx_renders_shell(self, app, auth_client, seed_user):
+        """A non-HTMX GET renders the shell with Taxes active (D13)."""
         with app.app_context():
             resp = auth_client.get("/analytics/taxes")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/taxes"
 
 
 def _settled_spending_txn(db, seed_user, period, name, category_key,
@@ -1992,8 +1892,11 @@ class TestSpendingTab:
 
             assert "$1,500.00" in html          # February spent hero
             assert "vs January" in html          # vs-prior chip label
-            assert "$500.00" in html             # |delta| = 1500 - 1000
-            assert "+50.0% vs last month" in html
+            assert "+$500.00" in html            # SIGNED delta (P-AN11 form)
+            assert "+50.0%" in html
+            # The caption names the prior month's total, so the delta can
+            # no longer read as January's total (P-AN11).
+            assert "January total $1,000.00" in html
             assert "trend-up" in html            # spent more -> danger dir
 
     def test_spending_tab_surprises(self, app, auth_client, seed_user,
@@ -2024,34 +1927,58 @@ class TestSpendingTab:
             # Net over ALL surprises = +45 (the est==actual row is excluded).
             assert "net +$45.00" in html
 
-    def test_spending_tab_sparklines_and_movers(self, app, auth_client,
-                                                seed_user, db):
-        """With 12+ completed periods, item rows carry sparklines and movers.
+    def test_spending_tab_chart_and_lens_rows(self, app, auth_client,
+                                              seed_user, seed_periods, db):
+        """The month chart serializes the series; the ledger carries both lenses.
 
-        ``_seed_long_periods(14)`` starts 2025-07-03; its last period
-        (index 13) is 2026-01-01..14 (January 2026).  A rising Rent series
-        makes Rent both trendable (sparkline) and a top mover.
+        January (period[0]): Rent 1000, then it stops.  February
+        (period[3], starts 2026-02-13): Groceries 460, brand new.  Viewing
+        February 2026: the chart's 12 bars end at Feb (index 11 = 460.0)
+        with Jan at index 10 (1000.0), pre-history 2025 months null, the
+        6-mo avg = 1000.0 (Jan is the only existing trailing month), and
+        the history note at Jan 2026.  The By-size lens collapses the
+        singleton Family group (Groceries as kin, "new" badge); the
+        By-change lens lists the stopped Rent at -$1,000.00.  Top Movers
+        and sparklines are retired (D7).
         """
         with app.app_context():
-            periods = _seed_long_periods(db, seed_user, 14)
-            _seed_increasing_trend(db, seed_user, periods)
+            _settled_spending_txn(db, seed_user, seed_periods[0], "JanRent",
+                                  "Rent", "1000.00")
+            _settled_spending_txn(db, seed_user, seed_periods[3], "FebFood",
+                                  "Groceries", "460.00")
+            db.session.commit()
 
             resp = auth_client.get(
-                "/analytics/spending?year=2026&month=1",
+                "/analytics/spending?year=2026&month=2",
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Rent is trendable -> its row carries a sparkline polyline.
-            assert "spend-spark-svg" in html
-            assert "<polyline points=" in html
-            # Rising Rent is a top mover; sufficiency met -> the reliability
-            # note is shown, not the insufficient-data note.
-            assert "Top Movers" in html
-            assert "Rent" in html
-            assert "recent per-period trend" in html
-            assert "Not enough completed pay periods" not in html
+            # The in-canvas chart carries the trailing-12 series.
+            assert 'id="spending-months-canvas"' in html
+            chart = _chart_payload(html)
+            assert len(chart["values"]) == 12
+            assert chart["viewed_index"] == 11
+            assert chart["values"][11] == 460.0    # February (viewed)
+            assert chart["values"][10] == 1000.0   # January (comparison)
+            assert chart["values"][0] is None      # Mar 2025: pre-history
+            assert chart["nav"][11] == {"year": 2026, "month": 2}
+            # 6-mo avg: Jan is the only trailing month that exists -> 1000.
+            assert chart["avg"] == 1000.0
+            assert chart["history_note"] == "settled history begins Jan 2026"
+
+            # Lens pill; singleton Family collapses with Groceries as kin.
+            assert "By size" in html
+            assert "By change" in html
+            assert "spend-kin" in html
+            assert "spend-badge-new" in html
+            # By change: the stopped Rent appears as a zero-current row.
+            assert "spend-chrow" in html
+            assert "-$1,000.00" in html
+            # The retired surfaces are gone (D7).
+            assert "Top Movers" not in html
+            assert "spend-spark-svg" not in html
 
     def test_spending_tab_empty_month(self, app, auth_client, seed_user,
                                       seed_periods):
@@ -2098,9 +2025,11 @@ class TestSpendingTab:
             assert resp.status_code == 200
             assert "February 2026" in resp.data.decode()
 
-    def test_spending_tab_non_htmx_redirects(self, app, auth_client, seed_user):
-        """A non-HTMX GET redirects to the analytics page."""
+    def test_spending_tab_non_htmx_renders_shell(self, app, auth_client, seed_user):
+        """A non-HTMX GET renders the shell with Spending active (D13)."""
         with app.app_context():
             resp = auth_client.get("/analytics/spending")
-            assert resp.status_code == 302
-            assert "/analytics" in resp.headers["Location"]
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "shekel-scroll-pills" in html
+            assert _shell_autoload_target(html) == "/analytics/spending"

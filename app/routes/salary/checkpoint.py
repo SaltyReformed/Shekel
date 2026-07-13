@@ -27,6 +27,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import to_display_date
+from app.utils.error_fragments import designed_error
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import tax_withholding_service
@@ -69,9 +70,13 @@ def save_ytd_checkpoint(profile_id):
     errors = _ytd_checkpoint_schema.validate(request.form)
     if errors:
         if is_htmx:
-            return _render_checkpoint_card(
+            # Designed fragment: the card re-rendered with field errors.
+            # The marker header opts the 422 back into swapping (the
+            # app-wide htmx config drops 4xx bodies); replaces the
+            # retired tax_checkpoint.js per-surface shim.
+            return designed_error(_render_checkpoint_card(
                 profile, errors=errors, form_values=request.form,
-            ), 422
+            ), 422)
         flash("Please correct the highlighted errors and try again.", "danger")
         return redirect(url_for("analytics.page"))
 
@@ -106,11 +111,16 @@ def save_ytd_checkpoint(profile_id):
             user_id, profile_id,
         )
         if is_htmx:
-            return _render_checkpoint_card(
+            # Designed fragment: the card with a save-failure banner.
+            # Before the marker convention this 500 body was dead UI --
+            # the client could not distinguish it from an unhandled
+            # crash page, so it was never swapped and the failure was
+            # silent (flagged in the S5 as-built).
+            return designed_error(_render_checkpoint_card(
                 profile,
                 save_error="Failed to save checkpoint. Please try again.",
                 form_values=request.form,
-            ), 500
+            ), 500)
         flash("Failed to save checkpoint. Please try again.", "danger")
         return redirect(url_for("analytics.page"))
 

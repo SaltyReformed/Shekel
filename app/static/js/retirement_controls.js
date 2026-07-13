@@ -21,12 +21,7 @@
  *      adjust their number input within its min/max and dispatch an
  *      ``input`` event so the debounce path sees the change (programmatic
  *      value writes fire no events on their own).
- *   4. 422 swap shim: htmx's responseHandling config leaves 4xx bodies
- *      unswapped app-wide, but the assumptions panel's validation
- *      failures are DESIGNED fragments (update_settings re-renders the
- *      panel with field errors at 422), so swaps into
- *      ``#assumptions-region`` are re-enabled for that status.
- *   5. Post-save coherence: a saved assumption changes the verdict, the
+ *   4. Post-save coherence: a saved assumption changes the verdict, the
  *      chart, the income meter, both levers, the account projections,
  *      AND the pension footer -- every figure on the page.  After a
  *      successful (2xx) assumptions-panel swap the page reloads so all
@@ -96,21 +91,14 @@
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-  // 422 swap shim for the assumptions panel (designed error fragment).
-  // The save forms target the stable #assumptions-region wrapper with
-  // an innerHTML swap, so beforeSwap/afterSwap fire on an attached node
-  // (an outerHTML target would be detached by the time afterSwap runs
-  // and its events would never reach body).
-  document.body.addEventListener("htmx:beforeSwap", function (event) {
-    var detail = event.detail;
-    if (detail && detail.xhr && detail.xhr.status === 422 &&
-        detail.target && detail.target.id === "assumptions-region") {
-      detail.shouldSwap = true;
-    }
-  });
-
   // Post-save coherence: reload so every server-computed figure on the
   // page re-derives against the newly stored settings.
+  // The 422 error path stays inline WITHOUT a page reload: the route
+  // stamps the designed-fragment marker header (update_settings), the
+  // global listener in app.js swaps the rail with its field errors, and
+  // the status >= 400 guard below skips the reload.  The save forms
+  // target the stable #assumptions-region wrapper with an innerHTML
+  // swap, so the swap lands on an attached node.
   document.body.addEventListener("htmx:afterSwap", function (event) {
     var detail = event.detail || {};
     if (event.target && event.target.id === "assumptions-region" &&

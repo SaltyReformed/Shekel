@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.db_errors import is_unique_violation
+from app.utils.error_fragments import designed_error
 
 from app.extensions import db
 from app.models.pension_profile import PensionProfile
@@ -470,9 +471,13 @@ def update_settings():
         .all()
     )
 
-    def rail_response(rail_errors, form_data, status=None):
-        """Render the assumptions fragment with freshly resolved provenance."""
-        body = render_template(
+    def rail_response(rail_errors, form_data):
+        """Render the assumptions fragment with freshly resolved provenance.
+
+        Returns the body only; the 422 error callers wrap it in
+        :func:`designed_error` so the fragment swaps despite the status.
+        """
+        return render_template(
             "retirement/_assumptions.html",
             settings=settings,
             form_data=form_data,
@@ -482,7 +487,6 @@ def update_settings():
                 .resolve_retirement_date_provenance(pensions, settings)
             ),
         )
-        return (body, status) if status is not None else body
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -490,7 +494,10 @@ def update_settings():
     # fractions directly.
     errors = _settings_schema.validate(request.form)
     if errors:
-        return rail_response(errors, raw_form_data, status=422)
+        # Designed fragment: the rail re-rendered with field errors.
+        # The marker header opts the 422 back into swapping; replaces
+        # the swap shim that lived in retirement_controls.js.
+        return designed_error(rail_response(errors, raw_form_data), 422)
 
     if settings is None:
         flash("Settings not found.", "danger")
@@ -518,7 +525,9 @@ def update_settings():
             data["planned_retirement_date"],
         )
         if pension_errors:
-            return rail_response(pension_errors, raw_form_data, status=422)
+            return designed_error(
+                rail_response(pension_errors, raw_form_data), 422,
+            )
         owner.planned_retirement_date = data.pop("planned_retirement_date")
 
     for field_name, value in data.items():

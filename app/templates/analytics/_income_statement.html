@@ -1,16 +1,26 @@
 {% from "_money_macros.html" import money %}
-{# Income Statement -- HTMX partial (Build-Order Step 5).
+{% from "analytics/_statement_macros.html" import statement_section %}
+{# Income Statement -- HTMX partial (Build-Order Step 5; S6 / D8 restructure).
    Rendered by analytics.income_statement_tab() into #tab-content.
    Presents the confirmed posting ledger's Income and Expense accounts
    over one window.  Transfers never appear (both a transfer's legs land
    on linked Asset/Liability accounts, outside the Income/Expense filter),
-   so this is a pure operating statement. #}
+   so this is a pure operating statement.
 
-{# ── Statements header (shared toggle) & Window Toggle ─────────── #}
+   D8 hierarchy: Net Income leads as the band hero -- the verdict, coloured
+   by sign -- over its two component chips; the tinted Income / Expense
+   section cards carry the per-account detail below.  The hero caption
+   states the window, so the old bare window-label line is gone (P-AN14),
+   and the detail reads as a document column rather than a full-bleed
+   table (P-AN15). #}
+
+{# ── Statements header (shared toggle) ─────────────────────────── #}
 
 {% include "analytics/_statements_toggle.html" %}
 
-<div class="d-flex justify-content-end mb-3">
+{# ── Window controls: type toggle + window selector, one chrome row ── #}
+
+<div class="d-flex flex-wrap align-items-center justify-content-end gap-2 mb-3">
   <div class="btn-group" role="group" aria-label="Time window">
     <button class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.income_statement_tab', window='pay_period') }}"
@@ -31,12 +41,8 @@
       Year
     </button>
   </div>
-</div>
 
-{# ── Window-Specific Selector ──────────────────────────────────── #}
-
-<div class="mb-3">
-{% if window_type == 'pay_period' %}
+  {% if window_type == 'pay_period' %}
   <select class="form-select form-select-sm w-auto"
           hx-get="{{ url_for('analytics.income_statement_tab', window='pay_period') }}"
           hx-target="#tab-content" hx-swap="innerHTML"
@@ -52,33 +58,31 @@
     {% endif %}
   </select>
 
-{% elif window_type == 'month' %}
-  <div class="d-flex gap-2">
-    <select class="form-select form-select-sm w-auto"
-            hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-indicator="#tab-spinner"
-            hx-include="[name=year]"
-            name="month">
-      {% for m in range(1, 13) %}
-      <option value="{{ m }}" {{ 'selected' if m == month }}>
-        {{ m|month_name }}
-      </option>
-      {% endfor %}
-    </select>
-    <select class="form-select form-select-sm w-auto"
-            hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-indicator="#tab-spinner"
-            hx-include="[name=month]"
-            name="year">
-      {% for y in available_years %}
-      <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
-      {% endfor %}
-    </select>
-  </div>
+  {% elif window_type == 'month' %}
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          hx-include="[name=year]"
+          name="month">
+    {% for m in range(1, 13) %}
+    <option value="{{ m }}" {{ 'selected' if m == month }}>
+      {{ m|month_name }}
+    </option>
+    {% endfor %}
+  </select>
+  <select class="form-select form-select-sm w-auto"
+          hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
+          hx-target="#tab-content" hx-swap="innerHTML"
+          hx-indicator="#tab-spinner"
+          hx-include="[name=month]"
+          name="year">
+    {% for y in available_years %}
+    <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
+    {% endfor %}
+  </select>
 
-{% elif window_type == 'year' %}
+  {% elif window_type == 'year' %}
   <select class="form-select form-select-sm w-auto"
           hx-get="{{ url_for('analytics.income_statement_tab', window='year') }}"
           hx-target="#tab-content" hx-swap="innerHTML"
@@ -88,80 +92,52 @@
     <option value="{{ y }}" {{ 'selected' if y == year }}>{{ y }}</option>
     {% endfor %}
   </select>
-{% endif %}
+  {% endif %}
 </div>
 
-<p class="text-muted small mb-3">{{ report.window_label }}</p>
-
 {% if not report.income.lines and not report.expense.lines %}
-{# ── Empty State ────────────────────────────────────────────────── #}
+{# ── Empty State: names the window, because the selector cannot always
+      represent it (a clamped year outside available_years renders no
+      selected option) -- the balance sheet's as-of empty state already
+      does the same. #}
 <div class="text-center py-5 text-muted">
   <i class="bi bi-clipboard-x fs-display"></i>
-  <p class="mt-2">No income or expenses in this window.</p>
+  <p class="mt-2">No income or expenses in {{ report.window_label }}.</p>
 </div>
 
 {% else %}
 
-{# ── Income Section ─────────────────────────────────────────────── #}
-<div class="card mb-3">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-arrow-down-circle"></i> Income</h6>
-  </div>
-  <div class="card-body p-0">
-    <table class="table mb-0">
-      <tbody>
-        {% for line in report.income.lines %}
-        <tr>
-          <td>{{ line.label }}</td>
-          <td class="text-end font-mono">{{ money(line.amount) }}</td>
-        </tr>
-        {% else %}
-        <tr><td class="text-muted" colspan="2">No income in this window.</td></tr>
-        {% endfor %}
-        <tr class="table-group-divider">
-          <td class="fw-bold">Total Income</td>
-          <td class="text-end font-mono fw-bold">{{ money(report.income.total) }}</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-{# ── Expense Section ────────────────────────────────────────────── #}
-<div class="card mb-3">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-arrow-up-circle"></i> Expenses</h6>
-  </div>
-  <div class="card-body p-0">
-    <table class="table mb-0">
-      <tbody>
-        {% for line in report.expense.lines %}
-        <tr>
-          <td>{{ line.label }}</td>
-          <td class="text-end font-mono">{{ money(line.amount) }}</td>
-        </tr>
-        {% else %}
-        <tr><td class="text-muted" colspan="2">No expenses in this window.</td></tr>
-        {% endfor %}
-        <tr class="table-group-divider">
-          <td class="fw-bold">Total Expenses</td>
-          <td class="text-end font-mono fw-bold">{{ money(report.expense.total) }}</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-{# ── Net Income ─────────────────────────────────────────────────── #}
-<div class="card mb-3">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-center">
-      <span class="fw-bold">Net Income</span>
-      <span class="font-mono fw-bold {% if report.net_income > 0 %}text-success{% elif report.net_income < 0 %}text-danger{% endif %}">
+{# ── Hero band: the net-income verdict over its components (D8).
+      The figure, its ink, and the caption all key off report.net_income
+      = income.total - expense.total, computed in the service. #}
+<div class="pulse-canvas mb-3">
+  <div class="nw-sky">
+    <div class="nw-hero">
+      <div class="pulse-hero__label">Net income</div>
+      <div class="nw-hero__num font-mono{% if report.net_income > 0 %} nw-hero__num--pos{% elif report.net_income < 0 %} nw-hero__num--neg{% endif %}">
         {{ money(report.net_income) }}
-      </span>
+      </div>
+      <div class="nw-hero__cap">{{ report.window_label }} &middot; income minus expenses</div>
+    </div>
+    <div class="pulse-statrow nw-statrow">
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Income</div>
+        <div class="pulse-chip__value font-mono{% if report.income.total < 0 %} statement-amount--neg{% endif %}">{{ money(report.income.total) }}</div>
+      </div>
+      <div class="pulse-chip">
+        <div class="pulse-chip__label">Expenses</div>
+        <div class="pulse-chip__value font-mono{% if report.expense.total < 0 %} statement-amount--neg{% endif %}">{{ money(report.expense.total) }}</div>
+      </div>
     </div>
   </div>
+</div>
+
+{# ── Section detail (document column, P-AN15) ───────────────────── #}
+<div class="statement-body">
+  {{ statement_section('Income', report.income, 'bi-arrow-down-circle', 'income',
+                       empty_text='No income in this window.') }}
+  {{ statement_section('Expenses', report.expense, 'bi-arrow-up-circle', 'expense',
+                       empty_text='No expenses in this window.') }}
 </div>
 
 {% endif %}

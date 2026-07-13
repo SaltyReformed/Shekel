@@ -6,14 +6,17 @@
  * so theme toggles re-resolve colors).  The series arrives as a JSON
  * ``data-chart`` attribute on the canvas:
  * {labels: [str], values: [float], current_index: int, threshold: float,
- *  payday_indices: [int], trough_index: int|null, week_tick_indices: [int]}.
+ *  payday_indices: [int], trough_index: int|null,
+ *  trough_state: "negative"|"low"|"ok"|null, week_tick_indices: [int]}.
  * Floats exist only at that serialization boundary
  * (``analytics_view.serialize_flow_strip``); this script never computes money -- it only
  * splits the provided points at ``current_index`` (solid + stronger fill
  * through today, dashed + lighter fill after), styles the payday / trough
- * dots, draws the low-balance threshold line (the same second-dataset
- * treatment as the dashboard pulse chart), and formats axis / tooltip
- * labels.
+ * dots (the trough ink keyed to the server-computed ``trough_state`` --
+ * danger only when negative, warning when low, muted marker ink when
+ * healthy; D11 / P-AN6), draws the low-balance threshold line (the same
+ * second-dataset treatment as the dashboard pulse chart), and formats
+ * axis / tooltip labels.
  *
  * ``current_index`` is the count of measured days: points
  * ``[0, current_index)`` are on or before today (drawn solid) and the rest
@@ -71,7 +74,8 @@
    *   trough, or null when the month has no series.
    * @param {number|null} troughValue - The trough end-of-day balance.
    * @param {number|null} threshold - The low-balance threshold, or null.
-   * @param {{danger: string, warning: string}} inks - Marker text colors.
+   * @param {{trough: string, warning: string}} inks - Marker text colors;
+   *   ``trough`` is pre-resolved from the payload's trough_state.
    * @returns {object} A Chart.js plugin.
    */
   function stripMarkersPlugin(troughIndex, troughValue, threshold, inks) {
@@ -96,7 +100,7 @@
           const yDot = yScale.getPixelForValue(troughValue);
           // Below the dot when room remains; above it near the floor.
           const below = yDot + 16 <= area.bottom;
-          ctx.fillStyle = inks.danger;
+          ctx.fillStyle = inks.trough;
           ctx.textAlign = "center";
           ctx.textBaseline = below ? "top" : "bottom";
           ctx.fillText(
@@ -148,6 +152,15 @@
     var troughValue = (
       data.trough_index !== null && data.trough_index !== undefined
     ) ? data.values[data.trough_index] : null;
+    // Trough marker ink from the server-computed money state (D11 /
+    // P-AN6): danger only for a negative trough, warning when below the
+    // threshold, muted marker ink for a healthy dip.  No client-side
+    // money comparison.
+    var troughInk = {
+      negative: danger,
+      low: warning,
+      ok: colors.textSecondary
+    }[data.trough_state] || colors.textSecondary;
 
     // Split one series into a measured span (through today) and a
     // projected span (today onward, sharing the boundary point so the
@@ -178,14 +191,15 @@
     }
 
     /**
-     * Scriptable point color: danger for the trough dot, done (income
-     * green) for payday dots, accent otherwise (hover crosshair dots).
+     * Scriptable point color: state-keyed ink for the trough dot, done
+     * (income green) for payday dots, accent otherwise (hover crosshair
+     * dots).
      * @param {object} ctx - Chart.js scriptable context.
      * @returns {string} Point fill color.
      */
     function dotColor(ctx) {
       const i = ctx.dataIndex;
-      if (i === data.trough_index) return danger;
+      if (i === data.trough_index) return troughInk;
       if (paydaySet.has(i)) return done;
       return accent;
     }
@@ -307,7 +321,7 @@
         ShekelChart.todayMarkerPlugin(data.current_index, colors.textSecondary),
         stripMarkersPlugin(
           data.trough_index, troughValue, data.threshold,
-          { danger: danger, warning: warning }
+          { trough: troughInk, warning: warning }
         )
       ]
     };

@@ -1,25 +1,15 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if pension else 'New' }} Pension -- Shekel{% endblock title %}
-
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('retirement.dashboard') }}">Retirement</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Pensions</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4>
+  <h4 class="mb-0">
     <i class="bi bi-shield-check"></i>
     {% if pension %}Edit Pension: {{ pension.name }}{% else %}Pension Profiles{% endif %}
   </h4>
-  <a href="{{ url_for('retirement.dashboard') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back
-  </a>
+  {{ back_link(url_for('retirement.dashboard'), 'Retirement') }}
 </div>
 
 {# --- Existing Pensions List --- #}
@@ -29,43 +19,49 @@
     <h6 class="mb-0">Active Pension Profiles</h6>
   </div>
   <div class="card-body">
-    <table class="table table-hover table-sm mb-0">
-      <thead class="table-light">
-        <tr>
-          <th>Name</th>
-          <th>Multiplier</th>
-          <th>High Years</th>
-          <th>Hire Date</th>
-          <th>Retirement Date</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in pensions %}
-        <tr>
-          <td>{{ p.name }}</td>
-          <td>{{ "%.3f"|format(p.benefit_multiplier|to_percent) }}%</td>
-          <td>{{ p.consecutive_high_years }}</td>
-          <td>{{ p.hire_date.strftime('%Y-%m-%d') }}</td>
-          <td>{{ p.planned_retirement_date.strftime('%Y-%m-%d') if p.planned_retirement_date else '--' }}</td>
-          <td class="text-end">
-            <a href="{{ url_for('retirement.edit_pension', pension_id=p.id) }}"
-               class="btn btn-sm btn-outline-secondary">
-              <i class="bi bi-pencil"></i>
-            </a>
-            <form method="POST" action="{{ url_for('retirement.delete_pension', pension_id=p.id) }}"
-                  class="d-inline"
-                  data-confirm="Delete this pension profile?">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-outline-danger">
-                <i class="bi bi-trash"></i>
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    {# Responsive wrapper: without it the table forced horizontal PAGE
+       scroll on phones, rendering the thead strip and action buttons
+       outside the card (polish audit P-RT1).  The action column pins to
+       the right edge so the row controls never scroll out of reach. #}
+    <div class="table-responsive">
+      <table class="table table-hover table-sm table-token mb-0">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th class="text-end">Multiplier</th>
+            <th class="text-end">High Years</th>
+            <th>Hire Date</th>
+            <th>Retirement Date</th>
+            <th class="table-sticky-actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pensions %}
+          <tr>
+            <td>{{ p.name }}</td>
+            <td class="text-end font-mono">{{ "%.3f"|format(p.benefit_multiplier|to_percent) }}%</td>
+            <td class="text-end font-mono">{{ p.consecutive_high_years }}</td>
+            <td>{{ p.hire_date.strftime('%Y-%m-%d') }}</td>
+            <td>{{ p.planned_retirement_date.strftime('%Y-%m-%d') if p.planned_retirement_date else '--' }}</td>
+            <td class="text-end text-nowrap table-sticky-actions">
+              <a href="{{ url_for('retirement.edit_pension', pension_id=p.id) }}"
+                 class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-pencil"></i>
+              </a>
+              <form method="POST" action="{{ url_for('retirement.delete_pension', pension_id=p.id) }}"
+                    class="d-inline"
+                    data-confirm="Delete this pension profile?">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 {% endif %}

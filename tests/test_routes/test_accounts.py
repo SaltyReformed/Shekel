@@ -4944,6 +4944,263 @@ class TestAnchorTemplatesEmitVersionPin:
             assert 'name="version_id"' not in body
 
 
+# ── Cash Detail Click-to-Edit Hero (S8 / D14 port) ────────────────
+
+
+class TestCashDetailClickToEditHero:
+    """S8 / D14: the cash detail hero doubles as the anchor true-up control.
+
+    Cash previously had NO on-page anchor recording (P-DT8).  The hero
+    reuses the shared anchor editor (accounts.anchor_form /
+    accounts.true_up / anchor_service) via a new ``revert=cash``
+    surface: ``accounts.cash_balance_hero`` is the Cancel / Escape /
+    409 revert target, and a save fires ``balanceChanged`` so the
+    page's ``#cash-band-region`` re-fetches ``accounts.cash_band`` --
+    the hero, horizon chips, interest chip, and chart all recompute
+    from the new anchor together.
+    """
+
+    def test_page_hero_is_click_to_edit_inside_band_region(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The detail page wires the band region and the editor opener.
+
+        The hero opens the shared editor scoped to the cash surface, and
+        the band region re-fetches accounts.cash_band on balanceChanged
+        (the L6 oracle's data-current-balance hook must survive on the
+        hero cell).
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(f"/accounts/{acct_id}/details")
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'id="cash-band-region"' in body
+            assert f'hx-get="/accounts/{acct_id}/details/band"' in body
+            assert 'hx-trigger="balanceChanged from:body"' in body
+            assert 'id="cash-balance-hero"' in body
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=cash"'
+                in body
+            )
+            assert "data-current-balance=" in body
+
+    def test_cash_balance_hero_renders_display_cell(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET (HX) returns the resolver balance and the editor opener.
+
+        The seed account is anchored at $1000.00 with no transactions,
+        so the resolver current-period balance the hero shows is exactly
+        1,000.00, and the L6 oracle hook carries the raw Decimal.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/details/balance-hero",
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert "$1,000.00" in body
+            assert 'data-current-balance="1000.00"' in body
+            assert 'id="cash-balance-hero"' in body
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=cash"'
+                in body
+            )
+
+    def test_cash_balance_hero_redirects_without_htmx(
+        self, app, auth_client, seed_user,
+    ):
+        """GET without HX-Request redirects to the detail page."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/details/balance-hero",
+            )
+            assert response.status_code == 302
+            assert f"/accounts/{acct_id}/details" in response.headers.get(
+                "Location", "",
+            )
+
+    def test_cash_balance_hero_idor(self, app, auth_client, seed_user):
+        """GET another user's cash hero returns 404 and leaks nothing."""
+        with app.app_context():
+            other = _create_other_user_account()
+            response = auth_client.get(
+                f"/accounts/{other['account'].id}/details/balance-hero",
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 404
+
+    def test_cash_band_renders_full_band(
+        self, app, auth_client, seed_user,
+    ):
+        """GET (HX) returns the whole band: hero, caption, chips, chart.
+
+        The balanceChanged refresh target must carry every
+        anchor-derived figure so no band surface can disagree with a
+        fresh anchor.  Periods are generated with ``num_periods=10``
+        starting today so the anchor sits on period 0 and the 3-month
+        horizon (period_index 6) is reachable -- ``seed_periods_today``
+        would anchor today on period 4 and ``4 + 6 = 10`` exceeds its
+        window, omitting the chip (the ``TestCheckingDetail`` pattern).
+        Hand arithmetic: anchor 2500.00, no transactions -> the hero
+        and every horizon chip read a flat $2,500.
+        """
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date.today(),
+                num_periods=10,
+            )
+            checking_type = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one()
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking_type.id,
+                    name="Band Checking",
+                    anchor_balance=Decimal("2500.00"),
+                    anchor_period_id=periods[0].id,
+                ),
+            )
+            db.session.flush()
+            db.session.commit()
+
+            response = auth_client.get(
+                f"/accounts/{account.id}/details/band",
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert 'id="cash-balance-hero"' in body
+            assert "$2,500.00" in body
+            assert "current period" in body
+            assert "In 3 months" in body
+            assert 'id="account-detail-chart-canvas"' in body
+
+    def test_cash_band_redirects_without_htmx(
+        self, app, auth_client, seed_user,
+    ):
+        """GET without HX-Request redirects to the detail page."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(f"/accounts/{acct_id}/details/band")
+            assert response.status_code == 302
+            assert f"/accounts/{acct_id}/details" in response.headers.get(
+                "Location", "",
+            )
+
+    def test_cash_band_idor(self, app, auth_client, seed_user):
+        """GET another user's band returns 404 and leaks nothing."""
+        with app.app_context():
+            other = _create_other_user_account()
+            response = auth_client.get(
+                f"/accounts/{other['account'].id}/details/band",
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == 404
+
+    def test_anchor_form_cash_revert_targets_cash_hero(
+        self, app, auth_client, seed_user,
+    ):
+        """With ?revert=cash, the editor reverts to the cash hero cell.
+
+        Opened from the cash detail hero, Cancel / Escape must restore
+        THAT cell (``accounts.cash_balance_hero``) rather than the grid
+        display cell -- the cash analog of the ``revert=accounts``
+        round-trip.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=cash",
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            cell_url = f"/accounts/{acct_id}/details/balance-hero"
+            assert f'hx-get="{cell_url}"' in body
+            assert f'data-revert-url="{cell_url}"' in body
+            assert f"/accounts/{acct_id}/anchor-display" not in body
+
+    def test_cash_anchor_form_patch_url_threads_revert(
+        self, app, auth_client, seed_user,
+    ):
+        """The cash edit form's hx-patch threads ``revert=cash``.
+
+        So a 409 conflict response can re-render the conflict cell with
+        the cash retry target rather than stranding the hero on the grid
+        display cell.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form?revert=cash",
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert (
+                f'hx-patch="/accounts/{acct_id}/true-up?revert=cash"'
+                in body
+            )
+
+    def test_cash_conflict_cell_retry_opener_carries_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The cash 409 conflict cell reopens in the cash surface.
+
+        A stale-version PATCH carrying ``?revert=cash`` returns the
+        conflict cell whose retry opener must reopen ``anchor-form``
+        WITH ``revert=cash``, so the cash hero never strands on the
+        grid.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            stale_version = db.session.get(Account, acct_id).version_id
+            _bump_account_version_outside_session(acct_id)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=cash",
+                data={
+                    "anchor_balance": "1200.00",
+                    "version_id": str(stale_version),
+                },
+            )
+            assert response.status_code == 409
+            body = response.data.decode()
+            assert "changed by another action" in body.lower()
+            assert (
+                f'hx-get="/accounts/{acct_id}/anchor-form?revert=cash"'
+                in body
+            )
+
+    def test_true_up_cash_revert_skips_as_of_oob(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """With ?revert=cash, the success response omits the as-of OOB.
+
+        The cash detail page has no singleton ``#anchor-as-of`` element
+        (the band's caption re-renders with the region on
+        ``balanceChanged``), so the out-of-band "as of" snippet -- which
+        would orphan-target -- is dropped.  The ``balanceChanged``
+        trigger still fires.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=cash",
+                data={"anchor_balance": "3210.00"},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+            body = response.data.decode()
+            assert 'id="anchor-as-of"' not in body
+            assert 'hx-swap-oob="true"' not in body
+
+
 # ── Multi-Tenant Account Type Ownership (commit C-28 / F-044) ─────
 
 

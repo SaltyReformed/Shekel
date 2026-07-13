@@ -12,6 +12,9 @@
    route and the page share one card producer.  All required context
    (``rk``, ``period``, ``txn``, ``entry_sums``, ``can_edit``,
    ``id_prefix``, ``entry_lists``, ``today``) is supplied by the route.
+   ``error`` (optional) is a rejection message: the card re-renders
+   with current data plus a danger banner (see ``render_one_card``).
 #}
 {% from "grid/_grid_row_macros.html" import render_one_card %}
-{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
+{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today,
+                   error=error if error is defined else none) }}

@@ -1,23 +1,18 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock title %}
 
 {% set prefill_from = prefill_from | default(None) %}
 {% set prefill_to = prefill_to | default(None) %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('templates.list_templates') }}">Recurring</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ 'Edit' if template else 'New' }} Recurring Transfer</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-8 col-lg-6">
+    <div class="d-flex justify-content-end mb-3">
+      {{ back_link(url_for('templates.list_templates'), 'Recurring') }}
+    </div>
     {% call form_card(('Edit' if template else 'New') ~ ' Recurring Transfer', 'bi-arrow-left-right') %}
     <form method="POST"
           action="{{ url_for('transfers.update_transfer_template', template_id=template.id) if template else url_for('transfers.create_transfer_template') }}">

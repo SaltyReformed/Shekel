@@ -8,20 +8,29 @@
      conflict -- if true, surfaces a warning indicator hint that the
                  row was changed by another action.  See commit C-18
                  of the 2026-04-15 security remediation plan.
+     error    -- optional message string.  Same grammar as conflict
+                 (danger icon + the message in the title/aria hint) for
+                 a rejected mutation; the route wraps the response in
+                 designed_error() so the 4xx body swaps (the
+                 marker-header convention, closeout plan session 4).
 #}
 {% if xfer %}
 {% set is_conflict = conflict is defined and conflict %}
+{% set error_msg = error if error is defined and error else none %}
 {% if wrap_div is defined and wrap_div %}<div id="xfer-cell-{{ xfer.id }}">{% endif %}
-<div class="txn-cell{% if is_conflict %} text-warning{% endif %}"
+<div class="txn-cell{% if error_msg %} text-danger{% elif is_conflict %} text-warning{% endif %}"
      hx-get="{{ url_for('transfers.get_quick_edit', xfer_id=xfer.id) }}"
      hx-trigger="click"
      hx-target="#xfer-cell-{{ xfer.id }}"
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{% if is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(xfer.amount, cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
-     title="{% if is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
-  {% if is_conflict %}
+     aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(xfer.amount, cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     title="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
+  {% if error_msg %}
+  <i class="bi bi-exclamation-octagon text-danger small me-1"
+     aria-label="Action rejected"></i>
+  {% elif is_conflict %}
   <i class="bi bi-exclamation-triangle text-warning small me-1"
      aria-label="Edit conflict"></i>
   {% endif %}

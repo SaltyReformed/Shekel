@@ -42,11 +42,15 @@ The route-level guard delegates ownership to
 ``access_denied_cross_user`` for cross-user pk) covers both the
 analytics routes and every other route that uses the helper.
 
-Test scope.  The calendar finding is exercised through both HTML
-and CSV paths (the calendar CSV export survives).  The income
-statement period_id guard is exercised through HTML and across
-window types that ignore period_id downstream -- the boundary check
-must not depend on whether the value happens to be consumed.
+Test scope.  The calendar finding is exercised through the HTMX
+partial path and the direct (non-HTMX) shell path.  The calendar CSV
+export was removed with P-AN4, and D13 makes a direct tab GET render
+the analytics shell instead of redirecting; the ownership guard runs
+before the shell render on that path, so a cross-user account_id still
+404s rather than being served a page.  The income statement period_id
+guard is exercised through HTML and across window types that ignore
+period_id downstream -- the boundary check must not depend on whether
+the value happens to be consumed.
 """
 
 from datetime import date
@@ -105,23 +109,24 @@ class TestCalendarTabAccountIdOwnership:
                 f"{resp.status_code}"
             )
 
-    def test_own_account_id_csv_succeeds(
+    def test_own_account_id_non_htmx_renders_shell(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A's CSV calendar download with their own ``account_id`` returns 200.
+        """A's direct (non-HTMX) calendar GET with their own ``account_id`` is 200.
 
-        The CSV path shares the same query-arg parsing as the HTML
-        path; this confirms the validation does not block the
-        legitimate CSV flow.
+        D13 makes a direct tab navigation render the shell (Calendar active)
+        after the ownership guard.  This is the success baseline for the
+        non-HTMX path: an owned account_id passes the guard and the shell is
+        served (never a 404), so a regression that over-rejects is visible.
         """
         with app.app_context():
             own_account_id = seed_user["account"].id
             resp = auth_client.get(
-                f"/analytics/calendar?format=csv&view=month&year=2026"
+                f"/analytics/calendar?view=month&year=2026"
                 f"&month=1&account_id={own_account_id}",
             )
             assert resp.status_code == 200
-            assert "text/csv" in resp.headers["Content-Type"]
+            assert "shekel-scroll-pills" in resp.data.decode()
 
     def test_cross_user_account_id_html_returns_404(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
@@ -153,29 +158,29 @@ class TestCalendarTabAccountIdOwnership:
                 "service-layer fallback re-emerged as the response."
             )
 
-    def test_cross_user_account_id_csv_returns_404(
+    def test_cross_user_account_id_non_htmx_returns_404(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
         seed_second_user,
     ):
-        """A's CSV calendar download with B's ``account_id`` returns 404.
+        """A's direct (non-HTMX) calendar GET with B's ``account_id`` is 404.
 
-        F-039 paired with the CSV bypass note in the plan: the
-        CSV path runs before the HX-Request guard so a non-HTMX
-        IDOR probe still triggers the silent fallback.  The 404
-        must fire on this path too.
+        F-039 on the non-HTMX path: D13 renders the shell on a direct
+        navigation, but ``_validate_owned_or_abort`` runs BEFORE
+        ``_tab_shell_if_not_htmx``, so a cross-user account_id 404s instead of
+        being served the shell.  The 404 body is the standard error page, not
+        the analytics shell -- the guard fired before any render.
         """
         with app.app_context():
             attacker_target = seed_second_user["account"].id
             resp = auth_client.get(
-                f"/analytics/calendar?format=csv&view=month&year=2026"
+                f"/analytics/calendar?view=month&year=2026"
                 f"&month=1&account_id={attacker_target}",
             )
             assert resp.status_code == 404
-            assert "text/csv" not in resp.headers.get("Content-Type", ""), (
-                "404 response must not carry a CSV content-type "
-                "header -- the body is the standard 404 page, not "
-                "an empty CSV that would still trigger a download "
-                "in the browser"
+            assert "shekel-scroll-pills" not in resp.data.decode(), (
+                "404 response must not carry the analytics shell -- the "
+                "ownership guard must fire before the D13 shell render, so a "
+                "cross-user probe cannot even reach a rendered page"
             )
 
     def test_cross_user_account_id_year_view_returns_404(

@@ -90,8 +90,8 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
    URLs, and the envelope / companion badges that only expenses carry. #}
 {% macro txn_section(title, kind, section, show_pp) %}
 <section class="card mb-3" data-recurring-section="{{ kind }}">
-  <div class="card-header recurring-banner recurring-banner--{{ kind }}">
-    <h6 class="recurring-banner__title">{{ title }}</h6>
+  <div class="card-header section-banner section-banner--{{ kind }}">
+    <h6 class="section-banner__title">{{ title }}</h6>
     <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
   </div>
   {% if section.rows %}
@@ -117,12 +117,12 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
           <td>
             {{ t.name }}
             {% if t.is_envelope %}
-            <span class="badge bg-info-subtle text-info ms-1" title="Tracks purchases">
+            <span class="flag-chip ms-1" title="Tracks purchases">
               <i class="bi bi-cart"></i>
             </span>
             {% endif %}
             {% if t.companion_visible %}
-            <span class="badge bg-success-subtle text-success ms-1" title="Companion visible">
+            <span class="flag-chip ms-1" title="Companion visible">
               <i class="bi bi-eye"></i>
             </span>
             {% endif %}
@@ -154,8 +154,8 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
 
 {% macro transfer_section(section, show_pp) %}
 <section class="card mb-3" data-recurring-section="transfer">
-  <div class="card-header recurring-banner recurring-banner--transfer">
-    <h6 class="recurring-banner__title">Transfers</h6>
+  <div class="card-header section-banner section-banner--accent">
+    <h6 class="section-banner__title">Transfers</h6>
     <span class="font-mono fw-bold">{{ equiv(section.subtotal, show_pp) }}</span>
   </div>
   {% if section.rows %}
@@ -224,7 +224,7 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
   <div class="nw-sky">
     <div class="nw-hero">
       <div class="pulse-hero__label">Net committed</div>
-      <div class="nw-hero__num font-mono {% if net_val < 0 %}recurring-net--neg{% elif net_val > 0 %}recurring-net--pos{% endif %}">
+      <div class="nw-hero__num font-mono {% if net_val < 0 %}nw-hero__num--neg{% elif net_val > 0 %}nw-hero__num--pos{% endif %}">
         {{ money(net_val) }}
       </div>
       <div class="nw-hero__cap">

@@ -537,26 +537,6 @@ class TestSection8Settings:
             ).one()
             assert settings.large_transaction_threshold == 1000
 
-    def test_save_trend_threshold(self, app, auth_client, seed_user):
-        """POST with trend threshold=15 (percent) stores as Decimal('0.1500').
-
-        User enters an integer percentage (e.g. 15 for 15%).  The route
-        divides by 100 before storing as a Numeric(5,4) decimal fraction.
-        """
-        with app.app_context():
-            resp = auth_client.post("/settings", data={
-                "trend_alert_threshold": "15",
-            }, follow_redirects=True)
-
-            assert resp.status_code == 200
-            assert b"Settings updated" in resp.data
-
-            db.session.expire_all()
-            settings = db.session.query(UserSettings).filter_by(
-                user_id=seed_user["user"].id,
-            ).one()
-            assert settings.trend_alert_threshold == Decimal("0.1500")
-
     def test_save_staleness_days(self, app, auth_client, seed_user):
         """POST with anchor_staleness_days=7 persists the value."""
         with app.app_context():
@@ -601,25 +581,12 @@ class TestSection8Settings:
             assert resp.status_code == 200
             assert b"Please correct the highlighted errors" in resp.data
 
-    def test_settings_validation_rejects_trend_over_100(self, app, auth_client, seed_user):
-        """POST with trend_alert_threshold=101 (percent) is rejected.
-
-        Schema validates max=100; values above 100% are not meaningful.
-        """
-        with app.app_context():
-            resp = auth_client.post("/settings", data={
-                "trend_alert_threshold": "101",
-            }, follow_redirects=True)
-
-            assert resp.status_code == 200
-            assert b"Please correct the highlighted errors" in resp.data
-
     def test_settings_defaults_rendered_on_get(self, app, auth_client, seed_user):
-        """GET /settings renders the three new fields with their default values.
+        """GET /settings renders the threshold fields with their defaults.
 
         Default values: large_transaction_threshold=500,
-        trend_alert_threshold=10 (displayed as integer percent),
-        anchor_staleness_days=14.
+        anchor_staleness_days=14.  (trend_alert_threshold was removed
+        with the retired spending trend engine.)
         """
         with app.app_context():
             resp = auth_client.get("/settings")
@@ -630,13 +597,12 @@ class TestSection8Settings:
             assert 'name="large_transaction_threshold"' in html
             assert 'value="500"' in html
 
-            # Trend alert threshold field with default 10 (10%).
-            assert 'name="trend_alert_threshold"' in html
-            assert 'value="10"' in html
-
             # Anchor staleness days field with default 14.
             assert 'name="anchor_staleness_days"' in html
             assert 'value="14"' in html
+
+            # The retired trend setting no longer renders a field.
+            assert 'name="trend_alert_threshold"' not in html
 
     def test_settings_page_includes_dashboard_analytics_section(self, app, auth_client, seed_user):
         """GET /settings includes the Dashboard & Analytics section heading."""

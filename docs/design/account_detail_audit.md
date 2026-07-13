@@ -299,3 +299,126 @@ duplicate). The value line compounds today's anchor at each month via the growth
 appreciation formula in the codebase; equity is the per-month `Decimal` difference. Visual (Fable
 scope): the band canvas + a `property_detail.js` renderer on the shared `chart_theme.js` helpers, to
 whatever direction Loop A locks.
+
+### Loop A lock (2026-07-11 -- developer pick, round 1; Loop A CLOSED)
+
+Three fill directions were mocked on the full band (real stylesheets + the real `chart_theme.js`
+linked into the scratch mockup, shot in both themes and both viewports): A stacked shares, B
+equity-gap-only, C single equity line. **The developer picked A -- stacked shares** -- and confirmed
+the loan-less fallback horizon. The as-mocked anatomy, locked with the pick:
+
+1. **Fill (the ruled fork):** debt region washed danger at 10% from zero (the bank's share); equity
+   band washed accent at 10% between the debt and value lines (the owner's share). At payoff the
+   danger wedge pinches out and the whole plot is equity -- the arc IS the story, and the stacked
+   reading answers the first attempt's dead-space finding. In-region identity labels ("Equity",
+   "Debt") draw in secondary ink on the canvas; a top legend with line keys names the two line
+   series (color is never the only signal).
+2. **Series colors follow the cockpit split-view convention:** market value = accent, secured debt =
+   danger; debt splits solid confirmed history vs dashed committed projection via
+   `ShekelChart.splitSegment`, with the shared Today marker at the boundary.
+3. **The value line is never solid** -- it is assumption end to end: short dots (`[2,3]`) at 45%
+   alpha flat-carrying today's anchor before Today, the family projection dash (`[6,5]`) compounding
+   at the appreciation rate after. The caption under the chart states this honestly and absorbs the
+   old in-band helper copy's edit pointer (market value is trued up on the Accounts card).
+4. **Axis grammar:** `%b %Y` labels thinned to 13 ticks max, no rotation (the loan band's
+   convention); y ticks whole-dollar `formatMoney` with the zero gridline emphasized.
+5. **Tooltip carries the exact figures** (family rule, decision 3 amendment): index mode, line keys,
+   rows Market value + Secured debt, footer Equity.
+6. **Zero-rate state:** the chart still renders (value flat-carries forward too); the caption swaps
+   to name the unset rate and link to the Parameters card -- it reads as "unset," never "broken."
+7. **Loan-less / paid-off fallback horizon: 10 years** of appreciation-only projection (confirmed at
+   the pick); value line + origin fill only, no legend.
+8. **Palette validation** (dataviz skill validator): the light pair passes all checks; dark
+   `--shekel-danger` `#FB6D63` sits just above the categorical lightness-band ceiling -- the S16
+   AA-as-chip-text lift -- with CVD separation from accent at 4x the floor and 3:1+ surface
+   contrast. Kept: the token layer is the contract, and identity never rides on color alone (see 1).
+   Recorded so nobody "fixes" the token for a chart-only reason.
+
+Scratch artifacts (`property_equity_explore.html` + shots) are RETAINED past Loop B by developer
+instruction (2026-07-12) for the acceptance check of this build; durable copy at
+`/home/josh/projects/shekel_theme/property_equity_loop_a/` (outside the repo per the anti-anchoring
+rule). Delete after the developer's check. Deferred defects from the build are registered in
+`property_detail_followups.md` (single-resolution DRY refactor + multi-loan date alignment).
+
+### Loop B build contract (pinned 2026-07-11, at the Loop A lock)
+
+Two commits, split by the model discipline; either half is resumable from this contract alone.
+
+**Commit 1 -- data (Opus scope).** `accounts.property_detail` gains the chart context. No template /
+JS / CSS changes in this commit.
+
+- **Series JSON** (one `chart_json` string, serialized like the loan band's `build_band_chart`;
+  floats only at this boundary): `labels` (list[str], `%b %Y`), `value` (list[float]), `debt`
+  (list[float]), `equity` (list[float]), `current_index` (int -- count of merged confirmed-history
+  months, the solid/dashed + Today boundary). For the no-loans fallback `debt` and `equity` are
+  empty lists and `current_index` is 0.
+- **Extra context:** `chart_state` in `{"standard", "zero_rate", "no_loans"}` (drives the caption
+  variant; `zero_rate` when the appreciation rate is the zero sentinel), `has_equity_chart` (False
+  only when there is no market value anchor to chart), and the display rate the caption prints.
+- **Debt series:** per secured loan, confirmed history + committed forward via the loan band's own
+  producers (`compute_payoff_scenarios` / `confirmed_loan_view`); merge multiple loans by summing
+  per-month balances on the longest series' monthly axis, padding shorter series with the literal
+  0.00 post-payoff balance -- the `_build_chart_series` pattern in `app/routes/loan/_helpers.py`,
+  HOISTED to a shared home both callers import (do not duplicate it, do not leave loan importing
+  from accounts or vice versa).
+- **Value series:** flat at today's anchor for indices `<= current_index`; after, compound the
+  anchor via the growth engine's `(1 + rate) ** (days / 365)` primitive
+  (`growth_engine.period_return_rate`) against each month's date -- exactly one appreciation formula
+  in the codebase. No-loans fallback: 120 months from today.
+- **Equity:** per-month `Decimal` `value - debt`, computed in the route/service, never in JS.
+- **Edge cases owed tests:** multi-loan merge with different payoff dates; a loan with no confirmed
+  history (`current_index` 0); all secured loans paid off -- no outstanding schedule means the
+  10-year fallback and the `no_loans` state, since the developer confirmed the fallback covers
+  "paid-off / loan-less" together; zero-rate flat value; exact-`Decimal` assertions per testing
+  standards.
+
+**Commit 2 -- visual (Fable scope).** `property_detail.html` band gains the `pulse-chart` canvas
+(`data-chart`, `role="img"`, aria-label) + the caption line under it; new
+`app/static/js/property_detail.js` renders the locked direction A anatomy on the shared
+`chart_theme.js` helpers (`splitSegment` / `todayMarkerPlugin` / `hexToRgba` / `formatMoney`);
+caption styling joins `accounts.css` (`.acctd-chart-cap`, token-only). Both themes, both viewports,
+live-verified via `tests/manual/shoot.py`; then the scratch mockup is deleted.
+
+### As-built (2026-07-12): the date-anchored rebuild + three-tier debt line
+
+The Loop B build contract above was DATA-superseded before Fable shipped. Three correctness defects
+(H1 paid-off fallback unreachable, H2 front-aligned multi-loan merge, H3 fabricated past values)
+plus a double-resolution DRY issue were reproduced against the real producers and closed by a full
+rebuild: `docs/plans/implementation_plan_property_equity_chart_rebuild.md`. The producer is now PURE
+and reasons on a CALENDAR-DATE axis anchored at `today`, so the JSON contract changed from the
+pinned version above:
+
+- `current_index` -> **`today_index`** (the month containing today: the value flat/compound split
+  and the Today marker). It is NOT the confirmed/projected boundary -- recorded history can end
+  before today (finding M1).
+- Added **`debt_tier`** (per month: `estimated` / `confirmed` / `projected`) and
+  **`has_estimated_debt`** (context flag gating the caption's dotted clause). The
+  `_build_chart_series` hoist was DROPPED (the band and property merges are genuinely different
+  operations); the producer owns its own date-aligned calendar merge.
+
+The Loop A lock's direction A (stacked shares) and its fill/color/axis/tooltip anatomy (items 1-8
+above) all still hold. What the rebuild ADDED to the visual, ruled at the Loop B gate (section 12 of
+the plan, all resolved 2026-07-12):
+
+1. **Three-tier debt line, not two.** The debt line is styled by `debt_tier` per segment
+   (`debtSegment`, keyed off `ctx.p1DataIndex`), NOT by `splitSegment` at a single index: solid
+   `confirmed`, dashed `projected`, and **faint dots (`[2,3]` at 45% danger) for `estimated`** --
+   the pre-tracking contractual back-projection for a mid-life-imported loan. Dots reuse the value
+   line's assumption texture, so across the whole chart dots = estimate, solid = recorded, dashes =
+   plan.
+2. **Faint "Tracking start" seam marker** at each `estimated -> non-estimated` transition (muted,
+   finer-dashed than Today), **suppressed within 100px of the Today marker** so a near-today seam
+   (the real single-mortgage case, records begin ~3 months before today) yields to Today rather than
+   colliding.
+3. **Caption + aria** name all three textures (dotted clause gated on `has_estimated_debt`); the
+   `no_loans` caption reworded to "no outstanding secured debt" (accurate for paid-off-but-linked).
+
+**Correctness fix found at the accept-check (commit `936db7df`).** A loan's resolved schedule is not
+one-row-per-calendar-month; the real mortgage had a rowless July between a June and an August row.
+The debt sum contributed `$0.00` on such gap months, collapsing the debt line to zero at today
+(cliff + phantom equity spike, reconciliation broken). `_dense_month_balances` now forward-fills the
+prior balance across gap months within a loan's span. Re-verified to the cent on 203 Chalmers Dr.
+
+Live-verified 2026-07-12 (real prod-clone data, both themes, desktop + mobile); acceptance shots at
+`/home/josh/projects/shekel_theme/property_equity_loop_a/shots-live/property_rebuilt__*`. Scratch
+mockup RETAINED per the developer's 2026-07-12 instruction (delete after the developer's check).

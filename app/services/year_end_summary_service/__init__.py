@@ -44,10 +44,10 @@ Module map:
   entry point.
 """
 
-# Re-export the public entry point so consumers that
-# ``from app.services import year_end_summary_service`` (notably
-# ``app/routes/analytics.py`` and ``csv_export_service``) resolve
-# ``compute_year_end_summary`` without an edit.
+# Re-export the public entry point so callers that
+# ``from app.services.year_end_summary_service import compute_year_end_summary``
+# keep resolving it after this module became a package (its internals moved
+# into the ``_orchestrator`` submodule) without an edit at each call site.
 from app.services.year_end_summary_service._orchestrator import (
     compute_year_end_summary,
 )

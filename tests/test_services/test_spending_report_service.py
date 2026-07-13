@@ -1,12 +1,14 @@
 """
-Shekel Budget App -- Unified Spending Report Service Tests (S-P1)
+Shekel Budget App -- Unified Spending Report Service Tests (S-P1, D7 rebuild)
 
 Hand-confirmed tests for :mod:`app.services.spending_report_service`: the
 category breakdown and its shares, window filtering, the estimate-surprises
 kernel (capped list + net), the hero band (vs-prior / vs-average with
-None-safety and per-window-type prior arithmetic), the sparkline/chip
-one-data-source identity, the flat-guard boundary, and the empty / no-account
-contracts.  Every value assertion carries the arithmetic that produces it.
+None-safety and per-window-type prior arithmetic), the trailing window
+series (the chart / hero one-source identity), the window-over-window
+deltas (items, groups, and the By-change rows with their zero-current
+rider), and the empty / no-account contracts.  Every value assertion
+carries the arithmetic that produces it.
 """
 
 from datetime import date
@@ -17,8 +19,7 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.category import Category
 from app.models.transaction import Transaction
-from app.services import spending_report_service, spending_trend_service
-from app.services.account_resolver import resolve_analytics_account
+from app.services import spending_report_service
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -61,18 +62,6 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 def _pp_window(period):
     """Return a pay-period SpendingWindow for a period."""
     return SpendingWindow(window_type="pay_period", period_id=period.id)
-
-
-def _generate(db, seed_user, start, count):
-    """Generate ``count`` biweekly periods from ``start`` (for trend tests)."""
-    from app.services import pay_period_service
-    periods = pay_period_service.generate_pay_periods(
-        user_id=seed_user["user"].id, start_date=start,
-        num_periods=count, cadence_days=14,
-    )
-    seed_user["account"].current_anchor_period_id = periods[0].id
-    db.session.commit()
-    return periods
 
 
 def _group(report, group_name):
@@ -195,6 +184,35 @@ class TestBreakdown:
             )
             assert report.hero.spent_total == Decimal("1200.00")
             assert report.scope.window_label == "January 2026"
+
+    def test_cross_boundary_due_date_belongs_to_its_month(self, app, seed_user,
+                                                          seed_periods, db):
+        """A bill due in month M funded from a period outside M belongs to M.
+
+        period[1] spans 2026-01-16..29 (entirely January) and holds a bill
+        with due_date 2026-02-05.  The period never overlaps February, so
+        the former period-overlap pre-filter attributed the row to NO month
+        window (January excluded it by date; February never loaded its
+        period).  The attribution-day fetch puts it where it is due:
+        February counts the 150.00; January does not.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[1], "EarlyFebBill", "Rent",
+                 "150.00", due_date=date(2026, 2, 5))
+            db.session.commit()
+
+            february = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=2, year=2026),
+            )
+            assert february.hero.spent_total == Decimal("150.00")
+            assert february.breakdown[0].items[0].item_name == "Rent"
+
+            january = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=1, year=2026),
+            )
+            assert january.hero.spent_total == Decimal("0")
 
 
 # ── Surprises ────────────────────────────────────────────────────────
@@ -397,93 +415,220 @@ class TestPriorWindowArithmetic:
             assert prior.year == 2025
 
 
-# ── Trend enrichment (sparkline == chip; movers; sufficiency) ────────
+# ── Trailing series (the chart / hero one-source identity) ──────────
 
 
-class TestTrendEnrichment:
-    """The breakdown carries the trend engine's series verbatim."""
+class TestSeries:
+    """The trailing same-type window series the chart and hero share."""
 
-    @patch("app.services.spending_trend_service.date")
-    def test_sparkline_series_is_the_chip_source(self, mock_date, app, seed_user, db):
-        """A breakdown item's sparkline series IS the trend engine's series.
+    def test_series_shape_and_pay_period_totals(self, app, seed_user,
+                                                seed_periods, db):
+        """Twelve points, viewed last; each point totals its own window.
 
-        Twelve biweekly periods (today mocked 2026-07-01), Groceries rising
-        100..210.  The Spending report's Groceries item.trend.series equals
-        the trend engine's period_totals, and its delta_pct/abs equal the
-        engine's -- one data source, cannot disagree.
+        period[0..2] spend 100/200/300; window = period[2].  The series is
+        _CHART_WINDOW_COUNT (12) points ending at the viewed window: the
+        last three total 300/200/100 walking back, and every earlier slot
+        is an all-None point (no period exists before period[0]).
         """
-        mock_date.today.return_value = date(2026, 7, 1)
-        mock_date.side_effect = lambda *a, **k: date(*a, **k)
         with app.app_context():
-            periods = _generate(db, seed_user, date(2026, 1, 2), 14)
-            window = spending_trend_service._get_window_periods(
-                seed_user["user"].id, spending_trend_service._FULL_WINDOW_PERIODS,
-            )
-            for idx, period in enumerate(window):
-                _txn(db, seed_user, period, "Food", "Groceries",
-                     f"{100 + 10 * idx}.00")
+            for idx, amt in enumerate(["100.00", "200.00", "300.00"]):
+                _txn(db, seed_user, seed_periods[idx], f"T{idx}", "Rent", amt)
             db.session.commit()
 
-            account = resolve_analytics_account(seed_user["user"].id, None)
-            trend = spending_trend_service.compute_trends(
-                seed_user["user"].id, account_id=account.id,
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[2]),
             )
-            groceries_trend = next(
-                i for i in trend.all_items if i.item_name == "Groceries"
+            series = report.series
+            assert len(series) == spending_report_service._CHART_WINDOW_COUNT
+            assert series[-1].window.period_id == seed_periods[2].id
+            assert series[-1].total == Decimal("300.00")
+            assert series[-2].total == Decimal("200.00")
+            assert series[-3].total == Decimal("100.00")
+            # Slots before the user's first period are all-None points.
+            assert all(
+                p.window is None and p.total is None for p in series[:-3]
             )
+
+    def test_series_month_zero_vs_none(self, app, seed_user, seed_periods, db):
+        """A tracked zero-spend month is 0; a pre-history month is None.
+
+        seed_periods span 2026-01-02 .. 2026-05-21.  Viewing March 2026:
+        the series is Apr 2025 .. Mar 2026.  Jan spends 1200, Feb nothing
+        (tracked, so Decimal 0), Mar spends 300; Apr-Dec 2025 overlap no
+        period, so their totals are None (excluded from averages; drawn as
+        baseline ticks).
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "JanRent", "Rent", "1200.00",
+                 due_date=date(2026, 1, 10))
+            _txn(db, seed_user, seed_periods[5], "MarBill", "Rent", "300.00",
+                 due_date=date(2026, 3, 15))
+            db.session.commit()
 
             report = compute_spending_report(
-                seed_user["user"].id, _pp_window(window[-1]),
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=3, year=2026),
             )
-            item = _group(report, "Family").items[0]
-            assert item.item_name == "Groceries"
-            assert item.trend is not None
-            # Same series, same derived delta -- one source.
-            assert item.trend.series == groceries_trend.period_totals
-            assert item.trend.delta_pct == groceries_trend.pct_change
-            assert item.trend.delta_abs == groceries_trend.absolute_change
-            # Groceries rose, so it is a top mover.
-            assert "Groceries" in [m.item_name for m in report.movers.up]
-            assert report.scope.trend_sufficiency == "sufficient"
-            # Periods 11 (last window period, used as the pay-period window)
-            # placeholder to keep the last period referenced.
-            assert len(periods) == 14
+            series = report.series
+            # Apr 2025 .. Dec 2025: before the user's first period.
+            assert [p.total for p in series[:9]] == [None] * 9
+            assert (series[9].window.year, series[9].window.month) == (2026, 1)
+            assert series[9].total == Decimal("1200.00")
+            assert series[10].total == Decimal("0")   # Feb: tracked, no spend
+            assert series[11].total == Decimal("300.00")  # March (viewed)
 
+    def test_hero_baselines_read_the_series(self, app, seed_user,
+                                            seed_periods, db):
+        """The hero's baselines derive from the series (one data source).
 
-# ── Flat-guard ───────────────────────────────────────────────────────
-
-
-class TestFlatGuard:
-    """The sparkline flat-guard: spread small relative to the mean."""
-
-    def test_flat_when_spread_under_ratio(self):
-        """Spread 4 on mean 100 (ratio 0.04 < 0.05) reads flat."""
-        assert spending_report_service._is_flat_series(
-            [Decimal("98"), Decimal("102"), Decimal("100"), Decimal("100")],
-        ) is True
-
-    def test_not_flat_when_spread_over_ratio(self):
-        """Spread 6 on mean 100 (ratio 0.06 > 0.05) is not flat."""
-        assert spending_report_service._is_flat_series(
-            [Decimal("97"), Decimal("103"), Decimal("100"), Decimal("100")],
-        ) is False
-
-    def test_flat_boundary_is_exclusive(self):
-        """Spread exactly 5 on mean 100 (ratio == 0.05) is NOT flat.
-
-        The guard is ``spread < mean * ratio`` (strict), so a spread equal to
-        the threshold does not flatten.
+        Same data as above, viewing March: vs-prior baseline is the
+        series' Feb point (0 -> delta 300.00, pct None); vs-average
+        averages the existing points among Sep 2025..Feb 2026 -- Jan 1200
+        and Feb 0 (the None 2025 months are skipped) -> (1200 + 0) / 2 =
+        600.00; delta 300 - 600 = -300.00; pct -300/600*100 = -50.00.
         """
-        assert spending_report_service._is_flat_series(
-            [Decimal("97.5"), Decimal("102.5"), Decimal("100"), Decimal("100")],
-        ) is False
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "JanRent", "Rent", "1200.00",
+                 due_date=date(2026, 1, 10))
+            _txn(db, seed_user, seed_periods[5], "MarBill", "Rent", "300.00",
+                 due_date=date(2026, 3, 15))
+            db.session.commit()
 
-    def test_all_zero_series_is_flat(self):
-        """An all-zero (or empty) series is flat by definition."""
-        assert spending_report_service._is_flat_series(
-            [Decimal("0"), Decimal("0"), Decimal("0")],
-        ) is True
-        assert spending_report_service._is_flat_series([]) is True
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=3, year=2026),
+            )
+            assert report.hero.vs_prior.baseline == Decimal("0")
+            assert report.hero.vs_prior.delta == Decimal("300.00")
+            assert report.hero.vs_prior.pct is None
+            assert report.hero.vs_average.baseline == Decimal("600.00")
+            assert report.hero.vs_average.delta == Decimal("-300.00")
+            assert report.hero.vs_average.pct == Decimal("-50.00")
+
+
+# ── Window-over-window deltas (breakdown + By-change rows) ──────────
+
+
+class TestDeltas:
+    """Item, group, and By-change deltas on the D7 change basis."""
+
+    def test_item_and_group_deltas(self, app, seed_user, seed_periods, db):
+        """Items and groups carry current minus prior; new categories flag.
+
+        period[0] (prior): Rent 1000, Groceries 400.
+        period[1] (viewed): Rent 900, Car Payment 250.
+        Viewed breakdown: Home/Rent 900 (delta 900 - 1000 = -100, not new);
+        Auto/Car Payment 250 (delta +250, is_new -- no prior spend).
+        Groceries has no viewed row, so Family is absent from the breakdown.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "Rent0", "Rent", "1000.00")
+            _txn(db, seed_user, seed_periods[0], "Food0", "Groceries", "400.00")
+            _txn(db, seed_user, seed_periods[1], "Rent1", "Rent", "900.00")
+            _txn(db, seed_user, seed_periods[1], "Car1", "Car Payment", "250.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[1]),
+            )
+            assert [g.group_name for g in report.breakdown] == ["Home", "Auto"]
+            home = _group(report, "Home")
+            assert home.delta == Decimal("-100.00")   # 900 - 1000
+            assert home.is_new is False
+            assert home.items[0].delta == Decimal("-100.00")
+            assert home.items[0].is_new is False
+            auto = _group(report, "Auto")
+            assert auto.delta == Decimal("250.00")    # 250 - 0
+            assert auto.is_new is True
+            assert auto.items[0].is_new is True
+
+    def test_group_delta_includes_stopped_categories(self, app, seed_user,
+                                                     seed_periods, db):
+        """A group's prior side sums categories with no current spend.
+
+        Home has two categories: Rent and Electricity (created here).
+        period[0] (prior): Rent 1000, Electricity 200 -> Home prior 1200.
+        period[1] (viewed): Electricity 150 only -> Home current 150.
+        Group delta = 150 - 1200 = -1050 (the stopped Rent still counts);
+        the Electricity ITEM delta is only 150 - 200 = -50.
+        """
+        with app.app_context():
+            electricity = Category(
+                user_id=seed_user["user"].id, group_name="Home",
+                item_name="Electricity",
+            )
+            db.session.add(electricity)
+            db.session.flush()
+            seed_user["categories"]["Electricity"] = electricity
+
+            _txn(db, seed_user, seed_periods[0], "Rent0", "Rent", "1000.00")
+            _txn(db, seed_user, seed_periods[0], "Elec0", "Electricity",
+                 "200.00")
+            _txn(db, seed_user, seed_periods[1], "Elec1", "Electricity",
+                 "150.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[1]),
+            )
+            home = _group(report, "Home")
+            assert home.amount == Decimal("150.00")
+            assert home.delta == Decimal("-1050.00")  # 150 - (1000 + 200)
+            assert home.items[0].delta == Decimal("-50.00")  # 150 - 200
+
+    def test_changes_include_zero_current_rows_sorted(self, app, seed_user,
+                                                      seed_periods, db):
+        """Changes span both windows; stopped categories appear at $0.
+
+        period[0] (prior): Rent 1000, Groceries 400.
+        period[1] (viewed): Groceries 460, Car Payment 250.
+        Rows by |delta| descending: Rent (0 - 1000 = -1000, the
+        zero-current rider), Car Payment (+250, is_new), Groceries
+        (460 - 400 = +60).
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "Rent0", "Rent", "1000.00")
+            _txn(db, seed_user, seed_periods[0], "Food0", "Groceries", "400.00")
+            _txn(db, seed_user, seed_periods[1], "Food1", "Groceries", "460.00")
+            _txn(db, seed_user, seed_periods[1], "Car1", "Car Payment", "250.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[1]),
+            )
+            rows = report.changes
+            assert [r.item_name for r in rows] == [
+                "Rent", "Car Payment", "Groceries",
+            ]
+            rent, car, groceries = rows
+            assert (rent.current, rent.prior) == (Decimal("0"), Decimal("1000.00"))
+            assert rent.delta == Decimal("-1000.00")
+            assert rent.is_new is False              # nothing new about a stop
+            assert rent.group_name == "Home"         # labels from the prior row
+            assert car.delta == Decimal("250.00")
+            assert car.is_new is True
+            assert groceries.delta == Decimal("60.00")
+            assert groceries.is_new is False
+
+    def test_changes_tie_breaks_on_current_then_name(self, app, seed_user,
+                                                     seed_periods, db):
+        """Equal |delta| rows order by current spend, then item name.
+
+        period[0]: Rent 100 (stops -> delta -100).  period[1]: Car Payment
+        100 (new -> delta +100).  |delta| ties at 100; Car Payment has the
+        higher current spend (100 > 0) so it sorts first.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "Rent0", "Rent", "100.00")
+            _txn(db, seed_user, seed_periods[1], "Car1", "Car Payment", "100.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[1]),
+            )
+            assert [r.item_name for r in report.changes] == [
+                "Car Payment", "Rent",
+            ]
 
 
 # ── Scope facts, empty window, and the None contract ────────────────
@@ -509,8 +654,10 @@ class TestScopeAndContracts:
     def test_empty_window_shape(self, app, seed_user, seed_periods, db):
         """A resolvable window with no settled spend is a zeroed report.
 
-        Not None: an empty breakdown, a zero spent total, an empty surprises
-        list with a zero net, and no payment timing.
+        Not None: an empty breakdown, empty change rows, a zero spent total,
+        an empty surprises list with a zero net, no payment timing, and a
+        full-length series whose viewed point is a real zero (the window
+        exists; it just has no settled spend).
         """
         with app.app_context():
             report = compute_spending_report(
@@ -518,10 +665,15 @@ class TestScopeAndContracts:
             )
             assert report is not None
             assert report.breakdown == []
+            assert report.changes == []
             assert report.hero.spent_total == Decimal("0")
             assert report.surprises.rows == []
             assert report.surprises.net == Decimal("0")
             assert report.hero.payment_timing is None
+            assert len(report.series) == (
+                spending_report_service._CHART_WINDOW_COUNT
+            )
+            assert report.series[-1].total == Decimal("0")
 
     def test_none_when_no_active_checking(self, app, seed_user, seed_periods):
         """No resolvable checking account -> None (empty state, not a crash)."""

@@ -311,6 +311,19 @@ services:
       SEED_USER_PASSWORD: ChangeMe!2026
       SEED_USER_DISPLAY_NAME: Budget Admin
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Idle-session ceiling for the containerized dev app.  BaseConfig
+      # defaults IDLE_TIMEOUT_MINUTES to 720 (12h, app/config.py); dev
+      # raises it to 10080 (7 days) so an authenticated browser -- in
+      # particular a reused Playwright storage-state session (see
+      # tools/playwright/shekel_shot.py) -- is not bounced back to the
+      # login screen mid-week.  The container reads its config from THIS
+      # block, not the host .env (which only feeds the ${SECRET_KEY} /
+      # ${TOTP_ENCRYPTION_KEY} interpolations above), so the knob must
+      # live here to take effect; ${IDLE_TIMEOUT_MINUTES:-10080} still
+      # lets .env or the shell override it.  Prod is unaffected -- it
+      # reads /opt/docker/shekel/.env and its own compose, never this
+      # file.
+      IDLE_TIMEOUT_MINUTES: ${IDLE_TIMEOUT_MINUTES:-10080}
       # Rate-limit storage on the dev redis above (parity audit
       # 2026-06-12, finding D04).  Hardcoded rather than interpolated
       # so the container value cannot be shadowed by the .env entry

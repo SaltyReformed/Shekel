@@ -3725,7 +3725,7 @@ class TestPaymentBreakdown:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Breakdown card renders.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
         assert "to interest" in html
         assert "to escrow" in html
@@ -3740,7 +3740,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
         assert "to interest" in html
         # Escrow line should not appear.
@@ -3792,7 +3792,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         # Without params, renders setup page (no breakdown).
         assert resp.status_code == 200
-        assert b"Payment Allocation" not in resp.data
+        assert b"Payment allocation" not in resp.data
 
     def test_breakdown_with_extra_payment(
         self, auth_client, seed_user, db, seed_periods,
@@ -3814,7 +3814,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
 
     def test_breakdown_confirmed_row_labeled(
@@ -3837,7 +3837,7 @@ class TestPaymentBreakdown:
         html = resp.data.decode()
         # The first non-confirmed (projected) row is shown, but
         # the confirmed payment's row would show "Confirmed" badge.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
 
     def test_breakdown_escrow_zero_hidden(
         self, auth_client, seed_user, db, seed_periods,
@@ -3852,7 +3852,7 @@ class TestPaymentBreakdown:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to escrow" not in html
 
     def test_breakdown_uses_committed_schedule(
@@ -3875,7 +3875,7 @@ class TestPaymentBreakdown:
         assert resp.status_code == 200
         html = resp.data.decode()
         # Breakdown renders from committed data.
-        assert "Payment Allocation" in html
+        assert "Payment allocation" in html
         assert "to principal" in html
 
     def test_breakdown_escrow_inflation_note(
@@ -6791,3 +6791,154 @@ class TestLoanDetailMeasuredSurfaces:
         # macro ("$1,234.56"), NOT the $0.00 the UTC year (2027) would give.
         assert chip_value == f"${interest_2026:,.2f}"
         assert chip_value != "$0.00"
+
+
+# ── Click-to-Edit Balance Hero (D14 port, polish audit P-DT8) ────────
+
+
+class TestLoanBalanceHeroClickToEdit:
+    """S8 / D14: the loan detail hero doubles as the dated true-up control.
+
+    ``loan.balance_hero`` renders the click-to-edit display cell (the
+    Cancel / Escape revert target); ``loan.anchor_form`` swaps in the
+    inline as-of-date + balance editor, whose form posts the EXISTING
+    ``loan.true_up_balance`` redirect flow (already covered by
+    TestLoanTrueUpBalance) -- so these tests pin the two fragments and
+    the page wiring, not the write path.  Today is frozen to 2026-03-20
+    by ``_freeze_today_inside_seed_range``.
+    """
+
+    def test_dashboard_hero_is_click_to_edit(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The dashboard hero carries the editor opener AND keeps the form.
+
+        The developer's S8 ruling keeps BOTH recording surfaces: the
+        click-to-edit hero and the parameters card's "Record balance"
+        form.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="loan-balance-hero"' in html
+        assert f'hx-get="/accounts/{acct.id}/loan/anchor-form"' in html
+        # The keep-both ruling: the guidance-carrying form card stays.
+        assert "Record balance" in html
+
+    def test_balance_hero_renders_display_cell(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET (HX) returns the resolver balance and the editor opener.
+
+        A fresh $250,000 mortgage with zero confirmed payments resolves
+        to exactly its original principal: 250,000.00.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/loan/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "250,000.00" in html
+        assert 'id="loan-balance-hero"' in html
+        assert f'hx-get="/accounts/{acct.id}/loan/anchor-form"' in html
+
+    def test_balance_hero_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET without HX-Request redirects to the loan dashboard page."""
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/balance-hero")
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+    def test_balance_hero_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """GET another user's loan hero returns 404 and leaks nothing."""
+        other = _create_other_loan(second_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{other.id}/loan/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
+        assert b"Other Loan" not in resp.data
+
+    def test_balance_hero_unconfigured_loan_404s(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A params-less loan has no dashboard hero: the fragment 404s.
+
+        The full page renders setup.html for an unconfigured loan, so no
+        hero fragment of it exists to serve (deliberately a 404, not the
+        POST flows' flash-and-redirect, which would swap a whole page
+        into the HTMX hero slot).
+        """
+        loan_type = (
+            db.session.query(AccountType).filter_by(name="Mortgage").one()
+        )
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Unconfigured Loan",
+                anchor_balance=Decimal("0.00"),
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+        resp = auth_client.get(
+            f"/accounts/{account.id}/loan/balance-hero",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
+
+    def test_anchor_form_renders_dated_editor(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET (HX) returns the inline editor with correct bounds + prefill.
+
+        The date input is floored at origination (2026-02-01 for the
+        fresh-mortgage default: first of the month before the frozen
+        2026-03-20 today) and capped at today; the balance prefills the
+        resolver figure (250000.00, zero payments confirmed); the form
+        posts the existing dated true-up route; Cancel reverts through
+        loan.balance_hero.
+        """
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{acct.id}/loan/anchor-form",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert f'action="/accounts/{acct.id}/loan/trueup"' in html
+        assert 'min="2026-02-01"' in html
+        assert 'max="2026-03-20"' in html
+        assert 'value="2026-03-20"' in html
+        assert 'value="250000.00"' in html
+        assert f'hx-get="/accounts/{acct.id}/loan/balance-hero"' in html
+        assert 'name="csrf_token"' in html
+
+    def test_anchor_form_redirects_without_htmx(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """GET without HX-Request redirects to the loan dashboard page."""
+        acct = _create_fresh_mortgage(seed_user, db.session)
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/anchor-form")
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+    def test_anchor_form_idor(
+        self, auth_client, second_user, db, seed_periods,
+    ):
+        """GET another user's loan editor returns 404 and leaks nothing."""
+        other = _create_other_loan(second_user, db.session)
+        resp = auth_client.get(
+            f"/accounts/{other.id}/loan/anchor-form",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 404
+        assert b"Other Loan" not in resp.data

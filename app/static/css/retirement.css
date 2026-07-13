@@ -13,14 +13,22 @@
 /* =============================================
    COVERAGE RAMP (validated per theme; the two
    income-meter segments and their legend swatches)
+
+   Re-derived 2026-07-11 for the ruled D12 chart-ramp policy (polish
+   audit P-RT2/O24): adjacent same-hue series must differ by >= 3:1
+   WCAG luminance.  Pension stays the deep ink blue, withdrawals the
+   light steel blue, in both themes.  Measured pairs: dark 3.21:1
+   (each fill >= 3.4:1 on the surface), light 3.42:1 (light fill
+   3.3:1 on the surface).  Do not substitute without re-running the
+   luminance math.
    ============================================= */
 [data-bs-theme="dark"] {
   --retire-cov-1: #2878A8;
-  --retire-cov-2: #4A9ECC;
+  --retire-cov-2: #B0D8F0;
 }
 
 [data-bs-theme="light"] {
-  --retire-cov-1: #0A5A96;
+  --retire-cov-1: #113A5C;
   --retire-cov-2: #3E92C2;
 }
 
@@ -276,12 +284,18 @@
    mark specs.  Widths applied by progress_bar.js from
    data-progress-pct.
    ============================================= */
+/* The meter track and the "Uncovered" legend swatch share one color:
+   the uncovered remainder IS the track (polish audit P-RT4). */
+.retire-meter,
+.retire-swatch--uncovered {
+  background: color-mix(in srgb, var(--retire-cov-1) 14%, var(--shekel-surface));
+}
+
 .retire-meter {
   display: flex;
   height: 18px;
   border-radius: 0.3125rem;
   overflow: hidden;
-  background: color-mix(in srgb, var(--retire-cov-1) 14%, var(--shekel-surface));
 }
 
 .retire-meter__seg {
@@ -321,6 +335,11 @@
   background: var(--retire-cov-2);
 }
 
+/* A hairline keeps the near-surface track tint legible as a swatch. */
+.retire-swatch--uncovered {
+  border: 1px solid var(--shekel-border-subtle);
+}
+
 .retire-income-row {
   display: flex;
   justify-content: space-between;
@@ -336,18 +355,10 @@
 }
 
 /* =============================================
-   ACCOUNTS TABLE (token-based header treatment;
-   fixes audit V3's table-light dark-mode band)
+   ACCOUNTS TABLE (the token-based header treatment that fixed audit
+   V3's table-light dark-mode band now lives app-wide as components.css
+   .table-token, extracted in the S7 polish session)
    ============================================= */
-.retire-table thead th {
-  color: var(--shekel-text-muted);
-  font-weight: 600;
-  font-size: 0.71875rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--shekel-border-strong);
-}
-
 .retire-chip {
   display: inline-block;
   font-size: 0.6875rem;

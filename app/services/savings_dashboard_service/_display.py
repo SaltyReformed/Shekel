@@ -13,37 +13,98 @@ from app.enums import AcctCategoryEnum
 
 ZERO = Decimal("0.00")
 
+# The cockpit's category display order.  ``other`` is the catch-all for an
+# account with no ``account_type`` or no ``category_id`` (degenerate /
+# partially loaded); the four real categories
+# (:class:`~app.enums.AcctCategoryEnum`) exhaust every account that carries a
+# ``category_id``, so this order also enumerates every band the net-worth
+# composition can produce.
+_CATEGORY_ORDER = ("asset", "liability", "retirement", "investment", "other")
+
+# The four real categories paired with their display keys, in the order the
+# key resolver checks them.  ``other`` is not here: it is the fall-through for
+# an account with no category id.
+_REAL_CATEGORIES = (
+    ("asset", AcctCategoryEnum.ASSET),
+    ("liability", AcctCategoryEnum.LIABILITY),
+    ("retirement", AcctCategoryEnum.RETIREMENT),
+    ("investment", AcctCategoryEnum.INVESTMENT),
+)
+
+
+def account_category_key(account) -> str:
+    """Return the cockpit category key for one account (id-based).
+
+    The single per-account category classifier both the grid grouping
+    (:func:`_group_accounts_by_category`) and the net-worth composition split
+    (:func:`category_key_by_account_id`, consumed by
+    :func:`~app.services.savings_dashboard_service._net_worth.compute_net_worth_series`)
+    read, so a category band in the trend can never disagree with the group
+    the same account sits in on the grid.  Classifies by the account type's
+    integer ``category_id`` against the cached category ids (IDs for logic,
+    never a ``.name`` string).  An account with no ``account_type`` or no
+    ``category_id`` -- degenerate / partially loaded -- classifies as
+    ``"other"``; because :class:`~app.enums.AcctCategoryEnum` has exactly the
+    four real categories, every account that DOES carry a ``category_id``
+    matches one of them, so ``"other"`` is reached only for the degenerate
+    case.
+
+    Args:
+        account: The :class:`~app.models.account.Account` to classify.
+
+    Returns:
+        One of ``"asset"``, ``"liability"``, ``"retirement"``,
+        ``"investment"``, or ``"other"``.
+    """
+    acct_type = account.account_type
+    if acct_type is None or acct_type.category_id is None:
+        return "other"
+    for key, enum in _REAL_CATEGORIES:
+        if acct_type.category_id == ref_cache.acct_category_id(enum):
+            return key
+    return "other"
+
+
+def category_key_by_account_id(account_data) -> dict[int, str]:
+    """Map each account's id to its cockpit category key.
+
+    The composition-split adapter: the net-worth trend
+    (:func:`~app.services.savings_dashboard_service._net_worth.compute_net_worth_series`)
+    and the long-horizon producer both read each account's category band by id
+    off this map, built from the SAME per-account classifier
+    (:func:`account_category_key`) the grid grouping uses, so a band and the
+    grid group cannot drift.
+
+    Args:
+        account_data: The per-account projection dicts (each carrying an
+            ``account``).
+
+    Returns:
+        ``{account_id: category_key}`` over every account in *account_data*.
+    """
+    return {
+        ad["account"].id: account_category_key(ad["account"])
+        for ad in account_data
+    }
+
 
 def _group_accounts_by_category(account_data):
     """Group account data dicts by account type category.
 
     Returns an OrderedDict with category labels as keys, preserving
     the display order: Asset, Liability, Retirement, Investment, Other.
+    Buckets each account through the shared :func:`account_category_key`
+    classifier (so the grid groups and the net-worth composition bands read
+    one taxonomy), keeping only the non-empty groups in display order.
     """
-    category_order = [
-        ("asset", ref_cache.acct_category_id(AcctCategoryEnum.ASSET)),
-        ("liability", ref_cache.acct_category_id(AcctCategoryEnum.LIABILITY)),
-        ("retirement", ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT)),
-        ("investment", ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT)),
-    ]
     grouped = OrderedDict()
-    for cat_label, cat_id in category_order:
+    for cat_label in _CATEGORY_ORDER:
         cat_accounts = [
             ad for ad in account_data
-            if ad["account"].account_type
-            and ad["account"].account_type.category_id == cat_id
+            if account_category_key(ad["account"]) == cat_label
         ]
         if cat_accounts:
             grouped[cat_label] = cat_accounts
-
-    uncategorized = [
-        ad for ad in account_data
-        if not ad["account"].account_type
-        or not ad["account"].account_type.category_id
-    ]
-    if uncategorized:
-        grouped["other"] = uncategorized
-
     return grouped
 
 

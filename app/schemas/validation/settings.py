@@ -19,20 +19,15 @@ from app.schemas.validation._helpers import (
 class UserSettingsSchema(BaseSchema):
     """Validates POST data for updating user settings.
 
-    E-28 / HIGH-06 / PA-01 / PA-02: ``default_inflation_rate`` and
-    ``trend_alert_threshold`` are persisted as decimal fractions
-    (DB CHECK ``[0, 1]`` on both columns).  The ``@pre_load`` converts
-    each percent input to its fraction equivalent so the schema's
+    E-28 / HIGH-06 / PA-02: ``default_inflation_rate`` is persisted as a
+    decimal fraction (DB CHECK ``[0, 1]``).  The ``@pre_load`` converts
+    the percent input to its fraction equivalent so the schema's
     ``Range`` validator and the DB CHECK agree on the accepted set.
-    Pre-Commit-24 the schema declared ``trend_alert_threshold`` as
-    ``Integer Range(1..100)`` while the DB CHECK admitted ``[0, 1]``;
-    only the literal value ``1`` satisfied both domains nominally
-    (the route's ``/100`` reconciled it in practice, but the schema
-    layer rejected ``0`` which is now a valid "alert disabled"
-    state under E-12 "zero is a value").
+    (``trend_alert_threshold``, the PA-01 sibling this hook once also
+    converted, was removed with the retired spending trend engine.)
     """
 
-    _PERCENT_FIELDS = ("default_inflation_rate", "trend_alert_threshold")
+    _PERCENT_FIELDS = ("default_inflation_rate",)
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
@@ -58,13 +53,6 @@ class UserSettingsSchema(BaseSchema):
     )
     large_transaction_threshold = fields.Integer(
         validate=validate.Range(min=0),
-    )
-    # E-28 / PA-01: validated as a fraction; the route stores the
-    # ``Decimal`` directly into the ``Numeric(5, 4)`` column.  Zero is
-    # now a valid "alert disabled" state per E-12.
-    trend_alert_threshold = fields.Decimal(
-        places=4, as_string=True,
-        validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
     )
     anchor_staleness_days = fields.Integer(
         validate=validate.Range(min=1),

@@ -1497,7 +1497,7 @@ class TestEmergencyFundCommittedBaseline:
 
             html = resp.data.decode()
             # Section renders (savings > 0) but no expense info.
-            assert "Emergency Fund Coverage" in html
+            assert "Emergency fund coverage" in html
             assert "avg expenses" not in html
 
     def test_emergency_fund_monthly_template_contribution(
@@ -3135,27 +3135,36 @@ class TestDebtSummaryDisplay:
     def test_dashboard_debt_summary_card_rendered(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """C-5.12-17: Dashboard shows debt summary card when loans exist."""
+        """C-5.12-17: Dashboard shows debt summary when loans exist.
+
+        D6-F fold: the standalone Debt Summary card is retired; its metrics
+        now render as the Liabilities group card's footer line, so assert
+        against that folded copy.
+        """
         with app.app_context():
             _create_small_loan(seed_user)
 
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt Summary" in html
-            assert "Total Debt" in html
-            assert "Monthly Payments" in html
-            assert "Weighted Avg Rate" in html
+            assert "Avg rate" in html
+            assert "Debt-free" in html
+            assert "Payoff Strategies" in html
 
     def test_dashboard_no_debt_summary_when_no_loans(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """C-5.12-19: No debt summary card when no loan accounts exist."""
+        """C-5.12-19: No debt summary when no loan accounts exist.
+
+        D6-F fold: the negative case now checks the same folded-footer
+        marker ("Avg rate") the positive test asserts, since the standalone
+        "Debt Summary" heading no longer exists.
+        """
         with app.app_context():
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt Summary" not in html
+            assert "Avg rate" not in html
 
     def test_dashboard_dti_badge_rendered(
         self, app, auth_client, seed_user, seed_periods,
@@ -3178,7 +3187,7 @@ class TestDebtSummaryDisplay:
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Debt-to-Income" in html
+            assert "DTI" in html
             # Small loan relative to $78K salary -> "Healthy" badge
             assert "Healthy" in html
 
@@ -3274,13 +3283,14 @@ class TestDashboardNetWorthContext:
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """net_worth_chart_json parses to the labeled float series shape.
+        """net_worth_chart_json carries both ranges as float series.
 
-        The route serializes the Decimal trend to a JSON string with
-        parallel ``net`` / ``assets`` / ``liabilities`` float arrays, one
-        ``%b %-d`` label per period, and an integer ``current_index``.  With
+        The route serializes ONE payload with the ``2 years`` totals (parallel
+        ``net`` / ``assets`` / ``liabilities`` float arrays + the per-category
+        ``composition`` split) and the nested ``horizon`` range (P-AC1).  With
         the seed Checking ($1,000) plus an added Savings ($4,000) and flat
-        balances, every ``net`` point is ``5000.0`` (the float boundary).
+        balances, every ``2 years`` ``net`` point is ``5000.0`` (the float
+        boundary), and the horizon starts there too.
         """
         # pylint: disable=import-outside-toplevel
         import json
@@ -3297,8 +3307,11 @@ class TestDashboardNetWorthContext:
             )
             chart = json.loads(context["net_worth_chart_json"])
 
+            # The prior keys stay (so the current chart script keeps working)
+            # plus the two additive P-AC1 fields.
             assert set(chart.keys()) == {
                 "labels", "net", "assets", "liabilities", "current_index",
+                "composition", "horizon",
             }
             series = context["net_worth"]["series"]
             n = len(series["periods"])
@@ -3319,6 +3332,28 @@ class TestDashboardNetWorthContext:
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] <= n
 
+            # The 2-year composition: each band a float list of length n, the
+            # asset-side bands summing to the assets total at every point.
+            comp = chart["composition"]
+            asset_bands = ("asset", "retirement", "investment", "other")
+            for band in (*asset_bands, "liability"):
+                assert len(comp[band]) == n
+                assert all(isinstance(v, float) for v in comp[band])
+            for i in range(n):
+                asset_side = sum(comp[band][i] for band in asset_bands)
+                assert asset_side == chart["assets"][i]
+                assert comp["liability"][i] == chart["liabilities"][i]
+
+            # The horizon range: a float net series that starts at the hero
+            # ($5,000), plus composition bands + milestone list.
+            horizon = chart["horizon"]
+            assert horizon is not None
+            assert horizon["net"][0] == 5000.0
+            assert all(isinstance(v, float) for v in horizon["net"])
+            assert isinstance(horizon["composition"], dict)
+            assert isinstance(horizon["milestones"], list)
+            assert horizon["current_index"] == 0
+
     def test_dashboard_still_renders_with_net_worth_wired(
         self, app, auth_client, seed_user, seed_periods,
     ):
@@ -3333,60 +3368,138 @@ class TestDashboardNetWorthContext:
             assert b"Accounts" in resp.data
 
 
-class TestAllocationBar:
-    """Tests for the diverging allocation bar's width serialization + render."""
+class TestHorizonSerialization:
+    """Unit tests for the Horizon-range Chart.js serializer (P-AC1 Loop B P1).
 
-    def test_widths_scale_to_the_larger_side(self):
-        """Each segment's pct is value/scale*100 with scale = the max side.
+    ``_serialize_horizon`` is the float boundary for the horizon range: it
+    maps the producer's ``Decimal`` band series + net trajectory to floats,
+    the annual dates to ``%b %Y`` labels, and each milestone's ``date`` to an
+    ISO string.
+    """
 
-        Assets total 50,000 and liabilities 100,000, so the scale is
-        100,000: the liability fills its half (100%) and the assets read
-        proportionally shorter (20% + 30% of their half).  ``float`` only at
-        this boundary; the values stay ``Decimal``.
-        """
+    def test_maps_decimals_dates_and_milestones(self):
+        """Decimals become floats, dates become labels, milestone dates ISO."""
         # pylint: disable=import-outside-toplevel
-        from app.routes.savings import _serialize_allocation_bar
-        allocation = {
-            "assets": [
-                {"label": "asset", "value": Decimal("20000.00")},
-                {"label": "retirement", "value": Decimal("30000.00")},
+        from datetime import date
+        from app.routes.savings import _serialize_horizon
+        horizon = {
+            "dates": [date(2026, 7, 12), date(2026, 12, 31)],
+            "net": [Decimal("236184.51"), Decimal("240000.00")],
+            "composition": {
+                "asset": [Decimal("358034.92"), Decimal("360000.00")],
+                "liability": [Decimal("192941.56"), Decimal("190000.00")],
+            },
+            "milestones": [
+                {"date": date(2048, 12, 1), "label": "Debt-free",
+                 "kind": "debt_free"},
             ],
-            "liabilities": [
-                {"label": "liability", "value": Decimal("100000.00")},
-            ],
+            "current_index": 0,
         }
 
-        result = _serialize_allocation_bar(allocation)
+        out = _serialize_horizon(horizon)
 
-        # scale = max(50000, 100000) = 100000
-        assert result["assets"][0]["pct"] == 20.0   # 20000/100000*100
-        assert result["assets"][1]["pct"] == 30.0   # 30000/100000*100
-        assert result["liabilities"][0]["pct"] == 100.0
-        assert all(isinstance(s["pct"], float) for s in result["assets"])
-        # values pass through unchanged as Decimal.
-        assert result["assets"][0]["value"] == Decimal("20000.00")
+        assert out["labels"] == ["Jul 2026", "Dec 2026"]
+        assert out["net"] == [236184.51, 240000.0]
+        assert all(isinstance(v, float) for v in out["net"])
+        assert out["composition"]["asset"] == [358034.92, 360000.0]
+        assert all(
+            isinstance(v, float) for v in out["composition"]["liability"]
+        )
+        # The milestone serializes its ISO date, label, and kind, plus a
+        # fractional axis position ``x``.  Its date (2048) is beyond the two
+        # sample dates (ending 2026-12-31), so ``x`` clamps to the last
+        # index (1.0) -- the flag pins to the right edge.
+        assert out["milestones"] == [
+            {"date": "2048-12-01", "label": "Debt-free", "kind": "debt_free",
+             "x": 1.0},
+        ]
+        assert out["current_index"] == 0
 
-    def test_empty_allocation_is_no_segments(self):
-        """With no segments the serializer returns empty lists (no div/0)."""
+    def test_none_passes_through(self):
+        """A ``None`` horizon (no pay periods) serializes to ``None``."""
         # pylint: disable=import-outside-toplevel
-        from app.routes.savings import _serialize_allocation_bar
-        assert _serialize_allocation_bar(
-            {"assets": [], "liabilities": []},
-        ) == {"assets": [], "liabilities": []}
+        from app.routes.savings import _serialize_horizon
+        assert _serialize_horizon(None) is None
 
-    def test_renders_bar_and_legend_in_page(
+
+class TestMilestoneAxisX:
+    """Tests for the milestone fractional-index helper (P-AC1 Loop B P2).
+
+    ``_milestone_axis_x`` places a milestone (an exact date) on the Horizon
+    stream's annual category axis as a fractional index, so the client's flag
+    plugin can position the flag between the year-end samples via
+    ``getPixelForValue``.
+    """
+
+    def test_positions_a_milestone_between_annual_samples(self):
+        """A mid-year milestone maps to a fractional index between samples.
+
+        Samples 2026-01-01 / 2026-12-31 / 2027-12-31; a milestone on
+        2027-07-01 falls in the index-1..2 bracket, 182 of the 365 days from
+        the index-1 sample, so x = 1 + 182 / 365.
+        """
+        # pylint: disable=import-outside-toplevel
+        from datetime import date
+        from app.routes.savings import _milestone_axis_x
+        dates = [date(2026, 1, 1), date(2026, 12, 31), date(2027, 12, 31)]
+        assert _milestone_axis_x(dates, date(2027, 7, 1)) == 1 + 182 / 365
+
+    def test_exact_sample_and_out_of_range_dates_clamp(self):
+        """A date on a sample lands on its index; out-of-range dates clamp."""
+        # pylint: disable=import-outside-toplevel
+        from datetime import date
+        from app.routes.savings import _milestone_axis_x
+        dates = [date(2026, 1, 1), date(2026, 12, 31), date(2027, 12, 31)]
+        # The last sample -> the last index; the middle sample -> index 1.
+        assert _milestone_axis_x(dates, date(2027, 12, 31)) == 2.0
+        assert _milestone_axis_x(dates, date(2026, 12, 31)) == 1.0
+        # Before the first sample -> 0.0; after the last -> the last index.
+        assert _milestone_axis_x(dates, date(2020, 1, 1)) == 0.0
+        assert _milestone_axis_x(dates, date(2030, 1, 1)) == 2.0
+
+
+class TestNetWorthStreamRender:
+    """The /savings page renders the P-AC1 net-worth stream element.
+
+    The diverging allocation bar and the old trend chart (with its
+    6/13/26/All picker) were replaced by ONE element: a range toggle over a
+    stream canvas plus a composition legend.
+    """
+
+    def test_renders_range_toggle_canvas_and_legend(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """The /savings page renders the allocation bar + legend.
+        """The stream's range toggle, canvas, and legend render on the page.
 
-        The seed Checking ($1,000) is an asset, so the bar has at least one
-        asset segment and the legend tier is present.
+        With the seed Checking ($1,000) plus an added Savings ($4,000) there
+        is a current period, so the chart region renders: the page carries
+        the `2 years` / `Horizon` range toggle (Horizon default), the stream
+        canvas with its serialized data-chart, and the composition legend
+        with an Assets band swatch (the two accounts are assets).  The
+        retired diverging-bar markup is gone.
         """
         with app.app_context():
+            _create_savings_account(
+                seed_user, name="Savings",
+                anchor_balance=Decimal("4000.00"),
+                anchor_period_id=seed_periods[0].id,
+            )
+            db.session.commit()
+
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"nw-alloc__bar" in resp.data
-            assert b"nw-alloc__legend" in resp.data
+            html = resp.data.decode()
+            # The two-mode range toggle replacing the old picker + net/split.
+            assert 'data-nw-range="horizon"' in html
+            assert 'data-nw-range="2yr"' in html
+            # The stream canvas carrying the serialized both-ranges payload.
+            assert 'id="net-worth-chart-canvas"' in html
+            assert "data-chart=" in html
+            # The composition legend with the Assets band swatch.
+            assert "nw-legend" in html
+            assert "nw-legend__swatch--asset" in html
+            # The retired diverging bar is gone.
+            assert "nw-alloc__bar" not in html
 
 
 class TestSparklines:
@@ -3498,3 +3611,35 @@ class TestCockpitBalance:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
+
+    def test_cockpit_balance_loan_cell_takes_liability_ink(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan (liability) balance cell renders the danger-ink class.
+
+        P-AC4: the owed balance is colored like the liabilities chip, group
+        subtotal, and diverging-bar segment -- keyed on the account's
+        category, never the figure's sign -- so a reverted loan cell keeps
+        its danger ink.  The asset-cell contrast is asserted below.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user)
+            resp = auth_client.get(
+                f"/savings/cockpit/{loan.id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "acct-card__num--liability" in resp.data.decode()
+
+    def test_cockpit_balance_asset_cell_omits_liability_ink(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A Checking (asset) balance cell omits the liability danger-ink class."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            resp = auth_client.get(
+                f"/savings/cockpit/{acct_id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "acct-card__num--liability" not in resp.data.decode()

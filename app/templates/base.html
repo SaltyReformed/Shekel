@@ -32,11 +32,25 @@
      cell, mobile card, transfer cell) built for the request's own
      hx-target, so 409 swaps.  Entries are matched IN ORDER and the meta
      override REPLACES the whole key, so the default 204 / 2xx / 4xx-5xx
-     entries are restated around it.  422 and the other 4xx stay
-     non-swapping deliberately: those bodies are raw strings or JSON
-     (str(errors), jsonify(...)), and the carry-forward modal's
-     htmx:responseError handler (app.js) relies on 4xx not swapping. #}
-  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
+     entries are restated around it.  Other 4xx/5xx stay non-swapping BY
+     DEFAULT: raw-string and JSON bodies must never land in the DOM, and
+     the carry-forward modal's htmx:responseError handler (app.js)
+     relies on that.  A route that deliberately renders a DESIGNED error
+     fragment opts back in per response by stamping the
+     Shekel-Designed-Fragment marker header (app/utils/error_fragments
+     .py); the global htmx:beforeSwap listener in app.js swaps any
+     response carrying it (the marker-header convention, ruled
+     2026-07-11).
+
+     attributesToSettle: htmx's default list includes "style", which the
+     settle phase copies between id-matched old/new nodes with
+     setAttribute("style", ...) -- an inline-style application the CSP
+     blocks (style-src 'self', no 'unsafe-hashes').  The copy was already
+     failing silently on every swap that replaces a Chart.js canvas (the
+     library sizes canvases via CSSOM inline styles), so dropping "style"
+     changes no behavior; it stops the console CSP violation.  class /
+     width / height (the rest of htmx's default) still settle. #}
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"attributesToSettle":["class","width","height"],"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
 
   {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
      The CSP forbids external origins (audit F-037), so every CSS/JS/font
@@ -49,7 +63,7 @@
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
 
   <!-- Web App Manifest -->
-  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+  <link rel="manifest" href="{{ url_for('static_pass.web_manifest') }}">
   <meta name="theme-color" content="#4A9ECC">
   <!-- iOS home screen support -->
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -91,7 +105,7 @@
     <div class="container-fluid">
       <a class="navbar-brand" href="{{ url_for('companion.index') if current_user.role_id == COMPANION_ROLE_ID else url_for('dashboard.page') }}">
         <img src="{{ url_for('static', filename='img/shekel_coin.png') }}" alt="" height="30" class="logo-img shekel-brand-coin">
-        Shekel
+        <span class="shekel-wordmark">Shekel</span>
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas"
               aria-controls="mainOffcanvas" aria-expanded="false" aria-label="Toggle navigation">
@@ -104,7 +118,7 @@
       <div class="offcanvas offcanvas-start" id="mainOffcanvas"
            tabindex="-1" aria-labelledby="mainOffcanvasLabel">
         <div class="offcanvas-header">
-          <h5 class="offcanvas-title" id="mainOffcanvasLabel">Shekel</h5>
+          <h5 class="offcanvas-title" id="mainOffcanvasLabel"><span class="shekel-wordmark">Shekel</span></h5>
           <button type="button" class="btn-close btn-close-white"
                   data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
@@ -228,16 +242,13 @@
   {% endif %}
 
   {# --- MFA Enrollment Nag (owner role without MFA enabled) ---
-     Rendered before breadcrumbs and the welcome banner so the
-     security CTA is the first non-nav element on the page.  See
+     Rendered before the welcome banner so the security CTA is the
+     first non-nav element on the page.  See
      audit F-095 / commit C-12; visibility is computed by the
      ``inject_mfa_nag_visible`` context processor in app/__init__.py. #}
   {% if mfa_nag_visible %}
     {% include "dashboard/_mfa_nag.html" %}
   {% endif %}
-
-  {# --- Breadcrumbs --- #}
-  {% block breadcrumbs %}{% endblock breadcrumbs %}
 
   {# --- Welcome Banner (Onboarding) --- #}
   {% if current_user.is_authenticated and onboarding is defined and not onboarding.complete %}

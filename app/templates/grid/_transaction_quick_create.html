@@ -1,6 +1,13 @@
-{# Quick create -- single amount input for creating a transaction in an empty cell.
-   Replaces the empty dash on click. Enter saves (POST), Escape reverts to dash.
-   Expand button or F2 opens the full create popover.
+{# Quick create -- name (optional) + amount inputs for creating a
+   transaction in an empty cell.  Replaces the empty dash on click.
+   Enter saves (POST), Escape reverts to dash.  Expand button or F2
+   opens the full create popover.
+
+   The name input (grid audit A5, closeout plan session 4) sits above
+   the amount so ad-hoc rows are nameable at the Tier-1 entry point;
+   left blank, the route derives the name from the category (the
+   placeholder shows that default), so the everyday amount-Enter loop
+   is unchanged -- autofocus stays on the amount.
 
    Expected context:
      category            -- Category object
@@ -9,7 +16,7 @@
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
 #}
-<form class="txn-quick-edit d-flex align-items-center gap-1"
+<form class="txn-quick-edit d-flex flex-column gap-1"
       data-mode="create"
       hx-post="{{ url_for('transactions.create_inline') }}"
       hx-target="closest td"
@@ -20,22 +27,38 @@
   <input type="hidden" name="pay_period_id" value="{{ period.id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
   <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
-  <input type="number"
-         step="0.01"
-         inputmode="decimal"
-         name="estimated_amount"
-         placeholder="0.00"
-         class="form-control form-control-sm txn-quick-input flex-1-min-0"
-         aria-label="Transaction amount for {{ category.item_name }}"
-         autofocus>
-  <button type="button"
-          class="btn btn-sm btn-link p-0 txn-expand-btn"
-          title="More options (F2)"
-          aria-label="More options"
-          data-category-id="{{ category.id }}"
-          data-period-id="{{ period.id }}"
-          data-transaction-type-id="{{ transaction_type_id }}"
-          data-account-id="{{ account_id }}">
-    <i class="bi bi-three-dots"></i>
-  </button>
+  {# Hidden default submit button: with TWO text-entry fields and no
+     submit control, the browser's implicit-submission rule stops
+     firing on Enter (it only applies to single-field forms), so this
+     button restores Enter-to-save from either input.  display:none is
+     fine -- implicit submission clicks the default button even when
+     it is not rendered. #}
+  <button type="submit" class="d-none" aria-hidden="true" tabindex="-1"></button>
+  <input type="text"
+         name="name"
+         maxlength="200"
+         placeholder="{{ category.item_name }}"
+         class="form-control form-control-sm txn-quick-name"
+         title="Optional name -- defaults to {{ category.item_name }}"
+         aria-label="Optional name for the new {{ category.item_name }} transaction">
+  <div class="d-flex align-items-center gap-1">
+    <input type="number"
+           step="0.01"
+           inputmode="decimal"
+           name="estimated_amount"
+           placeholder="0.00"
+           class="form-control form-control-sm txn-quick-input flex-1-min-0"
+           aria-label="Transaction amount for {{ category.item_name }}"
+           autofocus>
+    <button type="button"
+            class="btn btn-sm btn-link p-0 txn-expand-btn"
+            title="More options (F2)"
+            aria-label="More options"
+            data-category-id="{{ category.id }}"
+            data-period-id="{{ period.id }}"
+            data-transaction-type-id="{{ transaction_type_id }}"
+            data-account-id="{{ account_id }}">
+      <i class="bi bi-three-dots"></i>
+    </button>
+  </div>
 </form>

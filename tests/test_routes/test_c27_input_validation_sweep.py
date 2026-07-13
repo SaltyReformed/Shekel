@@ -47,6 +47,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
 from app.services import pay_period_service, transfer_service
 from app.services import account_service
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -233,7 +234,14 @@ class TestTransactionsMarkDoneActualAmount:
     def test_non_numeric_actual_amount_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Non-numeric ``actual_amount`` fails Marshmallow's Decimal coercion."""
+        """Non-numeric ``actual_amount`` fails Marshmallow's Decimal coercion.
+
+        Refit 2026-07-11 for the marker-header convention (closeout plan
+        session 4, developer-ruled): the 422 body changed from a JSON
+        errors dict to a DESIGNED fragment -- the requesting surface
+        re-rendered with the flattened field message -- carrying the
+        marker header so htmx swaps it instead of dropping it.
+        """
         with app.app_context():
             txn = _add_txn(
                 db.session, seed_user, seed_periods_today[0],
@@ -246,9 +254,12 @@ class TestTransactionsMarkDoneActualAmount:
                 data={"actual_amount": "abc"},
             )
             assert resp.status_code == 422
-            payload = resp.get_json()
-            assert payload is not None
-            assert "actual_amount" in payload["errors"]
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            body = resp.data.decode()
+            assert "actual_amount" in body
+            assert "txn-chip" in body, (
+                "the 422 body must be the desktop cell fragment"
+            )
 
     def test_negative_actual_amount_rejected_on_transfer_shadow(
         self, app, auth_client, seed_user, seed_periods_today,

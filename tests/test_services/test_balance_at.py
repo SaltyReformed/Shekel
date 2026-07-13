@@ -20,7 +20,7 @@ InvestmentParams (INVESTMENT), and a Property + AssetAppreciationParams
 the past (period 2) or at the current period (period 4).
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -57,6 +57,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from tests._test_helpers import (
     add_txn,
+    create_account_of_type,
     create_hysa_account,
     insert_origination_event,
     insert_origination_rate,
@@ -1745,8 +1746,13 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
             cash = balance_at.cash_balance_map(hysa, scenario, periods)
-            # Force the documented (NOT-NULL-unreachable) None return.
-            monkeypatch.setattr(balance_at, "balance_map", lambda *a, **k: None)
+            # Force the documented (NOT-NULL-unreachable) None return.  Patch the
+            # DEFINING module (``_kind_correct``), not the package re-export:
+            # ``grid_balance_view`` looks the producer up through its owning
+            # module, so that is where the substitution has to land.
+            monkeypatch.setattr(
+                balance_at._kind_correct, "balance_map", lambda *a, **k: None,
+            )
             view = balance_at.grid_balance_view(hysa, scenario, periods)
 
             assert view.balances == cash.balances
@@ -1811,3 +1817,396 @@ class TestGridBalanceView:
             total_accrual = sum(view.increments.values())
             assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
             assert total_accrual > Decimal("0.00")
+
+
+class TestLiabilityOwedAtDates:
+    """``liability_owed_at_dates``: the seam's FORWARD multi-date liability view.
+
+    The seam entry that closed the W9906 fence hole
+    (``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``):
+    the horizon liability band used to reach past the seam into
+    ``net_worth_kernel.loan_owed_at_dates`` and hold half the boundary rule (the
+    non-amortizing flat carry) itself.  These tests pin BOTH forward rules, the
+    today-point source, the sign convention, and the forward-only domain.
+    """
+
+    def test_amortizing_loan_amortizes_across_future_dates(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A mortgage's owed balance strictly declines across future sample dates."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            today = date.today()
+            samples = [
+                today,
+                date(today.year + 1, 12, 31),
+                date(today.year + 2, 12, 31),
+            ]
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], scenario, samples,
+                {acct.id: Decimal("200000.00")}, today,
+            )
+
+            series = owed[acct.id]
+            assert len(series) == len(samples)
+            # Today is the caller's confirmed balance; each later year end has
+            # had another year of scheduled principal applied, so the owed
+            # balance falls monotonically.
+            assert series[0] == Decimal("200000.00")
+            assert series[1] < series[0]
+            assert series[2] < series[1]
+
+    def test_today_point_is_the_callers_confirmed_balance(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The today point comes from *current_balances*, never a schedule walk.
+
+        Load-bearing: the caller's current balance is the ledger-confirmed figure
+        the net-worth hero renders, so a band built on this reconciles with the
+        hero at index 0 by construction.  A schedule walk at ``today`` would
+        instead report the balance net of any OVERDUE unconfirmed payment (the
+        due-basis rows stay in the forward walk), UNDERSTATING the debt.
+
+        Pinned by passing a current balance the schedule could not possibly
+        produce: it must come back verbatim at index 0.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            sentinel = Decimal("123456.78")
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], scenario, [date.today()], {acct.id: sentinel},
+                date.today(),
+            )
+
+            assert owed[acct.id] == [sentinel]
+
+    def test_non_amortizing_liability_holds_flat(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A revolving Credit Card has no forward model: flat owed magnitude.
+
+        The rule that used to live in the horizon consumer.  Also pins the sign
+        convention: a card's cash balance is NEGATIVE, and the seam returns the
+        POSITIVE owed magnitude (matching ``sum_net_worth_at_period``'s
+        ``total -= abs(bal)``).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            today = date.today()
+            samples = [today, date(today.year + 1, 12, 31),
+                       date(today.year + 5, 12, 31)]
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], scenario, samples, {card.id: Decimal("-500.00")}, today,
+            )
+
+            # abs(-500) held flat at every sample -- no forward model.
+            assert owed[card.id] == [Decimal("500.00")] * 3
+
+    def test_no_baseline_scenario_holds_every_liability_flat(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``scenario=None`` is the degenerate case of the SAME rule, not an error.
+
+        No baseline means no loan is resolvable, so every liability -- including
+        an amortizing mortgage -- falls to the no-forward-model flat hold.  This
+        is the one public seam entry that does NOT raise on a None scenario: it
+        has a correct answer, and raising would force each caller to re-derive
+        the flat hold (the very duplication the seam exists to prevent).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            today = date.today()
+            samples = [today, date(today.year + 1, 12, 31)]
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], None, samples, {acct.id: Decimal("200000.00")}, today,
+            )
+
+            assert owed[acct.id] == [Decimal("200000.00")] * 2
+
+    def test_liability_missing_from_current_balances_is_zero(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An account absent from *current_balances* reads 0, not a KeyError."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], scenario, [date.today()], {}, date.today(),
+            )
+
+            assert owed[card.id] == [Decimal("0")]
+
+    def test_past_sample_date_raises(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A past date is a LEDGER read, not a projection -- the seam refuses it.
+
+        The forward-only domain is a runtime invariant, not a docstring note.  A
+        consumer that wants a loan's past balance must ask ``balance_at``, which
+        routes an amortizing account's past to the genesis ledger (the only
+        complete record -- it books the true-ups that have no schedule row).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            yesterday = date.today() - timedelta(days=1)
+
+            with pytest.raises(ValueError, match="FORWARD"):
+                balance_at.liability_owed_at_dates(
+                    [acct], scenario, [yesterday, date.today()],
+                    {acct.id: Decimal("200000.00")}, date.today(),
+                )
+
+    def test_kernel_producer_rejects_today_or_earlier(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The kernel's forward projection refuses a today-or-earlier date.
+
+        ``forward_balance_at_date`` walks the schedule's UNCONFIRMED rows, and an
+        OVERDUE payment (past due, still unpaid) is deliberately among them.  So
+        at ``today`` the walk would report the balance net of a payment that was
+        NEVER MADE -- understating the debt.  The producer therefore rejects the
+        present as well as the past; the confirmed present is the resolver's
+        ``current_balance``, which the seam supplies.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+
+            with pytest.raises(ValueError, match="STRICTLY FORWARD"):
+                net_worth_kernel.loan_owed_at_dates(
+                    [acct], scenario.id, [date.today()], date.today(),
+                )
+
+    def test_projection_is_joined_by_date_not_by_position(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Sample dates are joined BY DATE, so their ORDER cannot mis-value the band.
+
+        The producer's returned list must never be consumed positionally.  If it
+        were, de-duplicating or sorting the sample dates inside
+        ``loan_owed_at_dates`` -- a natural optimization, since the schedule walk
+        is the expensive part -- would silently shift every point of the
+        liability band with no crash and no failing test.
+
+        Pinned by passing the samples OUT of chronological order: the +2y point
+        must still owe LESS than the +1y point, whatever order they arrive in.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            today = date.today()
+            plus_one = date(today.year + 1, 12, 31)
+            plus_two = date(today.year + 2, 12, 31)
+
+            # Deliberately unsorted: today, +2y, +1y.
+            owed = balance_at.liability_owed_at_dates(
+                [acct], scenario, [today, plus_two, plus_one],
+                {acct.id: Decimal("200000.00")}, today,
+            )
+
+            series = owed[acct.id]
+            assert series[0] == Decimal("200000.00")
+            # series[1] is the +2y sample and series[2] the +1y sample, so the
+            # LATER date must owe strictly less -- the opposite of what a
+            # positional join against a sorted producer list would return.
+            assert series[1] < series[2], (
+                "the +2y sample owes more than the +1y sample: the forward "
+                "projection was joined by POSITION, not by date"
+            )
+
+    def test_mixed_liability_set_in_one_call(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan and a card in ONE call: both forward rules coexist in one result.
+
+        The batch shape the sole caller actually passes.  The amortizing account
+        must amortize while the non-amortizing one holds flat, in the same result
+        dict -- the case where the splice and the flat carry have to coexist.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            today = date.today()
+            samples = [today, date(today.year + 1, 12, 31)]
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct, card], scenario, samples,
+                {acct.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
+                today,
+            )
+
+            assert set(owed) == {acct.id, card.id}
+            # The loan amortizes; the card has no forward model and holds flat.
+            assert owed[acct.id][1] < owed[acct.id][0]
+            assert owed[card.id] == [Decimal("500.00"), Decimal("500.00")]
+
+    def test_forward_balance_equals_the_scheduled_principal_arithmetic(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The projected owed balance equals the schedule's own principal arithmetic.
+
+        An inequality (``series[1] < series[0]``) would pass even if the
+        projection applied ONE month of principal instead of every month due, or
+        projected the wrong loan.  This pins the actual dollars with the identity
+        the amortization schedule itself satisfies:
+
+            owed(T) == current_balance - sum(principal of every payment due by T)
+
+        which is date-independent (it holds however many payments fall due by T),
+        so the assertion cannot rot as the suite's clock advances.  It is also the
+        SAME figure the debt card and the ``2 years`` band read, since all three
+        walk one resolver schedule.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            today = date.today()
+            far_out = date(today.year + 1, 12, 31)
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], scenario, [today, far_out],
+                {acct.id: Decimal("200000.00")}, today,
+            )
+
+            debt = net_worth_kernel.generate_debt_schedules(
+                [acct], scenario.id,
+            )[acct.id]
+            forward_rows = sorted(
+                (row for row in debt.schedule if not row.is_confirmed),
+                key=lambda row: row.payment_date,
+            )
+            due_by_target = [
+                row for row in forward_rows if row.payment_date <= far_out
+            ]
+            principal_retired = sum(
+                (row.principal for row in due_by_target), Decimal("0.00"),
+            )
+
+            # The seam's answer IS the schedule's arithmetic, to the cent.
+            assert owed[acct.id][1] == (
+                debt.current_balance - principal_retired
+            )
+            # And it agrees with the shared primitive every loan surface reads.
+            assert owed[acct.id][1] == balance_from_schedule_at_date(
+                forward_rows, far_out, debt.current_balance,
+            )
+            # Sanity on the oracle: many payments fell due, not zero and not one.
+            assert len(due_by_target) > 12
+            assert principal_retired > Decimal("2000.00")
+
+    def test_today_point_ignores_overdue_rows_that_would_understate_the_debt(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An OVERDUE unpaid payment must not shrink the today point.
+
+        This fixture is the real hazard, not a contrived one: the mortgage was
+        originated a year ago with NO payments recorded, so its schedule carries
+        a dozen UNCONFIRMED rows already past due.  ``forward_balance_at_date``
+        deliberately keeps overdue rows in its walk (the project's due-basis
+        treatment), so a schedule walk AT TODAY reports the balance net of
+        payments that were never made -- thousands of dollars less than the loan
+        actually owes.
+
+        The seam must not do that.  Its today point is the caller's
+        ledger-confirmed balance, full stop.  Pinned by asserting the two
+        differ: the schedule walk understates, and the seam does not follow it.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            acct, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            today = date.today()
+            confirmed = Decimal("200000.00")
+
+            debt = net_worth_kernel.generate_debt_schedules(
+                [acct], scenario.id,
+            )[acct.id]
+            forward_rows = sorted(
+                (row for row in debt.schedule if not row.is_confirmed),
+                key=lambda row: row.payment_date,
+            )
+            overdue = [row for row in forward_rows if row.payment_date <= today]
+            # The fixture really is in the hazardous state.
+            assert overdue, "expected overdue unconfirmed rows in this fixture"
+            walk_at_today = balance_from_schedule_at_date(
+                forward_rows, today, debt.current_balance,
+            )
+            assert walk_at_today < confirmed, (
+                "a schedule walk at today should understate the debt here"
+            )
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], scenario, [today], {acct.id: confirmed}, today,
+            )
+
+            # The seam reports what is OWED, not what the schedule wishes was paid.
+            assert owed[acct.id] == [confirmed]
+            assert owed[acct.id][0] != walk_at_today

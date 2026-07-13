@@ -45,21 +45,17 @@
                             drop the owner-only buttons.
 #}
 <div class="d-flex gap-2 px-3 py-2 bg-surface-raised border-bottom">
-  {# Suppress Mark Paid for any already-settled status -- the
-     state machine treats Paid (expense done), Received (income
-     done), and Settled as terminals for the mark-done path, so
-     offering the button would either no-op (identity edge) or
-     reject with 400 (RECEIVED -> DONE attempt on an income txn,
-     which the spec's literal STATUS_DONE / STATUS_SETTLED guard
-     missed -- the Playwright verification harness surfaced this
-     on income transactions).  ``Status.is_settled`` is the
-     canonical boolean for "this row is already paid"; see
-     app/ref_seeds.py for the seeded truth table.  Credit and
-     Cancelled (is_settled=False, is_immutable=True) still
-     expose the button; the underlying mark_done route returns
-     400 for those state-machine transitions and the user sees
-     the error text.  Tightening that is out of scope here. #}
-  {% if txn.status and not txn.status.is_settled %}
+  {# Mark Paid renders ONLY from Projected -- the exact precondition
+     of the projected -> done|received transition (grid audit D2,
+     ruled 2026-07-11).  The previous not-is_settled guard also
+     exposed the button on Credit and Cancelled rows
+     (is_settled=False, is_immutable=True), where mark_done is an
+     invalid transition; before the designed error fragments the
+     resulting 400 body was silently dropped, so the tap did nothing
+     visible.  Mirrors the desktop card's Paid button and the cell's
+     paybtn.  A stale card that still shows the button (another
+     device changed the status) gets the designed 400 banner. #}
+  {% if txn.status_id == STATUS_PROJECTED %}
     {# Mark Paid posts to mark_done and swaps THIS card in place.  The
        target is the card wrapper id `card-<prefix-><id>` emitted by
        `render_one_card` (the per-tab-namespaced sibling of the

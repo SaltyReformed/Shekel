@@ -149,9 +149,10 @@
   }
 
   /**
-   * Create the chart when its canvas is present (page-load only: the
-   * detail page has no HTMX swaps that replace the canvas; theme
-   * re-renders are handled by the ShekelChart factory).
+   * Create the chart when its canvas is present.  Theme re-renders are
+   * handled by the ShekelChart factory; ShekelChart.create destroys any
+   * prior instance registered under the same canvas id, so re-invoking
+   * after a swap is safe.
    */
   function init() {
     if (typeof ShekelChart === "undefined" || typeof Chart === "undefined") {
@@ -166,4 +167,13 @@
   } else {
     init();
   }
+
+  // Re-create after HTMX replaces the band: an anchor save through the
+  // hero's click-to-edit editor fires balanceChanged, and
+  // #cash-band-region re-renders the whole band, canvas included (the
+  // D14 port).  On afterSettle, not afterSwap, so the new canvas sits
+  // in its final DOM position (the growth_chart.js precedent).
+  document.addEventListener("htmx:afterSettle", function () {
+    init();
+  });
 })();

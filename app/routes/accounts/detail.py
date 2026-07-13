@@ -64,6 +64,12 @@ from app.services import (
     home_equity_service,
     net_worth_kernel,
     pay_period_service,
+    property_equity_chart,
+)
+from app.services.loan_loaders import load_rate_changes
+from app.services.loan_resolution import (
+    contractual_schedule_from_origination,
+    resolve_account_loan,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import (
@@ -76,8 +82,10 @@ from app.utils.period_projections import project_balance_horizons
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
+    from app.models.loan_params import LoanParams
     from app.models.pay_period import PayPeriod
     from app.services.balance_resolver import AnchorPoint
+    from app.services.loan_resolver import LoanState
 
 logger = logging.getLogger(__name__)
 
@@ -310,40 +318,47 @@ def _cash_detail_wrong_type(account: Account) -> bool:
 # ── Cash Detail (checking + interest + plain cash) ────────────────
 
 
-@accounts_bp.route("/accounts/<int:account_id>/details")
-@login_required
-@require_owner
-def cash_detail(account_id):
-    """Unified cash-account detail page (checking / interest / plain cash).
+def _load_cash_account_or_404(account_id: int) -> Account:
+    """Load a cash-detail-served account for the current user, or 404.
 
-    Shows the account's balance hero with an honest anchored caption, the
-    3 / 6 / 12-month horizon chips, and a trend chart; interest-bearing
-    accounts additionally get an APY / compounding parameters card, a
-    "next 12 months" projected-interest chip, and their interest-accrued
-    balances.  Serves every cash account kind (see
-    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
-    assets, and retirement / investment accounts 404 out.
-
-    Balance production is preserved verbatim from the two pre-merge routes:
-    interest accounts read the kind-correct ``balance_at.balance_map`` plus
-    the kernel's ``interest_by_period_for_account`` accessor; plain cash
-    accounts read the cash-flow ``balance_at.cash_balance_map``.  Both seam
-    entries delegate to the canonical entries-aware producers (Level-1
-    Commit 8), so this route calls no balance producer directly.  The
-    anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
-    Commit 4) for the hero caption and the current-period fallback; the
-    ``scenario is None`` / ``no pay periods`` empty-state guards are kept
-    (a fixture without a baseline scenario, a freshly-registered user with
-    no generated periods) and the template renders cleanly when
-    ``balances`` is empty.
+    The shared gate for :func:`cash_detail` and its two HTMX fragments
+    (:func:`cash_band`, :func:`cash_balance_hero`): ``get_or_404``
+    resolves cross-owner / non-existent accounts to ``None`` (the
+    project's "404 for not-found and not-yours" rule), and
+    :func:`_cash_detail_wrong_type` 404s the kinds this page does not
+    serve (loans, physical assets, retirement / investment).
     """
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
-
     if _cash_detail_wrong_type(account):
         abort(404)
+    return account
 
+
+def _cash_detail_context(account: Account) -> dict:
+    """Assemble the cash detail template context (page AND band fragments).
+
+    Extracted from :func:`cash_detail` when the D14 click-to-edit port
+    added the band-refresh fragment (:func:`cash_band`): both render
+    paths must compute the hero balance, horizon chips, interest chip,
+    and chart from the same producers or a band refresh could disagree
+    with the page render.
+
+    Balance production is preserved verbatim from the two pre-merge
+    routes: interest accounts read the kind-correct
+    ``balance_at.balance_map`` plus the kernel's
+    ``interest_by_period_for_account`` accessor; plain cash accounts
+    read the cash-flow ``balance_at.cash_balance_map``.  Both seam
+    entries delegate to the canonical entries-aware producers (Level-1
+    Commit 8), so this module calls no balance producer directly.  The
+    anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
+    Commit 4) for the hero caption and the current-period fallback; the
+    ``scenario is None`` / ``no pay periods`` empty-state guards are
+    kept (a fixture without a baseline scenario, a freshly-registered
+    user with no generated periods) and the templates render cleanly
+    when ``balances`` is empty.
+    """
     is_interest = bool(
         account.account_type and account.account_type.has_interest
     )
@@ -369,12 +384,11 @@ def cash_detail(account_id):
     current_balance = _current_period_balance(balances, current_period, anchor)
     chart_json, has_chart = _build_chart(all_periods, balances, current_period)
 
-    return render_template(
-        "accounts/cash_detail.html",
-        account=account,
-        is_interest=is_interest,
-        current_balance=current_balance,
-        current_period=current_period,
+    return {
+        "account": account,
+        "is_interest": is_interest,
+        "current_balance": current_balance,
+        "current_period": current_period,
         # ``anchor_as_of`` is the anchor EVENT instant
         # (``AnchorPoint.created_at``, the dated ``AccountAnchorHistory`` row),
         # NOT the anchor period's start date -- fixing the audit's finding #2
@@ -383,21 +397,101 @@ def cash_detail(account_id):
         # UTC-day ``as_of_date``) so the template renders it in the user's
         # display timezone via ``local_datetime`` -- a late-evening-Eastern
         # anchor otherwise shows on the next UTC day.
-        anchor_as_of=anchor.created_at if anchor is not None else None,
-        horizons=_build_horizons(
+        "anchor_as_of": anchor.created_at if anchor is not None else None,
+        "horizons": _build_horizons(
             current_balance, current_period, all_periods, balances,
         ),
         # The next-year interest chip is interest-only; a plain account
         # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
         # is a legitimate value for a zero-APY interest account.
-        interest_next_year=(
+        "interest_next_year": (
             _interest_next_year(interest_by_period, current_period, all_periods)
             if is_interest and current_period is not None else None
         ),
-        params=params,
-        compounding_frequencies=compounding_frequencies,
-        chart_json=chart_json,
-        has_chart=has_chart,
+        "params": params,
+        "compounding_frequencies": compounding_frequencies,
+        "chart_json": chart_json,
+        "has_chart": has_chart,
+    }
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details")
+@login_required
+@require_owner
+def cash_detail(account_id):
+    """Unified cash-account detail page (checking / interest / plain cash).
+
+    Shows the account's balance hero (the D14 click-to-edit anchor
+    control) with an honest anchored caption, the 3 / 6 / 12-month
+    horizon chips, and a trend chart; interest-bearing accounts
+    additionally get an APY / compounding parameters card, a "next 12
+    months" projected-interest chip, and their interest-accrued
+    balances.  Serves every cash account kind (see
+    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
+    assets, and retirement / investment accounts 404 out.  The balance
+    production contract lives on :func:`_cash_detail_context` (shared
+    with the band fragment).
+    """
+    account = _load_cash_account_or_404(account_id)
+    return render_template(
+        "accounts/cash_detail.html", **_cash_detail_context(account),
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details/band")
+@login_required
+@require_owner
+def cash_band(account_id):
+    """HTMX partial: re-render the cash detail band (D14 click-to-edit port).
+
+    The ``balanceChanged`` refresh target: after an anchor save through
+    the hero's inline editor, the page's ``#cash-band-region`` re-fetches
+    this fragment so the hero, the horizon chips, the interest chip, AND
+    the trend chart all recompute from the new anchor together -- a
+    hero-only refresh would leave the chips and chart disagreeing with
+    it (``account_detail.js`` re-creates the chart when the canvas
+    returns).  Renders ``accounts/_cash_band.html`` with the same
+    context builder the page uses, so the swapped-in band reads the
+    identical contract.
+
+    Non-HTMX requests redirect to the detail page (the band is a
+    fragment, not a standalone page).
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
+    account = _load_cash_account_or_404(account_id)
+    return render_template(
+        "accounts/_cash_band.html", **_cash_detail_context(account),
+    )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details/balance-hero")
+@login_required
+@require_owner
+def cash_balance_hero(account_id):
+    """HTMX partial: the cash balance hero cell (D14 click-to-edit port).
+
+    The Cancel / Escape and 409-conflict revert target for the cash
+    detail page's click-to-edit anchor editor:
+    ``accounts._anchor_revert_url`` maps ``revert=cash`` here, mirroring
+    how the cockpit's ``revert=accounts`` maps to
+    ``savings.cockpit_balance``.  Renders
+    ``accounts/_cash_balance_hero.html`` with the resolver
+    current-period balance the detail headline shows, so a reverted
+    cell restores the exact figure.  (A SAVE does not land here -- the
+    editor's success response fires ``balanceChanged`` and the whole
+    band re-renders via :func:`cash_band`.)
+
+    Non-HTMX requests redirect to the detail page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
+    account = _load_cash_account_or_404(account_id)
+    ctx = _cash_detail_context(account)
+    return render_template(
+        "accounts/_cash_balance_hero.html",
+        account=account,
+        current_balance=ctx["current_balance"],
     )
 
 
@@ -540,6 +634,123 @@ def update_interest_params(account_id):
 # ── Property (physical-asset) Detail & Params ─────────────────────
 
 
+def _secured_loan_series(
+    resolved_loans: list[tuple[LoanParams, LoanState]],
+) -> list[property_equity_chart.SecuredLoanSeries]:
+    """Pack each OUTSTANDING resolved loan's rows for the equity chart.
+
+    For every secured loan with a positive balance today, builds its pre-tracking
+    contractual back-projection
+    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`,
+    clipped to the months before the resolved schedule begins) and packs it with
+    the resolved schedule and current balance.  A paid-off loan (zero balance)
+    contributes nothing, so the chart's no-outstanding-debt fallback fires when
+    every secured loan is paid off (the H1 fix).  Reads each loan's rate-change
+    feed for the back-projection; the heavy resolution was already done once by
+    the caller.
+
+    Args:
+        resolved_loans: The ``(LoanParams, LoanState)`` pairs the route resolved
+            once for this page load.
+
+    Returns:
+        One :class:`~app.services.property_equity_chart.SecuredLoanSeries` per
+        outstanding loan (empty when every secured loan is paid off).
+    """
+    series: list[property_equity_chart.SecuredLoanSeries] = []
+    for loan_params, state in resolved_loans:
+        if state.current_balance <= Decimal("0"):
+            continue
+        full_contractual = contractual_schedule_from_origination(
+            loan_params, load_rate_changes(loan_params.account_id),
+        )
+        tracking_start = (
+            state.schedule[0].payment_date if state.schedule else None
+        )
+        back_projection = [
+            row for row in full_contractual
+            if tracking_start is None or row.payment_date < tracking_start
+        ]
+        series.append(property_equity_chart.SecuredLoanSeries(
+            back_projection=back_projection,
+            schedule=state.schedule,
+            current_balance=state.current_balance,
+        ))
+    return series
+
+
+def _property_chart_context(
+    params: AssetAppreciationParams,
+    equity: home_equity_service.HomeEquity,
+    resolved_loans: list[tuple[LoanParams, LoanState]],
+    today: date,
+) -> dict[str, object]:
+    """Serialize the property equity-over-time chart for the detail band.
+
+    The single Chart.js serialization boundary for the property page (coding
+    standards: ``float`` lives only here, never in a money calculation).
+    ``has_equity_chart`` is ``False`` -- and the band shows the "set a market
+    value" empty state instead of a chart -- only when there is no positive
+    market value to anchor the appreciation arc on (a freshly-created Property
+    whose value has not been set yet).  Otherwise the market-value /
+    secured-debt / equity series come from
+    :func:`app.services.property_equity_chart.build_property_equity_chart`
+    (fed the loans the route already resolved once, so the chart and the equity
+    hero read one resolution), floated here into the ``data-chart`` JSON the
+    template hands to ``property_detail.js``; ``chart_state`` drives the caption
+    variant (``standard`` / ``zero_rate`` / ``no_loans``), ``today_index`` the
+    Today boundary, and ``debt_tier`` the per-month estimated / confirmed /
+    projected styling.  ``has_estimated_debt`` -- ``True`` when any month is the
+    ``estimated`` contractual back-projection tier -- gates the caption's dotted
+    pre-tracking clause so the copy names a texture only when the chart draws it
+    (the "a figure and its caption never disagree" design principle).
+
+    Args:
+        params: The Property's :class:`AssetAppreciationParams` (the rate).
+        equity: The :class:`~app.services.home_equity_service.HomeEquity`
+            snapshot (its ``market_value`` gates ``has_equity_chart`` and is the
+            chart's anchor).
+        resolved_loans: The ``(LoanParams, LoanState)`` pairs resolved once for
+            this load (shared with the equity hero).
+        today: The as-of / compounding-origin date.
+
+    Returns:
+        The ``has_equity_chart`` / ``chart_json`` / ``chart_state`` context the
+        ``property_detail.html`` band reads.
+    """
+    if equity.market_value <= Decimal("0"):
+        return {
+            "has_equity_chart": False,
+            "chart_json": json.dumps({
+                "labels": [], "value": [], "debt": [], "equity": [],
+                "today_index": 0, "debt_tier": [],
+            }),
+            "chart_state": property_equity_chart.CHART_STATE_NO_LOANS,
+            "has_estimated_debt": False,
+        }
+    chart = property_equity_chart.build_property_equity_chart(
+        _secured_loan_series(resolved_loans),
+        equity.market_value,
+        params.annual_appreciation_rate,
+        today,
+    )
+    return {
+        "has_equity_chart": True,
+        "chart_json": json.dumps({
+            "labels": chart.labels,
+            "value": [float(value) for value in chart.value],
+            "debt": [float(debt) for debt in chart.debt],
+            "equity": [float(equity_pt) for equity_pt in chart.equity],
+            "today_index": chart.today_index,
+            "debt_tier": chart.debt_tier,
+        }),
+        "chart_state": chart.chart_state,
+        "has_estimated_debt": (
+            property_equity_chart.TIER_ESTIMATED in chart.debt_tier
+        ),
+    }
+
+
 @accounts_bp.route("/accounts/<int:account_id>/property")
 @login_required
 @require_owner
@@ -580,8 +791,20 @@ def property_detail(account_id):
 
     scenario = get_baseline_scenario(current_user.id)
     scenario_id = scenario.id if scenario else None
-    equity = home_equity_service.resolve_home_equity(
-        account, scenario_id, date.today(),
+    today = date.today()
+
+    # Resolve each secured loan ONCE, then feed both the equity hero and the
+    # equity chart from that single pass (no loan is resolved twice per load).
+    resolved_loans: list[tuple[LoanParams, LoanState]] = []
+    for loan in account.secured_loans:
+        resolved = resolve_account_loan(loan.id, scenario_id, today)
+        if resolved is not None:
+            resolved_loans.append(resolved)
+    # ``current_anchor_balance`` is NOT NULL (CHECK-constrained), so it is read
+    # straight -- no dead ``or 0`` anchor-NULL fork (C7-2).
+    equity = home_equity_service.compute_home_equity(
+        account.current_anchor_balance,
+        [state.current_balance for _params, state in resolved_loans],
     )
 
     return render_template(
@@ -590,6 +813,7 @@ def property_detail(account_id):
         params=params,
         equity=equity,
         secured_loans=account.secured_loans,
+        **_property_chart_context(params, equity, resolved_loans, today),
     )
 
 

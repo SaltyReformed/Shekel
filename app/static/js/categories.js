@@ -16,14 +16,19 @@
  * a wiring change, not a feature change.  Each ``data-action`` value
  * names one of four discrete behaviours:
  *
- *   data-action="cat-edit-show"     -- "Edit" button: show edit form,
- *                                      hide display row.
- *   data-action="cat-edit-cancel"   -- "Cancel" button: hide edit
- *                                      form, show display row.
+ *   data-action="cat-edit-show"     -- "Edit" button: show the edit
+ *                                      drawer, hide the display row.
+ *   data-action="cat-edit-cancel"   -- "Cancel" button: hide the edit
+ *                                      drawer, show the display row.
  *   data-action="cat-group-change"  -- group <select>: switch the
  *                                      "create new" UX on / off.
  *   data-action="cat-group-name-input" -- new-group text input:
  *                                      mirror value to hidden field.
+ *
+ * The edit drawer (``data-edit-id``) is a wrapper <div>, not the edit
+ * <form> itself: the labeled Archive / Delete actions moved into the
+ * drawer as sibling forms (polish audit P-ST6 / S11), and forms cannot
+ * nest, so show/cancel toggle the wrapper.
  *
  * Each element carries the IDs of its peer elements as data-* hints
  * so a row's handler operates only on that row's pieces (no
@@ -64,21 +69,21 @@
     var action = trigger.dataset.action;
 
     if (action === "cat-edit-show") {
-      // "Edit" button.  Show the edit form, hide the display row.
-      const editForm = getPeer(trigger, "editId");
+      // "Edit" button.  Show the edit drawer, hide the display row.
+      const editDrawer = getPeer(trigger, "editId");
       const displayRow = getPeer(trigger, "displayId");
-      editForm.classList.remove("d-none");
+      editDrawer.classList.remove("d-none");
       displayRow.classList.add("d-none");
       return;
     }
 
     if (action === "cat-edit-cancel") {
-      // "Cancel" button.  Hide the edit form (the closest <form>),
-      // restore the display row.
-      const form = trigger.closest("form");
-      if (form) {
-        form.classList.add("d-none");
-      }
+      // "Cancel" button.  Hide the edit drawer, restore the display
+      // row.  The drawer is resolved by id, not closest(<form>): the
+      // Cancel button sits outside the edit form so the drawer's
+      // sibling Archive / Delete forms hide with it.
+      const drawer = getPeer(trigger, "editId");
+      drawer.classList.add("d-none");
       const display = getPeer(trigger, "displayId");
       display.classList.remove("d-none");
       return;

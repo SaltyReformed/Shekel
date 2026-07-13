@@ -199,10 +199,6 @@ class UserSettings(TimestampMixin, db.Model):
             "large_transaction_threshold >= 0",
             name="ck_user_settings_large_txn_threshold",
         ),
-        db.CheckConstraint(
-            "trend_alert_threshold >= 0 AND trend_alert_threshold <= 1",
-            name="ck_user_settings_valid_trend_threshold",
-        ),
         # F-077 / C-24: SWR is the percentage of portfolio drawn
         # each year in retirement (4% rule -> ``Decimal("0.0400")``).
         # The retirement-settings route divides percent input by
@@ -282,9 +278,6 @@ class UserSettings(TimestampMixin, db.Model):
     estimated_retirement_tax_rate = db.Column(db.Numeric(5, 4), nullable=True)
     large_transaction_threshold = db.Column(
         db.Integer, nullable=False, server_default="500",
-    )
-    trend_alert_threshold = db.Column(
-        db.Numeric(5, 4), nullable=False, server_default="0.1000",
     )
     anchor_staleness_days = db.Column(
         db.Integer, nullable=False, server_default="14",

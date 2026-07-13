@@ -6,18 +6,38 @@
    calendar base rules. */
 
 /* =============================================
-   CALENDAR (slice-1 flagship rebuild)
-   Summary strip (reuses the shared .pulse-chip vocabulary from
-   dashboard.css, the accounts-cockpit precedent), month flow strip,
-   and ledger day cells with an end-of-day balance hero.
+   SHELL (four-pill tab loader)
    ============================================= */
 
-/* Summary strip: chip row above the flow strip. */
-.calendar-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+/* Tab-switch spinner: pinned to the tab body's top center (the shell
+   wraps #tab-spinner + #tab-content in a position-relative div) so the
+   idle indicator holds no layout space -- as an in-flow block its
+   transparent-but-present state reserved ~80px between the pills and
+   every tab (P-AN1).  Visibility still comes from the shared
+   .htmx-indicator opacity rules in base.css. */
+.analytics-tab-spinner {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
 }
+
+/* Shared period picker (P-AN3, _picker_macros.html): the fixed-width
+   centered label between the chevrons, so adjacent month names do not
+   shift the buttons as their widths differ. */
+.analytics-picker-label {
+  min-width: 7.5rem;
+  text-align: center;
+}
+
+/* =============================================
+   CALENDAR (slice-1 flagship rebuild; S5 cockpit recomposition)
+   One pulse canvas (the shared .nw-sky / .pulse-chip vocabulary from
+   dashboard.css + accounts.css) holding the balance hero, summary
+   chips, and the month flow strip; then ledger day cells with an
+   end-of-day balance hero.
+   ============================================= */
 
 .calendar-chip-cap {
   font-size: 0.71875rem;
@@ -92,8 +112,12 @@
   z-index: 1;
 }
 
+/* Opaque mix with the cell surface, not a translucent wash: the tint
+   sits over the calendar grid's gap backdrop (--shekel-border-subtle),
+   so a see-through payday cell rendered flat putty-gray in light mode
+   and read as disabled (P-AN5). */
 .calendar-paycheck {
-  background-color: rgba(var(--shekel-accent-rgb), 0.08);
+  background-color: color-mix(in srgb, var(--shekel-accent) 8%, var(--shekel-surface));
 }
 
 .calendar-day-head {
@@ -194,8 +218,17 @@
   font-weight: 500;
 }
 
+/* Money-state inks follow the grid's thresholds (D11, P-AN6): danger is
+   reserved for a NEGATIVE end-of-day balance; low-but-positive (below
+   the user's low-balance threshold) takes the caution token.  Being the
+   month's trough is a marker, not a money state, and no longer inks a
+   healthy figure red. */
 .calendar-day-balance--danger {
   color: var(--shekel-danger);
+}
+
+.calendar-day-balance--low {
+  color: var(--shekel-warning);
 }
 
 .calendar-day[data-day] {
@@ -217,6 +250,15 @@
   display: none;
 }
 
+/* Notation legend under the grid (P-AN8): names the PAY / asterisk /
+   tilde / check glyphs on screen, so the asterisk's meaning is
+   reachable on touch (its cell tooltip is not).  Layout comes from
+   Bootstrap utilities on the container; only the check's money-state
+   ink needs a rule (the cell version is scoped to .calendar-flow-name). */
+.calendar-legend .bi-check2 {
+  color: var(--shekel-done);
+}
+
 #calendar-day-detail:empty {
   display: none;
 }
@@ -230,6 +272,20 @@
 .calendar-month-card:focus-visible {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Net-sign border: a surplus / deficit month tints its whole card edge with
+   the money-state tokens (paired with the signed Net figure below, so colour
+   is never the only signal).  Replaces raw Bootstrap .border-success /
+   .border-danger, which used the un-themed Bootstrap palette.  The compound
+   .card selector matches the per-theme `[data-bs-theme] .card` border rule's
+   specificity and wins on source order (analytics.css loads after base.css). */
+.card.calendar-month-card--surplus {
+  border-color: var(--shekel-done);
+}
+
+.card.calendar-month-card--deficit {
+  border-color: var(--shekel-danger);
 }
 
 @media (max-width: 767.98px) {
@@ -276,12 +332,18 @@
 
 /* Money-state mapping for refund vs owed: positive/refund = done,
    negative/owed = danger; always paired with the "refund"/"owed" word
-   (color is never the only signal). */
-.tax-refund {
+   (color is never the only signal).  The .tax-ledger td selectors exist
+   because Bootstrap's `.table>:not(caption)>*>*` color declaration
+   (0,1,1) beats a bare class (0,1,0) on ledger cells -- without them
+   refund rows render plain and a flipped estimate would never go red
+   (P-AN16); the two-class form (0,2,1) outranks it. */
+.tax-refund,
+.tax-ledger td.tax-refund {
   color: var(--shekel-done);
 }
 
-.tax-owed {
+.tax-owed,
+.tax-ledger td.tax-owed {
   color: var(--shekel-danger);
 }
 
@@ -326,10 +388,37 @@
   font-weight: 600;
 }
 
-/* ── Spending trend deltas (movers + delta chips) ──────────────── */
-/* trend-up/down/flat map a trend direction to the money-state colours;
-   reused by the Spending tab's delta chips, movers, and sparkline strokes
-   (the sparkline stroke colours via currentColor from the direction class). */
+/* ── Statements (S6 / D8 restructure: hero band + tinted sections) ── */
+
+/* The statement detail reads as a document column: full-bleed, the
+   two-column label/amount tables left ~1,200px of empty leader at
+   1440px (P-AN15). The hero band above stays full width -- it is the
+   page's cockpit chrome, like every other tab's band. */
+.statement-body {
+  max-width: 44rem;
+}
+
+/* A contra-natural (negative) statement amount -- a deficit income
+   chip, a negative equity line, the out-of-balance verdict -- takes
+   danger ink beside the minus sign the money macro renders (P-AN12:
+   the Steel trio instead of raw Bootstrap contextual classes). */
+.statement-amount--neg {
+  color: var(--shekel-danger);
+}
+
+/* Out-of-balance tie-out detail card: a danger border marks what is an
+   app defect, not a user state. [data-bs-theme] matches the base.css
+   .card border skin's two-class specificity; analytics.css loads after
+   base.css, so the tie resolves in this rule's favor. */
+[data-bs-theme] .statement-tieout-broken {
+  border-color: var(--shekel-danger);
+}
+
+/* ── Spending change deltas (chips + ledger + surprises) ────────── */
+/* trend-up/down/flat map a signed month-over-month delta to the
+   money-state colours: up = spent more (danger), down = spent less
+   (done), flat = exactly equal (muted).  Shared by the hero chips, both
+   ledger lenses, and the surprises rail. */
 
 .trend-up {
   color: var(--shekel-danger);
@@ -343,30 +432,69 @@
   color: var(--shekel-text-muted);
 }
 
-/* ── Spending (slice-3 rebuild: hero + Where It Went + rail) ─────── */
+/* ── Spending (S14 "months lead" cockpit: canvas + merged ledger) ── */
 
-/* In-progress month caption + the "Where It Went" header note. */
-.spend-inprogress {
-  font-style: italic;
+/* In-canvas month chart: caption line + the Chart.js canvas region
+   (the .pulse-chart treatment at the spending band's height). */
+
+/* Caption row above the spending chart.  Owns its layout here rather than
+   borrowing the accounts cockpit's control row, which P-AC1 retired (the
+   net-worth stream replaced the old trend chart's controls); the padding /
+   flex is carried over verbatim so the caption renders unchanged. */
+.spend-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.25rem 1.375rem 0.5rem;
 }
 
-.spend-header-note {
+.spend-chart-note {
   font-size: 0.71875rem;
+  color: var(--shekel-text-muted);
 }
 
-.spend-month-label {
-  min-width: 7.5rem;
-  text-align: center;
+.spend-chart {
+  height: 230px;
+  padding: 0.25rem 0.875rem 0.625rem;
 }
 
-/* Where It Went rows: one shared grid so the group head and its item rows
-   align column-for-column (marker / name / share bar / sparkline / delta /
-   figures).  The group head is a <button>, the items are <div>s, so the grid
-   template is applied to both via .spend-row. */
+/* Lens pill: the By size / By change toggle in the ledger card header.
+   Bootstrap's pill plugin drives the .active swap and the pane switch. */
+.spend-lens {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--shekel-surface-raised);
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 99px;
+  padding: 2px;
+}
+
+.spend-lens button {
+  border: none;
+  background: transparent;
+  color: var(--shekel-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 99px;
+  padding: 2px 12px;
+  cursor: pointer;
+}
+
+.spend-lens button.active {
+  background: var(--shekel-accent);
+  color: var(--bs-white);
+}
+
+/* By-size rows: one shared grid so the group head and its item rows align
+   column-for-column (marker / name / capped bar / delta / figures).  The
+   group head is a <button> (collapsible) or a <div> (singleton group), the
+   items are <div>s, so the grid template is applied to all via .spend-row. */
 .spend-row {
   display: grid;
   grid-template-columns:
-    1.1rem minmax(4rem, 9rem) minmax(0, 1fr) 74px 66px minmax(5.5rem, auto);
+    1.1rem minmax(6rem, 12rem) minmax(0, 1fr) 6.5rem minmax(5.5rem, auto);
   align-items: center;
   gap: 0.5rem 0.75rem;
   padding: 0.5rem 1rem;
@@ -380,18 +508,21 @@
   border-bottom: none;
 }
 
-/* Group head: a full-width button that toggles its items' collapse. */
+/* Group head row; only the collapsible <button> form is interactive. */
 .spend-group__head {
   width: 100%;
   background: none;
   border: none;
   color: inherit;
   text-align: left;
+}
+
+button.spend-group__head {
   cursor: pointer;
 }
 
-.spend-group__head:hover,
-.spend-group__head:focus-visible {
+button.spend-group__head:hover,
+button.spend-group__head:focus-visible {
   background-color: var(--shekel-row-hover);
 }
 
@@ -410,6 +541,12 @@
   transition: transform 0.15s;
 }
 
+/* A singleton group has nothing to collapse: the chevron cell keeps its
+   grid slot but stays invisible so the name column lines up. */
+.spend-chevron--hidden {
+  visibility: hidden;
+}
+
 /* Default state is expanded (chevron-down); collapsed points right. */
 .spend-group__head[aria-expanded="false"] .spend-chevron {
   transform: rotate(-90deg);
@@ -422,8 +559,24 @@
   min-width: 0;
 }
 
-/* Share bar: proportion of the window total.  Fill width is applied by
-   progress_bar.js from data-progress-pct (CSP forbids inline style). */
+/* The singleton row's item name, and the change lens's group suffix. */
+.spend-kin {
+  color: var(--shekel-text-muted);
+  font-size: 0.71875rem;
+}
+
+/* A category with no prior-month spend: the whole amount is new, so the
+   row says so instead of faking a percent of zero. */
+.spend-badge-new {
+  font-size: 0.6875rem;
+  font-style: italic;
+  color: var(--shekel-text-muted);
+}
+
+/* Capped bar: length is the row's magnitude relative to the LARGEST row
+   (the largest group spans the full track); the % text stays
+   share-of-total.  Fill width is applied by progress_bar.js from
+   data-progress-pct (CSP forbids inline style). */
 .spend-bar {
   position: relative;
   height: 8px;
@@ -446,26 +599,8 @@
   background: color-mix(in srgb, var(--shekel-accent) 55%, transparent);
 }
 
-/* Sparkline cell: the per-period trend polyline, stroke coloured by the
-   direction class (trend-up / trend-down / trend-flat) via currentColor, so
-   the cell is theme-reactive with no JS. */
-.spend-spark {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.spend-spark-svg {
-  width: 100%;
-  height: 22px;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
 .spend-delta {
-  font-size: 0.75rem;
+  font-size: 0.78125rem;
   font-weight: 600;
   text-align: right;
   white-space: nowrap;
@@ -487,23 +622,65 @@
   color: var(--shekel-text-muted);
 }
 
-/* Rail: Top Movers + Estimate Surprises. */
-.spend-mover {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.5rem;
+/* By-change rows: name+kin / diverging minibar / signed delta / the shown
+   month's total. */
+.spend-chrow {
+  display: grid;
+  grid-template-columns: minmax(8rem, 16rem) minmax(0, 1fr) 7rem 6.5rem;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.4375rem 1rem;
+  border-bottom: 1px solid var(--shekel-border-subtle);
 }
 
-.spend-mover__name {
-  min-width: 0;
-  font-size: 0.8125rem;
+.spend-chrow:last-child {
+  border-bottom: none;
 }
 
-.spend-mover__abs {
-  font-size: 0.6875rem;
+/* Center-zeroed diverging minibar: less spending grows left of the center
+   line (done tint), more grows right (danger tint).  Fill widths come from
+   progress_bar.js (a full-magnitude row is 50% of the track = one half). */
+.spend-div-track {
+  position: relative;
+  height: 10px;
 }
 
+.spend-div-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--shekel-border-strong);
+}
+
+.spend-div-fill {
+  position: absolute;
+  top: 1px;
+  height: 8px;
+}
+
+.spend-div-fill--down {
+  right: 50%;
+  border-radius: 99px 0 0 99px;
+  background: color-mix(in srgb, var(--shekel-done) 70%, transparent);
+}
+
+.spend-div-fill--up {
+  left: 50%;
+  border-radius: 0 99px 99px 0;
+  background: color-mix(in srgb, var(--shekel-danger) 70%, transparent);
+}
+
+.spend-current {
+  color: var(--shekel-text-secondary);
+  font-size: 0.78125rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Rail: Estimate Surprises. */
 .spend-surprise__head {
   display: flex;
   justify-content: space-between;
@@ -522,17 +699,29 @@
   margin-top: 0.0625rem;
 }
 
-/* Mobile: drop the share bar and sparkline columns (the % and delta carry
-   the same signals in less space); the remaining four cells reflow into the
-   narrower grid in source order. */
+/* Mobile: both lenses reflow to name / delta / amount (the bars are the
+   dropped column -- the signed delta and % text carry the same signals in
+   less space), and the month chart compresses. */
 @media (max-width: 767.98px) {
   .spend-row {
     grid-template-columns: 1.1rem minmax(0, 1fr) auto auto;
     gap: 0.375rem 0.625rem;
   }
 
-  .spend-bar,
-  .spend-spark {
+  .spend-bar {
     display: none;
+  }
+
+  .spend-chrow {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .spend-div-track {
+    display: none;
+  }
+
+  .spend-chart {
+    height: 160px;
+    padding: 0.25rem 0.5rem 0.5rem;
   }
 }

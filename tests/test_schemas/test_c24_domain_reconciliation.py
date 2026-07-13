@@ -11,6 +11,9 @@ threshold columns whose Marshmallow domain disagreed with the DB
     literal value 1 nominally satisfied both, and the route's
     silent ``/100`` reconciled it in practice; zero was rejected
     although E-12 says "zero is a value, not missing."
+    (Column, field, and its C24-1 pins removed 2026-07-10 with the
+    retired spending trend engine; PA-01 stays here as the audit's
+    historical record.)
 
   PA-02 ``apy``, ``interest_rate`` (loan / rate_history),
     ``inflation_rate`` (escrow), ``default_inflation_rate`` --
@@ -61,58 +64,6 @@ from app.schemas.validation import (
     RefinanceSchema,
     UserSettingsSchema,
 )
-
-
-# ── C24-1 trend_alert_threshold writable ─────────────────────────
-
-
-class TestC24_1TrendAlertThresholdWritable:
-    """C24-1: ``trend_alert_threshold`` is writable end-to-end.
-
-    Pre-fix the schema was ``Integer Range(1, 100)`` while the DB
-    CHECK admitted ``[0, 1]``; only the value 1 nominally satisfied
-    both (the route's ``/100`` reconciled the rest in practice).
-    Post-fix the schema and the DB share the same fraction
-    domain, and the route stores the schema-converted value verbatim.
-    """
-
-    def test_percent_15_round_trips_as_fraction(self):
-        """A form value of ``"15"`` (15%) loads as ``Decimal("0.15")``.
-
-        Hand-check: 15 / 100 = 0.15.  The schema's ``@pre_load``
-        normalizes percent-to-fraction; the field is ``places=4``
-        Decimal so the loaded value is ``Decimal("0.1500")``.
-        """
-        loaded = UserSettingsSchema().load({"trend_alert_threshold": "15"})
-        assert loaded["trend_alert_threshold"] == Decimal("0.1500")
-
-    def test_percent_zero_accepted(self):
-        """E-12: zero is a value (alert disabled).  Pre-fix the
-        schema required ``Range(min=1, ...)`` so 0 was rejected;
-        post-fix the fraction-domain accepts the inclusive zero.
-
-        Hand-check: 0 / 100 = 0.  The schema's
-        ``Range(0, 1)`` validator accepts ``Decimal("0")``.
-        """
-        loaded = UserSettingsSchema().load({"trend_alert_threshold": "0"})
-        assert loaded["trend_alert_threshold"] == Decimal("0")
-
-    def test_percent_100_accepted_at_boundary(self):
-        """Upper boundary: 100% -> 1.0 (inclusive).
-
-        Hand-check: 100 / 100 = 1.0; ``Range(0, 1)`` is inclusive.
-        """
-        loaded = UserSettingsSchema().load({"trend_alert_threshold": "100"})
-        assert loaded["trend_alert_threshold"] == Decimal("1.0000")
-
-    def test_percent_101_rejected(self):
-        """Above 100% rejected (CHECK rejects 1.01).
-
-        Hand-check: 101 / 100 = 1.01; ``Range(0, 1)`` rejects.
-        """
-        with pytest.raises(ValidationError) as exc:
-            UserSettingsSchema().load({"trend_alert_threshold": "101"})
-        assert "trend_alert_threshold" in exc.value.messages
 
 
 # ── C24-2 rate field domain matches CHECK ────────────────────────

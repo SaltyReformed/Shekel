@@ -3,15 +3,6 @@
 {% from "_recurrence_macros.html" import recurrence_cell with context %}
 {% block title %}Recurring -- Shekel{% endblock title %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Recurring</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 <div data-recurring-page>
 
@@ -27,23 +18,30 @@
          submit sends name=unit and the route redirects back. Both units are
          produced server-side, so the toggle only re-picks which one renders
          -- money is never formatted in JS. #}
+      {# The hidden CSRF input must NOT be the first child of the .btn-group:
+         Bootstrap's `:not(.btn-check) + .btn` sibling rule would then strip
+         the first button's left radius, squaring the toggle's outer corner
+         (polish audit P-RC2). Keep it inside the form (the no-JS submit needs
+         it) but as a sibling of the .btn-group wrapper, not of the buttons. #}
       <form method="POST" action="{{ url_for('templates.set_unit_preference') }}"
-            class="btn-group btn-group-sm" role="group" aria-label="Amount unit">
+            class="d-inline-flex">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" name="unit" value="monthly" data-unit-value="monthly"
-                hx-post="{{ url_for('templates.set_unit_preference') }}"
-                hx-vals='{"unit": "monthly"}'
-                hx-target="#recurring-body" hx-swap="innerHTML"
-                class="btn {{ 'btn-primary' if not show_per_paycheck else 'btn-outline-primary' }}">
-          Monthly
-        </button>
-        <button type="submit" name="unit" value="per_paycheck" data-unit-value="per_paycheck"
-                hx-post="{{ url_for('templates.set_unit_preference') }}"
-                hx-vals='{"unit": "per_paycheck"}'
-                hx-target="#recurring-body" hx-swap="innerHTML"
-                class="btn {{ 'btn-primary' if show_per_paycheck else 'btn-outline-primary' }}">
-          Per paycheck
-        </button>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Amount unit">
+          <button type="submit" name="unit" value="monthly" data-unit-value="monthly"
+                  hx-post="{{ url_for('templates.set_unit_preference') }}"
+                  hx-vals='{"unit": "monthly"}'
+                  hx-target="#recurring-body" hx-swap="innerHTML"
+                  class="btn {{ 'btn-primary' if not show_per_paycheck else 'btn-outline-primary' }}">
+            Monthly
+          </button>
+          <button type="submit" name="unit" value="per_paycheck" data-unit-value="per_paycheck"
+                  hx-post="{{ url_for('templates.set_unit_preference') }}"
+                  hx-vals='{"unit": "per_paycheck"}'
+                  hx-target="#recurring-body" hx-swap="innerHTML"
+                  class="btn {{ 'btn-primary' if show_per_paycheck else 'btn-outline-primary' }}">
+            Per paycheck
+          </button>
+        </div>
       </form>
       <div class="dropdown">
         <button class="btn btn-primary btn-sm dropdown-toggle" type="button"
@@ -131,7 +129,7 @@
                 <form method="POST" action="{{ url_for('templates.unarchive_template', template_id=t.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Unarchive {{ t.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
@@ -156,7 +154,7 @@
                 <form method="POST" action="{{ url_for('transfers.unarchive_transfer_template', template_id=t.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success" aria-label="Unarchive {{ t.name }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary" aria-label="Unarchive {{ t.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>

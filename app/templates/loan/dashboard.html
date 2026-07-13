@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
 {% from "loan/_chips.html" import rate_chip, total_payment_chip, escrow_badge %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock title %}
 
 {# Fable 5 loan detail page (docs/design/loan_audit.md, locked anatomy):
@@ -12,19 +13,13 @@
    All money is computed in the route / services and passed in; templates format
    only. #}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
-<div class="d-flex align-items-center gap-2 mb-3">
-  <h4 class="mb-0"><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }}</h4>
-  <span class="acctd-type-tag">{{ account_type.name }}</span>
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ account_type.icon_class or 'bi-bank' }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">{{ account_type.name }}</span>
+  </div>
+  {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
 </div>
 
 {% if show_transfer_prompt and source_accounts %}
@@ -77,8 +72,9 @@
       <div class="pulse-hero__label">Balance owed</div>
       {# E-18 / read switch: resolver-derived current_balance (ledger
          authoritative) -- the same figure as the /savings debt card and the
-         net-worth liability, never the stored LoanParams.current_principal. #}
-      <div class="nw-hero__num font-mono">{{ money(current_principal_display) }}</div>
+         net-worth liability, never the stored LoanParams.current_principal.
+         The hero doubles as the click-to-edit dated-true-up control (D14). #}
+      {% include "loan/_balance_hero.html" %}
       <div class="nw-hero__cap">
         {%- set last_payment = payment_history[-1] if payment_history else none -%}
         {%- set last_anchor = balance_anchors[-1] if balance_anchors else none -%}
@@ -257,7 +253,10 @@
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-clock-history"></i> Payment history</h6>
-    <span class="badge bg-success">{{ payment_history|length }} confirmed</span>
+    {# Ledger-confirmed count: a true settled/done money state, so the
+       done chip-tint badge (grid grammar), not raw Bootstrap green
+       (polish audit P-DT2 / RC3). #}
+    <span class="badge-done">{{ payment_history|length }} confirmed</span>
   </div>
   <div class="card-body p-0">
     <div class="loan-history-scroll">
@@ -482,7 +481,7 @@
             </div>
           </div>
           <button type="submit" class="btn btn-primary btn-sm">
-            <i class="bi bi-check-lg"></i> Update parameters
+            <i class="bi bi-check-lg"></i> Save parameters
           </button>
         </form>
         <hr>
@@ -566,9 +565,12 @@
   </div>
 </div>
 
-{# ── Footer: full amortization schedule (demoted to its own route) ───── #}
+{# ── Footer: full amortization schedule (demoted to its own route).
+   An accent outline at full size so the deep view reads as a real
+   control, not a footnote (polish audit P-DT9 / O3); the footer
+   placement itself is the locked anatomy. #}
 <div class="text-center my-4">
-  <a href="{{ url_for('loan.schedule', account_id=account.id) }}" class="btn btn-outline-secondary btn-sm">
+  <a href="{{ url_for('loan.schedule', account_id=account.id) }}" class="btn btn-outline-primary">
     <i class="bi bi-table"></i> View full amortization schedule
   </a>
 </div>

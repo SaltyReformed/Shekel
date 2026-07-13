@@ -13,6 +13,7 @@ from app.extensions import db
 from app.models.ref import Status
 from app.services import category_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
@@ -63,4 +64,9 @@ def get_full_edit(xfer_id):
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
+        # Pre-hint (grid audit D2): the status dropdown disables
+        # transitions the state machine would reject.
+        allowed_status_ids=allowed_transitions(
+            xfer.status_id, context="transfer",
+        ),
     )

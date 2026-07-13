@@ -60,12 +60,22 @@
              {{ 'disabled' if locked else '' }}>
     </div>
 
-    {# Status selector #}
+    {# Status selector.  Pre-hint (grid audit D2, ruled 2026-07-11):
+       options the transfer state machine would reject render disabled
+       -- which permanently grays Credit and Received here, since the
+       transfer map excludes both entirely.  The allowed_status_ids
+       default keeps legacy render sites without the context
+       permissive. #}
+    {% set allowed_ids = allowed_status_ids if allowed_status_ids is defined else none %}
     <div class="mb-2">
       <label class="form-label mb-0 small">Status</label>
       <select name="status_id" class="form-select form-select-sm">
         {% for s in statuses %}
-        <option value="{{ s.id }}" {{ 'selected' if xfer.status_id == s.id else '' }}>
+        {% set illegal = allowed_ids is not none and s.id not in allowed_ids %}
+        <option value="{{ s.id }}"
+                {{ 'selected' if xfer.status_id == s.id else '' }}
+                {% if illegal %}disabled
+                title="Not reachable from {{ xfer.status.name if xfer.status else 'the current status' }}"{% endif %}>
           {{ s.name }}
         </option>
         {% endfor %}

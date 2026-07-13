@@ -1,79 +1,69 @@
 {% extends "base.html" %}
 {% block title %}Analytics -- Shekel{% endblock title %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Analytics</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
-<h4 class="mb-3"><i class="bi bi-bar-chart-line"></i> Analytics</h4>
+{# No page-level "Analytics" heading (P-AN2 heading collapse): the navbar
+   already marks Analytics active and each pill names its surface, so the
+   old h4 was the redundant middle title of a five-deep stack. #}
 
 {# Four pills (Slice-4 shell collapse): Calendar, Spending, Statements, Taxes.
-   The Statements pill loads the Income Statement by default; its own internal
-   toggle swaps to the Balance Sheet (both target #tab-content), so the
-   Statements pill stays active while the two confirmed-ledger reports switch. #}
+   Each pill pushes its own URL (D13: hx-push-url) so a tab is a real,
+   refreshable address, and ``active_tab`` (set by the route) marks the active
+   pill.  The Statements pill loads the Income Statement by default; its own
+   internal toggle swaps to the Balance Sheet (both target #tab-content), so
+   the Statements pill stays active while the two confirmed-ledger reports
+   switch.  One ``tabs`` list drives both the pills and the initial auto-load
+   below (DRY: a single source of tab key/label/url). #}
+{% set tabs = [
+  {"key": "calendar", "label": "Calendar", "url": url_for("analytics.calendar_tab")},
+  {"key": "spending", "label": "Spending", "url": url_for("analytics.spending_tab")},
+  {"key": "statements", "label": "Statements", "url": url_for("analytics.income_statement_tab")},
+  {"key": "taxes", "label": "Taxes", "url": url_for("analytics.taxes_tab")},
+] %}
 <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
+  {% for tab in tabs %}
   <li class="nav-item" role="presentation">
-    <button class="nav-link active" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.calendar_tab') }}"
+    <button class="nav-link{{ ' active' if tab.key == active_tab }}" data-bs-toggle="pill"
+            hx-get="{{ tab.url }}"
             hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click, load"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="true">
-      Calendar
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.spending_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
+            hx-push-url="true"
             hx-trigger="click"
             hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Spending
+            role="tab" aria-selected="{{ 'true' if tab.key == active_tab else 'false' }}">
+      {{ tab.label }}
     </button>
   </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.income_statement_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Statements
-    </button>
-  </li>
-  <li class="nav-item" role="presentation">
-    <button class="nav-link" data-bs-toggle="pill"
-            hx-get="{{ url_for('analytics.taxes_tab') }}"
-            hx-target="#tab-content" hx-swap="innerHTML"
-            hx-trigger="click"
-            hx-indicator="#tab-spinner"
-            role="tab" aria-selected="false">
-      Taxes
-    </button>
-  </li>
+  {% endfor %}
 </ul>
 
 {# Loading indicator for subsequent tab switches -- survives content swaps
    because it lives outside #tab-content.  HTMX toggles visibility via the
-   htmx-request class when a request targeting #tab-content is in flight. #}
-<div id="tab-spinner" class="htmx-indicator text-center py-3">
-  <div class="spinner-border spinner-border-sm text-secondary" role="status">
-    <span class="visually-hidden">Loading...</span>
-  </div>
-</div>
-
-<div id="tab-content">
-  {# Initial spinner shown until the Calendar tab auto-loads via hx-trigger="load" #}
-  <div class="d-flex justify-content-center py-5">
-    <div class="spinner-border text-secondary" role="status">
+   htmx-request class when a request targeting #tab-content is in flight.
+   Overlaid on the tab body (the position-relative wrapper) instead of
+   rendered in flow: an idle .htmx-indicator is transparent but still
+   reserved ~80px of layout between the pills and every tab (P-AN1). #}
+<div class="position-relative">
+  <div id="tab-spinner" class="htmx-indicator analytics-tab-spinner">
+    <div class="spinner-border spinner-border-sm text-secondary" role="status">
       <span class="visually-hidden">Loading...</span>
+    </div>
+  </div>
+
+  <div id="tab-content">
+    {# The active tab auto-loads on page load from HERE, not from the pill (D13):
+       the load lives on this soon-to-be-replaced spinner so the initial fetch
+       never pushes a URL (only pill CLICKS push).  That keeps the Back button
+       from restoring a stale pre-load snapshot.  ``active_tab`` (default
+       "calendar") selects which partial loads.  No #tab-spinner indicator on
+       this first fetch -- this placeholder IS the visible spinner, and wiring
+       both would stack two spinners on page load. #}
+    <div hx-get="{{ (tabs | selectattr('key', 'equalto', active_tab) | first).url }}"
+         hx-trigger="load"
+         hx-target="#tab-content" hx-swap="innerHTML"
+         class="d-flex justify-content-center py-5">
+      <div class="spinner-border text-secondary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
     </div>
   </div>
 </div>
@@ -84,4 +74,5 @@
 <script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
 <script src="{{ url_for('static', filename='js/calendar_flow_strip.js') }}"></script>
+<script src="{{ url_for('static', filename='js/spending_tab.js') }}"></script>
 {% endblock scripts %}

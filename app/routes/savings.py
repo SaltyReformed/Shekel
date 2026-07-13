@@ -8,6 +8,7 @@ and deleting savings goals.
 
 import json
 import logging
+from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -44,90 +45,138 @@ _create_schema = SavingsGoalCreateSchema()
 _update_schema = SavingsGoalUpdateSchema()
 
 
-def _serialize_net_worth_chart(net_worth_series: dict) -> str:
-    """Serialize the net-worth trend series to a Chart.js JSON string.
+# Chart.js x-axis label format for the Horizon range: month + full year
+# (e.g. "Dec 2049") -- the annual samples span decades, so the year matters.
+_HORIZON_LABEL_FORMAT = "%b %Y"
 
-    The single Chart.js serialization boundary for the cockpit's
-    net-worth region (coding-standards: ``float`` lives only here, never
-    in a calculation).  Maps the producer's parallel ``Decimal`` lists
-    (``net`` / ``assets`` / ``liabilities``, computed money-precise in
-    :mod:`app.services.savings_dashboard_service._net_worth`) to ``float``
-    arrays and the period descriptors' ``end_date`` to ``%b %-d`` labels.
 
-    ``current_index`` (from
-    :func:`~app.services.savings_dashboard_service._net_worth.build_trend_periods`,
-    passed straight through) is the position of the current period within
-    the series: the leading ``current_index`` points are the honest history
-    tail the client draws solid, and the rest are the forward projection it
-    draws dashed and lighter from a "Today" marker at the boundary.  It is
-    also the anchor the client slices the 6 / 13 / 26 / All forward horizon
-    from, always keeping the full history tail.
+def _milestone_axis_x(dates: list[date], target: date) -> float:
+    """Map a milestone date to its fractional x-index on the annual axis.
+
+    The Horizon stream's x-axis is the annual sample dates (a Chart.js
+    category axis, evenly spaced), but a milestone (a loan payoff, a
+    net-worth crossing) falls on an exact date BETWEEN two samples.  This
+    locates it as a fractional index -- ``i + (target - dates[i]) /
+    (dates[i + 1] - dates[i])`` for the bracket ``dates[i] <= target <=
+    dates[i + 1]`` -- so the client's flag plugin positions the flag
+    precisely via ``xScale.getPixelForValue(x)`` (Chart.js interpolates
+    fractional category indices linearly).  Presentation geometry, so
+    ``float`` lives here; a date at or beyond the sampled domain clamps to
+    its edge, so ``x`` is always in ``[0, len(dates) - 1]``.
 
     Args:
-        net_worth_series: The ``net_worth["series"]`` dict, with keys
-            ``periods`` (list of ``{end_date, period_index}``), ``net``,
-            ``assets``, ``liabilities``, and ``current_index``.
+        dates: The horizon sample dates (ascending; index 0 is today).
+        target: The milestone's :class:`datetime.date`.
 
     Returns:
-        A JSON string ``{"labels": [str], "net": [float], "assets":
-        [float], "liabilities": [float], "current_index": int}`` for the
-        ``data-chart`` attribute.
+        The fractional x-index of *target* on the sample axis.
     """
-    periods = net_worth_series["periods"]
+    last = len(dates) - 1
+    if target <= dates[0]:
+        return 0.0
+    if target >= dates[last]:
+        return float(last)
+    for index in range(last):
+        if dates[index] <= target <= dates[index + 1]:
+            # The samples are distinct calendar year-ends, so the span in
+            # days is never zero (no divide-by-zero guard needed).
+            span_days = (dates[index + 1] - dates[index]).days
+            offset = (target - dates[index]).days / span_days
+            return index + offset
+    return float(last)
+
+
+def _serialize_horizon(horizon: dict | None) -> dict | None:
+    """Serialize the Horizon-range producer output to Chart.js-ready data.
+
+    The presentation boundary for the cockpit's ``Horizon`` range (P-AC1
+    Loop B P1): maps the producer's parallel ``Decimal`` band series
+    (``composition``) and net trajectory to ``float`` arrays, the annual
+    sample dates to ``%b %Y`` labels, and each milestone to its ISO ``date``
+    plus a fractional axis position ``x`` (via :func:`_milestone_axis_x`, so
+    the client's flag plugin places the flag between the annual samples).
+    ``None`` (the user has no pay periods) passes straight through so the
+    client hides the range.
+
+    Args:
+        horizon: The ``net_worth["horizon"]`` dict from
+            :func:`~app.services.savings_dashboard_service._horizon.build_horizon`
+            (``dates`` / ``net`` / ``composition`` / ``milestones`` /
+            ``current_index``), or ``None``.
+
+    Returns:
+        A dict ``{"labels", "net", "composition", "milestones",
+        "current_index"}`` for the ``data-chart`` payload, or ``None``.
+    """
+    if horizon is None:
+        return None
+    return {
+        "labels": [
+            point.strftime(_HORIZON_LABEL_FORMAT) for point in horizon["dates"]
+        ],
+        "net": [float(value) for value in horizon["net"]],
+        "composition": {
+            band: [float(value) for value in band_series]
+            for band, band_series in horizon["composition"].items()
+        },
+        "milestones": [
+            {
+                "date": milestone["date"].isoformat(),
+                "label": milestone["label"],
+                "kind": milestone["kind"],
+                "x": _milestone_axis_x(horizon["dates"], milestone["date"]),
+            }
+            for milestone in horizon["milestones"]
+        ],
+        "current_index": horizon["current_index"],
+    }
+
+
+def _serialize_net_worth_chart(net_worth: dict) -> str:
+    """Serialize BOTH net-worth ranges into one Chart.js JSON payload.
+
+    The single Chart.js serialization boundary for the cockpit's net-worth
+    region (coding-standards: ``float`` lives only here, never in a
+    calculation).  Emits ONE payload carrying both ranges the element toggles
+    between (P-AC1): the ``2 years`` engine-real series (its ``net`` /
+    ``assets`` / ``liabilities`` totals AND the per-category ``composition``
+    split) with the ``current_index`` solid/dashed boundary, plus the nested
+    ``horizon`` range from :func:`_serialize_horizon`.  Every money figure is
+    mapped from the producer's money-precise ``Decimal`` to ``float`` here.
+
+    ``current_index`` is the position of the current period within the
+    ``2 years`` series: the leading points are the honest history tail the
+    client draws solid, the rest the forward projection.  The top-level
+    ``net`` / ``assets`` / ``liabilities`` / ``current_index`` keys keep their
+    prior shape so the current chart script renders unchanged until the P2
+    element replaces it; ``composition`` and ``horizon`` are additive fields
+    that script ignores.
+
+    Args:
+        net_worth: The ``compute_dashboard_data`` ``net_worth`` dict, with
+            ``series`` (``periods`` / ``net`` / ``assets`` / ``liabilities`` /
+            ``composition`` / ``current_index``) and ``horizon``.
+
+    Returns:
+        A JSON string for the ``data-chart`` attribute.
+    """
+    series = net_worth["series"]
+    periods = series["periods"]
     return json.dumps({
         "labels": [
             point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
             for point in periods
         ],
-        "net": [float(value) for value in net_worth_series["net"]],
-        "assets": [float(value) for value in net_worth_series["assets"]],
-        "liabilities": [
-            float(value) for value in net_worth_series["liabilities"]
-        ],
-        "current_index": net_worth_series["current_index"],
+        "net": [float(value) for value in series["net"]],
+        "assets": [float(value) for value in series["assets"]],
+        "liabilities": [float(value) for value in series["liabilities"]],
+        "current_index": series["current_index"],
+        "composition": {
+            band: [float(value) for value in band_series]
+            for band, band_series in series["composition"].items()
+        },
+        "horizon": _serialize_horizon(net_worth["horizon"]),
     })
-
-
-def _serialize_allocation_bar(allocation: dict) -> dict:
-    """Add each allocation segment's diverging-bar width percentage.
-
-    The presentation boundary for the allocation bar: the only place
-    ``float`` enters (each segment's ``value`` stays ``Decimal`` for the
-    money macro).  Both sides scale to one shared maximum --
-    ``max(total assets, total liabilities)`` -- so the larger side fills its
-    half of the bar and the smaller reads proportionally shorter, making the
-    net-worth gap (the difference in extents) legible.  Each segment's width
-    is then a percentage of its half: ``value / scale * 100``.
-
-    Args:
-        allocation: The producer dict from
-            :func:`~app.services.savings_dashboard_service._net_worth.compute_allocation`
-            (``{"assets": [...], "liabilities": [...]}``, ``Decimal``
-            values).
-
-    Returns:
-        The same structure with a ``pct`` (``float`` 0-100) added to each
-        segment; all ``pct`` are ``0.0`` when both sides are empty (scale
-        zero), so the template renders an empty bar rather than dividing by
-        zero.
-    """
-    asset_total = sum(seg["value"] for seg in allocation["assets"])
-    liability_total = sum(seg["value"] for seg in allocation["liabilities"])
-    scale = max(asset_total, liability_total)
-
-    def _with_pct(segments: list[dict]) -> list[dict]:
-        return [
-            {
-                **seg,
-                "pct": float(seg["value"] / scale * 100) if scale > 0 else 0.0,
-            }
-            for seg in segments
-        ]
-
-    return {
-        "assets": _with_pct(allocation["assets"]),
-        "liabilities": _with_pct(allocation["liabilities"]),
-    }
 
 
 # Sparkline SVG geometry: the normalized polyline viewBox the cards draw in.
@@ -242,27 +291,23 @@ def _cockpit_context(user_id: int) -> dict:
     The single producer + serialization prologue shared by the full-page
     ``dashboard`` render and the ``cockpit_section`` partial re-render, so
     both feed the template the identical contract (the money-precise
-    ``net_worth`` figures, the ``net_worth_chart_json`` the trend canvas
-    reads, the ``allocation`` segments' diverging-bar widths, and the
-    ``sparkline_points`` SVG polylines).  ``float`` is applied only in the
-    three serializers (:func:`_serialize_net_worth_chart`, the Chart.js
-    boundary; :func:`_serialize_allocation_bar`, the allocation-width
-    boundary; and :func:`_serialize_sparklines`, the sparkline-geometry
-    boundary); every other figure stays ``Decimal``.
+    ``net_worth`` figures, the ``net_worth_chart_json`` the net-worth stream
+    canvas reads, and the ``sparkline_points`` SVG polylines).  ``float`` is
+    applied only in the two serializers (:func:`_serialize_net_worth_chart`,
+    the Chart.js boundary; and :func:`_serialize_sparklines`, the
+    sparkline-geometry boundary); every other figure stays ``Decimal``.
 
     Args:
         user_id: Integer ID of the current user.
 
     Returns:
-        The ``compute_dashboard_data`` dict with ``net_worth_chart_json``
-        added, ``allocation`` replaced by its width-annotated form, and
+        The ``compute_dashboard_data`` dict with ``net_worth_chart_json`` and
         ``sparkline_points`` (``{account_id: svg points}``) added.
     """
     ctx = savings_dashboard_service.compute_dashboard_data(user_id)
     ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
-        ctx["net_worth"]["series"]
+        ctx["net_worth"]
     )
-    ctx["allocation"] = _serialize_allocation_bar(ctx["allocation"])
     ctx["sparkline_points"] = _serialize_sparklines(ctx["sparklines"])
     return ctx
 

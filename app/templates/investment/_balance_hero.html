@@ -21,7 +21,7 @@
    event date for the "anchored <date>" caption). #}
 {% if current_balance is not none %}
 <div id="investment-balance-hero"
-     class="nw-hero__num font-mono invd-hero-edit"
+     class="nw-hero__num font-mono hero-edit"
      hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='investment') }}"
      hx-target="this"
      hx-swap="outerHTML"
@@ -31,7 +31,7 @@
      aria-label="{{ account.name }} balance: {{ money(current_balance, cents=false) }}. Click to record a statement balance."
      title="Click to record a statement balance">
   {{ money(current_balance) }}
-  <i class="bi bi-pencil-square invd-hero-edit__pencil" aria-hidden="true"></i>
+  <i class="bi bi-pencil-square hero-edit__pencil" aria-hidden="true"></i>
   {% if anchor_as_of %}
   <small class="nw-hero__cap d-block">anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}</small>
   {% endif %}

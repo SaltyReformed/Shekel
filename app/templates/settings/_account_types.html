@@ -1,5 +1,3 @@
-<h5 class="mb-3"><i class="bi bi-bank"></i> Account Types</h5>
-
 <div class="card">
   <div class="card-header fw-semibold">Account Types</div>
   <ul class="list-group list-group-flush">
@@ -20,17 +18,21 @@
         <div class="flex-grow-1 me-2 account-type-form">
         {% endif %}
 
-          {# Display mode: name + badge summary #}
+          {# Display mode: name + capability chips.  Boolean capability
+             flags ride the shared accent flag chip (told apart by their
+             labels), Built-in is the neutral informational variant --
+             the raw cyan / amber / money-green Bootstrap badges were
+             off-palette (polish audit S11 / RC3). #}
           <div class="account-type-display">
             <span class="fw-semibold px-1">{{ at.name }}</span>
             <small class="text-muted ms-1">
               {% if at.category %}{{ at.category.name }}{% endif %}
-              {% if at.has_parameters %}<span class="badge bg-info ms-1">params</span>{% endif %}
-              {% if at.has_amortization %}<span class="badge bg-warning text-dark ms-1">amort</span>{% endif %}
-              {% if at.has_interest %}<span class="badge bg-success ms-1">interest</span>{% endif %}
-              {% if at.is_pretax %}<span class="badge bg-secondary ms-1">pre-tax</span>{% endif %}
-              {% if at.is_liquid %}<span class="badge bg-primary ms-1">liquid</span>{% endif %}
-              {% if not is_owned %}<span class="badge bg-light text-dark ms-1">Built-in</span>{% endif %}
+              {% if at.has_parameters %}<span class="flag-chip ms-1">params</span>{% endif %}
+              {% if at.has_amortization %}<span class="flag-chip ms-1">amort</span>{% endif %}
+              {% if at.has_interest %}<span class="flag-chip ms-1">interest</span>{% endif %}
+              {% if at.is_pretax %}<span class="flag-chip ms-1">pre-tax</span>{% endif %}
+              {% if at.is_liquid %}<span class="flag-chip ms-1">liquid</span>{% endif %}
+              {% if not is_owned %}<span class="flag-chip flag-chip--neutral ms-1">Built-in</span>{% endif %}
             </small>
           </div>
 

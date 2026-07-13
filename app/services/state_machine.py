@@ -176,6 +176,54 @@ def _build_transitions(context):
     )
 
 
+def allowed_transitions(current_status_id, context="transaction"):
+    """Return the set of status ids legally reachable from the current one.
+
+    The template-facing half of the state machine (grid audit D2, ruled
+    2026-07-11): the action cards' status dropdowns disable options this
+    set excludes, so the user is pre-hinted instead of discovering an
+    illegal transition through a 400.  :func:`verify_transition` remains
+    the enforcement seam -- this helper is display guidance only, and a
+    crafted request that ignores it is still rejected there.
+
+    Args:
+        current_status_id: Integer PK of the row's current status.
+        context: ``"transaction"`` or ``"transfer"`` -- selects that
+            entity's transition map.
+
+    Returns:
+        frozenset of legal successor status ids (identity included).
+        Empty for a current status the map does not recognise (a
+        corrupt row -- the dropdown then offers nothing rather than
+        guessing).
+
+    Raises:
+        ValueError: If *context* is not a recognised entity label
+            (programming error at the call site).
+    """
+    return frozenset(_build_transitions(context).get(current_status_id, ()))
+
+
+def _status_labels():
+    """Return ``{status_id: "Name (id)"}`` for every StatusEnum member.
+
+    Used to compose the user-facing rejection message: the designed
+    error fragments (closeout plan session 4) surface
+    ``verify_transition``'s message directly in the UI, where a bare
+    integer PK reads as noise.  The id stays in parentheses because it
+    is still the debugging handle (and the message contract several
+    tests pin).  An id outside the enum set falls back to the bare
+    integer via the caller's ``.get`` default.
+
+    Returns:
+        dict mapping each seeded status id to its display label.
+    """
+    return {
+        ref_cache.status_id(member): f"{member.value} ({ref_cache.status_id(member)})"
+        for member in StatusEnum
+    }
+
+
 def verify_transition(current_status_id, new_status_id, context="transaction"):
     """Raise ``ValidationError`` when the proposed transition is illegal.
 
@@ -227,9 +275,15 @@ def verify_transition(current_status_id, new_status_id, context="transaction"):
             "(allowed: %s).",
             context, current_status_id, new_status_id, sorted(allowed),
         )
+        # Status NAMES lead the message because the designed error
+        # fragments show it to the user verbatim; the ids stay in
+        # parentheses as the debugging handle (and the contract the
+        # route/service tests pin with ``str(id) in msg``).
+        labels = _status_labels()
         raise ValidationError(
             f"Invalid {context} status transition from "
-            f"{current_status_id} to {new_status_id}."
+            f"{labels.get(current_status_id, current_status_id)} to "
+            f"{labels.get(new_status_id, new_status_id)}."
         )
 
 

@@ -199,6 +199,25 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
   }
 });
 
+// Designed error fragments (the marker-header convention, ruled
+// 2026-07-11).  The htmx responseHandling config in base.html leaves
+// 4xx/5xx bodies non-swapping because most are raw strings or JSON; a
+// route that deliberately renders a DESIGNED error state -- the same
+// partial the request targeted, re-rendered with field errors or a
+// danger banner -- stamps the Shekel-Designed-Fragment header (helper:
+// app/utils/error_fragments.py, where the two names are kept in sync)
+// and this ONE listener swaps it.  An unhandled error document never
+// carries the header, so crash pages stay non-swapping.  Replaces the
+// per-surface target-id shims (tax_checkpoint.js, the swap block that
+// lived in retirement_controls.js).
+document.body.addEventListener("htmx:beforeSwap", function (event) {
+  var detail = event.detail;
+  if (detail && detail.xhr &&
+      detail.xhr.getResponseHeader("Shekel-Designed-Fragment") === "1") {
+    detail.shouldSwap = true;
+  }
+});
+
 // Carry-forward modal: surface confirm-time validation failures.
 // The Confirm button posts to /pay-periods/<id>/carry-forward; on a
 // race-condition validation failure the route returns 4xx with a

@@ -19,7 +19,11 @@
    debt marker uses the ALL-LOANS-EVER monotonic basis (developer
    ruling 2026-06-12); when principal_paid_pct is None (no loans is the
    only reachable case while debt is non-None via summary -- defensive)
-   the rail renders without a positional marker. #}
+   the rail renders bare, and the hero column still carries the figure.
+
+   Hierarchy (D10 ruling 2026-07-09): the CURRENT position is the hero
+   figure, the destination is its caption, and the rail label carries
+   only the percent. #}
 {% from "_money_macros.html" import money, pace_pill, dti_badge %}
 
 <div class="tracks">
@@ -41,16 +45,16 @@
       <div class="track__fill" data-progress-pct="{{ goal.progress_pct }}"></div>
       <div class="track__here" data-rail-pct="{{ goal.progress_pct }}"></div>
       <div class="track__here-label" data-rail-pct="{{ goal.progress_pct }}">
-        {{ money(goal.current_balance) }} &middot;
         {{ "{:.0f}".format(goal.progress_pct) }}%
       </div>
     </div>
-    <div class="track__dest">
-      <span class="font-mono fw-bold">{{ money(goal.target_amount) }}</span>
-      <span class="track__dest-sub">
-        {%- if goal.projected_completion_date -%}
+    <div class="track__pos">
+      <span class="track__pos-num font-mono">{{ money(goal.current_balance) }}</span>
+      <span class="track__pos-sub">
+        of {{ money(goal.target_amount) }} &middot;
+        {%- if goal.projected_completion_date %}
         arriving ~{{ goal.projected_completion_date.strftime('%b %Y') }}
-        {%- else -%}
+        {%- else %}
         no recurring contribution
         {%- endif -%}
         {%- if goal.target_date %} &middot; target {{ goal.target_date.strftime('%b %Y') }}{% endif -%}
@@ -76,18 +80,15 @@
       <div class="track__fill" data-progress-pct="{{ tracks.debt.principal_paid_pct }}"></div>
       <div class="track__here" data-rail-pct="{{ tracks.debt.principal_paid_pct }}"></div>
       <div class="track__here-label" data-rail-pct="{{ tracks.debt.principal_paid_pct }}">
-        {{ money(tracks.debt.total_debt) }} left
-      </div>
-      {% else %}
-      <div class="track__here-label track__here-label--static">
-        {{ money(tracks.debt.total_debt) }} left
+        {{ "{:.0f}".format(tracks.debt.principal_paid_pct) }}% paid
       </div>
       {% endif %}
     </div>
-    <div class="track__dest">
-      <span class="font-mono fw-bold">$0</span>
-      <span class="track__dest-sub">
-        {%- if tracks.debt.projected_debt_free_date -%}
+    <div class="track__pos">
+      <span class="track__pos-num font-mono">{{ money(tracks.debt.total_debt) }}</span>
+      <span class="track__pos-sub">
+        to $0
+        {%- if tracks.debt.projected_debt_free_date %} &middot;
         debt-free {{ tracks.debt.projected_debt_free_date.strftime('%b %Y') }}
         {%- endif -%}
       </span>

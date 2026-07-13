@@ -73,18 +73,14 @@ def build_taxes_display(report):
 
 
 # ── Spending tab display ───────────────────────────────────────────
-# The hero comparison magnitude/direction split (the ``build_taxes_display``
-# precedent) and the sparkline SVG geometry (the ``serialize_flow_strip``
-# float boundary).
+# The hero comparison signed-delta split (the ``build_taxes_display``
+# precedent), the ledger lens rows' bar geometry, and the month chart
+# serialization (the ``serialize_flow_strip`` float boundary).
 
-# Sparkline geometry for the per-category trend cells: a 100 x 24 user-unit
-# viewBox with vertical padding so the peak and trough are not clipped by the
-# stroke width.  The polyline is scaled into this box here (the one place
-# ``float`` is allowed -- presentation geometry, never a money value); the
-# template renders the point string verbatim.
-_SPARK_WIDTH = 100
-_SPARK_HEIGHT = 24
-_SPARK_PAD = 3
+# The By-change lens's diverging minibar grows from the track's center, so
+# a full-magnitude row fills half the track: its width percentage is capped
+# at 50 (progress_bar.js applies widths relative to the whole track).
+_DIVERGING_HALF_TRACK = 50
 
 
 def prev_month(year, month):
@@ -148,124 +144,290 @@ def build_spending_nav(today, year, month):
 
 
 def build_spending_display(report):
-    """Compute the Spending tab's route-layer hero comparison display.
+    """Compute the Spending tab's route-layer display values.
 
-    Splits each hero comparison into a magnitude plus a direction the template
-    renders without money math (the ``build_taxes_display`` precedent): a
-    positive delta is more spending ("up", danger), a negative delta is less
-    ("down", done).  A comparison with no baseline (no prior window / no
-    trailing windows) collapses to ``None`` so the template omits the chip.
+    Bundles the hero comparison chips (signed delta + direction + the
+    baseline for the caption, the P-AN11 fix form) with the merged ledger's
+    two lens row sets (By size / By change), each carrying its bar geometry
+    so the template renders without math.
 
     Args:
         report: The populated
             :class:`~app.services.spending_report_service.SpendingReport`.
 
     Returns:
-        dict with ``vs_prior`` and ``vs_average`` comparison-display dicts
-        (or ``None`` each).
+        dict with ``vs_prior`` / ``vs_average`` comparison-display dicts (or
+        ``None`` each), ``size_groups`` (the By-size group/item row dicts),
+        and ``change_rows`` (the By-change row dicts).
     """
     return {
         "vs_prior": _comparison_display(report.hero.vs_prior),
         "vs_average": _comparison_display(report.hero.vs_average),
+        "size_groups": _size_lens_rows(report.breakdown),
+        "change_rows": _change_lens_rows(report.changes),
     }
 
 
 def _comparison_display(comparison):
-    """Render one hero comparison as a magnitude / direction / percent dict.
+    """Render one hero comparison as a signed-delta chip dict.
 
     Args:
         comparison: A
             :class:`~app.services.spending_report_service.Comparison`.
 
     Returns:
-        A dict with the absolute ``amount`` (magnitude), the ``direction``
-        (``"up"`` / ``"down"`` / ``"flat"``), and the signed ``pct`` (or
-        ``None``), or ``None`` when the comparison has no baseline (its delta
-        is ``None``).
+        A dict with the signed ``delta``, its ``direction`` (``"up"`` /
+        ``"down"`` / ``"flat"``), the signed ``pct`` (or ``None``), and the
+        ``baseline`` the chip's caption states (the P-AN11 fix: the caption
+        names the prior total so the delta cannot read as the prior month's
+        total).  ``None`` when the comparison has no baseline at all.
     """
     if comparison.delta is None:
         return None
-    if comparison.delta > 0:
-        direction = "up"
-    elif comparison.delta < 0:
-        direction = "down"
-    else:
-        direction = "flat"
     return {
-        "amount": abs(comparison.delta),
-        "direction": direction,
+        "delta": comparison.delta,
+        "direction": _delta_direction(comparison.delta),
         "pct": comparison.pct,
+        "baseline": comparison.baseline,
     }
 
 
-def spending_sparklines(report):
-    """Serialize each trendable category's sparkline to SVG polyline points.
+def _delta_direction(delta):
+    """Map a signed spending delta to its direction key.
 
-    Walks the breakdown and, for every item carrying a trend, converts its
-    per-period series into a ``"x,y x,y ..."`` point string sized to the
-    :data:`_SPARK_WIDTH` x :data:`_SPARK_HEIGHT` viewBox.  The template renders
-    the string in an inline ``<polyline>`` (SVG geometry attributes are not
-    governed by ``style-src``, so no inline-style CSP concern); the stroke
-    colour comes from a direction CSS class, so the cell is theme-reactive
-    with no JS.
+    Args:
+        delta: The signed ``Decimal`` delta.
+
+    Returns:
+        ``"up"`` (spent more), ``"down"`` (spent less), or ``"flat"``
+        (exactly equal) -- the template maps these to the money-state
+        classes (up = danger, down = done, flat = muted).
+    """
+    if delta > 0:
+        return "up"
+    if delta < 0:
+        return "down"
+    return "flat"
+
+
+def _size_lens_rows(breakdown):
+    """Build the By-size lens's template-ready group rows.
+
+    Bars are CAPPED to the largest group (the D7 ruling): every bar's width
+    is its amount relative to the largest row, so the biggest group spans
+    the full track and lengths stay comparable, while the ``share`` text
+    stays share-of-total.  A single-item group collapses to one row (the
+    grid D3 singleton rule ported): its item name becomes the ``kin``
+    suffix and no drill-down items render.
+
+    Args:
+        breakdown: The report's
+            :class:`~app.services.spending_report_service.SpendingGroupRow`
+            list, amount-descending.
+
+    Returns:
+        A list of group dicts (name / kin / is_new / amount / share /
+        bar_pct / delta / delta_class / item_rows), where ``item_rows`` is
+        a list of the same shape minus ``kin`` and is empty for a singleton
+        group.  Named ``item_rows`` (not ``items``) because Jinja's dot
+        lookup would resolve ``group.items`` to the dict METHOD, not the
+        key.
+    """
+    if not breakdown:
+        return []
+    max_amount = max(group.amount for group in breakdown)
+    rows = []
+    for group in breakdown:
+        singleton = len(group.items) == 1
+        kin = None
+        if singleton and group.items[0].item_name != group.group_name:
+            kin = group.items[0].item_name
+        rows.append({
+            "name": group.group_name,
+            "kin": kin,
+            "is_new": group.is_new,
+            "amount": group.amount,
+            "share": group.share,
+            "bar_pct": _bar_pct(group.amount, max_amount),
+            "delta": group.delta,
+            "delta_class": _delta_class(group.delta),
+            "item_rows": [] if singleton else [
+                {
+                    "name": item.item_name,
+                    "is_new": item.is_new,
+                    "amount": item.amount,
+                    "share": item.share,
+                    "bar_pct": _bar_pct(item.amount, max_amount),
+                    "delta": item.delta,
+                    "delta_class": _delta_class(item.delta),
+                }
+                for item in group.items
+            ],
+        })
+    return rows
+
+
+def _change_lens_rows(changes):
+    """Build the By-change lens's template-ready row dicts.
+
+    Each row gets a center-zeroed diverging minibar: the fill's width is the
+    delta's magnitude relative to the largest delta, capped to half the
+    track (:data:`_DIVERGING_HALF_TRACK`), growing right (``side: "up"``,
+    danger tint) for more spending and left (``"down"``, done tint) for
+    less.  A zero-delta row has no fill (``side: None``).
+
+    Args:
+        changes: The report's
+            :class:`~app.services.spending_report_service.ChangeRow` list,
+            delta-magnitude-descending.
+
+    Returns:
+        A list of row dicts (name / kin / is_new / delta / delta_class /
+        current / bar_pct / side).
+    """
+    if not changes:
+        return []
+    max_delta = max(abs(row.delta) for row in changes)
+    rows = []
+    for row in changes:
+        if row.delta > 0:
+            side = "up"
+        elif row.delta < 0:
+            side = "down"
+        else:
+            side = None
+        rows.append({
+            "name": row.item_name,
+            "kin": (
+                row.group_name if row.group_name != row.item_name else None
+            ),
+            "is_new": row.is_new,
+            "delta": row.delta,
+            "delta_class": _delta_class(row.delta),
+            "current": row.current,
+            "bar_pct": (
+                _bar_pct(abs(row.delta), max_delta) * _DIVERGING_HALF_TRACK
+                / 100
+            ),
+            "side": side,
+        })
+    return rows
+
+
+def _delta_class(delta):
+    """Map a signed spending delta to its money-state CSS class.
+
+    Args:
+        delta: The signed ``Decimal`` delta.
+
+    Returns:
+        ``"trend-up"`` (danger; spent more), ``"trend-down"`` (done; spent
+        less), or ``"trend-flat"`` (muted; exactly equal).
+    """
+    return f"trend-{_delta_direction(delta)}"
+
+
+def _bar_pct(amount, max_amount):
+    """Scale an amount to its bar width as a percent of the largest row.
+
+    The ledger's ``float`` boundary (presentation geometry, never a money
+    value): the largest row renders a full-width bar and every other bar is
+    proportional to it.
+
+    Args:
+        amount: The row's ``Decimal`` amount (non-negative).
+        max_amount: The largest row's ``Decimal`` amount.
+
+    Returns:
+        The width percentage as a float rounded to 2 decimals (0.0 when the
+        maximum is not positive -- an all-zero ledger has no bars to size).
+    """
+    if max_amount <= 0:
+        return 0.0
+    return round(float(amount) / float(max_amount) * 100, 2)
+
+
+def serialize_spending_chart(report):
+    """Serialize the trailing-12 month series for the chart canvas.
+
+    The Spending tab's Chart.js serialization boundary (floats live only
+    here).  Handles the tab's exposed window type -- calendar months -- and
+    emits one bar per series point:
+
+    - ``labels``: short month names (``"Jul"``); the tooltip carries the
+      year from ``nav``.
+    - ``values``: the month's settled total as a float, or ``null`` for a
+      month with no pay periods (drawn as a baseline tick, like a zero
+      month).
+    - ``nav``: the ``{year, month}`` click-to-navigate target per bar.
+    - ``viewed_index`` / ``compare_index``: the emphasis bar (the viewed
+      month, always last) and its comparison bar (the prior month) -- the
+      only two bars that get value labels (D7).
+    - ``avg``: the hero's vs-average baseline (the SAME figure as the chip,
+      so the reference line and the chip cannot disagree), or ``null``.
+    - ``history_note``: ``"settled history begins Mar 2026"`` when the
+      window's leading months are all empty, else ``null``.
 
     Args:
         report: The populated
-            :class:`~app.services.spending_report_service.SpendingReport`.
+            :class:`~app.services.spending_report_service.SpendingReport`
+            for a month window.
 
     Returns:
-        dict mapping ``category_id`` to its polyline point string, for every
-        item whose ``trend`` is populated.
+        A JSON string for the canvas ``data-chart`` attribute.
     """
-    points = {}
-    for group in report.breakdown:
-        for item in group.items:
-            if item.trend is None:
-                continue
-            points[item.category_id] = _sparkline_points(
-                item.trend.series, item.trend.is_flat,
-            )
-    return points
+    labels = []
+    values = []
+    nav = []
+    for point in report.series:
+        window = point.window
+        if window is None or window.month is None or window.year is None:
+            labels.append("")
+            values.append(None)
+            nav.append(None)
+            continue
+        labels.append(f"{date(window.year, window.month, 1):%b}")
+        values.append(float(point.total) if point.total is not None else None)
+        nav.append({"year": window.year, "month": window.month})
+
+    avg = report.hero.vs_average.baseline
+    return json.dumps({
+        "labels": labels,
+        "values": values,
+        "nav": nav,
+        "viewed_index": len(report.series) - 1,
+        "compare_index": len(report.series) - 2,
+        "avg": float(avg) if avg is not None else None,
+        "history_note": _history_note(report.series),
+    })
 
 
-def _sparkline_points(series, is_flat):
-    """Scale a per-period Decimal series into SVG polyline points.
+def _history_note(series):
+    """Return the chart's settled-history note, or ``None``.
 
-    The single ``float`` boundary for the sparkline (presentation geometry,
-    never a money value): x is evenly spaced across the width; y inverts the
-    normalized value so a higher dollar amount sits higher on screen.  A flat
-    series (the producer's flat-guard) or a zero-range series renders as a
-    centered horizontal line rather than stretching sub-percent noise to full
-    height.
+    The note explains a leading run of empty bars: when the first point
+    with settled spend is not the first bar, every earlier bar is empty
+    (totals are non-negative), so the chart states where history begins
+    rather than reading as missing data.
 
     Args:
-        series: The chronological per-period totals (``Decimal``).
-        is_flat: The producer's flat-guard flag for this series.
+        series: The report's
+            :class:`~app.services.spending_report_service.SeriesPoint` list.
 
     Returns:
-        A ``"x,y x,y ..."`` point string in the viewBox's user units (empty
-        for an empty series -- the trend contract never yields one, so the
-        empty return is a defensive floor).
+        ``"settled history begins Mar 2026"`` styled text, or ``None`` when
+        the first bar already has spend or no bar has any.
     """
-    count = len(series)
-    if count == 0:
-        return ""
-    values = [float(value) for value in series]
-    low, high = min(values), max(values)
-    usable = _SPARK_HEIGHT - 2 * _SPARK_PAD
-    flat = is_flat or high == low
-    coords = []
-    for index, value in enumerate(values):
-        x = (
-            _SPARK_WIDTH / 2 if count == 1
-            else index * _SPARK_WIDTH / (count - 1)
-        )
-        if flat:
-            y = _SPARK_HEIGHT / 2
-        else:
-            y = _SPARK_PAD + usable * (1 - (value - low) / (high - low))
-        coords.append(f"{x:.2f},{y:.2f}")
-    return " ".join(coords)
+    for index, point in enumerate(series):
+        if point.total is not None and point.total > 0:
+            if index == 0 or point.window is None:
+                return None
+            window = point.window
+            if window.month is None or window.year is None:
+                return None
+            first = date(window.year, window.month, 1)
+            return f"settled history begins {first:%b %Y}"
+    return None
 
 
 # ── Calendar tab serialization ─────────────────────────────────────
@@ -291,6 +453,11 @@ def serialize_flow_strip(data, low_balance, today, year, month):
       source the grid and dashboard read -- Calendar rebuild decision 4).
     - ``payday_indices`` / ``trough_index``: 0-based day indices for the
       payday dots and the labeled trough dot.
+    - ``trough_state``: the trough's money state under the grid's
+      thresholds (D11, P-AN6) -- ``"negative"`` below zero, ``"low"``
+      below the threshold but positive, else ``"ok"`` -- so the strip
+      script picks the dot/label ink without comparing money client-side.
+      ``None`` when the month has no trough.
     - ``week_tick_indices``: the 1st of the month plus every Sunday
       (0-based), the strip's weekly gridline/tick positions -- Sundays
       match the calendar grid's week start.
@@ -326,6 +493,18 @@ def serialize_flow_strip(data, low_balance, today, year, month):
         if date(year, month, day).weekday() == cal_mod.SUNDAY
     })
 
+    # The trough's money state under the grid's thresholds (D11, P-AN6);
+    # the comparison lives here so the strip script never compares money.
+    trough_balance = data.daily.trough_balance
+    if trough_balance is None:
+        trough_state = None
+    elif trough_balance < 0:
+        trough_state = "negative"
+    elif trough_balance < low_balance:
+        trough_state = "low"
+    else:
+        trough_state = "ok"
+
     balances = data.daily.daily_balances
     return json.dumps({
         "labels": [
@@ -342,6 +521,7 @@ def serialize_flow_strip(data, low_balance, today, year, month):
             data.daily.trough_day - 1
             if data.daily.trough_day is not None else None
         ),
+        "trough_state": trough_state,
         "week_tick_indices": week_ticks,
     })
 

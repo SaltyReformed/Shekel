@@ -15,9 +15,12 @@ init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); 
 # shekel-balance-producer-bypass (every balance read must go through the
 # app.services.balance_at seam), shekel-transaction-status-bypass (every
 # Transaction.status_id change must go through the
-# transaction_service.apply_status_change seam), and shekel-ledger-model-bypass
+# transaction_service.apply_status_change seam), shekel-ledger-model-bypass
 # (every posted-ledger model import must stay inside the posting-ledger
-# services). See docs/coding-standards.md
+# services), and shekel-unclassified-fenced-export (every public function in a
+# fenced module must be explicitly classified as a balance producer or not, so
+# the balance fence fails CLOSED rather than leaking a new producer nobody
+# listed). See docs/coding-standards.md
 # (Type Safety, Reference Tables) for the rules they enforce.
 load-plugins=pylint.extensions.docparams,shekel_checkers
 

@@ -33,7 +33,6 @@ const STATIC_PREFIXES = [
   '/static/js/',
   '/static/img/',
   '/static/fonts/',
-  '/static/manifest.json',
 ];
 
 self.addEventListener('install', function () {

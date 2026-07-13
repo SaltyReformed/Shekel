@@ -25,6 +25,7 @@ from app.services import (
     pay_period_service,
     posting_service,
 )
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
 from tests._test_helpers import (
     create_hysa_account,
@@ -1576,12 +1577,12 @@ class TestTransactionNegativePaths:
 
         Pre-C-27: the route caught ``InvalidOperation`` and returned
         the literal string ``"Invalid actual amount"`` with status
-        400.  Post-C-27 (commit C-27 of the 2026-04-15 security
-        remediation plan): :class:`MarkDoneSchema` rejects the
-        value at the schema tier and the route returns
-        ``jsonify(errors=...)`` so HTMX form callers can render
-        the per-field message.  The status code stays 400; only
-        the body shape and message text changed.
+        400.  Post-C-27: :class:`MarkDoneSchema` rejects the value at
+        the schema tier.  Refit 2026-07-11 for the marker-header
+        convention (closeout plan session 4, developer-ruled): the 422
+        body changed from a JSON errors dict to a DESIGNED fragment --
+        the requesting cell re-rendered with the flattened field
+        message -- carrying the marker header so htmx swaps it.
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
@@ -1592,9 +1593,10 @@ class TestTransactionNegativePaths:
                 data={"actual_amount": "not_a_number"},
             )
             assert resp.status_code == 422
-            payload = resp.get_json()
-            assert payload is not None
-            assert "actual_amount" in payload["errors"]
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            body = resp.data.decode()
+            assert "actual_amount" in body
+            assert "txn-chip" in body
 
             # ``MarkDoneSchema`` runs before the route's status
             # mutation (commit C-27 reordered the parse to the
@@ -1906,6 +1908,68 @@ class TestAccountIdColumn:
         txn = Transaction.query.filter_by(name=category.display_name).first()
         assert txn is not None
         assert txn.account_id == account.id
+
+    def test_inline_create_honors_typed_name(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A typed quick-create name wins over the category default.
+
+        Grid audit A5 (closeout plan session 4): the Tier-1 entry point
+        accepts an optional name so an ad-hoc row does not need the
+        full form just to be named.
+        """
+        account = seed_user["account"]
+        category = seed_user["categories"]["Groceries"]
+        scenario = seed_user["scenario"]
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+
+        resp = auth_client.post("/transactions/inline", data={
+            "account_id": account.id,
+            "category_id": category.id,
+            "pay_period_id": seed_periods_today[0].id,
+            "scenario_id": scenario.id,
+            "transaction_type_id": expense_type.id,
+            "estimated_amount": "12.50",
+            "name": "Farmers market",
+        })
+        assert resp.status_code == 201
+
+        txn = Transaction.query.filter_by(name="Farmers market").first()
+        assert txn is not None
+        assert txn.estimated_amount == Decimal("12.50")
+
+    def test_inline_create_blank_name_falls_back_to_category(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An empty name submit keeps the category-derived default.
+
+        HTML forms submit every rendered input, so an untouched name
+        field arrives as "" -- the schema's strip_empty_strings hook
+        drops it and the route falls back to category.display_name.
+        """
+        account = seed_user["account"]
+        category = seed_user["categories"]["Groceries"]
+        scenario = seed_user["scenario"]
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+
+        resp = auth_client.post("/transactions/inline", data={
+            "account_id": account.id,
+            "category_id": category.id,
+            "pay_period_id": seed_periods_today[0].id,
+            "scenario_id": scenario.id,
+            "transaction_type_id": expense_type.id,
+            "estimated_amount": "20.00",
+            "name": "",
+        })
+        assert resp.status_code == 201
+
+        txn = Transaction.query.filter_by(name=category.display_name).first()
+        assert txn is not None
+        assert txn.estimated_amount == Decimal("20.00")
 
     def test_inline_create_rejects_missing_account_id(
         self, app, auth_client, seed_user, seed_periods_today

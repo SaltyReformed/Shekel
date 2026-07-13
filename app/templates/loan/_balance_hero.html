@@ -1,0 +1,36 @@
+{% from "_money_macros.html" import money %}
+{# Loan detail balance hero -- the click-to-edit balance-recording
+   control (the D14 idiom, ported from the investment hero; polish
+   audit P-DT8).
+
+   Clicking (or Enter / Space via the global data-keyboard-activate
+   handler in app.js) swaps in the loan's dated true-up editor
+   (loan.anchor_form), which REPLACES this cell.  Cancel / Escape
+   revert here via loan.balance_hero.  A SAVE submits the classic
+   loan.true_up_balance POST-redirect flow, so the whole page
+   re-renders and every dependent figure (band chart, YTD chips, the
+   drift scorecard, the allocation card) recomputes together -- there
+   is no partial-swap save path to drift out of sync.
+
+   The editor appends a dated ``user_trueup`` LoanAnchorEvent; this
+   cell DISPLAYS the resolver-derived current balance (the same
+   display-vs-edit split the investment hero uses).  The parameters
+   card's "Record balance" form stays as the second, guidance-carrying
+   path to the same route (developer ruling, S8).
+
+   Context: account (Account), current_principal_display (Decimal --
+   resolver-derived, ledger authoritative; equals the /savings debt
+   card and the net-worth liability). #}
+<div id="loan-balance-hero"
+     class="nw-hero__num font-mono hero-edit"
+     hx-get="{{ url_for('loan.anchor_form', account_id=account.id) }}"
+     hx-target="this"
+     hx-swap="outerHTML"
+     role="button"
+     tabindex="0"
+     data-keyboard-activate
+     aria-label="{{ account.name }} balance owed: {{ money(current_principal_display, cents=false) }}. Click to record a lender-reported balance."
+     title="Click to record a lender-reported balance">
+  {{ money(current_principal_display) }}
+  <i class="bi bi-pencil-square hero-edit__pencil" aria-hidden="true"></i>
+</div>

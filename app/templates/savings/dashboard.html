@@ -2,15 +2,6 @@
 {% from "_money_macros.html" import money, pace_pill %}
 {% block title %}Accounts -- Shekel{% endblock title %}
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('dashboard.page') }}">Home</a></li>
-    <li class="breadcrumb-item active" aria-current="page">Accounts</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
-
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
   <h4 class="mb-0"><i class="bi bi-wallet2"></i> Accounts</h4>
@@ -18,8 +9,8 @@
     {# Account-type catalogue management (rename / retype / add custom types)
        lives in Settings; this shortcut replaced the retired /accounts table's
        "Manage Account Types" button (P4) so that entry point is not orphaned.
-       Per-account management (balance, Edit, Archive, Delete) now lives on the
-       cards below and their kebab -> Edit danger zone. #}
+       Per-account management (balance, Transfer, Edit, Archive) now lives on
+       the cells below and their kebab -> Edit danger zone. #}
     <a href="{{ url_for('settings.show', section='account-types') }}" class="btn btn-outline-secondary btn-sm">
       <i class="bi bi-sliders"></i> Manage Account Types
     </a>
@@ -44,11 +35,12 @@
 {% else %}
 
 {# ── Net Worth Cockpit region ────────────────────────────────────────
-   The net-worth hero + chips + trend, the account grid with its group
-   subtotals and the debt summary, and the home-equity cards re-render as
-   one unit on balanceChanged (an inline card-balance edit) via
-   savings.cockpit_section, the same #pulse-section pattern the dashboard
-   uses. The savings / emergency / archived tiers below are page-load-only. #}
+   The net-worth hero + chips + trend and the per-category group cards
+   (with their subtotals, folded debt footer, and per-cell equity
+   captions) re-render as one unit on balanceChanged (an inline cell
+   balance edit) via savings.cockpit_section, the same #pulse-section
+   pattern the dashboard uses. The savings and archived tiers below are
+   page-load-only. #}
 <div id="cockpit-section"
      hx-get="{{ url_for('savings.cockpit_section') }}"
      hx-trigger="balanceChanged from:body"
@@ -56,165 +48,156 @@
   {% include "savings/_cockpit.html" %}
 </div>
 
-{# ── Savings section: emergency fund + goals ───────────────────────── #}
-{% if total_savings > 0 %}
-<div class="card mb-4">
-  <div class="card-header">
-    <h6 class="mb-0"><i class="bi bi-shield-check"></i> Emergency Fund Coverage</h6>
+{# ── Savings group: goals + emergency-fund coverage ─────────────────
+   One group card in the cockpit grammar (D6-F ruling; the P-AC5
+   re-housing).  Goal blocks keep their full anatomy inside the card
+   body; the old standalone Emergency Fund Coverage card is folded into
+   the card's footer line. #}
+<section class="acct-group">
+  <div class="acct-group__head">
+    <h2 class="acct-group__title"><i class="bi bi-bullseye"></i> Savings</h2>
   </div>
-  <div class="card-body">
-    <div class="row text-center">
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.months_covered }}</div>
-        <small class="text-muted">Months</small>
+
+  {% if goal_data %}
+  <div class="savings-goals">
+    {% for gd in goal_data %}
+    <div class="savings-goal">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <div>
+          <h6 class="mb-0">{{ gd.goal.name }}</h6>
+          <small class="text-muted">{{ gd.goal.account.name if gd.goal.account else '' }}</small>
+        </div>
+        <div class="d-flex gap-1">
+          <a href="{{ url_for('savings.edit_goal', goal_id=gd.goal.id) }}"
+             class="btn btn-sm btn-outline-secondary" aria-label="Edit {{ gd.goal.name }}">
+            <i class="bi bi-pencil"></i>
+          </a>
+          <a href="{{ url_for('transfers.new_transfer_template', to_account=gd.goal.account_id) }}"
+             class="btn btn-sm btn-outline-primary" title="Create recurring transfer to this goal">
+            <i class="bi bi-arrow-left-right"></i>
+          </a>
+        </div>
       </div>
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.paychecks_covered }}</div>
-        <small class="text-muted">Paychecks</small>
+
+      {% if gd.income_descriptor and not gd.has_salary_data %}
+      <div class="alert alert-warning py-1 px-2 small mb-2">
+        <i class="bi bi-exclamation-triangle"></i>
+        No salary profile configured -- income target cannot be calculated.
       </div>
-      <div class="col">
-        <div class="fs-3 fw-bold text-accent">{{ emergency_metrics.years_covered }}</div>
-        <small class="text-muted">Years</small>
-      </div>
-    </div>
-    <div class="text-center mt-2">
-      <small class="text-muted">
-        Based on {{ money(total_savings, cents=false) }} savings
-        {% if avg_monthly_expenses > 0 %}
-        and {{ money(avg_monthly_expenses, cents=false) }}/mo avg expenses
-        {% endif %}
-      </small>
-    </div>
-  </div>
-</div>
-{% endif %}
+      {% endif %}
 
-<h5 class="mb-3"><i class="bi bi-bullseye"></i> Savings Goals</h5>
-{% if goal_data %}
-<div class="row g-3 mb-4">
-  {% for gd in goal_data %}
-  <div class="col-md-6">
-    <div class="card h-100">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-start mb-2">
-          <div>
-            <h6 class="card-title mb-0">{{ gd.goal.name }}</h6>
-            <small class="text-muted">{{ gd.goal.account.name if gd.goal.account else '' }}</small>
-          </div>
-          <div class="d-flex gap-1">
-            <a href="{{ url_for('savings.edit_goal', goal_id=gd.goal.id) }}"
-               class="btn btn-sm btn-outline-secondary" aria-label="Edit {{ gd.goal.name }}">
-              <i class="bi bi-pencil"></i>
-            </a>
-            <a href="{{ url_for('transfers.new_transfer_template', to_account=gd.goal.account_id) }}"
-               class="btn btn-sm btn-outline-primary" title="Create recurring transfer to this goal">
-              <i class="bi bi-arrow-left-right"></i>
-            </a>
-          </div>
-        </div>
-
-        {% if gd.income_descriptor and not gd.has_salary_data %}
-        <div class="alert alert-warning py-1 px-2 small mb-2">
-          <i class="bi bi-exclamation-triangle"></i>
-          No salary profile configured -- income target cannot be calculated.
-        </div>
-        {% endif %}
-
-        <div class="mb-2">
-          <div class="d-flex justify-content-between small mb-1">
-            <span class="font-mono">{{ money(gd.current_balance, cents=false) }}</span>
-            <span class="font-mono">
-              {{ money(gd.resolved_target, cents=false) }}
-              {% if gd.income_descriptor %}
-              <span class="text-muted">({{ gd.income_descriptor }})</span>
-              {% endif %}
-            </span>
-          </div>
-          <div class="progress progress-h-8">
-            <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
-                 role="progressbar"
-                 data-progress-pct="{{ gd.progress_pct }}"
-                 aria-valuenow="{{ gd.progress_pct }}"
-                 aria-valuemin="0"
-                 aria-valuemax="100">
-            </div>
-          </div>
-          <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
-        </div>
-
-        {% if gd.goal.target_date %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Target date</span>
-          <span>{{ gd.goal.target_date.strftime('%b %d, %Y') }}</span>
-        </div>
-        {% endif %}
-
-        {% if gd.remaining_periods is not none and gd.remaining_periods > 0 %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Periods remaining</span>
-          <span>{{ gd.remaining_periods }}</span>
-        </div>
-        {% endif %}
-
-        {% if gd.required_contribution is not none %}
-        <div class="d-flex justify-content-between small mt-1">
-          <span class="text-muted fw-semibold">Recommended per paycheck</span>
-          <span class="fw-semibold font-mono text-accent">{{ money(gd.required_contribution) }}</span>
-        </div>
-        {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
-        <div class="small text-warning mt-1">
-          <i class="bi bi-exclamation-triangle"></i> Past target date
-        </div>
-        {% endif %}
-
-        {% if gd.goal.contribution_per_period %}
-        <div class="d-flex justify-content-between small">
-          <span class="text-muted">Manual target</span>
-          <span class="font-mono">{{ money(gd.goal.contribution_per_period) }}/period</span>
-        </div>
-        {% endif %}
-
-        {% if gd.trajectory %}
-        {% set traj = gd.trajectory %}
-        <div class="mt-2 pt-2 border-top">
-          {% if traj.months_to_goal == 0 %}
-          <p class="text-success fw-bold mb-1">Goal met!</p>
-          {% elif traj.months_to_goal is not none %}
-          <div class="small mb-1">
-            Projected completion:
-            <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
-            {% if traj.months_to_goal > 360 %}
-            (over 30 years)
-            {% else %}
-            ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
+      <div class="mb-2">
+        <div class="d-flex justify-content-between small mb-1">
+          <span class="font-mono">{{ money(gd.current_balance, cents=false) }}</span>
+          <span class="font-mono">
+            {{ money(gd.resolved_target, cents=false) }}
+            {% if gd.income_descriptor %}
+            <span class="text-muted">({{ gd.income_descriptor }})</span>
             {% endif %}
+          </span>
+        </div>
+        <div class="progress progress-h-8">
+          <div class="progress-bar {% if gd.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
+               role="progressbar"
+               data-progress-pct="{{ gd.progress_pct }}"
+               aria-valuenow="{{ gd.progress_pct }}"
+               aria-valuemin="0"
+               aria-valuemax="100">
           </div>
-          {{ pace_pill(traj.pace) }}
-          {% if traj.pace == 'behind' and traj.required_monthly %}
-          <p class="small text-muted mt-1 mb-0">
-            Increase to {{ money(traj.required_monthly) }}/mo
-            to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
-          </p>
-          {% endif %}
+        </div>
+        <small class="text-muted">{{ "{:.0f}".format(gd.progress_pct) }}% complete</small>
+      </div>
+
+      {% if gd.goal.target_date %}
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Target date</span>
+        <span>{{ gd.goal.target_date.strftime('%b %d, %Y') }}</span>
+      </div>
+      {% endif %}
+
+      {% if gd.remaining_periods is not none and gd.remaining_periods > 0 %}
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Periods remaining</span>
+        <span>{{ gd.remaining_periods }}</span>
+      </div>
+      {% endif %}
+
+      {% if gd.required_contribution is not none %}
+      <div class="d-flex justify-content-between small mt-1">
+        <span class="text-muted fw-semibold">Recommended per paycheck</span>
+        <span class="fw-semibold font-mono text-accent">{{ money(gd.required_contribution) }}</span>
+      </div>
+      {% elif gd.required_contribution is none and gd.progress_pct < 100 %}
+      <div class="small text-warning mt-1">
+        <i class="bi bi-exclamation-triangle"></i> Past target date
+      </div>
+      {% endif %}
+
+      {% if gd.goal.contribution_per_period %}
+      <div class="d-flex justify-content-between small">
+        <span class="text-muted">Manual target</span>
+        <span class="font-mono">{{ money(gd.goal.contribution_per_period) }}/period</span>
+      </div>
+      {% endif %}
+
+      {% if gd.trajectory %}
+      {% set traj = gd.trajectory %}
+      <div class="mt-2 pt-2 border-top">
+        {% if traj.months_to_goal == 0 %}
+        <p class="text-success fw-bold mb-1">Goal met!</p>
+        {% elif traj.months_to_goal is not none %}
+        <div class="small mb-1">
+          Projected completion:
+          <strong>{{ traj.projected_completion_date.strftime('%b %Y') }}</strong>
+          {% if traj.months_to_goal > 360 %}
+          (over 30 years)
           {% else %}
-          <p class="text-muted small mb-1">
-            No recurring contribution -- trajectory cannot be calculated.
-          </p>
+          ({{ traj.months_to_goal }} month{{ 's' if traj.months_to_goal != 1 else '' }})
           {% endif %}
         </div>
+        {{ pace_pill(traj.pace) }}
+        {% if traj.pace == 'behind' and traj.required_monthly %}
+        <p class="small text-muted mt-1 mb-0">
+          Increase to {{ money(traj.required_monthly) }}/mo
+          to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
+        </p>
+        {% endif %}
+        {% else %}
+        <p class="text-muted small mb-1">
+          No recurring contribution -- trajectory cannot be calculated.
+        </p>
         {% endif %}
       </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="acct-group__body">
+    <div class="alert alert-info mb-0">
+      No savings goals yet.
+      <a href="{{ url_for('savings.new_goal') }}" class="alert-link">Create one</a>
+      to track progress toward your savings targets.
     </div>
   </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="alert alert-info">
-  No savings goals yet.
-  <a href="{{ url_for('savings.new_goal') }}" class="alert-link">Create one</a>
-  to track progress toward your savings targets.
-</div>
-{% endif %}
+  {% endif %}
+
+  {# Emergency-fund coverage, folded from its standalone card (D6-F).
+     The figures derive from ALL liquid savings, not one goal, so the
+     line is labeled rather than attached to a specific goal block. #}
+  {% if total_savings > 0 %}
+  <div class="acct-group__foot">
+    <span>Emergency fund coverage</span>
+    <span><span class="font-mono">{{ emergency_metrics.months_covered }}</span> months</span>
+    <span><span class="font-mono">{{ emergency_metrics.paychecks_covered }}</span> paychecks</span>
+    <span><span class="font-mono">{{ emergency_metrics.years_covered }}</span> years</span>
+    <span class="acct-group__foot-note">
+      Based on {{ money(total_savings, cents=false) }} savings
+      {%- if avg_monthly_expenses > 0 %} and {{ money(avg_monthly_expenses, cents=false) }}/mo avg expenses{% endif %}
+    </span>
+  </div>
+  {% endif %}
+</section>
 
 {# ── Archived accounts (collapsed) ─────────────────────────────────── #}
 {% if archived_accounts %}
@@ -247,15 +230,15 @@
                 <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button type="submit" class="btn btn-sm btn-outline-success"
+                  <button type="submit" class="btn btn-sm btn-outline-secondary"
                           title="Unarchive {{ ad.account.name }}"
                           aria-label="Unarchive {{ ad.account.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
-                {# Archived accounts have no card kebab or edit-form reach in the
+                {# Archived accounts have no cell kebab or edit-form reach in the
                    cockpit, so hard-delete is a direct affordance here (P4).  It
-                   is the same route the active cards' Danger Zone uses: confirm
+                   is the same route the active cells' Danger Zone uses: confirm
                    modal + fresh-login gated, and an account that still has
                    transaction history is archived-not-deleted by the guard. #}
                 <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=ad.account.id) }}"

@@ -34,9 +34,17 @@ Module map:
   expenses, the debt summary + DTI, and the canonical paycheck-breakdown
   producer.
 * :mod:`app.services.savings_dashboard_service._display` -- account
-  grouping for the template.
+  grouping and the shared id-based category classifier.
+* :mod:`app.services.savings_dashboard_service._net_worth` -- the
+  ``2 years`` net-worth region: today figures, the trend series with its
+  per-category composition split, and the per-account sparklines.
+* :mod:`app.services.savings_dashboard_service._horizon` -- the ``Horizon``
+  range producer (P-AC1 Loop B P1): the annual net-worth composition +
+  net-trajectory series with milestone flags, reusing the /retirement
+  engine, per-account growth params, and the loan resolver schedules.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
   ``compute_dashboard_data`` (the full-page entry point),
+  ``compute_net_worth_horizon`` (the narrow ``Horizon``-range producer),
   ``compute_debt_summary`` (the narrow debt-card producer behind the
   dashboard's debt track; deep-hunt #82),
   ``compute_debt_principal_progress`` (the narrow principal-paid fraction
@@ -58,6 +66,7 @@ from app.services.savings_dashboard_service._orchestrator import (
     compute_debt_principal_progress,
     compute_debt_summary,
     compute_goal_progress,
+    compute_net_worth_horizon,
 )
 
 __all__ = [
@@ -66,4 +75,5 @@ __all__ = [
     "compute_debt_principal_progress",
     "compute_debt_summary",
     "compute_goal_progress",
+    "compute_net_worth_horizon",
 ]

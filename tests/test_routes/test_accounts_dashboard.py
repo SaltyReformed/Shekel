@@ -110,7 +110,8 @@ class TestDashboardGrouping:
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
         # Should include both savings ($5,000) and HYSA ($10,000) in total.
-        assert b"Emergency Fund" in resp.data
+        # D6-F fold: the EF card is now the Savings group card's footer line.
+        assert b"Emergency fund coverage" in resp.data
 
     def test_dashboard_savings_goals_unchanged(self, auth_client, seed_user, db, seed_periods_today):
         """Goals section renders correctly (regression)."""
@@ -127,8 +128,11 @@ class TestDashboardGrouping:
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
+        # D6-F fold: the "Savings Goals" h5 is gone; goals render inside the
+        # "Savings" group card.  The goal name proves the goals section
+        # rendered; "Emergency fund coverage" proves the EF footer rendered.
         assert b"Emergency Fund" in resp.data
-        assert b"Savings Goals" in resp.data
+        assert b"Emergency fund coverage" in resp.data
 
     def test_dashboard_mortgage_shows_rate(self, auth_client, seed_user, db, seed_periods_today):
         """Mortgage card shows interest rate."""
@@ -229,7 +233,11 @@ class TestDashboardGrouping:
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
-        assert b"Liability" in resp.data
+        # The liability group surfaces as "Liabilities" (the group header and
+        # the stream legend both render category_labels['liability']).  The
+        # prior singular "Liability" substring came from the diverging
+        # allocation bar's legend (seg.label|title), retired with P-AC1.
+        assert b"Liabilities" in resp.data
 
     def test_dashboard_no_accounts(self, app, db, seed_user):
         """Empty state renders the dashboard page with navigation elements.
@@ -293,7 +301,8 @@ class TestDashboardGrouping:
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
         # Emergency fund section should appear (liquid accounts exist).
-        assert b"Emergency Fund" in resp.data
+        # D6-F fold: the EF card is now the Savings group card's footer line.
+        assert b"Emergency fund coverage" in resp.data
 
     def test_user_created_liquid_type_in_emergency_fund(
         self, app, auth_client, seed_user, db, seed_periods_today,
@@ -325,7 +334,8 @@ class TestDashboardGrouping:
 
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
-            assert b"Emergency Fund" in resp.data
+            # D6-F fold: the EF card is now the Savings group card's footer line.
+            assert b"Emergency fund coverage" in resp.data
 
 
 # ── Hard Delete Tests (5A.5-4) ─────────────────────────────────────

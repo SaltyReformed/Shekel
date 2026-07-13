@@ -201,9 +201,14 @@ them:
   own 16% `color-mix` tint.
 
 **Archive / delete button convention (D5):** archive and deactivate controls are `--shekel-warning`
-amber outline buttons; true deletes are `--shekel-danger` outline buttons. Amber is never used on a
-control for any other reason, and raw Bootstrap `btn-outline-warning` (`#FFC107`) is retired -- the
-per-page sweeps execute in the page sessions.
+amber outline buttons; true deletes are `--shekel-danger` outline buttons; restore / unarchive /
+reactivate controls are neutral `btn-outline-secondary` outline buttons (a benign, reversible action
+in the same quiet tier as Edit, so color stays reserved for the caution and danger controls -- money
+green is never used on a non-money control). Amber is never used on a control for any other reason,
+and raw Bootstrap `btn-outline-warning` (`#FFC107`) and `btn-outline-success` (money green) are
+retired on controls. The `btn-outline-warning` / `btn-outline-danger` skins live app-wide in
+`base.css`; the restore sweep replaced `btn-outline-success` with `btn-outline-secondary` in the
+five archived-list / reactivate controls.
 
 ## Accessibility
 

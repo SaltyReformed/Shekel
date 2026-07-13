@@ -716,7 +716,12 @@ document.addEventListener('mousedown', function(e) {
 });
 
 document.addEventListener('focusout', function(e) {
-    if (!e.target.matches || !e.target.matches('.txn-quick-input')) return;
+    // .txn-quick-name is the quick-create form's optional name input
+    // (grid audit A5): clicking away from EITHER field must run the
+    // same revert check, and the activeElement guard below keeps the
+    // form open while focus moves between the two.
+    if (!e.target.matches
+        || !e.target.matches('.txn-quick-input, .txn-quick-name')) return;
     const quickForm = e.target.closest('.txn-quick-edit');
     if (!quickForm) return;
 

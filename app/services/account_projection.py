@@ -327,6 +327,98 @@ def splice_confirmed_and_projected_loan_balances(
     return result
 
 
+def forward_balance_at_date(
+    schedule: list,
+    target: date,
+    current_balance: Decimal,
+) -> Decimal:
+    """Return a loan's PROJECTED balance at a future date.
+
+    *current_balance* -- the confirmed present, which the read switch seeds from
+    the genesis ledger -- reduced by the scheduled payments still TO COME by
+    *target*.  Walks ONLY the schedule's UNCONFIRMED rows, and that exclusion is
+    the whole point:
+
+    * A confirmed row's paydown is ALREADY inside *current_balance* (the ledger
+      summed it), so the row is not a future event.  Its ``remaining_balance`` is
+      a HISTORICAL balance, and reading it for a future date reports whatever the
+      loan owed back then.
+    * The confirmed rows are also an INCOMPLETE record of the past.  They are
+      payment rows only -- a balance true-up is a ledger event with no schedule
+      row -- so a loan trued-up after its last payment has a last confirmed row
+      whose balance is stale by the true-up.  Walking it reported a balance the
+      loan does not owe (a real $3.94 divergence on production data), while the
+      ledger, which books the true-up, was right.
+    * A confirmed row's ``payment_date`` is its INSTALLMENT date, which for an
+      early- or late-settled payment need not sit on the same side of *target*
+      as the cash did.
+
+    The past therefore belongs to the ledger
+    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) and the
+    future to this projection; no consumer should derive one from the other.  An
+    OVERDUE payment (unconfirmed, already past due) stays in the walk, preserving
+    the project's due-basis treatment of it.
+
+    Args:
+        schedule: The resolver's :class:`AmortizationRow` list (confirmed
+            history rows plus committed forward rows).
+        target: The future date to value the loan at.
+        current_balance: The loan's confirmed balance today (the resolver's
+            ledger-seeded ``current_balance``) -- the projection's seed, and the
+            answer when no forward payment has come due by *target*.
+
+    Returns:
+        The projected ``Decimal`` balance owed at *target*.
+    """
+    forward_rows = sorted(
+        (row for row in schedule if not row.is_confirmed),
+        key=lambda row: row.payment_date,
+    )
+    return balance_from_schedule_at_date(
+        forward_rows, target, current_balance,
+    )
+
+
+def compute_forward_loan_period_balance_map(
+    schedule: list,
+    periods: list,
+    current_balance: Decimal,
+) -> "OrderedDict[int, Decimal]":
+    """Map a loan's FORWARD projection to per-period balances.
+
+    The per-period form of :func:`forward_balance_at_date` (same boundary rule,
+    keyed by ``period.end_date`` like its schedule-only sibling
+    :func:`compute_loan_period_balance_map`): each period reports the confirmed
+    present reduced by the scheduled payments due by that period's end.
+
+    This is the projection half of the genesis per-period read switch --
+    :func:`splice_confirmed_and_projected_loan_balances` overlays the confirmed
+    ledger on every BEGUN period and keeps this for the future -- so it is only
+    ever read for periods after ``as_of``.  It answers those periods from the
+    confirmed present forward, rather than re-deriving them from confirmed
+    history rows that the ledger has already superseded.
+
+    Args:
+        schedule: The resolver's :class:`AmortizationRow` list.
+        periods: The pay periods to key the result by.
+        current_balance: The loan's ledger-seeded confirmed balance today.
+
+    Returns:
+        ``OrderedDict`` mapping ``period.id`` to the projected ``Decimal``
+        balance at that period's end.
+    """
+    forward_rows = sorted(
+        (row for row in schedule if not row.is_confirmed),
+        key=lambda row: row.payment_date,
+    )
+    balances: "OrderedDict[int, Decimal]" = OrderedDict()
+    for period in periods:
+        balances[period.id] = balance_from_schedule_at_date(
+            forward_rows, period.end_date, current_balance,
+        )
+    return balances
+
+
 def find_period_containing_date(periods: list, target: date):
     """Return the pay period whose interval contains *target*.
 

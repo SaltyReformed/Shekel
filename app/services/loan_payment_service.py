@@ -53,9 +53,9 @@ from app.services.loan_loaders import (
     load_loan_anchor_facts,
     load_loan_params,
     load_rate_history,
+    loan_payment_due_date,
     query_shadow_income,
 )
-from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import is_projected
 from app.utils.money import round_money
 
@@ -155,7 +155,7 @@ def load_loan_context(
 
     # Payment history from shadow income transactions.
     raw_payments = (
-        get_payment_history(account_id, scenario_id)
+        get_payment_history(account_id, scenario_id, loan_params.payment_day)
         if scenario_id else []
     )
 
@@ -201,7 +201,7 @@ def load_loan_context(
 
 
 def get_payment_history(
-    account_id: int, scenario_id: int,
+    account_id: int, scenario_id: int, payment_day: int,
 ) -> list[PaymentRecord]:
     """Query shadow income transactions on a debt account.
 
@@ -226,9 +226,21 @@ def get_payment_history(
     respect the 5A.1 fix: actual_amount when populated, else
     estimated_amount, with correct zero-vs-null handling.
 
+    Each record carries BOTH of a loan payment's dates (see
+    :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
+    is the pay-period start (the cash basis the ledger sums on), and
+    ``due_date`` is the installment it satisfies, from the ONE derivation the
+    genesis write walk also uses
+    (:func:`app.services.loan_loaders.loan_payment_due_date`).  The two differ
+    for a payment settled late, and deriving the second from the first is the
+    defect that mis-dated such a payment to the following month.
+
     Args:
         account_id: The debt account receiving payments.
         scenario_id: The active budget scenario.
+        payment_day: The loan's contractual day-of-month due day
+            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
+            to reconstruct the due date of a shadow that stores none.
 
     Returns:
         List of PaymentRecord instances sorted by payment date
@@ -257,6 +269,7 @@ def get_payment_history(
 
         payments.append(PaymentRecord(
             payment_date=txn.pay_period.start_date,
+            due_date=loan_payment_due_date(txn, payment_day),
             amount=amount,
             is_confirmed=txn.status.is_settled,
         ))
@@ -325,19 +338,26 @@ def _redistribute_to_distinct_months(
     calendar month; the monthly engine would sum them, double-counting one
     month and leaving the next empty.  At most one extra payment per month
     (~2x/year) is expected, so cascading collisions are not, but the
-    while-loop handles them defensively.  The collision key is the true
-    monthly DUE month (``monthly_due_date`` of the pay-period start), NOT
-    the pay-period-start month: two pay periods that both fall before the
+    while-loop handles them defensively.  The collision key is each payment's
+    DUE month (:attr:`PaymentRecord.due_date`, the installment it satisfies),
+    NOT its pay-period-start month: two pay periods that both fall before the
     same ``payment_day`` (e.g. Apr 10 and Apr 24, both due May 1) collide on
     the May schedule row, and the schedule/override key everything by due
     month -- a pay-period-start-month key would leave that collision
     unresolved and sum both into a single double payment.
+
+    Only the DUE date shifts.  ``payment_date`` (the pay period the cash
+    actually moved in) is a FACT and is carried through untouched: it is the
+    replay's "has this period begun?" cap and its rate lookup, and it is what
+    the posting ledger sums on, so overwriting it with the shifted due date
+    (the pre-fix behaviour) fed a due date to every consumer expecting a
+    pay-period start -- excluding a shifted payment from the replay whenever
+    its invented due date sorted after ``as_of``.
     """
     result: list[PaymentRecord] = []
     allocated_months: set[tuple[int, int]] = set()
     for p in payments:
-        due = monthly_due_date(p.payment_date, payment_day)
-        ym = (due.year, due.month)
+        ym = (p.due_date.year, p.due_date.month)
         if ym not in allocated_months:
             result.append(p)
             allocated_months.add(ym)
@@ -353,9 +373,10 @@ def _redistribute_to_distinct_months(
                     m = 1
                     y += 1
             max_day = calendar.monthrange(y, m)[1]
-            new_date = date(y, m, min(payment_day, max_day))
+            new_due = date(y, m, min(payment_day, max_day))
             result.append(PaymentRecord(
-                payment_date=new_date,
+                payment_date=p.payment_date,
+                due_date=new_due,
                 amount=p.amount,
                 is_confirmed=p.is_confirmed,
             ))
@@ -432,6 +453,7 @@ def prepare_payments_for_engine(
                 new_amount = p.amount
             adjusted.append(PaymentRecord(
                 payment_date=p.payment_date,
+                due_date=p.due_date,
                 amount=new_amount,
                 is_confirmed=p.is_confirmed,
             ))

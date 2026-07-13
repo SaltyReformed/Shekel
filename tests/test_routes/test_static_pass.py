@@ -20,6 +20,7 @@ scope rationale.  These tests pin:
      the worker only reinstalls when an asset actually changes.
 """
 
+import json
 import os
 import re
 from pathlib import Path
@@ -117,6 +118,69 @@ class TestServiceWorkerPassthrough:
         match = re.search(r"shekel-static-([0-9a-f]{6,})", first)
         assert match is not None
         assert match.group(1) == _static_asset_version(app.static_folder)
+
+
+class TestWebManifest:
+    """Tests for GET /manifest.json (the PWA manifest route).
+
+    The manifest is rendered rather than served static so its icon
+    ``src`` URLs pick up the content-hash ``?v=`` parameter that the
+    static versioning hook cannot inject into a plain JSON string; the
+    versioning is the whole point of the route (item 8 of the UI
+    closeout plan / css_architecture_audit.md section 5 residue).
+    """
+
+    def test_manifest_returns_200_with_manifest_mimetype(self, app, client, db):
+        """GET /manifest.json returns 200 with the PWA manifest MIME type."""
+        response = client.get("/manifest.json")
+        assert response.status_code == 200
+        assert response.mimetype == "application/manifest+json"
+
+    def test_manifest_no_authentication_required(self, app, client, db):
+        """The manifest is a public asset reachable without a session.
+
+        The browser fetches it during PWA install before any login, so
+        an auth redirect would break installability.
+        """
+        response = client.get("/manifest.json")
+        assert response.status_code == 200
+
+    def test_manifest_is_no_store(self, app, client, db):
+        """The manifest response is no-store.
+
+        The manifest URL itself is unversioned, so it must not be pinned
+        by an HTTP cache: the browser has to re-read it to observe a
+        changed icon ``?v=`` URL.  The app-wide after-request hook sets
+        no-store on this non-static endpoint.
+        """
+        response = client.get("/manifest.json")
+        assert "no-store" in response.headers["Cache-Control"]
+
+    def test_manifest_icons_are_content_versioned(self, app, client, db):
+        """Every icon ``src`` carries the file's exact content hash.
+
+        This is the regression lock for the residue item 8 closes: a
+        plain-string ``src`` inside the static JSON could not be
+        versioned, so a re-baked icon could be served stale.  Each src
+        must now match ``url_for('static', ...)``'s output -- a
+        ``?v=<hash>`` equal to ``static_file_version`` for that file.
+        """
+        response = client.get("/manifest.json")
+        manifest = json.loads(response.data)
+        icons = manifest["icons"]
+        assert icons, "manifest must declare at least one icon"
+
+        prefix = f"{app.static_url_path}/"
+        for icon in icons:
+            src = icon["src"]
+            path, sep, version = src.partition("?v=")
+            assert sep, f"icon src is not versioned: {src}"
+            assert path.startswith(prefix), f"icon src not under static: {src}"
+            filename = path[len(prefix):]
+            # The route builds the URL via url_for, so its ?v= must equal
+            # the file's own content hash -- identical to every other
+            # static asset URL for the same file.
+            assert version == static_file_version(app.static_folder, filename)
 
 
 class TestStaticFileVersion:

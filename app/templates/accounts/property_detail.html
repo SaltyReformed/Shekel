@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_money_macros.html" import money %}
 {% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
 {% block title %}{{ account.name }} -- Property Detail -- Shekel{% endblock title %}
 
 {# Property detail page, rebuilt in the account-detail band grammar
@@ -12,22 +13,25 @@
    list" copy pointed at the retired /accounts table; market value is the
    account balance, edited via click-to-edit on its Accounts card.
 
-   Context (accounts.property_detail): account, params, equity,
-   secured_loans. #}
+   The band's chart slot draws the equity-over-time chart in the locked
+   "stacked shares" direction (Loop A lock 2026-07-11): market value and
+   secured debt lines on a monthly axis to payoff, the debt region
+   washed danger (the bank's share), the equity band washed accent (the
+   owner's share).  The caption under it carries the flat-carry honesty
+   ruling and absorbs the old helper copy's edit pointer; its wording
+   follows chart_state ("standard" / "zero_rate" / "no_loans").
 
-{% block breadcrumbs %}
-<nav aria-label="breadcrumb" class="container-fluid mt-2">
-  <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('savings.dashboard') }}">Accounts Dashboard</a></li>
-    <li class="breadcrumb-item active" aria-current="page">{{ account.name }}</li>
-  </ol>
-</nav>
-{% endblock breadcrumbs %}
+   Context (accounts.property_detail): account, params, equity,
+   secured_loans, has_equity_chart, chart_json, chart_state,
+   has_estimated_debt. #}
 
 {% block content %}
-<div class="d-flex align-items-center gap-2 mb-3">
-  <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
-  <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
+  </div>
+  {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
 </div>
 
 {% if request.args.get('setup') == '1' %}
@@ -68,11 +72,55 @@
       </div>
     </div>
   </div>
-  <div class="acctd-empty">
-    Market value is this account's balance -- click it on the Accounts card
-    to true it up. It compounds forward at the appreciation rate on
-    projections.
+  {% if has_equity_chart %}
+  <div class="pulse-chart">
+    {% if chart_state == 'no_loans' %}
+    <canvas id="property-equity-chart" data-chart='{{ chart_json }}'
+            data-chart-state="{{ chart_state }}"
+            role="img"
+            aria-label="{{ account.name }} market value projection: 10 years of appreciation, dashed as a projection"></canvas>
+    {% else %}
+    <canvas id="property-equity-chart" data-chart='{{ chart_json }}'
+            data-chart-state="{{ chart_state }}"
+            role="img"
+            aria-label="{{ account.name }} equity over time: market value and secured debt monthly to payoff, equity between them; secured debt solid where recorded, dashed where projected{% if has_estimated_debt %}, dotted where estimated before records begin{% endif %}; Today marker"></canvas>
+    {% endif %}
   </div>
+  <div class="acctd-chart-cap">
+    {% if chart_state == 'no_loans' %}
+    This property has no outstanding secured debt, so equity is the full
+    market value; the chart shows 10 years of appreciation
+    {%- if params.annual_appreciation_rate == 0 %} -- set a rate in
+    <a href="#property-params">Parameters</a> to project growth
+    {%- else %} at {{ "%.1f"|format(params.annual_appreciation_rate|to_percent) }}%/yr
+    {%- endif %}. Market value is this account's balance -- true it up by
+    clicking the balance on its <a href="{{ url_for('savings.dashboard') }}">Accounts card</a>.
+    {% elif chart_state == 'zero_rate' %}
+    No appreciation rate is set, so market value holds flat -- equity
+    still grows as the secured debt amortizes. Set a rate in
+    <a href="#property-params">Parameters</a> below, and true up the value by
+    clicking the balance on its <a href="{{ url_for('savings.dashboard') }}">Accounts card</a>.
+    Secured debt is solid where you have recorded payments and dashed for
+    the committed plan{% if has_estimated_debt %}; the dotted stretch before
+    your records begin is an estimate from the loan's original terms{% endif %}.
+    {% else %}
+    Market value history is unknown, so the value line holds today's
+    anchor flat before Today and compounds at
+    {{ "%.1f"|format(params.annual_appreciation_rate|to_percent) }}%/yr after -- true
+    it up by clicking the balance on its
+    <a href="{{ url_for('savings.dashboard') }}">Accounts card</a>. Secured
+    debt is solid where you have recorded payments and dashed for the
+    committed plan{% if has_estimated_debt %}; the dotted stretch before
+    your records begin is an estimate from the loan's original terms{% endif %}.
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="acctd-empty">
+    No market value to chart yet -- set the property's value by clicking
+    the balance on its Accounts card. It compounds forward at the
+    appreciation rate on projections.
+  </div>
+  {% endif %}
 </div>
 
 {# ── Secured-by + Parameters, below the band (decision 7) ───────────── #}
@@ -106,7 +154,7 @@
   </div>
 
   <div class="col-lg-5">
-    <div class="card h-100">
+    <div class="card h-100" id="property-params">
       <div class="card-header">
         <h6 class="mb-0"><i class="bi bi-gear"></i> Parameters</h6>
       </div>
@@ -135,3 +183,9 @@
   </div>
 </div>
 {% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart-js/chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/chart_theme.js') }}"></script>
+<script src="{{ url_for('static', filename='js/property_detail.js') }}"></script>
+{% endblock scripts %}

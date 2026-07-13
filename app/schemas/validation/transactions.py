@@ -106,10 +106,15 @@ class TransactionCreateSchema(BaseSchema):
 class InlineTransactionCreateSchema(BaseSchema):
     """Validates POST data for inline transaction creation from the grid.
 
-    Unlike TransactionCreateSchema, the name field is auto-derived from
-    the category so it is not required from the user.
+    Unlike TransactionCreateSchema, the name field is OPTIONAL: the
+    quick-create form offers it so an ad-hoc row can be named at the
+    Tier-1 entry point (grid audit A5), and the route falls back to the
+    category display name when it is omitted or left blank (the
+    ``strip_empty_strings`` hook drops an empty submit, so the loaded
+    payload simply lacks the key).
     """
 
+    name = fields.String(validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0),

@@ -12,7 +12,7 @@ dashboard is where the payoff date is computed with full payment context.
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
 
-from flask import abort, render_template
+from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
@@ -427,6 +427,90 @@ def _build_measured_context(account_id, scenario_id, as_of, current_year):
             account_id, scenario_id, as_of,
         ),
     }
+
+
+def _load_configured_loan_or_404(account_id):
+    """Load a configured loan for a detail-page HTMX fragment, or 404.
+
+    The shared gate for the hero-cell partials below: ``_load_loan_account``
+    resolves cross-owner / non-existent / non-loan accounts to ``None``
+    (the project's "404 for not-found and not-yours" rule), and an
+    owner's loan WITHOUT ``LoanParams`` also 404s here -- the fragments
+    are cells of the configured dashboard, which does not render for an
+    unconfigured loan (that page shows setup.html), so no fragment of it
+    exists to serve.  This deliberately differs from
+    ``_require_configured_loan``'s flash-and-redirect, which suits the
+    full-page POST flows but would swap a whole redirected page into an
+    HTMX hero slot.
+
+    Args:
+        account_id: The loan account id from the route.
+
+    Returns:
+        ``(account, params)`` -- only for a configured, owned loan.
+    """
+    account, params, _ = _load_loan_account(account_id)
+    if account is None or params is None:
+        abort(404)
+    return account, params
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/balance-hero")
+@login_required
+@require_owner
+def balance_hero(account_id):
+    """HTMX partial: the loan balance hero cell (D14 click-to-edit port).
+
+    The Cancel / Escape revert target for the loan detail page's
+    click-to-edit dated true-up editor, mirroring
+    :func:`investment.balance_hero`: renders ``loan/_balance_hero.html``
+    with the resolver-derived current balance, so a reverted cell
+    restores the exact figure the page loaded with.  There is no
+    save-path revert here -- a save posts :func:`loan.true_up_balance`'s
+    full-page redirect flow (see the partial's docstring).
+
+    Non-HTMX requests redirect to the loan dashboard page (the cell is
+    a fragment, not a standalone page).
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+    account, params = _load_configured_loan_or_404(account_id)
+    ctx = _load_loan_context(account, params)
+    return render_template(
+        "loan/_balance_hero.html",
+        account=account,
+        current_principal_display=ctx.state.current_balance,
+    )
+
+
+@loan_bp.route("/accounts/<int:account_id>/loan/anchor-form")
+@login_required
+@require_owner
+def anchor_form(account_id):
+    """HTMX partial: the loan hero's dated true-up editor (D14).
+
+    Returns ``loan/_anchor_edit.html`` -- the inline as-of-date +
+    balance form the click-to-edit hero swaps in.  The form posts the
+    existing :func:`loan.true_up_balance` redirect flow (the whole page
+    re-renders on save; every dependent figure recomputes together);
+    Cancel / Escape swap back through :func:`balance_hero`.  The
+    resolver-derived current balance prefills the balance field and
+    ``origination_date`` floors the date input, matching the parameters
+    card's "Record balance" form bounds.
+
+    Non-HTMX requests redirect to the loan dashboard page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("loan.dashboard", account_id=account_id))
+    account, params = _load_configured_loan_or_404(account_id)
+    ctx = _load_loan_context(account, params)
+    return render_template(
+        "loan/_anchor_edit.html",
+        account=account,
+        params=params,
+        current_principal_display=ctx.state.current_balance,
+        today_iso=date.today().isoformat(),
+    )
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan")

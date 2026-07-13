@@ -50,6 +50,24 @@ Rules implemented:
   primitives ``project_balance`` and ``resolve_loan`` / ``resolve_account_loan``
   are NOT producers (they return ProjectedBalance / LoanState detail the seam
   composes) and stay callable by the chart and loan-route consumers.
+* ``shekel-unclassified-fenced-export`` (W9909, :mod:`.balance_seam`): the
+  fail-closed half of the W9906 fence. Flags a PUBLIC top-level function defined
+  in a fenced module (the engine cluster that defines the balance producers, and
+  the whole genesis loan-ledger package that defines the confirmed-balance
+  readers) that is classified as NEITHER a producer nor a deliberate
+  non-producer. The rulings are keyed BY MODULE, so a name ruled harmless in one
+  cannot exempt a same-named function added to another. W9906's lists are keyed
+  on function NAME alone, which made
+  the fence fail OPEN -- a new function inside an allowlisted module was
+  unguarded until someone remembered to list it, and that shipped twice
+  (``investment_base_balance_map``, then ``loan_owed_at_dates``, which a consumer
+  read past the seam for a month with the fence silent). This inverts the
+  default: an unclassified public function fails AT ITS DEFINITION, in the same
+  per-edit hook run that created it, so a producer can no longer become a hole by
+  omission. Resolve it by deciding what the function IS -- balance-at-T goes in
+  the producer set (and consumers reach it through a ``balance_at`` seam entry);
+  anything else goes in the non-producer set with a comment saying why. If in
+  doubt, it is a producer.
 * ``shekel-transaction-status-bypass`` (W9907, :mod:`.status_bypass`): flags
   writing ``status_id`` outside the transaction status seam. Every non-transfer
   ``Transaction.status_id`` change must funnel through
@@ -94,6 +112,9 @@ positives, so that judgment lives in the code-reviewer subagent instead.
 from .balance_seam import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
+    _ENGINE_CLUSTER_MODULES,
+    _FENCED_MODULE_RULINGS,
+    _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     ShekelBalanceSeamChecker,
@@ -120,10 +141,13 @@ from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassCh
 __all__ = [
     "_BALANCE_PRODUCERS",
     "_BALANCE_SEAM_MODULES",
+    "_ENGINE_CLUSTER_MODULES",
+    "_FENCED_MODULE_RULINGS",
     "_LEDGER_LEAF_MODULE_NAMES",
     "_LEDGER_MODEL_ALLOWLIST",
     "_LEDGER_MODEL_MODULES",
     "_LEDGER_MODEL_NAMES",
+    "_LOAN_LEDGER_DEFINING_MODULES",
     "_LOAN_LEDGER_READER_MODULES",
     "_LOAN_LEDGER_READER_PRODUCERS",
     "_STATUS_SEAM_MODULES",
