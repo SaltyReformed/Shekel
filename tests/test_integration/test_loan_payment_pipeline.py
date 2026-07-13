@@ -163,11 +163,21 @@ class TestLoanPaymentPipeline:
                 )
 
             # Step 5: Verify get_payment_history returns the payments.
-            payments = get_payment_history(mortgage.id, scenario.id)
+            params = db.session.query(LoanParams).filter_by(
+                account_id=mortgage.id,
+            ).one()
+            payments = get_payment_history(
+                mortgage.id, scenario.id, params.payment_day,
+            )
             assert len(payments) > 0, "No payments returned from history"
             for payment in payments:
                 assert isinstance(payment.amount, Decimal)
                 assert payment.amount > 0
+                # Each record carries BOTH dates: the pay period the cash moved
+                # in, and the installment it satisfies.  The shadows here are
+                # on-time, so the due date is the payment_day of the period's
+                # own month or the next.
+                assert payment.due_date.day == params.payment_day
 
             # Step 6: Verify the loan dashboard renders successfully
             # with payment-aware data.

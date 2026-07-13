@@ -10,10 +10,11 @@ those corrections lives in the sibling modules (:mod:`._payments`,
 :mod:`._anchors`); this module only READS and COMPUTES (no writes, no commit).
 
 Reuses the resolver's OWN pure primitives -- the rate-period set
-(:func:`app.services.loan_resolver.resolve_periods`) and the due-date boundary
-(:func:`app.services.rate_period_engine.monthly_due_date`) -- so the posted
-ledger and the resolver's replayed balance can never drift on the rate path or
-the anchor boundary they consider.
+(:func:`app.services.loan_resolver.resolve_periods`) -- and the project's single
+installment-date derivation
+(:func:`app.services.loan_loaders.loan_payment_due_date`) -- so the posted ledger,
+the ledger history reader, and the resolver's replayed balance can never drift on
+the rate path or the anchor boundary they consider.
 
 **Genesis, not post-anchor (the read-switch change).**  The Step-4 walk seeded
 from the latest anchor and split only post-anchor payments.  Genesis seeds at
@@ -36,10 +37,7 @@ from app.services import (
     loan_resolver,
 )
 from app.services.loan_loaders import LoanAnchorFact
-from app.services.rate_period_engine import (
-    monthly_due_date,
-    period_for_date,
-)
+from app.services.rate_period_engine import period_for_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
 
@@ -320,12 +318,16 @@ def _merge_anchor_and_payment_events(
     Returns ``(is_anchor, item)`` tuples in the order the running-balance walk
     must process them so each anchor's RESET lands at the right point relative to
     the payments.  The ordering key is each item's governing date -- an anchor's
-    ``anchor_date``, a payment's :func:`monthly_due_date` -- with a PAYMENT sorted
-    BEFORE an anchor on a tie, so a payment due exactly on an anchor's date is
-    subsumed by (walked before, then overwritten by) that anchor's reset.  That is
-    the SAME strict ``anchor_date < monthly_due_date`` post-anchor boundary the
-    resolver's replay uses (:func:`is_confirmed_payment_eligible`), applied at
-    EVERY anchor rather than the latest only.
+    ``anchor_date``, a payment's
+    :func:`app.services.loan_loaders.loan_payment_due_date` -- with a PAYMENT
+    sorted BEFORE an anchor on a tie, so a payment due exactly on an anchor's date
+    is subsumed by (walked before, then overwritten by) that anchor's reset.  That
+    is the SAME strict ``anchor_date < due_date`` post-anchor boundary the
+    resolver's replay uses (:func:`is_confirmed_payment_eligible`, fed the same
+    derivation via :attr:`PaymentRecord.due_date`), applied at EVERY anchor rather
+    than the latest only -- the two MUST stay on one derivation, or the posted
+    ledger and the replayed balance drift on which payments a given anchor
+    subsumes.
 
     Anchors dated after ``as_of`` are dropped (an anchor cannot reset the balance
     as of a date before it); the shadows are NOT capped -- every settled payment
@@ -360,7 +362,7 @@ def _merge_anchor_and_payment_events(
     # stable sort of [payments..., anchors...] keeps each type's pre-sorted order
     # for equal keys.
     events = [
-        (monthly_due_date(shadow.pay_period.start_date, payment_day), 0, shadow)
+        (loan_loaders.loan_payment_due_date(shadow, payment_day), 0, shadow)
         for shadow in shadows
     ] + [
         (anchor.anchor_date, 1, anchor) for anchor in anchors_in_window

@@ -482,6 +482,71 @@ def _settled_income_shadows(
     )
 
 
+def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
+    """Return the monthly installment a loan payment shadow satisfies.
+
+    The project's SINGLE derivation of "which contractual installment is this
+    payment?" -- read by the genesis write walk
+    (:func:`app.services.loan_posting_service._walk._merge_anchor_and_payment_events`),
+    the ledger history reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`), the
+    payment-history table
+    (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
+    and the settled-payment guards below, so no two of them can disagree on a
+    payment's due date.
+
+    The shadow's OWN ``due_date`` is the answer: the recurrence engine stamps
+    each generated instance with the date its rule produced
+    (:func:`app.services.recurrence_engine`), so it is the installment's
+    identity as a stored fact.  It is deliberately NOT re-derived from the
+    payment's pay period, because a pay period is the CASH basis (when the money
+    moved / which period the ledger books it in), not the installment basis: a
+    payment settled LATE -- past its due date, into the next biweekly period, a
+    routine event over a weekend or holiday -- sits in a pay period that no
+    longer contains its due date.  Deriving the due date from that period's
+    start (the pre-fix behaviour) then reports the NEXT month's installment: a
+    July payment recorded as an August one, which both mis-states the payment
+    history and stamps a CONFIRMED schedule row with a FUTURE date, breaking
+    every date-basis balance walk that reads it.
+
+    ``monthly_due_date`` remains the fallback for a shadow with no stored
+    ``due_date`` (a hand-created or carried-forward row --
+    :attr:`app.models.transaction.Transaction.due_date` is nullable).  It
+    reconstructs the due date from the pay-period start, which is correct
+    exactly while the payment's period still contains its due date.
+
+    PRECONDITION on the stored value: the payment's recurrence rule must carry a
+    ``day_of_month``, so :func:`app.services.recurrence_engine.compute_due_date`
+    stamps each instance with the installment date rather than falling back to
+    ``period.start_date`` (its no-day behaviour, and the origin of the legacy
+    rows migration ``c4e91a7b2d38`` backfills).  The loan payment-transfer flow
+    guarantees it -- ``app/routes/loan/payment_transfer.py`` builds the rule with
+    ``day_of_month=params.payment_day`` -- but a loan payment set up as a plain
+    every-paycheck transfer would not, and would keep regenerating pay-period
+    starts into a column the posting walk now reads.
+
+    This value is a POSTING INPUT, not display metadata: the genesis write walk
+    (``loan_posting_service._walk._merge_anchor_and_payment_events``) orders
+    payments by it and applies its strict ``anchor_date < due_date`` post-anchor
+    boundary against it, so moving it moves the POSTED balance.  Any writer of
+    ``due_date`` must therefore follow it with a posting reconcile --
+    ``transfer_service._POSTING_RELEVANT_FIELDS`` is what enforces that.
+
+    Args:
+        shadow: The loan-payment income shadow (its ``pay_period`` must be
+            loaded; :func:`query_shadow_income` eager-loads it).
+        payment_day: The loan's contractual day-of-month due day
+            (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
+            by the fallback.
+
+    Returns:
+        The date of the monthly installment this payment satisfies.
+    """
+    if shadow.due_date is not None:
+        return shadow.due_date
+    return monthly_due_date(shadow.pay_period.start_date, payment_day)
+
+
 def _settled_payment_due_dates(
     account_id: int, scenario_id: int,
 ) -> list[date]:
@@ -493,8 +558,8 @@ def _settled_payment_due_dates(
     so the two provably agree with each other -- and with the genesis walk's own
     settled-shadow set -- on WHICH payments are settled and on each one's due date.
     The settled shadow set comes from :func:`_settled_income_shadows`; each is
-    dated by :func:`app.services.rate_period_engine.monthly_due_date` on its
-    pay-period start.
+    dated by :func:`loan_payment_due_date` (its stored ``due_date``, falling back
+    to a derivation from its pay-period start).
 
     Args:
         account_id: The loan account whose settled payments to scan.
@@ -509,7 +574,7 @@ def _settled_payment_due_dates(
     if params is None:
         return []
     return [
-        monthly_due_date(shadow.pay_period.start_date, params.payment_day)
+        loan_payment_due_date(shadow, params.payment_day)
         for shadow in _settled_income_shadows(account_id, scenario_id)
     ]
 

@@ -371,34 +371,56 @@ Section 4.
   Full suite 7340 green, pylint 10.00/10, biome + djlint clean, independent adversarial review
   addressed (color-mix to an rgba resolver; a stray `.nw-chart-controls` consumer in analytics
   re-homed to `.spend-chart-controls`; a per-band legend/chart reconciliation test added).
-  **REPORTED SEAM (pre-existing, NOT a P2 defect) -- the loan liability figure has two producers.**
-  The cockpit derives a loan's "today" owed two ways: (1) `current_balance`, the per-account
-  resolver figure from `_project_one_account`, which the net-worth hero, the Total-liabilities chip,
-  the group subtotals, the grid cells, AND this element's legend all read; and (2) the net-worth
-  composition maps (`build_account_net_worth_maps`, the `balance_at` seam), which the `2 years`
-  series liability band reads -- for an amortizing loan that map IS the contractual amortization
-  schedule (decision 11: the resolver schedule is today-forward). On reconciled data the two paths
-  agree to the cent -- at the current period the schedule equals `current_balance`, so the 2-year
-  band's today point, the legend, the hero, and the Horizon band all match (verified live on real
-  dev data: all four read `$192,941.56`). They diverge ONLY when a loan's stored anchor is a stale
-  true-up that no longer equals its own contractual schedule; then `current_balance` (the anchor)
-  and the schedule-based band differ by that staleness. Two consequences follow. First, the drift is
-  between the two PRODUCERS, so it shows across the whole cockpit (hero / chips / subtotals / grid
-  cells, all `current_balance`, versus the 2-year band, the schedule) -- it is not introduced by
-  this element, and the P2 legend stays internally consistent with every other `current_balance`
-  figure on the screen. Second, the DEFAULT Horizon view is immune: its index-0 band is built from
-  `current_balance` too, so it reconciles per band always (locked by
-  `test_group_subtotal_equals_horizon_band_at_today`); only the non-default 2-year band can show the
-  drift, and it is bounded by how stale the true-up is (imperceptible on maintained data). A proper
-  fix is loan-balance-architecture scope, not presentation: the two producers must agree at the
-  current period, i.e. the stored loan anchor must be reconciled with the contractual schedule so
-  `current_balance` and the `balance_at` map return the same figure there. That is the loan true-up
-  seam (a true-up is meant to be a rare opening anchor, not a recurring monthly correction -- see
-  the balance-at / posting-ledger arc and the loan-read-switch work); until it is closed,
-  presentation should keep reading `current_balance` consistently (as it does) rather than paper
-  over the divergence in the chart, because the honest resolution is to make the producers agree,
-  not to hide which one a given surface trusts. NEXT = developer acceptance drive + the Loop-B
-  dev->main prod ship.
+  **REPORTED SEAM -- INVESTIGATED 2026-07-12 AND WITHDRAWN; a REAL, different defect was found and
+  fixed underneath it.** The earlier note here claimed the cockpit had two disagreeing loan
+  producers -- `current_balance` (called "the anchor") versus the `2 years` band's `balance_at` map
+  (called "the contractual amortization schedule") -- diverging when a loan's stored anchor was a
+  stale true-up. **Every load-bearing claim in it was false**, and it was written (and expanded,
+  commit `278490df`) ten days AFTER the loan read switch retired the anchor read, re-asserting a
+  pre-read-switch mental model without re-verifying it. For the record, traced firsthand:
+  `current_balance` is the LEDGER sum, not the anchor (`loan_resolution.py:94` ->
+  `confirmed_loan_balance_at`; on real data the Mortgage's anchor was `$177,829.83` while
+  `current_balance` was `$177,277.97`); the `2 years` map is a SPLICE -- the confirmed ledger for
+  every BEGUN period, the schedule only for the future
+  (`net_worth_kernel._build_amortizing_balance_map`); and the two CANNOT diverge on a stale anchor,
+  because `confirmed_loan_balance_map[P]` and `confirmed_loan_balance_at(P.start_date)` are "the
+  same sum by construction" (`loan_posting_service/_reader.py:120-128`). A stale true-up is posted
+  INTO the ledger as a TRUEUP correction, so both producers see it identically.
+
+  **The real defect (found while disproving the above, and fixed).** The loan engine derived a
+  payment's contractual DUE DATE from its PAY-PERIOD START (`monthly_due_date`), instead of reading
+  the payment's own stored `transactions.due_date`. That derivation rests on an assumption
+  `monthly_due_date`'s own docstring stated -- "the payment's pay period was chosen to contain that
+  due date" -- which **breaks whenever a payment is settled LATE**, a routine event (weekends,
+  holidays). A late payment sits in the NEXT biweekly period, so the derivation returns the
+  FOLLOWING month's installment: the operator's July mortgage payment was reported as an August one.
+  Worse, that stamped a CONFIRMED schedule row with a FUTURE date, and since the ledger books by pay
+  period while the schedule walks by civil date, every date-basis balance walk then disagreed with
+  the ledger. Three live consequences, all reproduced on real data: the payment history showed a
+  phantom August payment; the `2 years` liability band plotted the Mortgage RISING
+  `$177,277.97 -> $177,554.69 -> $177,277.97` (a mortgage that grows, understating net worth); and
+  `balance_at.balance_at` -- the fenced seam scalar feeding year-end debt progress -- read
+  `$177,554.69` against the card's `$177,277.97`. So the audit's verdict was exactly inverted: the
+  Horizon band was fine, and the `2 years` band it blessed as consistent was the broken one.
+
+  **Fix (shipped in this arc).** (1) ROOT: one shared derivation,
+  `loan_loaders.loan_payment_due_date`, reads the payment's stored `due_date` -- the installment
+  identity -- while the pay period keeps its own job as the CASH basis (which period booked it, the
+  basis the ledger sums on). `PaymentRecord` and the new `ConfirmedPayment` now carry BOTH dates so
+  the two can never be conflated again; redistribution shifts only the DUE date and no longer
+  overwrites `payment_date` (which had been silently DROPPING genuinely-made payments from the
+  replay, and was the root of the accepted ledger-vs-resolver divergence recorded as review M7 /
+  Step-4 M2 -- now CLOSED). (2) Migration `c4e91a7b2d38` backfills the 5 legacy loan-payment shadows
+  whose stored `due_date` was a pay-period start. (3) GUARD: the past is now read from the genesis
+  ledger and never re-derived from the schedule -- a schedule carries PAYMENT rows only, so it
+  structurally cannot see a balance TRUE-UP, which had left the Van Loan's scalar $3.94 above what
+  it owed. Confirmed rows no longer participate in any balance-at-T walk; the future is
+  `current_balance` minus UNCONFIRMED scheduled principal
+  (`account_projection.forward_balance_at_date`). (4) The cross-page oracle gained a late-paid
+  fixture, a true-up-after-last-payment case, and a "a loan can never GROW" monotonicity invariant
+  -- all four proven to FAIL against the old code. Verified on real data: ledger == card == seam
+  scalar == `2 years` band == Horizon, to the cent, on both real loans. NEXT = developer acceptance
+  drive + the Loop-B dev->main prod ship.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.

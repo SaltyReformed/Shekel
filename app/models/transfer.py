@@ -161,12 +161,23 @@ class Transfer(
     # ``Transaction.due_date`` (ad-hoc transfers may omit it; recurrence
     # places it from the rule's ``day_of_month``).  The parent is the
     # canonical value: the transfer service mirrors it to both shadow
-    # transactions so the two stay equal (Transfer Invariant 3), and the
-    # balance/loan engines never read it (they query only shadows and
-    # derive loan dates from ``LoanParams.payment_day``).  Consumers of a
-    # due date (calendar, dashboard, year-end, spending-trend) read the
-    # shadow ``Transaction.due_date``; this column exists so the parent is
-    # a complete record and so edits/display have one source of truth.
+    # transactions so the three stay equal (Transfer Invariant 3).
+    # Consumers of a due date (calendar, dashboard, year-end, spending-trend)
+    # read the shadow ``Transaction.due_date``; this column exists so the
+    # parent is a complete record and so edits/display have one source of truth.
+    #
+    # On a LOAN PAYMENT the shadow's ``due_date`` is a POSTING INPUT, not
+    # display metadata: it is the INSTALLMENT the payment satisfies (the loan
+    # engine reads it via ``loan_loaders.loan_payment_due_date`` rather than
+    # re-deriving it from the pay period, which is wrong for a payment settled
+    # late), and the genesis write walk orders payments by it and applies its
+    # strict ``anchor_date < due_date`` post-anchor boundary against it.  Moving
+    # it therefore changes the POSTED balance, so ``due_date`` is in
+    # ``transfer_service._POSTING_RELEVANT_FIELDS`` and any other writer of this
+    # column MUST follow it with a posting reconcile.  The three rows must be
+    # kept equal for the same reason: the full-edit form pre-fills its input from
+    # the PARENT, so a stale parent would be written back over a corrected shadow
+    # by a no-op save.
     due_date = db.Column(db.Date, nullable=True)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

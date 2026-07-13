@@ -37,6 +37,7 @@ from app.services.loan_resolver import (
     compute_payoff_scenarios,
     resolve_loan,
 )
+from app.services.rate_period_engine import monthly_due_date
 from app.utils.dates import add_months
 
 
@@ -310,6 +311,7 @@ def test_confirmed_payment_reduces_balance():
     anchor = _origination_anchor(params)
     payment = PaymentRecord(
         payment_date=date(2026, 2, 15),
+        due_date=monthly_due_date(date(2026, 2, 15), 1),
         amount=Decimal("1888.36"),
         is_confirmed=True,
     )
@@ -342,6 +344,7 @@ def test_projected_payment_not_replayed():
     anchor = _origination_anchor(params)
     projected = PaymentRecord(
         payment_date=date(2026, 2, 15),
+        due_date=monthly_due_date(date(2026, 2, 15), 1),
         amount=Decimal("1888.36"),
         is_confirmed=False,
     )
@@ -382,6 +385,7 @@ def test_projected_overpayment_routes_into_the_forward_schedule():
     anchor = _origination_anchor(params)
     projected_overpay = PaymentRecord(
         payment_date=date(2026, 3, 1),
+        due_date=monthly_due_date(date(2026, 3, 1), 1),
         amount=Decimal("2500.00"),
         is_confirmed=False,
     )
@@ -436,9 +440,9 @@ def test_fixed_rate_replays_from_origination_anchor():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
     ]
 
     state = resolve_loan(
@@ -493,10 +497,10 @@ def test_anchor_trueup_resets_replay():
     )
     payments = [
         # Pre-trueup -- filtered out by the resolver.
-        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
         # Post-trueup -- replayed.
-        PaymentRecord(date(2026, 5, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 5, 1), monthly_due_date(date(2026, 5, 1), 1), Decimal("1798.65"), True),
     ]
 
     state = resolve_loan(
@@ -555,11 +559,11 @@ def test_payment_due_after_trueup_replays_though_pay_period_started_before():
     )
     payments = [
         # Already reflected in the trueup balance (due 04-01, 05-01).
-        PaymentRecord(date(2026, 3, 26), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 23), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 26), monthly_due_date(date(2026, 3, 26), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 23), monthly_due_date(date(2026, 4, 23), 1), Decimal("1798.65"), True),
         # Keyed to its pay-period start 05-21; due 06-01, after the
         # 05-22 trueup -- must replay.
-        PaymentRecord(date(2026, 5, 21), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), Decimal("1798.65"), True),
     ]
 
     state = resolve_loan(
@@ -1182,9 +1186,9 @@ def test_history_rows_marked_confirmed():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
     ]
 
     state = resolve_loan(
@@ -1225,9 +1229,9 @@ def test_forward_rows_marked_unconfirmed():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
     ]
 
     state = resolve_loan(
@@ -1292,10 +1296,10 @@ def _four_contractual_payments_jan_to_apr_2026() -> list[PaymentRecord]:
     regression scenario.
     """
     return [
-        PaymentRecord(date(2026, 1, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 2, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
     ]
 
 
@@ -1438,9 +1442,9 @@ class TestComputePayoffScenarios:
         ]
         payments = [
             # Confirmed, keyed to its pay-period start 2026-05-21; due 06-01.
-            PaymentRecord(date(2026, 5, 21), Decimal("1798.65"), True),
+            PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), Decimal("1798.65"), True),
             # Projected, keyed to pay-period start 2026-06-18; due 07-01.
-            PaymentRecord(date(2026, 6, 18), Decimal("1798.65"), False),
+            PaymentRecord(date(2026, 6, 18), monthly_due_date(date(2026, 6, 18), 1), Decimal("1798.65"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1505,7 +1509,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1537,7 +1541,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1573,7 +1577,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1640,7 +1644,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1917,7 +1921,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1999,8 +2003,8 @@ class TestComputePayoffScenarios:
             created_at=datetime(2025, 12, 15, tzinfo=timezone.utc),
         )
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("2398.20"), True),
-            PaymentRecord(date(2026, 2, 1), Decimal("2398.20"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("2398.20"), True),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("2398.20"), True),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -2058,8 +2062,8 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("1798.65"), True),
-            PaymentRecord(date(2026, 8, 1), Decimal("2500.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1798.65"), True),
+            PaymentRecord(date(2026, 8, 1), monthly_due_date(date(2026, 8, 1), 1), Decimal("2500.00"), True),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -2130,6 +2134,7 @@ class TestTargetDateOutlook:
         return [
             PaymentRecord(
                 payment_date=add_months(start, offset),
+                due_date=monthly_due_date(add_months(start, offset), 1),
                 amount=monthly_amount,
                 is_confirmed=False,
             )

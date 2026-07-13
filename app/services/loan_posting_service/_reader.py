@@ -62,7 +62,6 @@ from app.services.amortization_engine import AmortizationRow
 from app.services.posting_service import _ledger_account_for
 from app.services.rate_period_engine import (
     RatePeriod,
-    monthly_due_date,
     payment_number,
     period_for_date,
 )
@@ -882,8 +881,11 @@ def confirmed_loan_history_rows(
       ``extra_payment`` the actual excess above it.
 
     Row DATING mirrors the resolver's replay exactly: each row is dated at the
-    payment's true monthly due date (:func:`monthly_due_date` of its pay-period
-    start), numbered continuously from origination (:func:`payment_number`),
+    installment the payment satisfies
+    (:func:`app.services.loan_loaders.loan_payment_due_date` -- the shadow's own
+    stored ``due_date``, NOT a derivation from its pay period, so a payment
+    settled late is still dated at the installment it paid rather than at the
+    NEXT month's), numbered continuously from origination (:func:`payment_number`),
     and tagged with the governing period's rate.  Event ORDER mirrors the write
     walk (:func:`._walk._merge_anchor_and_payment_events`): payments by due
     date, non-payment balance events at their entry date, a payment sorting
@@ -948,7 +950,7 @@ def confirmed_loan_history_rows(
     # sort keeps the shadows' (pay-period start, id) order on equal keys.
     events: list[tuple[date, int, object]] = [
         (
-            monthly_due_date(shadow.pay_period.start_date, params.payment_day),
+            loan_loaders.loan_payment_due_date(shadow, params.payment_day),
             0,
             shadow,
         )

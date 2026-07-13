@@ -864,6 +864,7 @@ class TestPaymentRecordValidation:
         with pytest.raises(ValueError, match="amount must be >= 0"):
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
+                due_date=date(2026, 2, 15),
                 amount=Decimal("-100.00"),
                 is_confirmed=True,
             )
@@ -873,6 +874,7 @@ class TestPaymentRecordValidation:
         with pytest.raises(TypeError, match="amount must be a Decimal"):
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
+                due_date=date(2026, 2, 15),
                 amount=100.00,
                 is_confirmed=True,
             )
@@ -882,6 +884,24 @@ class TestPaymentRecordValidation:
         with pytest.raises(TypeError, match="payment_date must be a date"):
             PaymentRecord(
                 payment_date="2026-02-15",
+                due_date=date(2026, 2, 15),
+                amount=Decimal("100.00"),
+                is_confirmed=True,
+            )
+
+    def test_string_due_date_raises_type_error(self):
+        """String due_date must be rejected -- only date instances accepted.
+
+        ``due_date`` is the installment the payment satisfies, and it is a
+        SEPARATE fact from ``payment_date`` (the pay period the cash moved in),
+        so it carries the same construction-time type guard: a record that
+        conflated the two, or carried a stringly-typed date, would mis-key every
+        downstream due-month lookup.
+        """
+        with pytest.raises(TypeError, match="due_date must be a date"):
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                due_date="2026-03-01",
                 amount=Decimal("100.00"),
                 is_confirmed=True,
             )
@@ -891,6 +911,7 @@ class TestPaymentRecordValidation:
         with pytest.raises(TypeError, match="is_confirmed must be a bool"):
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
+                due_date=date(2026, 2, 15),
                 amount=Decimal("100.00"),
                 is_confirmed=1,
             )
@@ -899,6 +920,7 @@ class TestPaymentRecordValidation:
         """Zero amount is valid -- represents a missed payment."""
         record = PaymentRecord(
             payment_date=date(2026, 2, 15),
+            due_date=date(2026, 2, 15),
             amount=Decimal("0.00"),
             is_confirmed=False,
         )
@@ -908,6 +930,7 @@ class TestPaymentRecordValidation:
         """Valid PaymentRecord construction succeeds."""
         record = PaymentRecord(
             payment_date=date(2026, 2, 15),
+            due_date=date(2026, 2, 15),
             amount=Decimal("1500.00"),
             is_confirmed=True,
         )

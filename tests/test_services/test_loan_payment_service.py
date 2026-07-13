@@ -34,6 +34,12 @@ from app.services.loan_payment_service import (
 from app.services.loan_resolution import resolve_loan_seeded
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service, loan_resolver
+from app.services.rate_period_engine import monthly_due_date
+
+# The ``payment_day`` of the mortgage ``_create_loan_account`` builds; the
+# loan's contractual due day, which ``get_payment_history`` needs to
+# reconstruct the due date of a shadow that stores none.
+_PAYMENT_DAY = 1
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -129,7 +135,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert result == []
 
@@ -149,7 +155,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -182,7 +188,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             # No transfer_id -> excluded.
             assert result == []
@@ -213,7 +219,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert result == []
 
@@ -234,7 +240,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert result == []
 
@@ -269,7 +275,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             # effective_amount returns actual when populated.
@@ -291,7 +297,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].amount == Decimal("1500.00")
@@ -312,7 +318,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].is_confirmed is True
@@ -333,7 +339,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].is_confirmed is False
@@ -350,7 +356,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert result[0].payment_date == seed_periods[2].start_date
@@ -371,7 +377,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 2
             assert result[0].payment_date < result[1].payment_date
@@ -402,7 +408,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, other_scenario.id,
+                loan.id, other_scenario.id, _PAYMENT_DAY,
             )
             assert result == []
 
@@ -418,7 +424,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 1
             assert isinstance(result[0].amount, Decimal)
@@ -441,7 +447,7 @@ class TestGetPaymentHistory:
             db.session.commit()
 
             result = get_payment_history(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
             )
             assert len(result) == 3
 
@@ -715,9 +721,9 @@ class TestPreparePaymentsForEngine:
         The $283 above P&I is escrow -> subtract it -> $1,517.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 2, 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 3, 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1800.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -752,8 +758,8 @@ class TestPreparePaymentsForEngine:
             ),
         ]
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 7, 1), Decimal("1850.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 7, 1), monthly_due_date(date(2026, 7, 1), 1), Decimal("1850.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -775,7 +781,7 @@ class TestPreparePaymentsForEngine:
         this payment did not include escrow, so no subtraction.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("1500.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1500.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -795,10 +801,17 @@ class TestPreparePaymentsForEngine:
         monthly DUE date of 2026-02-01 (the schedule keys rows by due
         date).  The first keeps its slot (due Feb 1); the second is
         redistributed to the next free due month, 2026-03-01.
+
+        Only the DUE date is redistributed.  ``payment_date`` -- the pay period
+        the cash actually moved in -- is a FACT and is carried through
+        untouched on BOTH records: it is the replay's "has this period begun?"
+        cap and the basis the posting ledger sums on, so overwriting it with
+        the invented due date would feed a due date to every consumer expecting
+        a pay-period start.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 2), Decimal("1517.00"), True),
-            PaymentRecord(date(2026, 1, 16), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 1, 2), monthly_due_date(date(2026, 1, 2), 1), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 1, 16), monthly_due_date(date(2026, 1, 16), 1), Decimal("1517.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -808,10 +821,13 @@ class TestPreparePaymentsForEngine:
         )
 
         assert len(result) == 2
-        # First keeps its original pay-period-start date (due Feb 1).
+        # First keeps its slot: due Feb 1, booked in the Jan 2 pay period.
         assert result[0].payment_date == date(2026, 1, 2)
-        # Second is redistributed to the next free due month (Mar 1).
-        assert result[1].payment_date == date(2026, 3, 1)
+        assert result[0].due_date == date(2026, 2, 1)
+        # Second is redistributed to the next free due month (Mar 1), but stays
+        # booked in the pay period it was actually paid in (Jan 16).
+        assert result[1].payment_date == date(2026, 1, 16)
+        assert result[1].due_date == date(2026, 3, 1)
 
     def test_empty_payments_passthrough(self):
         """Empty payment list returns unchanged."""
@@ -826,7 +842,7 @@ class TestPreparePaymentsForEngine:
     def test_no_escrow_no_subtraction(self):
         """Zero escrow means no subtraction regardless of amount."""
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("2000.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("2000.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -840,8 +856,8 @@ class TestPreparePaymentsForEngine:
     def test_preserves_is_confirmed(self):
         """is_confirmed flag is preserved through preparation."""
         payments = [
-            PaymentRecord(date(2026, 1, 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 2, 1), Decimal("1800.00"), False),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1800.00"), False),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -860,11 +876,12 @@ class TestPreparePaymentsForEngine:
         2026-12-19 both fall before 2027-01-01, so both have a true
         monthly due date of 2027-01-01 (the due date crosses the year
         boundary).  The second is redistributed to the next free due
-        month, 2027-02-01.
+        month, 2027-02-01 -- its DUE date only; both keep the pay period they
+        were actually paid in.
         """
         payments = [
-            PaymentRecord(date(2026, 12, 5), Decimal("1517.00"), True),
-            PaymentRecord(date(2026, 12, 19), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 12, 5), monthly_due_date(date(2026, 12, 5), 1), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 12, 19), monthly_due_date(date(2026, 12, 19), 1), Decimal("1517.00"), True),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -875,7 +892,9 @@ class TestPreparePaymentsForEngine:
 
         assert len(result) == 2
         assert result[0].payment_date == date(2026, 12, 5)
-        assert result[1].payment_date == date(2027, 2, 1)
+        assert result[0].due_date == date(2027, 1, 1)
+        assert result[1].payment_date == date(2026, 12, 19)
+        assert result[1].due_date == date(2027, 2, 1)
 
 
 class TestReadSwitchSeedHelpers:

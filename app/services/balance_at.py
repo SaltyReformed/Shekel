@@ -81,7 +81,6 @@ from app.services import (
 )
 from app.services.account_projection import (
     AccountProjectionKind,
-    balance_from_schedule_at_date,
     classify_account,
     find_period_containing_date,
 )
@@ -478,34 +477,10 @@ def balance_at(
         return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
 
     if kind is AccountProjectionKind.AMORTIZING:
-        debt_schedule = net_worth_kernel.generate_debt_schedules(
-            [account], scenario.id,
-        ).get(account.id)
-        if debt_schedule is not None:
-            # Defensive sort before the walk, mirroring the period-map
-            # sibling ``compute_loan_period_balance_map``: the resolver emits
-            # chronological schedules, but ``balance_from_schedule_at_date``'s
-            # ``else: break`` REQUIRES ascending ``payment_date`` order, so
-            # the scalar path must not silently rely on the producer's order
-            # while the per-period path defends against it (the two would
-            # drift on a future out-of-order schedule).  Returned verbatim
-            # (no re-round): the schedule rows and current_balance are already
-            # cent-quantized by the resolver.  This loan scalar is DATE-precise
-            # (it walks to the exact as_of), per the granularity note above, so
-            # it equals balance_map's value for the containing period ONLY when
-            # as_of is that period's end_date; for a mid-period as_of with a
-            # scheduled payment still ahead in the period it (correctly) reads
-            # higher than the period-end map value.  Do NOT "simplify" this to
-            # read the period map -- that would discard the date precision the
-            # year-end debt-progress (a Dec 31 as_of, generally mid-period)
-            # depends on.
-            return balance_from_schedule_at_date(
-                sorted(debt_schedule.schedule, key=lambda r: r.payment_date),
-                as_of, debt_schedule.current_balance,
-            )
-        # No resolvable schedule: degrade to the cash producer over the
-        # loan's own transaction rows (documented above).
-        return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+        # Ledger for the past, forward projection after -- the kernel producer
+        # that keeps this scalar on the same source as the loan card and the
+        # ``2 years`` band's begun periods.
+        return net_worth_kernel.amortizing_balance_at(account, scenario, as_of)
 
     # INTEREST / INVESTMENT / APPRECIATING: locate the period containing as_of
     # and read the period-keyed map's value there.  INTEREST routes here (not

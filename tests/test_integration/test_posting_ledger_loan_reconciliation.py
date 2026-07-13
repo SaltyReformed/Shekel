@@ -150,13 +150,16 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
     anchor_service,
+    balance_at,
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
     loan_resolution,
     loan_resolver,
+    net_worth_kernel,
     pay_period_service,
     posting_service,
+    transfer_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.rate_period_engine import monthly_due_date
@@ -221,20 +224,22 @@ def _freeze_today(monkeypatch):
 
 def _make_loan(
     user, *, anchor_balance=_ANCHOR_BALANCE, anchor_date=_ANCHOR_DATE,
-    rate=_RATE, name="Oracle Loan", escrow_annual=None,
+    rate=_RATE, name="Oracle Loan", escrow_annual=None, payment_day=1,
 ):
     """Create a resolvable amortizing loan with the suite's controlled anchor.
 
     ``anchor_date`` defaults to 2026-01-10 (before every payment period used, so
     every settled payment is post-anchor and eligible); a caller pins a LATER
     date to place a payment pre-anchor (the read-switch boundary case).
+    ``payment_day`` defaults to the 1st; a caller pins another day to control
+    where each installment's due date falls relative to the biweekly grid.
     """
     return create_loan_with_trueup(
         user, _db.session,
         origination_principal=_ORIGINATION_PRINCIPAL,
         anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
         origination_date=_ORIGINATION_DATE, name=name,
-        escrow_annual=escrow_annual,
+        escrow_annual=escrow_annual, payment_day=payment_day,
     )
 
 
@@ -2380,22 +2385,28 @@ class TestReaderParallelRunAgainstResolver:
             _assert_loan_reconciles(loan, baseline.id, _AS_OF)
             _assert_loan_reconciles(loan, whatif.id, _AS_OF)
 
-    def test_biweekly_due_month_collision_reconciles_but_attribution_differs(
+    def test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ(
         self, app, db, seed_user, seed_periods,
     ):
-        """Two payments in one due month: the balance reconciles, the DATING differs.
+        """Two payments in one due month: balance AND per-period attribution agree.
 
         A biweekly cadence sometimes lands two monthly due dates in one calendar
         month.  For display the resolver's replay REDISTRIBUTES the second to the
         next month (``loan_payment_service._redistribute_to_distinct_months``, a
-        resolver-only fix); the genesis reader keeps every payment at its true
-        due date.  This is the one place the reader and the resolver attribution
-        legitimately disagree (review M7 / Step-4 note M2), never pinned until
-        now.  It pins that the disagreement is DISPLAY-ONLY for the scalar balance
-        -- the two producers book the SAME running balance, so the balance
-        reconciles three ways -- while the ATTRIBUTION differs, in TWO places: the
-        display row dates AND the LEDGER's per-period bucketing (the branch's
-        namesake).
+        resolver-only display fix, because the MONTHLY engine needs one payment
+        per due month); the genesis reader keeps every payment at its true due
+        date.  The only surviving difference is therefore the display ROW DATES.
+
+        The per-period BALANCE divergence this test used to pin (review M7 /
+        Step-4 note M2) is now CLOSED.  It existed because redistribution
+        overwrote the shifted payment's ``payment_date`` -- the pay period the
+        cash actually moved in -- with the invented next-month DUE date, which
+        the replay then read as a pay-period start.  Its "has this period begun?"
+        cap became ``2026-03-01 <= 2026-01-30`` (false), so the replay dropped a
+        payment that had genuinely been made and the resolver read HIGHER than the
+        ledger at period 2.  Redistribution now shifts only ``due_date`` and
+        carries ``payment_date`` through untouched, so both producers bucket every
+        paydown into its TRUE pay period and the per-period maps agree.
 
         ``seed_periods[1]`` (starts 2026-01-16) and ``seed_periods[2]`` (starts
         2026-01-30) both have monthly due date 2026-02-01 (payment_day=1) -- a
@@ -2404,14 +2415,8 @@ class TestReaderParallelRunAgainstResolver:
         scheduled-principal walk and the reader's real-principal walk stay locked
         step-for-step and the scalar balances agree to the penny.  The reader then
         dates BOTH rows 2026-02-01 (the true due date), where the resolver, having
-        shifted the second payment, dates its rows 2026-02-01 and 2026-03-01.  And
-        the LEDGER buckets each paydown into its TRUE pay period: the reader's
-        per-period map reflects BOTH paydowns by period 2 (payment 2's postings
-        carry ``pay_period_id = seed_periods[2]``), where the resolver's per-period
-        view -- payment 2 redistributed to March -- still shows only payment 1 at
-        period 2's start.  The distinct-month map test
-        (``test_period_map_matches_resolver_across_the_window``) cannot see this
-        divergence; the collision is exactly where it surfaces.
+        shifted the second payment's display slot, dates its rows 2026-02-01 and
+        2026-03-01 -- the one legitimate, display-only disagreement that remains.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2466,14 +2471,20 @@ class TestReaderParallelRunAgainstResolver:
 
             # Attribution, LEDGER per-period buckets (the branch's namesake): the
             # reader's per-period map reflects BOTH paydowns by period 2, so it
-            # equals the final balance and steps strictly below period 1; the
-            # resolver's per-period view at period 2's start still shows only
-            # payment 1 (payment 2 redistributed to March), so it reads HIGHER --
-            # the per-period divergence the distinct-month map test cannot see.
+            # equals the final balance and steps strictly below period 1.  The
+            # resolver's per-period view now AGREES: redistribution shifts only a
+            # payment's DUE date, never its ``payment_date`` (the pay period the
+            # cash actually moved in), so payment 2 still clears the replay's
+            # "has this period begun?" cap at period 2's start.  Overwriting
+            # ``payment_date`` with the invented March due date (the pre-fix
+            # behaviour) made that cap read ``2026-03-01 <= 2026-01-30`` -- false
+            # -- so the replay DROPPED a payment that had genuinely been made,
+            # and the resolver read HIGHER than the ledger.  That was the
+            # per-period divergence (review M7 / Step-4 M2); it is now CLOSED.
             balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
             assert balance_map[seed_periods[2].id] == reader
             assert balance_map[seed_periods[2].id] < balance_map[seed_periods[1].id]
-            assert balance_map[seed_periods[2].id] < _resolver_balance(
+            assert balance_map[seed_periods[2].id] == _resolver_balance(
                 loan.id, scenario_id, seed_periods[2].start_date,
             )
 
@@ -2637,3 +2648,316 @@ class TestReadSwitchProductionPath:
             )[1].current_balance
             assert production == _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert production == _ledger_balance(loan.id, scenario_id)
+
+
+class TestLatePaidPaymentDating:
+    """A payment settled LATE is credited to the installment it actually paid.
+
+    The real-world case the suite was blind to, and the root defect it hid.  A
+    monthly loan payment is due on the loan's ``payment_day``, but the operator
+    marks it paid whenever they actually pay it -- and over a weekend or a
+    holiday that is routinely a few days late, which lands the transaction in the
+    NEXT biweekly pay period.  Its pay period then no longer contains its due
+    date.
+
+    The engine used to RE-DERIVE each payment's due date from its pay period
+    (``monthly_due_date`` of the period start).  For a late payment that returns
+    the FOLLOWING month's installment: a February payment recorded as a March
+    one.  Two consequences, both pinned here:
+
+    * the payment history / amortization table shows an installment the operator
+      never paid (the reported symptom); and
+    * the CONFIRMED schedule row is stamped with a date that can be in the
+      FUTURE, so every date-basis balance walk that reads the schedule silently
+      disagrees with the ledger, which books by pay period.
+
+    The engine now reads the payment's OWN stored ``due_date``
+    (``loan_loaders.loan_payment_due_date``), so the pay period governs only the
+    CASH (which period booked it) and the due date governs only the INSTALLMENT.
+    """
+
+    def _settle_late(self, seed_user, loan, db, seed_periods):
+        """Settle a payment due 2026-02-01 LATE, into the 2026-02-13 period.
+
+        ``seed_periods[2]`` (2026-01-30 .. 02-12) is the period that CONTAINS the
+        2026-02-01 due date.  Paying late lands the payment in
+        ``seed_periods[3]`` (2026-02-13 .. 02-26) instead -- a period that does
+        not contain its own due date, exactly the production shape.  The stored
+        ``due_date`` still records the installment it paid.
+        """
+        payment = _settle(seed_user, loan, seed_periods[3])
+        shadow = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=payment.id, account_id=loan.id)
+            .one()
+        )
+        shadow.due_date = date(2026, 2, 1)
+        db.session.flush()
+        loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+        db.session.commit()
+        return shadow
+
+    def test_late_payment_is_dated_at_the_installment_it_paid(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The history row reads 2026-02-01, not the re-derived 2026-03-01.
+
+        Non-vacuous: the pre-fix derivation is
+        ``monthly_due_date(seed_periods[3].start_date, payment_day=1)`` ==
+        2026-03-01, asserted here to be a DIFFERENT date -- so a producer that
+        still derived from the pay period would report March and fail.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user, name="Late Paid Loan")
+            self._settle_late(seed_user, loan, db, seed_periods)
+
+            # The re-derivation the engine used to perform lands a month later.
+            assert monthly_due_date(seed_periods[3].start_date, 1) == date(
+                2026, 3, 1,
+            )
+
+            rows = loan_posting_service.confirmed_loan_history_rows(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [row.payment_date for row in rows] == [date(2026, 2, 1)]
+
+            history = loan_posting_service.confirmed_loan_payment_history(
+                loan.id, scenario_id, _AS_OF,
+            )
+            assert [row.due_date for row in history] == [date(2026, 2, 1)]
+
+    def test_every_surface_equals_the_ledger_for_a_late_payment(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Ledger, loan card, seam scalar and per-period map all agree at today.
+
+        The cross-producer lock for the late-paid shape.  Before the fix the
+        confirmed row carried a FUTURE date (2026-03-01 > _AS_OF), so the seam's
+        date-basis scalar walked past it and read the loan's PRE-payment balance
+        while the ledger had already booked the paydown -- the divergence that
+        surfaced as a mortgage that appeared to GROW.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user, name="Late Paid Surfaces")
+            self._settle_late(seed_user, loan, db, seed_periods)
+            scenario = seed_user["scenario"]
+
+            ledger = _ledger_balance(loan.id, scenario_id)
+            card = loan_resolution.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].current_balance
+            scalar = balance_at.balance_at(loan, scenario, _AS_OF)
+            period_map = balance_at.build_maps(
+                [loan], scenario, seed_periods,
+            )[loan.id]
+            current_period = next(
+                p for p in seed_periods
+                if p.start_date <= _AS_OF <= p.end_date
+            )
+
+            # The ARITHMETIC, pinned first: agreement alone is not enough, since
+            # a bug that moved all four producers TOGETHER (they now share one
+            # ledger source) would keep them equal while being uniformly wrong.
+            #   anchor 100,000.00 @ 6% -> interest = 100000 * 0.06/12 = 500.00
+            #   principal = cash 1000.00 - 500.00 = 500.00
+            #   balance   = 100000.00 - 500.00 = 99,500.00
+            assert ledger == Decimal("99500.00")
+            assert card == ledger
+            assert scalar == ledger
+            assert period_map[current_period.id] == ledger
+            # The paydown is real: the balance is strictly below the anchor.
+            assert ledger < _ANCHOR_BALANCE
+
+    def test_projected_liability_map_never_increases(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan's per-period balance is monotonically non-increasing.
+
+        The general invariant that makes this whole bug class impossible to ship
+        again: a loan amortizes, so it cannot GROW.  This is the defect the
+        operator saw plotted -- a mortgage that rose $276.72 for one period and
+        then fell back -- and it needed BOTH halves of the bug to appear, so this
+        reproduces both.
+
+        Geometry (payment_day=5, today=2026-05-15).  ``_settle_late`` alone is not
+        enough: the rise only shows when a mis-dated CONFIRMED row lands in the
+        FUTURE and a projected period ENDS BEFORE it, so the projection falls back
+        to an EARLIER confirmed row carrying a higher balance.
+
+        * An on-time payment for the 2026-04-05 installment, in the period that
+          contains it.
+        * A LATE payment for the 2026-05-05 installment, settled into the
+          2026-05-08 period.  The pre-fix derivation
+          (``monthly_due_date(2026-05-08, 5)``) dates it 2026-06-05 -- the FUTURE.
+        * The ledger books it now (its period has begun), so the CURRENT period
+          reads the post-payment balance...
+        * ...while the next period (2026-05-22 .. 06-04) ENDS BEFORE 2026-06-05,
+          so the pre-fix projection walked back to the April row and handed that
+          period the loan's OLDER, higher balance.  The plotted liability rose.
+        """
+        with app.app_context():
+            loan = _make_loan(seed_user, name="Monotonic Loan", payment_day=5)
+
+            # Two extra periods so a FUTURE period exists that ends before the
+            # mis-derived 2026-06-05 date -- the window the rise appears in.
+            future_periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 5, 22), num_periods=2, cadence_days=14,
+            )
+            db.session.flush()
+            periods = list(seed_periods) + list(future_periods)
+
+            # On-time: the 2026-04-05 installment, in the period containing it.
+            on_time_period = next(
+                p for p in periods
+                if p.start_date <= date(2026, 4, 5) <= p.end_date
+            )
+            _settle(seed_user, loan, on_time_period)
+
+            # Late: the 2026-05-05 installment, settled into the 05-08 period.
+            late_period = next(
+                p for p in periods if p.start_date == date(2026, 5, 8)
+            )
+            late = _settle(seed_user, loan, late_period)
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=late.id, account_id=loan.id)
+                .one()
+            )
+            shadow.due_date = date(2026, 5, 5)
+            db.session.flush()
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            # The pre-fix derivation dates the late payment in the FUTURE, and
+            # the next period ends BEFORE it -- the window the rise appeared in.
+            assert monthly_due_date(date(2026, 5, 8), 5) == date(2026, 6, 5)
+            assert date(2026, 6, 5) > _AS_OF
+            next_period = next(
+                p for p in periods if p.start_date == date(2026, 5, 22)
+            )
+            assert next_period.end_date < date(2026, 6, 5)
+
+            period_map = balance_at.build_maps(
+                [loan], seed_user["scenario"], periods,
+            )[loan.id]
+
+            series = [period_map[p.id] for p in periods]
+            rises = [
+                (periods[i].start_date, series[i - 1], series[i])
+                for i in range(1, len(series))
+                if series[i] > series[i - 1]
+            ]
+            assert not rises, f"loan balance ROSE across periods: {rises}"
+
+
+class TestTrueUpAfterLastPaymentIsRead:
+    """A true-up dated after the last payment reaches every balance surface.
+
+    A true-up is a BALANCE event, not a payment: the ledger books it, but it has
+    no amortization-schedule row.  So a schedule walk -- which sees payment rows
+    only -- reports the balance as of the last PAYMENT and silently misses any
+    true-up after it.  On production data that read a real loan $3.94 above what
+    it owed, splitting the year-end debt-progress scalar from the loan card.
+
+    The seam's scalar now reads the genesis ledger for any date at or before
+    today, so the past comes from the one producer that books every balance
+    event.  This is the structural reason the past can never be re-derived from
+    the schedule.
+    """
+
+    def test_scalar_reads_the_ledger_not_the_stale_last_payment_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """balance_at == ledger, though the last schedule row predates the true-up."""
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            scenario = seed_user["scenario"]
+            loan = _make_loan(seed_user, name="Trued Up After Payment")
+            _settle(seed_user, loan, seed_periods[2])
+            db.session.commit()
+
+            # A true-up asserted AFTER that payment's due date: the ledger books
+            # it; the schedule has no row for it.
+            outcome = anchor_service.apply_loan_anchor_true_up(
+                account=loan,
+                anchor_balance=Decimal("96000.00"),
+                anchor_date=date(2026, 2, 20),
+            )
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+            db.session.commit()
+
+            ledger = _ledger_balance(loan.id, scenario_id)
+            scalar = balance_at.balance_at(loan, scenario, _AS_OF)
+            card = loan_resolution.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].current_balance
+            schedule = net_worth_kernel.generate_debt_schedules(
+                [loan], scenario_id,
+            )[loan.id]
+
+            # The true-up IS the balance, and the card and scalar both report it.
+            assert ledger == Decimal("96000.00")
+            assert card == ledger
+            assert scalar == ledger
+
+            # Non-vacuity: the schedule's last CONFIRMED row still carries the
+            # pre-true-up balance, so a walk over it would have read HIGHER --
+            # the exact stale read this test exists to forbid.
+            confirmed_rows = [
+                row for row in schedule.schedule if row.is_confirmed
+            ]
+            assert confirmed_rows
+            assert confirmed_rows[-1].remaining_balance != ledger
+
+
+class TestDueDateEditReconcilesTheLedger:
+    """Editing a loan payment's due_date re-derives the posted ledger.
+
+    ``due_date`` became a POSTING INPUT with the installment-basis fix: the
+    genesis write walk orders payments by it and applies its strict
+    ``anchor_date < due_date`` post-anchor boundary against it, so moving it
+    changes which payments an anchor SUBSUMES and therefore the POSTED balance.
+
+    It was NOT in ``transfer_service._POSTING_RELEVANT_FIELDS``, because before
+    the fix the walk derived the due date from ``pay_period_id`` (which IS in the
+    set).  Left out, a due-date edit would move every live READER (the history
+    rows, the payment table, the resolver's replay) while the posted ledger kept
+    the old numbers -- a silent ledger-vs-resolver divergence that would persist
+    until some unrelated chokepoint happened to fire.
+    """
+
+    def test_editing_due_date_reposts_the_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A due-date edit alone moves the ledger, and it stays self-consistent."""
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            # Anchor 2026-01-10; the payment's due date starts AFTER it, so the
+            # payment is post-anchor and its principal is booked.
+            loan = _make_loan(seed_user, name="Due Date Edit Loan")
+            payment = _settle(seed_user, loan, seed_periods[2])
+            db.session.commit()
+
+            posted_before = _ledger_balance(loan.id, scenario_id)
+            assert posted_before == Decimal("99500.00")   # 100,000 - 500 principal
+
+            # Move the due date to BEFORE the anchor: the payment is now
+            # subsumed by the anchor's reset, so its principal is no longer a
+            # post-anchor paydown and the posted balance returns to the anchor.
+            transfer_service.update_transfer(
+                payment.id, seed_user["user"].id, due_date=date(2026, 1, 5),
+            )
+            db.session.commit()
+
+            posted_after = _ledger_balance(loan.id, scenario_id)
+            assert posted_after == _ANCHOR_BALANCE
+
+            # And every reader agrees with the ledger -- the edit reconciled,
+            # rather than leaving the posted numbers behind.
+            assert loan_resolution.resolve_account_loan(
+                loan.id, scenario_id, _AS_OF,
+            )[1].current_balance == posted_after
+            assert _reader_balance(loan.id, scenario_id) == posted_after

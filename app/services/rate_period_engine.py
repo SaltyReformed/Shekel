@@ -175,6 +175,35 @@ class BalanceAnchor:
     as_of_date: date
 
 
+@dataclass(frozen=True)
+class ConfirmedPayment:
+    """A confirmed loan payment's two dates, as one value object.
+
+    The pure-data analogue of a settled loan-payment shadow for the replay.  A
+    payment's CASH date (which pay period it was booked in) and its INSTALLMENT
+    date (which monthly payment it satisfies) are different facts with different
+    jobs, and they always travel together, so they are one value object -- the
+    same reasoning as :class:`BalanceAnchor`.
+
+    They diverge whenever a payment is settled LATE (past its due date, into the
+    next biweekly period -- routine over a weekend or holiday).  Deriving one
+    from the other is therefore wrong, and was the defect that dated a July
+    payment to August.
+
+    Attributes:
+        period_start: The start of the pay period the payment is booked in.
+            Governs the rate lookup and the ``as_of`` cap, and is the basis the
+            posting ledger sums on, so replay and ledger agree on which payments
+            are historical.
+        due_date: The monthly installment the payment satisfies (from
+            :func:`app.services.loan_loaders.loan_payment_due_date`).  Governs
+            the anchor boundary and the replayed row's date.
+    """
+
+    period_start: date
+    due_date: date
+
+
 def payment_number(origination_date: date, payment_date: date) -> int:
     """Return the scheduled-payment number (from origination) for a payment date.
 
@@ -273,26 +302,36 @@ def monthly_due_date(period_start: date, payment_day: int) -> date:
 def is_confirmed_payment_eligible(
     period_start: date,
     *,
+    due_date: date,
     anchor_date: date,
-    payment_day: int,
     as_of: date,
 ) -> bool:
     """Return whether a confirmed payment falls in the post-anchor replay window.
 
     The single eligibility rule for "which confirmed payments has this loan
-    actually made since its balance was last verified."  A payment keyed to
-    ``period_start`` counts iff BOTH boundaries clear:
+    actually made since its balance was last verified."  A payment counts iff
+    BOTH boundaries clear, and each reads the date that is CORRECT for its job:
 
-    * its true monthly due date (:func:`monthly_due_date`) is strictly AFTER
-      ``anchor_date`` -- it came due after the anchor balance was verified, so
-      it is not already baked into that balance; AND
-    * its pay-period start is at or before ``as_of`` -- its pay period has
+    * its ``due_date`` -- the installment it satisfies -- is strictly AFTER
+      ``anchor_date``: it came due after the anchor balance was verified, so it
+      is not already baked into that balance; AND
+    * its ``period_start`` is at or before ``as_of`` -- its pay period has
       begun, so it is historical fact rather than a forward projection.
 
     Comparing the DUE date (not the pay-period start) against the anchor is what
     keeps a payment whose biweekly pay period began on or before a mid-period
     balance true-up but whose monthly payment is not due until after it (the
-    mid-period-true-up subtlety, see :func:`monthly_due_date`).
+    mid-period-true-up subtlety).  Comparing the PERIOD START (not the due date)
+    against ``as_of`` is what keeps the replay's historical cut identical to the
+    posting ledger's, which sums on ``PayPeriod.start_date <= as_of``.
+
+    The due date is PASSED IN, never re-derived here from ``period_start``: it
+    comes from :func:`app.services.loan_loaders.loan_payment_due_date` (the
+    shadow's own stored ``due_date``), the same derivation the genesis write
+    walk uses.  A payment settled LATE sits in a pay period that no longer
+    contains its due date, so re-deriving the due date from that period would
+    report the NEXT month's installment -- and the walk and the replay would then
+    disagree on which payments an anchor subsumes.
 
     :func:`replay_schedule` (the resolver's confirmed-payment replay) and
     :func:`app.services.loan_posting_service.compute_loan_payment_splits` (the
@@ -301,23 +340,20 @@ def is_confirmed_payment_eligible(
     drift on which payment set they consider.
 
     Args:
-        period_start: The pay-period start date the payment is keyed to
+        period_start: The pay-period start date the payment is booked in
             (a ``PaymentRecord.payment_date`` / the income shadow's
             ``pay_period.start_date``).
+        due_date: The monthly installment the payment satisfies
+            (a ``PaymentRecord.due_date``).
         anchor_date: The latest balance anchor's verified date
             (``LoanAnchorEvent.anchor_date`` / ``BalanceAnchor.as_of_date``).
-        payment_day: The loan's contractual day-of-month due day
-            (``LoanParams.payment_day``), 1-31.
         as_of: The evaluation date; a payment whose pay period has not begun
             by it is a projection, not history.
 
     Returns:
         ``True`` iff the payment is an eligible post-anchor historical payment.
     """
-    return (
-        anchor_date < monthly_due_date(period_start, payment_day)
-        and period_start <= as_of
-    )
+    return anchor_date < due_date and period_start <= as_of
 
 
 def _rate_at_date(
@@ -623,7 +659,7 @@ def replay_schedule(
     *,
     periods: list[RatePeriod],
     anchor: BalanceAnchor,
-    confirmed_payment_dates: list[date],
+    confirmed_payments: list[ConfirmedPayment],
     payment_day: int,
     as_of: date,
 ) -> ScheduleReplay:
@@ -633,11 +669,10 @@ def replay_schedule(
     eligibility boundaries, in due-date order (see
     :func:`_replay_payment_row` for the per-step math):
 
-    * its true monthly due date (see :func:`monthly_due_date`) is strictly
-      after ``anchor.as_of_date`` -- the payment came due after the
-      balance was last verified, so it is not already baked into the
-      anchor; and
-    * its pay-period start is at or before ``as_of`` -- its pay period has
+    * its ``due_date`` -- the installment it satisfies -- is strictly after
+      ``anchor.as_of_date``: the payment came due after the balance was last
+      verified, so it is not already baked into the anchor; and
+    * its ``period_start`` is at or before ``as_of`` -- its pay period has
       begun, so it is historical rather than a forward projection.
 
     The cash amount and escrow are NOT inputs -- only the COUNT and dates
@@ -649,16 +684,23 @@ def replay_schedule(
     * The RATE (and therefore the interest/principal split and the running
       balance) is selected by the pay-period start, so this function's
       ``balance_as_of`` is independent of the dating choices below.
-    * Each replayed ROW is dated by the true monthly due date, so the
+    * Each replayed ROW is dated by the payment's ``due_date``, so the
       schedule shows real statement dates and ``next_pay_date`` advances to
       the correct following month (a pay-period-start dating would print
       the biweekly date and land the projection one month early).
     * The as_of cap uses the pay-period start (the replay-vs-projection
-      split), matching :func:`_build_monthly_override`.
+      split), matching :func:`_build_monthly_override` and the posting
+      ledger's own ``PayPeriod.start_date <= as_of`` bound.
 
     Using the due date for the anchor boundary is what lets a true-up dated
     mid-pay-period (one day after a period's biweekly start but before that
     period's monthly payment is due) still replay that payment.
+
+    Both dates are SUPPLIED (:class:`ConfirmedPayment`), never derived from one
+    another: a payment settled late sits in a period that no longer contains its
+    due date, so deriving the due date from the period start would credit it to
+    the NEXT month's installment and desync this replay from the genesis write
+    walk, which reads the payment's stored due date.
 
     Args:
         periods: Non-empty list from :func:`build_rate_periods`.
@@ -667,12 +709,12 @@ def replay_schedule(
         anchor: The :class:`BalanceAnchor` to start from (the latest
             ``LoanAnchorEvent``).  Payments whose due date is at or before
             its date are already reflected in its balance and are skipped.
-        confirmed_payment_dates: Pay-period-start dates of confirmed
-            (settled) payments.  Kept when the true monthly due date is
+        confirmed_payments: The confirmed (settled)
+            :class:`ConfirmedPayment` records.  Kept when the due date is
             after ``anchor.as_of_date`` and the pay-period start is at or
             before ``as_of``.
-        payment_day: Day of month payments are due.  Drives the due-date
-            classification, the replayed row dates, and ``next_pay_date``.
+        payment_day: Day of month payments are due.  Drives ``next_pay_date``
+            (the due dates themselves arrive on the records).
         as_of: Evaluation date; payments whose pay period has not begun by
             it are not replayed.
 
@@ -689,7 +731,7 @@ def replay_schedule(
 
     origination_date = periods[0].start_date
     # Two different dates govern the two eligibility boundaries:
-    #   * Anchor (lower) boundary -- the true monthly DUE date.  A payment
+    #   * Anchor (lower) boundary -- the payment's DUE date.  A payment
     #     due after the anchor but whose biweekly pay period started on or
     #     before it must still be replayed; comparing the pay-period start
     #     here would strand it (the mid-period-true-up bug).
@@ -698,29 +740,34 @@ def replay_schedule(
     #     has begun is historical, even if pre-paid a few days before its
     #     due date.  ``_build_monthly_override`` uses the same pay-period
     #     start so the two partitions stay exact complements.
+    # Walked in DUE-date order, matching the genesis write walk's own event
+    # merge, so the two consume the payments in one order.
     eligible = sorted(
-        d for d in confirmed_payment_dates
-        if is_confirmed_payment_eligible(
-            d,
-            anchor_date=anchor.as_of_date,
-            payment_day=payment_day,
-            as_of=as_of,
-        )
+        (
+            payment for payment in confirmed_payments
+            if is_confirmed_payment_eligible(
+                payment.period_start,
+                due_date=payment.due_date,
+                anchor_date=anchor.as_of_date,
+                as_of=as_of,
+            )
+        ),
+        key=lambda payment: (payment.due_date, payment.period_start),
     )
 
     balance = Decimal(str(anchor.balance))
     rows: list[AmortizationRow] = []
-    for period_start in eligible:
+    for payment in eligible:
         if balance <= 0:
             break
         # Rate (and therefore the interest/principal split and the running
         # balance) is selected by the pay-period start, so the replayed
-        # balance is unchanged by this dating.  The ROW is dated by the
-        # true monthly due date, so the schedule shows the real statement
+        # balance is unchanged by the row's dating.  The ROW is dated by the
+        # payment's due date, so the schedule shows the real statement
         # date and ``next_pay_date`` advances to the correct following
         # month rather than landing one month early.
-        period = period_for_date(periods, period_start)
-        due_date = monthly_due_date(period_start, payment_day)
+        period = period_for_date(periods, payment.period_start)
+        due_date = payment.due_date
         row = _replay_payment_row(balance, period, due_date, origination_date)
         balance = row.remaining_balance
         rows.append(row)
