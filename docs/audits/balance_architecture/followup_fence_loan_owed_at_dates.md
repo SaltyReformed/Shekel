@@ -1,135 +1,167 @@
 # Follow-up: close the W9906 fence hole on `net_worth_kernel.loan_owed_at_dates`
 
-**Status:** OPEN (not started). Found 2026-07-12 by the adversarial review of the loan due-date fix
-(commit `3e63baa8`), which touched the fence's producer list and so surfaced this. Reported to the
-developer, deliberately NOT fixed in that commit -- it predates the bug being fixed there, is not
-producing a wrong number today, and needs one design decision (below).
+**Status:** **CLOSED 2026-07-13.** Verified, then fixed at the root -- which turned out to be one
+level deeper than this document originally proposed. The fix shipped as the balance-seam liability
+view plus a new fail-CLOSED completeness checker (**W9909**), so the fence can no longer leak a
+producer by omission. Full suite 7360 green; `pylint app/` 10.00/10 with every `--fail-on` symbol.
 
-**Enabled by / depends on:** the Level-1 balance-at seam (`app/services/balance_at.py`) and its
+**Enabled by / depends on:** the Level-1 balance-at seam (`app/services/balance_at/`) and its
 `shekel-balance-producer-bypass` (**W9906**) checker --
 `tools/pylint/shekel_checkers/balance_seam.py`. See `implementation_plan_level1_balance_seam.md`.
 
-**Size:** small (one seam entry + one call-site reroute + one producer-list entry + tests). The only
-real work is the naming/shape decision in "Open decision" below.
-
 ---
 
-## The invariant that is being violated
+## What was claimed, and what verification found
 
-The Level-1 seam exists so there is exactly ONE public way to ask "what is this account's balance at
-time T". W9906 enforces it mechanically with two lists in
-`tools/pylint/shekel_checkers/balance_seam.py`:
+Every original claim held. Two things did NOT, and both made the problem worse, not better.
 
-- **`_BALANCE_PRODUCERS`** -- the low-level functions that actually compute a balance.
-- **`_BALANCE_SEAM_MODULES`** -- the modules allowed to call them directly: `balance_at`,
-  `balance_resolver`, `balance_calculator`, `account_projection`, `net_worth_kernel`,
-  `net_worth_investment`, `daily_balance_series` (the seam plus the engine cluster it composes).
+### Confirmed
 
-Any module outside that allowlist that calls a listed producer fires W9906 and fails the gate. Level-1
-Commit 10 closed the last exception (`investment_base_balance_map`), and the fence is documented as
-**zero-exception**.
+- `net_worth_kernel.loan_owed_at_dates` IS a balance-at-T producer (it returns
+  `{account_id: [owed at each date]}`, plotted directly as the horizon liability band) and was NOT
+  in `_BALANCE_PRODUCERS`.
+- `savings_dashboard_service._horizon` IS a consumer (not in `_BALANCE_SEAM_MODULES`), so a consumer
+  reached past the seam into the kernel.
+- The fence was silent: `pylint app/` reported **zero** W9906 findings. Adding the name to the
+  producer set made it fire at exactly one site (`_horizon.py:467`) and nowhere else -- proof both
+  that the hole was real and that the checker binds.
+- No wrong number was on screen: `_build_sample_dates` yields `[today]` + strictly-future year ends,
+  and the band passed `sample_dates[1:]`, so only future dates ever reached the producer.
+- The "full fence, zero exceptions" invariant is real (`implementation_plan_level1_balance_seam.md`
+  lines 71-73 and 363), so this genuinely violated a stated invariant.
+- The register-bound checker tests ARE name-agnostic, so adding a producer name is auto-covered
+  (`test_flags_every_guarded_producer_from_a_consumer`). ("Verify, do not assume" -- verified.)
 
-## The hole
+### Corrected: the past-date hazard was understated
+
+The original text said a past-date call "returns `current_balance` held flat, which is not the ledger
+truth." **That is wrong whenever the loan has an OVERDUE payment.**
+`account_projection.forward_balance_at_date` walks the schedule's UNCONFIRMED rows, and an overdue
+(past-due, still unpaid) row deliberately stays in that walk -- the project's due-basis treatment
+(`account_projection.py:358`). So a past-or-today date returns the balance net of a payment that was
+**never made**, silently UNDERSTATING the debt. Demonstrated with the real functions:
 
 ```text
-app/services/savings_dashboard_service/_horizon.py:467
-    net_worth_kernel.loan_owed_at_dates(loan_accounts, scenario_id, future_dates)
+ledger truth today                     10000
+PAST 2026-07-05  loan_owed_at_dates -> 9900   (a payment that never happened)
 ```
 
-- `savings_dashboard_service._horizon` is a **consumer**. It is NOT in `_BALANCE_SEAM_MODULES`.
-- `net_worth_kernel.loan_owed_at_dates` **is** a balance-at-T producer: it returns
-  `{account_id: [owed at each sample date]}`, and the horizon liability band plots those numbers
-  directly.
-- But it is **not in `_BALANCE_PRODUCERS`**, so W9906 never fires.
+The failure mode was therefore not "stale but plausible" -- it was a wrong number in the direction
+that flatters the user. That made the runtime guard (originally floated as optional "option 3")
+mandatory, and it extended to `today` itself, not just the past. It is not a contrived case either:
+the mortgage fixture in the existing test suite is in exactly this state (a loan originated a year
+ago with no payments recorded carries ~12 overdue unconfirmed rows), which is now pinned by
+`test_today_point_ignores_overdue_rows_that_would_understate_the_debt`.
 
-So a consumer reaches past the seam straight into the kernel, and the fence is silent. This is not a
-bypass of a listed rule; it is a producer that was never listed.
+### Missed: the root cause is the fence's DEFAULT, not a missing name
 
-**Why it happened:** `loan_owed_at_dates` is new -- added 2026-07-12 in the P-AC1 Loop B P1 work (the
-horizon band itself). It was correctly placed INSIDE the kernel (the right home, beside
-`generate_debt_schedules` whose output it walks), and its docstring says it "stays fenced with" its
-per-period sibling. But living in an allowlisted module only exempts it from CALLING producers -- it
-does nothing to stop OTHERS calling it. The second half (adding it to `_BALANCE_PRODUCERS` and giving
-it a seam entry) was missed.
+`_BALANCE_PRODUCERS` is a hand-maintained deny list keyed on function NAME. Its default is
+**unfenced**: a new function born inside an allowlisted cluster module is invisible to W9906 until a
+human remembers to list it. This shipped **twice** -- `investment_base_balance_map` (closed by
+Level-1 Commit 10) and now `loan_owed_at_dates`. Two identical misses is a design defect in the
+fence, not a lapse in diligence. Listing the name (this document's original plan) would have fixed
+the instance and guaranteed a third occurrence.
 
-## Why this is more than tidiness
+### Missed: the seam had no shape for the job
 
-This is the exact shape of the HIGH bug the fence caught during Level-1 Commit 10: the main dashboard
-had been wired to the kind-correct `balance_map` instead of the cash-flow view, so a HYSA grid account
-accrued interest into the SPENDING RUNWAY -- inflating the trough and hiding a real future dip. It
-shipped silently because every dashboard test used a PLAIN account.
+The producer was written in the kernel because the seam offered only period-keyed maps and a scalar
+at ONE date. The horizon needs "owed at ~25 calendar dates, for several loans," and the scalar would
+re-resolve each loan once per date. There was nowhere in the seam to put it -- so this was a missing
+seam concept, not a rogue call.
 
-The same trap is live here, and the loan due-date fix (`3e63baa8`) sharpened it. `loan_owed_at_dates`
-is now an explicitly **FORWARD-ONLY projection**: for `as_of <= today` it returns `current_balance`
-held flat, which is **not** the ledger truth. That is correct for its sole caller (the horizon band
-passes only future dates and prepends `current_balance` itself as the today point), and the domain is
-documented in the function's docstring. But **nothing enforces it**. A future consumer that reaches
-for `loan_owed_at_dates` with a PAST date gets a plausible-looking number that silently ignores the
-genesis ledger -- including any balance TRUE-UP, which has no schedule row at all. That is precisely
-the bug class `3e63baa8` eliminated (it read the real Van Loan $3.94 above what it owed), reopened
-through a side door.
+## What shipped
 
-## Open decision (the only real design question)
+1. **A third seam shape: `balance_at.liability_owed_at_dates`** (`app/services/balance_at/_liability.py`).
+   Answers every liability's owed magnitude at a list of FORWARD dates in ONE resolution pass, and
+   owns **both** forward rules -- the amortizing schedule walk AND the no-forward-model flat carry
+   (a revolving Credit Card, a loan with no `LoanParams`, or any liability with no baseline
+   scenario). The flat-carry rule previously lived inline in the horizon consumer; a balance-at-T
+   boundary rule living in a presentation module is precisely what the fence exists to prevent, so
+   the seam took the whole rule, not half of it. It also owns the `abs` owed-magnitude convention and
+   the today point.
+   - It is the ONE public seam entry that does not `_require_scenario`: a missing baseline is not an
+     error here but the degenerate case of its own rule (no loan is resolvable -> everything holds
+     flat). Raising would force every caller to re-derive that flat carry -- the exact duplication
+     the seam exists to kill. The rationale is pinned in its docstring and by
+     `test_no_baseline_scenario_holds_every_liability_flat`.
+2. **The producer's domain is now enforced, not documented.** `loan_owed_at_dates` raises
+   `ValueError` on any date at or before today. `today` is excluded too, for the overdue-row reason
+   above: the confirmed present is the resolver's `current_balance`, which the seam supplies, never a
+   schedule walk.
+3. **`_horizon._liability_band` is now pure assembly** -- select liabilities, ask the seam, sum. It
+   no longer imports `net_worth_kernel` at all. Verified **byte-identical** on real dev data: all 25
+   sample points match the pre-change band exactly ($192,941.56 today, amortizing to $0).
+4. **The fence now fails CLOSED (`W9909`, `shekel-unclassified-fenced-export`).** Every PUBLIC
+   top-level function defined in a fenced module must be explicitly classified as a producer
+   (`_BALANCE_PRODUCERS`) or a deliberate non-producer. An unclassified one is an error **at its
+   definition**, in the same per-edit hook run that created it. The next `loan_owed_at_dates` cannot
+   be born silently.
+   - Scope: the six engine-cluster modules AND the whole genesis loan-ledger package (whose reader
+     fence had the identical fail-open default). Rulings are keyed BY MODULE, so a name ruled
+     harmless in one cannot exempt a same-named function added to another.
+   - `test_classification_sets_match_the_real_fenced_modules` parses the real source with astroid and
+     asserts the sets exactly partition the modules' public surface in BOTH directions (no
+     unclassified function; no stale entry from a rename).
+5. **`balance_at` became a package** (`app/services/balance_at/`). It was at 975 lines against the
+   1000-line cap, so ANY new seam entry breached it -- the same module-size wall `net_worth_kernel`
+   hit before `net_worth_investment` was extracted. Split by view (`_inputs` / `_kind_correct` /
+   `_cash_flow` / `_grid` / `_liability`) with `__init__` re-exporting the public surface. Zero
+   consumer churn: every call site still reads `balance_at.balance_map(...)`. The W9906 allowlist
+   prefix-matches, so the submodules stayed inside the fence automatically -- a case the checker
+   header had explicitly anticipated.
 
-The seam currently exposes two coherent VIEWS, and that duality is load-bearing (Level-1 Commit 8):
+## Hardened by the adversarial review
 
-- **kind-correct** -- `balance_map` / `balance_at` / `build_maps` (net-worth surfaces).
-- **cash-flow** -- `cash_balance_map` / `cash_balance_at` / `cash_daily_balance_series`
-  (single-account cash-flow surfaces).
-- (plus the grid/obligations `grid_balance_view`, added by the kind-correct-grid follow-up.)
+A `code-reviewer` pass over the finished diff found four things worth fixing; all four were fixed
+before this was called done.
 
-A loan-only, multi-date, FORWARD-ONLY projection is a **third shape**, and it should not be bolted on
-carelessly. Options:
+1. **The forward projection is now joined BY DATE, not by position.** The splice originally consumed
+   the producer's list positionally, which was correct only because `loan_owed_at_dates` happened to
+   build it in the caller's order with no sort and no dedupe. Nothing enforced that, and the
+   expensive part of that function is the schedule walk -- so de-duplicating or sorting the sample
+   dates (an obvious future optimization) would have silently shifted every point of the liability
+   band, with no crash and no failing test. `test_projection_is_joined_by_date_not_by_position`
+   passes the samples out of chronological order and would now fail loudly.
+2. **One clock, chosen by the caller.** `liability_owed_at_dates` and `loan_owed_at_dates` now take
+   the caller's `today` instead of each re-reading `date.today()`. With three independent clock
+   reads, a request that crossed midnight between them would have seen its own index-0 sample as a
+   PAST date and raised -- turning a benign race into a 500 on a page that previously just held the
+   band flat. It also silently assumed the caller's dates were UTC-anchored, when the project's own
+   policy is that user-facing dates are display-tz.
+3. **`abs` is applied to the forward points too.** The view promised a positive owed magnitude at
+   every date but only absolute-valued the today point. A schedule row's `remaining_balance` is
+   non-negative, but the empty / paid-off fallback is the resolver's `current_balance`, which has no
+   zero floor -- so an OVERPAID loan would have added its overpayment to the band today and
+   subtracted it at every future point.
+4. **W9909's scope now matches its claim.** It originally covered only `loan_posting_service._reader`
+   while the prose claimed the ledger fence was fail-closed. The rest of the package already exports
+   balance-flavored functions (`walk_loan_ledger`, `loan_balance_anchor_history`, ...), so a new
+   reader born in `_display` or `_walk` would have reproduced the exact hole. The whole package is
+   now scoped (19 public functions classified), and `walk_loan_ledger` -- the running-balance walk
+   itself -- is now a fenced producer.
 
-1. **A named seam entry (recommended).** Add e.g. `balance_at.loan_forward_owed_at_dates(...)` -- a
-   thin pass-through whose NAME states the domain, so a past-date call reads as obviously wrong at the
-   call site, and whose docstring pins the contract ("FORWARD dates only; the past belongs to
-   `confirmed_loan_balance_at`"). Route `_horizon` through it.
-2. **Generalise the seam entry to all liabilities.** `_liability_band` also holds non-amortizing debts
-   (a revolving Credit Card) flat at `abs(current_balance)`. A seam entry could own that whole rule
-   instead of leaving half of it in `_horizon`. Larger, and arguably the seam taking on presentation
-   logic -- probably a step too far, but worth 5 minutes of thought.
-3. **Make it raise on a past date.** Orthogonal to 1/2 and cheap: `loan_owed_at_dates` could raise
-   `ValueError` for any `sample_date <= today`, mirroring how `confirmed_loan_balance_at` raises for a
-   FUTURE date (`_reader.py`). That makes the domain a runtime invariant, not just a docstring. The
-   only caller already passes `frame.sample_dates[1:]` (all strictly future), so this is a no-op for
-   production. Recommended IN ADDITION to option 1.
+## One test changed (disclosed)
 
-Recommendation: **1 + 3**.
+`test_accruing_kc_none_degrades_to_cash` patched `balance_at.balance_map` to force the documented
+`None` return. After the package split, `_grid` looks that producer up through its defining module,
+so the patch had to move to `balance_at._kind_correct`. **Only the monkeypatch TARGET changed; every
+assertion is byte-identical.** The behavior under test (a `None` kind-correct map degrades to the
+cash view) is unchanged and still passes.
 
-## Work plan
+## Residuals (not fixed here -- each needs its own decision)
 
-1. Add `"loan_owed_at_dates"` to `_BALANCE_PRODUCERS` in
-   `tools/pylint/shekel_checkers/balance_seam.py`.
-2. Confirm it now fires W9906 at `app/services/savings_dashboard_service/_horizon.py:467` (it must --
-   that is the proof the checker binds).
-3. Add the seam entry in `app/services/balance_at.py` (see Open decision), with `_require_scenario`
-   like every other public seam entry, and a docstring pinning the FORWARD-only domain and pointing at
-   `confirmed_loan_balance_at` for the past.
-4. Reroute `_horizon.py:467` to the seam entry; drop its now-unneeded `net_worth_kernel` import if
-   nothing else in the module uses it.
-5. (If taking option 3) Add the past-date guard to `loan_owed_at_dates` and a test for it.
-6. Tests:
-   - Checker: extend the register-bound loops in `tools/pylint/tests/test_shekel_checkers.py` (they
-     already assert EVERY producer is flagged from a consumer and EVERY allowlisted module is exempt,
-     so adding the name to the set may be enough -- verify, do not assume).
-   - Behaviour: the horizon band must be byte-identical after the reroute. `compute_net_worth_horizon`
-     already has coverage; assert the liability band series is unchanged.
-7. Gates: `pylint app/` 10.00 with all `--fail-on`; `pylint tools/pylint/shekel_checkers/`
-   `--fail-under=10`; `pytest tools/pylint/tests -c /dev/null`; full suite.
-
-## Pointers
-
-- Producer + hole: `app/services/net_worth_kernel.py` (`loan_owed_at_dates`), called from
-  `app/services/savings_dashboard_service/_horizon.py:467` (inside `_liability_band`).
-- Checker: `tools/pylint/shekel_checkers/balance_seam.py` (`_BALANCE_PRODUCERS`,
-  `_BALANCE_SEAM_MODULES`; W9906 binds on BOTH the call site and the import, closing the
-  aliased-import evasion).
-- Seam: `app/services/balance_at.py` (the two-view split; `_require_scenario` fail-loud guard).
-- The past-vs-future loan rule this protects: `net_worth_kernel.amortizing_balance_at` and
-  `account_projection.forward_balance_at_date` (both added in `3e63baa8`) -- ledger for
-  `as_of <= today`, forward projection after. See also
-  `~/.claude` memory `project_loan_due_date_is_a_posting_input`.
-- Prior art for exactly this class of miss: Level-1 Commit 10's fence-hole closure
-  (`investment_base_balance_map` -> wrapped by `balance_at.investment_seed_map`) in
-  `implementation_plan_level1_balance_seam.md` -- the same pattern applies here.
+1. **Loan resolved 4x per `/savings` render** (measured: 8 resolver runs for 2 loans). The horizon
+   band was the fourth; routing it through the seam moved it behind the seam but did not remove it.
+   See **`followup_redundant_loan_resolution.md`**.
+2. **`DebtSchedule.current_balance` is a balance-at-today that no fence can see.** The W9909 ruling
+   that `generate_debt_schedules` is a non-producer is TRUE today (verified: every out-of-cluster
+   consumer reads only `.schedule` rows), but it rests on a fact about the current tree, not a
+   property of the code -- W9906/W9909 bind on FUNCTIONS, and reading the attribute is invisible to
+   both. See **`followup_debt_schedule_attribute_fence.md`**.
+3. **The horizon answers "is this a loan?" two different ways.** The band now selects the amortizing
+   subset via the canonical `classify_account` (inside the seam), while `_resolve_horizon_domain` and
+   `_structural_milestones` still select via `ad.get("loan_params")`. They coincide on clean data, but
+   an account whose type was changed away from a loan while keeping its `LoanParams` row (reachable
+   through the account edit form) now gets a chart whose milestones retire a debt its band never
+   retires. This one is a REGRESSION from this work, not a pre-existing smell. See
+   **`followup_horizon_loan_predicate_split.md`**.
