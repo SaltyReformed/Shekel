@@ -37,7 +37,7 @@ already build on.  Centralising the dispatch the two existing dispatchers
 duplicate is the whole point: a third copy is exactly the duplication this
 work exists to kill.
 
-**Two views, one seam.**
+**Three shapes, one seam.**
 
 * The KIND-CORRECT entries (:func:`balance_map`, :func:`build_maps`,
   :func:`balance_at`, plus the investment projection-input accessors
@@ -57,7 +57,13 @@ work exists to kill.
   ``balances[p] - balances[p-1] == subtotals[p].net``).  See :mod:`._cash_flow`,
   and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers an
   INTEREST account's accrual back on for the grid.
-Both families route through this one package, so no screen reaches a producer
+* The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
+  owed magnitude at a list of FORWARD calendar dates in one resolution pass --
+  the shape a long-horizon liability band needs, which neither the period-keyed
+  maps nor the scalar can serve without re-resolving each loan per date.  See
+  :mod:`._liability`.
+
+Every family routes through this one package, so no screen reaches a producer
 directly (the W9906 ``shekel-balance-producer-bypass`` fence).
 
 Package layout.  The seam outgrew a single module (the 1000-line cap), so each
@@ -73,15 +79,19 @@ dashboards) depend on this seam; the seam depends only on the engine cluster
 ``balance_resolver`` / ``daily_balance_series`` / ``projection_inputs`` /
 ``income_service`` / ``pay_period_service``) and the models -- never a consumer
 package.  Inside the package the direction is
-``_grid -> {_cash_flow, _kind_correct} -> _inputs`` -- a DAG with ``_inputs`` as
-the single leaf, so no view module imports a sibling that imports it back.
+``_grid -> {_cash_flow, _kind_correct} -> _inputs`` and ``_liability -> _inputs``
+-- a DAG with ``_inputs`` as the single leaf, so no view module imports a
+sibling that imports it back.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
 
-Liability classification is NOT a balance concern: these maps are balances
-only; the net-worth sum's asset-plus / liability-minus rule lives in
-:func:`~app.services.net_worth_kernel.sum_net_worth_at_period`.
+Liability classification is NOT a balance concern: the balance MAPS here are
+balances only, and the net-worth sum's asset-plus / liability-minus rule lives
+in :func:`~app.services.net_worth_kernel.sum_net_worth_at_period`.
+(:func:`liability_owed_at_dates` is the one entry that takes a caller's
+already-classified liability set and returns owed MAGNITUDES, matching that
+same sum's ``abs`` convention.)
 """
 
 from ._cash_flow import (
@@ -104,6 +114,7 @@ from ._kind_correct import (
     investment_growth_since_anchor,
     investment_seed_map,
 )
+from ._liability import liability_owed_at_dates
 
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
@@ -130,4 +141,5 @@ __all__ = [
     "grid_balance_view",
     "investment_growth_since_anchor",
     "investment_seed_map",
+    "liability_owed_at_dates",
 ]

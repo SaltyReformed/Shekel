@@ -3,8 +3,8 @@
 The view the NET-WORTH surfaces read (savings cockpit, year-end summary,
 dashboards): a HYSA accrues interest, a loan walks its amortization schedule,
 an investment / property compounds.  See the package docstring
-(:mod:`app.services.balance_at`) for the "two views, one seam" contract and the
-four per-kind boundary rules these entries own.
+(:mod:`app.services.balance_at`) for the "three shapes, one seam" contract and
+the four per-kind boundary rules these entries own.
 
 Also home to the two investment PROJECTION-INPUT accessors the seam fences --
 :func:`investment_seed_map` (the pre-growth seed a chart compounds FROM, not a
@@ -178,7 +178,9 @@ def balance_at(
       the genesis LEDGER for a date at or before today (the only complete record
       of the past -- it books the true-ups that never appear as schedule rows),
       and the forward schedule projection after.  This is also the accessor a
-      consumer wanting a loan's PAST balance must use.
+      consumer wanting a loan's PAST balance must use; the seam's forward-only
+      liability view (:func:`~app.services.balance_at.liability_owed_at_dates`)
+      deliberately refuses a past date.
     * **INTEREST / INVESTMENT / APPRECIATING** -> the value of
       :func:`balance_map` at the period containing *as_of* (these kinds are
       period-granular: their model is period-keyed, so a date resolves to its

@@ -27,10 +27,12 @@ the P-AC1 ruling fixed on worked real-data examples:
   cash holds flat -- every figure traceable to a parameter the account
   carries, all through the ONE :func:`app.services.growth_engine.project_balance`
   compound formula (no parallel math).
-* **Liability band** = the loan resolver schedules
-  (:func:`app.services.net_worth_kernel.generate_debt_schedules` read via
-  :func:`app.services.account_projection.balance_from_schedule_at_date`) --
-  the same amortization the ``2 years`` band and the debt card consume.
+* **Liability band** = the :mod:`app.services.balance_at` seam's liability view
+  (:func:`app.services.balance_at.liability_owed_at_dates`), which owns both
+  forward rules -- an amortizing loan follows its resolver schedule, a debt with
+  no forward model (a revolving Credit Card) holds flat -- so this module only
+  SUMS what the seam returns.  Same amortization the ``2 years`` band and the
+  debt card consume.
 
 The today point (index 0) is each band's real today balance, so the horizon
 net at index 0 equals the net-worth hero and the ``2 years`` series' current
@@ -47,7 +49,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from app.services import growth_engine, net_worth_kernel, retirement_projection
+from app.services import balance_at, growth_engine, retirement_projection
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -415,38 +417,38 @@ def _liability_band(
     core: "_DashboardCoreData",
     frame: _HorizonFrame,
 ) -> list[Decimal]:
-    """Project the liability band from EVERY liability account.
+    """Sum the liability band from EVERY liability account.
 
-    Every ``is_liability`` account contributes its owed magnitude
-    (``abs`` of its current balance, the same sign convention the net-worth
-    hero's ``total_liabilities`` uses) so no debt can silently vanish from
-    the horizon -- the band must include a revolving Credit Card (no
-    amortization schedule), not just amortizing loans, or the today point
-    would not reconcile to the hero.  Two forward models:
+    Pure band ASSEMBLY: it selects the ``is_liability`` accounts, asks the
+    :mod:`app.services.balance_at` seam what each owes at every sample date
+    (:func:`~app.services.balance_at.liability_owed_at_dates`), and sums the
+    answers into one series.  No debt can silently vanish from the horizon --
+    the band includes a revolving Credit Card (no amortization schedule), not
+    just amortizing loans -- so the today point reconciles to the net-worth
+    hero's liability total.
 
-    * **Amortizing loans** (those carrying ``loan_params``) follow their
-      resolver schedule, read at the future sample dates through the
-      kernel's batch multi-date reader
-      (:func:`app.services.net_worth_kernel.loan_owed_at_dates`, which walks
-      the seam-fenced
-      :func:`~app.services.account_projection.balance_from_schedule_at_date`
-      boundary rule), so the band amortizes to zero as each loan retires and
-      cannot drift from the debt card or the ``2 years`` liability series.
-    * **Non-amortizing liabilities** (a revolving Credit Card, or a loan
-      with no resolvable schedule / no baseline scenario) have no forward
-      model, so they hold flat at their current owed magnitude.
-
-    The today point (index 0) is every liability's own current owed
-    magnitude, so the horizon starts at the net-worth hero's liability
-    total.
+    The two forward models (an amortizing loan follows its resolver schedule; a
+    liability with no forward model holds flat at its current owed magnitude)
+    are the SEAM's rules, not this module's -- a balance-at-T boundary rule
+    living in a presentation module is the exact pattern the W9906 fence exists
+    to prevent, and this band held half of one until the seam grew the liability
+    view (``followup_fence_loan_owed_at_dates.md``).  The seam also owns the
+    ``abs`` owed-magnitude convention and the today point, so index 0 is each
+    liability's ledger-confirmed current balance by construction.
 
     Args:
         account_data: The per-account projection dicts (each carrying
-            ``is_liability`` and ``current_balance``; loans also carry
-            ``loan_params``).
-        core: The loaded dashboard core data (its ``scenario`` scopes the
-            resolver).
-        frame: The horizon time frame.
+            ``account``, ``is_liability``, and ``current_balance`` -- the
+            already-resolved balance the hero renders, threaded into the seam
+            rather than re-resolved).
+        core: The loaded dashboard core data (its ``scenario`` scopes the loan
+            resolver; ``None`` is a valid no-baseline state the seam handles by
+            holding every liability flat).
+        frame: The horizon time frame.  Its ``sample_dates`` are today plus each
+            future year end (all on or after today, the seam's domain), and its
+            ``today`` is threaded to the seam as the as-of date, so the sample
+            axis and the seam's present/future boundary share ONE clock read
+            rather than racing across a midnight boundary.
 
     Returns:
         The liability band's Decimal series over ``frame.sample_dates`` (a
@@ -457,26 +459,15 @@ def _liability_band(
     if not liability_ads:
         return band
 
-    # sample_dates[0] is today (the hero point); the rest are all future.
-    future_dates = frame.sample_dates[1:]
-    loan_accounts = [
-        ad["account"] for ad in liability_ads if ad.get("loan_params")
-    ]
-    scenario_id = core.scenario.id if core.scenario else None
-    owed_by_loan = (
-        net_worth_kernel.loan_owed_at_dates(
-            loan_accounts, scenario_id, future_dates,
-        )
-        if scenario_id is not None and loan_accounts else {}
+    owed_by_account = balance_at.liability_owed_at_dates(
+        [ad["account"] for ad in liability_ads],
+        core.scenario,
+        frame.sample_dates,
+        {ad["account"].id: ad["current_balance"] for ad in liability_ads},
+        frame.today,
     )
     for ad in liability_ads:
-        current = abs(ad["current_balance"] or ZERO)
-        loan_future = owed_by_loan.get(ad["account"].id)
-        if loan_future is not None:
-            _add_into(band, [current] + loan_future)
-        else:
-            # Non-amortizing liability (or no schedule): flat owed magnitude.
-            _add_into(band, [current] * len(frame.sample_dates))
+        _add_into(band, owed_by_account[ad["account"].id])
     return band
 
 

@@ -193,50 +193,78 @@ def loan_owed_at_dates(
     loan_accounts: list,
     scenario_id: int,
     sample_dates: list[date],
+    today: date,
 ) -> dict[int, list[Decimal]]:
-    """Return each loan's owed balance at each of several calendar dates.
+    """Return each loan's PROJECTED owed balance at several FUTURE dates.
 
-    The batch, multi-date loan-owed reader the long-horizon net-worth
-    producer (:mod:`app.services.savings_dashboard_service._horizon`) reads:
-    it needs every loan's owed balance at ~25 annual sample dates, and the
-    scalar per-date accessors would regenerate each loan's resolver schedule
-    once per date.  This generates every loan's schedule ONCE (via
+    The batch, multi-date forward loan projection behind the seam's
+    :func:`app.services.balance_at.liability_owed_at_dates`: a long-horizon
+    liability band needs every loan's owed balance at ~25 annual sample dates,
+    and the scalar per-date accessors would regenerate each loan's resolver
+    schedule once per date.  This generates every loan's schedule ONCE (via
     :func:`generate_debt_schedules`, the same resolver output the debt card
     and the ``2 years`` liability series consume) and projects each loan to
     every date through the ONE forward rule
     (:func:`~app.services.account_projection.forward_balance_at_date`: the
     ledger-seeded confirmed balance today, reduced by the scheduled payments
-    still to come by that date), so the horizon liability band cannot drift
-    from the loan balance the rest of the app reports.  Lives in the kernel --
-    inside the balance-seam cluster, beside :func:`generate_debt_schedules`
-    whose output it projects -- so the rule stays fenced with the per-period
+    still to come by that date), so a liability band cannot drift from the loan
+    balance the rest of the app reports.  Lives in the kernel -- inside the
+    balance-seam cluster, beside :func:`generate_debt_schedules` whose output it
+    projects -- so the rule stays fenced with the per-period
     :func:`~app.services.account_projection.compute_forward_loan_period_balance_map`
-    it is the multi-date sibling of.
+    it is the multi-date sibling of.  Consumers reach it ONLY through the seam
+    entry (the W9906 fence).
 
-    **Domain: FORWARD dates.**  This is a projection, not a history reader: the
-    PAST belongs to the genesis ledger
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`), which
-    alone books the balance events -- true-ups above all -- that never appear as
-    schedule rows.  Its sole caller (the horizon liability band) prepends each
-    loan's own ``current_balance`` as the today point and passes only future
-    sample dates.  A date at or before today reads the confirmed balance held
-    flat, which is right at today and is the honest answer for this band's
-    domain, but it is NOT a history read -- route those to the ledger.
+    **Domain: STRICTLY FUTURE dates -- enforced, not merely documented.**  This
+    is a projection, not a history reader, and a date at or before today is
+    REJECTED rather than answered.  Two distinct reasons, both fatal:
 
-    A loan the resolver returns nothing for (no anchor event yet) is absent
-    from the result, mirroring how the per-period map skips it; the caller
-    then holds that loan flat at its own current balance.
+    * The PAST belongs to the genesis ledger
+      (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`, via
+      :func:`amortizing_balance_at`), which alone books the balance events --
+      true-ups above all -- that never appear as schedule rows.
+    * The answer here would not even be the confirmed balance held flat.
+      :func:`~app.services.account_projection.forward_balance_at_date` walks the
+      schedule's UNCONFIRMED rows, and an OVERDUE payment (past due, still
+      unpaid) is deliberately among them (the project's due-basis treatment).  A
+      past-or-today date would therefore report the balance net of a payment that
+      was never made -- silently UNDERSTATING the debt.  ``today`` itself is
+      excluded for exactly this reason: the confirmed present is the resolver's
+      ``current_balance``, which the seam entry supplies, not a schedule walk.
+
+    A loan the resolver returns nothing for (no ``LoanParams``) is absent from
+    the result, mirroring how the per-period map skips it; the seam then holds
+    that loan flat at its own current balance (the no-forward-model rule).
 
     Args:
         loan_accounts: The amortizing loan accounts to value.
         scenario_id: The baseline scenario id (scopes the resolver).
-        sample_dates: The FUTURE calendar dates to value each loan at, in the
-            desired output order.
+        sample_dates: The calendar dates to value each loan at, in the desired
+            output order.  Every date must be STRICTLY AFTER *today*.
+        today: The caller's as-of date -- the present/future boundary.  Passed
+            in rather than read here so the seam entry, its sample axis, and this
+            guard share ONE clock (a midnight crossing between two independent
+            ``date.today()`` reads would otherwise reject the caller's own
+            index-0 sample).  The RESOLVER keeps its own as-of for deciding which
+            payments are confirmed; that is a separate concern.
 
     Returns:
         ``{account_id: [Decimal owed at each sample date]}`` -- one list per
         loan with a resolvable schedule, aligned with *sample_dates*.
+
+    Raises:
+        ValueError: When any sample date is on or before *today*.  The past (and
+            the present) is the ledger's; see the domain note above.
     """
+    past = sorted({d for d in sample_dates if d <= today})
+    if past:
+        raise ValueError(
+            "loan_owed_at_dates projects STRICTLY FORWARD; it cannot answer a "
+            "date on or before today (an overdue unconfirmed payment would "
+            "understate the debt). Read the past through the genesis ledger "
+            "(balance_at.balance_at / amortizing_balance_at). Rejected dates: "
+            f"{[d.isoformat() for d in past]} (today={today.isoformat()})"
+        )
     schedules = generate_debt_schedules(loan_accounts, scenario_id)
     result: dict[int, list[Decimal]] = {}
     for account in loan_accounts:

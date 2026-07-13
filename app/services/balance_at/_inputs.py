@@ -3,10 +3,11 @@
 The seam's private foundation: the batch-loaded per-account projection inputs
 every view assembles from (:class:`_AssembledInputs` / :func:`_assemble_inputs`),
 the ONE per-kind dispatch site (:func:`_account_balance_map`), and the
-:func:`_require_scenario` guard every public entry runs first.
+:func:`_require_scenario` guard every public entry (bar the liability view --
+see :mod:`._liability`) runs first.
 
 Kept in one leaf submodule so the view modules (:mod:`._kind_correct`,
-:mod:`._cash_flow`, :mod:`._grid`) depend only on these
+:mod:`._cash_flow`, :mod:`._grid`, :mod:`._liability`) depend only on these
 primitives and never on each other's internals.  The package's SOLID dependency
 direction is ``<view module> -> _inputs``, and ``_inputs`` imports nothing back
 from the package.
@@ -214,6 +215,12 @@ def _require_scenario(scenario: Scenario) -> None:
     ``if scenario is None: return ...`` guard BEFORE calling the seam; this is
     the defensive backstop that turns a missed guard into a clear failure
     instead of a deep ``AttributeError`` on ``scenario.id`` (or a silent $0).
+
+    The ONE public entry that does not run this guard is
+    :func:`~app.services.balance_at.liability_owed_at_dates`, where a missing
+    baseline is not an error but the degenerate case of its own rule (no loan is
+    resolvable, so every liability holds flat); its docstring owns that
+    rationale.
     """
     if scenario is None:
         raise ValueError(
