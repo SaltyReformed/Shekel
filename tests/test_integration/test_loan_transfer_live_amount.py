@@ -15,18 +15,15 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
-from app.models.loan_params import LoanParams
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
-    account_service,
     loan_payment_service,
     loan_posting_service,
     transfer_recurrence,
@@ -34,8 +31,8 @@ from app.services import (
 from app.services.rate_period_engine import monthly_due_date
 from tests._test_helpers import (
     add_escrow_line,
-    insert_origination_event,
-    insert_origination_rate,
+    create_loan_account,
+    loan_params_for,
 )
 
 
@@ -46,37 +43,24 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     transfer's stored default amount is intentionally a stale value so
     the test can prove the live override, not the stored amount, drives
     the result.
+
+    The loan is built by the shared :func:`create_loan_account` factory, so it
+    carries the genesis posting ledger every production loan-write path opens in
+    the same transaction as the ``LoanParams`` insert (``routes/loan/params.py``)
+    -- a hand-rolled ``LoanParams`` insert would leave it on the no-ledger
+    fallback production never takes.
     """
     user = seed_user["user"]
     scenario_id = seed_user["scenario"].id
     checking = seed_user["account"]
 
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    loan = create_loan_account(
+        seed_user, db.session, name="Live Mortgage",
+        principal=Decimal("200000.00"), rate=Decimal("0.06000"),
+        term=360, origination_date=date(2026, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
-    loan = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name="Live Mortgage",
-            anchor_balance=Decimal("200000.00"),
-        ),
-    )
-    db.session.add(loan)
-    db.session.flush()
-
-    params = LoanParams(
-        account_id=loan.id,
-        original_principal=Decimal("200000.00"),
-        current_principal=Decimal("200000.00"),
-        term_months=360,
-        origination_date=date(2026, 1, 1),
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06000"))
+    params = loan_params_for(db.session, loan.id)
 
     escrow = add_escrow_line(
         db.session, loan.id, "Property Tax", escrow_annual,

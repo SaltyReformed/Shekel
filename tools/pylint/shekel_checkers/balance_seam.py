@@ -144,6 +144,14 @@ _BALANCE_SEAM_MODULES = frozenset({
 _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
+    # Carries the loan's OPENING BALANCE (with the date its ledger begins), so a
+    # caller can measure a change across a window without reading $0.00 for a date
+    # the ledger has no record of.  It is a balance-at-T -- the balance at the
+    # opening -- and a balance handed to a route is a balance rendered, so it is
+    # fenced like every other producer and reachable only through the seam
+    # (``balance_at.loan_ledger_domain``).  Its date-only sibling
+    # ``confirmed_loan_ledger_start`` is a non-producer.
+    "confirmed_loan_ledger_domain",
     # The running-balance walk the two readers above are built on: it IS the
     # balance-at-T computation over the posting rows.  Only the ledger package
     # itself calls it (verified 2026-07-13), which the wider allowlist already
@@ -325,6 +333,12 @@ _FENCED_MODULE_RULINGS = {
             # The anchor EVENT rows (the source documents behind a balance), not
             # the balance itself.
             "loan_balance_anchor_history",
+            # Query-expression builders (``_asof``).  ``effective_date`` is the
+            # as-of KEY both readers bound by and ``scope_to_linked_ledger`` is
+            # their shared join; they compute no balance and execute nothing --
+            # they are the plumbing a producer is built FROM.
+            "effective_date",
+            "scope_to_linked_ledger",
             # The real principal/interest/escrow split of an actual payment --
             # a decomposition of CASH, not an account balance.
             "compute_loan_payment_splits",

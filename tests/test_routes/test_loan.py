@@ -14,9 +14,7 @@ import pytest
 import sqlalchemy as sa
 
 from app import ref_cache
-from app.enums import StatusEnum
-from app.extensions import db
-from app.models.account import Account
+from app.enums import AcctTypeEnum, StatusEnum
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
@@ -28,12 +26,12 @@ from app.services import account_service, escrow_calculator, loan_loaders
 
 from tests._test_helpers import (
     add_escrow_line,
+    create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
-    insert_origination_event,
-    insert_origination_rate,
     insert_trueup_event,
+    loan_params_for,
     select_option_values,
 )
 
@@ -55,7 +53,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_loan_account(seed_user, db_session, type_name, name, principal,
+def _create_loan_account(seed_user, db_session, account_type, name, principal,
                          rate, term, orig_date, payment_day, is_arm=False):
     """Helper to create a loan account with params for any amortizing type.
 
@@ -68,15 +66,15 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     stored column.
 
     To preserve the test contract without rewriting every caller,
-    this helper synthesises TWO events when the
-    ``original_principal``-vs-``current_principal`` gap is non-zero
-    (existing helper sets ``original = principal + 5000``,
-    simulating "$5,000 already paid down before the test starts"):
+    this helper builds the loan with an ``original_principal`` of
+    ``principal + 5000`` (simulating "$5,000 already paid down before
+    the test starts") and then appends:
 
       * an ORIGINATION event at ``original_principal`` (matches
         Commit 12's backfill semantics and production's create_params),
+        written by the shared factory,
       * a USER_TRUEUP event one day after origination at the lower
-        ``current_principal`` value (represents "the user marked
+        ``principal`` value (represents "the user marked
         the loan's true current balance as $X today").
 
     When ``principal == 0`` the gap is the full $5,000, so the
@@ -85,60 +83,44 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     the trueup at ``principal`` produces a partially-paid loan
     state -- what ``test_refinance_principal_auto_calculated`` and
     every other refinance / debt-card test needs.
+
+    Routes through :func:`tests._test_helpers.create_loan_account` (the ONE
+    shared loan builder) and :func:`tests._test_helpers.insert_trueup_event`,
+    so BOTH anchors are reconciled into the loan's genesis posting ledger in
+    the same transaction that writes them -- exactly what
+    ``loan.create_params`` / ``anchor_service`` do in production.  The
+    hand-rolled block this replaced opened no ledger at all, so every loan
+    here exercised the no-ledger fallback production never takes.
+
+    Args:
+        seed_user: The ``seed_user`` (or ``seed_second_user``) fixture dict.
+        db_session: The test ``db.session``.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create
+            the loan account as.
+        name: The account name.
+        principal: The loan's current balance (the trueup anchor).
+        rate: The origination annual rate as a Decimal fraction.
+        term: The loan term in months.
+        orig_date: The loan origination date.
+        payment_day: The day-of-month payment day.
+        is_arm: Whether the loan is adjustable-rate.
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
     """
     from datetime import timedelta  # pylint: disable=import-outside-toplevel
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
-    from app.models.loan_anchor_event import LoanAnchorEvent  # pylint: disable=import-outside-toplevel
 
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
+    account = create_loan_account(
+        seed_user, db_session, name=name,
+        principal=principal + Decimal("5000.00"), rate=rate, term=term,
+        origination_date=orig_date, payment_day=payment_day,
+        account_type=account_type,
     )
-    db_session.add(account)
-    db_session.flush()
-
-    original_principal = principal + Decimal("5000.00")
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=orig_date,
-        payment_day=payment_day,
-        is_arm=is_arm,
-    )
-    db_session.add(params)
-    db_session.flush()
-    # Origination LoanAnchorEvent (E-18 / Commit 15): the resolver
-    # requires at least one event per loan.  Production's
-    # ``loan.create_params`` writes the same paired row; tests that
-    # build LoanParams directly must mirror it.
-    insert_origination_event(params)
-    # Origination RateHistory row (DH-#56): the loan's base rate lives
-    # in the RateHistory row effective at origination, not the dropped
-    # ``LoanParams.interest_rate`` column.  The resolver raises
-    # ``ValueError`` on an empty rate feed, so seed it alongside the
-    # origination anchor event.
-    insert_origination_rate(params, rate)
-    # User-trueup event at the lower current_principal -- preserves
-    # the pre-Commit-15 test contract that ``principal`` matches the
-    # displayed Current Principal.  Dated one day after origination
-    # so the resolver's (anchor_date, created_at) DESC selector
-    # picks this event over the origination event.
-    db_session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=orig_date + timedelta(days=1),
-        anchor_balance=principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.USER_TRUEUP,
-        ),
-    ))
+    params = loan_params_for(db_session, account.id)
+    # Set BEFORE the trueup's ledger re-sync so the postings are reconciled
+    # against the loan's final terms.
+    params.is_arm = is_arm
+    insert_trueup_event(params, principal, orig_date + timedelta(days=1))
     db_session.commit()
     return account
 
@@ -146,7 +128,7 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
 def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
     """Helper: auto loan account with params."""
     return _create_loan_account(
-        seed_user, db_session, "Auto Loan", name,
+        seed_user, db_session, AcctTypeEnum.AUTO_LOAN, name,
         Decimal("25000.00"), Decimal("0.05000"), 60,
         date(2025, 1, 1), 15,
     )
@@ -155,40 +137,27 @@ def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
 def _create_mortgage(seed_user, db_session, name="My Mortgage"):
     """Helper: mortgage account with params."""
     return _create_loan_account(
-        seed_user, db_session, "Mortgage", name,
+        seed_user, db_session, AcctTypeEnum.MORTGAGE, name,
         Decimal("250000.00"), Decimal("0.06500"), 360,
         date(2023, 6, 1), 1,
     )
 
 
-def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
-    """Create a loan account owned by the second user."""
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=second_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Other Loan",
-            anchor_balance=Decimal("15000.00"),
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
+def _create_other_loan(second_user, db_session,
+                       account_type=AcctTypeEnum.AUTO_LOAN):
+    """Create a loan account owned by the second user.
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=Decimal("20000.00"),
-        current_principal=Decimal("15000.00"),
-        term_months=48,
-        origination_date=date(2024, 6, 1),
-        payment_day=1,
+    A $20,000 loan (the origination anchor -- the hand-rolled block this
+    replaced wrote no trueup, so the origination principal IS the resolved
+    balance) at 4% over 48 months, originated 2024-06-01.  Built through the
+    shared factory, so its genesis posting ledger is opened with it.
+    """
+    return create_loan_account(
+        second_user, db_session, name="Other Loan",
+        principal=Decimal("20000.00"), rate=Decimal("0.04000"), term=48,
+        origination_date=date(2024, 6, 1), payment_day=1,
+        account_type=account_type,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.04000"))
-    db_session.commit()
-    return account
 
 
 # ── Dashboard Tests ──────────────────────────────────────────────────
@@ -220,7 +189,7 @@ class TestLoanDashboard:
         as '21th'/'22th'/'23th'/'31th', and the teens were never exercised.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Ordinal Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Ordinal Mortgage",
             Decimal("250000.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), payment_day,
         )
@@ -1041,7 +1010,7 @@ class TestEscrow:
 
     def test_escrow_delete_idor(self, auth_client, second_user, db, seed_periods):
         """DELETE another user's escrow returns 404 and leaves it active."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         line_id = add_escrow_line(
             db.session, other.id, "Tax", Decimal("3000.00"),
         ).line_id
@@ -1503,7 +1472,7 @@ class TestEscrow:
         self, auth_client, second_user, db, seed_periods,
     ):
         """Another user's escrow version routes return 404 (no existence oracle)."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         version = add_escrow_line(db.session, other.id, "Tax", Decimal("7200.00"))
         db.session.commit()
         edit = auth_client.post(
@@ -1532,7 +1501,7 @@ class TestEscrow:
         version edit / delete.
         """
         mine = _create_mortgage(seed_user, db.session)
-        victim = _create_other_loan(second_user, db.session, "Mortgage")
+        victim = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         victim_version = add_escrow_line(
             db.session, victim.id, "Tax", Decimal("7200.00"),
         )
@@ -1774,7 +1743,7 @@ class TestRateHistory:
 
     def test_rate_change_idor(self, auth_client, second_user, db, seed_periods):
         """Rate change to another user's loan returns 404 with no side effects."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         # DH-#56: the fixture seeds an origination RateHistory row, so the
         # "no side effects" invariant is that the count is UNCHANGED by the
         # IDOR POST -- not that it is zero.
@@ -2596,7 +2565,7 @@ class TestLoanNegativePaths:
 
     def test_escrow_idor_add(self, auth_client, second_user, db, seed_periods):
         """Escrow add to another user's loan returns 404."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/escrow",
             data={"name": "Stolen", "annual_amount": "9999.00"},
@@ -2611,11 +2580,11 @@ class TestLoanNegativePaths:
 
 # All five amortizing account types with realistic parameters.
 _AMORTIZING_TYPES = [
-    ("Mortgage", Decimal("250000.00"), Decimal("0.06500"), 360, 600),
-    ("Auto Loan", Decimal("25000.00"), Decimal("0.05000"), 60, 120),
-    ("Student Loan", Decimal("45000.00"), Decimal("0.04500"), 120, 300),
-    ("Personal Loan", Decimal("10000.00"), Decimal("0.08000"), 48, 120),
-    ("HELOC", Decimal("50000.00"), Decimal("0.07250"), 180, 360),
+    (AcctTypeEnum.MORTGAGE, Decimal("250000.00"), Decimal("0.06500"), 360, 600),
+    (AcctTypeEnum.AUTO_LOAN, Decimal("25000.00"), Decimal("0.05000"), 60, 120),
+    (AcctTypeEnum.STUDENT_LOAN, Decimal("45000.00"), Decimal("0.04500"), 120, 300),
+    (AcctTypeEnum.PERSONAL_LOAN, Decimal("10000.00"), Decimal("0.08000"), 48, 120),
+    (AcctTypeEnum.HELOC, Decimal("50000.00"), Decimal("0.07250"), 180, 360),
 ]
 
 
@@ -2627,10 +2596,10 @@ class TestLoanDashboardRegression:
     engine and loan UI.
     """
 
-    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    @pytest.mark.parametrize("account_type,principal,rate,term,max_term", _AMORTIZING_TYPES)
     def test_dashboard_renders_for_all_amortizing_types(
         self, auth_client, seed_user, db, seed_periods,
-        type_name, principal, rate, term, max_term,
+        account_type, principal, rate, term, max_term,
     ):
         """Dashboard must render successfully for every amortizing account type.
 
@@ -2638,7 +2607,7 @@ class TestLoanDashboardRegression:
         all existing types continue to work.
         """
         acct = _create_loan_account(
-            seed_user, db.session, type_name, f"Test {type_name}",
+            seed_user, db.session, account_type, f"Test {account_type.value}",
             principal, rate, term, date(2024, 1, 1), 1,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
@@ -2647,10 +2616,10 @@ class TestLoanDashboardRegression:
         # Dashboard should display the monthly payment.
         assert "Monthly" in html or "monthly" in html
 
-    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    @pytest.mark.parametrize("account_type,principal,rate,term,max_term", _AMORTIZING_TYPES)
     def test_payoff_extra_payment_all_types(
         self, auth_client, seed_user, db, seed_periods,
-        type_name, principal, rate, term, max_term,
+        account_type, principal, rate, term, max_term,
     ):
         """Payoff calculator extra-payment mode works for all amortizing types.
 
@@ -2658,7 +2627,7 @@ class TestLoanDashboardRegression:
         present in the response.
         """
         acct = _create_loan_account(
-            seed_user, db.session, type_name, f"Test {type_name}",
+            seed_user, db.session, account_type, f"Test {account_type.value}",
             principal, rate, term, date(2024, 1, 1), 1,
         )
         resp = auth_client.post(
@@ -2781,7 +2750,7 @@ class TestLoanDashboardRegression:
         for 'not found' and 'not yours' per the security response rule.
         """
         other_acct = _create_loan_account(
-            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            seed_second_user, db.session, AcctTypeEnum.MORTGAGE, "Other Mortgage",
             Decimal("200000.00"), Decimal("0.06000"), 360,
             date(2024, 1, 1), 1,
         )
@@ -3184,7 +3153,7 @@ class TestTransferPrompt:
     ):
         """POST to other user's debt account returns 404 (security)."""
         other_loan = _create_loan_account(
-            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            seed_second_user, db.session, AcctTypeEnum.MORTGAGE, "Other Mortgage",
             Decimal("200000.00"), Decimal("0.06000"), 360,
             date(2024, 1, 1), 1,
         )
@@ -3430,7 +3399,7 @@ class TestARMRateHistoryIntegration:
         verifies the dashboard renders and shows rate history data.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -3654,7 +3623,7 @@ class TestMultiScenarioVisualization:
         baseline (current_index 0); the rate chip carries the ARM tag.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -3957,43 +3926,47 @@ def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00")
                 month=first_of_this_month.month - 1,
             )
     return _create_loan_account_exact(
-        seed_user, db_session, "Mortgage", "Fresh Mortgage",
-        principal, principal, rate, term, origination_date, payment_day,
+        seed_user, db_session, AcctTypeEnum.MORTGAGE, "Fresh Mortgage",
+        principal, rate, term, origination_date, payment_day,
     )
 
 
-def _create_loan_account_exact(seed_user, db_session, type_name, name,
-                                original_principal, current_principal,
-                                rate, term, orig_date, payment_day,
-                                is_arm=False):
-    """Like _create_loan_account but with explicit original_principal."""
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=current_principal,
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
+def _create_loan_account_exact(seed_user, db_session, account_type, name,
+                                original_principal, rate, term, orig_date,
+                                payment_day):
+    """Like :func:`_create_loan_account` but with NO trueup anchor.
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=current_principal,
-        term_months=term,
-        origination_date=orig_date,
-        payment_day=payment_day,
-        is_arm=is_arm,
+    The loan carries only its origination anchor, so ``original_principal``
+    IS its resolved balance -- there is no ``+ $5,000`` paid-down gap and no
+    trueup event.  (The hand-rolled block this replaced also took a
+    ``current_principal``, but it only ever landed in the non-authoritative
+    ``LoanParams.current_principal`` column and the loan account's unread
+    anchor balance: with no trueup event, the resolver and the genesis ledger
+    both seeded from ``original_principal`` regardless.  The parameter is gone
+    rather than kept as a decorative no-op.)
+
+    Routes through the shared factory, so the loan's genesis posting ledger is
+    opened in the same transaction as its ``LoanParams``.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member.
+        name: The account name.
+        original_principal: The origination principal (the resolved balance).
+        rate: The origination annual rate as a Decimal fraction.
+        term: The loan term in months.
+        orig_date: The loan origination date.
+        payment_day: The day-of-month payment day.
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
+    """
+    return create_loan_account(
+        seed_user, db_session, name=name, principal=original_principal,
+        rate=rate, term=term, origination_date=orig_date,
+        payment_day=payment_day, account_type=account_type,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, rate)
-    db_session.commit()
-    return account
 
 
 class TestAmortizationSchedule:
@@ -4206,8 +4179,8 @@ class TestAmortizationSchedule:
         30-year assumption.
         """
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Short Loan",
-            Decimal("5000.00"), Decimal("5000.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Short Loan",
+            Decimal("5000.00"),
             Decimal("0.06500"), 12, date(2026, 3, 1), 1,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
@@ -4261,8 +4234,8 @@ class TestAmortizationSchedule:
         # Small loan: $1000 at 5% for 12 months, origination Jan 2026.
         # First payment month: Feb 2026 (seed_periods[3] = Feb 13).
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Paid Off",
-            Decimal("1000.00"), Decimal("0.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Paid Off",
+            Decimal("1000.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
         # Large confirmed payment in Feb covers the full balance.
@@ -4292,7 +4265,7 @@ class TestAmortizationSchedule:
         column header and rate values should appear in the schedule.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Schedule",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Schedule",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -4982,7 +4955,7 @@ class TestDashboardChartComposer:
         serializes a floor series.)
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM 5/1",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM 5/1",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -5192,7 +5165,7 @@ class TestRecurrenceEndDateUpdate:
         unset, the change sets it.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM End Date Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM End Date Mortgage",
             Decimal("250000.00"), Decimal("0.05000"), 360,
             date(2023, 6, 1), 1, is_arm=True,
         )
@@ -5222,8 +5195,8 @@ class TestRecurrenceEndDateUpdate:
         from datetime import datetime  # pylint: disable=import-outside-toplevel
 
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Paid Off Loan",
-            Decimal("1000.00"), Decimal("0.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Paid Off Loan",
+            Decimal("1000.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
@@ -5311,7 +5284,7 @@ class TestRecurrenceEndDateUpdate:
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
-        other_loan = _create_other_loan(second_user, db.session, "Mortgage")
+        other_loan = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
 
         # Create a transfer template for the other user's loan.
         monthly_id = ref_cache.recurrence_pattern_id(
@@ -5412,33 +5385,16 @@ def _create_exact_mortgage(seed_user, db_session):
     matches exactly: M = P * [r(1+r)^n] / [(1+r)^n - 1] where
     P=200000, r=0.065/12, n=360.  Origination today so remaining
     months = 360.
-    """
-    loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Exact Test Mortgage",
-            anchor_balance=Decimal("200000.00"),
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=Decimal("200000.00"),
-        current_principal=Decimal("200000.00"),
-        term_months=360,
-        origination_date=date.today(),
-        payment_day=1,
+    Built through the shared factory, so the loan's genesis posting ledger is
+    opened with it (as production's ``loan.create_params`` does).
+    """
+    return create_loan_account(
+        seed_user, db_session, name="Exact Test Mortgage",
+        principal=Decimal("200000.00"), rate=Decimal("0.06500"), term=360,
+        origination_date=date.today(), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db_session.commit()
-    return account
 
 
 class TestRefinanceCalculator:
@@ -5534,7 +5490,7 @@ class TestRefinanceCalculator:
 
     def test_refinance_idor(self, auth_client, second_user, db, seed_periods):
         """C-5.10-5: Refinance on another user's loan returns 404."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/refinance",
             data={"new_rate": "5.0", "new_term_months": "360"},
@@ -5675,7 +5631,7 @@ class TestRefinanceCalculator:
         fixed rate should show savings.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("250000.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), 1, is_arm=True,
         )
@@ -5706,7 +5662,7 @@ class TestRefinanceCalculator:
     ):
         """C-5.10-12: Paid-off loan returns error, not a comparison."""
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Paid Off Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Paid Off Mortgage",
             Decimal("0.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), 1,
         )
@@ -6243,13 +6199,6 @@ class TestLoanBalanceTrueUp:
     Test IDs follow the Commit-16 plan checklist (C16-1 .. C16-7).
     """
 
-    def _count_events(self, db_session, account):
-        return (
-            db_session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .count()
-        )
-
     # C16-1
     def test_trueup_appends_event(self, auth_client, seed_user, db, seed_periods):
         """POST trueup creates a new LoanAnchorEvent; no prior row mutated.
@@ -6717,7 +6666,7 @@ class TestLoanDetailMeasuredSurfaces:
         element ids (only the in-band chip and the escrow-header badge).
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Dup-ID Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Dup-ID Mortgage",
             Decimal("200000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )

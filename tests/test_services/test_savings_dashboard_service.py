@@ -10,7 +10,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CompoundingFrequencyEnum, GoalModeEnum, IncomeUnitEnum
+from app.enums import (
+    AcctTypeEnum,
+    CompoundingFrequencyEnum,
+    GoalModeEnum,
+    IncomeUnitEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType, FilingStatus
@@ -1345,68 +1350,27 @@ class TestDebtSummary:
                      = 14225 / 225000
                      = 0.06322...
         """
-        with app.app_context():
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Mortgage",
-                    anchor_balance=Decimal("200000.00"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
 
-            from app.models.loan_params import LoanParams as LP
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            lp1 = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
             )
-            db.session.add(lp1)
-            db.session.flush()
-            _ioe(lp1)
-            _ior(lp1, Decimal("0.06500"))  # DH-#56 origination rate
-
-            auto_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Auto Loan").one()
-            )
-            auto = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=auto_type.id,
-                    name="Auto",
-                    anchor_balance=Decimal("25000.00"),
-                ),
-            )
-            db.session.add(auto)
-            db.session.flush()
-
-            lp2 = LP(
-                account_id=auto.id,
-                original_principal=Decimal("25000.00"),
-                current_principal=Decimal("25000.00"),
-                term_months=60,
+            create_loan_account(
+                seed_user, db.session, name="Auto",
+                principal=Decimal("25000.00"),
+                rate=Decimal("0.04900"),  # DH-#56 origination rate
+                term=60,
                 origination_date=date(2024, 6, 1),
                 payment_day=15,
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
-            db.session.add(lp2)
-            db.session.flush()
-            _ioe(lp2)
-            _ior(lp2, Decimal("0.04900"))  # DH-#56 origination rate
-            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -1555,46 +1519,25 @@ class TestDebtSummary:
         A short-term loan (24 months) and a long-term mortgage (360
         months).  The debt-free date should match the mortgage's payoff.
         """
-        with app.app_context():
-            from app.models.loan_params import LoanParams as LP
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
 
+        with app.app_context():
             # Short-term loan
             _create_small_loan(
                 seed_user, db.session, name="Short Loan", term=24,
             )
 
             # Long-term mortgage
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Long Mortgage",
-                    anchor_balance=Decimal("0"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
-            lp = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+            create_loan_account(
+                seed_user, db.session, name="Long Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_balance=Decimal("0"),
             )
-            db.session.add(lp)
-            db.session.flush()
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            _ioe(lp)
-            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
-            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -1616,45 +1559,28 @@ class TestDebtSummary:
         A mortgage with $7,200/year escrow ($600/month).  The monthly
         total must include P&I + escrow.
         """
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            add_escrow_line,
+            create_loan_account,
+            loan_params_for,
+        )
+
         with app.app_context():
-            from app.models.loan_params import LoanParams as LP
-
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Escrow Mortgage",
-                    anchor_balance=Decimal("0"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
-
-            lp = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+            mortgage = create_loan_account(
+                seed_user, db.session, name="Escrow Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_balance=Decimal("0"),
             )
-            db.session.add(lp)
-            db.session.flush()
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                add_escrow_line,
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            _ioe(lp)
-            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
+            params = loan_params_for(db.session, mortgage.id)
 
             add_escrow_line(
                 db.session, mortgage.id, "Property Tax", Decimal("7200.00"),
-                effective_date=lp.origination_date,
+                effective_date=params.origination_date,
             )
             db.session.commit()
 
@@ -3006,45 +2932,27 @@ def _add_mortgage_account(seed_user, anchor_period_id, balance):
     as-of-today current balance equals the origination principal and the
     amortization schedule drives the forward liability series.
 
+    Routed through the shared ``create_loan_account`` factory rather than
+    re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
+    replaces never opened the loan's genesis posting ledger, so every mortgage in
+    this suite ran on the no-ledger fallback -- a path production never takes.
+
     Returns:
         The new mortgage Account.
     """
     # pylint: disable=import-outside-toplevel
     from datetime import date as _date
-    from app.models.loan_params import LoanParams
-    from tests._test_helpers import (
-        insert_origination_event,
-        insert_origination_rate,
-    )
+    from app.enums import AcctTypeEnum
+    from app.models.pay_period import PayPeriod
+    from tests._test_helpers import create_loan_account
 
-    mortgage_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    return create_loan_account(
+        seed_user, db.session, name="Home Mortgage",
+        principal=balance, rate=Decimal("0.06500"), term=360,
+        origination_date=_date(2025, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
+        anchor_period=db.session.get(PayPeriod, anchor_period_id),
     )
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name="Home Mortgage",
-            anchor_balance=balance,
-            anchor_period_id=anchor_period_id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    params = LoanParams(
-        account_id=acct.id,
-        original_principal=balance,
-        current_principal=balance,
-        term_months=360,
-        origination_date=_date(2025, 1, 1),
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db.session.commit()
-    return acct
 
 
 def _add_property_account(seed_user, anchor_period_id, market_value):
@@ -3255,28 +3163,31 @@ class TestNetWorthSeries:
             # Flat liquid-only: every trend point (history tail + forward).
             assert all(v == Decimal("5000.00") for v in nw["series"]["net"])
 
-    def test_current_period_point_diverges_from_hero_for_amortizing_loan(
+    def test_current_period_point_agrees_with_hero_for_amortizing_loan(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For a loan, the current-period series point differs from the hero.
+        """For a loan, the current-period series point EQUALS the hero.
 
-        The two figures deliberately read DIFFERENT sources, and this test
-        guards that they keep doing so (the documented caveat to the
-        liquid-only ``series[current_index] == hero`` case above).  The
-        current period sits at ``series["current_index"]`` within the trend
-        window (the history tail precedes it):
+        This test used to assert the opposite -- that the two figures
+        deliberately "read DIFFERENT sources" and must keep diverging.  They must
+        not.  A page whose loan tile and whose net-worth trend disagree about the
+        same loan on the same day is a page contradicting itself, and that
+        contradiction was the symptom that opened this whole arc::
 
-        - The hero (``compute_net_worth_today``) reduces over each
-          account's as-of-today ``current_balance``.  The mortgage has no
-          confirmed payments, so the loan resolver replays nothing forward
-          and reports its $240,000 origination principal.
-        - The series reads the dense amortization-schedule map, whose
-          current-period (period-end) value has already paid principal
-          DOWN below $240,000 by today.
+            the /savings loan tile and the net-worth trend's own 'today'
+            point disagree: tile=240000.00 trend=236544.21
 
-        Checking $1,000 and a $240,000 mortgage (anchored at index 0):
-          hero net        = 1000.00 - 240000.00 = -239000.00 (anchor)
-          series[current] = 1000.00 - (amortized < 240000.00) > -239000.00
+        The divergence had one cause: the hero read the loan's honest balance,
+        while the trend's dense map walked the amortization SCHEDULE and let ~14
+        unpaid, purely projected installments pay the principal down.  The mortgage
+        has NO confirmed payments, so not one dollar of principal was ever paid,
+        and $240,000 is the only true answer.  Both producers now read the confirmed
+        ledger for a period that has begun, so both give it.
+
+        Checking $1,000 and a $240,000 never-paid mortgage:
+          hero net        = 1000.00 - 240000.00 = -239000.00
+          series[current] = 1000.00 - 240000.00 = -239000.00  (agrees)
+          series[future]  = 1000.00 - (amortized < 240000.00) > -239000.00
         """
         with app.app_context():
             _add_mortgage_account(
@@ -3288,14 +3199,18 @@ class TestNetWorthSeries:
             )["net_worth"]
 
             current = nw["series"]["current_index"]
-            # Hero uses the as-of-today anchor (no confirmed payments):
-            # 1000.00 (checking) - 240000.00 (mortgage) = -239000.00
+            # No confirmed payment: 1000.00 (checking) - 240000.00 (mortgage).
             assert nw["net_worth"] == Decimal("-239000.00")
-            # The current-period series point uses the schedule (period-end),
-            # amortized below 240000, so net is HIGHER (less liability) and
-            # strictly differs from the hero -- the two-source split holds.
-            assert nw["series"]["net"][current] > nw["net_worth"]
-            assert nw["series"]["net"][current] != nw["net_worth"]
+            # The tile and the trend's own 'today' point agree, to the cent.
+            assert nw["series"]["net"][current] == nw["net_worth"], (
+                f"the /savings hero ({nw['net_worth']}) and the net-worth "
+                f"trend's current-period point "
+                f"({nw['series']['net'][current]}) disagree; the page is "
+                f"contradicting itself about the same loan on the same day"
+            )
+            # Amortization is real in the FUTURE, where the projection answers:
+            # the last trend point sits above the flat-debt line.
+            assert nw["series"]["net"][-1] > nw["net_worth"]
 
 
 class TestBuildTrendPeriods:

@@ -178,21 +178,51 @@ def _compute_debt_progress(
     read -- it calls the same resolver that built ``debt_schedules``, on the
     same clock, so the figures are identical.
 
+    **The opening window is CLAMPED to where the ledger's knowledge begins.**
+    ``principal_paid`` is a CHANGE across a window, so its opening balance must be
+    a date the confirmed ledger can actually answer.  Before a loan's opening the
+    balance readers return ``$0.00``, and that zero means "we have no record", NOT
+    "you owed nothing" (:func:`loan_posting_service.confirmed_loan_balance_at`'s
+    caveat).  Subtracting a real year-end balance from that fabricated zero is how
+    this section came to report the borrower ADDING the entire balance of every
+    mid-life-imported loan: on real data the Mortgage read
+    ``jan1=0.00, dec31=175,870.41, principal_paid=-175,870.41`` -- a $175k debt
+    INCREASE, for a year in which principal was steadily paid down.
+
+    So the window opens at ``max(Dec-31-prior-year, the ledger's start)``.  For a
+    loan tracked from origination that is the plain Dec-31 date and nothing changes.
+    For a mid-life import it is the ``tracking_start``, and the figure honestly
+    becomes "principal paid since we began tracking this loan" -- which
+    ``tracked_from`` reports, so the surface can say so rather than implying a full
+    calendar year.  A loan whose ledger begins AFTER the target year is skipped: it
+    did not exist, as far as any record goes, and inventing a $0 opening for it is
+    the same mistake in a different costume.
+
     Args:
         year: Target calendar year.
         debt_accounts: Accounts with has_amortization=True.
-        debt_schedules: account_id ->
-            :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
-            from _generate_debt_schedules(); the membership gate only.
+        debt_schedules: account_id -> that loan's ``list`` of
+            :class:`~app.services.amortization_engine.AmortizationRow` (the
+            orchestrator passes ``net_worth_kernel.debt_schedule_rows``); the
+            membership gate only -- an empty list means no meaningful figure.
         balance_ctx: The read pass's ``BalanceContext`` (scopes the seam's
             loan resolution and pins its as-of).
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
-        dec31_balance, principal_paid}].
+        dec31_balance, principal_paid, tracked_from}].  ``tracked_from`` is
+        ``None`` when the ledger covers the whole year, else the CIVIL DATE the
+        loan's opening balance was asserted on -- the instant ``jan1_balance`` is
+        as-of, and the date to show a user.  (Deliberately not the ledger's
+        ``start_date``, a pay-period start that can sit days earlier and on which
+        the readers report a different balance -- see
+        :class:`~app.services.loan_posting_service.LoanLedgerDomain`.)
     """
     if not debt_accounts:
         return []
+
+    year_open = date(year - 1, 12, 31)
+    year_close = date(year, 12, 31)
 
     result = []
     for account in debt_accounts:
@@ -200,15 +230,38 @@ def _compute_debt_progress(
         if not schedule_rows:
             continue
 
-        # Jan 1 balance = balance at end of prior year, BEFORE any
-        # payments in the target year.  Use Dec 31 of the prior year
-        # so a Jan 1 payment is not counted in the starting balance.
-        jan1_bal = balance_at.balance_at(
-            account, balance_ctx, date(year - 1, 12, 31),
-        )
-        dec31_bal = balance_at.balance_at(
-            account, balance_ctx, date(year, 12, 31),
-        )
+        # Clamp the opening read to a window the ledger can answer (see above).
+        domain = balance_at.loan_ledger_domain(account, balance_ctx)
+        if domain is not None and domain.start_date > year_close:
+            # The loan's record begins after this year entirely: no progress to
+            # report, and a $0 opening would fabricate one.
+            continue
+
+        if domain is not None and domain.start_date > year_open:
+            # The ledger opens mid-year (a mid-life import).  The window's opening
+            # balance is the ledger's OPENING balance -- not the balance read AT
+            # the start date, which would already net away any payment sharing the
+            # opening's pay period and hide principal paid inside the window.
+            # The CIVIL date the opening balance was asserted on -- NOT
+            # ``start_date``, which is a pay-period start and can sit days earlier,
+            # on which the readers report a different (post-payment) balance.
+            # Publishing that pair would show a figure the seam contradicts.
+            tracked_from = domain.opening_date
+            jan1_bal = domain.opening_balance
+        else:
+            # The ledger covers the whole year: read the balance at the end of the
+            # prior year, BEFORE any payment in the target year.
+            #
+            # At the exact boundary (ledger start == year_open) this branch reads
+            # ``balance_at(year_open)``, which nets away any payment sharing the
+            # opening's visibility date, while one day later the clamp above does
+            # not.  The asymmetry is benign: the netted payment lands in the PRIOR
+            # year's window instead, so no principal is lost or double-counted
+            # across consecutive years.
+            tracked_from = None
+            jan1_bal = balance_at.balance_at(account, balance_ctx, year_open)
+
+        dec31_bal = balance_at.balance_at(account, balance_ctx, year_close)
         principal_paid = jan1_bal - dec31_bal
 
         result.append({
@@ -217,6 +270,7 @@ def _compute_debt_progress(
             "jan1_balance": jan1_bal,
             "dec31_balance": dec31_bal,
             "principal_paid": principal_paid,
+            "tracked_from": tracked_from,
         })
 
     return result

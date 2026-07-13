@@ -30,25 +30,20 @@ import re
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app import ref_cache
-from app.enums import LoanAnchorSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
-from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services import (
-    account_service,
     loan_payment_service,
+    loan_posting_service,
     loan_resolver,
     savings_dashboard_service,
     transfer_service,
     year_end_summary_service,
 )
-from app.services.scenario_resolver import get_baseline_scenario
-from tests._test_helpers import insert_origination_rate
+from tests._test_helpers import create_loan_account, loan_params_for
 
 
 # -- Hand-computed reference values (mirror principal-settle ones) ---------
@@ -88,96 +83,56 @@ ARM_FIXED_WINDOW_PAYMENT = Decimal("2398.20")
 # -- Fixture helpers -------------------------------------------------------
 
 
-def _create_fixed_loan(seed_user, period_id):
+def _create_fixed_loan(seed_user, period):
     """Materialise the canonical fixed-rate $300k mortgage.
 
-    Creates the :class:`Account`, :class:`LoanParams`, and origination
-    :class:`LoanAnchorEvent`; commits.  Returns the account and
-    loan_params.
+    Routes through the shared :func:`create_loan_account` factory, which builds
+    the :class:`Account`, the :class:`LoanParams`, the origination
+    :class:`RateHistory` / anchor, AND the loan's genesis posting ledger in one
+    transaction -- the same dance ``app/routes/loan/params.py`` performs on every
+    production loan write.  Commits.  Returns the account and loan_params.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
     """
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name="Single-Source Mortgage",
+        principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+        origination_date=ORIGINATION_DATE, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Single-Source Mortgage",
-            anchor_balance=FIXED_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=FIXED_PRINCIPAL,
-        current_principal=FIXED_PRINCIPAL,
-        term_months=FIXED_TERM,
-        origination_date=ORIGINATION_DATE,
-        payment_day=1,
-        is_arm=False,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, FIXED_RATE)
-
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=ORIGINATION_DATE,
-        anchor_balance=FIXED_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
-    db.session.commit()
-    return account, loan_params
+    return account, loan_params_for(db.session, account.id)
 
 
-def _create_arm_loan(seed_user, period_id):
+def _create_arm_loan(seed_user, period):
     """Materialise the canonical 5/5 ARM in its fixed-rate window.
 
     Anchor at origination; no payments; the resolver's monthly_payment
     must equal :data:`ARM_FIXED_WINDOW_PAYMENT` for every ``as_of``
     inside the window (E-02 invariant, Commit 13 stability lock).
+
+    The shared factory carries no ARM knobs, so the ARM columns are set the way
+    production's own ARM edit does (``loan.update_params``): assign the params,
+    then re-sync the genesis ledger for every scenario before committing, so the
+    postings and the params land in one transaction and the loan is never left
+    on the no-ledger fallback.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
     """
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name="Single-Source ARM",
+        principal=ARM_PRINCIPAL, rate=ARM_RATE, term=ARM_TERM,
+        origination_date=ORIGINATION_DATE, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Single-Source ARM",
-            anchor_balance=ARM_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=ARM_PRINCIPAL,
-        current_principal=ARM_PRINCIPAL,
-        term_months=ARM_TERM,
-        origination_date=ORIGINATION_DATE,
-        payment_day=1,
-        is_arm=True,
-        arm_first_adjustment_months=ARM_WINDOW,
-        arm_adjustment_interval_months=12,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, ARM_RATE)
-
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=ORIGINATION_DATE,
-        anchor_balance=ARM_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
+    loan_params = loan_params_for(db.session, account.id)
+    loan_params.is_arm = True
+    loan_params.arm_first_adjustment_months = ARM_WINDOW
+    loan_params.arm_adjustment_interval_months = 12
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
     return account, loan_params
 
@@ -324,7 +279,7 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         ctx = loan_payment_service.load_loan_context(
@@ -392,7 +347,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
         _settle_one_payment(
             seed_user, account, seed_periods[3], auth_client,
@@ -463,7 +418,7 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         ctx = loan_payment_service.load_loan_context(

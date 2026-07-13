@@ -32,7 +32,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import create_loan_account, freeze_today
 
 
 @pytest.fixture(autouse=True)
@@ -2099,42 +2099,19 @@ def _create_small_loan(seed_user, name="Test Loan",
                        rate=Decimal("0.05000"), term=24):
     """Create a small loan with LoanParams for paid-off badge testing.
 
-    Origination is Jan 2026 with term=24 so remaining months is
-    comfortably positive (~21 from April 2026).
+    Routes through the ONE shared loan builder
+    (:func:`tests._test_helpers.create_loan_account`), whose defaults are this
+    loan: an Auto Loan originated 2026-01-01 with payment_day 1, so remaining
+    months is comfortably positive (~21 from April 2026).  The factory opens
+    the loan's genesis posting ledger in the same transaction as its
+    ``LoanParams``, exactly as ``loan.create_params`` does in production; the
+    hand-rolled block this replaced never did, so these cards rendered a loan
+    in a state production cannot produce.
     """
-    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
-
-    loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
+    return create_loan_account(
+        seed_user, db.session, name=name, principal=principal,
+        rate=rate, term=term,
     )
-    db.session.add(account)
-    db.session.flush()
-
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=date(2026, 1, 1),
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-    # DH-#56: origination RateHistory row carries the loan's base rate.
-    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event, insert_origination_rate,
-    )
-    insert_origination_event(params)
-    insert_origination_rate(params, rate)
-    db.session.commit()
-    return account
 
 
 def _make_confirmed_transfer(seed_user, to_account, period, amount):

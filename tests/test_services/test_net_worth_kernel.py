@@ -12,9 +12,7 @@ contract independently of either consumer.
 
 from decimal import Decimal
 
-from app.extensions import db
-from app.models.ref import AccountType
-from app.services import account_service, net_worth_kernel, pay_period_service
+from app.services import net_worth_kernel, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.resolution_context import BalanceContext
 
@@ -133,24 +131,34 @@ class TestBuildAccountBalanceMap:
     def test_liability_loan_uses_schedule(
         self, app, db, seed_user, seed_periods,
     ):
-        """An amortizing loan's dense map comes from its debt schedule.
+        """An amortizing loan's dense map comes from its debt schedule -- FORWARD.
 
-        A $240,000 mortgage (originated 2025-01-01, 6.5%, 30yr) projected
-        with its resolver schedule yields a current-period balance BELOW
-        the $240,000 origination principal -- the amortization has paid
-        principal down by the test clock's current period -- proving the
-        schedule path drives the map, not the static anchor.
+        A $240,000 mortgage (originated 2025-01-01, 6.5%, 30yr) with NO recorded
+        payment.  The map is answered by two different producers, and the schedule
+        drives only one of them:
+
+        * **A period that has BEGUN** reads the confirmed ledger.  Not one payment
+          was ever made, so the loan still owes the full $240,000.  It previously
+          asserted a balance BELOW $240,000 here -- i.e. that ~14 unpaid, purely
+          PROJECTED installments had paid principal down.  That is the phantom
+          paydown: reporting principal the borrower never paid, and understating
+          the debt.  It is the same defect ``loan_owed_at_dates`` refuses to commit
+          ("silently UNDERSTATING the debt"), and the one
+          ``TestUnpaidScheduleRowsNeverReduceTheDebt`` -- in this very file --
+          asserts must never happen.  The two tests contradicted each other; this
+          is the side that was wrong.
+        * **A FUTURE period** reads the projection, which genuinely does amortize
+          down from the ledger balance.  That is where the schedule path is real,
+          so that is where it is asserted -- and it still fails if the map were to
+          fall through to the static anchor.
         """
-        # Pylint: import-outside-toplevel -- the date / LoanParams / test
-        # helpers load inside the test, the file-wide deferred-import
-        # convention that keeps the top-level import block minimal.
+        # Pylint: import-outside-toplevel -- the date / test helpers load
+        # inside the test, the file-wide deferred-import convention that
+        # keeps the top-level import block minimal.
         # pylint: disable=import-outside-toplevel
         from datetime import date as _date
-        from app.models.loan_params import LoanParams
-        from tests._test_helpers import (
-            insert_origination_event,
-            insert_origination_rate,
-        )
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
@@ -158,33 +166,13 @@ class TestBuildAccountBalanceMap:
             all_periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
 
-            mortgage_type = (
-                db.session.query(AccountType).filter_by(name="Mortgage").one()
+            acct = create_loan_account(
+                seed_user, db.session, name="Mtg",
+                principal=Decimal("240000.00"), rate=Decimal("0.06500"),
+                term=360, origination_date=_date(2025, 1, 1), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=all_periods[0],
             )
-            acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user_id,
-                    account_type_id=mortgage_type.id,
-                    name="Mtg",
-                    anchor_balance=Decimal("240000.00"),
-                    anchor_period_id=all_periods[0].id,
-                ),
-            )
-            db.session.add(acct)
-            db.session.flush()
-            params = LoanParams(
-                account_id=acct.id,
-                original_principal=Decimal("240000.00"),
-                current_principal=Decimal("240000.00"),
-                term_months=360,
-                origination_date=_date(2025, 1, 1),
-                payment_day=1,
-            )
-            db.session.add(params)
-            db.session.flush()
-            insert_origination_event(params)
-            insert_origination_rate(params, Decimal("0.06500"))
-            db.session.commit()
 
             schedule = net_worth_kernel.generate_debt_schedules(
                 [acct], bctx,
@@ -198,10 +186,18 @@ class TestBuildAccountBalanceMap:
             )
 
             assert balances is not None
-            # Amortization has paid principal down below the origination
-            # $240,000 by the current period (schedule path, not anchor).
-            assert balances[current.id] < Decimal("240000.00")
-            assert balances[current.id] > Decimal("0.00")
+            # The current period has BEGUN -> the confirmed ledger.  No payment
+            # was ever recorded, so the full opening is still owed.  Unpaid
+            # scheduled rows must not pay it down.
+            assert balances[current.id] == Decimal("240000.00")
+
+            # A FUTURE period -> the projection, which DOES amortize down from
+            # that balance.  This is where the schedule path legitimately drives
+            # the map, and it is still distinguishable from the static anchor.
+            future = [p for p in all_periods if p.start_date > bctx.as_of]
+            assert future, "expected a future period"
+            assert balances[future[-1].id] < Decimal("240000.00")
+            assert balances[future[-1].id] > Decimal("0.00")
 
     def test_amortizing_empty_schedule_uses_current_balance(
         self, app, db, seed_user, seed_periods,
@@ -222,12 +218,13 @@ class TestBuildAccountBalanceMap:
         ($240,000 current balance) is distinguishable from the resolver
         fallthrough (the $200,000 flat anchor).
         """
-        # Pylint: import-outside-toplevel -- the date / LoanParams models
-        # load inside the test, the file-wide deferred-import convention
-        # that keeps the top-level import block minimal.
+        # Pylint: import-outside-toplevel -- the date / test helpers load
+        # inside the test, the file-wide deferred-import convention that
+        # keeps the top-level import block minimal.
         # pylint: disable=import-outside-toplevel
         from datetime import date as _date
-        from app.models.loan_params import LoanParams
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
@@ -235,30 +232,20 @@ class TestBuildAccountBalanceMap:
             all_periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
 
-            mortgage_type = (
-                db.session.query(AccountType).filter_by(name="Mortgage").one()
+            # The account's $200,000 anchor is deliberately DIFFERENT from the
+            # loan's $240,000 principal: it is the decoy that makes this test
+            # falsifiable.  Falling through to the entries-aware resolver would
+            # report the anchor; the loan path reports the debt schedule's
+            # current balance.  Production can set these apart too -- the account
+            # is created first, and the loan params configured afterwards.
+            acct = create_loan_account(
+                seed_user, db.session, name="Unpaid Mtg",
+                principal=Decimal("240000.00"), rate=Decimal("0.06500"),
+                term=360, origination_date=_date(2025, 1, 1), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=all_periods[0],
+                anchor_balance=Decimal("200000.00"),
             )
-            acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user_id,
-                    account_type_id=mortgage_type.id,
-                    name="Unpaid Mtg",
-                    anchor_balance=Decimal("200000.00"),
-                    anchor_period_id=all_periods[0].id,
-                ),
-            )
-            db.session.add(acct)
-            db.session.flush()
-            params = LoanParams(
-                account_id=acct.id,
-                original_principal=Decimal("240000.00"),
-                current_principal=Decimal("240000.00"),
-                term_months=360,
-                origination_date=_date(2025, 1, 1),
-                payment_day=1,
-            )
-            db.session.add(params)
-            db.session.commit()
 
             balances = net_worth_kernel.build_account_balance_map(
                 acct, bctx, all_periods,

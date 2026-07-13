@@ -13,21 +13,18 @@ import pytest
 from datetime import date
 from decimal import Decimal
 
+from app.enums import AcctTypeEnum
 from app.extensions import db
-from app.models.account import Account
-from app.models.loan_params import LoanParams
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RecurrencePattern, Status, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app.services import transfer_service
-from app.services.auth_service import hash_password
 from app.services import account_service
+
+from tests._test_helpers import create_loan_account, loan_params_for
 
 
 # ── XSS Payload Vectors ─────────────────────────────────────────
@@ -97,41 +94,27 @@ def _create_savings_account(seed_user):
 
 
 def _create_mortgage_account_with_params(seed_user):
-    """Create a mortgage account with LoanParams for escrow tests."""
-    mortgage_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
-    )
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name="XSS Test Mortgage",
-            anchor_balance=Decimal("200000"),
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
+    """Create a mortgage account with LoanParams for escrow tests.
 
-    params = LoanParams(
-        account_id=acct.id,
-        original_principal=Decimal("200000"),
-        current_principal=Decimal("195000"),
-        term_months=360,
-        origination_date=date(2024, 1, 1),
-        payment_day=1,
+    Routes through the ONE shared loan builder
+    (:func:`tests._test_helpers.create_loan_account`), which inserts the
+    ``LoanParams``, the origination anchor event and rate the resolver
+    requires, AND opens the loan's genesis posting ledger in the same
+    transaction -- exactly as ``loan.create_params`` does in production.
+    The hand-rolled block this replaced never opened that ledger, so the
+    escrow route ran against a loan in a state production cannot produce.
+
+    Returns:
+        ``(account, params)`` -- the $200,000 mortgage originated
+        2024-01-01 at 6.5% over 360 months, and its ``LoanParams`` row.
+    """
+    acct = create_loan_account(
+        seed_user, db.session, name="XSS Test Mortgage",
+        principal=Decimal("200000"), rate=Decimal("0.065"), term=360,
+        origination_date=date(2024, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
-    db.session.add(params)
-    db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-    # DH-#56: origination RateHistory row carries the loan's rate.
-    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event,
-        insert_origination_rate,
-    )
-    insert_origination_rate(params, Decimal("0.065"))
-    insert_origination_event(params)
-    db.session.commit()
-    return acct, params
+    return acct, loan_params_for(db.session, acct.id)
 
 
 def _create_salary_profile(seed_user, seed_periods_today):

@@ -77,6 +77,7 @@ from ._display import (
     confirmed_loan_principal_in_year,
     loan_balance_anchor_history,
 )
+from ._domain import LoanLedgerDomain, confirmed_loan_ledger_domain
 from ._payments import (
     reverse_loan_payment_postings_for_shadow,
     sync_loan_payment_postings,
@@ -112,6 +113,8 @@ __all__ = [
     "compute_loan_payment_splits",
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
+    "LoanLedgerDomain",
+    "confirmed_loan_ledger_domain",
     "confirmed_loan_history_rows",
     "confirmed_loan_interest_in_year",
     "confirmed_loan_payment_history",

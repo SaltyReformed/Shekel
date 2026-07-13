@@ -12,76 +12,71 @@ import re
 from datetime import date, timedelta
 from decimal import Decimal
 
-import pytest
-
-from app import ref_cache
-from app.enums import LoanAnchorSourceEnum
-from app.extensions import db
-from app.models.account import Account
-from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
+from app.enums import AcctTypeEnum
 from app.models.ref import AccountType
 from app.services import account_service
 
-from tests._test_helpers import insert_origination_rate
+from tests._test_helpers import (
+    create_loan_account,
+    insert_trueup_event,
+    loan_params_for,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_debt_account(user, db_session, type_name, name, principal,
+def _create_debt_account(user, db_session, account_type, name, principal,
                          rate, term, orig_date, payment_day):
-    """Create a debt account with LoanParams + LoanAnchorEvents.
+    """Create a debt account through the shared loan factory + a trueup anchor.
 
-    Sets original_principal = current_principal + 5000 to simulate a
-    partially paid-off loan.  Writes BOTH the origination event and
-    a same-day-after USER_TRUEUP event at ``principal`` so the
-    resolver's current_balance matches the test's intent (mirrors
-    ``test_loan._create_loan_account``; rationale in that helper's
-    docstring).  Without the trueup event the resolver would anchor
-    at original_principal and inflate every debt-strategy balance
-    by $5,000.
+    Builds the loan with ``original_principal = principal + 5000`` so it
+    simulates a partially paid-off loan, then appends a same-day-after
+    USER_TRUEUP event at ``principal`` -- so the resolver's current_balance
+    is ``principal``, the test's intent.  Without the trueup event the
+    resolver would anchor at original_principal and inflate every
+    debt-strategy balance by $5,000.
+
+    Routes through :func:`tests._test_helpers.create_loan_account` (the ONE
+    shared loan builder), so the loan's genesis posting ledger is opened in
+    the same transaction as its ``LoanParams`` -- exactly what
+    ``loan.create_params`` does in production.  The hand-rolled block this
+    replaced never opened one, so every debt here silently exercised the
+    no-ledger fallback that production never takes.
+
+    Args:
+        user: The owning :class:`~app.models.user.User`.
+        db_session: The test ``db.session``.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create
+            the debt account as.
+        name: The account name.
+        principal: The loan's current balance (the trueup anchor); the
+            origination anchor is this plus $5,000.
+        rate: The origination annual rate as a Decimal fraction.
+        term: The loan term in months.
+        orig_date: The loan origination date.
+        payment_day: The day-of-month payment day.
+
+    Returns:
+        The created debt :class:`~app.models.account.Account`.
     """
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=user.id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
-
     original_principal = principal + Decimal("5000.00")
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=orig_date,
-        payment_day=payment_day,
-    )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_rate(params, rate)
-    db_session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=orig_date,
-        anchor_balance=original_principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
-    db_session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=orig_date + timedelta(days=1),
+    account = create_loan_account(
+        {"user": user}, db_session, name=name,
+        principal=original_principal, rate=rate, term=term,
+        origination_date=orig_date, payment_day=payment_day,
+        account_type=account_type,
+        # The ACCOUNT anchor stays at ``principal`` while the loan's original
+        # principal is $5,000 higher -- a deliberate decoy.  If a producer ever
+        # fell through to the generic account-anchor path instead of the loan
+        # path, it would report this number, and the test would catch it.
         anchor_balance=principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.USER_TRUEUP,
-        ),
-    ))
+    )
+    insert_trueup_event(
+        loan_params_for(db_session, account.id),
+        principal,
+        orig_date + timedelta(days=1),
+    )
     db_session.commit()
     return account
 
@@ -89,7 +84,7 @@ def _create_debt_account(user, db_session, type_name, name, principal,
 def _create_auto_loan(user, db_session, name="Test Auto Loan"):
     """Create an auto loan: $25,000 at 5.5%, 60 months."""
     return _create_debt_account(
-        user, db_session, "Auto Loan", name,
+        user, db_session, AcctTypeEnum.AUTO_LOAN, name,
         Decimal("25000.00"), Decimal("0.05500"), 60,
         date(2025, 1, 1), 15,
     )
@@ -98,7 +93,7 @@ def _create_auto_loan(user, db_session, name="Test Auto Loan"):
 def _create_mortgage(user, db_session, name="Test Mortgage"):
     """Create a mortgage: $200,000 at 6.5%, 360 months."""
     return _create_debt_account(
-        user, db_session, "Mortgage", name,
+        user, db_session, AcctTypeEnum.MORTGAGE, name,
         Decimal("200000.00"), Decimal("0.06500"), 360,
         date(2023, 6, 1), 1,
     )
@@ -107,7 +102,7 @@ def _create_mortgage(user, db_session, name="Test Mortgage"):
 def _create_student_loan(user, db_session, name="Test Student Loan"):
     """Create a student loan: $30,000 at 4.5%, 120 months."""
     return _create_debt_account(
-        user, db_session, "Student Loan", name,
+        user, db_session, AcctTypeEnum.STUDENT_LOAN, name,
         Decimal("30000.00"), Decimal("0.04500"), 120,
         date(2024, 1, 1), 1,
     )
@@ -614,48 +609,19 @@ class TestDebtStrategyMetrics:
     def test_arm_warning_shown(self, auth_client, seed_user, db, seed_periods_today):
         """When an ARM loan is present, the R-5 warning is displayed."""
         user = seed_user["user"]
-        loan_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        arm_acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=user.id,
-                account_type_id=loan_type.id,
-                name="ARM Mortgage",
-                anchor_balance=Decimal("200000.00"),
-            ),
+        # $200,000 current / $205,000 original, originated 2023-01-01 at 5.5%
+        # over 360 months -- the shared builder's origination + next-day trueup
+        # anchor pair, so the resolver's current_balance == $200,000.
+        arm_acct = _create_debt_account(
+            user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
+            Decimal("200000.00"), Decimal("0.05500"), 360,
+            date(2023, 1, 1), 1,
         )
-        db.session.add(arm_acct)
-        db.session.flush()
-        params = LoanParams(
-            account_id=arm_acct.id,
-            original_principal=Decimal("205000.00"),
-            current_principal=Decimal("200000.00"),
-            term_months=360,
-            origination_date=date(2023, 1, 1),
-            payment_day=1,
-            is_arm=True,
-        )
-        db.session.add(params)
-        db.session.flush()
-        insert_origination_rate(params, Decimal("0.05500"))
-        # E-18 / Commit 15: resolver needs origination + trueup
-        # events so its current_balance == $200,000 (matches the
-        # pre-Commit-15 stored current_principal display).
-        db.session.add(LoanAnchorEvent(
-            account_id=arm_acct.id,
-            anchor_date=date(2023, 1, 1),
-            anchor_balance=Decimal("205000.00"),
-            source_id=ref_cache.loan_anchor_source_id(
-                LoanAnchorSourceEnum.ORIGINATION,
-            ),
-        ))
-        db.session.add(LoanAnchorEvent(
-            account_id=arm_acct.id,
-            anchor_date=date(2023, 1, 2),
-            anchor_balance=Decimal("200000.00"),
-            source_id=ref_cache.loan_anchor_source_id(
-                LoanAnchorSourceEnum.USER_TRUEUP,
-            ),
-        ))
+        # ARM flag only: with no ``arm_first_adjustment_months`` the rate-period
+        # engine emits no adjustment period, so the loan's schedule (and its
+        # genesis postings) are identical to the fixed-rate case -- the flag
+        # exists here purely to trip the route's R-5 warning.
+        loan_params_for(db.session, arm_acct.id).is_arm = True
         db.session.commit()
 
         resp = auth_client.post("/debt-strategy/calculate", data={

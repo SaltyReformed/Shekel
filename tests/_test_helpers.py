@@ -411,12 +411,19 @@ def _sync_loan_ledger(loan_account_id):
 
     # The sync bounds its walk at ``date.today()``, and an anchor dated after that
     # is DROPPED -- it posts nothing (``_walk._merge_anchor_and_payment_events``).
-    # A fixture that writes one therefore gets a loan carrying an OPENING but
-    # missing a true-up: it LOOKS ledger-backed and is not, which is the exact
-    # class of divergence this arc exists to delete.  Production cannot produce it
-    # (the true-up schema rejects a future ``anchor_date`` --
-    # ``app/schemas/validation/loans.py::validate_not_future``), so it is a fixture
-    # bug, and it fails loud here rather than silently skewing a later assertion.
+    # A fixture that writes a future USER-ASSERTED anchor therefore gets a loan
+    # carrying an opening but missing its true-up: it LOOKS ledger-backed and is
+    # not, which is the exact class of divergence this arc exists to delete.
+    #
+    # Only the user-asserted anchors are checked, and that boundary is production's
+    # own: a ``user_trueup`` and a ``tracking_start`` are both submitted through
+    # ``LoanAnchorTrueupSchema``, which REJECTS an ``anchor_date`` after today
+    # (``app/schemas/validation/loans.py::validate_not_future``), so a future one is
+    # a fixture bug.  A future ORIGINATION is NOT: ``origination_date`` carries no
+    # such validator, so a loan that has not originated yet is a legitimate,
+    # reachable production state -- it simply owes nothing and posts no opening
+    # until its origination date arrives.  Failing loud on THAT would be this
+    # helper inventing a rule the app does not have.
     #
     # The clock is read from the sync's OWN module: ``freeze_today`` patches the
     # ``date`` symbol per-module, and this module deliberately holds the real one
@@ -429,10 +436,11 @@ def _sync_loan_ledger(loan_account_id):
         fact.anchor_date
         for fact in loan_loaders.load_loan_anchor_facts(params)
         if fact.anchor_date > as_of
+        and (not fact.is_opening or fact.is_tracking_start)
     )
     if dropped:
         raise AssertionError(
-            f"loan {loan_account_id}: anchor(s) dated "
+            f"loan {loan_account_id}: user-asserted anchor(s) dated "
             f"{[d.isoformat() for d in dropped]} are AFTER the sync's as-of "
             f"({as_of.isoformat()}), so they post nothing and the loan is left "
             f"half-opened (opening present, true-up missing).  Production forbids "
@@ -633,18 +641,24 @@ def create_loan_account(
     seed_user, db_session, name="Test Loan",
     principal=None, rate=None, term=24,
     origination_date=None, payment_day=1,
+    *, account_type=None, anchor_period=None, anchor_balance=None,
 ):
     """Create a loan account with LoanParams, origination event, and rate.
 
-    The single shared loan-account builder for service tests (the
-    savings-dashboard, debt-summary, debt-principal-progress, and
-    dashboard-pulse suites all need a resolvable loan).  Routes the
-    account through the canonical ``account_service.create_account``
-    factory (so it gets its origination ``AccountAnchorHistory`` row),
-    inserts a ``LoanParams`` row, then seeds the origination
-    ``LoanAnchorEvent`` and ``RateHistory`` the loan resolver requires --
-    so a caller never has to repeat that four-step dance (DRY; the
-    per-suite ``_create_small_loan`` copies were a duplicate-code finding).
+    The ONE shared loan-account builder for every DB-backed loan in the suite.
+    Routes the account through the canonical ``account_service.create_account``
+    factory (so it gets its origination ``AccountAnchorHistory`` row), inserts a
+    ``LoanParams`` row, seeds the origination ``RateHistory`` the loan resolver
+    requires, and OPENS the genesis posting ledger -- so a caller never has to
+    repeat that dance, and cannot accidentally omit a step.
+
+    Seventeen suites used to hand-roll this block (a ``LoanParams(...)`` insert
+    beside a copy of the account-factory call).  Every one of them omitted the
+    ledger open, so their loans silently exercised the no-ledger FALLBACK that
+    production never takes -- which is exactly how a $3,455.79 divergence between
+    the two balance producers stayed invisible to the whole suite.  They differed
+    from this factory in only two respects, which are the two knobs below:
+    the account TYPE and the anchor PERIOD.  Everything else was duplication.
 
     **Always OPENS the loan's genesis ledger** (:func:`_sync_loan_ledger`), which
     is what ``loan.create_params`` does in the same transaction as the
@@ -673,15 +687,36 @@ def create_loan_account(
         origination_date: The loan origination date (default
             ``date(2026, 1, 1)``).
         payment_day: The day-of-month payment day (default 1).
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create the
+            account as; defaults to ``AUTO_LOAN``.  Keyword-only.  Resolved to its
+            id through :mod:`app.ref_cache` -- the project's ref-table rule is IDs
+            for logic, name strings for display only, so this takes the enum and
+            never a name string.  Any amortizing type works (``MORTGAGE`` is the
+            other one the suite uses).
+        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to anchor the
+            ACCOUNT to; defaults to the factory's own choice.  Keyword-only.  Pass
+            it when the test's assertions depend on which period the account's
+            origination anchor lands in.
+        anchor_balance: The ACCOUNT's anchor balance, when it must differ from the
+            loan's ``principal``; defaults to *principal*.  Keyword-only.  These
+            are genuinely two different facts, and production can set them apart:
+            the account is created first (with a user-entered anchor) and the loan
+            params are configured afterwards, through a separate route.  A test
+            that needs to prove the loan path is driving a balance -- rather than
+            the generic account-anchor path -- makes them differ, so the anchor is
+            a distinguishable decoy rather than the same number twice.
 
     Returns:
-        The created loan :class:`~app.models.account.Account`.
+        The created loan :class:`~app.models.account.Account`.  Its
+        :class:`LoanParams` row is reachable via :func:`loan_params_for` when a
+        caller needs to append an anchor event to it.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above; these pull the models/services
     # package, which must not load at tests/_test_helpers import time.
+    from app import ref_cache
+    from app.enums import AcctTypeEnum
     from app.models.loan_params import LoanParams
-    from app.models.ref import AccountType
     from app.services import account_service
 
     if principal is None:
@@ -690,16 +725,20 @@ def create_loan_account(
         rate = Decimal("0.05000")
     if origination_date is None:
         origination_date = _real_date(2026, 1, 1)
+    if account_type is None:
+        account_type = AcctTypeEnum.AUTO_LOAN
+    if anchor_balance is None:
+        anchor_balance = principal
 
-    loan_type = (
-        db_session.query(AccountType).filter_by(name="Auto Loan").one()
-    )
     account = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
+            account_type_id=ref_cache.acct_type_id(account_type),
             name=name,
-            anchor_balance=principal,
+            anchor_balance=anchor_balance,
+            anchor_period_id=(
+                anchor_period.id if anchor_period is not None else None
+            ),
         ),
     )
     db_session.add(account)
@@ -720,6 +759,32 @@ def create_loan_account(
     _sync_loan_ledger(account.id)
     db_session.commit()
     return account
+
+
+def loan_params_for(db_session, account_id):
+    """Return a loan account's :class:`LoanParams` row.
+
+    :func:`create_loan_account` returns the ACCOUNT, but the anchor helpers
+    (:func:`insert_trueup_event`, :func:`insert_tracking_start_event`) take its
+    params, so callers were each re-writing the same one-line query.  Holds it in
+    one place.
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The loan account whose params to load.
+
+    Returns:
+        The loan's :class:`~app.models.loan_params.LoanParams` row.
+
+    Raises:
+        NoResultFound: If the account has no ``LoanParams`` (not a configured
+            loan) -- a fixture bug, surfaced rather than papered over with None.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.models.loan_params import LoanParams
+
+    return db_session.query(LoanParams).filter_by(account_id=account_id).one()
 
 
 def add_escrow_line(

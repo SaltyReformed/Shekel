@@ -1,6 +1,6 @@
 # Fail-loud ledger authority: delete the schedule's answer for the past
 
-**Status: C1 DONE (2026-07-13), C2-C6 pending.** Successor to
+**Status: C1 + C1b DONE (2026-07-13); FU-4 FIXED. C2-C6 pending.** Successor to
 `implementation_plan_loan_resolution_context.md`, whose adversarial review (2026-07-13) produced the
 findings below. Prerequisite reading: `recurring_loan_balance_root_cause.md` (the design rule this
 plan finally enforces), `implementation_plan_loan_read_switch.md` (which made the loan's PAST
@@ -354,6 +354,121 @@ on that argument. That is a decent fence, and C2 makes it structural by deleting
 oracle's old docstring and believes the test is guarding something it is not; the test's docstring now
 says so itself.
 
+### C1b -- `fix(balance): the ledger's domain is a fact; stop reading $0 outside it` -- **DONE**
+
+Began as the test-only fixture prerequisite below. Migrating the ~30 hand-rolled loan builders onto
+production's path immediately turned the suite red in ways that were NOT fixture artifacts -- they were
+two real production bugs, both since confirmed on the dev clone and both fixed here. The suite was
+green only because it never ran the code production runs. That is the whole thesis of this arc,
+demonstrated.
+
+**BUG 1 -- an old anchor's date was a lie.** A journal entry carries an ``entry_date`` (its true civil
+date) and a NOT NULL ``pay_period_id``. When an anchor predates every pay period the user has,
+``_anchors._resolve_anchor_pay_period`` is forced to file it under the EARLIEST period -- which can only
+ever push it LATER than it happened. The readers bounded by period start and therefore believed it. A
+loan originated 2025-01-01 whose owner's periods begin 2026-01-02 read as owing **nothing for the whole
+of 2025**.
+
+*Fix:* new `loan_posting_service/_asof.py`. ``effective_date()`` bounds an ANCHOR by
+``LEAST(entry_date, period.start)`` and CASH by ``period.start``. The split follows the NATURE of the
+fact: an anchor ASSERTS a date and has no budget dimension; cash IS budgeted to a period, and the
+"an early-settled payment must not show until its period begins" rule is deliberate and must survive.
+Both readers take the key from that one place, so ``map[P] == balance_at(P.start)`` still holds by
+construction. Verified against the clone: of its 66 anchor entries the ONLY two the ``LEAST`` moves are
+superseded openings that net to exactly $0.00, so **no production number moves.**
+
+**BUG 2 -- $0.00 outside the ledger's domain was being spent as money.** For a mid-life import (opening
+is a ``tracking_start`` years after origination) the ledger genuinely has no record before that date,
+and ``confirmed_loan_balance_at`` returns ``$0.00`` -- meaning "no record", NOT "no debt". The year-end
+debt-progress read its opening balance at Dec-31-of-the-prior-year, subtracted a real year-end balance
+from that fabricated zero, and reported the borrower ADDING debt they had been paying down. **Live on
+real data:**
+
+| | before | after |
+|---|---|---|
+| Mortgage | `jan1=0.00 dec31=175,870.41` **`paid=-175,870.41`** | `jan1=178,375.43` **`paid=+2,505.02`** |
+| Van Loan | `jan1=0.00 dec31=12,883.20` **`paid=-12,883.20`** | `jan1=17,134.85` **`paid=+4,251.65`** |
+
+*Fix:* new `loan_posting_service/_domain.py`. ``confirmed_loan_ledger_domain()`` returns the ledger's
+``(start_date, opening_balance)``; ``_compute_debt_progress`` clamps its window to it and reports
+``tracked_from`` so the surface can say "since 2026-03-31" instead of implying a calendar year. The
+principle, and the one to hold on to: **a producer with no evidence must say so, and a caller must never
+spend a non-answer as money.** ``opening_balance`` is the OPENING-kind posting sum, deliberately not
+``balance_at(start_date)`` -- a payment sharing the opening's pay period would otherwise be netted into
+the opening balance and hide $272.02 of principal paid inside the window.
+
+**Test repairs, each with its proof (Section 4).** Four tests demanded the RIGHT number and the code was
+wrong (Bug 2); they now pass with their original expected values untouched. Three pinned the phantom
+paydown as CORRECT -- most starkly
+``test_current_period_point_diverges_from_hero_for_amortizing_loan``, which asserted that the /savings
+hero and the net-worth trend MUST disagree about the same loan on the same day. That disagreement is the
+symptom this arc opened with. It is now
+``test_current_period_point_agrees_with_hero_for_amortizing_loan``. One test
+(``test_hard_delete_account_with_params``) had a VACUOUS assertion: it checked
+``b"permanently deleted" in resp.data``, which the ARCHIVE flash also satisfies ("cannot be permanently
+deleted"). It could not have failed either way.
+
+**Verified:** full suite 7370 passed; `pylint app/` 10.00/10 with the full `--fail-on` set; checker unit
+tests 146 passed; the dev clone still reads Mortgage **$177,277.97** and Van Loan **$15,663.59** to the
+cent.
+
+### 2a is now PROVEN, with a number -- and the map fallback has NO coverage until C2
+
+C1b's adversarial review asked for the map-level twin of `TestUnpaidScheduleRowsNeverReduceTheDebt`
+(the scalar's guard). Written, it FAILS. On a $240,000 loan originated 548 days ago, never paid, with
+its ledger removed:
+
+```
+period 2026-01-19 reports 235771.76, below the $240,000 owed;
+unpaid schedule rows are paying the debt down
+```
+
+That is section 2a, demonstrated rather than argued. `compute_loan_period_balance_map` walks the FULL
+schedule, so ~17 purely PROJECTED installments pay down principal the borrower never paid.
+
+**It cannot be fixed narrowly.** The scalar sibling was fixed (`7b7c909b`) by filtering its walk to
+CONFIRMED rows, which is safe because it answers ONE date and RAISES for the future. This map answers
+the past AND the future in a single walk, so the same filter would flatten the forward projection to
+the last confirmed balance. Fixing it properly means splicing confirmed + forward -- which is precisely
+what the ledger path already does. **C2 deletes the branch; that is the fix.** The test is therefore not
+committed (a red test, or a band-aid, would both be worse), and the branch carries no coverage until
+then.
+
+**Reachability today: none.** After C1b every configured loan opens its ledger at params-create, and
+production runs a single baseline scenario, so `confirmed_loan_balance_map` never returns `None` for a
+real loan. The defect is latent, not live. C2 must delete `compute_loan_period_balance_map` outright --
+not merely stop calling it.
+
+### C2 DESIGN REQUIREMENT -- a not-yet-originated loan is not a broken loan
+
+Surfaced by C1b's exit gate (below). ``origination_date`` carries NO not-future validator (unlike a
+true-up's ``anchor_date``), so a loan configured before it originates -- a mortgage closing next month --
+is a legitimate, reachable production state. Its origination anchor post-dates the sync's as-of, so it
+posts NO opening, and C2's fail-loud would RAISE on it: `/savings` and the year-end page would 500 for a
+user who did nothing wrong.
+
+C2 must therefore fork on WHY the opening is missing:
+
+* ``origination_date > today`` -- not yet originated. Legitimate. It owes nothing yet; answer $0.00 (here
+  the zero is TRUE, unlike Bug 2's).
+* ``origination_date <= today`` and still no opening -- BROKEN. Raise ``LoanLedgerNotOpenedError``.
+
+`test_year_end_summary_service.py::TestMortgageInterest::test_mortgage_interest_partial_year` is the live
+test that forces this fork; it is the ONE remaining failure under the C2 simulation.
+
+### C1b EXIT GATE -- the C2 simulation (measured)
+
+Making `_build_amortizing_balance_map` raise instead of falling back, and running the full suite:
+
+| | failures |
+|---|---|
+| before C1b | **45** across 8 files |
+| after the factory migration | 4 |
+| after the FU-4 fix + test repairs | **1** |
+
+The last one is the not-yet-originated loan above -- a C2 design requirement, not a fixture defect. C2
+therefore lands against a suite that is otherwise already green under its own semantics.
+
 ### C2 PREREQUISITE -- the off-factory loan builders (measured, 2026-07-13)
 
 **C1 does NOT put the whole suite on the production path, and the plan is wrong to imply it does.**
@@ -607,9 +722,12 @@ correcting legs that land on the wrong side of the 05-22 boundary. Either way th
 lands right because the 2026-06-23 true-up pins it -- which is precisely how a wrong history hides
 behind a right present.
 
-### FU-4 -- A period BEFORE a loan's opening renders $0 owed (live, on real data)
+### FU-4 -- A period BEFORE a loan's opening renders $0 owed -- **FIXED in C1b**
 
-**Found 2026-07-13 while verifying C1; not a regression -- this ships today. C2 does NOT fix it.**
+**Found 2026-07-13 while verifying C1. Turned out to be far worse than "one period, one loan": it
+inverted the year-end debt-progress section on real data (see C1b). Fixed there -- the seam now exposes
+the ledger's DOMAIN and the year-end clamps its window to it. The net-worth trend / grid display
+question below is the remaining open piece.**
 
 `confirmed_loan_balance_map` returns `Decimal("0.00")` for any period preceding the loan's opening
 posting (`_reader.py:257`, documented as "nothing confirmed yet as of that date"), and

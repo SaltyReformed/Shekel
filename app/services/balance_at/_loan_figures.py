@@ -38,6 +38,8 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services.resolution_context import BalanceContext
 
+from ._inputs import _require_scenario
+
 ZERO_MONEY = Decimal("0.00")
 
 
@@ -129,3 +131,48 @@ def _is_paid_off(resolved) -> bool:
     if not any(p.is_confirmed for p in resolved.context.payments):
         return False
     return resolved.state.current_balance <= ZERO_MONEY
+
+
+def loan_ledger_domain(
+    account: Account, ctx: BalanceContext,
+) -> "LoanLedgerDomain | None":
+    """Return where a loan's confirmed ledger begins, and what balance it opens at.
+
+    The seam's view of the ledger's DOMAIN -- its lower edge.  A caller measuring a
+    CHANGE in a loan's balance across a window (the year-end summary's
+    principal-paid) must clamp the window to start here: before this date
+    :func:`balance_at` reports ``$0.00``, and that zero means "no record", not "no
+    debt".  Subtracting a real balance from that fabricated zero is what made the
+    year-end summary report the borrower ADDING $188,753 of debt they had actually
+    been paying down.
+
+    **Loan-only, and guarded.**  Returns ``None`` for anything that is not a
+    configured loan, exactly as :func:`loan_figures` does.  The guard is
+    load-bearing rather than defensive: the underlying reader keys on an
+    OPENING-kind posting, and EVERY account carries one (a non-loan's is its
+    ``account_opening``), so without the guard a Checking account would resolve
+    happily and hand back its asset balance SIGN-INVERTED as an ``opening_balance``
+    -- a negative "owed" for a positive asset, from the one seam every consumer is
+    told to call.
+
+    Args:
+        account: The loan :class:`~app.models.account.Account`.
+        ctx: The read pass's :class:`BalanceContext` (supplies the scenario).
+
+    Returns:
+        The loan's
+        :class:`~app.services.loan_posting_service.LoanLedgerDomain` (its
+        ``start_date``, ``opening_date`` and ``opening_balance``), or ``None`` when
+        the account is not a configured loan, or is one whose ledger was never
+        opened.
+    """
+    # Pylint: ``import-outside-toplevel`` -- the lazy-seam import pattern this
+    # package uses for the loan ledger, so the static import graph carries no
+    # ``balance_at -> loan_posting_service`` cycle at module load.
+    # pylint: disable=import-outside-toplevel
+    from app.services.loan_posting_service import confirmed_loan_ledger_domain
+
+    _require_scenario(ctx)
+    if ctx.loan(account) is None:
+        return None
+    return confirmed_loan_ledger_domain(account.id, ctx.scenario.id)

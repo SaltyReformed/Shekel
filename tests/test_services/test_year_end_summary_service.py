@@ -70,9 +70,12 @@ from app.services import account_service
 from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
+    create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    insert_tracking_start_event,
+    loan_params_for,
 )
 
 ZERO = Decimal("0")
@@ -285,46 +288,30 @@ def _create_mortgage_account(user, periods):
     """Create a mortgage account with loan parameters.
 
     Mortgage: $240,000 at 6.5%, 30-year, originated 2025-01-01.
+
+    Routed through the shared ``create_loan_account`` factory rather than
+    re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
+    replaces never opened the loan's genesis posting ledger, so every mortgage in
+    this suite ran on the no-ledger fallback -- a path production never takes.
+
+    Takes the ``User`` rather than the ``seed_user`` dict because several of this
+    module's callers come from ``seed_full_user_data``, which has no such dict.
+    The factory reads only the ``"user"`` key, so the one-key adapter below is the
+    whole difference, and all ten call sites stay untouched.
     """
-    mortgage_type = (
-        db.session.query(AccountType)
-        .filter_by(name="Mortgage").one()
-    )
-    mortgage_acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=user.id,
-            account_type_id=mortgage_type.id,
-            name="Home Mortgage",
-            anchor_balance=Decimal("240000.00"),
-            anchor_period_id=periods[0].id,
-        ),
-    )
-    db.session.add(mortgage_acct)
-    db.session.flush()
+    # Pylint: ``import-outside-toplevel`` -- the file-wide deferred-import
+    # convention for test helpers.
+    # pylint: disable=import-outside-toplevel
+    from app.enums import AcctTypeEnum
+    from tests._test_helpers import create_loan_account, loan_params_for
 
-    params = LoanParams(
-        account_id=mortgage_acct.id,
-        original_principal=Decimal("240000.00"),
-        current_principal=Decimal("240000.00"),
-        term_months=360,
-        origination_date=date(2025, 1, 1),
-        payment_day=1,
+    mortgage_acct = create_loan_account(
+        {"user": user}, db.session, name="Home Mortgage",
+        principal=Decimal("240000.00"), rate=Decimal("0.06500"),
+        term=360, origination_date=date(2025, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
     )
-    db.session.add(params)
-    db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent so the resolver
-    # can derive current_balance from the event stream.
-    # DH-#56: the rate now lives in an origination RateHistory row, not
-    # the dropped LoanParams.interest_rate column.
-    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event,
-        insert_origination_rate,
-    )
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db.session.commit()
-
-    return mortgage_acct, params
+    return mortgage_acct, loan_params_for(db.session, mortgage_acct.id)
 
 
 def _create_investment_account(
@@ -693,42 +680,25 @@ class TestMortgageInterest:
         user = seed_user["user"]
         periods = seed_periods
 
-        mortgage_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Mortgage").one()
-        )
-        mortgage_acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=user.id,
-                account_type_id=mortgage_type.id,
-                name="New Mortgage",
-                anchor_balance=Decimal("200000.00"),
-                anchor_period_id=periods[0].id,
-            ),
-        )
-        db.session.add(mortgage_acct)
-        db.session.flush()
+        # Pylint: ``import-outside-toplevel`` -- the file-wide deferred-import
+        # convention for test helpers.
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account, loan_params_for
 
-        params = LoanParams(
-            account_id=mortgage_acct.id,
-            original_principal=Decimal("200000.00"),
-            current_principal=Decimal("200000.00"),
-            term_months=360,
-            origination_date=date(2026, 7, 1),
-            payment_day=1,
+        # NOTE: originated 2026-07-01, which is AFTER this suite's frozen today
+        # (2026-03-20).  A loan that has not originated yet posts no opening --
+        # the genesis walk drops an anchor dated after its as-of -- so this loan
+        # legitimately carries no ledger.  Production permits exactly this
+        # (``origination_date`` has no not-future validator, unlike a true-up's
+        # ``anchor_date``), so it is a real, reachable state, not a fixture bug.
+        mortgage_acct = create_loan_account(
+            seed_user, db.session, name="New Mortgage",
+            principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+            term=360, origination_date=date(2026, 7, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
         )
-        db.session.add(params)
-        db.session.flush()
-        # E-18 / Commit 15: origination LoanAnchorEvent.
-        # DH-#56: the rate now lives in an origination RateHistory row,
-        # not the dropped LoanParams.interest_rate column.
-        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-            insert_origination_event,
-            insert_origination_rate,
-        )
-        insert_origination_event(params)
-        insert_origination_rate(params, Decimal("0.05000"))
-        db.session.commit()
+        params = loan_params_for(db.session, mortgage_acct.id)
 
         # Expected: first payment Aug 1 2026.  5 or 6 payments in 2026.
         # Projection via ``project_forward`` (Commit 9 of the
@@ -1539,14 +1509,26 @@ class TestNetWorth:
         month_1 = nw["monthly_values"][0]["balance"]
         assert month_1 < ZERO
 
-        # With amortization, the mortgage balance at Jan 2026 is ~$237,548
-        # (less than the $240k anchor).  So net worth should be less
-        # negative than $1,000 - $240,000 = -$239,000.
+        # Jan 2026 has BEGUN, so its mortgage balance is the confirmed ledger's:
+        # the loan has NO recorded payment, so it still owes the full $240,000 and
+        # net worth is exactly $1,000 - $240,000.  This previously asserted net
+        # worth was LESS negative than that, i.e. that unpaid PROJECTED
+        # installments had already paid principal down -- the phantom paydown, and
+        # an understatement of the debt.
         static_nw = Decimal("1000.00") - Decimal("240000.00")
-        assert month_1 > static_nw, (
-            f"Net worth {month_1} should be less negative than "
-            f"static {static_nw} because amortization reduces the "
-            f"mortgage balance below $240k"
+        assert month_1 == static_nw, (
+            f"Net worth {month_1} at a begun month should be the ledger's "
+            f"{static_nw}: not one payment was recorded, so not one dollar of "
+            f"principal was paid"
+        )
+
+        # Amortization is real in the FUTURE, where the projection answers: by
+        # December the mortgage has genuinely amortized and net worth is less
+        # negative than the flat $240,000 debt.
+        december = nw["monthly_values"][-1]["balance"]
+        assert december > static_nw, (
+            f"Net worth {december} in December should be less negative than "
+            f"{static_nw}; the forward projection amortizes the debt down"
         )
 
         # Consecutive months with data should show improving net worth
@@ -1707,6 +1689,105 @@ class TestNetWorth:
 # ── Debt Progress Tests ───────────────────────────────────────────
 
 
+class TestDebtProgressMidLifeImport:
+    """A loan whose ledger opens MID-YEAR reports progress from its opening.
+
+    The regression lock for the defect this section shipped with: it read the
+    opening balance at Dec-31-of-the-prior-year, which for a mid-life-imported loan
+    precedes the loan's ``tracking_start`` -- a date the confirmed ledger has no
+    record for, and answers ``$0.00``.  Subtracting a real year-end balance from
+    that fabricated zero reported the borrower ADDING the loan's entire balance as
+    new debt.  Measured on the production clone before the fix::
+
+        Mortgage  jan1=0.00  dec31=175,870.41  principal_paid=-175,870.41
+        Van Loan  jan1=0.00  dec31= 12,883.20  principal_paid= -12,883.20
+
+    The window is now clamped to where the ledger's knowledge begins, and
+    ``tracked_from`` says so.
+    """
+
+    def test_tracking_start_clamps_the_window_and_paid_is_positive(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan tracked from mid-year opens at its tracking balance, not $0.
+
+        A $250,000 mortgage originated 2020-01-01 but only TRACKED from 2026-02-10
+        at $180,000 (the mid-life import: the operator asserts the real balance as
+        of the date they began recording it).  The confirmed ledger knows nothing
+        before 2026-02-10.
+
+        The old behaviour read jan1 at 2025-12-31 -> $0.00, making principal_paid
+        NEGATIVE (a fabricated debt increase of the whole balance).  The window now
+        opens at the tracking-start, so:
+
+          jan1_balance  == 180,000.00  (the ledger's OPENING balance)
+          principal_paid == 180,000.00 - dec31  (positive: debt is being paid down)
+          tracked_from   is not None   (the surface can say "since 2026-02-10")
+        """
+        user = seed_user["user"]
+        loan = create_loan_account(
+            {"user": user}, db.session, name="Imported Mortgage",
+            principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2020, 1, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+        )
+        insert_tracking_start_event(
+            loan_params_for(db.session, loan.id),
+            Decimal("180000.00"), date(2026, 2, 10),
+        )
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        entry = next(
+            e for e in result["debt_progress"] if e["account_id"] == loan.id
+        )
+
+        # The opening is the ledger's OPENING balance -- never a fabricated $0.
+        assert entry["jan1_balance"] == Decimal("180000.00")
+        assert entry["tracked_from"] is not None, (
+            "a mid-life import must report the window it was actually measured "
+            "over, not imply a full calendar year"
+        )
+        # Debt is being paid DOWN, so principal_paid is positive.  Negative here
+        # is the exact inversion this class exists to prevent.
+        assert entry["principal_paid"] > ZERO, (
+            f"principal_paid {entry['principal_paid']} is not positive; the "
+            f"window opened on a date the ledger cannot answer"
+        )
+        # dec31 is pinned to a hand-computed figure, so this catches a wrong
+        # CLOSING balance instead of merely restating principal_paid = jan1 - dec31.
+        #
+        # The contractual P&I comes from the ORIGINAL params (not the tracked
+        # opening): $250,000, 6.0%, 360 months
+        #   M = 250000 * (0.005 * 1.005^360) / (1.005^360 - 1) = $1,498.88
+        # The ledger opens at $180,000 on 2026-02-10 and payment_day is 1, so ten
+        # payments land in 2026 (2026-03-01 .. 2026-12-01).  Amortizing $180,000 at
+        # 0.5%/month with a $1,498.88 payment for 10 months:
+        #   180,000.00 -> 173,874.65   (principal paid 6,125.35)
+        assert entry["dec31_balance"] == Decimal("173874.65")
+        assert entry["principal_paid"] == Decimal("6125.35")
+
+    def test_loan_tracked_from_origination_is_unclamped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan whose ledger covers the whole year is NOT clamped.
+
+        The other half of the rule: an ordinary loan (opening == origination,
+        before the target year) has a ledger record for Dec-31-of-the-prior-year,
+        so the window is the full calendar year and ``tracked_from`` is ``None``.
+        Without this, the clamp could silently narrow every loan's window.
+        """
+        user = seed_user["user"]
+        _create_mortgage_account(user, seed_periods)  # originated 2025-01-01
+        db.session.commit()
+
+        result = compute_year_end_summary(user.id, YEAR)
+        entry = result["debt_progress"][0]
+
+        assert entry["tracked_from"] is None
+        assert entry["jan1_balance"] == Decimal("240000.00")
+
+
 class TestDebtProgress:
     """Tests for the debt progress section.
 
@@ -1721,30 +1802,23 @@ class TestDebtProgress:
         """C1-6: Debt progress balances match the amortization schedule.
 
         Mortgage: $240,000 at 6.5%, 30-year, originated 2025-01-01, with NO
-        payment ever recorded and no genesis-ledger opening.
+        payment ever recorded.  Its genesis ledger IS opened (the factory opens it,
+        as ``loan.create_params`` does), so this reads the ledger path -- the one
+        production takes.
 
-        Jan 1 2026 balance = $240,000.00 -- the full anchor.  Not one payment was
-        ever confirmed, so not one dollar of principal was ever paid.  This
-        asserted $237,547.74 before, the balance implied by eleven 2025
-        installments that were NEVER MADE: the scalar's no-ledger fallback walked
-        the FULL schedule, so unpaid projected rows dated on or before the
-        valuation date silently paid the loan down (the same defect
-        ``loan_owed_at_dates`` refuses to commit at its own boundary, and the same
-        one that made an unpaid loan render $236,853.27 on the /savings tile).
-        The fallback now walks CONFIRMED rows only, which is what its comment
-        always claimed.
+        Jan 1 2026 balance = $240,000.00, read from the confirmed ledger.  Not one
+        payment was ever confirmed, so not one dollar of principal was ever paid.
+        The loan's opening is dated at its 2025-01-01 origination, which precedes
+        every one of this user's pay periods (they begin 2026-01-02) -- so the
+        opening is FILED under the earliest period, and a period-bounded reader
+        used to report $0.00 here.  The anchor is now bounded by its own civil date
+        (``_asof.effective_date``), which is what makes this $240,000 rather than a
+        fabricated zero.
 
         Dec 31 2026 balance = $234,701.02 -- a FUTURE date, so it is the forward
-        projection from today's balance, unchanged by the fix.
+        projection from today's balance.
 
-        Principal paid in 2026 = $240,000.00 - $234,701.02 = $5,298.98: the
-        paydown the loan's committed schedule implies from a start that is now the
-        honest one.
-
-        Ruled by the developer 2026-07-13.  Nothing live moves: year-end has no
-        route (``/analytics/year-end`` redirects), and every production loan is
-        opened in the ledger, so production reads the ledger path, never this
-        fallback.
+        Principal paid in 2026 = $240,000.00 - $234,701.02 = $5,298.98.
         """
         user = seed_user["user"]
         periods = seed_periods

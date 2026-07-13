@@ -18,16 +18,28 @@ quantity the reconciliation oracle already proves equals the resolver's
 replayed ``current_balance``; the pay-period-start bound generalises it to any
 historical date, and the per-period map applies it at every period boundary.
 
-**The pay-period-start bound is period assignment, not a boundary rule.**  Each
-posting is attributed to a whole pay period (its journal entry's NOT NULL
-``pay_period_id``), and pay periods are contiguous, so bounding by
-``pay_period.start_date <= as_of`` selects exactly the postings whose period has
-begun -- the same confirmed cut the walk (:func:`._walk.walk_loan_ledger`)
-applied when it produced them, not a recomputed special case.  This is why the
-per-period map (keyed by period start) IS the canonical period-END-keyed loan
-balance (:func:`app.services.account_projection.compute_loan_period_balance_map`):
-a posting's period start is a real boundary and periods are contiguous, so
+**The as-of bound is period assignment, not a boundary rule.**  Each posting is
+attributed to a whole pay period (its journal entry's NOT NULL ``pay_period_id``),
+and pay periods are contiguous, so bounding CASH by ``pay_period.start_date <=
+as_of`` selects exactly the postings whose period has begun -- the same confirmed
+cut the walk (:func:`._walk.walk_loan_ledger`) applied when it produced them, not
+a recomputed special case.  This is why the per-period map (keyed by period start)
+IS the canonical period-END-keyed loan balance
+(:func:`app.services.account_projection.compute_loan_period_balance_map`): a
+posting's period start is a real boundary and periods are contiguous, so
 ``<= period.start`` and ``<= period.end`` select the identical posting set.
+
+An ANCHOR (the opening, every true-up) is bounded by ``LEAST(entry_date,
+period.start)`` instead.  For the ordinary anchor -- one a pay period CONTAINS --
+that collapses to the period start, exactly as before, and nothing moves.  It differs
+only for an anchor that predates EVERY pay period the user has, which
+``journal_entries.pay_period_id`` being NOT NULL forces to be filed under the
+earliest period anyway (:func:`._anchors._resolve_anchor_pay_period`); that fallback
+can only ever push such an anchor LATER than it truly happened, and a period-bounded
+reader believed it.  The ``LEAST`` restores the anchor's own civil date, which is
+the only date it ever asserted.  Both readers take the key from the one place that
+defines it (:func:`._asof.effective_date`), so they cannot drift on which postings a
+date selects.
 
 **Wiring status.**  The current-balance scalar AND the history rows are wired
 through the ``loan_payment_service.confirmed_loan_view`` seam (read switch C8,
@@ -47,7 +59,6 @@ from sqlalchemy.orm import joinedload
 from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
-    PostingKindEnum,
     PostingSourceEnum,
     TxnTypeEnum,
 )
@@ -68,86 +79,11 @@ from app.services.rate_period_engine import (
 from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
+from ._asof import effective_date, scope_to_linked_ledger
+from ._domain import _has_opening_posting, _visible_nets
 from ._walk import _confirmed_shadows_through, _settled_income_shadows
 
 _ZERO_MONEY = Decimal("0.00")
-
-
-def _has_opening_posting(linked_ledger_id: int, scenario_id: int) -> bool:
-    """Return whether an OPENING leg is posted on a loan's linked ledger.
-
-    The configured-loan test the ``None`` sentinel rests on.  A loan gets
-    exactly one OPENING-kind leg on its linked ledger per scenario -- the
-    origination anchor correction, whose ``owed_before`` is zero and whose
-    linked leg is ``-original_principal`` (always non-zero for a real loan, so
-    always posted; :func:`._anchors._loan_anchor_correction_target`).  Its
-    absence means the loan is not configured in this scenario (no
-    :class:`~app.models.loan_params.LoanParams`, or a what-if the opening was
-    never posted into), which the reader reports as ``None`` -- routing the
-    caller to its needs-setup path, never to a misleading ``$0``.
-
-    Scoped to the linked ledger so the opening's OTHER leg (the
-    ``+original_principal`` on the per-loan opening-equity account, same kind) is
-    not what matches; scoped to the scenario so a loan opened in the baseline
-    does not read as configured in a what-if it was never posted into.
-
-    Args:
-        linked_ledger_id: The loan's linked ledger account id
-            (:func:`app.services.posting_service._ledger_account_for`).
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``True`` when an OPENING-kind posting exists on the linked ledger in the
-        scenario, else ``False``.
-    """
-    opening_kind_id = ref_cache.posting_kind_id(PostingKindEnum.OPENING)
-    return db.session.query(
-        db.session.query(Posting.id)
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(
-            Posting.ledger_account_id == linked_ledger_id,
-            Posting.posting_kind_id == opening_kind_id,
-            JournalEntry.scenario_id == scenario_id,
-        )
-        .exists()
-    ).scalar()
-
-
-def _scope_to_linked_ledger(query, linked_ledger_id: int, scenario_id: int):
-    """Scope a :class:`Posting` query to one loan's linked ledger in one scenario.
-
-    The shared FROM / JOIN / WHERE of the confirmed-balance scalar and map
-    readers -- they differ only in projection (a coalesced total vs a per-period
-    total) and tail (an as-of bound vs a group-by) -- so the two cannot drift on
-    WHICH postings they sum: ``confirmed_loan_balance_map[P]`` and
-    ``confirmed_loan_balance_at(P.start_date)`` are then the same sum by
-    construction.  Joins each posting to its journal entry (for the scenario
-    scope and the pay-period link) and that entry to its pay period (for the
-    as-of bound / period grouping the callers add), then filters to the one
-    linked ledger in the one scenario.
-
-    Args:
-        query: A ``db.session.query(...)`` over :class:`Posting` whose projection
-            the caller has already set (a ``SUM`` for the scalar reader;
-            ``start_date, SUM`` for the map reader).
-        linked_ledger_id: The loan's linked ledger account id
-            (:func:`app.services.posting_service._ledger_account_for`).
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        The *query* with the entry + pay-period joins and the ledger + scenario
-        filters applied; the caller adds its own tail (as-of bound or grouping)
-        and executor.
-    """
-    return (
-        query
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .join(PayPeriod, JournalEntry.pay_period_id == PayPeriod.id)
-        .filter(
-            Posting.ledger_account_id == linked_ledger_id,
-            JournalEntry.scenario_id == scenario_id,
-        )
-    )
 
 
 def confirmed_loan_balance_at(
@@ -166,9 +102,18 @@ def confirmed_loan_balance_at(
     Returns ``None`` when the loan has no OPENING posting in the scenario (an
     unconfigured loan -- :func:`_has_opening_posting`), so the caller routes to
     its needs-setup path rather than showing a misleading ``$0``.  A configured
-    loan whose ``as_of`` precedes its opening period (a within-range loan read
-    before it originated) returns ``Decimal("0.00")`` -- configured, but nothing
-    confirmed yet as of that date.
+    loan whose ``as_of`` precedes its OPENING (a mid-life import read before
+    tracking began) returns ``Decimal("0.00")`` -- see the caveat below.
+
+    **Caveat: $0.00 before the opening is "no record", not "no debt".**  For a loan
+    whose opening IS its origination the two coincide and the zero is correct (the
+    debt did not exist yet).  For a mid-life import -- whose opening is a
+    ``tracking_start`` dated years after origination -- the loan DID exist and DID
+    owe money before that date, and the ledger simply has no record of it.  A caller
+    asking for such a date is asking a question the confirmed ledger cannot answer,
+    and must not present the zero as a balance: the year-end summary did, and
+    reported NEGATIVE principal paid on real data.  Bound the window to the loan's
+    opening instead.
 
     **Domain: ``as_of <= today``.**  A future date is a forward projection, out
     of the confirmed ledger's domain; the reader RAISES rather than silently
@@ -207,13 +152,13 @@ def confirmed_loan_balance_at(
     if not _has_opening_posting(linked.id, scenario_id):
         return None
     net = (
-        _scope_to_linked_ledger(
+        scope_to_linked_ledger(
             db.session.query(
                 db.func.coalesce(db.func.sum(Posting.amount), _ZERO_MONEY)
             ),
             linked.id, scenario_id,
         )
-        .filter(PayPeriod.start_date <= as_of)
+        .filter(effective_date() <= as_of)
         .scalar()
     )
     # Debit-positive ledger: the linked net is -(owed), so owed is its negation,
@@ -278,24 +223,17 @@ def confirmed_loan_balance_map(
     linked = _ledger_account_for(loan_account_id)
     if not _has_opening_posting(linked.id, scenario_id):
         return None
-    # One load: each pay-period start carrying a posting on the linked ledger,
-    # with that period's net.  Grouped by start_date (unique per user's periods),
-    # ascending, so a single forward pass builds the prefix cumulative.
-    grouped = (
-        _scope_to_linked_ledger(
-            db.session.query(PayPeriod.start_date, db.func.sum(Posting.amount)),
-            linked.id, scenario_id,
-        )
-        .group_by(PayPeriod.start_date)
-        .order_by(PayPeriod.start_date)
-        .all()
-    )
+    # One load: each date a posting BECOMES VISIBLE on
+    # (:func:`._asof.effective_date` -- a pay-period start for cash, an anchor's
+    # own civil date when it predates every period), with that date's net.
+    # Ascending, so a single forward pass builds the prefix cumulative.
+    grouped = _visible_nets(linked.id, scenario_id)
     boundaries: list[date] = []
     cumulative_at_boundary: list[Decimal] = []
     running = _ZERO_MONEY
-    for start_date, period_net in grouped:
-        running += period_net
-        boundaries.append(start_date)
+    for visible_on, date_net in grouped:
+        running += date_net
+        boundaries.append(visible_on)
         cumulative_at_boundary.append(running)
 
     balances: "OrderedDict[int, Decimal]" = OrderedDict()

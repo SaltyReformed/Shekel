@@ -28,12 +28,12 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    AcctTypeEnum,
     StatusEnum,
     TxnTypeEnum,
 )
 from app.models.account import Account
 from app.models.interest_params import InterestParams
-from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, CalcMethod, DeductionTiming
 from app.models.transaction import Transaction
@@ -60,9 +60,9 @@ from tests._test_helpers import (
     add_txn,
     create_account_of_type,
     create_hysa_account,
-    insert_origination_event,
-    insert_origination_rate,
+    create_loan_account,
     insert_trueup_event,
+    loan_params_for,
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
@@ -95,41 +95,25 @@ def _make_hysa(db, seed_user, anchor_period, balance):
 def _make_mortgage(
     db, seed_user, anchor_period, balance, origination_date, name="Mortgage",
 ):
-    """Create a Mortgage (AMORTIZING) with LoanParams + origination event/rate.
+    """Create a Mortgage (AMORTIZING) through the shared loan factory.
 
     ``name`` is parameterised so a test can seed two mortgages in one user
     without colliding on the ``(user_id, name)`` unique constraint.  Returns
     ``(account, loan_params)`` so a caller can append a trueup event (e.g. to
     drive the loan to paid-off / empty-schedule, or to re-anchor it today).
+
+    Delegates to :func:`create_loan_account` rather than re-rolling the
+    account-factory + ``LoanParams`` + rate block: the hand-rolled copy this
+    replaces never opened the loan's genesis posting ledger, so every mortgage in
+    this suite ran on the no-ledger fallback -- a path production never takes.
     """
-    mortgage_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    acct = create_loan_account(
+        seed_user, db.session, name=name, principal=balance,
+        rate=Decimal("0.06500"), term=360,
+        origination_date=origination_date, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
     )
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name=name,
-            anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    params = LoanParams(
-        account_id=acct.id,
-        original_principal=balance,
-        current_principal=balance,
-        term_months=360,
-        origination_date=origination_date,
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db.session.commit()
-    return acct, params
+    return acct, loan_params_for(db.session, acct.id)
 
 
 def _add_flat_deduction(db, profile, account, amount):

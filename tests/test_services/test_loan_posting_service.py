@@ -64,6 +64,7 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    loan_params_for,
     ledger_accounts_for_account,
     ledger_net,
     loan_correction_entries,
@@ -2977,3 +2978,136 @@ class TestUserScopedResync:
             # User 2's loan was never visited: no genesis entries posted.
             assert _genesis_entry_count(u2) == 0
             assert loan2.id not in posted
+
+
+class TestLedgerDomainAndPrePeriodAnchor:
+    """The ledger's DOMAIN, and an anchor older than the user's pay periods.
+
+    Direct coverage for ``_asof.effective_date`` and ``_domain``.  Both exist
+    because of one production defect: a journal entry carries its true civil
+    ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor predates
+    every pay period the user has, ``_resolve_anchor_pay_period`` is FORCED to file
+    it under the earliest period -- pushing it later than it happened.  A
+    period-bounded reader believed that, so a loan originated before the user's
+    pay-period history read as owing NOTHING for the whole span in between, and the
+    year-end summary turned that $0 into a NEGATIVE principal-paid figure.
+    """
+
+    def test_anchor_older_than_every_pay_period_is_still_owed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan originated BEFORE the user's first pay period still owes it all.
+
+        ``seed_periods`` begins 2026-01-02.  This loan is originated 2025-06-01, so
+        its opening is forced into the earliest period (there is no period covering
+        2025) -- and before this fix the reader therefore reported the loan as owing
+        $0.00 for every date in 2025, despite the debt plainly existing.
+
+        The opening asserts $250,000 and no payment is recorded, so the honest
+        balance on 2025-12-31 is the full $250,000.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Old Loan",
+                principal=Decimal("250000.00"), rate=_RATE, term=360,
+                origination_date=date(2025, 6, 1),
+            )
+
+            # A date inside the gap: after origination, before any pay period.
+            owed = loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, date(2025, 12, 31),
+            )
+            assert owed == Decimal("250000.00"), (
+                f"a loan originated 2025-06-01 read as owing {owed} on "
+                f"2025-12-31; the ledger is dating its opening by the pay period "
+                f"it was FILED under, not the date it asserts"
+            )
+
+    def test_map_and_scalar_agree_with_a_pre_period_anchor(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """map[P] == balance_at(P.start) still holds for a pre-period anchor.
+
+        The invariant the two readers are built on.  ``effective_date`` is the ONE
+        as-of key both bound by, so introducing it must not let them drift -- least
+        of all on the very shape it was added for.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Old Loan",
+                principal=Decimal("250000.00"), rate=_RATE, term=360,
+                origination_date=date(2025, 6, 1),
+            )
+
+            bmap = loan_posting_service.confirmed_loan_balance_map(
+                loan.id, scenario_id, seed_periods,
+            )
+            # The scalar reader's domain is as_of <= today (a future date is a
+            # projection, and it raises rather than pretend), so compare over the
+            # periods that have begun.
+            begun = [p for p in seed_periods if p.start_date <= date.today()]
+            assert begun, "expected at least one begun period"
+            for period in begun:
+                assert bmap[period.id] == (
+                    loan_posting_service.confirmed_loan_balance_at(
+                        loan.id, scenario_id, period.start_date,
+                    )
+                ), f"map and scalar disagree at period {period.start_date}"
+
+
+    def test_domain_reports_the_tracking_start_it_was_opened_at(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A mid-life import's domain is its tracking-start date and balance.
+
+        The loan originated 2025-06-01 at $250,000 but was only TRACKED from
+        2026-02-10 at $180,000.  The ledger knows nothing before that, so:
+
+          start_date      -- the pay period the opening is VISIBLE from (the clamp)
+          opening_date    -- 2026-02-10, the civil date the balance was asserted
+          opening_balance -- $180,000.00, what the operator asserted
+
+        ``opening_date`` and ``start_date`` are deliberately different things:
+        showing a user the balance as-of the period start would print a figure the
+        readers contradict.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Imported Loan",
+                principal=Decimal("250000.00"), rate=_RATE, term=360,
+                origination_date=date(2025, 6, 1),
+            )
+            insert_tracking_start_event(
+                loan_params_for(db.session, loan.id),
+                Decimal("180000.00"), date(2026, 2, 10),
+            )
+            db.session.commit()
+
+            domain = loan_posting_service.confirmed_loan_ledger_domain(
+                loan.id, scenario_id,
+            )
+            assert domain is not None
+            assert domain.opening_date == date(2026, 2, 10)
+            assert domain.opening_balance == Decimal("180000.00")
+            # The superseded origination opening (2025-06-01, $250,000) was
+            # REVERSED, not deleted -- the ledger is append-only.  The domain must
+            # skip it, or the clamp lands on a date carrying no balance.
+            assert domain.start_date > date(2025, 6, 1)
+            assert domain.start_date <= date(2026, 2, 10)
+
+    def test_domain_is_none_for_a_loan_whose_ledger_was_never_opened(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No opening posting -> no domain (the same sentinel the readers use)."""
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
+                rate=_RATE, origination_date=_ORIGINATION_DATE,
+            )
+            clear_loan_ledger(loan.id)
+            assert loan_posting_service.confirmed_loan_ledger_domain(
+                loan.id, seed_user["scenario"].id,
+            ) is None

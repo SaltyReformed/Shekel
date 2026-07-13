@@ -115,7 +115,7 @@ from ._kind_correct import (
     investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
-from ._loan_figures import LoanFigures, loan_figures
+from ._loan_figures import LoanFigures, loan_figures, loan_ledger_domain
 
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
@@ -145,4 +145,5 @@ __all__ = [
     "investment_seed_map",
     "liability_owed_at_dates",
     "loan_figures",
+    "loan_ledger_domain",
 ]

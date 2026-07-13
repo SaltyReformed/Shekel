@@ -11,16 +11,12 @@ Also verifies all five transfer invariants hold throughout the process.
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
-from app.extensions import db
-from app.models.account import Account
-from app.models.loan_params import LoanParams
-from app.models.ref import AccountType
+from app.enums import AcctTypeEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_calculator
 from app.services.loan_payment_service import get_payment_history
-from app.services import account_service
+from tests._test_helpers import create_loan_account, loan_params_for
 
 
 class TestLoanPaymentPipeline:
@@ -57,42 +53,19 @@ class TestLoanPaymentPipeline:
             scenario = seed_user["scenario"]
             periods = seed_periods
 
-            # Step 1: Create mortgage account.
-            loan_type = db.session.query(AccountType).filter_by(
-                name="Mortgage",
-            ).one()
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=loan_type.id,
-                    name="Pipeline Mortgage",
-                    anchor_balance=Decimal("200000.00"),
-                ),
+            # Step 1: Create mortgage account.  The shared factory routes the
+            # account through ``account_service.create_account``, inserts the
+            # LoanParams + origination RateHistory the resolver needs, and OPENS
+            # the loan's genesis posting ledger in the same transaction -- the
+            # dance every production loan-write path performs
+            # (``app/routes/loan/params.py``).
+            mortgage = create_loan_account(
+                seed_user, db.session, name="Pipeline Mortgage",
+                principal=Decimal("250000.00"), rate=Decimal("0.06500"),
+                term=360, origination_date=periods[0].start_date,
+                payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=periods[0],
             )
-            db.session.add(mortgage)
-            db.session.flush()
-
-            mortgage.current_anchor_period_id = periods[0].id
-
-            loan_params = LoanParams(
-                account_id=mortgage.id,
-                original_principal=Decimal("250000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
-                origination_date=periods[0].start_date,
-                payment_day=1,
-            )
-            db.session.add(loan_params)
-            db.session.flush()
-            # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-            # DH-#56: origination RateHistory row carries the loan's rate.
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                insert_origination_event,
-                insert_origination_rate,
-            )
-            insert_origination_event(loan_params)
-            insert_origination_rate(loan_params, Decimal("0.06500"))
-            db.session.commit()
 
             # Step 2: Create recurring transfer via the route.
             resp = auth_client.post(
@@ -163,9 +136,7 @@ class TestLoanPaymentPipeline:
                 )
 
             # Step 5: Verify get_payment_history returns the payments.
-            params = db.session.query(LoanParams).filter_by(
-                account_id=mortgage.id,
-            ).one()
+            params = loan_params_for(db.session, mortgage.id)
             payments = get_payment_history(
                 mortgage.id, scenario.id, params.payment_day,
             )
