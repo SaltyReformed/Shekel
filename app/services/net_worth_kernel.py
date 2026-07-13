@@ -415,12 +415,31 @@ def amortizing_balance_at(
         return forward_balance_at_date(
             debt_schedule.schedule, as_of, debt_schedule.current_balance,
         )
-    # A past date the ledger cannot answer (no OPENING posting): the pre-switch
-    # schedule-only walk, over the FULL schedule -- its confirmed rows are then
-    # the only history there is.
+    # A date at or before now that the ledger cannot answer (no OPENING posting):
+    # walk the loan's CONFIRMED rows -- the only history there is.
+    #
+    # The unconfirmed rows are EXCLUDED, and that exclusion is load-bearing.  An
+    # unconfirmed row dated on or before *as_of* is a scheduled payment that was
+    # NEVER MADE (an overdue installment, or -- for a loan with no payments at all
+    # -- every projected row since origination), and counting it reduces the
+    # reported balance by principal the borrower never paid.  This walked the FULL
+    # schedule and so did exactly that: a $240,000 loan originated 18 months ago
+    # with no payments read as $236,853.27 owed, as though 17 unpaid installments
+    # had been made.  It is the identical defect
+    # :func:`loan_owed_at_dates` refuses to commit at its own boundary ("a
+    # past-or-today date would report the balance net of a payment that was never
+    # made -- silently UNDERSTATING the debt"), and the comment here always
+    # claimed the confirmed rows were what it read.  Now they are.
+    #
+    # With no confirmed row at all the walk returns ``current_balance``, the
+    # resolver's anchor replay -- which is the honest answer and is what makes
+    # this scalar agree with the balance every loan surface displays.
+    confirmed_rows = sorted(
+        (row for row in debt_schedule.schedule if row.is_confirmed),
+        key=lambda row: row.payment_date,
+    )
     return balance_from_schedule_at_date(
-        sorted(debt_schedule.schedule, key=lambda row: row.payment_date),
-        as_of, debt_schedule.current_balance,
+        confirmed_rows, as_of, debt_schedule.current_balance,
     )
 
 

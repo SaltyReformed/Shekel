@@ -93,78 +93,26 @@ def _current_balance_from_map(balances, acct, ctx):
     return balances.get(ctx.current_period.id)
 
 
-def _loan_is_paid_off(resolved):
-    """Return whether the loan owes nothing -- read from the genesis ledger.
-
-    ``resolved.state.current_balance`` is the ledger-confirmed balance (the
-    read switch seeds it from :func:`confirmed_loan_balance_at`), so this asks
-    the ONE producer that books what each payment actually paid.  A loan owes
-    nothing when that balance is ``<= 0`` AND it has at least one confirmed
-    payment -- the confirmed-payment guard is preserved from the original so a
-    brand-new loan with a degenerate zero anchor does not render as "paid off".
-
-    **Why this replaced a ``date.max`` resolver probe.**  The flag used to be
-    answered by ``resolve_loan(inputs, date.max)`` with NO ``confirmed_view``,
-    and that call could not have consulted the ledger even if it wanted to:
-    :func:`~app.services.loan_payment_service.confirmed_loan_view` returns
-    ``None`` for any ``as_of`` after today, by contract.  So the probe was
-    structurally pinned to the pre-read-switch anchor replay -- and that replay
-    is BLIND TO MONEY.  It feeds the engine ``ConfirmedPayment(period_start,
-    due_date)`` with no amount, advancing one SCHEDULED step per confirmed
-    payment (``principal = period P&I - interest``) and discarding the cash
-    actually moved.
-
-    The failure was real and bidirectional (``followup_redundant_loan_resolution.md``):
-
-    * Pay a $15,663.59 van loan off with ONE payment.  The ledger says $0.00
-      and the hero renders $0 -- but the replay, taking a single ~$450 scheduled
-      step, still owed ~$15,213, so ``is_paid_off`` stayed False.  The loan kept
-      its "Paid off" badge hidden, stayed in the Horizon's domain as active debt,
-      and pushed the "Debt-free" milestone years out.
-    * Inversely, a loan paid SHORT amortizes faster in the replay than in the
-      ledger, so the replay could reach zero while the ledger still owed.  Then
-      ``is_paid_off`` was True, ``_metrics._loan_current_balance`` dropped the
-      loan from ``total_debt`` entirely, and its full original principal counted
-      as paid.  Real debt silently vanished from the debt card.
-
-    Reading the ledger makes the badge, the debt card, the principal-paid
-    fraction, and the Horizon agree with the balance the hero renders BY
-    CONSTRUCTION -- and costs zero extra resolutions, where the probe cost one
-    full amortization walk per loan per render.
-
-    Args:
-        resolved: The loan's :class:`~app.services.loan_resolution.ResolvedLoan`
-            from the read pass's context (its ``state.current_balance`` is the
-            ledger balance; its ``context.payments`` is the payment feed).
-
-    Returns:
-        ``True`` when the loan owes nothing and has at least one confirmed
-        payment.
-    """
-    if not any(p.is_confirmed for p in resolved.context.payments):
-        return False
-    return resolved.state.current_balance <= Decimal("0.00")
-
-
 def _compute_loan_account(acct, ctx):
     """Resolve current balance, payment, rate, and payoff for a loan.
 
-    Reads the loan out of the read pass's
-    :class:`~app.services.resolution_context.BalanceContext`, which resolves it
-    at most ONCE for the whole render.  The resolver is the source of truth for
-    current_balance, monthly_payment, current_rate, and payoff_date -- the same
-    dollar figures rendered on the loan card and the year-end net-worth
-    liability.  The resolver-derived ``current_balance`` replaces the stored
-    ``LoanParams.current_principal`` read that pre-E-18 produced the F-008
-    stored-vs-engine divergence on this tile.
+    BOTH reads go through the :mod:`app.services.balance_at` seam, and both hit
+    the read pass's ONE memoized resolution:
 
-    It used to load the loan's context and anchor facts and run the resolver
-    ITSELF (``load_loan_context`` + ``load_loan_anchor_facts`` +
-    ``resolve_loan_seeded``), which is why the same loan the net-worth section
-    was already resolving got resolved again for its tile.  Both now read one
-    :class:`~app.services.loan_resolution.ResolvedLoan`, so the tile's balance
-    and the loan's net-worth contribution are the same number BY CONSTRUCTION
-    rather than because two independent resolutions happened to agree.
+    * the BALANCE from :func:`~app.services.balance_at.balance_at` -- the same
+      seam entry every other account kind on this page reads, so the loan tile
+      is no longer the one kind whose displayed balance was produced outside the
+      seam.  It used to be ``LoanState.current_balance``, read straight off the
+      resolver; that value IS a balance-at-T, and because the W9906 fence binds
+      on function names and cannot see an attribute read, the loan's balance --
+      the hero's biggest number -- reached the screen with every gate silent.
+    * the rich FIGURES from :func:`~app.services.balance_at.loan_figures`, a
+      value object that deliberately carries no balance, so this module cannot
+      render one by accident.
+
+    Both come from one resolution, so the tile's balance and the loan's
+    net-worth contribution are the same number BY CONSTRUCTION rather than
+    because two producers happened to agree.
 
     Args:
         acct: The loan Account instance.
@@ -172,20 +120,20 @@ def _compute_loan_account(acct, ctx):
             the resolution).
 
     Returns:
-        A :class:`_LoanAccountResult` with the resolver-derived figures, or
-        ``None`` when the context cannot resolve the account as a loan (no
-        ``LoanParams``).
+        A :class:`_LoanAccountResult`, or ``None`` when the account is not a
+        configured loan (no ``LoanParams``).
     """
-    resolved = ctx.balance_ctx.loan(acct)
-    if resolved is None:
+    figures = balance_at.loan_figures(acct, ctx.balance_ctx)
+    if figures is None:
         return None
-    state = resolved.state
     return _LoanAccountResult(
-        current_balance=state.current_balance,
-        monthly_payment=state.monthly_payment,
-        current_rate=state.current_rate,
-        payoff_date=state.payoff_date,
-        is_paid_off=_loan_is_paid_off(resolved),
+        current_balance=balance_at.balance_at(
+            acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
+        ),
+        monthly_payment=figures.monthly_payment,
+        current_rate=figures.current_rate,
+        payoff_date=figures.payoff_date,
+        is_paid_off=figures.is_paid_off,
     )
 
 

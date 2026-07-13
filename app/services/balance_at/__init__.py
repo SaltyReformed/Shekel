@@ -115,6 +115,7 @@ from ._kind_correct import (
     investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
+from ._loan_figures import LoanFigures, loan_figures
 
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
@@ -127,6 +128,7 @@ from ._liability import liability_owed_at_dates
 __all__ = [
     "ZERO",
     "GridBalanceView",
+    "LoanFigures",
     "_AssembledInputs",
     "_account_balance_map",
     "_accruing_grid_view",
@@ -142,4 +144,5 @@ __all__ = [
     "investment_growth_since_anchor",
     "investment_seed_map",
     "liability_owed_at_dates",
+    "loan_figures",
 ]

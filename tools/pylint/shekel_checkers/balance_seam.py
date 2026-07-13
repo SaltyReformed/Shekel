@@ -21,13 +21,23 @@ from ._common import _called_name_in, _module_in_allowlist
 # centralizes -- the recurrence generator behind the months-long
 # loan/investment balance-bug family (docs/audits/balance_architecture/). The
 # private (``_build_*``) producers are listed by their bare name: a consumer
-# reaching one is already past the seam. NOT listed -- and so never flagged --
-# are the rich projection-detail primitives the seam composes:
-# ``project_balance`` / ``reverse_project_balance`` (return a ProjectedBalance
-# with contribution/growth detail) and ``resolve_loan`` / ``resolve_account_loan``
-# (return the full LoanState). Those are a different responsibility (rich detail,
-# not a balance map) and stay callable by the chart and loan-route consumers by
-# design.
+# reaching one is already past the seam.
+#
+# ``project_balance`` / ``reverse_project_balance`` are NOT listed: they return a
+# ProjectedBalance carrying contribution/growth detail, a different
+# responsibility from a balance map, and the charts compose them legitimately.
+#
+# The LOAN RESOLVER entries (``resolve_account_loan`` / ``resolve_loan_seeded`` /
+# ``resolve_loan_bundle``) WERE excluded on the same "rich detail, not a balance"
+# reasoning -- and that was the hole. ``LoanState`` bundles the rich detail WITH
+# ``current_balance``, a balance-at-today, and a name-keyed fence cannot see an
+# attribute read. So the loan's displayed balance -- the /savings tile, the
+# net-worth hero, the debt card, the Horizon's index-0 point, the equity card's
+# mortgage leg, /debt-strategy -- was produced outside the seam with every gate
+# silent, agreeing with it only because both paths happened to bottom out in the
+# same ledger. They are fenced now (:data:`_LOAN_RESOLVER_PRODUCERS`), and
+# consumers take ``balance_at.loan_figures`` (rich detail, deliberately WITHOUT a
+# balance) plus ``balance_at.balance_at`` (the balance).
 #
 # ``investment_base_balance_map`` IS guarded (below).  It returns a
 # DISPLAY-shaped cash-basis (pre-growth) map -- the one balance-map accessor a
@@ -90,7 +100,7 @@ _BALANCE_PRODUCERS = frozenset({
 # the engine cluster it composes (the SOLID dependency direction -- consumers
 # depend on the seam, the seam depends on these engines). Listed by their FULLY
 # QUALIFIED module name, matched exactly or as a package prefix (see
-# :func:`_in_balance_seam_cluster`). The full path -- not the basename -- is
+# :func:`_module_in_allowlist`). The full path -- not the basename -- is
 # deliberate: a same-named module in another package (a hypothetical
 # ``app/routes/balance_at.py``) must NOT be exempted, or the fence could be
 # silently bypassed by a name collision (a false negative is the dangerous mode
@@ -145,6 +155,60 @@ _LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
     "app.services.loan_posting_service",
     "app.services.loan_payment_service",
 })
+
+# ── The loan RESOLVER entries (W9906) ───────────────────────────────
+#
+# ``LoanState`` bundles rich projection detail (schedule, payment, rate, payoff)
+# with ``current_balance`` -- a balance-at-TODAY.  The fence binds on function
+# NAMES and cannot see an attribute read, so for as long as any consumer could
+# call these and hold a ``LoanState``, the loan's DISPLAYED balance reached the
+# screen without passing the seam: the /savings loan tile, the net-worth hero
+# that reduces over it, the debt card, the Horizon's index-0 liability, the
+# property-equity card's mortgage leg, and /debt-strategy were ALL produced
+# outside the one tested place, and every gate stayed silent.  They agreed with
+# the seam only because both paths happened to bottom out in the same genesis
+# ledger -- agreement by luck, which is the exact failure signature of the
+# balance-bug family this fence exists to end.
+#
+# Consumers now take ``balance_at.loan_figures`` (rich detail, deliberately
+# WITHOUT a balance) plus ``balance_at.balance_at`` (the balance), so a consumer
+# holding loan figures cannot render a wrong balance even by accident.
+_LOAN_RESOLVER_PRODUCERS = frozenset({
+    "resolve_account_loan",
+    "resolve_loan_seeded",
+    "resolve_loan_bundle",
+})
+# Who may still resolve a loan directly:
+#   * ``loan_resolution`` -- defines them.
+#   * ``resolution_context`` -- the read pass's memo; the ONE place a loan is
+#     resolved for a read, and what the seam's loan entries compose.
+#   * ``loan_payment_service`` -- the live grid/transfer amount producer, inside
+#     the loan cluster (it composes the resolver for a payment's P&I, not for a
+#     displayed account balance).
+#   * ``loan_recurrence_sync`` / ``_transfer_loan_posting`` -- WRITE paths.  They
+#     resolve mid-mutation, which is exactly why the read-pass context is not a
+#     request-scoped cache; a writer is not a balance reader.
+#   * ``app.routes.loan`` -- the loan DETAIL page, a genuine rich-primitive
+#     consumer (the amortization table, the payoff and refinance calculators).
+#     It reads the resolver through its own ``_resolve`` seam.
+_LOAN_RESOLVER_MODULES = frozenset({
+    "app.services.loan_resolution",
+    "app.services.resolution_context",
+    "app.services.loan_payment_service",
+    "app.services.loan_recurrence_sync",
+    "app.services._transfer_loan_posting",
+    "app.routes.loan",
+})
+
+# Every fenced CALL surface: ``(guarded names, modules allowed to reach them)``.
+# ``visit_call`` and ``visit_importfrom`` both walk this one table, so a new
+# fenced surface is a data change here rather than a third copy of the same
+# branch in two visitors (the duplication that let the earlier surfaces drift).
+_FENCED_CALL_SURFACES = (
+    (_BALANCE_PRODUCERS, _BALANCE_SEAM_MODULES),
+    (_LOAN_LEDGER_READER_PRODUCERS, _LOAN_LEDGER_READER_MODULES),
+    (_LOAN_RESOLVER_PRODUCERS, _LOAN_RESOLVER_MODULES),
+)
 
 # ── Fail-closed completeness (W9909) ────────────────────────────────
 #
@@ -307,32 +371,6 @@ def _fenced_module_ruling(
     return None
 
 
-def _called_balance_producer(node: nodes.Call) -> str | None:
-    """Return the guarded balance-producer name ``node`` calls, or ``None``.
-
-    Thin wrapper over :func:`_called_name_in` for the general balance-producer
-    set (:data:`_BALANCE_PRODUCERS`); the genesis loan-ledger readers have
-    their own set + allowlist (:data:`_LOAN_LEDGER_READER_PRODUCERS`).
-    """
-    return _called_name_in(node, _BALANCE_PRODUCERS)
-
-
-def _in_balance_seam_cluster(node: nodes.NodeNG) -> bool:
-    """Return True if ``node``'s module is the seam or an engine-cluster module.
-
-    Thin wrapper over :func:`_module_in_allowlist` for the balance-seam fence
-    (:data:`_BALANCE_SEAM_MODULES`); see that helper for the exact/prefix match
-    and fail-closed rationale the W9906 fence relies on.
-
-    Args:
-        node: The producer-call node whose enclosing module is checked.
-
-    Returns:
-        ``True`` if the module may call a balance producer directly.
-    """
-    return _module_in_allowlist(node, _BALANCE_SEAM_MODULES)
-
-
 class ShekelBalanceSeamChecker(BaseChecker):
     """Forbid obtaining an account balance outside the balance_at seam.
 
@@ -463,22 +501,15 @@ class ShekelBalanceSeamChecker(BaseChecker):
         and the ``loan_payment_service`` view seam -- the read switch's single
         injection point).
         """
-        producer = _called_balance_producer(node)
-        if producer is not None:
-            if not _in_balance_seam_cluster(node):
+        for producers, allowlist in _FENCED_CALL_SURFACES:
+            name = _called_name_in(node, producers)
+            if name is None:
+                continue
+            if not _module_in_allowlist(node, allowlist):
                 self.add_message(
-                    "shekel-balance-producer-bypass", node=node,
-                    args=(producer,),
+                    "shekel-balance-producer-bypass", node=node, args=(name,),
                 )
             return
-        reader = _called_name_in(node, _LOAN_LEDGER_READER_PRODUCERS)
-        if reader is None:
-            return
-        if _module_in_allowlist(node, _LOAN_LEDGER_READER_MODULES):
-            return
-        self.add_message(
-            "shekel-balance-producer-bypass", node=node, args=(reader,),
-        )
 
     def visit_importfrom(self, node: nodes.ImportFrom) -> None:
         """Flag importing a fenced producer NAME into a non-allowlisted module.
@@ -497,15 +528,12 @@ class ShekelBalanceSeamChecker(BaseChecker):
         two producer-set/allowlist pairs the call check uses.
         """
         for name, _alias in node.names:
-            if name in _BALANCE_PRODUCERS:
-                if not _in_balance_seam_cluster(node):
+            for producers, allowlist in _FENCED_CALL_SURFACES:
+                if name not in producers:
+                    continue
+                if not _module_in_allowlist(node, allowlist):
                     self.add_message(
                         "shekel-balance-producer-bypass", node=node,
                         args=(name,),
                     )
-            elif name in _LOAN_LEDGER_READER_PRODUCERS:
-                if not _module_in_allowlist(node, _LOAN_LEDGER_READER_MODULES):
-                    self.add_message(
-                        "shekel-balance-producer-bypass", node=node,
-                        args=(name,),
-                    )
+                break

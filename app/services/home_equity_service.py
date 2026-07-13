@@ -20,6 +20,7 @@ Flask imports.  All money is :class:`~decimal.Decimal`.
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
+from app.services import balance_at
 from app.services.resolution_context import BalanceContext
 
 ZERO = Decimal("0")
@@ -122,8 +123,7 @@ def resolve_home_equity(
     market_value = property_account.current_anchor_balance or ZERO
     balances: list[Decimal] = []
     for loan in property_account.secured_loans:
-        state = ctx.loan_state(loan)
-        if state is None:
-            continue
-        balances.append(state.current_balance)
+        if ctx.loan(loan) is None:
+            continue                       # not a configured loan: no debt leg
+        balances.append(balance_at.balance_at(loan, ctx, ctx.as_of))
     return compute_home_equity(market_value, balances)

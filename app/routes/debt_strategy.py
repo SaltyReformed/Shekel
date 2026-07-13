@@ -36,8 +36,8 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services.loan_resolution import resolve_account_loan
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services import balance_at
+from app.services.resolution_context import BalanceContext
 
 logger = logging.getLogger(__name__)
 
@@ -132,19 +132,21 @@ def _load_debt_accounts(user_id):
         .all()
     )
 
-    scenario = get_baseline_scenario(user_id)
-    scenario_id = scenario.id if scenario else None
-    today = date.today()
+    # ONE read pass: each loan is resolved once, and its BALANCE comes from the
+    # seam (``balance_at.balance_at``) rather than off a ``LoanState`` -- this
+    # page renders that balance, so it is a balance-at-T consumer like any other.
+    ctx = BalanceContext.build(user_id)
 
     debt_accounts = []
     has_arm = False
 
     for account in accounts:
-        resolved = resolve_account_loan(account.id, scenario_id, today)
-        if resolved is None:
+        figures = balance_at.loan_figures(account, ctx)
+        if figures is None:
             # Account exists but loan details not yet configured.
             continue
-        params, state = resolved
+        params = ctx.loan(account).params
+        current_balance = balance_at.balance_at(account, ctx, ctx.as_of)
 
         if params.is_arm:
             has_arm = True
@@ -155,8 +157,8 @@ def _load_debt_accounts(user_id):
         # the legacy ``LoanParams.current_principal`` column still
         # carries a non-zero seed.
         if (
-            state.current_balance <= Decimal("0")
-            or state.monthly_payment <= Decimal("0")
+            current_balance <= Decimal("0")
+            or figures.monthly_payment <= Decimal("0")
         ):
             continue
 
@@ -172,9 +174,9 @@ def _load_debt_accounts(user_id):
         debt_accounts.append(DebtAccount(
             account_id=account.id,
             name=account.name,
-            current_principal=state.current_balance,
-            interest_rate=state.current_rate,
-            minimum_payment=state.monthly_payment,
+            current_principal=current_balance,
+            interest_rate=figures.current_rate,
+            minimum_payment=figures.monthly_payment,
         ))
 
     return debt_accounts, has_arm

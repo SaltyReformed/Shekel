@@ -1720,17 +1720,31 @@ class TestDebtProgress:
     ):
         """C1-6: Debt progress balances match the amortization schedule.
 
-        Mortgage: $240,000 at 6.5%, 30-year, originated 2025-01-01.
-        Monthly payment: $1,516.96 (from amortization formula).
+        Mortgage: $240,000 at 6.5%, 30-year, originated 2025-01-01, with NO
+        payment ever recorded and no genesis-ledger opening.
 
-        Jan 1 2026 balance = balance after Dec 2025 payment = $237,547.74
-        (11 payments of principal in 2025: each reducing balance from
-        the first $216.96 to the eleventh payment's ~$241.15).
+        Jan 1 2026 balance = $240,000.00 -- the full anchor.  Not one payment was
+        ever confirmed, so not one dollar of principal was ever paid.  This
+        asserted $237,547.74 before, the balance implied by eleven 2025
+        installments that were NEVER MADE: the scalar's no-ledger fallback walked
+        the FULL schedule, so unpaid projected rows dated on or before the
+        valuation date silently paid the loan down (the same defect
+        ``loan_owed_at_dates`` refuses to commit at its own boundary, and the same
+        one that made an unpaid loan render $236,853.27 on the /savings tile).
+        The fallback now walks CONFIRMED rows only, which is what its comment
+        always claimed.
 
-        Dec 31 2026 balance = balance after Dec 2026 payment = $234,701.02
-        (12 more payments of principal in 2026).
+        Dec 31 2026 balance = $234,701.02 -- a FUTURE date, so it is the forward
+        projection from today's balance, unchanged by the fix.
 
-        Principal paid in 2026 = $237,547.74 - $234,701.02 = $2,846.72.
+        Principal paid in 2026 = $240,000.00 - $234,701.02 = $5,298.98: the
+        paydown the loan's committed schedule implies from a start that is now the
+        honest one.
+
+        Ruled by the developer 2026-07-13.  Nothing live moves: year-end has no
+        route (``/analytics/year-end`` redirects), and every production loan is
+        opened in the ledger, so production reads the ledger path, never this
+        fallback.
         """
         user = seed_user["user"]
         periods = seed_periods
@@ -1744,9 +1758,11 @@ class TestDebtProgress:
         assert entry["account_name"] == "Home Mortgage"
 
         # Verify exact amortization-based values.
-        assert entry["jan1_balance"] == Decimal("237547.74")
+        # No payment was ever confirmed -> the loan still owes its full anchor.
+        assert entry["jan1_balance"] == Decimal("240000.00")
         assert entry["dec31_balance"] == Decimal("234701.02")
-        assert entry["principal_paid"] == Decimal("2846.72")
+        # 240000.00 - 234701.02 = 5298.98
+        assert entry["principal_paid"] == Decimal("5298.98")
         # Invariant: principal_paid = jan1 - dec31.
         assert entry["principal_paid"] == (
             entry["jan1_balance"] - entry["dec31_balance"]
@@ -1881,9 +1897,11 @@ class TestDebtProgress:
         assert len(debt) == 1
         entry = debt[0]
 
-        assert entry["jan1_balance"] == Decimal("237547.74")
+        # No payment was ever confirmed -> the loan still owes its full anchor.
+        assert entry["jan1_balance"] == Decimal("240000.00")
         assert entry["dec31_balance"] == Decimal("234701.02")
-        assert entry["principal_paid"] == Decimal("2846.72")
+        # 240000.00 - 234701.02 = 5298.98
+        assert entry["principal_paid"] == Decimal("5298.98")
 
     def test_mortgage_interest_with_prepared_payments(
         self, app, db, seed_user, seed_periods,

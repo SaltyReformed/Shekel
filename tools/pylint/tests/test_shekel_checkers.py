@@ -1044,6 +1044,67 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
+    def test_flags_resolve_account_loan_from_a_consumer(self) -> None:
+        """The loan RESOLVER is fenced: a consumer call is flagged.
+
+        ``LoanState`` bundles rich detail WITH ``current_balance`` -- a
+        balance-at-today -- and the fence cannot see an attribute read.  So while
+        the resolver was excluded as a "rich primitive", the loan's displayed
+        balance reached the screen outside the seam: the /savings tile, the
+        net-worth hero, the debt card, the Horizon's index-0 point, the equity
+        card's mortgage leg, and /debt-strategy.  They agreed with the seam only
+        because both paths bottomed out in the same ledger -- agreement by luck.
+        """
+        node = self._producer_call(
+            "resolve_account_loan(account.id, scenario_id, today)",
+            "app.routes.debt_strategy",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("resolve_account_loan",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_resolve_loan_bundle_inside_the_resolution_context(self) -> None:
+        """The read-pass memo may resolve a loan: it IS the one resolution site."""
+        node = self._producer_call(
+            "resolve_loan_bundle(account.id, scenario_id, as_of)",
+            "app.services.resolution_context",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_resolve_account_loan_on_a_write_path(self) -> None:
+        """A WRITE path may resolve a loan mid-mutation; a writer is not a reader.
+
+        This is also why the read-pass context is a value object rather than a
+        request-scoped cache: the write paths resolve inside a mutation, so a
+        request-scoped memo would go stale across the write.
+        """
+        node = self._producer_call(
+            "resolve_account_loan(account_id, scenario_id, today)",
+            "app.services.loan_recurrence_sync",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_loan_figures_seam_entry_from_a_consumer(self) -> None:
+        """The seam's loan_figures is the compliant rich read; never flagged.
+
+        It deliberately carries NO balance, so a consumer holding one cannot
+        render a wrong balance even by accident.
+        """
+        node = self._producer_call(
+            "balance_at.loan_figures(account, ctx)",
+            "app.services.savings_dashboard_service._projections",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
     def test_flags_generate_debt_schedules_from_consumer(self) -> None:
         """The DebtSchedule bundle IS guarded: a consumer call is flagged.
 
