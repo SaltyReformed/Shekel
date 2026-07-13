@@ -5,16 +5,22 @@ Assembles the per-account dict the dashboard template renders.  Every
 non-loan account's balance over time comes from the single
 :mod:`app.services.balance_at` seam (cash, interest-bearing, investment, and
 appreciating-property accounts each dispatch per kind inside it); a loan tile
-instead reads the loan resolver directly for its rich figures -- current
-balance, monthly payment, rate, payoff -- and shows no projected horizons.
-No Flask imports.
+reads its rich figures -- current balance, monthly payment, rate, payoff --
+off the read pass's ONE
+:class:`~app.services.resolution_context.ResolvedLoan`, and shows no projected
+horizons.
+
+This module no longer imports the resolver or the clock.  It used to load a
+loan's context and anchor facts and run ``resolve_loan`` twice per loan (once
+for the tile, once for a ``date.max`` "ever paid off" probe); both reads now
+come from the context, which resolves each loan exactly once for the whole
+render.  No Flask imports.
 """
 
 from collections import OrderedDict
-from datetime import date
 from decimal import Decimal
 
-from app.services import balance_at, loan_resolver
+from app.services import balance_at
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -87,39 +93,57 @@ def _current_balance_from_map(balances, acct, ctx):
     return balances.get(ctx.current_period.id)
 
 
-def _loan_ever_paid_off(acct_loan_params, anchor_facts, loan_ctx):
-    """Return whether confirmed payments have EVER retired this loan.
+def _loan_is_paid_off(resolved):
+    """Return whether the loan owes nothing -- read from the genesis ledger.
 
-    Distinct from "balance is zero as of today": the per-tile current
-    balance correctly excludes settled payments dated in the future,
-    whereas this flag asks "have my confirmed payments ever retired this
-    loan?", regardless of when those payments are dated.  A resolver call
-    with ``as_of=date.max`` replays every confirmed payment forward and
-    answers that directly.  Requires at least one confirmed payment so a
-    brand-new loan with a zero anchor balance (degenerate input) does not
-    render as "paid off" -- preserves the historical ``_check_loan_paid_off``
-    semantic.
+    ``resolved.state.current_balance`` is the ledger-confirmed balance (the
+    read switch seeds it from :func:`confirmed_loan_balance_at`), so this asks
+    the ONE producer that books what each payment actually paid.  A loan owes
+    nothing when that balance is ``<= 0`` AND it has at least one confirmed
+    payment -- the confirmed-payment guard is preserved from the original so a
+    brand-new loan with a degenerate zero anchor does not render as "paid off".
+
+    **Why this replaced a ``date.max`` resolver probe.**  The flag used to be
+    answered by ``resolve_loan(inputs, date.max)`` with NO ``confirmed_view``,
+    and that call could not have consulted the ledger even if it wanted to:
+    :func:`~app.services.loan_payment_service.confirmed_loan_view` returns
+    ``None`` for any ``as_of`` after today, by contract.  So the probe was
+    structurally pinned to the pre-read-switch anchor replay -- and that replay
+    is BLIND TO MONEY.  It feeds the engine ``ConfirmedPayment(period_start,
+    due_date)`` with no amount, advancing one SCHEDULED step per confirmed
+    payment (``principal = period P&I - interest``) and discarding the cash
+    actually moved.
+
+    The failure was real and bidirectional (``followup_redundant_loan_resolution.md``):
+
+    * Pay a $15,663.59 van loan off with ONE payment.  The ledger says $0.00
+      and the hero renders $0 -- but the replay, taking a single ~$450 scheduled
+      step, still owed ~$15,213, so ``is_paid_off`` stayed False.  The loan kept
+      its "Paid off" badge hidden, stayed in the Horizon's domain as active debt,
+      and pushed the "Debt-free" milestone years out.
+    * Inversely, a loan paid SHORT amortizes faster in the replay than in the
+      ledger, so the replay could reach zero while the ledger still owed.  Then
+      ``is_paid_off`` was True, ``_metrics._loan_current_balance`` dropped the
+      loan from ``total_debt`` entirely, and its full original principal counted
+      as paid.  Real debt silently vanished from the debt card.
+
+    Reading the ledger makes the badge, the debt card, the principal-paid
+    fraction, and the Horizon agree with the balance the hero renders BY
+    CONSTRUCTION -- and costs zero extra resolutions, where the probe cost one
+    full amortization walk per loan per render.
 
     Args:
-        acct_loan_params: The account's LoanParams.
-        anchor_facts: The account's anchor facts (synthesized origination +
-            true-ups, from ``loan_loaders.load_loan_anchor_facts``).
-        loan_ctx: The loaded loan context (payments + rate changes).
+        resolved: The loan's :class:`~app.services.loan_resolution.ResolvedLoan`
+            from the read pass's context (its ``state.current_balance`` is the
+            ledger balance; its ``context.payments`` is the payment feed).
 
     Returns:
-        True when confirmed payments have ever retired the loan.
+        ``True`` when the loan owes nothing and has at least one confirmed
+        payment.
     """
-    has_confirmed = any(p.is_confirmed for p in loan_ctx.payments)
-    if not has_confirmed:
+    if not any(p.is_confirmed for p in resolved.context.payments):
         return False
-    ever_state = loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            acct_loan_params, anchor_facts,
-            loan_ctx.payments, loan_ctx.rate_changes,
-        ),
-        date.max,
-    )
-    return ever_state.current_balance == Decimal("0.00")
+    return resolved.state.current_balance <= Decimal("0.00")
 
 
 def _compute_loan_account(acct, ctx):
@@ -161,9 +185,7 @@ def _compute_loan_account(acct, ctx):
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
-        is_paid_off=_loan_ever_paid_off(
-            resolved.params, resolved.anchor_facts, resolved.context,
-        ),
+        is_paid_off=_loan_is_paid_off(resolved),
     )
 
 
