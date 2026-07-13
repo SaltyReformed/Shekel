@@ -165,6 +165,7 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
@@ -2748,9 +2749,12 @@ class TestLatePaidPaymentDating:
             card = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].current_balance
-            scalar = balance_at.balance_at(loan, scenario, _AS_OF)
+            bctx = BalanceContext(
+                user_id=loan.user_id, scenario=scenario, as_of=_AS_OF,
+            )
+            scalar = balance_at.balance_at(loan, bctx, _AS_OF)
             period_map = balance_at.build_maps(
-                [loan], scenario, seed_periods,
+                [loan], bctx, seed_periods,
             )[loan.id]
             current_period = next(
                 p for p in seed_periods
@@ -2841,7 +2845,7 @@ class TestLatePaidPaymentDating:
             assert next_period.end_date < date(2026, 6, 5)
 
             period_map = balance_at.build_maps(
-                [loan], seed_user["scenario"], periods,
+                [loan], BalanceContext.build(seed_user["user"].id), periods,
             )[loan.id]
 
             series = [period_map[p.id] for p in periods]
@@ -2890,12 +2894,15 @@ class TestTrueUpAfterLastPaymentIsRead:
             db.session.commit()
 
             ledger = _ledger_balance(loan.id, scenario_id)
-            scalar = balance_at.balance_at(loan, scenario, _AS_OF)
+            bctx = BalanceContext(
+                user_id=loan.user_id, scenario=scenario, as_of=_AS_OF,
+            )
+            scalar = balance_at.balance_at(loan, bctx, _AS_OF)
             card = loan_resolution.resolve_account_loan(
                 loan.id, scenario_id, _AS_OF,
             )[1].current_balance
             schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], scenario_id,
+                [loan], bctx,
             )[loan.id]
 
             # The true-up IS the balance, and the card and scalar both report it.

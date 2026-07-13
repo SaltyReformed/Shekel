@@ -18,6 +18,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.services import savings_dashboard_service, pay_period_service
 from app.services import account_service
+from app.services.resolution_context import BalanceContext
 
 
 class TestComputeDashboardData:
@@ -3700,7 +3701,9 @@ class TestNetWorthHorizon:
                 _DashboardCoreData,
             )
             core = _DashboardCoreData(
-                accounts=[], scenario=None, all_periods=[], current_period=None,
+                accounts=[],
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+                all_periods=[], current_period=None,
             )
             assert build_horizon(seed_user["user"].id, core, [], {}) is None
 

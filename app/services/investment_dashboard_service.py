@@ -35,7 +35,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -59,7 +58,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_account,
     load_shadow_income_contributions_for_account,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.utils.dates import to_display_date
 from app.utils.money import percent_complete, round_money
 
@@ -139,7 +138,7 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
             this account; drives the contribution-prompt decision.
         active_profile: The user's active :class:`SalaryProfile`, or
             ``None``; drives the deduction-path salary-profile link.
-        scenario: The baseline scenario (or ``None``); the history chart and
+        balance_ctx: The read pass's ``BalanceContext``; the history chart and
             anchor caption read it so both agree with the headline balance.
         anchor_as_of: Display-tz date of the account's latest anchor event
             (C1 hero caption), or ``None`` when no baseline scenario exists.
@@ -154,7 +153,7 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     contributions: list[growth_engine.ContributionRecord]
     deductions: list[PaycheckDeduction]
     active_profile: SalaryProfile | None
-    scenario: Scenario | None
+    balance_ctx: BalanceContext
     anchor_as_of: date | None
     all_periods: list
     current_period: PayPeriod | None
@@ -182,7 +181,7 @@ def _load_investment_params(account_id: int) -> InvestmentParams | None:
 
 
 def _resolve_anchor_as_of(
-    account: Account, scenario: Scenario | None,
+    account: Account, balance_ctx: BalanceContext,
 ) -> date | None:
     """Return the display-tz date of the account's latest anchor EVENT (C1).
 
@@ -194,15 +193,15 @@ def _resolve_anchor_as_of(
     (:func:`~app.utils.dates.to_display_date`); ``None`` when no baseline
     scenario is configured.
     """
-    if scenario is None:
+    if balance_ctx.scenario is None:
         return None
-    anchor_point = balance_resolver.resolve_anchor(account, scenario.id)
-    return to_display_date(anchor_point.created_at)
+    anchor = balance_resolver.resolve_anchor(account, balance_ctx.scenario.id)
+    return to_display_date(anchor.created_at)
 
 
 def _resolve_current_balance(
     account: Account,
-    scenario,
+    balance_ctx: BalanceContext,
     current_period,
     all_periods: list,
 ) -> Decimal:
@@ -217,9 +216,9 @@ def _resolve_current_balance(
     :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    if scenario is None or current_period is None:
+    if balance_ctx.scenario is None or current_period is None:
         return anchor_balance
-    balances = balance_at.balance_map(account, scenario, all_periods)
+    balances = balance_at.balance_map(account, balance_ctx, all_periods)
     if balances is None:
         return anchor_balance
     return balances.get(current_period.id, anchor_balance)
@@ -227,7 +226,7 @@ def _resolve_current_balance(
 
 def _resolve_seed_balance(
     account: Account,
-    scenario,
+    balance_ctx: BalanceContext,
     current_period,
     all_periods: list,
 ) -> Decimal:
@@ -243,12 +242,12 @@ def _resolve_seed_balance(
     :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    if (scenario is None
+    if (balance_ctx.scenario is None
             or account.current_anchor_period_id is None
             or current_period is None):
         return anchor_balance
     balances = balance_at.investment_seed_map(
-        account, scenario, all_periods,
+        account, balance_ctx, all_periods,
     )
     return balances.get(current_period.id, anchor_balance)
 
@@ -287,12 +286,12 @@ def _load_projection_context(
         A :class:`_ProjectionContext` carrying the seven per-account
         values the projection primitives and card builders consume.
     """
-    scenario = get_baseline_scenario(user_id)
+    balance_ctx = BalanceContext.build(user_id)
     # The headline tile shows the model-from-anchor balance (so it agrees
     # with /savings and the net-worth trend); the forward projection seeds
     # from the cash basis instead, so the two are resolved separately.
     current_balance = _resolve_current_balance(
-        account, scenario, current_period, all_periods,
+        account, balance_ctx, current_period, all_periods,
     )
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
@@ -315,7 +314,7 @@ def _load_projection_context(
     # balance movements (expenses, deposits) stay in the seed because the
     # engine never re-creates them.
     projection_seed = (
-        _resolve_seed_balance(account, scenario, current_period, all_periods)
+        _resolve_seed_balance(account, balance_ctx, current_period, all_periods)
         - current_period_transfer_contribution(
             acct_contributions, current_period,
         )
@@ -337,9 +336,9 @@ def _load_projection_context(
         contributions=contributions,
         deductions=deductions,
         active_profile=active_profile,
-        scenario=scenario,
+        balance_ctx=balance_ctx,
         # C1 anchor caption date (inlined to stay under the locals limit).
-        anchor_as_of=_resolve_anchor_as_of(account, scenario),
+        anchor_as_of=_resolve_anchor_as_of(account, balance_ctx),
         all_periods=all_periods,
         current_period=current_period,
     )
@@ -644,9 +643,9 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
     # Measured growth since the anchor (None -> chip hidden), via the seam.
     growth = (
         balance_at.investment_growth_since_anchor(
-            account, ctx.scenario, all_periods, current_period,
+            account, ctx.balance_ctx, all_periods, current_period,
         )
-        if ctx.scenario is not None else None
+        if ctx.balance_ctx.scenario is not None else None
     )
 
     return {
@@ -680,16 +679,16 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != user_id or not account.is_active:
         return None
-    scenario = get_baseline_scenario(user_id)
+    balance_ctx = BalanceContext.build(user_id)
     balance = (
-        balance_at.balance_at(account, scenario, date.today())
-        if scenario is not None
+        balance_at.balance_at(account, balance_ctx, balance_ctx.as_of)
+        if balance_ctx.scenario is not None
         else account.current_anchor_balance or Decimal("0.00")
     )
     return {
         "account": account,
         "current_balance": balance,
-        "anchor_as_of": _resolve_anchor_as_of(account, scenario),
+        "anchor_as_of": _resolve_anchor_as_of(account, balance_ctx),
     }
 
 
@@ -741,9 +740,10 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
     tail meets the headline at the Today boundary).  Empty when no scenario /
     current period / map; values are stringified cent ``Decimal``.
     """
-    if ctx.scenario is None or ctx.current_period is None:
+    bctx = ctx.balance_ctx
+    if bctx.scenario is None or ctx.current_period is None:
         return {"history_labels": [], "history_balances": []}
-    balances = balance_at.balance_map(account, ctx.scenario, ctx.all_periods)
+    balances = balance_at.balance_map(account, bctx, ctx.all_periods)
     if balances is None:
         return {"history_labels": [], "history_balances": []}
     labels: list[str] = []

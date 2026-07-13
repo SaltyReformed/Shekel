@@ -81,6 +81,7 @@ from app.services import (
     savings_dashboard_service,
     year_end_summary_service,
 )
+from app.services.resolution_context import BalanceContext
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
@@ -191,6 +192,20 @@ _CASES = [
 # analog).
 
 
+def _bctx(ctx):
+    """Return the read-pass BalanceContext for a cross-page fixture.
+
+    The fixtures hand back a raw ``scenario``; the seam now takes the
+    context that owns it (the scenario, the pinned as-of, and the memo
+    that resolves each loan exactly once for the pass).
+    """
+    return BalanceContext(
+        user_id=ctx["account"].user_id,
+        scenario=ctx["scenario"],
+        as_of=date.today(),
+    )
+
+
 def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
@@ -204,7 +219,7 @@ def _grid_value(ctx):
     ``balances_for`` calls in the per-kind locks.
     """
     result = balance_at.cash_balance_map(
-        ctx["account"], ctx["scenario"], ctx["all_periods"],
+        ctx["account"], _bctx(ctx), ctx["all_periods"],
     )
     return result.balances[ctx["anchor_period"].id]
 
@@ -881,7 +896,7 @@ def _property_detail_value(ctx):
     zero, so market value alone is the cross-page value.
     """
     return home_equity_service.resolve_home_equity(
-        ctx["account"], ctx["scenario_id"], date.today(),
+        ctx["account"], _bctx(ctx),
     ).market_value
 
 
@@ -932,7 +947,7 @@ def _balance_at_scalar_value(ctx, target):
     "today" with an overdue payment it deliberately reads below the card.
     """
     return balance_at.balance_at(
-        ctx["account"], ctx["scenario"], target,
+        ctx["account"], _bctx(ctx), target,
     )
 
 
@@ -996,7 +1011,7 @@ class TestLoanCrossPageEquality:
             # P there is the exact PR #44 / aba0242 bug.  C != P is what
             # makes this non-tautological (verified by the second assert).
             balances = balance_at.balance_map(
-                ctx["account"], ctx["scenario"], ctx["all_periods"],
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
             )
             pre_balance = balances[ctx["pre_anchor_period"].id]
             assert pre_balance == ctx["C"], (
@@ -1216,7 +1231,7 @@ class TestInvestmentCrossPageEquality:
             # The canonical model-from-anchor value at today, read straight
             # from the seam (the producer the rerouted tile now reads).
             modeled = balance_at.balance_map(
-                ctx["account"], ctx["scenario"], ctx["all_periods"],
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
             )[ctx["current_period"].id]
 
             # Non-tautological AND magnitude-bounded: the modeled balance must
@@ -1282,7 +1297,8 @@ class TestSecuredHomeEquityEquality:
             ctx = cross_page_secured_ctx
             pv, mc = ctx["PV"], ctx["MC"]
             equity = home_equity_service.resolve_home_equity(
-                ctx["property_account"], ctx["scenario_id"], date.today(),
+                ctx["property_account"],
+                BalanceContext.build(ctx["property_account"].user_id),
             )
             dashboard = savings_dashboard_service.compute_dashboard_data(
                 ctx["user_id"],

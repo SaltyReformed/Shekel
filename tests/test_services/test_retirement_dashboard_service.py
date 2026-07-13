@@ -25,6 +25,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
+from app.services.resolution_context import BalanceContext
 from app.services import (
     account_service,
     balance_at,
@@ -576,8 +577,9 @@ class TestRetirementAnchorInPastModeledHeadlineCashSeed:
 
             # The seam's model-from-anchor value at today (the figure the
             # rerouted headline now reads), strictly above the flat carry.
+            bctx = BalanceContext.build(seed_user["user"].id)
             modeled = balance_at.balance_map(
-                acct, scenario, all_periods,
+                acct, bctx, all_periods,
             )[current_period.id]
             assert modeled > v0, (
                 f"modeled {modeled!r} did not compound above the flat anchor "

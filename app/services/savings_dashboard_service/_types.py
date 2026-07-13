@@ -17,22 +17,36 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
+from app.services.resolution_context import BalanceContext
 
 
 @dataclass(frozen=True)
 class _DashboardCoreData:
-    """Request-scoped data loaded once at the start of the dashboard build.
+    """Read-pass data loaded once at the start of the dashboard build.
 
-    Bundles the accounts, baseline scenario, and pay periods so the
+    Bundles the accounts, the balance-seam context, and the pay periods so the
     orchestrator passes one object to the projection step instead of a
     long positional parameter list.  Per-account balances come from the
     :mod:`app.services.balance_at` seam (which loads its own transactions),
     so no pre-loaded transaction set rides here.
+
+    Attributes:
+        accounts: The user's active accounts, ordered for display.
+        balance_ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext` -- the
+            baseline scenario, the pinned ``as_of``, and the memo that resolves
+            each loan exactly ONCE for the whole build.  It replaces the bare
+            ``scenario`` this bundle used to carry: every seam call in the pass
+            now shares this object, which is what collapsed a ``/savings``
+            render from eleven loan resolutions to one per loan.  Read
+            ``balance_ctx.scenario`` where the scenario itself is wanted.
+        all_periods: All of the user's pay periods.
+        current_period: The period containing ``balance_ctx.as_of``, or
+            ``None``.
     """
 
     accounts: list[Account]
-    scenario: Scenario | None
+    balance_ctx: BalanceContext
     all_periods: list[PayPeriod]
     current_period: PayPeriod | None
 
@@ -64,18 +78,19 @@ class _ProjectionContext:
     """Loop-invariant inputs shared across the per-account projection loop.
 
     Every account in ``_compute_account_projections`` projects against
-    the same periods, current period, loaded parameter maps, and baseline
-    scenario; bundling them keeps the per-account helpers to a small,
-    cohesive argument list.  The ``scenario`` object (not just its id) is
-    held because the :mod:`app.services.balance_at` seam each non-loan tile
-    reads through takes the :class:`~app.models.scenario.Scenario`; the loan
-    path derives ``scenario.id`` for the resolver.
+    the same periods, current period, loaded parameter maps, and balance
+    context; bundling them keeps the per-account helpers to a small,
+    cohesive argument list.  The ``balance_ctx`` (not a bare scenario) is held
+    because the :mod:`app.services.balance_at` seam every tile reads through
+    takes the context -- and because carrying the SAME context the rest of the
+    build uses is what guarantees a loan the tile renders and the same loan in
+    the net-worth trend came from one resolution, not two that happen to agree.
     """
 
     all_periods: list[PayPeriod]
     current_period: PayPeriod | None
     params: _AccountParams
-    scenario: Scenario | None
+    balance_ctx: BalanceContext
 
 
 @dataclass(frozen=True)

@@ -19,9 +19,6 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.loan_loaders import load_loan_anchor_facts
-from app.services.loan_payment_service import load_loan_context
-from app.services.loan_resolution import resolve_loan_seeded
 from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
@@ -53,14 +50,14 @@ def _account_balance_maps(accounts, ctx):
         accounts that have a map; an account the seam omits (no anchor
         period) is simply absent.
     """
-    if ctx.scenario is None:
+    if ctx.balance_ctx.scenario is None:
         return {}
     non_loan_accounts = [
         acct for acct in accounts
         if acct.id not in ctx.params.loan_params_map
     ]
     return balance_at.build_maps(
-        non_loan_accounts, ctx.scenario, ctx.all_periods,
+        non_loan_accounts, ctx.balance_ctx, ctx.all_periods,
     )
 
 
@@ -125,52 +122,47 @@ def _loan_ever_paid_off(acct_loan_params, anchor_facts, loan_ctx):
     return ever_state.current_balance == Decimal("0.00")
 
 
-def _compute_loan_account(acct, acct_loan_params, scenario_id):
+def _compute_loan_account(acct, ctx):
     """Resolve current balance, payment, rate, and payoff for a loan.
 
-    Loads the loan context (payments + escrow + rate changes) and runs the
-    loan resolver (E-18 / Commit 13), the source of truth for
-    current_balance, monthly_payment, current_rate, and payoff_date -- the
-    same dollar figures rendered on the loan card and the year-end net-worth
+    Reads the loan out of the read pass's
+    :class:`~app.services.resolution_context.BalanceContext`, which resolves it
+    at most ONCE for the whole render.  The resolver is the source of truth for
+    current_balance, monthly_payment, current_rate, and payoff_date -- the same
+    dollar figures rendered on the loan card and the year-end net-worth
     liability.  The resolver-derived ``current_balance`` replaces the stored
     ``LoanParams.current_principal`` read that pre-E-18 produced the F-008
     stored-vs-engine divergence on this tile.
 
-    The loan tile renders Monthly Payment + payoff date, not projected
-    balance horizons, and the loan's net-worth contribution is produced by
-    the net-worth section through the :mod:`app.services.balance_at` seam, so
-    this resolver call is the loan tile's only balance source -- the tile
-    does NOT also read the seam (which would resolve the loan a second time).
+    It used to load the loan's context and anchor facts and run the resolver
+    ITSELF (``load_loan_context`` + ``load_loan_anchor_facts`` +
+    ``resolve_loan_seeded``), which is why the same loan the net-worth section
+    was already resolving got resolved again for its tile.  Both now read one
+    :class:`~app.services.loan_resolution.ResolvedLoan`, so the tile's balance
+    and the loan's net-worth contribution are the same number BY CONSTRUCTION
+    rather than because two independent resolutions happened to agree.
 
     Args:
         acct: The loan Account instance.
-        acct_loan_params: The account's LoanParams.
-        scenario_id: The baseline scenario id (or None).
+        ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx`` owns
+            the resolution).
 
     Returns:
-        A :class:`_LoanAccountResult` with the resolver-derived figures.
+        A :class:`_LoanAccountResult` with the resolver-derived figures, or
+        ``None`` when the context cannot resolve the account as a loan (no
+        ``LoanParams``).
     """
-    loan_ctx = load_loan_context(acct.id, scenario_id, acct_loan_params)
-    anchor_facts = load_loan_anchor_facts(acct_loan_params)
-    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
-    # the /savings tile's ``current_balance`` is the genesis-ledger confirmed
-    # balance (falling back to the anchor replay when the ledger has not opened
-    # this loan).  ``acct`` comes from the user's own account set, so ownership
-    # is already established for the reader's trust-the-caller contract.
-    state = resolve_loan_seeded(
-        loan_resolver.LoanInputs(
-            acct_loan_params, anchor_facts,
-            loan_ctx.payments, loan_ctx.rate_changes,
-        ),
-        acct.id, scenario_id, date.today(),
-    )
+    resolved = ctx.balance_ctx.loan(acct)
+    if resolved is None:
+        return None
+    state = resolved.state
     return _LoanAccountResult(
         current_balance=state.current_balance,
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
         is_paid_off=_loan_ever_paid_off(
-            acct_loan_params, anchor_facts, loan_ctx,
+            resolved.params, resolved.anchor_facts, resolved.context,
         ),
     )
 
@@ -243,11 +235,7 @@ def _project_one_account(acct, ctx, balance_maps):
     acct_investment_params = ctx.params.investment_params_map.get(acct.id)
 
     loan_result = (
-        _compute_loan_account(
-            acct, acct_loan_params,
-            ctx.scenario.id if ctx.scenario else None,
-        )
-        if acct_loan_params else None
+        _compute_loan_account(acct, ctx) if acct_loan_params else None
     )
 
     if loan_result is not None:

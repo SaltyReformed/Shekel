@@ -19,7 +19,6 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.scenario import Scenario
 from app.services import (
     income_service,
     net_worth_kernel,
@@ -32,6 +31,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
 )
+from app.services.resolution_context import BalanceContext, require_scenario
 
 ZERO = Decimal("0")
 
@@ -77,7 +77,7 @@ class _AssembledInputs:
 
 
 def _assemble_inputs(
-    accounts: list[Account], scenario: Scenario,
+    accounts: list[Account], ctx: BalanceContext,
 ) -> _AssembledInputs:
     """Batch-load the per-account projection inputs ONCE for *accounts*.
 
@@ -94,12 +94,20 @@ def _assemble_inputs(
     ``_load_account_params`` and the year-end summary already use -- this
     seam reuses them rather than writing new inline param queries.
 
+    Assembling per call is what keeps single-account and batch reads from
+    drifting -- but it used to mean N seam calls in one request did N LOAN
+    RESOLUTIONS.  The context now owns the resolutions, so re-assembling is
+    cheap: the second and later assemblies in a pass re-slice the same memoized
+    :class:`~app.services.loan_resolution.ResolvedLoan` instead of replaying the
+    amortization.  Statelessness is preserved; only the waste is gone.
+
     Args:
         accounts: The accounts to assemble inputs for, each with its
             ``account_type`` relationship available for the classifier.  An
             empty list returns an empty bundle without issuing any query.
-        scenario: The baseline scenario (its id scopes the loan resolver's
-            payment history).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (it scopes the loan resolver's payment history and memoizes each
+            loan's resolution for the pass).
 
     Returns:
         The :class:`_AssembledInputs` bundle.
@@ -124,7 +132,7 @@ def _assemble_inputs(
         if classify_account(account) is AccountProjectionKind.AMORTIZING
     ]
     debt_schedules = net_worth_kernel.generate_debt_schedules(
-        loan_accounts, scenario.id,
+        loan_accounts, ctx,
     )
 
     # The shared loader owns the canonical-classifier filter, so a
@@ -169,7 +177,7 @@ def _assemble_inputs(
 
 def _account_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     inputs: _AssembledInputs,
     amount_overrides: dict[int, Decimal] | None,
@@ -188,7 +196,7 @@ def _account_balance_map(
 
     Args:
         account: The account to project.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
         periods: The pay periods to project over (the output domain).
         inputs: The :class:`_AssembledInputs` bundle for the account's set.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
@@ -200,30 +208,13 @@ def _account_balance_map(
         account has no anchor period (the kernel's own no-anchor contract).
     """
     return net_worth_kernel.account_balance_map_from_inputs(
-        account, scenario, periods, inputs, amount_overrides=amount_overrides,
+        account, ctx, periods, inputs, amount_overrides=amount_overrides,
     )
 
 
-def _require_scenario(scenario: Scenario) -> None:
-    """Raise ``ValueError`` when *scenario* is None -- the seam's fail-loud guard.
-
-    Every public seam entry resolves balances against a baseline scenario,
-    and ``get_baseline_scenario`` can return None (a fresh user with no
-    baseline).  Centralising the guard here (rather than repeating it in each
-    entry point) keeps the contract and its message single-sourced.  Callers
-    that legitimately handle the no-baseline case keep their own
-    ``if scenario is None: return ...`` guard BEFORE calling the seam; this is
-    the defensive backstop that turns a missed guard into a clear failure
-    instead of a deep ``AttributeError`` on ``scenario.id`` (or a silent $0).
-
-    The ONE public entry that does not run this guard is
-    :func:`~app.services.balance_at.liability_owed_at_dates`, where a missing
-    baseline is not an error but the degenerate case of its own rule (no loan is
-    resolvable, so every liability holds flat); its docstring owns that
-    rationale.
-    """
-    if scenario is None:
-        raise ValueError(
-            "the balance_at seam requires a baseline scenario; resolve via "
-            "get_baseline_scenario and guard None before calling"
-        )
+# The seam's fail-loud no-baseline guard.  It lives on the context (the object
+# that OWNS the scenario) rather than here, and is re-exported so every seam
+# entry keeps calling ``_require_scenario(ctx)`` under one name; see
+# :func:`app.services.resolution_context.require_scenario` for the contract and
+# the one entry (``liability_owed_at_dates``) that deliberately skips it.
+_require_scenario = require_scenario

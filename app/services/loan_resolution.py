@@ -25,6 +25,7 @@ loaders' anchor synthesis with the pure resolver; the caller supplies its one lo
 input (the rate-change feed), so the function itself stays I/O-free.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -37,12 +38,55 @@ from app.services.loan_loaders import (
     synthesize_origination_anchor,
 )
 from app.services.loan_payment_service import (
+    LoanContext,
     confirmed_loan_view,
     load_loan_context,
 )
 from app.services.recurring_transfer_query import (
     loan_standing_extra_for_account,
 )
+
+
+@dataclass(frozen=True)
+class ResolvedLoan:
+    """Everything one loan resolution produced, from ONE load of its inputs.
+
+    The unit of work :class:`~app.services.resolution_context.BalanceContext`
+    memoizes: a loan's loaded inputs AND the :class:`LoanState` they resolve to,
+    bundled so that every surface reading any part of a loan -- its balance, its
+    schedule, its payment / rate / payoff, its payment feed -- reads ONE
+    resolution rather than triggering its own.
+
+    Before this bundle existed, a single ``/savings`` render ran the resolver
+    ELEVEN times for two loans (measured 2026-07-13), because each consumer
+    re-derived the loan from scratch: the balance maps, the trend window's
+    honest-history gate, the liability band, the loan tile, the property-equity
+    card, and the "ever paid off" probe each loaded and resolved independently.
+    They agreed on the balance, which is what made the waste look harmless --
+    but the probe among them resolved through a producer that CANNOT read the
+    genesis ledger, and no gate could see that because there was no single
+    resolution to compare against
+    (``docs/audits/balance_architecture/followup_redundant_loan_resolution.md``).
+
+    Attributes:
+        params: The loan's :class:`~app.models.loan_params.LoanParams`.
+        anchor_facts: The loan's anchor facts (the synthesized origination
+            anchor plus any balance true-ups), from
+            :func:`~app.services.loan_loaders.load_loan_anchor_facts`.
+        context: The loan's loaded :class:`~app.services.loan_payment_service.LoanContext`
+            (payments, rate changes, escrow lines, contractual P&I).  Carried
+            because the payment feed answers questions the ``LoanState`` cannot
+            -- "has this loan ever had a confirmed payment?" above all -- and
+            re-loading it was one of the redundant resolutions.
+        state: The resolved :class:`~app.services.loan_resolver.LoanState` as of
+            the context's ``as_of``: the genesis-ledger confirmed balance, the
+            committed (plan-aware) schedule, the payment, rate, and payoff.
+    """
+
+    params: LoanParams
+    anchor_facts: list
+    context: LoanContext
+    state: loan_resolver.LoanState
 
 
 def resolve_loan_seeded(
@@ -98,26 +142,84 @@ def resolve_loan_seeded(
     )
 
 
+def resolve_loan_bundle(
+    account_id: int, scenario_id: int | None, as_of: date,
+) -> ResolvedLoan | None:
+    """Load a loan's inputs ONCE and resolve it -- the whole-loan read.
+
+    The single db-facing loan read the whole app resolves through: it loads the
+    loan's params, anchor facts, and context, runs
+    :func:`resolve_loan_seeded`, and returns all four bundled as a
+    :class:`ResolvedLoan`.  :func:`resolve_account_loan` is a thin projection of
+    it, and :class:`~app.services.resolution_context.BalanceContext` memoizes it
+    per ``(account, scenario, as_of)`` so a read pass resolves each loan exactly
+    once no matter how many surfaces ask.
+
+    Returning the loaded ``context`` alongside the ``state`` is what removes the
+    last reason for a consumer to re-load: the loan tile previously called
+    :func:`load_loan_context` and :func:`load_loan_anchor_facts` itself (to run a
+    second ``date.max`` resolver probe), which is precisely the duplication this
+    bundle exists to make unnecessary.
+
+    Returns ``None`` when the account has no ``LoanParams`` row (it is not a
+    configured loan); the caller skips it.  A configured loan is always
+    resolvable -- its origination anchor fact is synthesized from the immutable
+    params -- so there is no anchor-based short-circuit here.
+
+    Args:
+        account_id: The loan account to resolve.  The caller owns the ownership
+            check (the loaders trust this arg).
+        scenario_id: The active budget scenario (scopes the payment history and
+            the genesis-ledger seed), or ``None`` when the user has no baseline
+            -- the loan then resolves from its anchor with no payment feed, the
+            documented degraded state.
+        as_of: The evaluation date the loan is resolved AT (the resolver's
+            "now": what counts as confirmed, and what the current balance is).
+
+    Returns:
+        The :class:`ResolvedLoan`, or ``None`` if the account has no
+        ``LoanParams``.
+    """
+    params = load_loan_params(account_id)
+    if params is None:
+        return None
+    anchor_facts = load_loan_anchor_facts(params)
+    context = load_loan_context(account_id, scenario_id, params)
+    state = resolve_loan_seeded(
+        loan_resolver.LoanInputs(
+            params, anchor_facts, context.payments, context.rate_changes,
+        ),
+        account_id, scenario_id, as_of,
+    )
+    return ResolvedLoan(
+        params=params,
+        anchor_facts=anchor_facts,
+        context=context,
+        state=state,
+    )
+
+
 def resolve_account_loan(
     account_id: int, scenario_id: int, today: date
 ) -> tuple[LoanParams, loan_resolver.LoanState] | None:
     """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
 
-    The per-account "load LoanParams (skip if unconfigured), load anchor
-    events + context, run the resolver" preamble shared by the debt-strategy
-    route, the net-worth / year-end schedule generation, home equity, and the
-    recurrence-sync writer.  Centralizing it keeps those consumers from drifting
-    on HOW a loan account is resolved (which inputs feed
-    :func:`loan_resolver.resolve_loan`, in what order).  It resolves through
-    :func:`resolve_loan_seeded`, so its ``current_balance`` is the
-    genesis-ledger confirmed balance (falling back to the anchor replay when the
-    ledger has not opened the loan) and its schedule / payoff / interest reflect
-    the loan's standing overpayment.
+    The ``(params, state)`` PROJECTION of :func:`resolve_loan_bundle` -- the
+    narrow view the write / sync paths want (the recurrence-sync writer, the
+    transfer posting sync), which need the params and the resolved state but
+    not the loaded payment feed.  It performs no load of its own, so it cannot
+    drift from the bundle every READ surface resolves through: both are one
+    resolution, seeded from the genesis ledger via :func:`resolve_loan_seeded`.
+
+    A READ surface should NOT call this: it resolves the loan afresh on every
+    call, which is how one ``/savings`` render came to run the resolver eleven
+    times for two loans.  Read surfaces ask the seam
+    (:func:`app.services.balance_at.loan_state`), whose
+    :class:`~app.services.resolution_context.BalanceContext` memoizes the bundle
+    for the read pass.
 
     Returns ``None`` when the account has no ``LoanParams`` row (it is not a
-    configured loan); the caller skips it.  A configured loan is always
-    resolvable -- its origination anchor fact is synthesized from the
-    immutable params -- so there is no anchor-based short-circuit here.
+    configured loan); the caller skips it.
 
     Args:
         account_id: The debt account to resolve.
@@ -130,18 +232,10 @@ def resolve_account_loan(
         resolved :class:`~app.services.loan_resolver.LoanState` -- or
         ``None`` if the account has no ``LoanParams``.
     """
-    params = load_loan_params(account_id)
-    if params is None:
+    resolved = resolve_loan_bundle(account_id, scenario_id, today)
+    if resolved is None:
         return None
-    anchor_facts = load_loan_anchor_facts(params)
-    ctx = load_loan_context(account_id, scenario_id, params)
-    state = resolve_loan_seeded(
-        loan_resolver.LoanInputs(
-            params, anchor_facts, ctx.payments, ctx.rate_changes,
-        ),
-        account_id, scenario_id, today,
-    )
-    return params, state
+    return resolved.params, resolved.state
 
 
 def contractual_schedule_from_origination(

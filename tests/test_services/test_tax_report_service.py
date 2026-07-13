@@ -39,6 +39,7 @@ from app.services.auth_service import _seed_tax_data_for_user
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import TaxReport, compute_tax_report
+from app.services.resolution_context import BalanceContext
 from app.services.year_end_summary_service._income_tax import (
     _compute_mortgage_interest,
 )
@@ -607,8 +608,9 @@ class TestScheduleAMortgageInterest:
         )
 
         # Independent oracle: the same hybrid over the same schedule.
+        bctx = BalanceContext.build(seed_user["user"].id)
         debt_schedules = net_worth_kernel.generate_debt_schedules(
-            [loan], scenario_id,
+            [loan], bctx,
         )
         oracle_interest = _compute_mortgage_interest(
             2026, debt_schedules, scenario_id,

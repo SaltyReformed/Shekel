@@ -20,12 +20,11 @@ series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.services import balance_at, home_equity_service, net_worth_kernel
+from app.services.resolution_context import BalanceContext
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -93,7 +92,7 @@ def compute_net_worth_today(account_data: list[dict]) -> dict:
 
 def build_account_net_worth_maps(
     accounts: list,
-    scenario: Scenario | None,
+    ctx: BalanceContext,
     all_periods: list[PayPeriod],
 ) -> list[dict]:
     """Build each account's dense balance map plus its liability flag.
@@ -125,11 +124,11 @@ def build_account_net_worth_maps(
 
     Args:
         accounts: The user's active accounts.
-        scenario: The baseline scenario, or ``None``.  With no scenario the
-            seam's resolver path cannot run, so an empty list is returned
-            (the degraded no-scenario state) WITHOUT calling the seam --
-            the seam raises on a ``None`` scenario by contract, and this
-            caller owns the legitimate empty state.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            With no baseline scenario on it the seam's resolver path cannot run,
+            so an empty list is returned (the degraded no-scenario state)
+            WITHOUT calling the seam -- the seam raises on a ``None`` scenario by
+            contract, and this caller owns the legitimate empty state.
         all_periods: All of the user's pay periods (the dense domain).
 
     Returns:
@@ -140,10 +139,10 @@ def build_account_net_worth_maps(
         the sparklines and the net-worth math read one projection; the
         net-worth reducers ignore it.
     """
-    if scenario is None:
+    if ctx.scenario is None:
         return []
 
-    balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
+    balance_maps = balance_at.build_maps(accounts, ctx, all_periods)
     return to_net_worth_account_data(accounts, balance_maps)
 
 
@@ -481,8 +480,7 @@ def compute_net_worth_series(
 
 def compute_property_equity(
     accounts: list,
-    scenario_id: int | None,
-    as_of: date,
+    ctx: BalanceContext,
 ) -> list[dict]:
     """Resolve each Property account's equity for the cockpit equity card.
 
@@ -504,11 +502,10 @@ def compute_property_equity(
 
     Args:
         accounts: The user's active accounts.
-        scenario_id: The baseline scenario id for the loan resolver, or
-            ``None`` when the user has no scenario yet (each secured loan
-            then resolves from its anchor with no payment history, exactly
-            as the detail page does).
-        as_of: The as-of date for the loan resolver.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            Each secured loan is read from its memo, so the mortgage leg of this
+            card is the SAME resolution the debt card and the net-worth liability
+            column read -- one resolution, not a fourth one that has to agree.
 
     Returns:
         A list of ``{account, equity}`` dicts, one per Property account in
@@ -522,7 +519,7 @@ def compute_property_equity(
             result.append({
                 "account": account,
                 "equity": home_equity_service.resolve_home_equity(
-                    account, scenario_id, as_of,
+                    account, ctx,
                 ),
             })
     return result

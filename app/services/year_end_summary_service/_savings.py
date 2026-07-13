@@ -105,7 +105,8 @@ def _savings_progress_for_account(
     """
     all_periods = year_ctx.all_periods
     year = year_ctx.year
-    scenario = year_ctx.scenario
+    balance_ctx = year_ctx.balance_ctx
+    scenario = balance_ctx.scenario
 
     contributions = _sum_shadow_income(
         account.id, year_ctx.year_period_ids, scenario.id,
@@ -120,7 +121,7 @@ def _savings_progress_for_account(
             )
         )
     elif int_params:
-        balances = balance_at.balance_map(account, scenario, all_periods)
+        balances = balance_at.balance_map(account, balance_ctx, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -135,7 +136,7 @@ def _savings_progress_for_account(
             account, int_params, scenario, all_periods, year,
         )
     else:
-        balances = balance_at.balance_map(account, scenario, all_periods)
+        balances = balance_at.balance_map(account, balance_ctx, all_periods)
         jan1_bal = _lookup_balance_with_anchor_fallback(
             balances, year, 1, all_periods, account,
         )
@@ -194,7 +195,7 @@ def _project_investment_for_year(
     # compounds from -- so both investment projections start identically, and
     # this consumer reads the seed through the seam (W9906 fence).
     balances = balance_at.investment_seed_map(
-        account, year_ctx.scenario, all_periods,
+        account, year_ctx.balance_ctx, all_periods,
     )
 
     # Pay periods that fall within the target year (Jan 1 - Dec 31).
@@ -210,7 +211,7 @@ def _project_investment_for_year(
         inputs.deductions_by_account.get(account.id, []),
     )
     acct_contributions = _load_shadow_contributions(
-        account.id, year_ctx.scenario.id, year_ctx.year_period_ids,
+        account.id, year_ctx.balance_ctx.scenario.id, year_ctx.year_period_ids,
     )
 
     # Compute periodic contribution and employer params.

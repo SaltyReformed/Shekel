@@ -14,18 +14,19 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.services import (
     balance_resolver,
     daily_balance_series,
 )
+
+from app.services.resolution_context import BalanceContext
 
 from ._inputs import _require_scenario
 
 
 def cash_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     *,
     amount_overrides: "dict[int, Decimal] | None" = None,
@@ -67,7 +68,7 @@ def cash_balance_map(
     Args:
         account: The account whose cash-flow balance to project.  Its
             ``user_id`` scopes the producer; its kind is NOT consulted.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
         periods: The pay periods to project over, ordered by
             ``period_index`` (must include the anchor period; pre-anchor
             periods are omitted from the result by the producer).
@@ -83,14 +84,14 @@ def cash_balance_map(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
+    _require_scenario(ctx)
     return balance_resolver.balances_for(
-        account, scenario.id, periods, amount_overrides=amount_overrides,
+        account, ctx.scenario.id, periods, amount_overrides=amount_overrides,
     )
 
 
 def cash_balance_at(
-    account: Account, scenario: Scenario, as_of: date,
+    account: Account, ctx: BalanceContext, as_of: date,
 ) -> Decimal:
     """Return one account's cash-flow balance as of a calendar date *as_of*.
 
@@ -109,7 +110,8 @@ def cash_balance_at(
 
     Args:
         account: The account to value.  Its kind is NOT consulted.
-        scenario: The baseline scenario (its id scopes the producer).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (its scenario scopes the producer).
         as_of: The calendar date to value the account at.
 
     Returns:
@@ -122,13 +124,13 @@ def cash_balance_at(
         TypeError: When ``as_of`` is not a :class:`datetime.date` (raised by
             the underlying producer).
     """
-    _require_scenario(scenario)
-    return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+    _require_scenario(ctx)
+    return balance_resolver.balance_as_of_date(account, ctx.scenario.id, as_of)
 
 
 def cash_daily_balance_series(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     first_day: date,
     last_day: date,
     *,
@@ -152,7 +154,8 @@ def cash_daily_balance_series(
     Args:
         account: The account to project.  Its kind is NOT consulted; must be
             session-attached.
-        scenario: The baseline scenario (its id scopes the producer).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (its scenario scopes the producer).
         first_day: Inclusive first calendar day of the range.
         last_day: Inclusive last calendar day of the range.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
@@ -170,8 +173,8 @@ def cash_daily_balance_series(
         TypeError: When ``first_day`` / ``last_day`` are not
             :class:`datetime.date`.
     """
-    _require_scenario(scenario)
+    _require_scenario(ctx)
     return daily_balance_series.build_daily_series(
-        account, scenario.id, first_day, last_day,
+        account, ctx.scenario.id, first_day, last_day,
         amount_overrides=amount_overrides,
     )

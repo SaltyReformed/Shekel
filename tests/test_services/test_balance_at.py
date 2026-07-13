@@ -55,6 +55,7 @@ from app.services.projection_inputs import (
 from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -66,6 +67,19 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
 )
+
+
+def _no_baseline(user_id):
+    """Return a BalanceContext with NO baseline scenario.
+
+    The honest stand-in for the bare ``None`` scenario the seam entries used to
+    take: ``get_baseline_scenario`` returns ``None`` for a fresh user, and the
+    seam's fail-loud contract turns that into a ``ValueError`` rather than a deep
+    ``AttributeError`` on ``scenario.id`` (or a silent ``$0``).  The guard now
+    lives on the context, so the no-baseline state is expressed by a context
+    carrying ``scenario=None`` -- not by passing ``None`` where a context goes.
+    """
+    return BalanceContext(user_id=user_id, scenario=None, as_of=date.today())
 
 
 def _make_hysa(db, seed_user, anchor_period, balance):
@@ -162,13 +176,14 @@ class TestBalanceMapCash:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(account, scenario, periods)
+            seam = balance_at.balance_map(account, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                account, scenario, periods,
+                account, bctx, periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=gross,
             )
@@ -192,13 +207,14 @@ class TestBalanceMapCash:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(hysa, scenario, periods)
+            seam = balance_at.balance_map(hysa, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                hysa, scenario, periods,
+                hysa, bctx, periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=gross,
             )
@@ -227,6 +243,7 @@ class TestBalanceMapLoan:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
@@ -242,13 +259,13 @@ class TestBalanceMapLoan:
             db.session.commit()
 
             schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], scenario.id,
+                [mortgage], bctx,
             )[mortgage.id]
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(mortgage, scenario, periods)
+            seam = balance_at.balance_map(mortgage, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                mortgage, scenario, periods,
+                mortgage, bctx, periods,
                 debt_schedule=schedule, investment_params=None,
                 deductions=[], salary_gross_biweekly=gross,
             )
@@ -283,6 +300,7 @@ class TestBalanceMapLoan:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
@@ -292,13 +310,13 @@ class TestBalanceMapLoan:
             db.session.commit()
 
             schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], scenario.id,
+                [loan], bctx,
             )[loan.id]
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(loan, scenario, periods)
+            seam = balance_at.balance_map(loan, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                loan, scenario, periods,
+                loan, bctx, periods,
                 debt_schedule=schedule, investment_params=None,
                 deductions=[], salary_gross_biweekly=gross,
             )
@@ -328,6 +346,7 @@ class TestBalanceMapInvestment:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
             inv = make_investment_account(
@@ -340,9 +359,9 @@ class TestBalanceMapInvestment:
             ).get(inv.id, [])
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(inv, scenario, periods)
+            seam = balance_at.balance_map(inv, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                inv, scenario, periods,
+                inv, bctx, periods,
                 debt_schedule=None, investment_params=params,
                 deductions=deductions, salary_gross_biweekly=gross,
             )
@@ -363,6 +382,7 @@ class TestBalanceMapInvestment:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
@@ -372,9 +392,9 @@ class TestBalanceMapInvestment:
             ).get(inv.id, [])
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(inv, scenario, periods)
+            seam = balance_at.balance_map(inv, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                inv, scenario, periods,
+                inv, bctx, periods,
                 debt_schedule=None, investment_params=params,
                 deductions=deductions, salary_gross_biweekly=gross,
             )
@@ -404,12 +424,13 @@ class TestBalanceMapInvestment:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
 
-            seed = balance_at.investment_seed_map(inv, scenario, periods)
+            seed = balance_at.investment_seed_map(inv, bctx, periods)
             # Delegation parity: the seam returns the producer's seed verbatim
             # (investment_base_balance_map lives in net_worth_investment, the
             # investment growth sub-chain extracted from the kernel).
@@ -421,7 +442,7 @@ class TestBalanceMapInvestment:
             assert seed[periods[2].id] == Decimal("10000.00")
             assert seed[periods[-1].id] == Decimal("10000.00")
             # Strictly below the growth-modeled map -- the seed is pre-growth.
-            modeled = balance_at.balance_map(inv, scenario, periods)
+            modeled = balance_at.balance_map(inv, bctx, periods)
             assert modeled[periods[-1].id] > seed[periods[-1].id]
 
 
@@ -450,6 +471,7 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
             # Anchor at the first period, strictly before the current one.
@@ -458,12 +480,12 @@ class TestInvestmentGrowthSinceAnchor:
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, scenario, periods, current,
+                inv, bctx, periods, current,
             )
             assert result is not None
             growth, contributed = result
 
-            balances = balance_at.balance_map(inv, scenario, periods)
+            balances = balance_at.balance_map(inv, bctx, periods)
             anchor_balance = balances[periods[0].id]
             current_balance = balances[current.id]
             # The reconciliation identity, to the cent.
@@ -484,6 +506,7 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
             inv = make_investment_account(
@@ -497,7 +520,7 @@ class TestInvestmentGrowthSinceAnchor:
             gross = income_service.get_current_gross_biweekly(user_id)
 
             seam = balance_at.investment_growth_since_anchor(
-                inv, scenario, periods, current,
+                inv, bctx, periods, current,
             )
             raw = net_worth_investment.investment_growth_since_anchor(
                 inv, params, scenario, periods, deductions, gross, current,
@@ -517,6 +540,7 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
             inv = make_investment_account(
@@ -524,7 +548,7 @@ class TestInvestmentGrowthSinceAnchor:
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, scenario, periods, current,
+                inv, bctx, periods, current,
             )
             assert result is None
 
@@ -535,13 +559,14 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
 
             result = balance_at.investment_growth_since_anchor(
-                inv, scenario, periods, None,
+                inv, bctx, periods, None,
             )
             assert result is None
 
@@ -563,6 +588,7 @@ class TestBalanceMapProperty:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
@@ -570,9 +596,9 @@ class TestBalanceMapProperty:
             )
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(prop, scenario, periods)
+            seam = balance_at.balance_map(prop, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                prop, scenario, periods,
+                prop, bctx, periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=gross,
             )
@@ -606,6 +632,7 @@ class TestBuildMaps:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
 
             _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
@@ -634,7 +661,7 @@ class TestBuildMaps:
                 a for a in accounts if a.id in params.loan_params_map
             ]
             debt_schedules = net_worth_kernel.generate_debt_schedules(
-                loan_accounts, scenario.id,
+                loan_accounts, bctx,
             )
             # Deductions + engine gross are no longer on _AccountParams (the
             # seam assembles them); source them from the same shared loaders
@@ -656,7 +683,7 @@ class TestBuildMaps:
             expected_by_id = {}
             for account in accounts:
                 balances = net_worth_kernel.build_account_balance_map(
-                    account, scenario, periods,
+                    account, bctx, periods,
                     debt_schedule=debt_schedules.get(account.id),
                     investment_params=params.investment_params_map.get(
                         account.id,
@@ -667,7 +694,7 @@ class TestBuildMaps:
                 if balances is not None:
                     expected_by_id[account.id] = balances
 
-            seam_maps = balance_at.build_maps(accounts, scenario, periods)
+            seam_maps = balance_at.build_maps(accounts, bctx, periods)
 
             assert set(seam_maps.keys()) == set(expected_by_id.keys())
             # All five seeded accounts have anchors, so none is omitted.
@@ -689,6 +716,7 @@ class TestBuildMaps:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             checking = seed_user["account"]
             no_anchor = SimpleNamespace(
@@ -697,7 +725,7 @@ class TestBuildMaps:
             )
 
             seam_maps = balance_at.build_maps(
-                [checking, no_anchor], scenario, periods,
+                [checking, no_anchor], bctx, periods,
             )
 
             assert checking.id in seam_maps
@@ -714,11 +742,12 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date  # inside a known period
 
-            seam = balance_at.balance_at(account, scenario, as_of)
+            seam = balance_at.balance_at(account, bctx, as_of)
             expected = balance_resolver.balance_as_of_date(
                 account, scenario.id, as_of,
             )
@@ -744,12 +773,13 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
             as_of = periods[6].start_date  # independently known: in period 6
 
-            seam = balance_at.balance_at(hysa, scenario, as_of)
-            full_map = balance_at.balance_map(hysa, scenario, periods)
+            seam = balance_at.balance_at(hysa, bctx, as_of)
+            full_map = balance_at.balance_map(hysa, bctx, periods)
             # Kind-correct scalar == kind-correct map at the containing period.
             assert seam == full_map[periods[6].id]
             # And it ACCRUES: strictly above the flat no-interest cash carry
@@ -769,17 +799,18 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
             schedule = net_worth_kernel.generate_debt_schedules(
-                [mortgage], scenario.id,
+                [mortgage], bctx,
             )[mortgage.id]
             as_of = periods[7].end_date
 
-            seam = balance_at.balance_at(mortgage, scenario, as_of)
+            seam = balance_at.balance_at(mortgage, bctx, as_of)
             expected = balance_from_schedule_at_date(
                 schedule.schedule, as_of, schedule.current_balance,
             )
@@ -801,12 +832,13 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
             as_of = periods[6].start_date  # independently known: in period 6
 
-            seam = balance_at.balance_at(inv, scenario, as_of)
-            full_map = balance_at.balance_map(inv, scenario, periods)
+            seam = balance_at.balance_at(inv, bctx, as_of)
+            full_map = balance_at.balance_map(inv, bctx, periods)
             assert seam == full_map[periods[6].id]
             # Neighbors differ -> an off-by-one in period selection would show.
             assert full_map[periods[5].id] != full_map[periods[7].id]
@@ -826,6 +858,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
@@ -833,8 +866,8 @@ class TestBalanceAt:
             )
             as_of = periods[6].start_date  # independently known: in period 6
 
-            seam = balance_at.balance_at(prop, scenario, as_of)
-            full_map = balance_at.balance_map(prop, scenario, periods)
+            seam = balance_at.balance_at(prop, bctx, as_of)
+            full_map = balance_at.balance_map(prop, bctx, periods)
             assert seam == full_map[periods[6].id]
             # Neighbors differ -> an off-by-one in period selection would show.
             assert full_map[periods[5].id] != full_map[periods[7].id]
@@ -858,6 +891,7 @@ class TestAmountOverridesPassthrough:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             bonus = add_txn(
@@ -868,7 +902,7 @@ class TestAmountOverridesPassthrough:
             overrides = {bonus.id: Decimal("9999.00")}
 
             seam = balance_at.balance_map(
-                account, scenario, periods, amount_overrides=overrides,
+                account, bctx, periods, amount_overrides=overrides,
             )
             expected = balance_resolver.balances_for(
                 account, scenario.id, periods, amount_overrides=overrides,
@@ -877,7 +911,7 @@ class TestAmountOverridesPassthrough:
 
             # The override changed the projection: $1,000 anchor + $9,999
             # bonus = $10,999 at period 5, vs $1,000 + $100 = $1,100 without.
-            no_override = balance_at.balance_map(account, scenario, periods)
+            no_override = balance_at.balance_map(account, bctx, periods)
             assert no_override[periods[5].id] == Decimal("1100.00")
             assert seam[periods[5].id] == Decimal("10999.00")
 
@@ -899,6 +933,7 @@ class TestMultiLoanIsolation:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             loan_a, params_a = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
@@ -916,7 +951,7 @@ class TestMultiLoanIsolation:
             )
             db.session.commit()
 
-            seam_maps = balance_at.build_maps([loan_a, loan_b], scenario, periods)
+            seam_maps = balance_at.build_maps([loan_a, loan_b], bctx, periods)
 
             # Pre-first-payment period 0 -> each loan's OWN current balance.
             assert seam_maps[loan_a.id][periods[0].id] == Decimal("200000.00")
@@ -941,17 +976,18 @@ class TestInvestmentContributions:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
-            baseline = balance_at.balance_map(inv, scenario, periods)
+            baseline = balance_at.balance_map(inv, bctx, periods)
 
             profile = make_salary_profile(seed_user, db.session)
             db.session.flush()
             _add_flat_deduction(db, profile, inv, Decimal("200.0000"))
             db.session.commit()
 
-            with_ded = balance_at.balance_map(inv, scenario, periods)
+            with_ded = balance_at.balance_map(inv, bctx, periods)
             # Post-anchor period reflects the consumed contribution.
             assert with_ded[periods[-1].id] > baseline[periods[-1].id]
 
@@ -962,7 +998,7 @@ class TestInvestmentContributions:
             ).get(inv.id, [])
             gross = income_service.get_current_gross_biweekly(user_id)
             expected = net_worth_kernel.build_account_balance_map(
-                inv, scenario, periods, debt_schedule=None,
+                inv, bctx, periods, debt_schedule=None,
                 investment_params=params, deductions=deductions,
                 salary_gross_biweekly=gross,
             )
@@ -971,9 +1007,9 @@ class TestInvestmentContributions:
 
             # Scope: a non-investment account in the same batch is untouched.
             checking = seed_user["account"]
-            maps = balance_at.build_maps([inv, checking], scenario, periods)
+            maps = balance_at.build_maps([inv, checking], bctx, periods)
             assert maps[checking.id] == balance_at.balance_map(
-                checking, scenario, periods,
+                checking, bctx, periods,
             )
 
     def test_employer_match_driven_by_gross_exceeds_no_match(
@@ -992,6 +1028,7 @@ class TestInvestmentContributions:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv_match = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
@@ -1011,8 +1048,8 @@ class TestInvestmentContributions:
             gross = income_service.get_current_gross_biweekly(user_id)
             assert gross > Decimal("0.00")  # the match cap basis must be real
 
-            match_map = balance_at.balance_map(inv_match, scenario, periods)
-            none_map = balance_at.balance_map(inv_none, scenario, periods)
+            match_map = balance_at.balance_map(inv_match, bctx, periods)
+            none_map = balance_at.balance_map(inv_none, bctx, periods)
             assert match_map[periods[-1].id] > none_map[periods[-1].id]
 
             # seam == kernel for the matched account.
@@ -1023,7 +1060,7 @@ class TestInvestmentContributions:
                 user_id, [inv_match.id],
             ).get(inv_match.id, [])
             expected = net_worth_kernel.build_account_balance_map(
-                inv_match, scenario, periods, debt_schedule=None,
+                inv_match, bctx, periods, debt_schedule=None,
                 investment_params=params, deductions=deductions,
                 salary_gross_biweekly=gross,
             )
@@ -1049,11 +1086,11 @@ class TestScenarioGuard:
             as_of = periods[5].start_date
 
             with pytest.raises(ValueError):
-                balance_at.balance_map(account, None, periods)
+                balance_at.balance_map(account, _no_baseline(user_id), periods)
             with pytest.raises(ValueError):
-                balance_at.build_maps([account], None, periods)
+                balance_at.build_maps([account], _no_baseline(user_id), periods)
             with pytest.raises(ValueError):
-                balance_at.balance_at(account, None, as_of)
+                balance_at.balance_at(account, _no_baseline(user_id), as_of)
 
 
 class TestBalanceAtDegrade:
@@ -1071,6 +1108,7 @@ class TestBalanceAtDegrade:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage_type = (
                 db.session.query(AccountType).filter_by(name="Mortgage").one()
@@ -1084,7 +1122,7 @@ class TestBalanceAtDegrade:
             db.session.commit()
             as_of = periods[5].start_date
 
-            seam = balance_at.balance_at(acct, scenario, as_of)
+            seam = balance_at.balance_at(acct, bctx, as_of)
             expected = balance_resolver.balance_as_of_date(
                 acct, scenario.id, as_of,
             )
@@ -1102,10 +1140,11 @@ class TestBalanceAtDegrade:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
-            seam = balance_at.balance_at(inv, scenario, date(2000, 1, 1))
+            seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
             expected = round_money(
                 balance_resolver.resolve_anchor(inv, scenario.id).balance,
             )
@@ -1128,6 +1167,7 @@ class TestAmountOverridesScope:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage, _p = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
@@ -1141,8 +1181,8 @@ class TestAmountOverridesScope:
             overrides = {999999: Decimal("99999.00")}
             for acct in (mortgage, inv, prop):
                 assert balance_at.balance_map(
-                    acct, scenario, periods, amount_overrides=overrides,
-                ) == balance_at.balance_map(acct, scenario, periods)
+                    acct, bctx, periods, amount_overrides=overrides,
+                ) == balance_at.balance_map(acct, bctx, periods)
 
     def test_interest_path_override_changes_balance(
         self, app, db, seed_user, seed_periods_today,
@@ -1157,6 +1197,7 @@ class TestAmountOverridesScope:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -1174,9 +1215,9 @@ class TestAmountOverridesScope:
             overrides = {txn.id: Decimal("9999.00")}
 
             with_ov = balance_at.balance_map(
-                hysa, scenario, periods, amount_overrides=overrides,
+                hysa, bctx, periods, amount_overrides=overrides,
             )
-            without_ov = balance_at.balance_map(hysa, scenario, periods)
+            without_ov = balance_at.balance_map(hysa, bctx, periods)
             # The override ($9,999) replaces the stored $100 -> ~$9,899 higher.
             assert with_ov[periods[5].id] > without_ov[periods[5].id]
             assert (
@@ -1200,13 +1241,14 @@ class TestCashPreAnchorOmission:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
             gross = income_service.get_current_gross_biweekly(user_id)
 
-            seam = balance_at.balance_map(hysa, scenario, periods)
+            seam = balance_at.balance_map(hysa, bctx, periods)
             expected = net_worth_kernel.build_account_balance_map(
-                hysa, scenario, periods, debt_schedule=None,
+                hysa, bctx, periods, debt_schedule=None,
                 investment_params=None, deductions=[],
                 salary_gross_biweekly=gross,
             )
@@ -1227,8 +1269,9 @@ class TestBalanceMapEdgeCases:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            assert balance_at.build_maps([], scenario, periods) == {}
+            assert balance_at.build_maps([], bctx, periods) == {}
 
     def test_balance_map_empty_periods_is_empty_map(
         self, app, db, seed_user, seed_periods_today,
@@ -1237,8 +1280,9 @@ class TestBalanceMapEdgeCases:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             account = seed_user["account"]
-            result = balance_at.balance_map(account, scenario, [])
+            result = balance_at.balance_map(account, bctx, [])
             assert result is not None
             assert len(result) == 0
 
@@ -1249,12 +1293,13 @@ class TestBalanceMapEdgeCases:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             no_anchor = SimpleNamespace(
                 id=-1, user_id=user_id, account_type=None,
                 current_anchor_period_id=None,
             )
-            assert balance_at.balance_map(no_anchor, scenario, periods) is None
+            assert balance_at.balance_map(no_anchor, bctx, periods) is None
 
 
 class TestCashFlowView:
@@ -1284,10 +1329,11 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
 
-            seam = balance_at.cash_balance_map(account, scenario, periods)
+            seam = balance_at.cash_balance_map(account, bctx, periods)
             expected = balance_resolver.balances_for(
                 account, scenario.id, periods,
             )
@@ -1310,11 +1356,12 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
-            cash = balance_at.cash_balance_map(hysa, scenario, periods)
-            kind_correct = balance_at.balance_map(hysa, scenario, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
+            kind_correct = balance_at.balance_map(hysa, bctx, periods)
             plain = balance_resolver.balances_for(
                 hysa, scenario.id, periods,
             ).balances
@@ -1339,6 +1386,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             add_txn(
@@ -1347,7 +1395,7 @@ class TestCashFlowView:
             )
             db.session.commit()
 
-            seam = balance_at.cash_balance_map(account, scenario, periods)
+            seam = balance_at.cash_balance_map(account, bctx, periods)
             expected = balance_resolver.balances_for(
                 account, scenario.id, periods,
             )
@@ -1366,6 +1414,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             bonus = add_txn(
@@ -1376,7 +1425,7 @@ class TestCashFlowView:
             overrides = {bonus.id: Decimal("9999.00")}
 
             seam = balance_at.cash_balance_map(
-                account, scenario, periods, amount_overrides=overrides,
+                account, bctx, periods, amount_overrides=overrides,
             )
             expected = balance_resolver.balances_for(
                 account, scenario.id, periods, amount_overrides=overrides,
@@ -1392,11 +1441,12 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
-            seam = balance_at.cash_balance_at(account, scenario, as_of)
+            seam = balance_at.cash_balance_at(account, bctx, as_of)
             expected = balance_resolver.balance_as_of_date(
                 account, scenario.id, as_of,
             )
@@ -1416,11 +1466,12 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             as_of = periods[-1].end_date
 
-            cash = balance_at.cash_balance_at(hysa, scenario, as_of)
+            cash = balance_at.cash_balance_at(hysa, bctx, as_of)
             assert cash == balance_resolver.balance_as_of_date(
                 hysa, scenario.id, as_of,
             )
@@ -1438,9 +1489,9 @@ class TestCashFlowView:
             as_of = periods[5].start_date
 
             with pytest.raises(ValueError):
-                balance_at.cash_balance_map(account, None, periods)
+                balance_at.cash_balance_map(account, _no_baseline(user_id), periods)
             with pytest.raises(ValueError):
-                balance_at.cash_balance_at(account, None, as_of)
+                balance_at.cash_balance_at(account, _no_baseline(user_id), as_of)
 
 
 class TestInterestDetailRerouteParity:
@@ -1475,6 +1526,7 @@ class TestInterestDetailRerouteParity:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -1519,7 +1571,7 @@ class TestInterestDetailRerouteParity:
             )
 
             # NEW interest_detail path: the seam + the kernel interest accessor.
-            new_balances = balance_at.balance_map(hysa, scenario, periods)
+            new_balances = balance_at.balance_map(hysa, bctx, periods)
             new_interest = net_worth_kernel.interest_by_period_for_account(
                 hysa, scenario, periods, params,
             )
@@ -1563,11 +1615,12 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
 
-            view = balance_at.grid_balance_view(account, scenario, periods)
-            cash = balance_at.cash_balance_map(account, scenario, periods)
+            view = balance_at.grid_balance_view(account, bctx, periods)
+            cash = balance_at.cash_balance_map(account, bctx, periods)
 
             assert view.balances == cash.balances
             assert view.stale_anchor_warning == cash.stale_anchor_warning
@@ -1587,14 +1640,15 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
 
-            view = balance_at.grid_balance_view(mortgage, scenario, periods)
-            cash = balance_at.cash_balance_map(mortgage, scenario, periods)
+            view = balance_at.grid_balance_view(mortgage, bctx, periods)
+            cash = balance_at.cash_balance_map(mortgage, bctx, periods)
 
             assert view.balances == cash.balances
             assert view.increments == {}
@@ -1614,6 +1668,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
@@ -1627,9 +1682,9 @@ class TestGridBalanceView:
             ))
             db.session.commit()
 
-            view = balance_at.grid_balance_view(hysa, scenario, periods)
-            kc = balance_at.balance_map(hysa, scenario, periods)
-            cash = balance_at.cash_balance_map(hysa, scenario, periods)
+            view = balance_at.grid_balance_view(hysa, bctx, periods)
+            kc = balance_at.balance_map(hysa, bctx, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
 
             # Displayed balances are the rounded kind-correct (interest-accrued)
             # map, strictly above the no-interest cash balance by the horizon.
@@ -1673,20 +1728,21 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
 
-            view = balance_at.grid_balance_view(inv, scenario, periods)
-            cash = balance_at.cash_balance_map(inv, scenario, periods)
+            view = balance_at.grid_balance_view(inv, bctx, periods)
+            cash = balance_at.cash_balance_map(inv, bctx, periods)
 
             assert view.balances == cash.balances
             assert view.increments == {}
             # It is the cash-flow (transaction) balance, NOT the growth-modeled
             # one: balance_map accrues growth above the flat cash basis at the
             # horizon, and the grid view deliberately does not.
-            modeled = balance_at.balance_map(inv, scenario, periods)
+            modeled = balance_at.balance_map(inv, bctx, periods)
             assert view.balances[periods[-1].id] < modeled[periods[-1].id]
 
     def test_property_stays_cash_flow_no_accrual(
@@ -1702,19 +1758,20 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
 
-            view = balance_at.grid_balance_view(prop, scenario, periods)
-            cash = balance_at.cash_balance_map(prop, scenario, periods)
+            view = balance_at.grid_balance_view(prop, bctx, periods)
+            cash = balance_at.cash_balance_map(prop, bctx, periods)
 
             assert view.balances == cash.balances
             assert view.increments == {}
             # Cash-flow (flat market value), NOT the appreciated projection.
-            modeled = balance_at.balance_map(prop, scenario, periods)
+            modeled = balance_at.balance_map(prop, bctx, periods)
             assert view.balances[periods[-1].id] < modeled[periods[-1].id]
 
     def test_none_scenario_raises(
@@ -1725,7 +1782,9 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             periods = pay_period_service.get_all_periods(user_id)
             with pytest.raises(ValueError):
-                balance_at.grid_balance_view(seed_user["account"], None, periods)
+                balance_at.grid_balance_view(
+                    seed_user["account"], _no_baseline(user_id), periods,
+                )
 
     def test_accruing_kc_none_degrades_to_cash(
         self, app, db, seed_user, seed_periods_today, monkeypatch,
@@ -1742,10 +1801,11 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
-            cash = balance_at.cash_balance_map(hysa, scenario, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
             # Force the documented (NOT-NULL-unreachable) None return.  Patch the
             # DEFINING module (``_kind_correct``), not the package re-export:
             # ``grid_balance_view`` looks the producer up through its owning
@@ -1753,7 +1813,7 @@ class TestGridBalanceView:
             monkeypatch.setattr(
                 balance_at._kind_correct, "balance_map", lambda *a, **k: None,
             )
-            view = balance_at.grid_balance_view(hysa, scenario, periods)
+            view = balance_at.grid_balance_view(hysa, bctx, periods)
 
             assert view.balances == cash.balances
             assert view.increments == {}
@@ -1781,6 +1841,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_txn = Transaction(
@@ -1803,7 +1864,7 @@ class TestGridBalanceView:
                 lambda uid, sid, txns: {income_txn.id: Decimal("1500.00")},
             )
 
-            view = balance_at.grid_balance_view(hysa, scenario, periods)
+            view = balance_at.grid_balance_view(hysa, bctx, periods)
             params = (
                 db.session.query(InterestParams)
                 .filter_by(account_id=hysa.id).one()
@@ -1837,6 +1898,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -1850,8 +1912,8 @@ class TestLiabilityOwedAtDates:
             ]
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], scenario, samples,
-                {acct.id: Decimal("200000.00")}, today,
+                [acct], bctx, samples,
+                {acct.id: Decimal("200000.00")},
             )
 
             series = owed[acct.id]
@@ -1880,6 +1942,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -1888,8 +1951,7 @@ class TestLiabilityOwedAtDates:
             sentinel = Decimal("123456.78")
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], scenario, [date.today()], {acct.id: sentinel},
-                date.today(),
+                [acct], bctx, [date.today()], {acct.id: sentinel},
             )
 
             assert owed[acct.id] == [sentinel]
@@ -1907,6 +1969,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
@@ -1917,7 +1980,7 @@ class TestLiabilityOwedAtDates:
                        date(today.year + 5, 12, 31)]
 
             owed = balance_at.liability_owed_at_dates(
-                [card], scenario, samples, {card.id: Decimal("-500.00")}, today,
+                [card], bctx, samples, {card.id: Decimal("-500.00")},
             )
 
             # abs(-500) held flat at every sample -- no forward model.
@@ -1945,7 +2008,7 @@ class TestLiabilityOwedAtDates:
             samples = [today, date(today.year + 1, 12, 31)]
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], None, samples, {acct.id: Decimal("200000.00")}, today,
+                [acct], _no_baseline(user_id), samples, {acct.id: Decimal("200000.00")},
             )
 
             assert owed[acct.id] == [Decimal("200000.00")] * 2
@@ -1957,6 +2020,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
@@ -1964,7 +2028,7 @@ class TestLiabilityOwedAtDates:
             db.session.commit()
 
             owed = balance_at.liability_owed_at_dates(
-                [card], scenario, [date.today()], {}, date.today(),
+                [card], bctx, [date.today()], {},
             )
 
             assert owed[card.id] == [Decimal("0")]
@@ -1982,6 +2046,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -1991,8 +2056,8 @@ class TestLiabilityOwedAtDates:
 
             with pytest.raises(ValueError, match="FORWARD"):
                 balance_at.liability_owed_at_dates(
-                    [acct], scenario, [yesterday, date.today()],
-                    {acct.id: Decimal("200000.00")}, date.today(),
+                    [acct], bctx, [yesterday, date.today()],
+                    {acct.id: Decimal("200000.00")},
                 )
 
     def test_kernel_producer_rejects_today_or_earlier(
@@ -2010,6 +2075,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -2018,7 +2084,7 @@ class TestLiabilityOwedAtDates:
 
             with pytest.raises(ValueError, match="STRICTLY FORWARD"):
                 net_worth_kernel.loan_owed_at_dates(
-                    [acct], scenario.id, [date.today()], date.today(),
+                    [acct], bctx, [date.today()],
                 )
 
     def test_projection_is_joined_by_date_not_by_position(
@@ -2038,6 +2104,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -2049,8 +2116,8 @@ class TestLiabilityOwedAtDates:
 
             # Deliberately unsorted: today, +2y, +1y.
             owed = balance_at.liability_owed_at_dates(
-                [acct], scenario, [today, plus_two, plus_one],
-                {acct.id: Decimal("200000.00")}, today,
+                [acct], bctx, [today, plus_two, plus_one],
+                {acct.id: Decimal("200000.00")},
             )
 
             series = owed[acct.id]
@@ -2075,6 +2142,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -2089,9 +2157,8 @@ class TestLiabilityOwedAtDates:
             samples = [today, date(today.year + 1, 12, 31)]
 
             owed = balance_at.liability_owed_at_dates(
-                [acct, card], scenario, samples,
+                [acct, card], bctx, samples,
                 {acct.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
-                today,
             )
 
             assert set(owed) == {acct.id, card.id}
@@ -2119,6 +2186,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -2128,12 +2196,12 @@ class TestLiabilityOwedAtDates:
             far_out = date(today.year + 1, 12, 31)
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], scenario, [today, far_out],
-                {acct.id: Decimal("200000.00")}, today,
+                [acct], bctx, [today, far_out],
+                {acct.id: Decimal("200000.00")},
             )
 
             debt = net_worth_kernel.generate_debt_schedules(
-                [acct], scenario.id,
+                [acct], bctx,
             )[acct.id]
             forward_rows = sorted(
                 (row for row in debt.schedule if not row.is_confirmed),
@@ -2178,6 +2246,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
@@ -2187,7 +2256,7 @@ class TestLiabilityOwedAtDates:
             confirmed = Decimal("200000.00")
 
             debt = net_worth_kernel.generate_debt_schedules(
-                [acct], scenario.id,
+                [acct], bctx,
             )[acct.id]
             forward_rows = sorted(
                 (row for row in debt.schedule if not row.is_confirmed),
@@ -2204,7 +2273,7 @@ class TestLiabilityOwedAtDates:
             )
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], scenario, [today], {acct.id: confirmed}, today,
+                [acct], bctx, [today], {acct.id: confirmed},
             )
 
             # The seam reports what is OWED, not what the schedule wishes was paid.

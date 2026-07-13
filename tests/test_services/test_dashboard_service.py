@@ -24,6 +24,7 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import balance_at, dashboard_service
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     add_txn as _add_txn,
     make_investment_account,
@@ -381,9 +382,10 @@ class TestComputeBalanceSection:
             )
 
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             # The kind-correct scalar (the bug's hero) compounds the anchor
             # forward; assert the divergence is real before locking the fix.
-            modeled = balance_at.balance_at(inv, scenario, date(2026, 3, 20))
+            modeled = balance_at.balance_at(inv, bctx, date(2026, 3, 20))
             assert modeled > Decimal("100000.00")
 
             result = dashboard_service.compute_balance_section(

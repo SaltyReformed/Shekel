@@ -873,9 +873,15 @@ class TestPropertyDetailChartContext:
     ):
         """Each secured loan is resolved exactly once per GET (D1: no double resolve).
 
-        Both the equity hero and the chart read one resolution pass, so a
-        call-counting spy sees exactly one ``resolve_account_loan`` for the
-        secured loan.
+        The equity hero, the LTV, and the debt chart all read the request's ONE
+        :class:`~app.services.resolution_context.BalanceContext`, so a spy on the
+        db-facing resolver (``resolve_loan_bundle`` -- the single load the memo
+        wraps) sees exactly one call for the secured loan.
+
+        Spying on the BUNDLE rather than on this route's own import is what makes
+        the assertion meaningful: it counts every resolution anywhere in the
+        request, so a consumer that re-resolved the loan behind the route's back
+        (which ``resolve_home_equity`` and the chart used to do) would be caught.
         """
         with app.app_context():
             prop = _make_property(
@@ -890,15 +896,21 @@ class TestPropertyDetailChartContext:
             db.session.commit()
             prop_id, loan_id = prop.id, loan.id
 
-        calls = []
-        real_resolve = property_detail_module.resolve_account_loan
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        from app.services import (  # pylint: disable=import-outside-toplevel
+            resolution_context,
+        )
 
-        def _spy(account_id, scenario_id, today):
+        calls = []
+        real_resolve = resolution_context.resolve_loan_bundle
+
+        def _spy(account_id, scenario_id, as_of):
             calls.append(account_id)
-            return real_resolve(account_id, scenario_id, today)
+            return real_resolve(account_id, scenario_id, as_of)
 
         monkeypatch.setattr(
-            property_detail_module, "resolve_account_loan", _spy,
+            resolution_context, "resolve_loan_bundle", _spy,
         )
         response = auth_client.get(f"/accounts/{prop_id}/property")
         assert response.status_code == 200

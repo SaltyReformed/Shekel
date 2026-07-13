@@ -71,7 +71,7 @@ from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_liability_service import (
     AnnualLiability,
@@ -358,7 +358,13 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
         empty state).  A user with profiles but no pay periods for the year
         degrades to an all-modeled zero report (no crash).
     """
-    scenario = get_baseline_scenario(user_id)
+    # The report's civil window is the DISPLAY-timezone year, so the loan
+    # schedules behind Schedule A must be resolved against that same ``today``.
+    # The context pins it; ``generate_debt_schedules`` used to take no date at
+    # all and re-derive its own ``date.today()``, silently discarding the one
+    # this producer was handed (the New-Year UTC/display seam).
+    balance_ctx = BalanceContext.build(user_id, as_of=today)
+    scenario = balance_ctx.scenario
     if scenario is None:
         return None
     profiles = load_active_salary_profiles(user_id, scenario.id)
@@ -386,7 +392,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
             withholding, box1_wages, configs.get("fica_config"),
         ),
         schedule_a=_build_schedule_a(
-            user_id, year, scenario.id, withholding, liability,
+            user_id, year, balance_ctx, withholding, liability,
         ),
         chips=_build_chips(
             liability, box1_wages, configs.get("bracket_set"), next_stub,
@@ -609,7 +615,7 @@ def _build_w2_preview(
 def _build_schedule_a(
     user_id: int,
     year: int,
-    scenario_id: int,
+    balance_ctx: BalanceContext,
     withholding: WithholdingSummary,
     liability: AnnualLiability,
 ) -> ScheduleACheck:
@@ -626,7 +632,9 @@ def _build_schedule_a(
     Args:
         user_id: The owning user (scopes the debt-account load).
         year: The tax year (interest is summed in the year PAID).
-        scenario_id: The baseline scenario (scopes schedules + ledger read).
+        balance_ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext` (scopes the
+            schedules + ledger read, and pins the display-tz ``as_of``).
         withholding: The summed withholding-to-date (state component).
         liability: The liability (its federal standard deduction).
 
@@ -635,10 +643,10 @@ def _build_schedule_a(
     """
     debt_accounts = _load_debt_accounts(user_id)
     debt_schedules = net_worth_kernel.generate_debt_schedules(
-        debt_accounts, scenario_id,
+        debt_accounts, balance_ctx,
     )
     mortgage_interest = _compute_mortgage_interest(
-        year, debt_schedules, scenario_id,
+        year, debt_schedules, balance_ctx.scenario.id,
     )
     state_income_tax = withholding.total.state
     itemized_estimate = mortgage_interest + state_income_tax

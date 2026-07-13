@@ -16,6 +16,7 @@ from app.extensions import db
 from app.models.ref import AccountType
 from app.services import account_service, net_worth_kernel, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 
 
 class TestSumNetWorthAtPeriod:
@@ -92,11 +93,12 @@ class TestBuildAccountBalanceMap:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             all_periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
 
             balances = net_worth_kernel.build_account_balance_map(
-                account, scenario, all_periods,
+                account, bctx, all_periods,
                 debt_schedule=None,
                 investment_params=None,
                 deductions=[],
@@ -152,6 +154,7 @@ class TestBuildAccountBalanceMap:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             all_periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
 
@@ -184,10 +187,10 @@ class TestBuildAccountBalanceMap:
             db.session.commit()
 
             schedule = net_worth_kernel.generate_debt_schedules(
-                [acct], scenario.id,
+                [acct], bctx,
             )[acct.id]
             balances = net_worth_kernel.build_account_balance_map(
-                acct, scenario, all_periods,
+                acct, bctx, all_periods,
                 debt_schedule=schedule,
                 investment_params=None,
                 deductions=[],
@@ -228,6 +231,7 @@ class TestBuildAccountBalanceMap:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
             all_periods = pay_period_service.get_all_periods(user_id)
             current = pay_period_service.get_current_period(user_id)
 
@@ -257,7 +261,7 @@ class TestBuildAccountBalanceMap:
             db.session.commit()
 
             balances = net_worth_kernel.build_account_balance_map(
-                acct, scenario, all_periods,
+                acct, bctx, all_periods,
                 debt_schedule=net_worth_kernel.DebtSchedule(
                     schedule=[], current_balance=Decimal("240000.00"),
                 ),
@@ -371,12 +375,15 @@ class TestAmortizingReadSwitch:
             scenario = ctx["scenario"]
             periods = ctx["all_periods"]
             today = _date.today()
+            bctx = BalanceContext(
+                user_id=loan.user_id, scenario=scenario, as_of=today,
+            )
 
             debt_schedule = net_worth_kernel.generate_debt_schedules(
-                [loan], scenario.id,
+                [loan], bctx,
             )[loan.id]
             dense = net_worth_kernel.build_account_balance_map(
-                loan, scenario, periods,
+                loan, bctx, periods,
                 debt_schedule=debt_schedule,
                 investment_params=None,
                 deductions=[],

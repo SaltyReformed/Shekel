@@ -9,8 +9,8 @@ import calendar
 from datetime import date
 from decimal import Decimal
 
-from app.models.scenario import Scenario
 from app.services import balance_at, net_worth_account_data
+from app.services.resolution_context import BalanceContext
 # Net-worth sum re-exported from the shared kernel (Loop B Phase 1): the
 # private alias is preserved so the section helpers below and the
 # year-end net-worth tests keep calling ``_sum_net_worth_at_period``
@@ -61,7 +61,7 @@ def _compute_net_worth(
 
     month_end_periods = _get_month_end_periods(year, all_periods)
     account_data = _build_account_data(
-        accounts, year_ctx.scenario, all_periods,
+        accounts, year_ctx.balance_ctx, all_periods,
     )
 
     jan1_period = _find_period_before_date(date(year, 1, 1), all_periods)
@@ -85,7 +85,7 @@ def _compute_net_worth(
 
 def _build_account_data(
     accounts: list,
-    scenario: Scenario,
+    balance_ctx: BalanceContext,
     all_periods: list,
 ) -> list[dict]:
     """Build balance maps for all accounts with liability flags.
@@ -103,7 +103,7 @@ def _build_account_data(
 
     Args:
         accounts: All active user accounts.
-        scenario: Baseline scenario.
+        balance_ctx: The read pass's ``BalanceContext``.
         all_periods: All user pay periods (the dense domain; the seam
             builds over ALL periods so the entries-aware resolver has its
             anchor seed).
@@ -112,7 +112,7 @@ def _build_account_data(
         List of ``{account_id, balances, is_liability}`` dicts (the
         net-worth reducers read only ``balances`` / ``is_liability``).
     """
-    balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
+    balance_maps = balance_at.build_maps(accounts, balance_ctx, all_periods)
     return net_worth_account_data.to_net_worth_account_data(
         accounts, balance_maps,
     )
@@ -153,7 +153,7 @@ def _compute_debt_progress(
     year: int,
     debt_accounts: list,
     debt_schedules: dict[int, DebtSchedule],
-    scenario: Scenario,
+    balance_ctx: BalanceContext,
 ) -> list[dict]:
     """Compute principal paid for each debt account during the year.
 
@@ -184,7 +184,8 @@ def _compute_debt_progress(
         debt_schedules: account_id ->
             :class:`~app.services.net_worth_kernel.DebtSchedule` mapping
             from _generate_debt_schedules(); the membership gate only.
-        scenario: Baseline scenario (scopes the seam's loan resolution).
+        balance_ctx: The read pass's ``BalanceContext`` (scopes the seam's
+            loan resolution and pins its as-of).
 
     Returns:
         List of dicts: [{account_name, account_id, jan1_balance,
@@ -203,10 +204,10 @@ def _compute_debt_progress(
         # payments in the target year.  Use Dec 31 of the prior year
         # so a Jan 1 payment is not counted in the starting balance.
         jan1_bal = balance_at.balance_at(
-            account, scenario, date(year - 1, 12, 31),
+            account, balance_ctx, date(year - 1, 12, 31),
         )
         dec31_bal = balance_at.balance_at(
-            account, scenario, date(year, 12, 31),
+            account, balance_ctx, date(year, 12, 31),
         )
         principal_paid = jan1_bal - dec31_bal
 

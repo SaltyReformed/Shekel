@@ -5,8 +5,7 @@ The public entry point ``compute_year_end_summary`` plus the load-once
 and section-assembly steps that drive every section helper.
 """
 
-from app.models.scenario import Scenario
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.services.year_end_summary_service._balances import (
     _generate_debt_schedules,
 )
@@ -53,16 +52,17 @@ def compute_year_end_summary(user_id: int, year: int) -> dict:
         transfers_summary, net_worth, debt_progress,
         savings_progress, payment_timeliness.
     """
-    scenario = get_baseline_scenario(user_id)
+    balance_ctx = BalanceContext.build(user_id)
+    scenario = balance_ctx.scenario
     if scenario is None:
         return _full_empty_summary()
 
     ctx = _load_common_data(user_id, year, scenario)
-    return _build_summary(user_id, year, scenario, ctx)
+    return _build_summary(user_id, year, balance_ctx, ctx)
 
 
 def _build_summary(
-    user_id: int, year: int, scenario: Scenario, ctx: dict,
+    user_id: int, year: int, balance_ctx: BalanceContext, ctx: dict,
 ) -> dict:
     """Compute each section and assemble the final summary dict.
 
@@ -75,7 +75,7 @@ def _build_summary(
     Args:
         user_id: The authenticated user's ID.
         year: The target calendar year.
-        scenario: The user's baseline scenario.
+        balance_ctx: The read pass's ``BalanceContext``.
         ctx: Common data from :func:`_load_common_data`.  This is the
             sanctioned W-052 load-once bag and stays whole at this
             top-level assembly site, where it is packed into the two
@@ -92,7 +92,7 @@ def _build_summary(
     # (escrow subtracted, biweekly overlaps redistributed).  Shared by the
     # mortgage-interest section and the debt-progress membership gate.
     debt_schedules = _generate_debt_schedules(
-        ctx["debt_accounts"], scenario.id,
+        ctx["debt_accounts"], balance_ctx,
     )
 
     inputs = _ProjectionInputs(
@@ -103,7 +103,7 @@ def _build_summary(
     )
     year_ctx = _YearContext(
         year=year,
-        scenario=scenario,
+        balance_ctx=balance_ctx,
         all_periods=ctx["all_periods"],
         year_period_ids=ctx["year_period_ids"],
     )
@@ -112,29 +112,29 @@ def _build_summary(
         user_id, year, ctx["year_periods"], ctx["salary_profiles"],
     )
     mortgage_interest = _compute_mortgage_interest(
-        year, debt_schedules, scenario.id,
+        year, debt_schedules, balance_ctx.scenario.id,
     )
     income_tax["mortgage_interest_total"] = mortgage_interest
 
     return {
         "income_tax": income_tax,
         "spending_by_category": _compute_spending_by_category(
-            user_id, year, ctx["year_period_ids"], scenario.id,
+            user_id, year, ctx["year_period_ids"], balance_ctx.scenario.id,
         ),
         "transfers_summary": _compute_transfers_summary(
-            user_id, year, ctx["year_period_ids"], scenario.id,
+            user_id, year, ctx["year_period_ids"], balance_ctx.scenario.id,
         ),
         "net_worth": _compute_net_worth(
             ctx["accounts"], year_ctx,
         ),
         "debt_progress": _compute_debt_progress(
-            year, ctx["debt_accounts"], debt_schedules, scenario,
+            year, ctx["debt_accounts"], debt_schedules, balance_ctx,
         ),
         "savings_progress": _compute_savings_progress(
             ctx["savings_accounts"], year_ctx, inputs,
         ),
         "payment_timeliness": _compute_payment_timeliness(
-            user_id, year, ctx["year_period_ids"], scenario.id,
+            user_id, year, ctx["year_period_ids"], balance_ctx.scenario.id,
         ),
     }
 

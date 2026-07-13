@@ -17,12 +17,12 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.services import net_worth_kernel
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.resolution_context import BalanceContext
 
 from ._inputs import ZERO
 
@@ -75,10 +75,9 @@ def _spliced_owed_series(
 
 def liability_owed_at_dates(
     liabilities: list[Account],
-    scenario: Scenario | None,
+    ctx: BalanceContext,
     sample_dates: list[date],
     current_balances: dict[int, Decimal],
-    today: date,
 ) -> dict[int, list[Decimal]]:
     """Return every liability's owed magnitude at each FORWARD sample date.
 
@@ -142,16 +141,18 @@ def liability_owed_at_dates(
             result).  ``account_type`` must be loaded -- the canonical
             :func:`~app.services.account_projection.classify_account` selects the
             amortizing subset.
-        scenario: The baseline scenario, or ``None`` (no baseline: every
-            liability holds flat -- see above).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            Its ``as_of`` is the present/future boundary AND the "now" its
+            *sample_dates* were built against -- one clock, so this guard cannot
+            reject the caller's own index-0 sample.  Its ``scenario`` may be
+            ``None`` (no baseline: every liability holds flat -- see above); this
+            is the one seam entry that tolerates that rather than raising.
         sample_dates: The calendar dates to value each liability at, in the
             desired output order (any order; the projection is joined BY DATE,
-            not by position).  Every date must be on or after *today*.
+            not by position).  Every date must be on or after ``ctx.as_of``.
         current_balances: ``{account_id: Decimal}`` each liability's current
             balance as the caller already resolved it (the figure its hero
             renders).  A missing account is treated as ``0``.
-        today: The caller's as-of date -- the present/future boundary, and the
-            same "now" its *sample_dates* were built against (see above).
 
     Returns:
         ``{account_id: [Decimal owed magnitude at each sample date]}`` -- one
@@ -164,6 +165,7 @@ def liability_owed_at_dates(
             amortizing account's past to the genesis ledger (the only complete
             record -- it books the true-ups that have no schedule row).
     """
+    today = ctx.as_of
     stale = sorted({d for d in sample_dates if d < today})
     if stale:
         raise ValueError(
@@ -183,9 +185,9 @@ def liability_owed_at_dates(
     ]
     owed_by_loan = (
         net_worth_kernel.loan_owed_at_dates(
-            loan_accounts, scenario.id, future_dates, today,
+            loan_accounts, ctx, future_dates,
         )
-        if scenario is not None and loan_accounts and future_dates
+        if ctx.scenario is not None and loan_accounts and future_dates
         else {}
     )
 

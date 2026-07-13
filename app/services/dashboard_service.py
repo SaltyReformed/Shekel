@@ -40,7 +40,7 @@ from app.models.user import UserSettings
 from app.services import balance_at, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import is_projected_clause
 
 _ZERO = Decimal("0")
@@ -85,12 +85,14 @@ def compute_balance_section(user_id: int) -> dict:
         A dict with key ``hero`` -> ``{balance, account_id}``, or
         ``{"hero": None}`` when the user has no resolvable account.
     """
-    account, scenario, current_period = _resolve_section_context(user_id)
-    if account is None or scenario is None:
+    account, balance_ctx, current_period = _resolve_section_context(user_id)
+    if account is None or balance_ctx.scenario is None:
         return {"hero": None}
 
     if current_period is not None:
-        balance = balance_at.cash_balance_at(account, scenario, date.today())
+        balance = balance_at.cash_balance_at(
+            account, balance_ctx, balance_ctx.as_of,
+        )
     else:
         balance = account.current_anchor_balance or _ZERO
 
@@ -108,9 +110,9 @@ def _resolve_section_context(
     defined once rather than copied.
 
     Returns:
-        ``(account, scenario, current_period)``.  ``account`` is ``None``
-        when the user has no resolvable grid account; ``scenario`` is
-        ``None`` when there is no baseline scenario; ``current_period``
+        ``(account, balance_ctx, current_period)``.  ``account`` is ``None``
+        when the user has no resolvable grid account; ``balance_ctx.scenario``
+        is ``None`` when there is no baseline scenario; ``current_period``
         is ``None`` when no period contains today.
     """
     settings = _get_user_settings(user_id)
@@ -118,9 +120,9 @@ def _resolve_section_context(
     if account is None:
         return None, None, None
 
-    scenario = get_baseline_scenario(user_id)
+    balance_ctx = BalanceContext.build(user_id)
     current_period = pay_period_service.get_current_period(user_id)
-    return account, scenario, current_period
+    return account, balance_ctx, current_period
 
 
 # ── Shared bill query and render-ready bill dict ───────────────────

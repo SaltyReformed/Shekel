@@ -26,6 +26,7 @@ from app.services import (
     posting_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.services.resolution_context import BalanceContext
 
 from tests._test_helpers import (
     create_hysa_account,
@@ -1892,6 +1893,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
@@ -1921,6 +1923,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -1952,6 +1955,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -1977,6 +1981,7 @@ class TestAccountIdColumn:
         """POST /transactions/inline without account_id returns validation error."""
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -1995,6 +2000,7 @@ class TestAccountIdColumn:
         other_account = second_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -2059,6 +2065,7 @@ class TestAccountScopedGrid:
         """Default grid (checking) shows only checking transactions, not savings."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2086,6 +2093,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
@@ -2149,6 +2157,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 500,
@@ -2168,6 +2177,7 @@ class TestAccountScopedGrid:
         """GET /grid/balance-row with account_id returns that account's balances."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Expense on Checking", 300,
@@ -2204,6 +2214,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
@@ -2259,6 +2270,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2308,6 +2320,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         current = pay_period_service.get_current_period(seed_user["user"].id)
 
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
@@ -2330,6 +2343,7 @@ class TestAccountScopedGrid:
         """Soft-deleted transactions (is_deleted=True) do not appear."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
 
         txn = self._create_txn(checking, seed_periods_today[0], scenario, "Deleted Expense", 999,
                                category=seed_user["categories"]["Rent"])
@@ -2352,6 +2366,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Create projected transactions on both accounts in period 0.
@@ -2390,6 +2405,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         category = seed_user["categories"]["Salary"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         db.session.commit()
 
@@ -2426,6 +2442,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -4361,6 +4378,7 @@ class TestGridSubtotalsRegressionBaseline:
         """
         with app.app_context():
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
 
             projected = db.session.query(Status).filter_by(
@@ -6931,11 +6949,12 @@ class TestGridInterestAccrual:
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
         all_periods = pay_period_service.get_all_periods(user_id)
         current = pay_period_service.get_current_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
-        view = balance_at.grid_balance_view(hysa, scenario, all_periods)
+        view = balance_at.grid_balance_view(hysa, bctx, all_periods)
         accrued = view.balances[current.id]
         interest = view.increments[current.id]
 
@@ -7034,6 +7053,7 @@ class TestGridInterestAccrual:
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
         )
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
         status = db.session.query(Status).filter_by(name="Projected").one()
         income_type = (
@@ -7060,7 +7080,7 @@ class TestGridInterestAccrual:
         current = pay_period_service.get_current_period(user_id)
         # The seam's accrued balance under the SAME live map the route builds.
         live_view = balance_at.grid_balance_view(
-            hysa, scenario, all_periods,
+            hysa, bctx, all_periods,
             amount_overrides={income.id: Decimal("5000.00")},
         )
         accrued_live = live_view.balances[current.id]

@@ -19,7 +19,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 import pytest
 
-from app.services import calendar_service
+from app.services import calendar_service, resolution_context
 from app.services.balance_resolver import period_subtotal
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
@@ -1330,8 +1330,10 @@ class TestUnresolvableAccountOrScenario:
     ):
         """C11-2 (service): None baseline scenario -> error."""
         with app.app_context():
+            # The baseline scenario is now resolved inside the balance context,
+            # so that is where an unresolvable baseline is simulated.
             monkeypatch.setattr(
-                calendar_service, "get_baseline_scenario",
+                resolution_context, "get_baseline_scenario",
                 lambda _user_id: None,
             )
             with pytest.raises(CalendarAccountNotResolvableError):
@@ -1361,8 +1363,10 @@ class TestUnresolvableAccountOrScenario:
     ):
         """C11-2 (service, year view): None scenario -> error."""
         with app.app_context():
+            # The baseline scenario is now resolved inside the balance context,
+            # so that is where an unresolvable baseline is simulated.
             monkeypatch.setattr(
-                calendar_service, "get_baseline_scenario",
+                resolution_context, "get_baseline_scenario",
                 lambda _user_id: None,
             )
             with pytest.raises(CalendarAccountNotResolvableError):

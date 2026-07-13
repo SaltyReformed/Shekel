@@ -18,10 +18,9 @@ Flask imports.  All money is :class:`~decimal.Decimal`.
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.services.loan_resolution import resolve_account_loan
+from app.services.resolution_context import BalanceContext
 
 ZERO = Decimal("0")
 # LTV is a display ratio (debt / value), not a money amount; four-place
@@ -89,27 +88,33 @@ def compute_home_equity(
 
 
 def resolve_home_equity(
-    property_account, scenario_id: int | None, as_of: date,
+    property_account, ctx: BalanceContext,
 ) -> HomeEquity:
     """Resolve a Property account's equity from its secured loans.
 
     Market value is the Property's ``current_anchor_balance`` (the user's
     last-set valuation, the honest "as of today" figure -- the appreciation
-    projection is a forward estimate, not a known present value).  Each
-    loan in ``property_account.secured_loans`` is resolved through
-    :func:`app.services.loan_payment_service.resolve_account_loan`, so its
-    contribution is the same ``LoanState.current_balance`` the debt card
-    shows.  A linked account with no ``LoanParams`` row (not a configured
-    loan) contributes nothing.
+    projection is a forward estimate, not a known present value).  Each loan in
+    ``property_account.secured_loans`` is read from the read pass's
+    :class:`~app.services.resolution_context.BalanceContext`, so its contribution
+    is the SAME ``LoanState.current_balance`` the debt card and the net-worth
+    liability column read -- one resolution, not a parallel one that has to
+    agree.  A linked account with no ``LoanParams`` row (not a configured loan)
+    contributes nothing.
+
+    This module used to call :func:`resolve_account_loan` itself, which made the
+    cockpit's equity card an independent, unfenced re-resolution of the mortgage
+    -- one of the eleven a single ``/savings`` render ran, and the one the
+    redundancy audit missed entirely.
 
     Args:
         property_account: The Property :class:`~app.models.account.Account`
             (its ``secured_loans`` backref lists the liabilities it
             secures).
-        scenario_id: The baseline scenario id for payment history, or
-            ``None`` when the user has no scenario yet (loans then resolve
-            from their anchor with no payment history).
-        as_of: The as-of date for the loan resolver.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (its scenario scopes the payment history; its ``as_of`` is the
+            resolver's now).  With no baseline scenario each secured loan still
+            resolves, from its anchor with no payment history, exactly as before.
 
     Returns:
         A :class:`HomeEquity` snapshot for the Property.
@@ -117,9 +122,8 @@ def resolve_home_equity(
     market_value = property_account.current_anchor_balance or ZERO
     balances: list[Decimal] = []
     for loan in property_account.secured_loans:
-        resolved = resolve_account_loan(loan.id, scenario_id, as_of)
-        if resolved is None:
+        state = ctx.loan_state(loan)
+        if state is None:
             continue
-        _params, state = resolved
         balances.append(state.current_balance)
     return compute_home_equity(market_value, balances)

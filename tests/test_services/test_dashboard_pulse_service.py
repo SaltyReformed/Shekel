@@ -37,6 +37,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
 from app.services import balance_at, pay_period_service
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_entry,
@@ -1202,11 +1203,12 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             )
 
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             current = seed_periods[_CURRENT_IDX]
             cash = balance_at.cash_balance_map(
-                hysa, scenario, seed_periods,
+                hysa, bctx, seed_periods,
             ).balances
-            accrued = balance_at.balance_map(hysa, scenario, seed_periods)
+            accrued = balance_at.balance_map(hysa, bctx, seed_periods)
 
             # The cash truth is hand-computable: anchor carried flat, no rows,
             # no interest -> $50,000.00 at the current period.
@@ -1255,9 +1257,10 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             )
 
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             # The kind-correct scalar (the bug's hero) compounds the anchor
             # forward; assert the divergence is real before locking the fix.
-            modeled = balance_at.balance_at(inv, scenario, _TODAY)
+            modeled = balance_at.balance_at(inv, bctx, _TODAY)
             assert modeled > Decimal("100000.00")
 
             section = dashboard_pulse_service.compute_pulse_section(

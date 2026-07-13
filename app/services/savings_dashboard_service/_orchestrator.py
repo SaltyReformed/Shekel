@@ -12,11 +12,11 @@ the loan accounts the debt summary reads.  No Flask imports.
 
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from app.services import net_worth_kernel, savings_goal_service
+from app.services.resolution_context import BalanceContext
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -92,7 +92,7 @@ def _build_projection_context(
         all_periods=core.all_periods,
         current_period=core.current_period,
         params=params,
-        scenario=core.scenario,
+        balance_ctx=core.balance_ctx,
     )
 
 
@@ -137,7 +137,7 @@ def _debt_summary_with_dti(
 
 
 def _project_loan_accounts(
-    user_id: int,
+    user_id: int, balance_ctx: BalanceContext | None = None,
 ) -> tuple[_DashboardCoreData, _AccountParams, list[dict]] | None:
     """Load + project the user's loan accounts for the debt producers.
 
@@ -158,6 +158,11 @@ def _project_loan_accounts(
 
     Args:
         user_id: Integer ID of the current user.
+        balance_ctx: An existing read pass's
+            :class:`~app.services.resolution_context.BalanceContext` to share, or
+            ``None`` to start one.  The budget dashboard's tracks section runs
+            two of these producers back to back, so it passes ONE context and
+            each loan is resolved once for the pair, not once per producer.
 
     Returns:
         ``(core, params, account_data)`` -- the loaded core data, the
@@ -166,7 +171,7 @@ def _project_loan_accounts(
         ``None`` when the user has no loan accounts with params, mirroring
         ``_compute_debt_summary``'s no-loan ``None`` inside the full build.
     """
-    core = _load_dashboard_core_data(user_id)
+    core = _load_dashboard_core_data(user_id, balance_ctx)
     params = _load_account_params(core.accounts)
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
@@ -179,7 +184,9 @@ def _project_loan_accounts(
     return core, params, account_data
 
 
-def compute_debt_summary(user_id: int) -> dict | None:
+def compute_debt_summary(
+    user_id: int, balance_ctx: BalanceContext | None = None,
+) -> dict | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
     The narrow producer behind the dashboard's debt track
@@ -198,6 +205,8 @@ def compute_debt_summary(user_id: int) -> dict | None:
 
     Args:
         user_id: Integer ID of the current user.
+        balance_ctx: An optional shared read-pass context (see
+            :func:`_project_loan_accounts`).
 
     Returns:
         The debt-summary dict with the DTI keys applied, or ``None``
@@ -207,7 +216,7 @@ def compute_debt_summary(user_id: int) -> dict | None:
         projections and the breakdown's paycheck-engine call -- the
         debt summary needs neither).
     """
-    projected = _project_loan_accounts(user_id)
+    projected = _project_loan_accounts(user_id, balance_ctx)
     if projected is None:
         return None
     core, params, account_data = projected
@@ -220,7 +229,9 @@ def compute_debt_summary(user_id: int) -> dict | None:
     )
 
 
-def compute_debt_principal_progress(user_id: int) -> Decimal | None:
+def compute_debt_principal_progress(
+    user_id: int, balance_ctx: BalanceContext | None = None,
+) -> Decimal | None:
     """Compute the aggregate fraction of original loan principal paid off.
 
     The narrow producer behind the budget dashboard's debt track marker
@@ -249,6 +260,8 @@ def compute_debt_principal_progress(user_id: int) -> Decimal | None:
 
     Args:
         user_id: Integer ID of the current user.
+        balance_ctx: An optional shared read-pass context (see
+            :func:`_project_loan_accounts`).
 
     Returns:
         The principal-paid fraction as a ``Decimal`` in ``[0, 1]``, or
@@ -257,14 +270,16 @@ def compute_debt_principal_progress(user_id: int) -> Decimal | None:
         loan set returns ``Decimal("1")``, not ``None``.  The UI renders
         no marker for ``None``.
     """
-    projected = _project_loan_accounts(user_id)
+    projected = _project_loan_accounts(user_id, balance_ctx)
     if projected is None:
         return None
     _core, _params, account_data = projected
     return _compute_principal_paid_fraction(account_data)
 
 
-def compute_goal_progress(user_id: int) -> list[dict]:
+def compute_goal_progress(
+    user_id: int, balance_ctx: BalanceContext | None = None,
+) -> list[dict]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
     The narrow producer behind the dashboard's savings tracks
@@ -290,13 +305,15 @@ def compute_goal_progress(user_id: int) -> list[dict]:
 
     Args:
         user_id: Integer ID of the current user.
+        balance_ctx: An optional shared read-pass context (see
+            :func:`_project_loan_accounts`).
 
     Returns:
         A list of per-goal progress dicts (see
         :func:`_compute_goal_progress`), one per active goal; empty when
         the user has no active goals.
     """
-    core = _load_dashboard_core_data(user_id)
+    core = _load_dashboard_core_data(user_id, balance_ctx)
 
     active_goals = _load_active_goals(user_id)
     if not active_goals:
@@ -452,10 +469,9 @@ def _build_trend_window(
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
-    scenario_id = core.scenario.id if core.scenario else None
     debt_schedules = (
-        net_worth_kernel.generate_debt_schedules(loan_accounts, scenario_id)
-        if scenario_id is not None else {}
+        net_worth_kernel.generate_debt_schedules(loan_accounts, core.balance_ctx)
+        if core.balance_ctx.scenario is not None else {}
     )
     return build_trend_periods(
         core.accounts, core.all_periods, core.current_period, debt_schedules,
@@ -540,7 +556,7 @@ def _compute_net_worth_section(
     category = category_key_by_account_id(account_data)
 
     account_maps = build_account_net_worth_maps(
-        core.accounts, core.scenario, core.all_periods,
+        core.accounts, core.balance_ctx, core.all_periods,
     )
 
     trend_periods, current_index, _ = _build_trend_window(core, params)
@@ -587,12 +603,11 @@ def _compute_cockpit_grid_section(
     """
     grouped_accounts = _group_accounts_by_category(account_data)
     group_subtotals = _compute_group_subtotals(grouped_accounts)
-    scenario_id = core.scenario.id if core.scenario else None
     return {
         "grouped_accounts": grouped_accounts,
         "group_subtotals": group_subtotals,
         "property_equity": compute_property_equity(
-            core.accounts, scenario_id, date.today(),
+            core.accounts, core.balance_ctx,
         ),
     }
 
@@ -649,7 +664,7 @@ def compute_dashboard_data(user_id):
     # ── Emergency fund metrics ──────────────────────────────────
     avg_monthly_expenses = _compute_avg_monthly_expenses(
         user_id, core.accounts, core.all_periods, core.current_period,
-        core.scenario,
+        core.balance_ctx.scenario,
     )
     total_savings = _sum_liquid_balances(account_data)
     emergency_metrics = savings_goal_service.calculate_savings_metrics(

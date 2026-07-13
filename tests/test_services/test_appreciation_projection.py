@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.ref import AccountType
+from app.services.resolution_context import BalanceContext
 from app.services import (
     account_service,
     growth_engine,
@@ -78,7 +79,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.03000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
@@ -121,7 +122,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.00000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
@@ -144,7 +145,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=None,  # no params row
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
@@ -192,7 +193,8 @@ class TestSavingsDashboardProjection:
                 seed_user["user"].id,
             )
             modeled_map = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], seed_periods_today,
+                acct, BalanceContext.build(seed_user["user"].id),
+                seed_periods_today,
                 debt_schedule=None, investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )

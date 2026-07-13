@@ -67,6 +67,7 @@ from app.services.year_end_summary_service._income_tax import (
     _compute_mortgage_interest,
 )
 from app.services import account_service
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
     create_loan_with_trueup,
@@ -837,7 +838,8 @@ class TestMortgageInterestGenesisHybrid:
             freeze_today(monkeypatch, date(2026, 4, 1))
             scenario_id = seed_user["scenario"].id
             loan = _genesis_off_schedule_loan(seed_user, seed_periods)
-            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            debt_schedules = _generate_debt_schedules([loan], bctx)
             debt = debt_schedules[loan.id]
 
             ledger_confirmed = confirmed_loan_interest_in_year(
@@ -918,7 +920,8 @@ class TestMortgageInterestGenesisHybrid:
                 paid_at=_paid_utc(2025, 12, 20),
             )
             db.session.commit()
-            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            debt_schedules = _generate_debt_schedules([loan], bctx)
 
             # 2025 has NO amortization rows (first payment is 2026), so the figure
             # is PURE ledger -- the "all-ledger" year.
@@ -967,7 +970,8 @@ class TestMortgageInterestGenesisHybrid:
                 paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
             )
             db.session.commit()
-            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            debt_schedules = _generate_debt_schedules([loan], bctx)
 
             assert _compute_mortgage_interest(
                 2025, debt_schedules, scenario_id,
@@ -1019,7 +1023,8 @@ class TestMortgageInterestGenesisHybrid:
             # EARLY settle), so its schedule row is not replay-confirmed.
             assert seed_periods[p3].start_date > date(2026, 2, 10)
 
-            debt_schedules = _generate_debt_schedules([loan], scenario_id)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            debt_schedules = _generate_debt_schedules([loan], bctx)
             debt = debt_schedules[loan.id]
             ledger_confirmed = confirmed_loan_interest_in_year(
                 loan.id, scenario_id, 2026,

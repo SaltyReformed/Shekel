@@ -69,9 +69,8 @@ from app.services import (
 from app.services.loan_loaders import load_rate_changes
 from app.services.loan_resolution import (
     contractual_schedule_from_origination,
-    resolve_account_loan,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.utils.account_validation import (
     _appreciation_params_schema,
     _interest_params_schema,
@@ -245,7 +244,7 @@ def _build_chart(
 def _cash_projection(
     account: Account,
     is_interest: bool,
-    scenario,
+    balance_ctx: BalanceContext,
     all_periods: list[PayPeriod],
     params: InterestParams | None,
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
@@ -274,15 +273,18 @@ def _cash_projection(
     balances: dict[int, Decimal] = {}
     interest_by_period: dict[int, Decimal] = {}
     anchor: AnchorPoint | None = None
+    scenario = balance_ctx.scenario
     if is_interest:
         if scenario is not None:
             anchor = balance_resolver.resolve_anchor(account, scenario.id)
-            balances = balance_at.balance_map(account, scenario, all_periods) or {}
+            balances = balance_at.balance_map(
+                account, balance_ctx, all_periods,
+            ) or {}
             interest_by_period = net_worth_kernel.interest_by_period_for_account(
                 account, scenario, all_periods, params,
             )
     elif scenario is not None and all_periods:
-        result = balance_at.cash_balance_map(account, scenario, all_periods)
+        result = balance_at.cash_balance_map(account, balance_ctx, all_periods)
         balances = result.balances
         anchor = balance_resolver.resolve_anchor(account, scenario.id)
     return balances, interest_by_period, anchor
@@ -365,7 +367,7 @@ def _cash_detail_context(account: Account) -> dict:
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
-    scenario = get_baseline_scenario(current_user.id)
+    balance_ctx = BalanceContext.build(current_user.id)
 
     # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
     # auto-created before any projection so the parameters card always
@@ -378,7 +380,7 @@ def _cash_detail_context(account: Account) -> dict:
     )
 
     balances, interest_by_period, anchor = _cash_projection(
-        account, is_interest, scenario, all_periods, params,
+        account, is_interest, balance_ctx, all_periods, params,
     )
 
     current_balance = _current_period_balance(balances, current_period, anchor)
@@ -789,23 +791,22 @@ def property_detail(account_id):
         db.session.add(params)
         db.session.commit()
 
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    today = date.today()
+    balance_ctx = BalanceContext.build(current_user.id)
+    today = balance_ctx.as_of
 
-    # Resolve each secured loan ONCE, then feed both the equity hero and the
-    # equity chart from that single pass (no loan is resolved twice per load).
-    resolved_loans: list[tuple[LoanParams, LoanState]] = []
-    for loan in account.secured_loans:
-        resolved = resolve_account_loan(loan.id, scenario_id, today)
-        if resolved is not None:
-            resolved_loans.append(resolved)
-    # ``current_anchor_balance`` is NOT NULL (CHECK-constrained), so it is read
-    # straight -- no dead ``or 0`` anchor-NULL fork (C7-2).
-    equity = home_equity_service.compute_home_equity(
-        account.current_anchor_balance,
-        [state.current_balance for _params, state in resolved_loans],
-    )
+    # Every secured loan is read from the read pass's ONE memoized resolution,
+    # so the equity hero, the equity chart, and the /savings cockpit's equity
+    # card all read the same mortgage balance -- this page used to resolve them
+    # itself and hand the pure ``compute_home_equity`` its own figures, a second
+    # equity path parallel to ``resolve_home_equity``.
+    equity = home_equity_service.resolve_home_equity(account, balance_ctx)
+    resolved_loans: list[tuple[LoanParams, LoanState]] = [
+        (resolved.params, resolved.state)
+        for resolved in (
+            balance_ctx.loan(loan) for loan in account.secured_loans
+        )
+        if resolved is not None
+    ]
 
     return render_template(
         "accounts/property_detail.html",

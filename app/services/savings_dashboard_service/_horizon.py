@@ -461,10 +461,9 @@ def _liability_band(
 
     owed_by_account = balance_at.liability_owed_at_dates(
         [ad["account"] for ad in liability_ads],
-        core.scenario,
+        core.balance_ctx,
         frame.sample_dates,
         {ad["account"].id: ad["current_balance"] for ad in liability_ads},
-        frame.today,
     )
     for ad in liability_ads:
         _add_into(band, owed_by_account[ad["account"].id])
@@ -702,7 +701,7 @@ def build_horizon(
     if not core.all_periods:
         return None
 
-    today = date.today()
+    today = core.balance_ctx.as_of
     horizon_end, debt_free_date, is_loan_free = _resolve_horizon_domain(
         account_data, today,
     )

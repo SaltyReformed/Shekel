@@ -54,6 +54,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.utils.money import round_money
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import insert_origination_rate
 
 
@@ -229,7 +230,7 @@ def test_per_period_principal_interest_single_source(
         state = _resolver_state(account, loan_params, date.today())
 
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
+            [account], BalanceContext.build(seed_user["user"].id),
         )
         year_end_schedule = debt_schedules[account.id].schedule
 
@@ -305,7 +306,7 @@ def test_total_interest_one_definition(
         # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
         # 2026-12-01).
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
+            [account], BalanceContext.build(seed_user["user"].id),
         )
         # This loan has no genesis opening posting (LoanParams added directly,
         # no create_params chokepoint), so the hybrid falls back to the full
@@ -564,7 +565,7 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
         debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
+            [account], BalanceContext.build(seed_user["user"].id),
         )
         ye_schedule = debt_schedules[account.id].schedule
         ye_payoff = (
@@ -743,7 +744,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
         debt_schedules = (
             year_end_summary_service._balances._generate_debt_schedules(
-                [account], scenario_id,
+                [account], BalanceContext.build(seed_user["user"].id),
             )
         )
         ye_schedule = debt_schedules[account.id].schedule

@@ -44,6 +44,7 @@ from app.services import (
     year_end_summary_service,
 )
 from app.services.tax_config_service import load_tax_configs
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
 
 
@@ -315,6 +316,7 @@ class TestLiveIncomeThroughBalanceResolver:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -371,6 +373,7 @@ class TestLiveIncomeThroughBalanceResolver:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -535,6 +538,7 @@ class TestConsumerIntegration:
         """
         with app.app_context():
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             user_id = seed_user["user"].id
             profile = _create_profile(user_id, scenario.id)
             _add_one_time_raise(
@@ -559,7 +563,7 @@ class TestConsumerIntegration:
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._assemble_inputs([inv], scenario)
+            seam_inputs = balance_at._assemble_inputs([inv], bctx)
             assert seam_inputs.salary_gross_biweekly == canonical
 
             # Year-end consumer: thin delegator over income_service

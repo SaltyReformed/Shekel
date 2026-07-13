@@ -34,6 +34,7 @@ from app.services import (
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
+from app.services.resolution_context import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 
@@ -93,7 +94,7 @@ class _GridContext(NamedTuple):
 
     Produced by :func:`_resolve_grid_context`.  Carrying this as a
     :class:`typing.NamedTuple` lets :func:`index` access fields via
-    attribute (``ctx.scenario``) without binding a separate local per
+    attribute (``ctx.balance_ctx``) without binding a separate local per
     field from a tuple unpack -- the same pattern keeps the
     orchestrator's pylint ``R0914`` count below the project threshold
     after the mobile-follow-up Commit 8 / F-6 decomposition.
@@ -102,7 +103,7 @@ class _GridContext(NamedTuple):
         user_id: ID of the requesting user.  Drives the user-scoped
             pay-period queries -- notably the forward Plan-tab window
             rebuilt by :func:`_build_plan_view`.
-        scenario: The baseline scenario for the requesting user.
+        balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
         account: The grid account (checking by default, or the user's
             preferred grid account), or ``None`` when the user has no
             account rows at all (the post-Commit-3 user-with-zero-
@@ -120,7 +121,7 @@ class _GridContext(NamedTuple):
     """
 
     user_id: int
-    scenario: Scenario
+    balance_ctx: BalanceContext
     account: Account | None
     num_periods: int
     start_offset: int
@@ -148,8 +149,8 @@ def _resolve_grid_context(user_id, request_args, settings):
         period.  The caller distinguishes via ``isinstance(result, str)``.
     """
     # Get the baseline scenario.
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    balance_ctx = BalanceContext.build(user_id)
+    if balance_ctx.scenario is None:
         return render_template("grid/no_setup.html")
 
     # Get the grid account (checking by default, or user preference).
@@ -179,7 +180,7 @@ def _resolve_grid_context(user_id, request_args, settings):
 
     return _GridContext(
         user_id=user_id,
-        scenario=scenario,
+        balance_ctx=balance_ctx,
         account=account,
         num_periods=num_periods,
         start_offset=start_offset,
@@ -191,7 +192,7 @@ def _resolve_grid_context(user_id, request_args, settings):
     )
 
 
-def _load_grid_transactions(account, scenario, all_periods):
+def _load_grid_transactions(account, balance_ctx, all_periods):
     """Load all transactions for the visible account and scenario.
 
     Every transaction has ``account_id`` NOT NULL, so filtering by
@@ -212,7 +213,7 @@ def _load_grid_transactions(account, scenario, all_periods):
     period_ids = [p.id for p in all_periods]
     txn_filters = [
         Transaction.pay_period_id.in_(period_ids),
-        Transaction.scenario_id == scenario.id,
+        Transaction.scenario_id == balance_ctx.scenario.id,
         Transaction.is_deleted.is_(False),
     ]
     if account:
@@ -228,7 +229,7 @@ def _load_grid_transactions(account, scenario, all_periods):
     )
 
 
-def _grid_amount_overrides(account, scenario, all_periods):
+def _grid_amount_overrides(account, balance_ctx, all_periods):
     """Build the live projected-net override map for a grid account.
 
     The grid threads ONE live override map into the balance / accrual
@@ -247,13 +248,13 @@ def _grid_amount_overrides(account, scenario, all_periods):
     would show stored income while the full-page render shows live, and the
     balance row would flicker between them on refresh.
     """
-    transactions = _load_grid_transactions(account, scenario, all_periods)
+    transactions = _load_grid_transactions(account, balance_ctx, all_periods)
     return balance_resolver.live_amount_overrides(
-        account, scenario.id, transactions,
+        account, balance_ctx.scenario.id, transactions,
     )
 
 
-def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
+def _build_grid_balances(account, balance_ctx, all_periods, amount_overrides=None):
     """Compute the anchor balance, period-end projection, and accrual row.
 
     Routes through the balance-at seam's kind-aware grid view
@@ -292,8 +293,7 @@ def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
 
     if account is not None:
         grid_view = balance_at.grid_balance_view(
-            account, scenario, all_periods,
-            amount_overrides=amount_overrides,
+            account, balance_ctx, all_periods, amount_overrides=amount_overrides,
         )
     else:
         grid_view = balance_at.GridBalanceView(
@@ -304,7 +304,7 @@ def _build_grid_balances(account, scenario, all_periods, amount_overrides=None):
     return grid_view, anchor_balance
 
 
-def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
+def _build_grid_subtotals(account, balance_ctx, periods, amount_overrides=None):
     """Compute per-period subtotals via the canonical entries-aware producer.
 
     Routing the on-screen subtotal row through
@@ -341,7 +341,7 @@ def _build_grid_subtotals(account, scenario, periods, amount_overrides=None):
         )
         return {period.id: zero for period in periods}
     return balance_resolver.period_subtotals(
-        account, scenario.id, periods, amount_overrides=amount_overrides,
+        account, balance_ctx.scenario.id, periods, amount_overrides=amount_overrides,
     )
 
 
@@ -512,7 +512,7 @@ def _build_plan_view(
     )
 
     plan_subtotals = _build_grid_subtotals(
-        ctx.account, ctx.scenario, plan_periods, amount_overrides,
+        ctx.account, ctx.balance_ctx, plan_periods, amount_overrides,
     )
 
     plan_balances = {p.id: grid_view.balances.get(p.id) for p in plan_periods}
@@ -561,7 +561,7 @@ def index():
         return ctx
 
     all_transactions = _load_grid_transactions(
-        ctx.account, ctx.scenario, ctx.all_periods,
+        ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
     # Workstream B: build the live projected-income override once from the
     # loaded transactions, annotate each row with the display amount, and
@@ -572,14 +572,14 @@ def index():
     # safe ``is defined`` fallback, so it never persists and never affects
     # render paths that do not set it.
     amount_overrides = balance_resolver.live_amount_overrides(
-        ctx.account, ctx.scenario.id, all_transactions,
+        ctx.account, ctx.balance_ctx.scenario.id, all_transactions,
     )
     for txn in all_transactions:
         txn.live_estimated_amount = amount_overrides.get(
             txn.id, txn.estimated_amount,
         )
     grid_view, anchor_balance = _build_grid_balances(
-        ctx.account, ctx.scenario, ctx.all_periods,
+        ctx.account, ctx.balance_ctx, ctx.all_periods,
         amount_overrides=amount_overrides,
     )
 
@@ -611,14 +611,14 @@ def index():
 
     return render_template(
         "grid/grid.html",
-        scenario=ctx.scenario,
+        scenario=ctx.balance_ctx.scenario,
         account=ctx.account,
         periods=ctx.periods,
         current_period=ctx.current_period,
         balances=grid_view.balances,
         increments=grid_view.increments,
         subtotals=_build_grid_subtotals(
-            ctx.account, ctx.scenario, ctx.periods,
+            ctx.account, ctx.balance_ctx, ctx.periods,
             amount_overrides=amount_overrides,
         ),
         categories=[c for c in all_categories if c.is_active],
@@ -695,7 +695,7 @@ class _PartialBase(NamedTuple):
             user-with-zero-accounts edge case.
     """
 
-    scenario: Scenario
+    balance_ctx: BalanceContext
     account: Account | None
 
 
@@ -715,15 +715,15 @@ def _resolve_partial_base(user_id):
         A :class:`_PartialBase`, or ``None`` when the user has no
         baseline scenario.
     """
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    balance_ctx = BalanceContext.build(user_id)
+    if balance_ctx.scenario is None:
         return None
 
     account = resolve_grid_account(
         user_id, current_user.settings,
         request.args.get("account_id", type=int),
     )
-    return _PartialBase(scenario=scenario, account=account)
+    return _PartialBase(balance_ctx=balance_ctx, account=account)
 
 
 class _PartialWindow(NamedTuple):
@@ -751,7 +751,7 @@ class _PartialWindow(NamedTuple):
         periods: The visible period slice (length up to ``num_periods``).
     """
 
-    scenario: Scenario
+    balance_ctx: BalanceContext
     account: Account | None
     num_periods: int
     start_offset: int
@@ -797,7 +797,7 @@ def _resolve_partial_window(user_id):
     )
 
     return _PartialWindow(
-        scenario=base.scenario,
+        balance_ctx=base.balance_ctx,
         account=base.account,
         num_periods=num_periods,
         start_offset=start_offset,
@@ -841,10 +841,10 @@ def balance_row():
     # figures use live projected income, matching the full-page render.
     if window.account is not None:
         amount_overrides = _grid_amount_overrides(
-            window.account, window.scenario, all_periods,
+            window.account, window.balance_ctx, all_periods,
         )
         view = balance_at.grid_balance_view(
-            window.account, window.scenario, all_periods,
+            window.account, window.balance_ctx, all_periods,
             amount_overrides=amount_overrides,
         )
         balances = view.balances
@@ -914,7 +914,7 @@ def subtotal_rows():
     # so ``balances[p] - balances[p-1] == subtotals[p].net`` keeps
     # holding across the live swap (E-25 / Commit 10).
     subtotals = _build_grid_subtotals(
-        window.account, window.scenario, window.periods,
+        window.account, window.balance_ctx, window.periods,
     )
 
     return render_template(
@@ -975,10 +975,10 @@ def mobile_this_period_summary():
         # full render.  For every other kind this is the cash-flow
         # running-balance with an empty accrual map -- the prior behavior.
         amount_overrides = _grid_amount_overrides(
-            base.account, base.scenario, all_periods,
+            base.account, base.balance_ctx, all_periods,
         )
         view = balance_at.grid_balance_view(
-            base.account, base.scenario, all_periods,
+            base.account, base.balance_ctx, all_periods,
             amount_overrides=amount_overrides,
         )
         balances = view.balances
@@ -987,7 +987,7 @@ def mobile_this_period_summary():
         balances = OrderedDict()
         increments = OrderedDict()
 
-    subtotals = _build_grid_subtotals(base.account, base.scenario, [period])
+    subtotals = _build_grid_subtotals(base.account, base.balance_ctx, [period])
 
     return render_template(
         "grid/_mobile_tp_summary.html",

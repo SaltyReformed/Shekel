@@ -21,26 +21,38 @@ from app.services import pay_period_service
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.resolution_context import BalanceContext
 from app.services.savings_dashboard_service._types import (
     _AccountParams,
     _DashboardCoreData,
 )
 
 
-def _load_dashboard_core_data(user_id):
-    """Load the accounts, scenario, and periods for the dashboard.
+def _load_dashboard_core_data(user_id, balance_ctx=None):
+    """Load the accounts, balance context, and periods for the dashboard.
 
     Per-account balances are produced by the
     :mod:`app.services.balance_at` seam, which loads its own scenario-scoped
     transactions, so this loader no longer pre-fetches a transaction set.
 
+    It builds the read pass's
+    :class:`~app.services.resolution_context.BalanceContext` (resolving the
+    baseline scenario once) unless the caller supplies one.  Every producer in
+    the build then shares it, so each loan is resolved exactly once for the whole
+    render rather than once per surface that asks.
+
     Args:
         user_id: Integer ID of the current user.
+        balance_ctx: An existing
+            :class:`~app.services.resolution_context.BalanceContext` to reuse, or
+            ``None`` to build one for this pass.  A caller that has already
+            started a read pass (the budget dashboard's tracks section runs three
+            savings producers back to back) passes its own so all of them share
+            ONE set of loan resolutions.
 
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
-        display), the baseline scenario, all pay periods, and the current
+        display), the balance context, all pay periods, and the current
         period.
     """
     accounts = (
@@ -52,7 +64,10 @@ def _load_dashboard_core_data(user_id):
 
     return _DashboardCoreData(
         accounts=accounts,
-        scenario=get_baseline_scenario(user_id),
+        balance_ctx=(
+            balance_ctx if balance_ctx is not None
+            else BalanceContext.build(user_id)
+        ),
         all_periods=pay_period_service.get_all_periods(user_id),
         current_period=pay_period_service.get_current_period(user_id),
     )

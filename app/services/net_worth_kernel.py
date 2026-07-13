@@ -53,7 +53,7 @@ from app.services.account_projection import (
     forward_balance_at_date,
     splice_confirmed_and_projected_loan_balances,
 )
-from app.services.loan_resolution import resolve_account_loan
+from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
 
 ZERO = Decimal("0")
@@ -155,45 +155,52 @@ class DebtSchedule:
 
 def generate_debt_schedules(
     debt_accounts: list,
-    scenario_id: int,
+    ctx: "BalanceContext",
 ) -> dict[int, "DebtSchedule"]:
-    """Generate amortization schedules and current balances for debt accounts.
+    """Return each debt account's :class:`DebtSchedule` from the pass's resolutions.
 
-    Runs the loan resolver (E-18 / Commit 13) for each debt account and
-    returns its :class:`DebtSchedule` -- the :class:`AmortizationRow` schedule
-    plus the resolver-derived current balance.  Same resolver output the loan
-    dashboard and /savings debt card consume, so mortgage interest, debt
-    progress, and net-worth liability all derive from the single resolver call
-    (E-18 / Commit 15).
+    Projects the read pass's memoized loan resolutions
+    (:meth:`~app.services.resolution_context.BalanceContext.loan_state`) into the
+    narrow ``(schedule, current_balance)`` bundle the balance dispatcher needs.
+    Same resolver output the loan dashboard and the /savings debt card consume,
+    so mortgage interest, debt progress, and net-worth liability all derive from
+    ONE resolution per loan (E-18 / Commit 15).
+
+    It no longer resolves anything itself, and that is the point.  It used to
+    call the resolver per account against its own ``date.today()`` -- so the five
+    surfaces that called it in a single ``/savings`` render each re-resolved
+    every loan, against five independently-read clocks.  Now the context owns
+    both the clock and the resolution, so calling this twice in one pass costs
+    one dict comprehension, not two amortization walks
+    (``docs/audits/balance_architecture/followup_redundant_loan_resolution.md``).
 
     Args:
-        debt_accounts: Accounts with has_amortization=True.
-        scenario_id: Baseline scenario ID for payment history.
+        debt_accounts: The amortizing loan accounts to bundle.  An account the
+            context cannot resolve (no ``LoanParams`` -- not a configured loan)
+            is absent from the result, and the caller's per-kind dispatch then
+            falls through to its non-loan path.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (it pins the scenario and the as-of, and memoizes each resolution).
 
     Returns:
         dict mapping account_id to :class:`DebtSchedule`.
     """
     schedules: dict[int, DebtSchedule] = {}
-    today = date.today()
-
     for account in debt_accounts:
-        resolved = resolve_account_loan(account.id, scenario_id, today)
-        if resolved is None:
+        state = ctx.loan_state(account)
+        if state is None:
             continue
-        _, state = resolved
         schedules[account.id] = DebtSchedule(
             schedule=state.schedule,
             current_balance=state.current_balance,
         )
-
     return schedules
 
 
 def loan_owed_at_dates(
     loan_accounts: list,
-    scenario_id: int,
+    ctx: "BalanceContext",
     sample_dates: list[date],
-    today: date,
 ) -> dict[int, list[Decimal]]:
     """Return each loan's PROJECTED owed balance at several FUTURE dates.
 
@@ -238,24 +245,25 @@ def loan_owed_at_dates(
 
     Args:
         loan_accounts: The amortizing loan accounts to value.
-        scenario_id: The baseline scenario id (scopes the resolver).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            Its ``as_of`` is the present/future boundary this guard splits on AND
+            the date each loan is resolved at -- ONE clock, so the seam entry, its
+            sample axis, this guard, and the resolver cannot disagree.  They were
+            two independent ``date.today()`` reads before, which a midnight
+            crossing between them could turn into a rejection of the caller's own
+            index-0 sample.
         sample_dates: The calendar dates to value each loan at, in the desired
-            output order.  Every date must be STRICTLY AFTER *today*.
-        today: The caller's as-of date -- the present/future boundary.  Passed
-            in rather than read here so the seam entry, its sample axis, and this
-            guard share ONE clock (a midnight crossing between two independent
-            ``date.today()`` reads would otherwise reject the caller's own
-            index-0 sample).  The RESOLVER keeps its own as-of for deciding which
-            payments are confirmed; that is a separate concern.
+            output order.  Every date must be STRICTLY AFTER ``ctx.as_of``.
 
     Returns:
         ``{account_id: [Decimal owed at each sample date]}`` -- one list per
         loan with a resolvable schedule, aligned with *sample_dates*.
 
     Raises:
-        ValueError: When any sample date is on or before *today*.  The past (and
-            the present) is the ledger's; see the domain note above.
+        ValueError: When any sample date is on or before ``ctx.as_of``.  The past
+            (and the present) is the ledger's; see the domain note above.
     """
+    today = ctx.as_of
     past = sorted({d for d in sample_dates if d <= today})
     if past:
         raise ValueError(
@@ -265,7 +273,7 @@ def loan_owed_at_dates(
             "(balance_at.balance_at / amortizing_balance_at). Rejected dates: "
             f"{[d.isoformat() for d in past]} (today={today.isoformat()})"
         )
-    schedules = generate_debt_schedules(loan_accounts, scenario_id)
+    schedules = generate_debt_schedules(loan_accounts, ctx)
     result: dict[int, list[Decimal]] = {}
     for account in loan_accounts:
         schedule_info = schedules.get(account.id)
@@ -285,7 +293,7 @@ def loan_owed_at_dates(
 
 
 def amortizing_balance_at(
-    account: Account, scenario: Scenario, as_of: date,
+    account: Account, ctx: "BalanceContext", as_of: date,
 ) -> Decimal:
     """Return an amortizing loan's balance at *as_of*: ledger past, projected future.
 
@@ -317,16 +325,26 @@ def amortizing_balance_at(
     posted into) -- exactly the pre-switch behaviour, safe by construction -- and
     to the cash producer when the loan has no resolvable schedule at all.
 
+    **The two dates.**  ``ctx.as_of`` is the resolver's NOW -- the moment the loan
+    is RESOLVED at, which decides what is confirmed and what it currently owes.
+    *as_of* is the VALUATION date -- the moment to value it AT.  They are
+    different questions, and this producer splits on their comparison.  While
+    "now" was an implicit ``date.today()`` read inside this function, the two were
+    silently conflated: a caller could ask for a historical valuation and get it
+    measured against a loan resolved at today, with no way to say otherwise.
+
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
-        scenario: The baseline scenario (scopes the ledger and the resolver).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (its scenario scopes the ledger; its ``as_of`` is the resolver's NOW
+            and the past/future boundary).
         as_of: The date to value the loan at.
 
     Returns:
         The ``Decimal`` balance owed at *as_of*.
     """
-    if as_of <= date.today():
+    if as_of <= ctx.as_of:
         # Pylint: ``import-outside-toplevel`` -- imported from the defining
         # ``_reader`` submodule rather than the package, so the static import
         # graph carries no ``net_worth_kernel -> loan_posting_service`` cycle at
@@ -335,20 +353,20 @@ def amortizing_balance_at(
         from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
             confirmed_loan_balance_at,
         )
-        confirmed = confirmed_loan_balance_at(account.id, scenario.id, as_of)
+        confirmed = confirmed_loan_balance_at(
+            account.id, ctx.scenario.id, as_of,
+        )
         if confirmed is not None:
             return confirmed
 
-    debt_schedule = generate_debt_schedules(
-        [account], scenario.id,
-    ).get(account.id)
+    debt_schedule = generate_debt_schedules([account], ctx).get(account.id)
     if debt_schedule is None:
         # No resolvable schedule: degrade to the cash producer over the loan's
         # own transaction rows (the seam's documented AMORTIZING fallback).
         return balance_resolver.balance_as_of_date(
-            account, scenario.id, as_of,
+            account, ctx.scenario.id, as_of,
         )
-    if as_of > date.today():
+    if as_of > ctx.as_of:
         return forward_balance_at_date(
             debt_schedule.schedule, as_of, debt_schedule.current_balance,
         )
@@ -531,7 +549,7 @@ def interest_by_period_for_account(
 
 def build_account_balance_map(  # pylint: disable=too-many-arguments
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
     *,
     debt_schedule: "DebtSchedule | None",
@@ -571,7 +589,12 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
 
     Args:
         account: The account to project.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            Its ``scenario`` scopes every branch's producer; its ``as_of`` is the
+            confirmed/projected boundary the AMORTIZING branch splices on.  Only
+            the loan branch needs the whole context -- the cash / investment /
+            appreciation producers are leaves with no clock and no loan of their
+            own, so they take ``ctx.scenario`` and keep their existing contract.
         periods: All user pay periods.
         debt_schedule: This account's :class:`DebtSchedule` (the
             :func:`generate_debt_schedules` entry for it -- its amortization
@@ -626,7 +649,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
         # Genesis per-period read switch (plan Section 9): confirmed ledger
         # for begun periods, re-seeded projection after (see the helper).
         return _build_amortizing_balance_map(
-            account, scenario, periods, debt_schedule,
+            account, ctx, periods, debt_schedule,
         )
 
     # Investment accounts: use the growth engine.  The base balance
@@ -644,7 +667,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             build_investment_balance_map,
         )
         return build_investment_balance_map(
-            account, investment_params, scenario, periods,
+            account, investment_params, ctx.scenario, periods,
             deductions, salary_gross_biweekly,
         )
 
@@ -661,7 +684,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
         from app.services.net_worth_investment import (  # pylint: disable=import-outside-toplevel
             build_appreciation_balance_map,
         )
-        return build_appreciation_balance_map(account, scenario, periods)
+        return build_appreciation_balance_map(account, ctx.scenario, periods)
 
     # Interest-bearing and plain accounts share the base path, and it is the
     # only branch that forwards ``amount_overrides``: the override map only
@@ -669,13 +692,13 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     # match any of them (the investment base builds its own live overrides
     # inside ``balances_for``).
     return base_account_balance_map(
-        account, scenario, periods, amount_overrides=amount_overrides,
+        account, ctx.scenario, periods, amount_overrides=amount_overrides,
     )
 
 
 def account_balance_map_from_inputs(
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
     inputs,
     *,
@@ -705,7 +728,7 @@ def account_balance_map_from_inputs(
 
     Args:
         account: The account to project.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
         periods: The pay periods to project over.
         inputs: The per-set projection bundle (see the duck-typed contract
             above).
@@ -718,7 +741,7 @@ def account_balance_map_from_inputs(
         account has no anchor period.
     """
     return build_account_balance_map(
-        account, scenario, periods,
+        account, ctx, periods,
         debt_schedule=inputs.debt_schedules.get(account.id),
         investment_params=inputs.investment_params_map.get(account.id),
         deductions=inputs.deductions_by_account.get(account.id, []),
@@ -729,7 +752,7 @@ def account_balance_map_from_inputs(
 
 def _build_amortizing_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
     debt_schedule: "DebtSchedule",
 ) -> "OrderedDict[int, Decimal]":
@@ -757,7 +780,11 @@ def _build_amortizing_balance_map(
     Args:
         account: The loan account (its id and the scenario scope the ledger
             read; the caller owns the ownership check).
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+            Its ``scenario`` scopes the ledger read, and its ``as_of`` is the
+            begun/future splice boundary -- the SAME date the loan behind
+            *debt_schedule* was resolved at, which a local ``date.today()`` read
+            could not guarantee.
         periods: All user pay periods (output domain, keyed by ``period.id``).
         debt_schedule: This account's :class:`DebtSchedule` (resolver schedule
             plus the read-switch-seeded current balance).
@@ -776,7 +803,7 @@ def _build_amortizing_balance_map(
         confirmed_loan_balance_map,
     )
     confirmed_map = confirmed_loan_balance_map(
-        account.id, scenario.id, periods,
+        account.id, ctx.scenario.id, periods,
     )
     if confirmed_map is None:
         # No ledger to be authoritative: the whole map falls back to the
@@ -790,5 +817,5 @@ def _build_amortizing_balance_map(
         compute_forward_loan_period_balance_map(
             debt_schedule.schedule, periods, debt_schedule.current_balance,
         ),
-        date.today(),
+        ctx.as_of,
     )

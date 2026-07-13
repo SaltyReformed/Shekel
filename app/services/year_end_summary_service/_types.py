@@ -12,7 +12,7 @@ from decimal import Decimal
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
+from app.services.resolution_context import BalanceContext
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,6 @@ class _YearContext:
     """
 
     year: int
-    scenario: Scenario
+    balance_ctx: BalanceContext
     all_periods: list[PayPeriod]
     year_period_ids: list[int]
