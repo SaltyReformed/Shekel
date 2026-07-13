@@ -1745,8 +1745,13 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
             cash = balance_at.cash_balance_map(hysa, scenario, periods)
-            # Force the documented (NOT-NULL-unreachable) None return.
-            monkeypatch.setattr(balance_at, "balance_map", lambda *a, **k: None)
+            # Force the documented (NOT-NULL-unreachable) None return.  Patch the
+            # DEFINING module (``_kind_correct``), not the package re-export:
+            # ``grid_balance_view`` looks the producer up through its owning
+            # module, so that is where the substitution has to land.
+            monkeypatch.setattr(
+                balance_at._kind_correct, "balance_map", lambda *a, **k: None,
+            )
             view = balance_at.grid_balance_view(hysa, scenario, periods)
 
             assert view.balances == cash.balances
