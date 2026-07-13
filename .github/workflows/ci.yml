@@ -126,7 +126,7 @@ jobs:
 
       # ── 5. Run pylint ────────────────────────────────────────────
       # Layered pylint gate:
-      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass:
+      #   --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export:
       #     always fail on errors (E), fatals (F), and the project's custom
       #     checkers (tools/pylint/shekel_checkers/, loaded via .pylintrc) --
       #     the financial-correctness rules (decimal-from-float, refname-compare,
@@ -146,7 +146,7 @@ jobs:
       #     that drops the score fails the build.  Enforced locally by the Stop
       #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
-        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass --output-format=colorized
+        run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export --output-format=colorized
 
       # ── 5a. Lint scripts/ ────────────────────────────────────────
       # Same layered gate for the operational CLI scripts.  scripts/
@@ -158,7 +158,7 @@ jobs:
       # gate cross-tree duplicate-code is a separate open decision in
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
-        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass --output-format=colorized
+        run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export --output-format=colorized
 
       # ── 5a2. Lint the pylint checker package ─────────────────────
       # The custom checkers ARE the enforcement machinery, so they hold the
@@ -169,7 +169,7 @@ jobs:
       # package only -- the tests/ subtree is out of general pylint scope
       # (ratified decision #1) and is covered by the pytest run in step 5b.
       - name: Lint checker package with pylint
-        run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass --output-format=colorized
+        run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-original-principal-as-balance,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
