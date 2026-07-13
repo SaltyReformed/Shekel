@@ -346,6 +346,183 @@ def insert_origination_rate(loan_params, interest_rate):
     return row
 
 
+def _sync_loan_ledger(loan_account_id):
+    """Reconcile a loan's genesis ledger, exactly as every production writer does.
+
+    The shared write-through step of the three loan fixtures below
+    (:func:`create_loan_account`, :func:`insert_trueup_event`,
+    :func:`insert_tracking_start_event`).  Every production path that creates or
+    re-bases a loan's anchors reconciles the genesis postings in the SAME
+    transaction as the source row:
+
+    * ``loan.create_params`` / ``loan.update_params`` call
+      :func:`~app.services.loan_posting_service.sync_loan_postings_all_scenarios`
+      (``app/routes/loan/params.py:125`` and ``:177``).
+    * The balance true-up and the tracking-start opening both route through
+      :func:`app.services.anchor_service._append_loan_anchor_and_sync`, which
+      appends the event, re-syncs, and commits (``anchor_service.py:390``).
+
+    The property that matters, and the one this helper reproduces, is that the
+    event and its postings land in the SAME transaction -- never an event alone.
+    This helper flushes rather than commits, keeping the existing fixture contract
+    (the caller owns the transaction and commits with the rest of its setup).
+
+    Without this, a fixture-built loan carries anchor rows but NO opening
+    posting -- a state production cannot produce, and the one every loan built
+    through these helpers used to be in (so it exercised the no-ledger fallback
+    while production always took the ledger path).
+
+    **Scope, stated plainly so nobody over-trusts it.**  This reaches only loans
+    built through :func:`create_loan_account` / :func:`create_loan_with_trueup` /
+    :func:`insert_trueup_event` / :func:`insert_tracking_start_event`.  Roughly
+    twenty test modules still hand-roll a loan (a bare ``LoanParams(...)`` insert;
+    e.g. ``tests/test_services/test_balance_at.py::_make_mortgage``, a near-copy of
+    :func:`create_loan_account`).  Such a loan gets a ledger only if one of the
+    anchor helpers above happens to be called on it afterwards, and otherwise has
+    none at all -- ``test_year_end_summary_service.py``'s hand-built loan is in
+    exactly that state.  That coupling is invisible at the call site and is a real
+    trap; routing the hand-rolled builders through this factory is a follow-up
+    (and a prerequisite for the fail-loud read seam, which turns a ledger-less loan
+    into a raise).
+
+    Deliberately calls the PLAIN sync rather than production's
+    :func:`~app.services.loan_posting_service.sync_all_scenarios_or_duplicate`:
+    the duplicate-translating wrapper exists to turn a user's double-click into
+    idempotent success, and it does so by ROLLING BACK.  In a fixture that would
+    silently discard the test's setup; a duplicate anchor written by a fixture is
+    a bug in the fixture and must fail loud.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary, the
+    same contract the production chokepoints keep.
+
+    Args:
+        loan_account_id: The loan whose genesis ledger to reconcile.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same circular-dep avoidance as every
+    # other helper in this module: the services package must not load at
+    # tests/_test_helpers import time.
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.services import loan_loaders, loan_posting_service
+    from app.services.loan_posting_service import _sync as _loan_sync
+
+    loan_posting_service.sync_loan_postings_all_scenarios(loan_account_id)
+    db.session.flush()
+
+    # The sync bounds its walk at ``date.today()``, and an anchor dated after that
+    # is DROPPED -- it posts nothing (``_walk._merge_anchor_and_payment_events``).
+    # A fixture that writes one therefore gets a loan carrying an OPENING but
+    # missing a true-up: it LOOKS ledger-backed and is not, which is the exact
+    # class of divergence this arc exists to delete.  Production cannot produce it
+    # (the true-up schema rejects a future ``anchor_date`` --
+    # ``app/schemas/validation/loans.py::validate_not_future``), so it is a fixture
+    # bug, and it fails loud here rather than silently skewing a later assertion.
+    #
+    # The clock is read from the sync's OWN module: ``freeze_today`` patches the
+    # ``date`` symbol per-module, and this module deliberately holds the real one
+    # (as ``_real_date``), so asking it would compare against the wrong today.
+    as_of = _loan_sync.date.today()
+    params = loan_loaders.load_loan_params(loan_account_id)
+    if params is None:
+        return
+    dropped = sorted(
+        fact.anchor_date
+        for fact in loan_loaders.load_loan_anchor_facts(params)
+        if fact.anchor_date > as_of
+    )
+    if dropped:
+        raise AssertionError(
+            f"loan {loan_account_id}: anchor(s) dated "
+            f"{[d.isoformat() for d in dropped]} are AFTER the sync's as-of "
+            f"({as_of.isoformat()}), so they post nothing and the loan is left "
+            f"half-opened (opening present, true-up missing).  Production forbids "
+            f"a future anchor date; re-date the fixture's anchor to on/before the "
+            f"effective today, or move the frozen clock past it."
+        )
+
+
+def clear_loan_ledger(loan_account_id):
+    """Delete a loan's genesis postings -- the BROKEN state production cannot make.
+
+    The exact inverse of :func:`_sync_loan_ledger`: removes the journal entries
+    the loan sync produces (``loan_opening``, ``loan_trueup``, and the
+    ``loan_payment`` split corrections) on any of the loan's own ledger accounts,
+    leaving the Step-2/3 CASH entries untouched.  The posting ledger is
+    append-only (the ORM blocks deletes on ``budget.journal_entries`` /
+    ``budget.account_postings``), so it clears them via raw SQL -- the same
+    mechanism, and the same rationale, as :func:`clear_postings_for_transfer`.
+
+    A configured loan with no opening posting is NOT a legitimate state: the
+    opening is written in the same transaction as the ``LoanParams``
+    (``app/routes/loan/params.py:125``), the Step-4 migration backfilled every
+    pre-existing loan, and ``pay_period_admin.reset_pay_periods`` re-syncs.  This
+    helper exists so the handful of tests that pin behaviour ON that broken state
+    -- the readers' ``None`` contract, and the seam's fail-loud raise -- can
+    construct it EXPLICITLY and say so at the call site.
+
+    It is deliberately the only way to build a ledger-less loan THROUGH THESE
+    HELPERS (a hand-rolled ``LoanParams`` insert still yields one by omission --
+    see :func:`_sync_loan_ledger`).  A boolean ``open_ledger=False`` knob on
+    :func:`create_loan_account` would leave a casual escape hatch back onto the
+    fallback path this arc exists to delete; a call to something named
+    ``clear_loan_ledger`` cannot be made by accident.
+
+    Commits (mirroring :func:`clear_postings_for_transfer`).
+
+    Args:
+        loan_account_id: The loan whose genesis ledger to remove.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same lazy-app-import convention every
+    # helper in this module follows.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import PostingSourceEnum
+    from app.extensions import db
+
+    # ID-based, never a name-string compare (the project's ref-table rule): the
+    # three source kinds the loan sync emits.
+    genesis_source_ids = [
+        ref_cache.posting_source_id(source)
+        for source in (
+            PostingSourceEnum.LOAN_OPENING,
+            PostingSourceEnum.LOAN_TRUEUP,
+            PostingSourceEnum.LOAN_PAYMENT,
+        )
+    ]
+    # A loan owns two shapes of ledger account: the LINKED one (``account_id``)
+    # and its derived opening-equity / interest / escrow / refund ones
+    # (``loan_account_id``).  Scope to entries of a genesis kind touching either.
+    #
+    # The entry ids are resolved to a Python list FIRST, deliberately: the
+    # predicate reaches the entry THROUGH its postings, so deleting the postings
+    # would empty the predicate and strand every journal-entry header behind it.
+    entry_ids = [
+        row[0] for row in db.session.execute(db.text("""
+            SELECT DISTINCT je.id
+            FROM budget.journal_entries je
+            JOIN budget.account_postings p ON p.journal_entry_id = je.id
+            JOIN budget.ledger_accounts la ON la.id = p.ledger_account_id
+            WHERE je.source_kind_id = ANY(:src)
+              AND (la.account_id = :a OR la.loan_account_id = :a)
+        """), {"a": loan_account_id, "src": genesis_source_ids}).all()
+    ]
+    if not entry_ids:
+        return
+    # Legs before the header, for explicitness -- the FK CASCADE would do it
+    # either way, and the ordering carries no safety property: the balanced-entry
+    # constraint trigger fires AFTER INSERT OR UPDATE only
+    # (``app/posting_infrastructure.py:151``), never on DELETE, so an entry cannot
+    # be caught mid-delete with too few legs.
+    db.session.execute(db.text(
+        "DELETE FROM budget.account_postings "
+        "WHERE journal_entry_id = ANY(:ids)"
+    ), {"ids": entry_ids})
+    db.session.execute(db.text(
+        "DELETE FROM budget.journal_entries WHERE id = ANY(:ids)"
+    ), {"ids": entry_ids})
+    db.session.commit()
+
+
 def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
 
@@ -360,6 +537,15 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     it now is: a balance true-up, exactly as the user does after making
     an extra or lump-sum payment.
 
+    Like production, the event is RECONCILED INTO POSTINGS in the same
+    transaction (:func:`_sync_loan_ledger`): ``apply_loan_anchor_true_up`` appends
+    the row and re-syncs every scenario
+    (``anchor_service._append_loan_anchor_and_sync``, which then commits; this
+    helper leaves the commit to its caller).  An un-reconciled true-up
+    does not exist as far as the ledger is concerned -- and the ledger is what
+    every loan surface now reads -- so a fixture that only wrote the event left
+    the loan reporting its pre-true-up balance on every page.
+
     Args:
         loan_params: The :class:`LoanParams` ORM instance, already
             flushed (``account_id`` populated).
@@ -370,7 +556,8 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
             origination event and becomes the resolver's latest anchor.
 
     Returns:
-        The newly added :class:`LoanAnchorEvent` (added, not committed).
+        The newly added :class:`LoanAnchorEvent` (added and reconciled into
+        postings, not committed).
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as insert_origination_event above.
@@ -391,6 +578,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
         ),
     )
     db.session.add(event)
+    _sync_loan_ledger(loan_params.account_id)
     return event
 
 
@@ -405,6 +593,12 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
     synthesizes the ``is_opening`` anchor from it in place of the origination), so
     the genesis walk seeds from this balance/date instead of the origination.
 
+    Like production, the event is RECONCILED INTO POSTINGS in the same
+    transaction (:func:`_sync_loan_ledger`): ``record_loan_tracking_start``
+    appends the row and re-syncs every scenario (it shares
+    ``anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
+    commits; this helper leaves the commit to its caller).
+
     Args:
         loan_params: The :class:`LoanParams` ORM instance, already flushed.
         anchor_balance: The asserted opening balance (Decimal).
@@ -412,7 +606,8 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
             recorded payment).
 
     Returns:
-        The newly added :class:`LoanAnchorEvent` (added, not committed).
+        The newly added :class:`LoanAnchorEvent` (added and reconciled into
+        postings, not committed).
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as insert_trueup_event above.
@@ -430,6 +625,7 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
         ),
     )
     db.session.add(event)
+    _sync_loan_ledger(loan_params.account_id)
     return event
 
 
@@ -449,6 +645,18 @@ def create_loan_account(
     ``LoanAnchorEvent`` and ``RateHistory`` the loan resolver requires --
     so a caller never has to repeat that four-step dance (DRY; the
     per-suite ``_create_small_loan`` copies were a duplicate-code finding).
+
+    **Always OPENS the loan's genesis ledger** (:func:`_sync_loan_ledger`), which
+    is what ``loan.create_params`` does in the same transaction as the
+    ``LoanParams`` insert (``app/routes/loan/params.py:125``).  There is no
+    opt-out: a configured loan without an opening posting is a state production
+    cannot produce, and a suite built on it exercises the no-ledger fallback that
+    production never takes.  A test that needs that broken loan on purpose builds
+    it explicitly with :func:`clear_loan_ledger`.
+
+    The sync runs after the ``RateHistory`` insert because the genesis walk
+    resolves the loan's rate periods, and the resolver raises on an empty
+    rate-change feed.
 
     Commits before returning so the loan is fully resolvable.
 
@@ -509,6 +717,7 @@ def create_loan_account(
     db_session.flush()
     insert_origination_rate(params, rate)
     insert_origination_event(params)
+    _sync_loan_ledger(account.id)
     db_session.commit()
     return account
 

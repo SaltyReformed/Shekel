@@ -78,6 +78,7 @@ from app.services import (
     investment_dashboard_service,
     loan_payment_service,
     loan_resolution,
+    net_worth_kernel,
     savings_dashboard_service,
     year_end_summary_service,
 )
@@ -982,20 +983,44 @@ class TestLoanCrossPageEquality:
     A single isolated amortizing loan (current balance C, original principal
     P, with C != P) must report C identically on the /savings tile, the
     loan-detail producer, the negated year-end liability aggregate, and the
-    net-worth trend's liabilities at today.  The boundary assertion
-    additionally locks the pre-payment-period rule (PR #44 / aba0242): the
-    balance seam must return C -- the current balance held flat -- at a
-    pre-anchor period, NEVER the original principal P.
+    net-worth trend's liabilities at today.
+
+    The boundary assertions additionally lock the balance rule at the three
+    points a loan's per-period map is answered from, since each has a DIFFERENT
+    producer and only one of them can see any given defect:
+
+    * **A begun period at/after the true-up** (the anchor period) -- the confirmed
+      LEDGER.  Returns C, never the original principal P.
+    * **A begun period that ended BEFORE the true-up** -- the confirmed ledger
+      again, which reports what it knew then: the $240,000 opening, since this loan
+      has no recorded payment.  A re-anchored schedule must never back-project
+      today's balance over a past it has no evidence for.
+    * **The first FUTURE period** -- the forward PROJECTION, which amortizes DOWN
+      from C, so it sits below C.  A map reporting the original principal here
+      (one that fell back to the whole-schedule walk) would sit far above C.
+
+    A note on what this test can NO LONGER catch, so nobody trusts it for more
+    than it does.  Before the ledger read switch, EVERY period came from the
+    schedule walk seeded with ``current_balance``, so a pre-payment period was a
+    live probe of that seed -- which is what made it the PR #44 / aba0242 lock
+    (that bug passed ``original_principal`` where the seed belongs).  Now the
+    ledger owns every BEGUN period, and the seed is read only for a target
+    preceding the first scheduled payment, so the seed is invisible to all three
+    assertions above.  Confirmed by reintroducing the defect: seeding the forward
+    map with ``original_principal`` changes no value this test sees.  The fence on
+    that argument is now the W9905 ``shekel-original-principal-as-balance``
+    checker -- a build failure -- not this test.
     """
 
     def test_all_surfaces_equal(self, app, cross_page_loan_ctx, auth_client):
-        """Every loan surface returns C; the pre-anchor balance is C, not P.
+        """Every loan surface returns C; the anchor period is C, the past is the ledger.
 
-        C = $200,000 (trued up today) and P = $240,000 (origination
-        principal) differ, so the boundary assertion is falsifiable: a
-        producer that returned the original principal at the pre-payment
-        boundary would yield P there, failing ``== C``.  All four cross-page
-        surfaces read C at today.
+        C = $200,000 (trued up today) and P = $240,000 (origination principal)
+        differ, so none of the boundary assertions is tautological.  All five
+        cross-page surfaces read C at today.  The seam then reports C at the anchor
+        period (never P), the ledger's $240,000 opening at a period that ended
+        before the true-up was asserted, and a value below C at the first future
+        period (the projection amortizing down from C).
         """
         with app.app_context():
             ctx = cross_page_loan_ctx
@@ -1006,21 +1031,66 @@ class TestLoanCrossPageEquality:
             }
             _assert_surfaces_equal(surface_values, expected, "loan kind")
 
-            # Boundary lock: the balance seam holds the current balance C
-            # flat at a pre-anchor period; returning the original principal
-            # P there is the exact PR #44 / aba0242 bug.  C != P is what
-            # makes this non-tautological (verified by the second assert).
             balances = balance_at.balance_map(
                 ctx["account"], _bctx(ctx), ctx["all_periods"],
             )
-            pre_balance = balances[ctx["pre_anchor_period"].id]
-            assert pre_balance == ctx["C"], (
-                f"pre-anchor balance {pre_balance!r} != current balance "
+
+            # Boundary lock (PR #44 / aba0242): at the anchor period -- the
+            # period the true-up lands in, and still pre-first-payment -- the
+            # seam holds the current balance C flat.  Returning the original
+            # principal P for the loan's CURRENT balance is the exact PR #44 bug
+            # (its cause: the schedule map was seeded with original_principal).
+            # C != P is what makes this non-tautological.
+            anchor_balance = balances[ctx["anchor_period"].id]
+            assert anchor_balance == ctx["C"], (
+                f"anchor-period balance {anchor_balance!r} != current balance "
                 f"{ctx['C']!r}; the loan pre-payment boundary regressed"
             )
-            assert pre_balance != ctx["P"], (
-                f"pre-anchor balance {pre_balance!r} == original principal "
+            assert anchor_balance != ctx["P"], (
+                f"anchor-period balance {anchor_balance!r} == original principal "
                 f"{ctx['P']!r}; this is the exact PR #44 boundary bug"
+            )
+
+            # Ledger authority: the true-up is dated TODAY, so a period that
+            # ENDED before it reports what the confirmed ledger knew then -- the
+            # $240,000 opening, undisturbed, because this loan has no recorded
+            # payment.  C is an assertion about today and is NOT back-projected
+            # across the past.  Verified against the real dev clone, whose
+            # Mortgage likewise steps down at each recorded event rather than
+            # carrying today's balance backward.
+            pre_balance = balances[ctx["pre_anchor_period"].id]
+            assert pre_balance == ctx["P"], (
+                f"pre-anchor balance {pre_balance!r} != the ledger's opening "
+                f"{ctx['P']!r}; the schedule is answering for the past again"
+            )
+
+            # The future belongs to the projection, and it amortizes DOWN from C:
+            # the first future period must sit strictly below C.  This catches a
+            # forward map that reports the original principal -- e.g. one that fell
+            # back to the whole-schedule walk, which would land it near P, far
+            # ABOVE C.
+            #
+            # It does NOT catch a wrong ``current_balance`` ARGUMENT, and no
+            # assertion on this fixture can: that argument is read only for a
+            # target PRECEDING the first scheduled payment
+            # (``account_projection.balance_from_schedule_at_date``), every such
+            # period here has BEGUN (so it reads the ledger), and the true-up dated
+            # today puts the first payment inside the very next period -- leaving
+            # no future period before it.  Verified by reintroducing the defect:
+            # seeding this map with ``original_principal`` changes nothing, because
+            # the schedule ROWS carry the balances.  The argument's fence is the
+            # W9905 ``shekel-original-principal-as-balance`` checker (a build
+            # failure), and after C2 deletes ``compute_loan_period_balance_map`` it
+            # is structural.
+            future = [
+                p for p in ctx["all_periods"] if p.start_date > date.today()
+            ]
+            assert future, "expected a future period"
+            first_future = balances[future[0].id]
+            assert first_future < ctx["C"], (
+                f"first future period {first_future!r} is not below the trued-up "
+                f"balance {ctx['C']!r}; the forward projection is not amortizing "
+                f"down from the current balance"
             )
 
             # Route wiring: the loan detail page renders without raising.
@@ -1028,6 +1098,69 @@ class TestLoanCrossPageEquality:
             assert resp.status_code == 200, (
                 f"/accounts/<id>/loan returned {resp.status_code} for the "
                 "loan kind"
+            )
+
+    def test_unpaid_loan_owes_its_opening_on_every_surface(
+        self, app, cross_page_loan_unpaid_ctx, auth_client,
+    ):
+        """A never-paid loan owes its FULL opening on every surface, at every period.
+
+        The shape the cross-page lock was blind to.  ``cross_page_loan_ctx``
+        true-ups the loan TODAY, which re-anchors the schedule today-forward and
+        leaves no past-dated unpaid rows -- the one loan shape in which a
+        schedule-walking producer cannot phantom-pay the debt down.  This loan was
+        originated 18 months ago and never paid, so its schedule carries ~17
+        PROJECTED installments dated on or before today.
+
+        Not one of them was paid, so not one dollar of principal was: every
+        surface must report the full $240,000 opening.  A producer that reduces
+        the balance by unpaid scheduled principal reports LESS -- and because only
+        some producers walk the schedule, the page contradicts itself (the
+        /savings tile and the net-worth trend's own 'today' point disagreeing was
+        the symptom that opened this arc).
+
+        Non-vacuity is asserted, not assumed: the schedule really does carry
+        unpaid rows dated on or before today, so a phantom paydown had something
+        to bite on.
+        """
+        with app.app_context():
+            ctx = cross_page_loan_unpaid_ctx
+            expected = ctx["P"]  # never paid -> still owes the whole opening
+            bctx = _bctx(ctx)
+
+            # Non-vacuity: unpaid installments dated on or before today exist.
+            schedule = net_worth_kernel.debt_schedule_rows(
+                [ctx["account"]], bctx,
+            )[ctx["account_id"]]
+            stale_projected = [
+                row for row in schedule
+                if not row.is_confirmed and row.payment_date <= bctx.as_of
+            ]
+            assert stale_projected, (
+                "fixture regressed: the schedule must carry unpaid rows dated on "
+                "or before today, or this test pins nothing"
+            )
+
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _LOAN_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(surface_values, expected, "unpaid loan")
+
+            # The per-period map agrees with the scalar the surfaces read -- at
+            # today AND at a past period.  These are the two producers that
+            # diverged: the scalar walked confirmed rows, its per-period sibling
+            # walked all of them.
+            balances = balance_at.balance_map(
+                ctx["account"], bctx, ctx["all_periods"],
+            )
+            assert balances[ctx["anchor_period"].id] == expected
+            assert balances[ctx["past_period"].id] == expected
+
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/loan")
+            assert resp.status_code == 200, (
+                f"/accounts/<id>/loan returned {resp.status_code} for the "
+                "never-paid loan"
             )
 
     def test_all_surfaces_read_the_ledger_off_schedule(

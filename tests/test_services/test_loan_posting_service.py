@@ -56,6 +56,7 @@ from app.services import (
 )
 from tests._test_helpers import (
     add_escrow_line,
+    clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -510,14 +511,22 @@ class TestComputeLoanPaymentSplits:
         anchor as a running-balance reset, so a payment due BEFORE the trueup is
         NOT excluded (the Step-4 behavior) -- it is split on the origination
         balance the walk carries until the trueup resets it.  With the trueup
-        moved to 2026-04-15, period 1's payment (pay-period start 2026-01-16, due
+        moved to 2026-03-15, period 1's payment (pay-period start 2026-01-16, due
         2026-02-01) precedes it and accrues on the $250,000 origination principal:
         interest = round(250000 * 0.06 / 12) = 1250.00;
         principal = 1000 - 1250 - 0 = -250.00 (negative amortization, surfaced).
         The 1250.00 (vs the trueup's 500.00) is what proves the origination reset.
+
+        The trueup is dated 2026-03-15 rather than 2026-04-15 (its original value)
+        because this suite freezes today at 2026-03-20 and the posting sync bounds
+        its walk at today: a future-dated anchor posts NOTHING, leaving the loan
+        half-opened (opening present, trueup missing) -- a shape production forbids
+        outright (the trueup schema rejects a future ``anchor_date``).  Any date
+        strictly after the payment's 2026-02-01 due date and on/before the frozen
+        today reproduces the case, so every asserted number is unchanged.
         """
         with app.app_context():
-            loan = _make_loan(seed_user, anchor_date=date(2026, 4, 15))
+            loan = _make_loan(seed_user, anchor_date=date(2026, 3, 15))
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
@@ -1885,18 +1894,24 @@ class TestConfirmedLoanBalanceReader:
     ):
         """A loan with no opening posting reads None, never $0.
 
-        A loan whose ledger carries no OPENING (never synced) is unconfigured:
-        both the scalar and the map return ``None`` so the caller routes to its
-        needs-setup path, distinct from a real $0 (a paid-off) balance.
+        A loan whose ledger carries no OPENING is unconfigured: both the scalar
+        and the map return ``None`` so the caller routes to its needs-setup path,
+        distinct from a real $0 (a paid-off) balance.
+
+        The broken loan is built EXPLICITLY (``clear_loan_ledger``): the linked
+        ledger still exists (the create hook pairs it) but carries no opening
+        posting.  Production cannot reach this state -- ``loan.create_params``
+        opens the ledger in the same transaction as the ``LoanParams`` insert --
+        so the premise is stated rather than inherited from a builder that never
+        opened the ledger at all.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            # Built but never synced -> the linked ledger exists (the create hook
-            # pairs it) but carries no opening posting.
             loan = create_loan_account(
                 seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
+            clear_loan_ledger(loan.id)
 
             assert loan_posting_service.confirmed_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
@@ -2259,9 +2274,10 @@ class TestConfirmedLoanInterestReader:
     ):
         """A loan with no OPENING posting reads None, so the caller falls back.
 
-        ``create_loan_account`` alone posts no genesis opening (the sync is not
-        run), so the loan is unconfigured in the ledger: the reader returns
-        ``None`` (route to the schedule), never a misleading $0.
+        With no genesis opening the loan is unconfigured in the ledger: the
+        reader returns ``None`` (route to the schedule), never a misleading $0.
+        The broken loan is built EXPLICITLY (``clear_loan_ledger``) -- production
+        opens the ledger with the params, so it cannot produce this state.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2270,6 +2286,7 @@ class TestConfirmedLoanInterestReader:
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
             db.session.commit()
+            clear_loan_ledger(loan.id)
 
             assert loan_posting_service.confirmed_loan_interest_in_year(
                 loan.id, scenario_id, 2026,
@@ -2820,7 +2837,8 @@ class TestConfirmedLoanHistoryRows:
         Mirrors the balance reader's sentinel: no OPENING posting means the
         ledger cannot answer for this loan / scenario, so the caller keeps the
         resolver's replay -- never an empty history that would blank a real
-        schedule.
+        schedule.  The broken loan is built EXPLICITLY (``clear_loan_ledger``) --
+        production opens the ledger with the params, so it cannot produce it.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2828,7 +2846,7 @@ class TestConfirmedLoanHistoryRows:
                 seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
-            # Deliberately NO sync: params exist but nothing is posted.
+            clear_loan_ledger(loan.id)
             assert loan_posting_service.confirmed_loan_history_rows(
                 loan.id, scenario_id, _AS_OF,
             ) is None
@@ -2931,11 +2949,21 @@ class TestUserScopedResync:
         id, posts its opening + true-up (the loan-linked ledger nets -100000), and
         posts NOTHING for the second user (zero genesis entries) -- the scoping
         that keeps a single-user reset from reconciling another owner's loans.
+
+        Both ledgers are CLEARED first (``clear_loan_ledger``), which is what the
+        re-sync's real caller does to them: ``pay_period_admin.reset_pay_periods``
+        wipes the user's pay periods, and ``journal_entries.pay_period_id`` is ON
+        DELETE CASCADE, so the reset disposes exactly these genesis entries and
+        this re-sync is what re-derives them.  The builders open both ledgers (as
+        production does), so the un-posted starting state has to be made, not
+        inherited.
         """
         with app.app_context():
             loan1 = _make_loan(seed_user)
             loan2 = _make_loan(seed_second_user)
             db.session.commit()
+            clear_loan_ledger(loan1.id)
+            clear_loan_ledger(loan2.id)
             u1 = seed_user["user"].id
             u2 = seed_second_user["user"].id
 

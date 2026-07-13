@@ -33,6 +33,7 @@ from app.services import loan_posting_service, transfer_service
 from app.services.loan_posting_service import LoanAnchorDrift, LoanPaymentHistoryRow
 from tests._test_helpers import (
     SPLIT_LOAN,
+    clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -217,9 +218,14 @@ class TestConfirmedLoanPrincipalReader:
     def test_unconfigured_loan_returns_none(self, app, db, seed_user):
         """A loan with no OPENING posting reads None (route to the schedule).
 
-        ``create_loan_account`` alone posts no genesis opening (the sync is not
-        run), so the chip returns ``None`` -- the interest reader's fallback
-        contract -- rather than a misleading $0.
+        The reader's fallback contract: with no genesis opening it returns
+        ``None`` -- so the caller routes to its needs-setup path -- rather than a
+        misleading $0.
+
+        The broken loan is built EXPLICITLY (``clear_loan_ledger``), because
+        production cannot produce it: ``loan.create_params`` opens the ledger in
+        the same transaction as the ``LoanParams`` insert.  This test used to get
+        the state by accident, from a builder that never opened the ledger at all.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -227,6 +233,7 @@ class TestConfirmedLoanPrincipalReader:
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
             db.session.commit()
+            clear_loan_ledger(loan.id)
             assert loan_posting_service.confirmed_loan_principal_in_year(
                 loan.id, seed_user["scenario"].id, 2026,
             ) is None
@@ -426,8 +433,10 @@ class TestConfirmedLoanPaymentHistory:
     def test_unconfigured_loan_returns_none(self, app, db, seed_user):
         """A loan with no OPENING posting reads None (the caller hides the table).
 
-        ``create_loan_account`` posts no genesis opening (the sync is not run), so
-        the table returns ``None`` rather than a misleading empty list.
+        With no genesis opening the table returns ``None`` rather than a
+        misleading empty list.  The broken loan is built EXPLICITLY
+        (``clear_loan_ledger``) -- production opens the ledger with the params, so
+        this state cannot arise there; the test used to get it by accident.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -435,6 +444,7 @@ class TestConfirmedLoanPaymentHistory:
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
             db.session.commit()
+            clear_loan_ledger(loan.id)
             assert loan_posting_service.confirmed_loan_payment_history(
                 loan.id, seed_user["scenario"].id, _AS_OF,
             ) is None

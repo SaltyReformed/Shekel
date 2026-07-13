@@ -493,7 +493,7 @@ class TestUnpaidScheduleRowsNeverReduceTheDebt:
         from datetime import timedelta
 
         from app.services.loan_posting_service import confirmed_loan_balance_at
-        from tests._test_helpers import create_loan_account
+        from tests._test_helpers import clear_loan_ledger, create_loan_account
 
         with app.app_context():
             user_id = seed_user["user"].id
@@ -505,6 +505,10 @@ class TestUnpaidScheduleRowsNeverReduceTheDebt:
                 origination_date=_date.today() - timedelta(days=548),
             )
             db.session.commit()
+            # The fallback under test is reachable ONLY on a loan with no opening
+            # posting, which production cannot produce (the params insert opens
+            # the ledger).  Build that broken loan explicitly.
+            clear_loan_ledger(loan.id)
 
             # The premise: the ledger genuinely cannot answer for this loan, so
             # the scalar is on the schedule-walk fallback (not the ledger path).

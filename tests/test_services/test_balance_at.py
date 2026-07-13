@@ -231,14 +231,36 @@ class TestBalanceMapLoan:
     def test_pre_first_payment_uses_current_balance(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A loan map equals the kernel's, and pre-payment == current_balance.
+        """A loan map equals the kernel's; post-anchor == C, pre-anchor == the ledger.
 
         The seam internally generates the same debt schedule the kernel
-        consumes, so the maps match.  A recent balance true-up re-anchors
-        the resolver to today, so its schedule is today-forward: the earliest
-        (pre-first-payment) periods report the resolver-derived
-        current_balance ($200,000) held flat -- NEVER the $240,000 original
-        principal (the recurring bug this seam fences).
+        consumes, so the maps match.  A balance true-up dated today re-anchors the
+        resolver, so its schedule is today-forward, and the map splits on the date
+        the balance was ASSERTED:
+
+        * A period that had not ended when the true-up landed, and that still
+          precedes the first scheduled payment, reports the trued-up
+          current_balance ($200,000) held flat -- NEVER the $240,000 original
+          principal.
+        * A period that ENDED before the true-up reports what the confirmed ledger
+          knew then: the $240,000 opening, undisturbed, because not one payment was
+          ever recorded.  The past belongs to the ledger, and the trued-up balance
+          is not back-projected across it.
+
+        Both halves are verified against the real dev clone, where the Mortgage's
+        past periods likewise step down at each recorded event rather than
+        carrying today's balance backward.
+
+        This does NOT fence PR #44 / aba0242 (the schedule map seeded with
+        ``original_principal``), despite reading like it: both periods above have
+        BEGUN, so the confirmed ledger answers them and
+        ``compute_loan_period_balance_map`` is never called.  Proven by coverage --
+        its body is unexecuted here -- and by reintroducing the defect, which
+        leaves this test green.  That fence is the W9905
+        ``shekel-original-principal-as-balance`` checker (a build failure), plus the
+        direct unit test
+        ``test_savings_dashboard_service::TestLoanProjectedBalanceDispatcher::
+        test_dispatcher_returns_current_balance_before_first_payment``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -273,18 +295,31 @@ class TestBalanceMapLoan:
             assert seam is not None
             assert seam == expected
 
-            # The first scheduled payment is today-forward; every period
-            # ending before it sits at the resolver current_balance.
+            anchor_date = date.today()
             first_payment = min(
                 row.payment_date for row in schedule.schedule
             )
-            pre_payment = [p for p in periods if p.end_date < first_payment]
-            assert pre_payment, "expected a pre-first-payment period"
-            assert seam[pre_payment[0].id] == schedule.current_balance
-            # The pre-payment value is the trued-up current balance, never
-            # the $240,000 original principal.
+
+            # A period still open when the balance was asserted, and before the
+            # first scheduled payment: the trued-up balance, held flat.
+            post_anchor = [
+                p for p in periods
+                if anchor_date <= p.end_date < first_payment
+            ]
+            assert post_anchor, "expected a post-anchor pre-first-payment period"
+            assert seam[post_anchor[0].id] == schedule.current_balance
+            # ...which is the trued-up current balance, never the original
+            # principal (the PR #44 / aba0242 boundary bug).
             assert schedule.current_balance == Decimal("200000.00")
             assert schedule.current_balance != Decimal("240000.00")
+
+            # A period that ENDED before the true-up: the ledger's answer.  The
+            # loan opened at $240,000 and no payment was ever recorded, so that is
+            # what it owed then.  The $200,000 assertion is dated today and is NOT
+            # back-projected over the past.
+            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            assert pre_anchor, "expected a pre-anchor period"
+            assert seam[pre_anchor[-1].id] == Decimal("240000.00")
 
     def test_paid_off_empty_schedule_uses_current_balance(
         self, app, db, seed_user, seed_periods_today,
@@ -922,13 +957,27 @@ class TestMultiLoanIsolation:
     def test_two_loans_keep_distinct_current_balances(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Two trued-up loans in one build_maps keep DISTINCT pre-payment balances.
+        """Two trued-up loans in one build_maps keep DISTINCT balances, past AND future.
 
-        A shared or positional debt-schedule forward would collapse both
-        loans onto one balance.  Loan A is trued up to $200,000 today and
-        loan B to $50,000 today (both pre-first-payment at period 0), so the
-        seam must report each loan's OWN current balance at period 0 -- the
-        debt_schedules map is keyed by account id, not positional.
+        A shared or positional debt-schedule forward would collapse both loans onto
+        one balance.  Loan A is trued up to $200,000 today and loan B to $50,000, so
+        the seam must report each loan's OWN balance -- the ``debt_schedules`` map is
+        keyed by account id, not positional.
+
+        The FUTURE assertion is the load-bearing one, and the reason this test is not
+        a tautology.  Every BEGUN period is answered by
+        ``confirmed_loan_balance_map(account.id, ...)`` -- a per-account ledger read
+        that is correct even if ``build_maps`` handed loan A the loan B
+        ``DebtSchedule``.  Only the forward tail consumes that bundle, so a
+        mis-assigned schedule shows up ONLY on a period after today.  Asserting just
+        the begun periods (as this test did while the fixtures had no ledger, where
+        the value came straight from the possibly-swapped bundle) would silently stop
+        testing isolation at all.
+
+        So all three regions are pinned: each loan's own ledger opening at a
+        pre-anchor period ($240,000 / $180,000), its own trued-up balance at the
+        anchor period ($200,000 / $50,000), and its own forward projection -- which
+        must still straddle the two loans' wildly different balances after today.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -953,9 +1002,44 @@ class TestMultiLoanIsolation:
 
             seam_maps = balance_at.build_maps([loan_a, loan_b], bctx, periods)
 
-            # Pre-first-payment period 0 -> each loan's OWN current balance.
-            assert seam_maps[loan_a.id][periods[0].id] == Decimal("200000.00")
-            assert seam_maps[loan_b.id][periods[0].id] == Decimal("50000.00")
+            anchor_date = date.today()
+            anchor_period = next(
+                p for p in periods
+                if p.start_date <= anchor_date <= p.end_date
+            )
+            # The period the true-ups landed in -> each loan's OWN trued-up
+            # balance (both are still pre-first-payment there).
+            assert seam_maps[loan_a.id][anchor_period.id] == Decimal("200000.00")
+            assert seam_maps[loan_b.id][anchor_period.id] == Decimal("50000.00")
+
+            # A period that ended before the true-ups -> each loan's OWN ledger
+            # opening (no payment was recorded against either).
+            pre_anchor = [p for p in periods if p.end_date < anchor_date]
+            assert pre_anchor, "expected a pre-anchor period"
+            earlier = pre_anchor[-1].id
+            assert seam_maps[loan_a.id][earlier] == Decimal("240000.00")
+            assert seam_maps[loan_b.id][earlier] == Decimal("180000.00")
+
+            # The FUTURE tail -- the only region that consumes the per-loan
+            # DebtSchedule bundle, and so the only one where a positional/shared
+            # mix-up can surface.  Each loan must still amortize down from its OWN
+            # trued-up balance, so A stays far above B and neither drifts toward the
+            # other's schedule.
+            future = [p for p in periods if p.start_date > anchor_date]
+            assert future, "expected a future period"
+            later = future[-1].id
+            a_future = seam_maps[loan_a.id][later]
+            b_future = seam_maps[loan_b.id][later]
+            # A was trued up to 200k and B to 50k; a few biweekly periods of
+            # amortization cannot move either near the other.
+            assert Decimal("190000.00") < a_future <= Decimal("200000.00"), (
+                f"loan A's forward projection {a_future!r} did not amortize from "
+                f"its own $200,000 balance; the debt schedules are crossed"
+            )
+            assert Decimal("45000.00") < b_future <= Decimal("50000.00"), (
+                f"loan B's forward projection {b_future!r} did not amortize from "
+                f"its own $50,000 balance; the debt schedules are crossed"
+            )
 
 
 class TestInvestmentContributions:

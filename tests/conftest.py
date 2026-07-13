@@ -1562,6 +1562,71 @@ def cross_page_loan_ctx(db, seed_user):
     }
 
 
+@pytest.fixture()
+def cross_page_loan_unpaid_ctx(db, seed_user):
+    """An amortizing loan originated in the PAST with NO payment and NO true-up.
+
+    The loan shape the cross-page lock could not previously see: the one in which
+    a schedule-walking producer CAN phantom-pay the debt down.
+    ``cross_page_loan_ctx`` asserts a true-up dated TODAY, which re-anchors the
+    resolver's schedule today-forward and so leaves no past-dated UNPAID rows
+    behind; this fixture deliberately leaves them.  Originated 18 months ago at
+    $240,000 over 360 months, never paid and never trued up, the resolver's
+    schedule carries ~17 PROJECTED installments dated on or before today.
+
+    Every one of those rows is a payment that was never made, so not one dollar of
+    principal was ever paid: the honest balance is the full $240,000 opening, on
+    EVERY surface and at EVERY period.  A producer that walked the schedule instead
+    of the ledger would report LESS.
+
+    The loan IS opened in the ledger (``create_loan_account`` writes through
+    production's reconcile path), exactly as a real configured loan is -- so on
+    the current code every surface reads the ledger and agrees at $240,000, and
+    the accompanying test PASSES.  It is a regression lock, not a reproducer: it
+    holds the line against a schedule producer being reintroduced for the past,
+    which is what let the /savings tile and the net-worth trend disagree on their
+    own 'today' point (a no-ledger path production never took, but every loan test
+    did).
+
+    Returns a ctx dict mirroring ``cross_page_loan_ctx``, plus ``P`` (the original
+    principal, which is also the correct balance everywhere) and
+    ``past_period`` (a period strictly before today, where an unpaid projected
+    installment would have phantom-paid the debt down).
+    """
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    today = date.today()
+    original_principal = Decimal("240000.00")  # P -- never paid down
+    loan = create_loan_account(
+        seed_user, db.session, name="Never-Paid Loan",
+        principal=original_principal, rate=Decimal("0.06000"), term=360,
+        origination_date=today - timedelta(days=548),
+    )
+    db.session.commit()
+
+    anchor_pos = next(
+        i for i, p in enumerate(all_periods) if p.id == anchor_period.id
+    )
+    past_period = all_periods[anchor_pos - 1]
+
+    return {
+        "user_id": user.id,
+        "account": loan,
+        "account_id": loan.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "P": original_principal,
+        "past_period": past_period,
+    }
+
+
 def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     """Return a loan's un-seeded schedule-replay balance (the pre-switch value).
 
