@@ -196,8 +196,8 @@ def _compute_debt_progress(
 
     result = []
     for account in debt_accounts:
-        schedule_info = debt_schedules.get(account.id)
-        if schedule_info is None or not schedule_info.schedule:
+        schedule_rows = debt_schedules.get(account.id)
+        if not schedule_rows:
             continue
 
         # Jan 1 balance = balance at end of prior year, BEFORE any

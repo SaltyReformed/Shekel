@@ -1044,6 +1044,48 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
+    def test_flags_generate_debt_schedules_from_consumer(self) -> None:
+        """The DebtSchedule bundle IS guarded: a consumer call is flagged.
+
+        ``generate_debt_schedules`` returns a bundle carrying the loan's
+        ledger-confirmed ``current_balance``.  The fence binds on function NAMES
+        and cannot see an ATTRIBUTE read, so while any consumer could call it,
+        one line -- ``schedules[a.id].current_balance`` into a template context --
+        would have put a balance-at-T on a screen with every gate silent
+        (``followup_debt_schedule_attribute_fence.md``).  The bundle is fenced to
+        the cluster now; consumers that want the ROWS take
+        ``debt_schedule_rows``, and a consumer that wants a BALANCE has no choice
+        but the seam.
+        """
+        node = self._producer_call(
+            "net_worth_kernel.generate_debt_schedules(loans, ctx)",
+            "app.services.tax_report_service",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("generate_debt_schedules",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_debt_schedule_rows_from_consumer(self) -> None:
+        """The rows-only accessor carries no balance, so it is never flagged.
+
+        The compliant read for the five out-of-cluster consumers (the
+        honest-history gate's first-payment date, the year-end and Schedule A
+        interest hybrids): they all want rows, and rows cannot be mistaken for a
+        balance.
+        """
+        node = self._producer_call(
+            "net_worth_kernel.debt_schedule_rows(loans, ctx)",
+            "app.services.tax_report_service",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
     def test_allows_investment_seed_map_seam_entry_from_consumer(self) -> None:
         """The seam's investment_seed_map is the compliant seed read; never flagged.
 

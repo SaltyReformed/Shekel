@@ -197,6 +197,51 @@ def generate_debt_schedules(
     return schedules
 
 
+def debt_schedule_rows(
+    debt_accounts: list,
+    ctx: "BalanceContext",
+) -> dict[int, list]:
+    """Return each debt account's amortization ROWS -- no balance attached.
+
+    The accessor every out-of-cluster consumer of the loan schedules reads,
+    instead of :func:`generate_debt_schedules`.  They all want the same thing --
+    the :class:`AmortizationRow` list, for a first-payment date (the net-worth
+    trend's honest-history gate) or a yearly interest sum (the year-end and
+    Schedule A mortgage-interest hybrids) -- and none of them wants a balance.
+
+    Handing them rows rather than the :class:`DebtSchedule` bundle is what makes
+    the fence real.  W9906 binds on function NAMES: it flags a consumer that
+    CALLS a balance producer.  It cannot see an ATTRIBUTE read, and
+    ``DebtSchedule.current_balance`` IS a loan's balance-at-today.  So while any
+    consumer could call ``generate_debt_schedules``, one line --
+    ``schedules[account.id].current_balance`` in a template context -- would put
+    a balance-at-T on a screen without passing the seam, with every gate silent
+    (``docs/audits/balance_architecture/followup_debt_schedule_attribute_fence.md``).
+    The bundle exists precisely so a caller CAN report today's balance; that made
+    it a loaded gun whose safety was a docstring.  The rows carry no balance, so
+    a consumer that wants one has no choice but ``balance_at.balance_at`` -- which
+    is the point.  :func:`generate_debt_schedules` is fenced as a producer now,
+    and its remaining callers are all inside the cluster.
+
+    Args:
+        debt_accounts: The amortizing loan accounts whose rows to return.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (each loan is resolved at most once for the pass).
+
+    Returns:
+        ``{account_id: [AmortizationRow, ...]}`` -- the loan's schedule
+        (confirmed history plus committed forward rows).  A loan the context
+        cannot resolve (no ``LoanParams``) is absent, matching
+        :func:`generate_debt_schedules`.
+    """
+    return {
+        account_id: schedule.schedule
+        for account_id, schedule in generate_debt_schedules(
+            debt_accounts, ctx,
+        ).items()
+    }
+
+
 def loan_owed_at_dates(
     loan_accounts: list,
     ctx: "BalanceContext",

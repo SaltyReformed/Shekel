@@ -609,7 +609,7 @@ class TestScheduleAMortgageInterest:
 
         # Independent oracle: the same hybrid over the same schedule.
         bctx = BalanceContext.build(seed_user["user"].id)
-        debt_schedules = net_worth_kernel.generate_debt_schedules(
+        debt_schedules = net_worth_kernel.debt_schedule_rows(
             [loan], bctx,
         )
         oracle_interest = _compute_mortgage_interest(

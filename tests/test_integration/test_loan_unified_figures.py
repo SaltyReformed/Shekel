@@ -229,10 +229,10 @@ def test_per_period_principal_interest_single_source(
 
         state = _resolver_state(account, loan_params, date.today())
 
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
-        year_end_schedule = debt_schedules[account.id].schedule
+        year_end_schedule = debt_schedules[account.id]
 
         # The two schedules MUST be the same length and identical
         # row-by-row -- year-end derives from the resolver, no
@@ -305,7 +305,7 @@ def test_total_interest_one_definition(
         # first eleven payments (payment_day=1, origination
         # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
         # 2026-12-01).
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
         # This loan has no genesis opening posting (LoanParams added directly,
@@ -564,10 +564,10 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
+        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
-        ye_schedule = debt_schedules[account.id].schedule
+        ye_schedule = debt_schedules[account.id]
         ye_payoff = (
             ye_schedule[-1].payment_date if ye_schedule else None
         )
@@ -743,11 +743,11 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         # Year-end / net-worth debt aggregation reads the same seam
         # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
         debt_schedules = (
-            year_end_summary_service._balances._generate_debt_schedules(
+            year_end_summary_service._balances._debt_schedule_rows(
                 [account], BalanceContext.build(seed_user["user"].id),
             )
         )
-        ye_schedule = debt_schedules[account.id].schedule
+        ye_schedule = debt_schedules[account.id]
         assert ye_schedule[-1].payment_date == ref_payoff, (
             f"Year-end debt schedule payoff {ye_schedule[-1].payment_date} != "
             f"committed {ref_payoff}."

@@ -61,7 +61,7 @@ from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.year_end_summary_service import compute_year_end_summary
 from app.services.year_end_summary_service._balances import (
     _compute_pre_anchor_interest,
-    _generate_debt_schedules,
+    _debt_schedule_rows,
 )
 from app.services.year_end_summary_service._income_tax import (
     _compute_mortgage_interest,
@@ -839,7 +839,7 @@ class TestMortgageInterestGenesisHybrid:
             scenario_id = seed_user["scenario"].id
             loan = _genesis_off_schedule_loan(seed_user, seed_periods)
             bctx = BalanceContext.build(seed_user["user"].id)
-            debt_schedules = _generate_debt_schedules([loan], bctx)
+            debt_schedules = _debt_schedule_rows([loan], bctx)
             debt = debt_schedules[loan.id]
 
             ledger_confirmed = confirmed_loan_interest_in_year(
@@ -847,14 +847,14 @@ class TestMortgageInterestGenesisHybrid:
             )
             projected = sum(
                 (
-                    row.interest for row in debt.schedule
+                    row.interest for row in debt
                     if not row.is_confirmed and row.payment_date.year == 2026
                 ),
                 Decimal("0.00"),
             )
             schedule_confirmed = sum(
                 (
-                    row.interest for row in debt.schedule
+                    row.interest for row in debt
                     if row.is_confirmed and row.payment_date.year == 2026
                 ),
                 Decimal("0.00"),
@@ -921,14 +921,14 @@ class TestMortgageInterestGenesisHybrid:
             )
             db.session.commit()
             bctx = BalanceContext.build(seed_user["user"].id)
-            debt_schedules = _generate_debt_schedules([loan], bctx)
+            debt_schedules = _debt_schedule_rows([loan], bctx)
 
             # 2025 has NO amortization rows (first payment is 2026), so the figure
             # is PURE ledger -- the "all-ledger" year.
             schedule_2025 = sum(
                 (
                     row.interest
-                    for row in debt_schedules[loan.id].schedule
+                    for row in debt_schedules[loan.id]
                     if row.payment_date.year == 2025
                 ),
                 Decimal("0.00"),
@@ -971,7 +971,7 @@ class TestMortgageInterestGenesisHybrid:
             )
             db.session.commit()
             bctx = BalanceContext.build(seed_user["user"].id)
-            debt_schedules = _generate_debt_schedules([loan], bctx)
+            debt_schedules = _debt_schedule_rows([loan], bctx)
 
             assert _compute_mortgage_interest(
                 2025, debt_schedules, scenario_id,
@@ -1024,7 +1024,7 @@ class TestMortgageInterestGenesisHybrid:
             assert seed_periods[p3].start_date > date(2026, 2, 10)
 
             bctx = BalanceContext.build(seed_user["user"].id)
-            debt_schedules = _generate_debt_schedules([loan], bctx)
+            debt_schedules = _debt_schedule_rows([loan], bctx)
             debt = debt_schedules[loan.id]
             ledger_confirmed = confirmed_loan_interest_in_year(
                 loan.id, scenario_id, 2026,
@@ -1035,7 +1035,7 @@ class TestMortgageInterestGenesisHybrid:
             # The April due slot still projects a not-confirmed row (the
             # replay's period-begun bound cannot see the early settle) ...
             april_rows = [
-                row for row in debt.schedule
+                row for row in debt
                 if not row.is_confirmed
                 and (row.payment_date.year, row.payment_date.month) == (2026, 4)
             ]
@@ -1043,7 +1043,7 @@ class TestMortgageInterestGenesisHybrid:
             assert april_rows[0].interest > Decimal("0.00")
             naive_projected = sum(
                 (
-                    row.interest for row in debt.schedule
+                    row.interest for row in debt
                     if not row.is_confirmed and row.payment_date.year == 2026
                 ),
                 Decimal("0.00"),

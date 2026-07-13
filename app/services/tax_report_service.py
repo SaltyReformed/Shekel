@@ -642,7 +642,7 @@ def _build_schedule_a(
         The populated :class:`ScheduleACheck`.
     """
     debt_accounts = _load_debt_accounts(user_id)
-    debt_schedules = net_worth_kernel.generate_debt_schedules(
+    debt_schedules = net_worth_kernel.debt_schedule_rows(
         debt_accounts, balance_ctx,
     )
     mortgage_interest = _compute_mortgage_interest(

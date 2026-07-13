@@ -72,6 +72,19 @@ _BALANCE_PRODUCERS = frozenset({
     # completeness check below now makes impossible; see
     # ``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``.
     "loan_owed_at_dates",
+    # The resolver bundle: an amortization schedule AND the loan's
+    # ledger-confirmed ``current_balance``.  It was ruled a non-producer while
+    # the claim "no consumer reads that attribute" held -- but the fence binds on
+    # function NAMES and cannot see an attribute read, so the ruling rested on a
+    # fact about the tree, not a property of the code, and one line
+    # (``schedules[a.id].current_balance`` in a template context) would have put
+    # a balance-at-T on a screen with every gate silent
+    # (``followup_debt_schedule_attribute_fence.md``).  Fenced now: the
+    # out-of-cluster consumers all wanted rows, and they take
+    # ``debt_schedule_rows`` (which carries no balance), so the bundle's only
+    # remaining callers are inside the cluster.  A consumer that wants a loan's
+    # balance has no choice but ``balance_at.balance_at`` -- which is the point.
+    "generate_debt_schedules",
 })
 # Modules allowed to call a balance producer directly: the balance_at seam plus
 # the engine cluster it composes (the SOLID dependency direction -- consumers
@@ -186,16 +199,13 @@ _FENCED_MODULE_RULINGS = {
         # seam: it sums given maps (asset-plus / liability-minus), it does not
         # compute a balance from an account.
         "sum_net_worth_at_period",
-        # The resolver bundle (schedule + LoanState current_balance) -- the
-        # batch sibling of ``resolve_account_loan``, which the header already
-        # rules a rich projection-detail primitive rather than a balance map.
-        # Its consumers read ``.schedule`` rows only; the loan tile's displayed
-        # balance comes from ``resolve_loan_seeded`` (verified 2026-07-13).
-        # NOTE: ``DebtSchedule.current_balance`` IS a balance-at-today, so this
-        # ruling holds only while no consumer renders that ATTRIBUTE.  The
-        # function fence cannot see an attribute read; that residual is recorded
-        # in ``followup_fence_loan_owed_at_dates.md``.
-        "generate_debt_schedules",
+        # The loan's amortization ROWS -- no balance attached.  This is what the
+        # out-of-cluster consumers (the honest-history gate's first-payment date,
+        # the year-end + Schedule A interest hybrids) actually want, and handing
+        # them rows rather than the ``DebtSchedule`` bundle is what CLOSED the
+        # attribute hole: ``generate_debt_schedules`` is a producer now (below),
+        # so no consumer can reach ``DebtSchedule.current_balance`` at all.
+        "debt_schedule_rows",
         # Interest EARNED per period -- a projection INPUT and an explanatory
         # row, not a balance-at-T figure.
         "interest_by_period_for_account",

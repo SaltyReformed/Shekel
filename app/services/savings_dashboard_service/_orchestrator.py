@@ -470,7 +470,7 @@ def _build_trend_window(
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
     debt_schedules = (
-        net_worth_kernel.generate_debt_schedules(loan_accounts, core.balance_ctx)
+        net_worth_kernel.debt_schedule_rows(loan_accounts, core.balance_ctx)
         if core.balance_ctx.scenario is not None else {}
     )
     return build_trend_periods(

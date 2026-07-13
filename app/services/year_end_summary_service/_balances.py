@@ -29,7 +29,7 @@ from app.services.interest_projection import calculate_interest
 # ``__all__`` so the re-export is intentional, not an unused import).
 from app.services.net_worth_investment import _load_shadow_contributions
 from app.services.net_worth_kernel import (
-    generate_debt_schedules as _generate_debt_schedules,
+    debt_schedule_rows as _debt_schedule_rows,
 )
 
 ZERO = Decimal("0")
@@ -42,7 +42,7 @@ ZERO = Decimal("0")
 __all__ = [
     "_compute_interest_for_year",
     "_compute_pre_anchor_interest",
-    "_generate_debt_schedules",
+    "_debt_schedule_rows",
     "_load_shadow_contributions",
     "_settled_net_by_period",
     "_sum_shadow_income",

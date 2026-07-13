@@ -233,7 +233,7 @@ def _loan_year_interest(
         # projection), byte-identical to the pre-read-switch behaviour.
         return sum(
             (
-                row.interest for row in debt.schedule
+                row.interest for row in debt
                 if row.payment_date.year == year
             ),
             ZERO,
@@ -252,7 +252,7 @@ def _loan_year_interest(
     )
     projected = sum(
         (
-            row.interest for row in debt.schedule
+            row.interest for row in debt
             if not row.is_confirmed
             and row.payment_date.year == year
             and (row.payment_date.year, row.payment_date.month)

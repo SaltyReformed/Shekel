@@ -223,7 +223,7 @@ _CASH_GATING_KINDS = frozenset({
 
 def _loan_schedule_start_index(
     all_periods: list[PayPeriod],
-    schedule_info: "net_worth_kernel.DebtSchedule | None",
+    schedule_rows: list | None,
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
@@ -258,9 +258,9 @@ def _loan_schedule_start_index(
         The first honest ``period_index``, or ``None`` when the loan does
         not gate the window.
     """
-    if schedule_info is None or not schedule_info.schedule:
+    if not schedule_rows:
         return None
-    first_payment = min(row.payment_date for row in schedule_info.schedule)
+    first_payment = min(row.payment_date for row in schedule_rows)
     for period in all_periods:
         if period.end_date >= first_payment:
             return period.period_index

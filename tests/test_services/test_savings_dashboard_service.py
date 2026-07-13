@@ -3357,34 +3357,29 @@ class TestBuildTrendPeriods:
 
     @staticmethod
     def _debt_schedule(first_payment_period_index, periods):
-        """A one-row loan :class:`DebtSchedule` first paying in a period.
+        """A one-row loan schedule first paying in a period.
 
         The row's ``payment_date`` is that period's ``end_date``, so the
         loan gate resolves the loan's honest start to that period's index.
-        ``current_balance`` is arbitrary here -- the gate reads only the
-        schedule rows, not the balance.
+        The gate reads only the schedule ROWS -- which is why it is now handed
+        rows (``debt_schedule_rows``) rather than the balance-bearing
+        ``DebtSchedule`` bundle.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
-        from app.services.net_worth_kernel import DebtSchedule
-        return DebtSchedule(
-            schedule=[SimpleNamespace(
-                payment_date=periods[first_payment_period_index].end_date,
-                remaining_balance=Decimal("1000.00"),
-            )],
-            current_balance=Decimal("1000.00"),
-        )
+        return [SimpleNamespace(
+            payment_date=periods[first_payment_period_index].end_date,
+            remaining_balance=Decimal("1000.00"),
+        )]
 
     @staticmethod
     def _empty_debt_schedule():
-        """An empty-schedule :class:`DebtSchedule` (a paid-off / resolved loan).
+        """An EMPTY loan schedule (a paid-off / fully-resolved loan).
 
         The gate must NOT constrain the window for such a loan -- its flat
         current balance is its real balance at every period.
         """
-        # pylint: disable=import-outside-toplevel
-        from app.services.net_worth_kernel import DebtSchedule
-        return DebtSchedule(schedule=[], current_balance=Decimal("1000.00"))
+        return []
 
     def test_tail_reaches_back_to_cash_anchor(self):
         """History reaches back to the cash account's anchor period.
@@ -4559,3 +4554,171 @@ class TestAccountBalanceCell:
             )
             assert cell is not None
             assert cell["is_liability"] is False
+
+
+class TestOneResolutionPerLoanPerReadPass:
+    """Every producer resolves each loan EXACTLY ONCE per read pass.
+
+    The DRY property made into a deterministic gate rather than a hope.  Before
+    the read-pass :class:`~app.services.resolution_context.BalanceContext`, ONE
+    ``compute_dashboard_data`` ran the loan resolver ELEVEN times for two loans:
+    the balance maps, the trend window's honest-history gate, the liability band,
+    the loan tile, the property-equity card, and an "ever paid off" probe each
+    resolved independently.
+
+    That was filed as waste, and the waste was the least of it: because there was
+    no single resolution to compare against, nothing revealed that one of the
+    eleven answered from a producer that could not read the genesis ledger
+    (``followup_redundant_loan_resolution.md``).  Redundant derivation is where a
+    divergence hides, so "resolved once" is pinned HERE, at the count -- a new
+    consumer that re-resolves a loan behind the seam's back fails this test
+    rather than silently agreeing until the day it does not.
+
+    The spy sits on ``resolve_loan_bundle``: the single db-facing load the memo
+    wraps, so it counts every resolution anywhere in the pass regardless of which
+    module asked.
+    """
+
+    def _count_resolutions(self, monkeypatch):
+        """Spy on the db-facing loan resolver; return the per-account call list."""
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        from app.services import (  # pylint: disable=import-outside-toplevel
+            resolution_context,
+        )
+
+        calls = []
+        real = resolution_context.resolve_loan_bundle
+
+        def _spy(account_id, scenario_id, as_of):
+            calls.append(account_id)
+            return real(account_id, scenario_id, as_of)
+
+        monkeypatch.setattr(resolution_context, "resolve_loan_bundle", _spy)
+        return calls
+
+    def test_dashboard_data_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """/savings resolves each of two loans exactly once (was 11 runs for 2)."""
+        with app.app_context():
+            first = _create_small_loan(seed_user, db.session, name="Loan A")
+            second = _create_small_loan(seed_user, db.session, name="Loan B")
+            db.session.commit()
+            ids = {first.id, second.id}
+
+            calls = self._count_resolutions(monkeypatch)
+            savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+
+            assert set(calls) == ids
+            for loan_id in ids:
+                assert calls.count(loan_id) == 1, (
+                    f"loan {loan_id} was resolved {calls.count(loan_id)} times "
+                    "in one /savings render; it must be resolved exactly once"
+                )
+
+    def test_tracks_section_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The dashboard's tracks section shares ONE pass across its 3 producers.
+
+        ``compute_tracks_section`` runs the goal, debt-summary, and
+        principal-progress producers back to back.  Each used to start its own
+        read pass, so a two-loan user paid for six resolutions; they now share one
+        context.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Tracks Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+            calls = self._count_resolutions(monkeypatch)
+            # Pylint: import-outside-toplevel -- deferred, matching the producer's
+            # own lazy import of the savings package.
+            from app.services import (  # pylint: disable=import-outside-toplevel
+                dashboard_pulse_service,
+            )
+            dashboard_pulse_service.compute_tracks_section(
+                seed_user["user"].id,
+            )
+
+            assert calls.count(loan_id) == 1
+
+    def test_horizon_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The standalone Horizon producer resolves each loan once (was 6 for 2)."""
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Horizon Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+            calls = self._count_resolutions(monkeypatch)
+            savings_dashboard_service.compute_net_worth_horizon(
+                seed_user["user"].id,
+            )
+
+            assert calls.count(loan_id) == 1
+
+
+class TestTypeDriftedLoanParamsRow:
+    """An orphan ``LoanParams`` on a non-amortizing type is not treated as a loan.
+
+    The reachable drift state: the account edit form allows changing
+    ``account_type_id`` (``accounts/crud.py``), nothing deletes the params row on
+    a type change, so a Mortgage re-typed to Credit Card KEEPS its ``LoanParams``.
+    ``followup_horizon_loan_predicate_split.md`` proposed that the Horizon's
+    domain / milestones (which read ``ad["loan_params"]``) would then disagree
+    with its liability band (which asks the canonical classifier), drawing a
+    payoff flag on a debt line that never retires.
+
+    They do NOT disagree, and this test is the evidence the follow-up said did not
+    exist.  ``_data._load_loan_params_and_escrow`` builds ``loan_params_map`` from
+    the accounts whose TYPE carries ``has_amortization`` -- the SAME flag
+    ``classify_account`` branches on -- so a drifted account never enters the map,
+    never gets ``loan_params`` in its projection dict, and is therefore skipped by
+    the domain and the milestones exactly as the band skips it.  One flag, one
+    answer, three consumers.
+    """
+
+    def test_drifted_account_is_a_plain_liability_everywhere(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A re-typed loan carries no loan fields and raises no payoff milestone."""
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session, name="Drifted")
+            assert acct.loan_params is not None
+
+            # Re-type it to a NON-amortizing liability, exactly as the edit route
+            # allows; the LoanParams row deliberately survives.
+            card_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card").one()
+            )
+            assert card_type.has_amortization is False
+            acct.account_type_id = card_type.id
+            db.session.commit()
+            acct_id = acct.id
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            entry = next(
+                ad for ad in data["account_data"] if ad["account"].id == acct_id
+            )
+
+            # No loan fields: the tile shows no payment / rate / payoff, so the
+            # Horizon's domain and its milestone flags cannot pick it up.
+            assert "loan_params" not in entry
+            assert entry.get("payoff_date") is None
+            assert entry["is_paid_off"] is False
+
+            # And it raises no "paid off" milestone on the Horizon.
+            horizon = data["net_worth"]["horizon"]
+            assert horizon is not None
+            assert not [
+                m for m in horizon["milestones"]
+                if m["kind"] == "payoff" and "Drifted" in m["label"]
+            ]

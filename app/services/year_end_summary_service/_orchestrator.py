@@ -7,7 +7,7 @@ and section-assembly steps that drive every section helper.
 
 from app.services.resolution_context import BalanceContext
 from app.services.year_end_summary_service._balances import (
-    _generate_debt_schedules,
+    _debt_schedule_rows,
 )
 from app.services.year_end_summary_service._data import _load_common_data
 from app.services.year_end_summary_service._income_tax import (
@@ -91,7 +91,7 @@ def _build_summary(
     # Pre-compute amortization schedules with properly prepared payments
     # (escrow subtracted, biweekly overlaps redistributed).  Shared by the
     # mortgage-interest section and the debt-progress membership gate.
-    debt_schedules = _generate_debt_schedules(
+    debt_schedules = _debt_schedule_rows(
         ctx["debt_accounts"], balance_ctx,
     )
 
