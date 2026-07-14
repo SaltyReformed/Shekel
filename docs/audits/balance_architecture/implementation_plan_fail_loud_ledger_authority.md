@@ -7,6 +7,45 @@ arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose adv
 `implementation_plan_loan_read_switch.md` (which made the loan's PAST ledger-authoritative), and
 `followup_debt_schedule_attribute_fence.md`.
 
+---
+
+## 0. Resuming this arc (read this first)
+
+**Shipped on `dev`, in order:** C1 `2a88456c` -> C1b `603aea73` -> C2 `def3c8ff` -> C2b `9ea61f8a`.
+Nothing is on `main` yet. Suite 7386, `pylint app/` 10.00 with zero findings.
+
+**The four numbers that tell you the arc is behaving.** Re-check these against the dev clone before
+and after ANY further commit; if one moves, the commit is wrong, not the number:
+
+| | |
+|---|---|
+| Mortgage (account 3) balance today | **$177,277.97** |
+| Van Loan (account 8) balance today | **$15,663.59** |
+| Year-end 2026 principal paid | **+$2,505.02** / **+$4,251.65** |
+| Scalar-vs-map divergences, 2 loans x 59 periods | **0** |
+
+**Next up: C3** (Section 5) -- fence `BalanceContext.loan` / `.loan_state`, the hole this whole arc's
+review started from. Then C4, C5, C6. C5 has grown: several of its "correct the false claims" items
+were already fixed in C2/C2b; re-verify each before rewriting it.
+
+**Two things you must know before touching this code again:**
+
+1. **`app/services/net_worth_kernel.py` is at EXACTLY its 1000-line ceiling.** The next addition
+   needs the loan cluster extracted to its own module (see C2's AS BUILT residue note).
+2. **FU-7 is a live defect with a ruling still owed by the developer** (Section 7). The forward
+   projection pays down overdue installments that were never paid -- defect 2a pointed forwards. It
+   is latent on real data (both loans carry ZERO past-dated unconfirmed rows -- verified) and LIVE in
+   the suite. **The obvious fix was tried and MEASURED: it breaks 26 tests and silently drops a
+   payment the user has planned.** Do not attempt it without reading FU-7 in full.
+
+**The process lesson this arc paid for twice, stated so it is not paid for a third time.** The C2
+design was reasoned from reading the code; four throwaway probes against the RUNNING code then found
+four defects in it, and an independent `code-reviewer` pass found three more that C2 itself created.
+**Probe before you design, and negative-control every new guard** -- one of this arc's controls did
+not fire and was a bad control, which is only knowable by running it.
+
+---
+
 **Revision, 2026-07-13 (developer ruling).** A loan the user knows is coming -- a mortgage closing
 next month -- must be SUPPORTED, not forbidden. Probing that state found the app reports **$200,000
 owed on a mortgage that has not closed**, at every pay period, for four months. The plan's original
@@ -564,7 +603,8 @@ then.
 **Reachability today: none.** After C1b every configured loan opens its ledger at params-create, and
 production runs a single baseline scenario, so `confirmed_loan_balance_map` never returns `None` for a
 real loan. The defect is latent, not live. C2b must delete `compute_loan_period_balance_map` outright --
-not merely stop calling it.
+not merely stop calling it.  **(Done in C2b `9ea61f8a`: deleted, and W9905 extended to the two forward
+producers that inherited its seed argument.)**
 
 ### C2 DESIGN REQUIREMENT -- a not-yet-originated loan is not a broken loan
 
@@ -625,12 +665,76 @@ re-implementation of `create_loan_account` differing only in account type), or o
 Not doing this first means C2 lands as a 45-test red wall with no way to tell a real regression from
 a fixture that never modelled production.
 
-### C2 -- `fix(loan): a loan's origination is a balance event; it owes nothing before it`
+### C2 -- `fix(loan): a loan's origination is a balance event; it owes nothing before it` -- **DONE (`def3c8ff`)**
 
 **The corollary commit (Section 3a). Lands BEFORE C3 because C3's fail-loud is only unconditional
 once this exists.** Independently green and independently revertable; it moves no number for either
 real loan (both originated years ago, so every guard it adds is structurally unreachable for them --
 proven by the regression baseline, not asserted).
+
+**AS BUILT -- everything below shipped, PLUS the following, which the plan did not anticipate.**
+
+**An independent `code-reviewer` pass found THREE regressions C2 CREATED, all outside the seam, all
+the same class as R3: a consumer reading a truthful `$0.00` balance as "this debt is repaid."**
+Zeroing `current_balance` is correct; every one of these was wrong to spend it. R3 was the plan's
+only instance, and it was not the only one.
+
+1. **The dashboard debt track reported 66.67% of principal REPAID by a borrower who had repaid
+   nothing.** `_compute_principal_paid_fraction` (`savings_dashboard_service/_metrics.py`) is an
+   ALL-LOANS-EVER basis: every loan puts its `original_principal` in the denominator, and a loan
+   owing `$0.00` therefore counts as fully repaid. An unclosed $200,000 mortgage beside a never-paid
+   $100,000 auto loan read `200000/300000`. It also broke the marker's one design invariant --
+   MONOTONICITY -- since the fraction would COLLAPSE from 66.67% to 0% on closing day.
+2. **The property equity chart DROPPED a mortgage closing in 26 days** and drew ten years of
+   debt-free equity. Its `current_balance <= 0` test means "retired", and an unborrowed loan
+   satisfies it. **The route (`_secured_loan_series`) and the chart producer each carried their own
+   copy of that test** -- two copies of one rule, and BOTH went wrong the moment the seam started
+   answering honestly.
+3. **The year-end panel reported -$198,049.28 of principal PAID.** C1b's ledger-domain clamp skips a
+   loan whose record begins after the year, but an unborrowed loan has NO ledger at all, so
+   `domain is None` **fails OPEN** -- the same inverted figure C1b spent a commit deleting, arriving
+   through a door the clamp does not cover.
+
+**The fix, and the reason it is one fix and not three: `LoanFigures.is_originated`.** All three
+consumers needed a fact the seam KNEW and did not publish -- *"does this loan exist yet?"* A zero
+balance means "owes nothing"; it does NOT mean "has no debt ahead of it", and only this flag separates
+them. It has exactly ONE definition (`_loan_figures._is_originated`), which `_is_paid_off` also uses,
+and a single negative control (make it return `True`) turns all three regression tests red. That is
+the test that it is one fact.
+
+Consequent changes the plan did not list:
+
+* `savings_dashboard_service/_types._LoanAccountResult` now **COMPOSES** `LoanFigures` instead of
+  re-declaring its fields. It copied them, and the copy went stale the instant the seam grew
+  `is_originated` -- a bundle that must be hand-synchronised with the seam it mirrors is the seam's
+  fence with a hole in it. (Caught as a real `R0801` duplicate-code finding, not a style nit.)
+* `property_equity_chart.SecuredLoanSeries` gains `is_originated` and an `is_retired` property --
+  THE single definition of "drop this loan from the chart", so the route and the producer cannot
+  answer it two ways again.
+* `routes/accounts/detail._secured_loan_series(loan_accounts, balance_ctx)` -- signature changed. It
+  now reads `is_originated` FROM THE SEAM rather than re-deriving `origination_date <= today`
+  itself. The first cut derived it locally; the negative control then failed to bite on the chart
+  test, which is how the second derivation was caught. **One fact, one producer.**
+* Four docstrings the review proved FALSE were corrected -- including this commit's own safety
+  argument. The origination guard is NOT "structurally unreachable" for an originated loan:
+  `compute_forward_loan_period_balance_map` is handed EVERY period, so a begun period that ended
+  before the loan was taken out DOES probe `target < owed_from`. What makes it harmless is the
+  SPLICE discarding those values, not unreachability. A reason a future reader would trust must be
+  the true one.
+* A stale `dict[int, DebtSchedule]` type hint on `_compute_debt_progress` (the caller passes ROWS)
+  and `_projection_seed`'s missing type hint.
+
+**Verified:** full suite **7383 passed**; `pylint app/` 10.00/10 with the full `--fail-on` set and
+ZERO findings of any kind; checker unit tests 148. Both guards proven load-bearing by negative
+control, with a clean partition: 2 tests pin the resolver guard, 4 pin the seam guard, 3 pin the
+consumers -- none vacuous. Dev clone unmoved (Mortgage $177,277.97, Van Loan $15,663.59; year-end
++$2,505.02 / +$4,251.65).
+
+**Known residue:** `app/services/net_worth_kernel.py` now sits at EXACTLY its 1000-line ceiling. The
+next commit that adds to it must extract the loan cluster (`DebtSchedule`, `generate_debt_schedules`,
+`_projection_seed`, `loan_owed_at_dates`, `amortizing_balance_at`, `_build_amortizing_balance_map`,
+`_loan_ledger_not_opened`) into its own module -- the same module-size move the investment sub-chain
+already made. That touches the W9906 `_ENGINE_CLUSTER_MODULES` list.
 
 * `loan_resolver/_state.resolve_loan` -- the domain guard on the derived balance:
   `as_of < loan_params.origination_date` -> `current_balance = Decimal("0.00")`. Docstring states the
@@ -665,9 +769,44 @@ proven by the regression baseline, not asserted).
   confirmed payment present (R3's negative control). Plus a negative control on the whole commit: an
   already-originated loan's map and scalar are byte-identical before and after it.
 
-### C2b -- `fix(balance): the ledger owns a loan's past; a broken loan fails loud`
+### C2b -- `fix(balance): the ledger owns a loan's past; a broken loan fails loud` -- **DONE (`9ea61f8a`)**
 
 **The correctness commit.**
+
+**AS BUILT -- everything below shipped, with these differences from the plan.**
+
+* **W9905 was STRENGTHENED, not merely pruned.** The plan said "drop the dead name, keep the live
+  one." Doing only that would have SHRUNK the fence: the two FORWARD producers
+  (`forward_balance_at_date`, `compute_forward_loan_period_balance_map`) inherited
+  `compute_loan_period_balance_map`'s seed argument when it was deleted, and therefore inherited its
+  hazard. They JOIN the checker. `_LOAN_BALANCE_MAP_FUNCS` is now those two plus
+  `balance_from_schedule_at_date`.
+* **`_loan_ledger_not_opened(account, ctx)`** -- the raise is built in ONE shared helper, so the
+  scalar and the map cannot report the same corruption two different ways, and the REPAIR is named
+  in one place.
+* **Test disposition, each with its proof (Section 4):**
+  * `TestUnpaidScheduleRowsNeverReduceTheDebt` -- **DELETED.** It pinned the no-ledger schedule
+    fallback, and its own body asserted `confirmed_loan_balance_at(...) is None` as its PREMISE. It
+    asserted the behaviour of code that no longer exists. Superseded by `TestBrokenLoanFailsLoud`.
+  * `TestLoanProjectedBalanceDispatcher` (4 cases) -- **RE-POINTED, not deleted.** Every semantic
+    they pin (period-end keying, the pre-first-payment seed, the empty schedule, the no-phantom-jump
+    guarantee) moved intact to the FORWARD producer, which is what the surfaces actually call. Their
+    synthetic rows gained `is_confirmed=False` -- which is what they always WERE (projected rows) --
+    and an `owed_from` predating every period. **Not one expected number changed.**
+  * `TestAmortizingReadSwitch::test_builder_splices_ledger_past_and_projection_future` -- its
+    comparison producer was the deleted function; re-pointed at the forward producer the builder
+    actually uses.
+* **`TestScalarAndMapAgree` was negative-controlled, and the FIRST control did not bite.** Adding
+  confirmed rows back into the forward walk changes nothing, because a forward row always dominates
+  a confirmed one for a future target. Two controls that DO bite: re-key the forward map on
+  `period.start_date` (fires: `map=235511.70` vs `scalar=235250.34`), and seed the map one cent off
+  the scalar (fires: `map=0.01` vs `scalar=0.00`). **A guard whose negative control does not fire is
+  not a guard.** Recorded because the first one looked convincing.
+* **Verified on REAL data, not just fixtures:** the new invariant holds across **118 real
+  (loan x period) checks on the dev clone with ZERO divergences**, and the baseline is unmoved
+  (Mortgage $177,277.97, Van Loan $15,663.59; year-end +$2,505.02 / +$4,251.65).
+* **Verified:** full suite **7386 passed**; `pylint app/` 10.00/10, zero findings; checker unit tests
+  148.
 
 * New `LoanLedgerNotOpenedError(PostingError)` in `app/services/posting_reads.py` (beside
   `PostingError`, which already models exactly this family of invariant violation). Its message names
@@ -787,25 +926,30 @@ proven by the regression baseline, not asserted).
 No behaviour change. Every item here is a statement in the code that a future reader would rely on and
 that is not true.
 
-* `net_worth_kernel.debt_schedule_rows` (`:220-223`) -- "the rows carry no balance" is false;
-  `AmortizationRow.remaining_balance` exists. Say what is actually true: the bundle's balance-at-today
-  is gone, the rows remain rich detail, and the fence on the rows is the C3 method fence plus the
-  seam's ownership of every rendered balance.
-* `savings_dashboard_service/_projections.py` -- three claims that the loan tile "reads the resolver
-  directly ... never the seam" (`:47`, `:181-186`, and the inline comment at `:212-214`). All three
-  are the opposite of what `_compute_loan_account` now does.
-* `home_equity_service.resolve_home_equity` (`:117-118`) -- "With no baseline scenario each secured
+**Status re-verified 2026-07-13 after C2/C2b shipped.** Those commits corrected the false docstrings
+they touched, so two items below are already DONE. **Re-check each remaining one against the code
+before rewriting it** -- do not assume this list is current; that is exactly the failure mode it
+exists to fix.
+
+* ~~`net_worth_kernel.debt_schedule_rows` -- "the rows carry no balance" is false;
+  `AmortizationRow.remaining_balance` exists.~~ **DONE in C2**: it now says the rows carry no SEED
+  (true -- `projection_seed` is the loaded field), and names the real fence.
+* ~~`balance_at/_loan_figures.py` -- `_is_paid_off(resolved)` has no type annotation.~~ **DONE in
+  C2**: `_is_paid_off(resolved: ResolvedLoan, as_of: date)`.
+* **OPEN.** `savings_dashboard_service/_projections.py:42-43` -- "the loan tile reads the resolver
+  directly ... never the seam" (and the inline comment near `_compute_loan_account`'s `current_bal`).
+  Verified still present and still false: `_compute_loan_account` reads `balance_at.loan_figures` and
+  `balance_at.balance_at`.
+* **OPEN.** `home_equity_service.resolve_home_equity:118` -- "With no baseline scenario each secured
   loan still resolves ... exactly as before" is false since `7b7c909b`; `balance_at.balance_at` calls
-  `_require_scenario`, which raises. State the raise.
-* `balance_at/_loan_figures.py:104` -- `_is_paid_off(resolved)` has no type annotation. Add
-  `resolved: ResolvedLoan` (imports cleanly, no cycle).
-* `TestOneResolutionPerLoanPerReadPass` (`test_savings_dashboard_service.py:4577-4579`) -- the spy sits
+  `_require_scenario`, which raises. Verified still present. State the raise.
+* **OPEN.** `TestOneResolutionPerLoanPerReadPass` (`test_savings_dashboard_service.py:4577-4579`) -- the spy sits
   on `resolution_context.resolve_loan_bundle`, so it counts resolutions routed THROUGH the context,
   not "every resolution anywhere in the pass regardless of which module asked."
-* `tests/_test_helpers.py::insert_origination_event` -- delete it and its call site. Its docstring
-  claims "the resolver raises ValueError on an empty anchor-event list," which the read switch retired;
-  `load_loan_anchor_facts` never reads an `origination`-source row. Verify by removal, not by
-  assertion.
+* **OPEN.** `tests/_test_helpers.py::insert_origination_event` (`:260`, called at `:758`; verified
+  still present) -- delete it and its call site. Its docstring claims "the resolver raises ValueError
+  on an empty anchor-event list," which the read switch retired; `load_loan_anchor_facts` never reads
+  an `origination`-source row. Verify by removal, not by assertion.
 * `implementation_plan_loan_resolution_context.md` -- append a "Corrections (2026-07-13 review)"
   section pointing here. Do not rewrite its history; record what it got wrong.
 
@@ -1003,19 +1147,34 @@ pinned to a historical date resolves the loan with today's overpayment plan. Har
 caller pins as_of at or near today (C4 now enforces "not future"), but it is a latent wrong answer for
 any historical read and should be dated when one is built.
 
-### FU-5 -- A CONFIRMED payment on a loan that has not originated
+### FU-5 -- A CONFIRMED payment on a loan that has not originated -- **DEMONSTRATED, NOT FIXED**
 
-Found while designing C2 (Section 3a); not caused by it. Nothing forbids settling a transfer into a
-loan account whose `origination_date` has not arrived. The genesis walk would then split that payment
-against a running balance of zero and post it with no OPENING to correct against. C2 routes such a
-loan to the projection, whose forward walk reads only UNCONFIRMED rows -- so the payment would be
-silently ignored by every balance surface.
+Found while designing C2 (Section 3a); NOT caused by it, and C2/C2b do not make it worse.
 
-It is broken data, and by the arc's own rule it should FAIL LOUD rather than be quietly dropped. Not
-folded into C2 because it needs its own reachability measurement first (can the recurring-payment
-generator even produce it, or does it require a hand-made transfer?) and because a wrong guard here
-would reject a legitimate loan. **C2 must add the assertion that a not-yet-originated loan has no
-confirmed payments, and report rather than paper over it if one turns up.**
+**It is reachable, and C2's own test builds it.** `tests/test_services/test_balance_at.py::
+TestLoanNotYetOriginated::test_not_paid_off_even_with_a_confirmed_payment` settles a $1,200 transfer
+INTO an unclosed mortgage through the ordinary `transfer_service` -- a down payment, an earnest
+deposit -- and it works. So this is no longer theorised: the shape exists, in the suite, on purpose.
+
+**What actually happens to the money.** The $1,200 leaves checking. On the loan side the genesis walk
+drops the future-dated origination anchor, so there is no OPENING to correct against; the loan reports
+`$0.00` owed (correctly -- it does not exist yet) and NOTHING records the payment against it. When the
+loan later originates it will owe its full principal, as though the payment never happened. Net worth
+falls by $1,200 and no surface says a word.
+
+**Why C2 did NOT add a guard, stated plainly because an earlier draft of this section said it must.**
+The honest options are not obviously one-sided:
+
+* **Fail loud** on a confirmed payment before origination. But a user CAN produce this through the
+  normal UI, so it would 500 a page for data they were allowed to enter.
+* **Reject at the write boundary** (the transfer service refuses a loan payment dated before the
+  loan's origination). This is the root-cause fix, and it is a WRITE-path change -- a different
+  concern from the balance seam, and out of C2's scope.
+* **Model it** as a prepayment / down payment that reduces the opening principal. That is a feature.
+
+Nothing here is a balance-seam decision, so folding a guess into C2 would have been exactly the kind
+of unilateral design call this arc exists to stop. **It needs a developer ruling.** The measurement is
+above; start from it rather than re-deriving it.
 
 ### FU-7 -- The forward projection PAYS DOWN overdue installments that were never paid (2a, forwards)
 
