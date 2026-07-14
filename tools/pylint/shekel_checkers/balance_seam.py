@@ -207,6 +207,36 @@ _LOAN_RESOLVER_MODULES = frozenset({
     "app.routes.loan",
 })
 
+# ── The read pass's memoized loan handle (W9906) ─────────────────────
+#
+# ``BalanceContext.resolved_loan`` hands the caller a whole ``ResolvedLoan`` --
+# and ``resolved.state.current_balance`` is a balance-at-today, one attribute read
+# away.  Fencing the three resolver FUNCTIONS above and then exposing the same
+# bundle as a public METHOD was the hole: the fence binds on names, and the method
+# was called ``loan``, which is far too generic to guard (it would collide with
+# every unrelated ``.loan`` attribute in the codebase).  Proven silent before this
+# commit: a probe consumer in ``app/routes/companion.py`` reading
+# ``ctx.loan_state(account).current_balance`` rated 10.00/10.
+#
+# The rename to ``resolved_loan`` is therefore load-bearing, not cosmetic -- a
+# distinctive name is what makes the call site catchable.  Its sibling
+# ``loan_state`` was DELETED rather than renamed: it had zero callers, and its
+# entire purpose was to hand a consumer the ``LoanState`` this fence exists to
+# keep out of consumer hands.
+#
+# The allowlist is deliberately NARROWER than the resolver's: the seam and the
+# kernel cluster compose the memo, and nothing else may touch it.  Routes and
+# dashboards get ``balance_at.loan_figures`` (rich detail, no balance) plus
+# ``balance_at.balance_at`` (the balance).
+_CONTEXT_LOAN_PRODUCERS = frozenset({
+    "resolved_loan",
+})
+_CONTEXT_LOAN_MODULES = frozenset({
+    "app.services.balance_at",
+    "app.services.net_worth_kernel",
+    "app.services.resolution_context",
+})
+
 # Every fenced CALL surface: ``(guarded names, modules allowed to reach them)``.
 # ``visit_call`` and ``visit_importfrom`` both walk this one table, so a new
 # fenced surface is a data change here rather than a third copy of the same
@@ -215,6 +245,7 @@ _FENCED_CALL_SURFACES = (
     (_BALANCE_PRODUCERS, _BALANCE_SEAM_MODULES),
     (_LOAN_LEDGER_READER_PRODUCERS, _LOAN_LEDGER_READER_MODULES),
     (_LOAN_RESOLVER_PRODUCERS, _LOAN_RESOLVER_MODULES),
+    (_CONTEXT_LOAN_PRODUCERS, _CONTEXT_LOAN_MODULES),
 )
 
 # ── Fail-closed completeness (W9909) ────────────────────────────────
@@ -255,6 +286,16 @@ _ENGINE_CLUSTER_MODULES = _BALANCE_SEAM_MODULES - frozenset({
 })
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_posting_service",
+})
+# The loan-RESOLVER defining modules.  They were fenced as a CALL surface
+# (:data:`_LOAN_RESOLVER_PRODUCERS`) and then left out of the completeness check
+# -- the same fail-open shape the check exists to close, reintroduced by the very
+# commit that added the surface.  Proven: a new public
+# ``loan_balance_right_now()`` added to ``loan_resolution`` rated 10.00/10, and
+# ``contractual_schedule_from_origination`` sat there public and unclassified.
+_LOAN_RESOLVER_DEFINING_MODULES = frozenset({
+    "app.services.loan_resolution",
+    "app.services.resolution_context",
 })
 
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
@@ -356,7 +397,86 @@ _FENCED_MODULE_RULINGS = {
             "resync_user_loan_postings",
         }),
     ),
+    # The loan-resolver seeding layer.  Its three db-facing wrappers ARE the
+    # fenced resolver producers; everything else it exports must say why it is
+    # not.
+    "app.services.loan_resolution": (_LOAN_RESOLVER_PRODUCERS, frozenset({
+        # PURE contractual rows from the loan's IMMUTABLE params (its origination
+        # principal / term / rate feed), for the property chart's pre-tracking
+        # back-projection.  It reads no ledger, takes no scenario, and answers no
+        # "what is owed at T" -- it says what the origination TERMS imply, which
+        # is why it is the one legitimate ``confirmed_view=None`` composer call in
+        # the codebase.  The rows it returns carry ``remaining_balance``, but they
+        # are reachable only through the seam's ``secured_loan_series``, which is
+        # the sanctioned rows-to-a-consumer path (the same ruling
+        # ``debt_schedule_rows`` carries).
+        "contractual_schedule_from_origination",
+    })),
+    # The read pass's resolution context.  ``resolved_loan`` is the fenced memo
+    # (:data:`_CONTEXT_LOAN_PRODUCERS`); its public siblings are plumbing.
+    "app.services.resolution_context": (
+        _CONTEXT_LOAN_PRODUCERS, frozenset({
+            # The context CONSTRUCTOR: it resolves the baseline scenario and pins
+            # the as-of.  It builds the object a producer is called WITH; it
+            # computes no balance.
+            "build",
+            # The baseline scenario's id -- an int, and the ONE place the
+            # no-baseline degradation is expressed.
+            "scenario_id",
+            # The fail-loud no-baseline guard.  It raises or returns None; it
+            # answers nothing about an account.
+            "require_scenario",
+        }),
+    ),
 }
+
+
+def _is_public_export_surface(node: nodes.FunctionDef) -> bool:
+    """Return whether ``node`` is a PUBLIC name a consumer outside the module can call.
+
+    A name is reachable from outside when it is public AND every scope enclosing
+    it is a public CLASS, all the way up to the Module.  That admits, and the
+    second of these is the shape the original check missed:
+
+    * a public TOP-LEVEL function, and
+    * a public METHOD of a public class (including a method of a public class
+      nested in a public class) -- reachable as ``SomeClass(...).method(...)``,
+      which is exactly how ``BalanceContext.loan`` handed routes a ``ResolvedLoan``
+      with the fence silent.
+
+    Excluded: any private name (leading underscore) at any level -- a private
+    class's methods are unreachable because a consumer cannot name the class -- and
+    anything nested inside a FUNCTION, which is unreachable from outside. Dunders
+    fall out of the same underscore test: ``__post_init__`` is a lifecycle hook,
+    not an export. ``@property`` / ``@classmethod`` / ``@staticmethod`` / ``async``
+    are all ordinary FunctionDefs here and are all covered.
+
+    **The walk is up the ANCESTOR CHAIN, not a fixed one- or two-level test.**  A
+    two-level test (``parent is a ClassDef whose parent is the Module``) silently
+    drops a method of a nested class, and a bare ``parent is Module`` test drops a
+    top-level function defined inside an ``if`` or ``try``.  Neither shape exists
+    in a fenced module today -- and "it cannot happen today" is precisely the
+    reasoning that produced both of the holes this checker exists to close.
+
+    Args:
+        node: The function-definition node under inspection.
+
+    Returns:
+        ``True`` when the name is part of the module's public export surface.
+    """
+    if node.name.startswith("_"):
+        return False
+    scope = node.parent
+    while scope is not None and not isinstance(scope, nodes.Module):
+        # A FunctionDef ancestor makes it a nested (unreachable) def; a private
+        # class ancestor makes it unnameable.  Statement wrappers (If / Try /
+        # With) are not scopes -- step through them.
+        if isinstance(scope, nodes.FunctionDef):
+            return False
+        if isinstance(scope, nodes.ClassDef) and scope.name.startswith("_"):
+            return False
+        scope = scope.parent
+    return scope is not None
 
 
 def _fenced_module_ruling(
@@ -467,23 +587,32 @@ class ShekelBalanceSeamChecker(BaseChecker):
     }
 
     def visit_functiondef(self, node: nodes.FunctionDef) -> None:
-        """Flag a public function in a fenced module that is classified as neither.
+        """Flag a public function OR METHOD in a fenced module classified as neither.
 
         The fail-closed half of the fence.  ``node`` is every function
-        definition; only a PUBLIC (non-underscore) TOP-LEVEL function whose
-        enclosing module carries a ruling (:data:`_FENCED_MODULE_RULINGS` -- the
-        engine cluster and the genesis loan-ledger package) is considered, and it
-        is reported unless it appears in THAT MODULE'S producer set or its
-        deliberate non-producer set.
+        definition; it is considered when it is PUBLIC (non-underscore) and part
+        of a fenced module's reachable export surface -- see
+        :func:`_is_public_export_surface` -- and it is reported unless it appears
+        in THAT MODULE'S producer set or its deliberate non-producer set.
 
-        Nested functions and methods are skipped (``node.parent`` is not the
-        module): a fence is about the module's public export surface, which is
-        what a consumer can reach.  The seam package itself carries no ruling --
-        its public functions ARE the entries consumers call.
+        **METHODS are classified, not skipped, and that is this checker's second
+        design fix.**  The original check returned early for anything whose parent
+        was not the Module, on the reasoning that "a fence is about the module's
+        public export surface".  A public method of a public class IS that surface:
+        ``BalanceContext.loan`` was a public method that handed any caller a whole
+        ``ResolvedLoan`` -- ``state.current_balance``, a balance-at-today, one
+        attribute read away -- and because methods were never classified, the
+        checker could not see it.  That is the exact fail-open shape W9909 was
+        written to close, one level down, and it shipped anyway.  A consumer can
+        reach ``SomeClass().method()`` every bit as easily as ``some_function()``;
+        the fence must see both.
+
+        Nested functions (a def inside a def) are still skipped: they are
+        unreachable from outside, so they are not an export surface.  The
+        ``balance_at`` seam package carries no ruling -- its public functions ARE
+        the entries consumers call.
         """
-        if not isinstance(node.parent, nodes.Module):
-            return
-        if node.name.startswith("_"):
+        if not _is_public_export_surface(node):
             return
         ruling = _fenced_module_ruling(node)
         if ruling is None:

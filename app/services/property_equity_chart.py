@@ -11,13 +11,14 @@ fallback unreachable, H2 front-aligned merge, H3 fabricated past values) are
 registered in ``docs/design/property_detail_followups.md``.
 
 The producer is PURE: it takes each secured loan's already-resolved rows (a
-:class:`SecuredLoanSeries`: the pre-tracking contractual back-projection, the
-resolved schedule, and the authoritative current balance) plus the market
-value, appreciation rate, and ``today`` -- no ``resolve_account_loan``, no DB.
-The route resolves each loan ONCE and feeds those rows to both the equity hero
-(``home_equity_service.compute_home_equity``) and this producer, so the two
-surfaces reconcile by construction (they read the same resolution) and no loan
-is resolved twice per page load.
+:class:`~app.services.balance_at.SecuredLoanSeries`: the pre-tracking contractual
+back-projection, the resolved schedule, and the seam's ``is_retired``) plus the
+market value, appreciation rate, and ``today`` -- no resolver, no DB, and
+deliberately NO BALANCE.  The series is assembled by the balance-at seam
+(:func:`app.services.balance_at.secured_loan_series`) off the read pass's ONE
+memoized resolution -- the same one the equity hero
+(:func:`app.services.home_equity_service.resolve_home_equity`) reads -- so the two
+surfaces reconcile by construction and no loan is resolved twice per page load.
 
 Every per-month decision keys off a CALENDAR DATE relative to ``today``, never a
 schedule index:
@@ -32,10 +33,13 @@ schedule index:
   today, and its committed projection (``projected``) after -- summed per
   CALENDAR MONTH, so a younger loan's balance never lands in a month before it
   existed; and
-* "no outstanding secured debt" (drives the loan-less fallback) is decided by
-  the loans the caller passes -- it passes only loans with a positive balance
-  today -- so a fully-paid-off property reaches the 120-month appreciation
-  fallback.
+* "no outstanding secured debt" (drives the loan-less fallback) is decided HERE,
+  by the seam's :attr:`~app.services.balance_at.LoanFigures.is_retired` carried
+  on each series -- ONE predicate, applied in one place, so a fully-retired
+  property reaches the 120-month appreciation fallback while a mortgage that has
+  not closed yet (also owing ``$0.00``, and emphatically not retired) stays on
+  the chart.  The caller passes EVERY configured secured loan and lets this rule
+  decide; when the caller filtered too, the two copies disagreed.
 
 Boundary discipline (``CLAUDE.md``: services are isolated from Flask): no Flask
 imports.  All money is :class:`~decimal.Decimal`; the ``float()`` cast for
@@ -47,17 +51,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
+from app.services.balance_at import SecuredLoanSeries
 from app.services.growth_engine import period_return_rate
 from app.utils.dates import add_months
 from app.utils.money import round_money
-
-if TYPE_CHECKING:
-    # Typing-only import (lazy string annotations): the module reads only
-    # ``.remaining_balance`` / ``.payment_date`` / ``.is_confirmed`` off each
-    # row, so it never needs the class at runtime.
-    from app.services.amortization_engine import AmortizationRow
 
 # Market value with no securing debt (a loan-less OR fully-paid-off property):
 # project the appreciation-only arc this many months forward -- 10 years, the
@@ -92,61 +90,6 @@ _TIER_PRIORITY = {TIER_ESTIMATED: 0, TIER_PROJECTED: 1, TIER_CONFIRMED: 2}
 # market value flat and drives the "zero_rate" caption when debt still exists.
 _ZERO_RATE = Decimal("0")
 _ZERO_MONEY = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class SecuredLoanSeries:
-    """One secured loan's already-resolved rows for the equity chart.
-
-    The caller (the property route) resolves each loan ONCE and packs its rows
-    here, so this producer stays pure.  ``back_projection`` and ``schedule``
-    together span the loan's origination-first-payment .. payoff months, one
-    row per calendar month.
-
-    Attributes:
-        back_projection: The contractual-from-origination rows for the months
-            BEFORE the resolved schedule begins (a mid-life-imported loan's
-            pre-tracking-start estimate;
-            :func:`app.services.loan_resolution.contractual_schedule_from_origination`,
-            clipped to ``payment_date < schedule[0].payment_date``).  Empty for
-            a loan whose schedule already starts at origination.  Rendered as
-            the ``estimated`` tier.
-        schedule: The loan's resolved schedule
-            (``resolve_account_loan(...).schedule`` == confirmed history +
-            committed forward): ``is_confirmed`` rows are recorded history
-            (``confirmed`` tier), the rest are the committed projection
-            (``projected`` tier).
-        current_balance: The loan's authoritative balance today
-            (the ``balance_at`` seam's figure) -- the same one the equity hero
-            nets, so the chart and the hero reconcile at the last confirmed
-            month by construction.
-        is_originated: Whether the loan EXISTS yet
-            (:attr:`~app.services.balance_at.LoanFigures.is_originated`).  A loan
-            that has not been borrowed owes ``$0.00`` today and is NOT retired;
-            without this flag the ``current_balance <= 0`` test below would drop a
-            mortgage closing in 26 days and draw ten years of debt-free equity.
-    """
-
-    back_projection: list["AmortizationRow"]
-    schedule: list["AmortizationRow"]
-    current_balance: Decimal
-    is_originated: bool
-
-    @property
-    def is_retired(self) -> bool:
-        """Whether this loan is DONE -- borrowed, and now owing nothing.
-
-        THE single definition of "drop this loan from the chart", so the route
-        that packs the series and the producer that charts it cannot answer it two
-        ways.  They previously each carried their own ``current_balance <= 0``
-        test, which is exactly how both came to conflate "retired" with "not
-        borrowed yet" the moment the seam started reporting an honest ``$0.00``
-        for an upcoming loan.
-
-        A loan that has not originated owes nothing and is emphatically not
-        retired: its entire debt line is still ahead of it.
-        """
-        return self.is_originated and self.current_balance <= _ZERO_MONEY
 
 
 @dataclass(frozen=True)
@@ -481,24 +424,26 @@ def build_property_equity_chart(
 
     The property detail band's equity-over-time chart (Loop A direction A), on a
     calendar axis anchored at ``today``.  ``secured_loans`` are the property's
-    secured loans (each carrying its pre-tracking back-projection, resolved
-    schedule, and current balance); a loan with a zero balance today is paid off
-    and is dropped here, so it never affects the debt line.  The axis spans the
-    earliest outstanding-loan month to the latest payoff; the debt line sums
-    each loan's per-calendar-month balance (:func:`_debt_series`); the value line
-    compounds the anchor forward from ``today`` (:func:`_value_series`); equity
-    is the per-month ``value - debt``.
+    secured loans (each carrying its pre-tracking back-projection, its resolved
+    schedule, and the seam's RETIRED predicate -- deliberately no balance); a
+    RETIRED loan is dropped here, so it never affects the debt line.  Retired means
+    borrowed and now owing nothing; a loan that has not been borrowed yet also owes
+    ``$0.00`` and is NOT retired, so it stays charted -- its debt line is entirely
+    ahead of it.  The axis spans the earliest outstanding-loan month to the latest
+    payoff; the debt line sums each loan's per-calendar-month balance
+    (:func:`_debt_series`); the value line compounds the anchor forward from
+    ``today`` (:func:`_value_series`); equity is the per-month ``value - debt``.
 
     With no outstanding secured loan (none linked, none configured, or every one
-    paid off), returns the loan-less fallback: 120 months of appreciation only
+    retired), returns the loan-less fallback: 120 months of appreciation only
     (:func:`_fallback_chart`).  Otherwise ``chart_state`` is ``"zero_rate"`` when
     the appreciation rate is the unset sentinel (value holds flat, equity still
     grows as debt amortizes), else ``"standard"``.
 
     Args:
         secured_loans: The property's secured loans' resolved rows (each a
-            :class:`SecuredLoanSeries`).  Empty, or all-paid-off, drives the
-            fallback.
+            :class:`~app.services.balance_at.SecuredLoanSeries`, assembled by the
+            balance-at seam).  Empty, or all-retired, drives the fallback.
         market_value: The Property's ``current_anchor_balance`` -- today's
             honest valuation, the anchor the value line compounds from.
         appreciation_rate: The Property's annual appreciation rate (decimal
@@ -509,13 +454,25 @@ def build_property_equity_chart(
         A :class:`PropertyEquityChart` -- ``Decimal`` series the route floats at
         its JSON serialization boundary.
     """
-    # A loan is charted unless it is RETIRED -- decided by
-    # :attr:`SecuredLoanSeries.is_retired`, NOT by schedule emptiness (a loan paid
-    # off through confirmed payments keeps its whole confirmed schedule, so an
-    # "is the schedule empty" test never fired the fallback; the H1 fix).  A
-    # property whose every secured loan is paid off falls through to the arc.
-    # A loan that has not been BORROWED yet also owes $0.00 and is charted, since
-    # its debt line is entirely ahead of it.
+    # A loan is charted unless it is RETIRED -- decided by the SEAM's one predicate
+    # (``LoanFigures.is_retired``, handed over on the series), NOT by schedule
+    # emptiness (a loan paid off through confirmed payments keeps its whole
+    # confirmed schedule, so an "is the schedule empty" test never fired the
+    # fallback; the H1 fix), and NOT by a local ``balance <= 0`` test.  This module
+    # and the property route each used to carry their own copy of that test, and
+    # two copies of one rule is how BOTH came to drop a mortgage closing next month
+    # -- it owes $0.00 today, which is true, and it is not remotely retired.
+    # ``is_retired`` carries the origination guard, so a not-yet-BORROWED loan
+    # stays charted: its debt line is entirely ahead of it.  A property whose every
+    # secured loan is retired falls through to the appreciation-only arc.
+    #
+    # NOT ``is_paid_off``: that is ``is_retired`` PLUS a confirmed-payment guard,
+    # which exists for BADGING (do not congratulate a degenerate $0-anchor loan).
+    # A mortgage paid off by a lump sum recorded as a balance true-up has no
+    # payment rows, so it reads ``is_paid_off=False`` while owing $0.00 -- and
+    # since a zero-balance loan has an EMPTY schedule, the seam's back-projection
+    # clip admits its whole contractual walk and this chart drew $197,049.32 of
+    # debt beside an equity hero correctly reporting $0.00.
     outstanding = [loan for loan in secured_loans if not loan.is_retired]
     if not outstanding:
         return _fallback_chart(market_value, appreciation_rate, today)

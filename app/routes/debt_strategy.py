@@ -145,10 +145,9 @@ def _load_debt_accounts(user_id):
         if figures is None:
             # Account exists but loan details not yet configured.
             continue
-        params = ctx.loan(account).params
         current_balance = balance_at.balance_at(account, ctx, ctx.as_of)
 
-        if params.is_arm:
+        if figures.is_arm:
             has_arm = True
 
         # Skip debts with zero principal or zero payment (fully paid

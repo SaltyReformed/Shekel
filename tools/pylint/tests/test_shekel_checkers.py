@@ -25,7 +25,9 @@ from shekel_checkers import (
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
+    _LOAN_RESOLVER_DEFINING_MODULES,
     _STATUS_SEAM_MODULES,
+    _is_public_export_surface,
     ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
     ShekelLedgerModelFenceChecker,
@@ -62,6 +64,29 @@ def _fenced_module_sources(module_name: str) -> list[Path]:
         f"scope names something that does not exist"
     )
     return sorted(package.glob("*.py"))
+
+
+def _public_export_names(tree: nodes.Module) -> list[str]:
+    """Return every public name a consumer outside *tree*'s module can call.
+
+    The registry-vs-reality mirror of the checker's own
+    ``_is_public_export_surface``, and it MUST agree with it on what "the export
+    surface" means -- otherwise this guard stops pinning the thing it claims to
+    pin. That is not hypothetical: while both looked only at ``tree.body``, a
+    public ``BalanceContext.loan`` handed routes a ``ResolvedLoan`` unseen by
+    either. So rather than re-implement the rule (a second copy that can drift),
+    this walks every FunctionDef in the tree and asks the CHECKER'S OWN predicate.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        The public export names, in source order.
+    """
+    return [
+        node.name for node in tree.nodes_of_class(nodes.FunctionDef)
+        if _is_public_export_surface(node)
+    ]
 
 
 class TestShekelMoneyChecker(CheckerTestCase):
@@ -1288,6 +1313,211 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_functiondef(nested)
 
+    # ── The context's loan handle: the hole a public METHOD opened ──────
+
+    @staticmethod
+    def _method_def(source: str, module_name: str) -> nodes.FunctionDef:
+        """Return the first METHOD of the first class in *source*.
+
+        The method-level counterpart of :meth:`_function_def`. The snippet
+        defines exactly one class with one method, so the class body's first
+        statement is the node under test.
+        """
+        module = astroid.parse(source, module_name=module_name)
+        return module.body[0].body[0]
+
+    def test_flags_unclassified_public_method_in_fenced_module(self) -> None:
+        """A NEW public METHOD in a fenced module, unclassified, is flagged.
+
+        THE regression test for this checker's second fail-open hole.
+        ``visit_functiondef`` used to return early for anything whose parent was
+        not the Module, so a public method was never classified at all -- and
+        ``BalanceContext.loan`` became exactly that: a public method handing any
+        caller a ``ResolvedLoan``, whose ``state.current_balance`` is a
+        balance-at-today one attribute read away. Measured before the fix: a route
+        reading ``ctx.loan_state(account).current_balance`` rated 10.00/10.
+        """
+        node = self._method_def(
+            "class BalanceContext:\n"
+            "    def balance_right_now(self, account):\n"
+            "        return self.resolved_loan(account).state.current_balance\n",
+            "app.services.resolution_context",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_right_now",),
+                line=2, col_offset=4,
+                end_line=2, end_col_offset=25,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_private_method_in_fenced_module(self) -> None:
+        """A private method is not reachable from outside; not an export."""
+        node = self._method_def(
+            "class BalanceContext:\n"
+            "    def _memoize(self, account):\n"
+            "        return None\n",
+            "app.services.resolution_context",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_public_method_of_private_class_in_fenced_module(self) -> None:
+        """A public method of a PRIVATE class: a consumer cannot name the class."""
+        node = self._method_def(
+            "class _Memo:\n"
+            "    def balance_right_now(self, account):\n"
+            "        return None\n",
+            "app.services.resolution_context",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_flags_public_method_of_a_NESTED_public_class(self) -> None:
+        """A method of a public class nested in a public class is still reachable.
+
+        ``Outer.Inner().balance_right_now()`` is nameable from a consumer, so it is
+        export surface. A fixed two-level parent test (``parent is a ClassDef whose
+        parent is the Module``) drops it silently. No fenced module has this shape
+        today -- and "it cannot happen today" is exactly the reasoning that
+        produced both holes this checker exists to close, so the walk is up the
+        whole ancestor chain and this pins it.
+        """
+        module = astroid.parse(
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        def balance_right_now(self, account):\n"
+            "            return None\n",
+            module_name="app.services.resolution_context",
+        )
+        node = module.body[0].body[0].body[0]
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_right_now",),
+                line=3, col_offset=8,
+                end_line=3, end_col_offset=29,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_flags_public_function_defined_under_a_module_level_if(self) -> None:
+        """A top-level function inside an ``if`` / ``try`` is still an export.
+
+        ``node.parent`` is the ``If``, not the Module, so a bare
+        ``isinstance(parent, Module)`` test drops it -- and a conditional
+        definition (a feature flag, a try/except import shim) is a perfectly
+        ordinary way to define a public producer.
+        """
+        module = astroid.parse(
+            "import os\n"
+            "if os.environ.get('X'):\n"
+            "    def balance_right_now(account):\n"
+            "        return None\n",
+            module_name="app.services.loan_resolution",
+        )
+        node = module.body[1].body[0]
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_right_now",),
+                line=3, col_offset=4,
+                end_line=3, end_col_offset=25,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_flags_context_loan_handle_called_from_a_route(self) -> None:
+        """A route calling ``ctx.resolved_loan(...)`` is a build failure.
+
+        The memo hands back a whole ``ResolvedLoan``, so a route holding one is a
+        route one attribute read from putting an unfenced loan balance on a
+        screen. Routes take ``balance_at.loan_figures`` (no balance) plus
+        ``balance_at.balance_at`` (the balance).
+        """
+        node = self._producer_call(
+            "ctx.resolved_loan(account)", "app.routes.accounts.detail",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("resolved_loan",),
+                line=1, col_offset=9,
+                end_line=1, end_col_offset=35,
+            ),
+        ):
+            self.checker.visit_call(node)
+
+    def test_allows_context_loan_handle_inside_the_seam(self) -> None:
+        """The seam composing its own memo is the sanctioned path."""
+        node = self._producer_call(
+            "ctx.resolved_loan(account)", "app.services.balance_at._loan_figures",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_allows_context_loan_handle_inside_the_kernel(self) -> None:
+        """The engine cluster composing the memo is the sanctioned path."""
+        node = self._producer_call(
+            "ctx.resolved_loan(account)", "app.services.net_worth_kernel",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_flags_context_loan_handle_from_a_loan_resolver_module(self) -> None:
+        """The memo's allowlist is NARROWER than the resolver's, deliberately.
+
+        ``loan_payment_service`` / ``loan_recurrence_sync`` / ``app.routes.loan``
+        may resolve a loan directly (they need the rich primitives), but none of
+        them may reach into a READ PASS's memo -- that object belongs to the seam
+        and the cluster that composes it. Pins the two allowlists as genuinely
+        different sets rather than one copied into two names.
+        """
+        node = self._producer_call(
+            "ctx.resolved_loan(account)", "app.routes.loan.dashboard",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("resolved_loan",),
+                line=1, col_offset=9,
+                end_line=1, end_col_offset=35,
+            ),
+        ):
+            self.checker.visit_call(node)
+
+    def test_flags_unclassified_public_function_in_loan_resolution(self) -> None:
+        """A NEW public producer in ``loan_resolution`` is flagged at its DEFINITION.
+
+        The 2c hole: the arc fenced the three resolver FUNCTIONS as a call surface
+        and then did not add their defining modules to the completeness registry --
+        the same fail-open shape W9909 exists to close, reintroduced by the very
+        commit that added the surface. Measured before the fix: a new public
+        ``loan_balance_right_now()`` in this module rated 10.00/10.
+        """
+        node = self._function_def(
+            "def loan_balance_right_now(account_id, scenario_id, as_of):\n"
+            "    return None\n",
+            "app.services.loan_resolution",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("loan_balance_right_now",),
+                line=1, col_offset=0,
+                end_line=1, end_col_offset=26,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
     def test_rulings_cover_every_producer_defining_module(self) -> None:
         """The ruling registry scopes EXACTLY the producer-defining modules.
 
@@ -1297,7 +1527,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         silently stop covering it -- the fail-open hole one level up. Pins the
         registry's key set against the two module scopes the fence is built from.
         """
-        expected = _ENGINE_CLUSTER_MODULES | _LOAN_LEDGER_DEFINING_MODULES
+        expected = (
+            _ENGINE_CLUSTER_MODULES
+            | _LOAN_LEDGER_DEFINING_MODULES
+            | _LOAN_RESOLVER_DEFINING_MODULES
+        )
         assert set(_FENCED_MODULE_RULINGS) == expected
 
     def test_classification_sets_match_the_real_fenced_modules(self) -> None:
@@ -1306,11 +1540,19 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         The checker enforces completeness against whatever the sets say; this
         pins the sets against the actual source on disk, in both directions:
 
-        * every public top-level function really defined in a fenced module is
-          classified (no hole the checker itself could not see -- e.g. if a
-          module were dropped from the scope), and
+        * every public top-level function AND every public METHOD of a public
+          class really defined in a fenced module is classified (no hole the
+          checker itself could not see -- e.g. if a module were dropped from the
+          scope), and
         * every classified name really exists (no stale entry silently
           un-fencing a name that was renamed).
+
+        **The methods are walked, not just the top-level functions, and that is
+        the point.**  This guard previously read only ``tree.body``, so it carried
+        the identical blind spot the checker did: ``BalanceContext.loan`` was a
+        public method handing routes a ``ResolvedLoan``, and neither the checker
+        nor the guard that is supposed to pin the checker's coverage could see it.
+        A guard that shares the bug it guards against is not a guard.
 
         Parses the source with astroid rather than importing ``app`` so the
         checker's unit tests stay free of the Flask/SQLAlchemy import graph.
@@ -1322,18 +1564,13 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                 tree = astroid.parse(
                     source_path.read_text(encoding="utf-8"), module_name=module,
                 )
-                for child in tree.body:
-                    if (
-                        isinstance(child, nodes.FunctionDef)
-                        and not child.name.startswith("_")
-                    ):
-                        defined.add(child.name)
-                        assert child.name in classified, (
-                            f"{module}.{child.name} is an UNCLASSIFIED public "
-                            f"function in a fenced module: add it to the producer "
-                            f"set (it answers balance-at-T) or the non-producer "
-                            f"set (it does not)"
-                        )
+                for name in _public_export_names(tree):
+                    defined.add(name)
+                    assert name in classified, (
+                        f"{module}.{name} is an UNCLASSIFIED public export in a "
+                        f"fenced module: add it to the producer set (it answers "
+                        f"balance-at-T) or the non-producer set (it does not)"
+                    )
             # Only the module's OWN non-producer rulings are pinned for staleness:
             # the producer set is shared across the cluster (a producer defined in
             # balance_resolver is legitimately absent from net_worth_kernel).

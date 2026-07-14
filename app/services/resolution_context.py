@@ -135,7 +135,7 @@ class BalanceContext:
         """
         return self.scenario.id if self.scenario is not None else None
 
-    def loan(self, account: Account) -> ResolvedLoan | None:
+    def resolved_loan(self, account: Account) -> ResolvedLoan | None:
         """Return *account*'s resolution for this pass, resolving it at most once.
 
         The memo that collapses a read pass's N resolutions of a loan to one.
@@ -147,6 +147,23 @@ class BalanceContext:
         configured loan) is memoized TOO, so a non-loan account asked repeatedly
         does not re-issue its params query each time.  That is why the membership
         test is ``in self._loans`` and not a truthiness check on the value.
+
+        **FENCED (W9906), and named so it CAN be.**  A :class:`ResolvedLoan`
+        reaches ``state.current_balance`` -- a balance-at-today -- in one
+        attribute read, so handing one to a route puts a loan balance on a screen
+        without passing the seam.  That is the hole this method WAS: it was called
+        ``loan``, a name too generic to fence (``_called_name_in`` matches a
+        call's attribute name, and ``.loan`` collides with unrelated code), so the
+        checker could not see it and a route reading
+        ``ctx.loan(account).state.current_balance`` rated 10.00/10 -- measured, on
+        this codebase, before the rename.  The distinctive name is what makes the
+        fence bind.
+
+        Only the seam (:mod:`app.services.balance_at`) and the kernel cluster it
+        composes may call it.  A consumer that wants a loan's rich figures takes
+        :func:`app.services.balance_at.loan_figures` (which carries no balance,
+        deliberately); one that wants its balance takes
+        :func:`app.services.balance_at.balance_at`.
 
         Args:
             account: The account to resolve.  Must belong to ``user_id`` (the
@@ -161,23 +178,6 @@ class BalanceContext:
                 account.id, self.scenario_id, self.as_of,
             )
         return self._loans[account.id]
-
-    def loan_state(self, account: Account):
-        """Return *account*'s resolved ``LoanState``, or ``None``.
-
-        The narrow projection of :meth:`loan` for the many callers that want the
-        resolved figures (balance, schedule, payment, rate, payoff) and not the
-        loaded input feed.
-
-        Args:
-            account: The loan account.
-
-        Returns:
-            The :class:`~app.services.loan_resolver.LoanState`, or ``None`` when
-            *account* is not a configured loan.
-        """
-        resolved = self.loan(account)
-        return resolved.state if resolved is not None else None
 
 
 def require_scenario(ctx: BalanceContext) -> None:

@@ -60,10 +60,32 @@ class LoanFigures:
             replaced the retired ``LoanParams.interest_rate`` column.
         payoff_date: The last payment date in the committed (plan-aware)
             schedule -- the month the loan reaches zero.
-        is_paid_off: Whether the loan owes nothing: it has ORIGINATED, its
-            LEDGER-confirmed balance is ``<= 0``, and it has at least one
-            confirmed payment.  The confirmed-payment guard keeps a brand-new loan
-            with a degenerate zero anchor from reading as retired.
+        is_retired: Whether the loan is DONE -- it has ORIGINATED and its
+            LEDGER-confirmed balance is ``<= 0``.  It has no debt line left: no
+            balance now, and nothing scheduled ahead.
+
+            THE single definition of "this loan has no debt to draw", which the
+            property equity chart drops on.  A loan that has NOT been borrowed yet
+            also owes ``$0.00`` and is emphatically not retired -- its whole debt
+            line is ahead of it -- which is what the origination half of this test
+            separates, and what kept a mortgage closing in 26 days on the chart.
+        is_paid_off: Whether the loan is retired AND the ledger can show at least
+            one confirmed payment for it.  **Strictly narrower than
+            :attr:`is_retired`, and built on it, so the two cannot drift.**
+
+            The extra confirmed-payment guard is a BADGING rule, not a debt rule:
+            it keeps a brand-new loan with a degenerate ``$0`` opening anchor -- a
+            misconfiguration, not an achievement -- from being badged "paid off" on
+            the /savings tile and dropped from the debt card.
+
+            Use :attr:`is_retired` to decide whether a loan has a debt line; use
+            this to decide whether to CONGRATULATE the user.  Collapsing the two
+            was measured: a mortgage paid off by a lump sum recorded as a balance
+            true-up (no payment rows) reads ``is_paid_off=False``, so the equity
+            chart charted it -- and since a zero-balance loan has an EMPTY
+            schedule, the back-projection clip admitted its whole 360-row
+            contractual walk and drew **$197,049.32** of debt the borrower does not
+            owe, on the same page as an equity hero reporting ``$0.00``.
         is_originated: Whether the loan EXISTS yet -- whether its
             ``origination_date`` has arrived by the read pass's ``as_of``.
 
@@ -77,13 +99,23 @@ class LoanFigures:
             the year-end panel reported -$198,049.28 of principal "paid".  A zero
             balance means "owes nothing"; it does NOT mean "has no debt ahead of
             it", and only this flag separates the two.
+        is_arm: Whether the loan is an adjustable-rate mortgage
+            (``LoanParams.is_arm``).  Projection detail, not a balance: it tells
+            /debt-strategy to caption its projection as rate-assumption-bound (the
+            strategy holds the CURRENT rate fixed and does not re-apply future ARM
+            adjustments).  It is here so that consumer no longer needs the whole
+            ``ResolvedLoan`` -- it reached for ``ctx.resolved_loan(account).params``
+            to read this ONE boolean, and a route holding a ``ResolvedLoan`` is a
+            route one attribute read away from an unfenced loan balance.
     """
 
     monthly_payment: Decimal
     current_rate: Decimal
     payoff_date: date | None
+    is_retired: bool
     is_paid_off: bool
     is_originated: bool
+    is_arm: bool
 
 
 def loan_figures(
@@ -92,8 +124,8 @@ def loan_figures(
     """Return *account*'s rich loan figures, or ``None`` if it is not a loan.
 
     Reads the read pass's ONE memoized resolution
-    (:meth:`~app.services.resolution_context.BalanceContext.loan`), so these
-    figures and the balance the same consumer reads from
+    (:meth:`~app.services.resolution_context.BalanceContext.resolved_loan`), so
+    these figures and the balance the same consumer reads from
     :func:`~app.services.balance_at.balance_at` come from the SAME resolution --
     identical by construction, not by two producers agreeing.
 
@@ -106,7 +138,7 @@ def loan_figures(
         The :class:`LoanFigures`, or ``None`` when *account* is not a configured
         loan.
     """
-    resolved = ctx.loan(account)
+    resolved = ctx.resolved_loan(account)
     if resolved is None:
         return None
     state = resolved.state
@@ -114,8 +146,10 @@ def loan_figures(
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
+        is_retired=_is_retired(resolved, ctx.as_of),
         is_paid_off=_is_paid_off(resolved, ctx.as_of),
         is_originated=_is_originated(resolved, ctx.as_of),
+        is_arm=bool(resolved.params.is_arm),
     )
 
 
@@ -138,12 +172,45 @@ def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
     return resolved.params.origination_date <= as_of
 
 
-def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
-    """Return whether the loan owes nothing -- read from the genesis ledger.
+def _is_retired(resolved: ResolvedLoan, as_of: date) -> bool:
+    """Return whether the loan is DONE -- borrowed, and now owing nothing.
+
+    THE one definition of "this loan has no debt line left", shared by
+    :attr:`LoanFigures.is_retired` and :func:`_is_paid_off` (which is this plus a
+    badging guard), so the seam cannot answer it two ways.
 
     ``resolved.state.current_balance`` is the ledger-confirmed balance (the read
     switch seeds it from ``confirmed_loan_balance_at``), so this asks the ONE
     producer that books what each payment actually paid.
+
+    **A loan that has not ORIGINATED is not retired; it has not been taken out.**
+    That guard is load-bearing, not defensive: ``current_balance`` is correctly
+    ``0.00`` for a loan configured before it closes, so without it an unclosed
+    mortgage reads as DONE -- dropped from the debt card, gone from the Horizon's
+    liabilities, and erased from the property equity chart, which then draws ten
+    years of debt-free equity on a house about to carry a mortgage.
+
+    Args:
+        resolved: The loan's
+            :class:`~app.services.loan_resolution.ResolvedLoan`.
+        as_of: The read pass's as-of, against which the loan's origination is
+            tested.
+
+    Returns:
+        ``True`` when the loan has originated and the ledger says nothing is owed.
+    """
+    if not _is_originated(resolved, as_of):
+        return False
+    return resolved.state.current_balance <= ZERO_MONEY
+
+
+def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
+    """Return whether the loan is retired AND has a confirmed payment behind it.
+
+    Strictly narrower than :func:`_is_retired`, and BUILT ON IT so the two cannot
+    drift.  The extra guard is a BADGING rule, not a debt rule: it keeps a
+    brand-new loan with a degenerate ``$0`` opening anchor -- a misconfiguration,
+    not an achievement -- from being badged "paid off" on the /savings tile.
 
     This replaced a ``resolve_loan(inputs, date.max)`` probe that could not have
     consulted the ledger even in principle -- ``confirmed_loan_view`` returns
@@ -155,32 +222,25 @@ def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
     debt card's total.  Both are regression-tested
     (``followup_redundant_loan_resolution.md``).
 
-    **A loan that has not ORIGINATED is not paid off; it has not been taken out.**
-    That guard is not defensive -- it is load-bearing, and this function is where
-    the origination fix would otherwise have CREATED a bug.  ``current_balance``
-    is now correctly ``0.00`` for a loan configured before it closes, and a
-    settled transfer INTO such a loan is constructible through the ordinary
-    ``transfer_service`` (a down payment, an earnest deposit), which satisfies the
-    confirmed-payment guard below.  Without this check an unclosed mortgage would
-    render RETIRED: badged paid off, dropped from the debt card's total, and gone
-    from the Horizon's liabilities.  The confirmed-payment guard alone was assumed
-    to cover this and does not.
+    **Do NOT use this to decide whether a loan has a debt line** -- that is
+    :func:`_is_retired`.  A mortgage paid off by a LUMP SUM recorded as a balance
+    true-up has no payment rows, so it reads ``False`` here while owing ``$0.00``.
+    Charting on this predicate drew **$197,049.32** of phantom debt for such a
+    loan (its zero balance means an EMPTY schedule, so the equity chart's
+    back-projection clip admitted its entire contractual walk), beside an equity
+    hero correctly reporting ``$0.00`` on the same page.
 
     Args:
         resolved: The loan's
             :class:`~app.services.loan_resolution.ResolvedLoan`.
-        as_of: The read pass's as-of, against which the loan's origination is
-            tested.
+        as_of: The read pass's as-of.
 
     Returns:
-        ``True`` when the loan has originated, the ledger says nothing is owed,
-        and at least one payment is confirmed.
+        ``True`` when the loan is retired and at least one payment is confirmed.
     """
-    if not _is_originated(resolved, as_of):
+    if not _is_retired(resolved, as_of):
         return False
-    if not any(p.is_confirmed for p in resolved.context.payments):
-        return False
-    return resolved.state.current_balance <= ZERO_MONEY
+    return any(p.is_confirmed for p in resolved.context.payments)
 
 
 def loan_ledger_domain(
@@ -223,6 +283,6 @@ def loan_ledger_domain(
     from app.services.loan_posting_service import confirmed_loan_ledger_domain
 
     _require_scenario(ctx)
-    if ctx.loan(account) is None:
+    if ctx.resolved_loan(account) is None:
         return None
     return confirmed_loan_ledger_domain(account.id, ctx.scenario.id)

@@ -1,8 +1,8 @@
 # Fail-loud ledger authority: delete the schedule's answer for the past
 
-**Status: C1 + C1b + C2 + C2b DONE (2026-07-13); FU-4 FIXED. C3-C6 pending. R5 -> FU-7 (its own
-arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose adversarial review
-(2026-07-13) produced the findings below. Prerequisite reading:
+**Status: C1 + C1b + C2 + C2b + C3 DONE (2026-07-13); FU-4 FIXED. C3b, C3c, C4-C6 pending. R5 ->
+FU-7 (its own arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose
+adversarial review (2026-07-13) produced the findings below. Prerequisite reading:
 `recurring_loan_balance_root_cause.md` (the design rule this plan finally enforces),
 `implementation_plan_loan_read_switch.md` (which made the loan's PAST ledger-authoritative), and
 `followup_debt_schedule_attribute_fence.md`.
@@ -11,8 +11,8 @@ arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose adv
 
 ## 0. Resuming this arc (read this first)
 
-**Shipped on `dev`, in order:** C1 `2a88456c` -> C1b `603aea73` -> C2 `def3c8ff` -> C2b `9ea61f8a`.
-Nothing is on `main` yet. Suite 7386, `pylint app/` 10.00 with zero findings.
+**Shipped on `dev`, in order:** C1 `2a88456c` -> C1b `603aea73` -> C2 `def3c8ff` -> C2b `9ea61f8a`
+-> C3. Nothing is on `main` yet. Suite 7387, `pylint app/` 10.00 with zero findings.
 
 **The four numbers that tell you the arc is behaving.** Re-check these against the dev clone before
 and after ANY further commit; if one moves, the commit is wrong, not the number:
@@ -24,11 +24,51 @@ and after ANY further commit; if one moves, the commit is wrong, not the number:
 | Year-end 2026 principal paid | **+$2,505.02** / **+$4,251.65** |
 | Scalar-vs-map divergences, 2 loans x 59 periods | **0** |
 
-**Next up: C3** (Section 5) -- fence `BalanceContext.loan` / `.loan_state`, the hole this whole arc's
-review started from. Then C4, C5, C6. C5 has grown: several of its "correct the false claims" items
-were already fixed in C2/C2b; re-verify each before rewriting it.
+### Next up: C3b, then C3c (developer-approved 2026-07-13)
 
-**Two things you must know before touching this code again:**
+**C3 closed the fence but NOT the hole it was written to close.** C3's own charter (Section 3) says:
+*"The resolver keeps its fallback; nothing can READ a balance out of it once C3 lands."* **That was
+false, and the plan never noticed, because the plan never looked at the loan detail page.**
+
+`app/routes/loan/` does not use `BalanceContext` or the seam at all. It resolves the loan itself
+(`_helpers.py:189`, `resolve_loan_seeded`, on its own `date.today()`) and renders
+`state.current_balance` -- **7 live reads** across `dashboard.py:259,482,511` and
+`calculators.py:198,405,422,432,495`. When the genesis ledger cannot answer, `resolve_loan` falls back
+to `_replay_from_anchor`, the walk this codebase's own comments call **"BLIND TO MONEY"** -- the same
+fallback C2b spent a commit deleting from the seam.
+
+**Measured on the dev clone** (Mortgage, genesis ledger deleted inside a rolled-back transaction):
+
+| producer | result |
+|---|---|
+| `balance_at.balance_at()` -- /savings, year-end, property, debt-strategy | **raises `LoanLedgerNotOpenedError`** |
+| `state.current_balance` -- what `/accounts/3` RENDERS | **$177,277.97** |
+
+Five surfaces fail loud; the sixth -- the most-used loan surface in the app -- fails silent. The number
+happens to be right today only because the user's true-ups re-anchor the replay. That is agreement by
+luck: the exact failure signature the whole arc exists to end.
+
+* **C3b** -- point the loan page's 7 balance reads at `balance_at.balance_at`, resolving through ONE
+  `BalanceContext` so the page does not resolve the loan twice (the DRY constraint). A broken loan then
+  fails loud on EVERY surface. **Developer ruling 2026-07-13: raise everywhere, no repair path.** A
+  broken loan is not a legitimate state (params-create opens the ledger in the same transaction; the
+  Step-4 migration backfilled every existing loan), so a loud 500 naming the repair
+  (`sync_loan_postings_all_scenarios`) beats a plausible wrong number on a mortgage.
+* **C3c** -- **delete `LoanState.current_balance`.** Once C3b lands it has exactly TWO readers, both
+  in-cluster (`net_worth_kernel._projection_seed`, `balance_at._loan_figures._is_retired`). Deleting it
+  means no module -- allowlisted or not -- can read a loan balance off a resolver bundle again: closed
+  by CONSTRUCTION, not by policing, which is the standard the rest of this arc holds itself to
+  (`LoanFigures`, `debt_schedule_rows`, `SecuredLoanSeries` all carry no balance for exactly this
+  reason). `ResolvedLoan` carries the `ConfirmedLedgerView` it was resolved with instead, which also
+  kills a redundant second ledger read the seam does today. Cost: 29 test assertions re-pointed.
+  **Design detail still to settle:** what a ROWS-ONLY consumer (`debt_schedule_rows`, used by the
+  year-end interest section and the trend's honest-history gate) does for a broken loan -- it needs no
+  balance, so it must not be made to raise for one.
+
+Then C4, C5, C6. C5 has grown: several of its "correct the false claims" items were already fixed in
+C2/C2b/C3; re-verify each before rewriting it.
+
+**Three things you must know before touching this code again:**
 
 1. **`app/services/net_worth_kernel.py` is at EXACTLY its 1000-line ceiling.** The next addition
    needs the loan cluster extracted to its own module (see C2's AS BUILT residue note).
@@ -37,6 +77,11 @@ were already fixed in C2/C2b; re-verify each before rewriting it.
    is latent on real data (both loans carry ZERO past-dated unconfirmed rows -- verified) and LIVE in
    the suite. **The obvious fix was tried and MEASURED: it breaks 26 tests and silently drops a
    payment the user has planned.** Do not attempt it without reading FU-7 in full.
+3. **A DRY refactor of a PREDICATE can move money.** C3 collapsed two "this loan is done" tests into
+   one and drew **$197,049.32** of phantom debt on a paid-off mortgage (see C3's AS BUILT). The
+   instinct was right; the predicate was wrong. When two rules look like duplicates, prove they answer
+   the SAME question before merging them -- and if they do not, make one BUILD ON the other rather than
+   sit beside it.
 
 **The process lesson this arc paid for twice, stated so it is not paid for a third time.** The C2
 design was reasoned from reading the code; four throwaway probes against the RUNNING code then found
@@ -870,9 +915,93 @@ already made. That touches the W9906 `_ENGINE_CLUSTER_MODULES` list.
   * The cross-page oracle gains the `cross_page_loan_unpaid_ctx` fixture from C1.
   * A not-yet-originated loan does NOT raise (the regression guard on 3a's ruling).
 
-### C3 -- `fix(balance): fence the context's loan handle; a route cannot hold a LoanState`
+### C3 -- `fix(balance): fence the context's loan handle; a route cannot hold a LoanState` -- **DONE**
 
 **Closes 2b and 2c.**
+
+**AS BUILT (differs from the plan as written -- read this before C3b).**
+
+**All three of the plan's fence claims were PROBE-VERIFIED against the running gate before any code
+was written, and all three held**: a route reading `ctx.loan_state(account).current_balance`, a new
+public `loan_balance_right_now()` in `loan_resolution`, and a new public method on `BalanceContext`
+each rated **10.00/10**. After C3 each is a build failure (negative-controlled, all three fire).
+
+* **`BalanceContext.loan_state` was DELETED, not renamed.** It had **zero callers** (verified across
+  `app/`, `tests/`, `tools/`, `scripts/`, templates). Its entire purpose was to hand a consumer the
+  `LoanState` this fence exists to keep out of consumer hands. Renaming it would have preserved a
+  hole nobody was using.
+* `BalanceContext.loan` -> `resolved_loan`. The rename is load-bearing, not cosmetic:
+  `_called_name_in` matches a call's ATTRIBUTE name (`_common.py:31`), so a distinctive name is what
+  makes it catchable, where the generic `loan` would collide with unrelated code.
+* **A FOURTH fenced call surface, not an addition to the resolver's**: `_CONTEXT_LOAN_PRODUCERS` with
+  its own, deliberately NARROWER allowlist (`balance_at` / `net_worth_kernel` /
+  `resolution_context`). `loan_payment_service`, `loan_recurrence_sync`, `_transfer_loan_posting` and
+  `app.routes.loan` may resolve a loan directly -- they need the rich primitives -- but none of them
+  may reach into a READ PASS's memo. Pinned as genuinely different sets by
+  `test_flags_context_loan_handle_from_a_loan_resolver_module`.
+* **W9909 now classifies METHODS** (`_is_public_export_surface`). The old `visit_functiondef` returned
+  early unless the parent was a Module, so no method was ever classified -- which is precisely what let
+  `BalanceContext.loan` become a hole. The walk is up the whole ANCESTOR CHAIN, not a fixed two-level
+  test: a two-level test drops a method of a nested class, and a bare `parent is Module` test drops a
+  function defined under a module-level `if`/`try`. Neither shape exists in a fenced module today --
+  and "it cannot happen today" is the exact reasoning that produced holes 2b and 2c, so both are
+  tested.
+* **The registry-vs-reality test shared the checker's blind spot.**
+  `test_classification_sets_match_the_real_fenced_modules` walked only `tree.body`, so it could not
+  see a method either -- a guard that shares the bug it guards against. It now calls the checker's OWN
+  `_is_public_export_surface` rather than re-implementing the rule (a second copy that can drift).
+* `_FENCED_MODULE_RULINGS` gains `app.services.loan_resolution` and `app.services.resolution_context`
+  (`_LOAN_RESOLVER_DEFINING_MODULES`), closing 2c.
+* `LoanFigures` gains `is_arm` (so `/debt-strategy` stops holding a `ResolvedLoan` for one boolean).
+* The property equity chart's `SecuredLoanSeries` assembly MOVED from `app/routes/accounts/detail.py`
+  into the seam as `balance_at.secured_loan_series(property_account, ctx)`. The DTO moved with it
+  (`balance_at/_secured_debt.py`); `property_equity_chart` imports it FROM the seam (consumer -> seam,
+  the correct direction -- verified acyclic). The DTO now carries `account_id` + rows + `is_retired`
+  and **no balance at all**. The route holds no resolver bundle.
+
+**The adversarial review found ONE CRITICAL REGRESSION C3 CREATED, and it is the lesson of this
+commit.** The first cut collapsed the chart's `is_retired` (`is_originated AND balance <= 0`) onto the
+seam's `is_paid_off` -- which ALSO requires a confirmed payment -- reasoning that two predicates for
+"this loan is done" was the duplication the arc exists to delete. **The DRY instinct was right and the
+predicate was wrong.** A mortgage paid off by a LUMP SUM recorded as a balance true-up has no payment
+rows, so `is_paid_off` is `False`; the chart therefore charted it, and because a zero-balance loan
+resolves to an EMPTY schedule, the back-projection clip (FU-8) then admitted its entire 360-row
+contractual walk. Measured, on the running code:
+
+| | |
+|---|---|
+| equity hero | `total_debt $0.00`, `equity $400,000.00` |
+| equity chart, SAME PAGE | `debt[today] $197,049.32`, `equity[today] $202,950.68` |
+
+Two producers, one page, **$197,049.32** apart -- the exact failure class this arc exists to end,
+reintroduced by the commit that claims to end it.
+
+**The fix keeps ONE definition and makes it the right one.** `LoanFigures.is_retired` (originated +
+ledger balance <= 0) is THE rule for "does this loan have a debt line"; `is_paid_off` is now **built on
+it** (`is_retired AND has-a-confirmed-payment`) rather than sitting beside it, so the two cannot drift.
+The confirmed-payment guard is a BADGING rule -- do not congratulate a degenerate `$0`-anchor loan --
+and is documented as such. Both guards are negative-controlled with a clean partition: charting on
+`is_paid_off` reds the new lump-sum test; deleting the origination guard from `_is_retired` reds the
+chart test AND the earnest-deposit test. Neither is vacuous.
+
+**Four more false docstring claims the review proved** (this project treats a false docstring as a
+defect), all corrected: `build_property_equity_chart`'s own contract still said the series carries a
+`current_balance` and that "a loan with a zero balance today is paid off and is dropped here" -- the
+defect, stated as the contract; the new `Raises:` on `resolve_home_equity` attributed the no-baseline
+raise to `loan_figures`, which carries no such guard (it comes from `balance_at.balance_at`, and only
+when the Property secures a configured loan); the seam's `__init__` said "Three shapes" over five and
+listed a dependency set that no longer matched; and `_secured_debt` claimed to be "the last route-held
+`ResolvedLoan` in the app", which `app/routes/loan/` flatly contradicts (that is C3b).
+
+**Verified:** full suite **7387 passed** (7386 + the new regression guard); `pylint app/` 10.00/10 with
+the full `--fail-on` set, zero findings; `pylint tools/pylint/shekel_checkers/` 10.00/10; checker unit
+tests **158**. Dev clone unmoved to the cent (Mortgage **$177,277.97**, Van Loan **$15,663.59**,
+year-end **+$2,505.02** / **+$4,251.65**, 118 scalar-vs-map checks / 0 divergences). Live-rendered
+against the clone: the real property page's chart and equity hero both report **$177,277.97**.
+
+---
+
+**The plan as originally written (kept for the record):**
 
 * `resolution_context.py` -- rename `BalanceContext.loan` to `resolved_loan` and `.loan_state` to
   `resolved_loan_state`. The rename is load-bearing, not cosmetic: `_called_name_in` matches the
@@ -1128,6 +1257,44 @@ The fix needs a design decision, which is why it is not folded into C2:
 
 Measure the error against real data before designing it, and note the overlap with FU-2 -- both are
 "what does a loan's history look like before we started tracking it".
+
+### FU-8 -- An empty schedule makes the back-projection clip admit the loan's WHOLE contractual walk
+
+**Found 2026-07-13 by C3's adversarial review, while measuring C-1. PRE-EXISTING (the route helper
+C3 replaced carried the identical clip, verbatim); NOT caused by C3, and C3 does not make it worse.
+It is currently UNREACHABLE, and that is the entire problem: it is a loaded gun whose safety is a
+predicate.**
+
+`balance_at/_secured_debt.secured_loan_series` clips the contractual back-projection to the months
+before the resolved schedule begins:
+
+```python
+tracking_start = schedule[0].payment_date if schedule else None
+back_projection = [r for r in full_contractual
+                   if tracking_start is None or r.payment_date < tracking_start]
+```
+
+When the schedule is EMPTY there is no `tracking_start`, so the predicate admits **every** row -- the
+loan's entire origination-to-payoff contractual walk, presented as its pre-tracking estimate. A
+$200,000 / 360-month mortgage yields 360 rows of fabricated debt.
+
+**Reachable only if a loan with an empty schedule is ever CHARTED.** Today it is not: an empty
+schedule means a zero balance, which means `is_retired`, which drops the loan. That is exactly how
+C3 shipped the C-1 phantom into review -- the moment the drop predicate was (wrongly) narrowed to
+`is_paid_off`, the loan was charted, the clip fired, and the chart drew **$197,049.32** of debt
+beside an equity hero reporting `$0.00`. The clip did not change; only its guard did.
+
+**Why it is not fixed here, and what the fix needs.** The obvious fix ("empty schedule -> empty
+back_projection") is NOT obviously right. There is a second shape with an empty schedule: a loan PAST
+MATURITY that still owes a balance (a balloon). It is not retired, so it IS charted -- and for it the
+contractual walk is arguably the only history estimate available. Emptying the back-projection would
+leave it charted with NO rows at all, which `_axis_span` may not survive. **Measure that shape before
+designing.** Two candidate answers, and the choice is a modelling decision, not a seam one:
+
+* clip the back-projection to the ledger's DOMAIN (`balance_at.loan_ledger_domain`), so the estimated
+  tier can never assert a balance for a date the ledger can actually answer -- this also subsumes
+  FU-2; or
+* make an empty schedule yield an empty back-projection, and give the balloon shape its own rule.
 
 ### FU-2 -- The property equity chart draws its confirmed past from schedule rows, not the ledger
 

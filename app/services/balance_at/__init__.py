@@ -37,7 +37,7 @@ already build on.  Centralising the dispatch the two existing dispatchers
 duplicate is the whole point: a third copy is exactly the duplication this
 work exists to kill.
 
-**Three shapes, one seam.**
+**Five shapes, one seam.**
 
 * The KIND-CORRECT entries (:func:`balance_map`, :func:`build_maps`,
   :func:`balance_at`, plus the investment projection-input accessors
@@ -62,6 +62,17 @@ work exists to kill.
   the shape a long-horizon liability band needs, which neither the period-keyed
   maps nor the scalar can serve without re-resolving each loan per date.  See
   :mod:`._liability`.
+* The LOAN-FIGURES entries (:func:`loan_figures`, :func:`loan_ledger_domain`)
+  answer everything a loan tile wants BESIDE its balance -- the payment, the rate,
+  the payoff date, whether it is retired -- and deliberately carry NO balance, so a
+  consumer holding them cannot render a wrong one.  ``loan_ledger_domain`` reports
+  where the confirmed ledger BEGINS, so a caller measuring a change across a window
+  never spends a pre-ledger ``$0.00`` as money.  See :mod:`._loan_figures`.
+* The SECURED-DEBT entry (:func:`secured_loan_series`) packs each loan a property
+  secures into the rows its equity chart draws a debt line from.  That line is a
+  balance-at-T series, and the assembly used to live in the property ROUTE, which
+  had to hold a whole ``ResolvedLoan`` to do it -- one attribute read from an
+  unfenced loan balance.  See :mod:`._secured_debt`.
 
 Every family routes through this one package, so no screen reaches a producer
 directly (the W9906 ``shekel-balance-producer-bypass`` fence).
@@ -77,11 +88,15 @@ Dependency direction (SOLID).  Consumers (routes, savings, year-end,
 dashboards) depend on this seam; the seam depends only on the engine cluster
 (``net_worth_kernel`` / ``net_worth_investment`` / ``account_projection`` /
 ``balance_resolver`` / ``daily_balance_series`` / ``projection_inputs`` /
-``income_service`` / ``pay_period_service``) and the models -- never a consumer
-package.  Inside the package the direction is
-``_grid -> {_cash_flow, _kind_correct} -> _inputs`` and ``_liability -> _inputs``
--- a DAG with ``_inputs`` as the single leaf, so no view module imports a
-sibling that imports it back.
+``income_service`` / ``pay_period_service``), the LOAN cluster it composes the
+loan shapes from (``resolution_context`` / ``loan_resolution`` / ``loan_loaders``
+/ ``amortization_engine``, plus ``loan_posting_service`` behind a lazy import),
+and the models -- never a consumer package.  ``property_equity_chart`` and
+``home_equity_service`` import FROM here, not the other way round.  Inside the
+package the direction is
+``_grid -> {_cash_flow, _kind_correct} -> _inputs``, ``_liability -> _inputs``,
+and ``_secured_debt -> {_loan_figures, _inputs}`` -- a DAG with ``_inputs`` as
+the single leaf, so no view module imports a sibling that imports it back.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
@@ -116,6 +131,7 @@ from ._kind_correct import (
 )
 from ._liability import liability_owed_at_dates
 from ._loan_figures import LoanFigures, loan_figures, loan_ledger_domain
+from ._secured_debt import SecuredLoanSeries, secured_loan_series
 
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
@@ -129,6 +145,7 @@ __all__ = [
     "ZERO",
     "GridBalanceView",
     "LoanFigures",
+    "SecuredLoanSeries",
     "_AssembledInputs",
     "_account_balance_map",
     "_accruing_grid_view",
@@ -146,4 +163,5 @@ __all__ = [
     "liability_owed_at_dates",
     "loan_figures",
     "loan_ledger_domain",
+    "secured_loan_series",
 ]

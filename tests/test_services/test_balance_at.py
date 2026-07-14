@@ -2556,7 +2556,7 @@ class TestLoanNotYetOriginated:
             periods = seed_periods
             acct = self._upcoming_mortgage(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
-            resolved = bctx.loan(acct)
+            resolved = bctx.resolved_loan(acct)
 
             assert resolved.state.current_balance == self.ZERO
             # The schedule is intact: 360 contractual rows from the first payment.
@@ -2570,12 +2570,19 @@ class TestLoanNotYetOriginated:
     ):
         """A loan that has not originated is NOT retired -- the R3 guard.
 
-        ``_is_paid_off`` is ``(any confirmed payment) AND (current_balance <= 0)``.
-        Zeroing ``current_balance`` (above) satisfies the second clause, and a
+        ``_is_retired`` is ``is_originated AND (current_balance <= 0)``, and
+        ``_is_paid_off`` is that PLUS "the ledger shows a confirmed payment".
+        Zeroing ``current_balance`` (above) satisfies the balance clause, and a
         settled transfer INTO the loan -- a down payment, an earnest deposit --
-        satisfies the first through the ordinary ``transfer_service``.  Without the
-        origination guard an unclosed mortgage would render RETIRED: badged paid
-        off, dropped from the debt card's total, gone from the Horizon.
+        satisfies the payment clause through the ordinary ``transfer_service``.
+        **Only the origination guard is left standing between an unclosed mortgage
+        and RETIRED**: badged paid off, dropped from the debt card's total, gone
+        from the Horizon, and erased from the property equity chart.
+
+        This is the ONE shape in which that guard is the guard doing the work --
+        every other unclosed-mortgage test has no confirmed payment, so the payment
+        clause would carry it regardless.  NEGATIVE CONTROL: delete the
+        ``_is_originated`` check from ``_is_retired`` and this test goes red.
 
         This bug did not exist before the origination fix; the fix CREATES it, and
         this is the test that keeps it dead.
@@ -2600,12 +2607,16 @@ class TestLoanNotYetOriginated:
             db.session.commit()
 
             bctx = BalanceContext.build(seed_user["user"].id)
-            resolved = bctx.loan(acct)
+            resolved = bctx.resolved_loan(acct)
             # The two clauses that would otherwise conspire.
             assert any(p.is_confirmed for p in resolved.context.payments)
             assert resolved.state.current_balance == self.ZERO
 
-            assert balance_at.loan_figures(acct, bctx).is_paid_off is False
+            figures = balance_at.loan_figures(acct, bctx)
+            assert figures.is_paid_off is False
+            # And the chart's drop rule holds the same line, from the same guard:
+            # an unborrowed mortgage is not RETIRED either, so it stays charted.
+            assert figures.is_retired is False
 
 
 class TestUpcomingLoanDoesNotCorruptTheSurfaces:
@@ -2677,7 +2688,7 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             def _ad(acct):
                 figures = balance_at.loan_figures(acct, bctx)
                 return {
-                    "loan_params": bctx.loan(acct).params,
+                    "loan_params": bctx.resolved_loan(acct).params,
                     "current_balance": balance_at.balance_at(
                         acct, bctx, bctx.as_of),
                     "is_paid_off": figures.is_paid_off,
@@ -2747,21 +2758,36 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
         omitting a real liability for its entire horizon.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services import property_equity_chart
-        from app.routes.accounts.detail import _secured_loan_series
+        from app.enums import AcctTypeEnum
+        from app.services import balance_at, property_equity_chart
+        from tests._test_helpers import create_account_of_type
 
         with app.app_context():
             periods = seed_periods
             _auto, mortgage = self._both_loans(seed_user, db.session, periods)
-            bctx = BalanceContext.build(seed_user["user"].id)
+            # The mortgage is secured BY a Property, as production's is: the seam
+            # walks ``property_account.secured_loans``, so the fixture has to build
+            # the real collateral link rather than hand the producer a list.
+            house = create_account_of_type(
+                seed_user, db.session, AcctTypeEnum.PROPERTY.value, "House",
+                anchor_balance=Decimal("400000.00"),
+            )
+            db.session.flush()
+            mortgage.collateral_account_id = house.id
+            db.session.commit()
 
-            series = _secured_loan_series([mortgage], bctx)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            series = balance_at.secured_loan_series(house, bctx)
             assert len(series) == 1
             loan = series[0]
-            # It owes nothing today -- and it is NOT retired.
-            assert loan.current_balance == Decimal("0.00")
-            assert loan.is_originated is False
+            assert loan.account_id == mortgage.id
+            # It owes nothing today -- and it is emphatically NOT done.  The seam's
+            # ONE predicate carries the origination guard; the series no longer
+            # carries a balance for the chart to re-derive "retired" from.
             assert loan.is_retired is False
+            assert balance_at.balance_at(
+                mortgage, bctx, bctx.as_of,
+            ) == Decimal("0.00")
 
             chart = property_equity_chart.build_property_equity_chart(
                 series, Decimal("400000.00"), Decimal("0.03000"), bctx.as_of,

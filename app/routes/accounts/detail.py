@@ -65,10 +65,6 @@ from app.services import (
     pay_period_service,
     property_equity_chart,
 )
-from app.services.loan_loaders import load_rate_changes
-from app.services.loan_resolution import (
-    contractual_schedule_from_origination,
-)
 from app.services.resolution_context import BalanceContext
 from app.utils.account_validation import (
     _appreciation_params_schema,
@@ -633,72 +629,10 @@ def update_interest_params(account_id):
 # ── Property (physical-asset) Detail & Params ─────────────────────
 
 
-def _secured_loan_series(
-    loan_accounts: list,
-    balance_ctx: BalanceContext,
-) -> list[property_equity_chart.SecuredLoanSeries]:
-    """Pack each secured loan's rows for the equity chart.
-
-    For every secured loan, builds its pre-tracking contractual back-projection
-    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`,
-    clipped to the months before the resolved schedule begins) and packs it with
-    the resolved schedule, the loan's balance today, and whether it exists yet.
-    Every figure comes from the read pass's ONE memoized resolution, so the chart
-    cannot disagree with the equity hero beside it.
-
-    **Neither "has it originated" nor "is it retired" is decided here.**  The first
-    is the seam's
-    (:attr:`~app.services.balance_at.LoanFigures.is_originated`); the second is
-    :attr:`~app.services.property_equity_chart.SecuredLoanSeries.is_retired`, which
-    the chart producer applies.  This route and that producer each used to carry
-    their own copy of a ``current_balance <= 0`` test, and two copies of a rule is
-    how BOTH came to drop a mortgage that closes next month -- it owes ``$0.00``
-    today, which is true, and it is not remotely retired.  Packing every loan and
-    letting the one predicate decide costs a back-projection walk for a paid-off
-    loan and removes a whole class of divergence.
-
-    Args:
-        loan_accounts: The Property's secured loan accounts.  A non-loan (no
-            ``LoanParams``) is skipped, as it is for the equity hero.
-        balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`.
-
-    Returns:
-        One :class:`~app.services.property_equity_chart.SecuredLoanSeries` per
-        configured secured loan.
-    """
-    series: list[property_equity_chart.SecuredLoanSeries] = []
-    for loan in loan_accounts:
-        resolved = balance_ctx.loan(loan)
-        if resolved is None:
-            continue
-        figures = balance_at.loan_figures(loan, balance_ctx)
-        state = resolved.state
-        full_contractual = contractual_schedule_from_origination(
-            resolved.params, load_rate_changes(resolved.params.account_id),
-        )
-        tracking_start = (
-            state.schedule[0].payment_date if state.schedule else None
-        )
-        back_projection = [
-            row for row in full_contractual
-            if tracking_start is None or row.payment_date < tracking_start
-        ]
-        series.append(property_equity_chart.SecuredLoanSeries(
-            back_projection=back_projection,
-            schedule=state.schedule,
-            current_balance=balance_at.balance_at(
-                loan, balance_ctx, balance_ctx.as_of,
-            ),
-            is_originated=figures.is_originated,
-        ))
-    return series
-
-
 def _property_chart_context(
     params: AssetAppreciationParams,
     equity: home_equity_service.HomeEquity,
-    loan_accounts: list,
+    property_account: Account,
     balance_ctx: BalanceContext,
 ) -> dict[str, object]:
     """Serialize the property equity-over-time chart for the detail band.
@@ -711,9 +645,11 @@ def _property_chart_context(
     whose value has not been set yet).  Otherwise the market-value /
     secured-debt / equity series come from
     :func:`app.services.property_equity_chart.build_property_equity_chart`
-    (fed the loans the route already resolved once, so the chart and the equity
-    hero read one resolution), floated here into the ``data-chart`` JSON the
-    template hands to ``property_detail.js``; ``chart_state`` drives the caption
+    (fed by the seam's :func:`app.services.balance_at.secured_loan_series`, which
+    packs each loan's rows off the read pass's ONE memoized resolution -- the same
+    one the equity hero reads -- so the chart and the hero cannot disagree, and
+    this route never holds a resolver bundle), floated here into the ``data-chart``
+    JSON the template hands to ``property_detail.js``; ``chart_state`` drives the caption
     variant (``standard`` / ``zero_rate`` / ``no_loans``), ``today_index`` the
     Today boundary, and ``debt_tier`` the per-month estimated / confirmed /
     projected styling.  ``has_estimated_debt`` -- ``True`` when any month is the
@@ -726,8 +662,8 @@ def _property_chart_context(
         equity: The :class:`~app.services.home_equity_service.HomeEquity`
             snapshot (its ``market_value`` gates ``has_equity_chart`` and is the
             chart's anchor).
-        loan_accounts: The Property's secured loan accounts (each resolved once
-            for this load through *balance_ctx*, shared with the equity hero).
+        property_account: The Property account; the seam reads its
+            ``secured_loans`` to pack the chart's debt series.
         balance_ctx: The read pass's
             :class:`~app.services.resolution_context.BalanceContext`; its ``as_of``
             is the chart's compounding origin.
@@ -747,7 +683,7 @@ def _property_chart_context(
             "has_estimated_debt": False,
         }
     chart = property_equity_chart.build_property_equity_chart(
-        _secured_loan_series(loan_accounts, balance_ctx),
+        balance_at.secured_loan_series(property_account, balance_ctx),
         equity.market_value,
         params.annual_appreciation_rate,
         balance_ctx.as_of,
@@ -822,9 +758,7 @@ def property_detail(account_id):
         params=params,
         equity=equity,
         secured_loans=account.secured_loans,
-        **_property_chart_context(
-            params, equity, account.secured_loans, balance_ctx,
-        ),
+        **_property_chart_context(params, equity, account, balance_ctx),
     )
 
 

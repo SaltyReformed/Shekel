@@ -23,6 +23,7 @@ from app.models.ref import AccountType
 from app.routes.accounts import detail as property_detail_module
 from app.services import (
     account_service,
+    balance_at,
     home_equity_service,
     property_equity_chart,
 )
@@ -31,6 +32,7 @@ from app.services.loan_resolution import (
     contractual_schedule_from_origination,
     resolve_account_loan,
 )
+from app.services.resolution_context import BalanceContext
 from app.utils.dates import add_months
 from app.utils.money import round_money
 from tests._test_helpers import (
@@ -38,6 +40,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     freeze_today,
     insert_tracking_start_event,
+    insert_trueup_event,
 )
 
 
@@ -270,29 +273,37 @@ class TestPropertyDeletion:
 _FOUR_HUNDRED_K = Decimal("400000.00")
 
 
-def _series_for(loan, scenario_id, today):
-    """Build one loan's ``SecuredLoanSeries`` the way the route does.
+def _series_for(prop, loan, today):
+    """Return *loan*'s ``SecuredLoanSeries`` through the PRODUCTION seam.
 
-    Resolves the loan once and clips its contractual-from-origination schedule
-    to the months before the resolved schedule begins (the pre-tracking
-    back-projection), mirroring ``detail._secured_loan_series`` so the producer
-    tests feed it the rows production feeds it.
+    Calls :func:`app.services.balance_at.secured_loan_series` -- the same entry
+    the property route calls -- and picks out *loan*'s series, so the producer
+    tests are fed the rows production feeds it.
+
+    It used to hand-roll the assembly (``resolve_account_loan`` + a clipped
+    ``contractual_schedule_from_origination`` + ``state.current_balance``), which
+    is a verbatim re-implementation of the route helper it was mirroring.  A
+    fixture that re-implements the code it is testing cannot catch that code being
+    wrong -- the founding lesson of this arc -- and it went stale the moment the
+    assembly moved into the seam.
+
+    *today* is taken, not re-derived: the caller holds the frozen ``today`` it
+    also passes to ``build_property_equity_chart``, and building the context off an
+    independent ``date.today()`` would resolve the series at one date while the
+    chart was built at another -- silently, and only correct by the grace of
+    ``freeze_today`` happening to patch ``resolution_context`` too.
+
+    Args:
+        prop: The Property account the loan is secured by.
+        loan: The secured loan account whose series to return.
+        today: The read pass's as-of -- the SAME date the caller charts at.
+
+    Returns:
+        The loan's :class:`~app.services.balance_at.SecuredLoanSeries`.
     """
-    loan_params, state = resolve_account_loan(loan.id, scenario_id, today)
-    full_contractual = contractual_schedule_from_origination(
-        loan_params, load_rate_changes(loan.id),
-    )
-    tracking_start = state.schedule[0].payment_date if state.schedule else None
-    back_projection = [
-        row for row in full_contractual
-        if tracking_start is None or row.payment_date < tracking_start
-    ]
-    return property_equity_chart.SecuredLoanSeries(
-        back_projection=back_projection,
-        schedule=state.schedule,
-        current_balance=state.current_balance,
-        is_originated=True,
-    )
+    ctx = BalanceContext.build(prop.user_id, as_of=today)
+    series = balance_at.secured_loan_series(prop, ctx)
+    return next(sec for sec in series if sec.account_id == loan.id)
 
 
 def _expected_value(market_value, rate, month_date, today):
@@ -335,6 +346,81 @@ class TestPropertyEquityChartProducer:
                 _FOUR_HUNDRED_K, Decimal("0.03000"), add_months(today, 1), today,
             )
 
+    def test_lump_sum_payoff_via_trueup_drops_the_loan_end_to_end(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan paid off by a LUMP SUM (a true-up, no payment rows) is dropped.
+
+        THE regression guard for the $197,049.32 phantom, and it runs the whole
+        production path: the real collateral link, the real seam entry, the real
+        chart, and the real equity hero -- not a hand-built series.
+
+        The chart's drop rule is the seam's ``is_retired`` (originated + ledger
+        balance <= 0).  It is deliberately NOT ``is_paid_off``, which ALSO demands a
+        confirmed payment -- a BADGING guard.  A mortgage paid off by a single lump
+        sum recorded as a balance true-up has NO payment rows, so ``is_paid_off`` is
+        False.  Charting on that predicate charted the loan; and since a
+        zero-balance loan resolves to an EMPTY schedule, the seam's back-projection
+        clip (``tracking_start is None`` -> admit everything) then handed the chart
+        its ENTIRE contractual walk.  Measured before the fix:
+
+            HERO  : total_debt $0.00        equity $400,000.00
+            CHART : debt[today] $197,049.32 equity[today] $202,950.68
+
+        Two producers, one page, $197,049.32 apart -- the exact failure this arc
+        exists to end.
+
+        NEGATIVE CONTROL: swap ``is_retired=figures.is_retired`` for
+        ``figures.is_paid_off`` in ``balance_at._secured_debt`` and this test fails
+        with a non-empty debt line.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.loan_params import LoanParams
+
+        with app.app_context():
+            today = date.today()
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Paid Off Mortgage",
+                principal=Decimal("200000.00"), term=360,
+                origination_date=add_months(today, -12), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            # The lump-sum payoff, recorded the way the UI records one: a balance
+            # true-up asserting $0.00.  No settled payment rows exist.
+            params = db.session.query(LoanParams).filter_by(
+                account_id=loan.id,
+            ).one()
+            insert_trueup_event(params, Decimal("0.00"))
+            db.session.commit()
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(loan, ctx)
+            # The ledger says the debt is gone...
+            assert balance_at.balance_at(loan, ctx, ctx.as_of) == Decimal("0.00")
+            assert figures.is_retired is True
+            # ...but there is no confirmed payment behind it, so it is not BADGED.
+            assert figures.is_paid_off is False
+
+            series = balance_at.secured_loan_series(prop, ctx)
+            assert len(series) == 1
+            assert series[0].is_retired is True
+
+            chart = property_equity_chart.build_property_equity_chart(
+                series, _FOUR_HUNDRED_K, Decimal("0.03000"), today,
+            )
+            # Dropped: the appreciation-only arc, no debt line at all.
+            assert chart.chart_state == property_equity_chart.CHART_STATE_NO_LOANS
+            assert chart.debt == []
+            assert chart.equity == []
+            # And the hero agrees, to the cent -- which is the whole point.
+            equity = home_equity_service.resolve_home_equity(prop, ctx)
+            assert equity.total_debt == Decimal("0.00")
+            assert equity.equity == _FOUR_HUNDRED_K
+
     def test_paid_off_loan_dropped_and_falls_back(
         self, app, db, seed_user, seed_periods_today,
     ):
@@ -356,13 +442,16 @@ class TestPropertyEquityChartProducer:
             )
             _params, state = resolve_account_loan(loan.id, scenario_id, today)
             assert state.schedule != []  # precondition: the schedule is NON-empty
-            paid_off = property_equity_chart.SecuredLoanSeries(
+            paid_off = balance_at.SecuredLoanSeries(
+                account_id=loan.id,
                 back_projection=[], schedule=state.schedule,
-                current_balance=Decimal("0.00"),
-                # Borrowed, and now owing nothing -- RETIRED.  A loan that has not
-                # been borrowed yet also owes $0.00 and must NOT be dropped; that
-                # is what ``is_originated`` separates.
-                is_originated=True,
+                # Borrowed, and now owing nothing -- RETIRED.  The seam's ONE
+                # predicate; a loan that has not been borrowed yet also owes $0.00
+                # but reads ``is_retired=False``, so it is NOT dropped.  The series
+                # no longer carries a balance for the chart to re-derive this from:
+                # two copies of that rule is how both the route and the producer
+                # came to drop an unclosed mortgage.
+                is_retired=True,
             )
 
             chart = property_equity_chart.build_property_equity_chart(
@@ -402,8 +491,8 @@ class TestPropertyEquityChartProducer:
             old.collateral_account_id = prop.id
             new.collateral_account_id = prop.id
             db.session.commit()
-            old_series = _series_for(old, scenario_id, today)
-            new_series = _series_for(new, scenario_id, today)
+            old_series = _series_for(prop, old, today)
+            new_series = _series_for(prop, new, today)
 
             chart = property_equity_chart.build_property_equity_chart(
                 [old_series, new_series], _FOUR_HUNDRED_K, Decimal("0"), today,
@@ -446,7 +535,7 @@ class TestPropertyEquityChartProducer:
             )
             loan.collateral_account_id = prop.id
             db.session.commit()
-            series = _series_for(loan, scenario_id, today)
+            series = _series_for(prop, loan, today)
 
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
@@ -481,7 +570,7 @@ class TestPropertyEquityChartProducer:
             )
             loan.collateral_account_id = prop.id
             db.session.commit()
-            series = _series_for(loan, scenario_id, today)
+            series = _series_for(prop, loan, today)
 
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
@@ -506,7 +595,7 @@ class TestPropertyEquityChartProducer:
             )
             loan.collateral_account_id = prop.id
             db.session.commit()
-            series = _series_for(loan, scenario_id, today)
+            series = _series_for(prop, loan, today)
 
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0"), today,
@@ -567,26 +656,15 @@ class TestPropertyEquityChartProducer:
             # confirmed schedule row IS the current balance the hero nets.
             assert last_confirmed.remaining_balance == state.current_balance
 
-            # Build the loan's series exactly as ``detail._secured_loan_series``
-            # does, off the one resolution.  The resolved schedule opens at the
-            # FIRST confirmed payment, so the months from origination to that
-            # payment become the estimated back-projection (a real, non-empty
-            # prefix here); the reconciliation still keys off the confirmed tier.
-            full_contractual = contractual_schedule_from_origination(
-                params, load_rate_changes(loan.id),
-            )
-            tracking_start = (
-                state.schedule[0].payment_date if state.schedule else None
-            )
-            back_projection = [
-                row for row in full_contractual
-                if tracking_start is None or row.payment_date < tracking_start
-            ]
-            series = property_equity_chart.SecuredLoanSeries(
-                back_projection=back_projection,
-                schedule=state.schedule,
-                current_balance=state.current_balance,
-                is_originated=True,
+            # The loan's series comes from the PRODUCTION seam
+            # (``balance_at.secured_loan_series``), which is what the property
+            # route calls.  The resolved schedule opens at the FIRST confirmed
+            # payment, so the months from origination to that payment become the
+            # estimated back-projection (a real, non-empty prefix here); the
+            # reconciliation still keys off the confirmed tier.
+            series = _series_for(prop, loan, today)
+            assert series.back_projection, (
+                "precondition: this loan has pre-tracking months to estimate"
             )
             equity = home_equity_service.compute_home_equity(
                 _FOUR_HUNDRED_K, [state.current_balance],
@@ -652,7 +730,7 @@ class TestPropertyEquityChartProducer:
             )
             db.session.commit()
 
-            series = _series_for(loan, scenario_id, today)
+            series = _series_for(prop, loan, today)
             assert series.back_projection, (
                 "a tracking-start loan must have a pre-tracking back-projection"
             )
@@ -723,10 +801,9 @@ class TestPropertyEquityChartProducer:
                 row_cls(add_months(today, -1), Decimal("900.00"), True),
                 row_cls(add_months(today, 1), Decimal("700.00"), True),
             ]
-            series = property_equity_chart.SecuredLoanSeries(
-                back_projection=[], schedule=schedule,
-                current_balance=Decimal("700.00"),
-                is_originated=True,
+            series = balance_at.SecuredLoanSeries(
+                account_id=1, back_projection=[], schedule=schedule,
+                is_retired=False,
             )
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0"), today,
@@ -762,10 +839,9 @@ class TestPropertyEquityChartProducer:
                 row_cls(today, Decimal("800.00"), False),
                 row_cls(add_months(today, 2), Decimal("600.00"), False),
             ]
-            series = property_equity_chart.SecuredLoanSeries(
-                back_projection=[], schedule=schedule,
-                current_balance=Decimal("800.00"),
-                is_originated=True,
+            series = balance_at.SecuredLoanSeries(
+                account_id=1, back_projection=[], schedule=schedule,
+                is_retired=False,
             )
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0"), today,

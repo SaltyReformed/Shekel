@@ -118,7 +118,9 @@ from .balance_seam import (
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
+    _LOAN_RESOLVER_DEFINING_MODULES,
     ShekelBalanceSeamChecker,
+    _is_public_export_surface,
 )
 from .disable_rationale import ShekelDisableRationaleChecker
 from .ledger_model_fence import (
@@ -151,6 +153,8 @@ __all__ = [
     "_LOAN_LEDGER_DEFINING_MODULES",
     "_LOAN_LEDGER_READER_MODULES",
     "_LOAN_LEDGER_READER_PRODUCERS",
+    "_LOAN_RESOLVER_DEFINING_MODULES",
+    "_is_public_export_surface",
     "_STATUS_SEAM_MODULES",
     "ShekelBalanceSeamChecker",
     "ShekelDisableRationaleChecker",

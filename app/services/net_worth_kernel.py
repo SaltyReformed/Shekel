@@ -198,7 +198,7 @@ def generate_debt_schedules(
     """
     schedules: dict[int, DebtSchedule] = {}
     for account in debt_accounts:
-        resolved = ctx.loan(account)
+        resolved = ctx.resolved_loan(account)
         if resolved is None:
             continue
         origination = resolved.params.origination_date

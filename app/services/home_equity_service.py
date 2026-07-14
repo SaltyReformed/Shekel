@@ -6,10 +6,10 @@ liabilities it secures) and its loan-to-value ratio, for the Property
 detail page now and the Net Worth Cockpit equity card after the rebuild.
 
 This module forks NO math.  The market value is the Property's user-set
-anchor balance and each securing loan's balance is the resolver-derived
-``LoanState.current_balance`` -- the same figures the debt card and the
-net-worth liability column read -- so the equity number can never disagree
-with the loan surfaces.  Equity itself is plain presentation arithmetic
+anchor balance and each securing loan's balance comes from the balance-at seam
+(:func:`app.services.balance_at.balance_at`) -- the same producer the debt card
+and the net-worth liability column read -- so the equity number can never
+disagree with the loan surfaces.  Equity itself is plain presentation arithmetic
 over those canonical inputs; the emergent net-worth sum in
 :mod:`app.services.net_worth_kernel` is untouched.
 
@@ -96,12 +96,16 @@ def resolve_home_equity(
     Market value is the Property's ``current_anchor_balance`` (the user's
     last-set valuation, the honest "as of today" figure -- the appreciation
     projection is a forward estimate, not a known present value).  Each loan in
-    ``property_account.secured_loans`` is read from the read pass's
-    :class:`~app.services.resolution_context.BalanceContext`, so its contribution
-    is the SAME ``LoanState.current_balance`` the debt card and the net-worth
-    liability column read -- one resolution, not a parallel one that has to
-    agree.  A linked account with no ``LoanParams`` row (not a configured loan)
-    contributes nothing.
+    ``property_account.secured_loans`` is valued through the balance-at seam off
+    the read pass's :class:`~app.services.resolution_context.BalanceContext`, so
+    its contribution is the SAME figure the debt card and the net-worth liability
+    column read -- one resolution, not a parallel one that has to agree.  A linked
+    account with no ``LoanParams`` row (not a configured loan) contributes
+    nothing; :func:`app.services.balance_at.loan_figures` is the configured-loan
+    test, since it is already a seam entry and already returns ``None`` for a
+    non-loan.  (It was ``ctx.loan(...) is None``, which handed this module a whole
+    ``ResolvedLoan`` -- and therefore an unfenced ``current_balance`` -- to answer
+    a yes/no question.)
 
     This module used to call :func:`resolve_account_loan` itself, which made the
     cockpit's equity card an independent, unfenced re-resolution of the mortgage
@@ -114,16 +118,26 @@ def resolve_home_equity(
             secures).
         ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
             (its scenario scopes the payment history; its ``as_of`` is the
-            resolver's now).  With no baseline scenario each secured loan still
-            resolves, from its anchor with no payment history, exactly as before.
+            resolver's now).
 
     Returns:
         A :class:`HomeEquity` snapshot for the Property.
+
+    Raises:
+        ValueError: When *ctx* has no baseline scenario AND the Property secures at
+            least one CONFIGURED loan -- :func:`app.services.balance_at.balance_at`
+            runs the seam's ``_require_scenario`` guard, and raises.  (The
+            configured-loan test above does not: ``loan_figures`` carries no such
+            guard, so a Property with no configured secured loan still resolves to
+            an all-market-value ``HomeEquity`` for a user with no baseline.)  An
+            earlier version of this docstring claimed each loan "still resolves ...
+            exactly as before" with no baseline; that has been false since
+            ``7b7c909b``, when the balance moved to the seam.
     """
     market_value = property_account.current_anchor_balance or ZERO
     balances: list[Decimal] = []
     for loan in property_account.secured_loans:
-        if ctx.loan(loan) is None:
+        if balance_at.loan_figures(loan, ctx) is None:
             continue                       # not a configured loan: no debt leg
         balances.append(balance_at.balance_at(loan, ctx, ctx.as_of))
     return compute_home_equity(market_value, balances)
