@@ -2660,13 +2660,23 @@ class TestLoanProjectedBalanceDispatcher:
     The savings dashboard's 3/6/12-month projected loan balances and
     the year-end net-worth / debt-progress liability columns both
     route through
-    :func:`app.services.account_projection.compute_loan_period_balance_map`.
+    :func:`app.services.account_projection.compute_forward_loan_period_balance_map`.
     The locked canonical is period-end-keyed -- the balance AFTER any
     payment due in the period containing the target date.  Pre-F-21
     the savings dashboard ran a parallel target-month-first walk over
     ``state.schedule`` (last row on-or-before
     ``date(target_y, target_m, 1)``) that produced cents-precise
     drift across the two surfaces.
+
+    These cases originally exercised ``compute_loan_period_balance_map``, which
+    C2b of the fail-loud arc DELETED: the ledger now owns every begun period, so a
+    schedule-only map has no caller and no right to answer.  Every semantic they
+    pin -- period-end keying, the pre-first-payment seed, the empty schedule, the
+    no-phantom-jump guarantee -- moved intact to the FORWARD producer, which is
+    what the surfaces actually call.  They are re-pointed at it; not one expected
+    number changed.  The synthetic rows carry ``is_confirmed=False`` because that
+    is what they always were: PROJECTED rows.  ``owed_from`` predates every period
+    here, so the origination guard never fires (these loans exist).
     """
 
     def test_dispatcher_returns_period_end_keyed_balance(self):
@@ -2693,21 +2703,24 @@ class TestLoanProjectedBalanceDispatcher:
         from types import SimpleNamespace
 
         from app.services.account_projection import (
-            compute_loan_period_balance_map,
+            compute_forward_loan_period_balance_map,
         )
 
         schedule = [
             SimpleNamespace(
                 payment_date=date(2026, 1, 15),
                 remaining_balance=Decimal("910.00"),
+                is_confirmed=False,
             ),
             SimpleNamespace(
                 payment_date=date(2026, 2, 15),
                 remaining_balance=Decimal("819.00"),
+                is_confirmed=False,
             ),
             SimpleNamespace(
                 payment_date=date(2026, 3, 15),
                 remaining_balance=Decimal("727.00"),
+                is_confirmed=False,
             ),
         ]
         periods = [
@@ -2731,8 +2744,9 @@ class TestLoanProjectedBalanceDispatcher:
             ),
         ]
 
-        result = compute_loan_period_balance_map(
+        result = compute_forward_loan_period_balance_map(
             schedule, periods, current_balance=Decimal("1000.00"),
+            owed_from=date(2020, 1, 1),
         )
 
         assert result[1] == Decimal("910.00")
@@ -2762,13 +2776,14 @@ class TestLoanProjectedBalanceDispatcher:
         from types import SimpleNamespace
 
         from app.services.account_projection import (
-            compute_loan_period_balance_map,
+            compute_forward_loan_period_balance_map,
         )
 
         schedule = [
             SimpleNamespace(
                 payment_date=date(2026, 1, 15),
                 remaining_balance=Decimal("910.00"),
+                is_confirmed=False,
             ),
         ]
         periods = [
@@ -2786,8 +2801,9 @@ class TestLoanProjectedBalanceDispatcher:
             ),
         ]
 
-        result = compute_loan_period_balance_map(
+        result = compute_forward_loan_period_balance_map(
             schedule, periods, current_balance=Decimal("1000.00"),
+            owed_from=date(2020, 1, 1),
         )
 
         assert result[1] == Decimal("1000.00")
@@ -2812,7 +2828,7 @@ class TestLoanProjectedBalanceDispatcher:
         from types import SimpleNamespace
 
         from app.services.account_projection import (
-            compute_loan_period_balance_map,
+            compute_forward_loan_period_balance_map,
         )
 
         current_balance = Decimal("15663.59")     # resolver balance today
@@ -2822,10 +2838,12 @@ class TestLoanProjectedBalanceDispatcher:
             SimpleNamespace(
                 payment_date=date(2026, 7, 22),
                 remaining_balance=Decimal("15205.63"),
+                is_confirmed=False,
             ),
             SimpleNamespace(
                 payment_date=date(2026, 8, 22),
                 remaining_balance=Decimal("14745.51"),
+                is_confirmed=False,
             ),
         ]
         # Periods 1 and 2 END before the 07-22 first payment; period 3 ends
@@ -2841,8 +2859,9 @@ class TestLoanProjectedBalanceDispatcher:
                             end_date=date(2026, 8, 26), period_index=4),
         ]
 
-        result = compute_loan_period_balance_map(
+        result = compute_forward_loan_period_balance_map(
             schedule, periods, current_balance=current_balance,
+            owed_from=date(2020, 1, 1),
         )
 
         # Pre-first-payment periods: the current balance, NOT $32,402.45.
@@ -2873,7 +2892,7 @@ class TestLoanProjectedBalanceDispatcher:
         from types import SimpleNamespace
 
         from app.services.account_projection import (
-            compute_loan_period_balance_map,
+            compute_forward_loan_period_balance_map,
         )
 
         periods = [
@@ -2891,8 +2910,9 @@ class TestLoanProjectedBalanceDispatcher:
             ),
         ]
 
-        result = compute_loan_period_balance_map(
+        result = compute_forward_loan_period_balance_map(
             [], periods, current_balance=Decimal("1234.56"),
+            owed_from=date(2020, 1, 1),
         )
 
         assert result[1] == Decimal("1234.56")

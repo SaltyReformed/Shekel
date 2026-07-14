@@ -47,14 +47,13 @@ from app.services import (
 from app.services.account_projection import (
     ZERO_MONEY,
     AccountProjectionKind,
-    balance_from_schedule_at_date,
     classify_account,
     compute_forward_loan_period_balance_map,
-    compute_loan_period_balance_map,
     forward_balance_at_date,
     splice_confirmed_and_projected_loan_balances,
 )
 from app.services.loan_resolution import ResolvedLoan
+from app.services.posting_reads import LoanLedgerNotOpenedError
 from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
 
@@ -393,6 +392,33 @@ def loan_owed_at_dates(
     return result
 
 
+def _loan_ledger_not_opened(
+    account: Account, ctx: "BalanceContext",
+) -> "LoanLedgerNotOpenedError":
+    """Build the fail-loud error for an originated loan with no OPENING posting.
+
+    Shared by the scalar (:func:`amortizing_balance_at`) and the map
+    (:func:`_build_amortizing_balance_map`), so the two cannot report the same
+    corruption two different ways -- and so the REPAIR is named in one place.
+
+    Args:
+        account: The broken loan account.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            (names the scenario the opening is missing from).
+
+    Returns:
+        The :class:`~app.services.posting_reads.LoanLedgerNotOpenedError` to raise.
+    """
+    return LoanLedgerNotOpenedError(
+        f"loan account {account.id} ({account.name!r}) has originated but has no "
+        f"OPENING posting in scenario {ctx.scenario.id}: its genesis ledger was "
+        f"never written, so its balance history cannot be read.  Refusing to "
+        f"answer from the amortization schedule, whose rows are payments the "
+        f"borrower was SUPPOSED to make, not ones they did.  Repair with "
+        f"loan_posting_service.sync_loan_postings_all_scenarios({account.id})."
+    )
+
+
 def amortizing_balance_at(
     account: Account, ctx: "BalanceContext", as_of: date,
 ) -> Decimal:
@@ -421,27 +447,26 @@ def amortizing_balance_at(
       rounding to a period-end map value.  Do NOT "simplify" it to read the
       period map.
 
-    * **A loan that has not ORIGINATED by ``ctx.as_of``: the projection, for every
-      date.**  Nothing has happened to it, so the genesis ledger has no domain at
-      all (it posts no OPENING for an anchor dated after its as-of), and the
-      projection owns the loan's whole timeline: ``0.00`` before origination -- it
-      does not exist and cannot owe anything -- and its opening balance forward.
-      This is not an exception to the rule above; it IS the rule, applied to a loan
-      whose entire life is still in the future.
+    * **A loan not yet ORIGINATED by ``ctx.as_of``: the projection, for every
+      date.**  Nothing has happened to it, so the ledger has no domain at all (it
+      posts no OPENING for an anchor dated after its as-of) and the projection owns
+      its whole timeline: ``0.00`` before origination, its opening balance forward.
+      Not an exception to the rule above -- it IS the rule, for a loan whose entire
+      life is still ahead of it.
 
-    Falls back to the schedule-only walk when the ledger cannot answer for a loan
-    that HAS originated (no OPENING posting: un-backfilled, or a what-if never
-    posted into), and to the cash producer when the loan has no resolvable
-    schedule at all.
+    **An ORIGINATED loan the ledger cannot answer for is BROKEN, and RAISES**
+    (:class:`~app.services.posting_reads.LoanLedgerNotOpenedError`).  It does not
+    fall back to the schedule: those rows are payments the borrower was SUPPOSED to
+    make, and walking them for the past pays the debt down with money that never
+    moved.  There is no third source for a loan's history.
 
     **The schedule is resolved BEFORE the ledger is read, and the order matters.**
-    An AMORTIZING account with no ``LoanParams`` -- a Mortgage account whose loan
-    terms were never filled in -- has no OPENING posting either, so the ledger
-    answers ``None`` for it exactly as a broken loan does.  Asking the loan first
-    is what keeps those two apart: no schedule means "not a configured loan", which
-    legitimately routes to cash; a schedule with no ledger means a loan that is
-    broken (or not yet born).  The resolution is memoized on *ctx*, so asking costs
-    nothing.
+    An AMORTIZING account with no ``LoanParams`` -- a Mortgage account whose terms
+    were never filled in -- also has no OPENING posting, so the ledger answers
+    ``None`` for it exactly as a broken loan does.  Asking the loan first keeps them
+    apart: no schedule means "not a configured loan", which degrades to the cash
+    producer; a schedule with no ledger means a loan that is broken (or not yet
+    born).  The resolution is memoized on *ctx*, so asking costs nothing.
 
     **The two dates.**  ``ctx.as_of`` is the resolver's NOW -- the moment the loan
     is RESOLVED at, which decides what is confirmed and what it currently owes.
@@ -461,6 +486,11 @@ def amortizing_balance_at(
 
     Returns:
         The ``Decimal`` balance owed at *as_of*.
+
+    Raises:
+        LoanLedgerNotOpenedError: When an ORIGINATED loan has no OPENING posting in
+            the scenario -- its history cannot be read, and the schedule is not a
+            substitute for it.
     """
     debt_schedule = generate_debt_schedules([account], ctx).get(account.id)
     if debt_schedule is None:
@@ -494,28 +524,8 @@ def amortizing_balance_at(
     if confirmed is not None:
         return confirmed
 
-    # An ORIGINATED loan, at a date the ledger cannot answer (no OPENING posting):
-    # walk the loan's CONFIRMED rows -- the only history there is.
-    #
-    # The unconfirmed rows are EXCLUDED, and that exclusion is load-bearing.  An
-    # unconfirmed row dated on or before *as_of* is a scheduled payment that was
-    # NEVER MADE (an overdue installment, or -- for a loan with no payments at all
-    # -- every projected row since origination), and counting it reduces the
-    # reported balance by principal the borrower never paid.  This walked the FULL
-    # schedule and so did exactly that: a $240,000 loan originated 18 months ago
-    # with no payments read as $236,853.27 owed, as though 17 unpaid installments
-    # had been made.  It is the identical defect
-    # :func:`loan_owed_at_dates` refuses to commit at its own boundary ("a
-    # past-or-today date would report the balance net of a payment that was never
-    # made -- silently UNDERSTATING the debt"), and the comment here always
-    # claimed the confirmed rows were what it read.  Now they are.
-    confirmed_rows = sorted(
-        (row for row in debt_schedule.schedule if row.is_confirmed),
-        key=lambda row: row.payment_date,
-    )
-    return balance_from_schedule_at_date(
-        confirmed_rows, as_of, debt_schedule.projection_seed,
-    )
+    # An ORIGINATED loan whose ledger cannot answer is BROKEN.  Fail loud.
+    raise _loan_ledger_not_opened(account, ctx)
 
 
 def _account_interest_projection(
@@ -907,11 +917,10 @@ def _build_amortizing_balance_map(
     The ledger books the REAL principal each settled payment paid, so an
     off-schedule payment moves the PAST balances exactly, where the schedule
     replay shows only scheduled principal.  An ORIGINATED loan the ledger has not
-    opened (un-backfilled, or a what-if never posted into) falls back to the
-    schedule-only walk, byte-identical to the pre-switch behaviour.  The direct
-    reader call is
-    fence-clean: this module is in the W9906 seam cluster the reader joins at
-    plan Section 11.
+    opened is BROKEN and RAISES (:func:`_loan_ledger_not_opened`) -- it does NOT
+    fall back to the schedule, whose rows are payments the borrower was supposed to
+    make, not ones they did.  The direct reader call is fence-clean: this module is
+    in the W9906 seam cluster the reader joins at plan Section 11.
 
     **A loan that has not ORIGINATED reads a map of TRUE zeros for its begun
     periods, and the splice runs unchanged.**  Every begun period starts on or
@@ -943,8 +952,12 @@ def _build_amortizing_balance_map(
 
     Returns:
         The period_id -> Decimal map: confirmed ledger for begun periods,
-        re-seeded projection after; schedule-only when an ORIGINATED loan is not
-        opened in the ledger.
+        re-seeded projection after.
+
+    Raises:
+        LoanLedgerNotOpenedError: When an ORIGINATED loan has no OPENING posting in
+            the scenario -- its history cannot be read, and the schedule is not a
+            substitute for it.
     """
     # Pylint: ``import-outside-toplevel`` -- imported from the defining
     # ``_reader`` submodule (which imports nothing back from here) rather than
@@ -974,11 +987,8 @@ def _build_amortizing_balance_map(
                 (period.id, ZERO_MONEY) for period in periods
             )
         else:
-            # An ORIGINATED loan with no ledger: fall back to the schedule-only
-            # walk, byte-identical to the pre-switch behaviour.
-            return compute_loan_period_balance_map(
-                debt_schedule.schedule, periods, debt_schedule.projection_seed,
-            )
+            # An ORIGINATED loan whose ledger cannot answer is BROKEN.  Fail loud.
+            raise _loan_ledger_not_opened(account, ctx)
     return splice_confirmed_and_projected_loan_balances(
         periods,
         confirmed_map,

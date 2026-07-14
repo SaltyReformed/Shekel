@@ -227,11 +227,12 @@ def _loan_schedule_start_index(
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
-    A loan's schedule has no rows before its first recorded payment:
-    :func:`app.services.account_projection.compute_loan_period_balance_map`
-    therefore returns the loan's CURRENT balance, held flat, for every period
-    before the schedule's first payment -- today's balance, not the real
-    amortized balance the loan actually had then.  So a loan is "honest" only
+    A loan's schedule has no rows before its first recorded payment, so a
+    schedule-derived map returns the loan's CURRENT balance, held flat, for every
+    period before that first payment -- today's balance, not the real amortized
+    balance the loan actually had then.  (The ledger now owns every BEGUN period,
+    so that hazard is gone from the balance map itself; this gate still bounds
+    what the TREND is willing to draw.)  So a loan is "honest" only
     from the first period whose ``end_date`` reaches its first schedule row
     onward; before that the trend would carry today's balance flat backward
     through the loan's real past.  For a GENESIS loan the confirmed rows are

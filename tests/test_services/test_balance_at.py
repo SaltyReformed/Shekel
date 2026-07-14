@@ -235,13 +235,14 @@ class TestBalanceMapLoan:
         past periods likewise step down at each recorded event rather than
         carrying today's balance backward.
 
-        This does NOT fence PR #44 / aba0242 (the schedule map seeded with
+        This does NOT fence PR #44 / aba0242 (a schedule map seeded with
         ``original_principal``), despite reading like it: both periods above have
-        BEGUN, so the confirmed ledger answers them and
-        ``compute_loan_period_balance_map`` is never called.  Proven by coverage --
-        its body is unexecuted here -- and by reintroducing the defect, which
-        leaves this test green.  That fence is the W9905
-        ``shekel-original-principal-as-balance`` checker (a build failure), plus the
+        BEGUN, so the confirmed ledger answers them and no schedule map is
+        consulted at all.  Proven by reintroducing the defect, which left this test
+        green.  That fence is now STRUCTURAL -- C2b deleted the schedule-only map
+        outright, so there is no seeded producer left for a begun period to reach --
+        backed by the W9905 ``shekel-original-principal-as-balance`` checker (a
+        build failure) on the FORWARD producers that inherited the seed, plus the
         direct unit test
         ``test_savings_dashboard_service::TestLoanProjectedBalanceDispatcher::
         test_dispatcher_returns_current_balance_before_first_payment``.
@@ -2769,3 +2770,219 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             # The mortgage really is drawn: the debt line reaches its principal
             # once the loan closes.
             assert max(chart.debt) >= self.MORTGAGE - Decimal("500.00")
+
+
+class TestBrokenLoanFailsLoud:
+    """A configured, ORIGINATED loan with no OPENING posting refuses to answer.
+
+    The seam used to fall back to the loan's amortization SCHEDULE when the genesis
+    ledger could not answer for a past date.  A schedule row is a payment the
+    borrower was SUPPOSED to make, not one they did, so the fallback quietly paid
+    the debt down with money that never moved: a $240,000 loan originated 18 months
+    ago and never paid read as $236,544.21 owed by the per-period map, while the
+    scalar said $240,000 -- two producers, one loan, one day, $3,455.79 apart.
+
+    A wrong balance that looks plausible is worse than a page that fails, because
+    nobody investigates a plausible number.  Both producers now raise.
+
+    Replaces ``TestUnpaidScheduleRowsNeverReduceTheDebt``, which pinned the
+    behaviour of the fallback this deletes.
+    """
+
+    def _broken_loan(self, seed_user, db_session, periods):
+        """A configured loan whose genesis ledger has been removed."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import clear_loan_ledger, create_loan_account
+
+        acct = create_loan_account(
+            seed_user, db_session, name="Broken",
+            principal=Decimal("240000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        )
+        # The ONE way to build a ledger-less loan: production cannot make one.
+        clear_loan_ledger(acct.id)
+        return acct
+
+    def test_scalar_raises_rather_than_walking_the_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """balance_at on a broken loan raises LoanLedgerNotOpenedError."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.posting_reads import LoanLedgerNotOpenedError
+
+        with app.app_context():
+            periods = seed_periods
+            acct = self._broken_loan(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            with pytest.raises(LoanLedgerNotOpenedError) as excinfo:
+                balance_at.balance_at(acct, bctx, bctx.as_of)
+            # The message names the account, the scenario, and the REPAIR.
+            message = str(excinfo.value)
+            assert str(acct.id) in message
+            assert "sync_loan_postings_all_scenarios" in message
+
+    def test_map_raises_rather_than_walking_the_schedule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """balance_map on a broken loan raises from the same one place."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.posting_reads import LoanLedgerNotOpenedError
+
+        with app.app_context():
+            periods = seed_periods
+            acct = self._broken_loan(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            with pytest.raises(LoanLedgerNotOpenedError):
+                balance_at.balance_map(acct, bctx, periods)
+
+    def test_an_amortizing_account_with_no_loan_params_does_NOT_raise(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Mortgage account whose loan terms were never filled in routes to CASH.
+
+        Two clicks in the UI produce it, and it has no OPENING posting either -- so
+        the ledger answers ``None`` for it exactly as a broken loan does.  What
+        keeps them apart is ORDER: the seam resolves the loan BEFORE reading the
+        ledger, and no schedule means "not a configured loan", not "corrupt".
+
+        Without that ordering the fail-loud raise would 500 the /savings page for a
+        user who did nothing wrong.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_account_of_type
+
+        with app.app_context():
+            acct = create_account_of_type(
+                seed_user, db.session, "Mortgage", "Terms Never Entered",
+                anchor_balance=Decimal("150000.00"),
+            )
+            db.session.commit()
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            # It really is in the hazardous state: the ledger cannot answer for it.
+            # pylint: disable=import-outside-toplevel
+            from app.services.loan_posting_service._reader import (
+                confirmed_loan_balance_at,
+            )
+            assert confirmed_loan_balance_at(
+                acct.id, bctx.scenario.id, bctx.as_of) is None
+
+            # And it degrades to the cash producer instead of raising.
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) is not None
+
+
+class TestScalarAndMapAgree:
+    """The structural invariant: the scalar and the per-period map never disagree.
+
+    Defect 2a was a $3,455.79 divergence between ``balance_at`` and ``balance_map``
+    for the same loan on the same day -- two producers the code's own docstrings
+    called siblings.  Nothing compared them, so nothing caught it.  This does, on
+    every loan shape the app can produce.
+
+    **The probe date follows each period's OWN keying, and that is not a detail.**
+    The map reads the confirmed LEDGER for a period that has BEGUN (keyed by the
+    period's START) and the PROJECTION for one that has not (keyed by its END).  The
+    plan originally specified ``balance_at(p.end_date)`` for every period; measured
+    against a correct loan that invariant is FALSE -- ``map[current period]`` is
+    $50,000.00 against ``balance_at(current period.end_date)`` of $39,634.37 -- and
+    building the guard as written would have meant "fixing" correct code to make a
+    wrong test green.  (That $39,634.37 is itself a real defect: FU-7.)
+    """
+
+    # pylint: disable=too-many-arguments
+    def _assert_agrees(self, acct, bctx, periods, shape):
+        """Every period: map[p] == balance_at(p, keyed the way that period is)."""
+        bmap = balance_at.balance_map(acct, bctx, periods)
+        for period in periods:
+            begun = period.start_date <= bctx.as_of
+            probe = period.start_date if begun else period.end_date
+            scalar = balance_at.balance_at(acct, bctx, probe)
+            assert bmap[period.id] == scalar, (
+                f"{shape}: period {period.start_date}..{period.end_date} "
+                f"({'begun' if begun else 'future'}) -- "
+                f"map={bmap[period.id]} scalar@{probe}={scalar}"
+            )
+
+    def test_every_loan_shape(self, app, db, seed_user, seed_periods):
+        """Six shapes, including the two this arc was built to handle."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import (
+            create_loan_account, insert_tracking_start_event,
+            insert_trueup_event, loan_params_for,
+        )
+
+        with app.app_context():
+            periods = seed_periods
+            bctx_user = seed_user["user"].id
+
+            # 1. Never paid, originated long ago -- the shape defect 2a lived in.
+            never_paid = create_loan_account(
+                seed_user, db.session, name="Never Paid",
+                principal=Decimal("240000.00"), rate=Decimal("0.06000"),
+                term=360, origination_date=date(2024, 9, 1), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            )
+            # 2. Trued up (the operator asserted a balance).
+            trued_up = create_loan_account(
+                seed_user, db.session, name="Trued Up",
+                principal=Decimal("100000.00"), rate=Decimal("0.05000"),
+                term=120, origination_date=date(2025, 2, 1), payment_day=1,
+                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, trued_up.id),
+                Decimal("88000.00"), anchor_date=date(2026, 2, 10),
+            )
+            # 3. Mid-life import (the ledger opens at a tracking start).
+            mid_life = create_loan_account(
+                seed_user, db.session, name="Mid Life",
+                principal=Decimal("300000.00"), rate=Decimal("0.04500"),
+                term=360, origination_date=date(2019, 6, 1), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            )
+            insert_tracking_start_event(
+                loan_params_for(db.session, mid_life.id),
+                Decimal("240000.00"), date(2026, 1, 20),
+            )
+            # 4. Paid off (a $0.00 true-up -- the operator's explicit action).
+            paid_off = create_loan_account(
+                seed_user, db.session, name="Paid Off",
+                principal=Decimal("15000.00"), rate=Decimal("0.07000"),
+                term=48, origination_date=date(2025, 1, 1), payment_day=1,
+                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, paid_off.id),
+                Decimal("0.00"), anchor_date=date(2026, 3, 1),
+            )
+            # 5. Not yet originated (C2's shape).
+            upcoming = create_loan_account(
+                seed_user, db.session, name="Upcoming",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 4, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            )
+            # 6. Originating INSIDE the current pay period -- the keying trap.
+            closing_now = create_loan_account(
+                seed_user, db.session, name="Closing Now",
+                principal=Decimal("180000.00"), rate=Decimal("0.05500"),
+                term=360, origination_date=date(2026, 3, 25), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            )
+            db.session.commit()
+
+            bctx = BalanceContext.build(bctx_user)
+            for acct, shape in [
+                (never_paid, "never-paid"),
+                (trued_up, "trued-up"),
+                (mid_life, "mid-life import"),
+                (paid_off, "paid-off"),
+                (upcoming, "not-yet-originated"),
+                (closing_now, "originating inside the current period"),
+            ]:
+                self._assert_agrees(acct, bctx, periods, shape)

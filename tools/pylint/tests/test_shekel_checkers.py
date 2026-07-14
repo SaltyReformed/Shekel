@@ -483,7 +483,7 @@ class TestShekelDisableRationaleChecker(CheckerTestCase):
 class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     """The loan balance-map fallback must be the resolver balance, not a stored column.
 
-    ``compute_loan_period_balance_map`` / ``balance_from_schedule_at_date`` take
+    ``compute_forward_loan_period_balance_map`` / ``balance_from_schedule_at_date`` take
     the loan's resolver-derived ``current_balance`` as the pre-first-payment /
     empty-schedule fallback; passing a stored column (``original_principal`` /
     ``current_principal``) is the recurring net-worth bug (F-21 / PR #44). Every
@@ -493,9 +493,9 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     CHECKER_CLASS = ShekelLoanBalanceSourceChecker
 
     def test_flags_original_principal_attribute(self) -> None:
-        """compute_loan_period_balance_map(..., params.original_principal): the PR #44 bug."""
+        """compute_forward_loan_period_balance_map(..., params.original_principal): the PR #44 bug."""
         node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, params.original_principal)",
+            "compute_forward_loan_period_balance_map(schedule, periods, params.original_principal)",
         )
         with self.assertAddsMessages(
             MessageTest("shekel-original-principal-as-balance", node=node),
@@ -517,7 +517,7 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     def test_flags_bare_name_original_principal(self) -> None:
         """The bare-name parameter form (the live /savings bug pre-fix) is flagged."""
         node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, original_principal)",
+            "compute_forward_loan_period_balance_map(schedule, periods, original_principal)",
         )
         with self.assertAddsMessages(
             MessageTest("shekel-original-principal-as-balance", node=node),
@@ -528,7 +528,7 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     def test_flags_current_principal_keyword(self) -> None:
         """The demoted current_principal column passed by the current_balance keyword is flagged."""
         node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, "
+            "compute_forward_loan_period_balance_map(schedule, periods, "
             "current_balance=acct.current_principal)",
         )
         with self.assertAddsMessages(
@@ -538,9 +538,9 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
             self.checker.visit_call(node)
 
     def test_flags_qualified_producer_call(self) -> None:
-        """The attribute-call form (module.compute_loan_period_balance_map) is flagged."""
+        """The attribute-call form (module.compute_forward_loan_period_balance_map) is flagged."""
         node = astroid.extract_node(
-            "account_projection.compute_loan_period_balance_map("
+            "account_projection.compute_forward_loan_period_balance_map("
             "schedule, periods, params.original_principal)",
         )
         with self.assertAddsMessages(
@@ -552,7 +552,7 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     def test_allows_current_balance_attribute(self) -> None:
         """The resolver-derived state.current_balance is the correct fallback; not flagged."""
         node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, state.current_balance)",
+            "compute_forward_loan_period_balance_map(schedule, periods, state.current_balance)",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
@@ -576,7 +576,7 @@ class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
     def test_ignores_call_without_balance_argument(self) -> None:
         """A producer call missing the balance argument is not flagged and does not crash."""
         node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods)",
+            "compute_forward_loan_period_balance_map(schedule, periods)",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
@@ -634,18 +634,18 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_flags_bare_name_producer_from_consumer(self) -> None:
         """A bare-imported producer call from a consumer is flagged.
 
-        Uses compute_loan_period_balance_map -- imported and called by its bare
+        Uses compute_forward_loan_period_balance_map -- imported and called by its bare
         name, the form net_worth_kernel itself uses internally.
         """
         node = self._producer_call(
-            "compute_loan_period_balance_map(schedule, periods, current_balance)",
+            "compute_forward_loan_period_balance_map(schedule, periods, current_balance)",
             "app.services.savings_dashboard_service._projections",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("compute_loan_period_balance_map",),
+                args=("compute_forward_loan_period_balance_map",),
             ),
             ignore_position=True,
         ):
@@ -714,7 +714,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         for module_name in sorted(_BALANCE_SEAM_MODULES):
             node = self._producer_call(
-                "compute_loan_period_balance_map(schedule, periods, current_balance)",
+                "compute_forward_loan_period_balance_map(schedule, periods, current_balance)",
                 module_name,
             )
             with self.assertNoMessages():
@@ -929,7 +929,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         for module_name in sorted(_BALANCE_SEAM_MODULES):
             node = self._import_node(
                 "from app.services.account_projection import "
-                "compute_loan_period_balance_map",
+                "compute_forward_loan_period_balance_map",
                 module_name,
             )
             with self.assertNoMessages():

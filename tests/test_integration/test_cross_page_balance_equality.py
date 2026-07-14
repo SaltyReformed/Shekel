@@ -1080,8 +1080,8 @@ class TestLoanCrossPageEquality:
             # seeding this map with ``original_principal`` changes nothing, because
             # the schedule ROWS carry the balances.  The argument's fence is the
             # W9905 ``shekel-original-principal-as-balance`` checker (a build
-            # failure), and after C2 deletes ``compute_loan_period_balance_map`` it
-            # is structural.
+            # failure), which C2b extended to the FORWARD producers that inherited
+            # the seed when the schedule-only map was deleted.
             future = [
                 p for p in ctx["all_periods"] if p.start_date > date.today()
             ]

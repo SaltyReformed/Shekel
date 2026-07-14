@@ -179,9 +179,9 @@ def balance_from_schedule_at_date(
     principal the moment the first payment landed -- a phantom liability drop,
     and net-worth jump, of (original principal - current balance).
 
-    The shared primitive behind both :func:`compute_loan_period_balance_map`
-    (per-period) and the year-end debt-progress section (at Jan 1 / Dec 31),
-    so the two cannot drift on how a loan balance is read from a schedule.
+    The shared primitive behind :func:`_projected_owed_at` -- and therefore behind
+    BOTH forward producers, the scalar and the per-period map -- so the two cannot
+    drift on how a loan balance is read from a schedule.
 
     Args:
         sorted_schedule: Non-empty ``AmortizationRow`` list sorted ascending
@@ -200,70 +200,6 @@ def balance_from_schedule_at_date(
         else:
             break
     return balance
-
-
-def compute_loan_period_balance_map(
-    schedule: list,
-    periods: list,
-    current_balance: Decimal,
-) -> "OrderedDict[int, Decimal]":
-    """Map an amortization schedule to per-period remaining balances.
-
-    For each ``PayPeriod`` in *periods*, returns the
-    :attr:`~app.services.amortization_engine.AmortizationRow.remaining_balance`
-    from the last schedule row whose ``payment_date`` is on or before
-    ``period.end_date``.  Periods before the schedule's first payment -- and
-    every period when the schedule is empty -- return *current_balance*.
-
-    *current_balance* is the loan's resolver-derived balance as of today
-    (:attr:`~app.services.loan_resolver.LoanState.current_balance`), NOT its
-    original principal.  The resolver's schedule is TODAY-forward, so a period
-    before the first upcoming payment is at today's balance; reporting the
-    origination amount there made the loan leap down to its real balance when
-    the first payment landed -- a phantom liability drop / net-worth jump of
-    (original principal - current balance).  An empty schedule (a paid-off or
-    fully-resolved loan with no remaining rows) likewise sits at its current
-    balance at every period.
-
-    Period-end-keyed is the project's canonical loan-balance derivation as of
-    F-21 / Commit 19 of ``remediation_follow_up_plan.md`` -- it answers "what
-    does the borrower owe AFTER the payment due in this period?"  The savings
-    cockpit and the year-end net-worth / debt-progress sections all route
-    through this producer and the shared
-    :func:`balance_from_schedule_at_date`, so their loan balances cannot drift.
-
-    Args:
-        schedule: List of
-            :class:`~app.services.amortization_engine.AmortizationRow`
-            sorted chronologically.  An empty schedule returns
-            *current_balance* for every period.
-        periods: List of :class:`~app.models.pay_period.PayPeriod`
-            objects.  Order does not matter; the map keys by
-            ``period.id``.
-        current_balance: The loan's resolver-derived current balance, the
-            pre-first-payment and empty-schedule fallback.
-
-    Returns:
-        ``OrderedDict`` mapping ``period.id`` to ``Decimal``
-        remaining balance.
-    """
-    balances: "OrderedDict[int, Decimal]" = OrderedDict()
-
-    if not schedule:
-        for period in periods:
-            balances[period.id] = current_balance
-        return balances
-
-    # Defensive sort -- the resolver emits chronological schedules,
-    # but a future caller might assemble one differently.
-    sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
-
-    for period in periods:
-        balances[period.id] = balance_from_schedule_at_date(
-            sorted_schedule, period.end_date, current_balance,
-        )
-
-    return balances
 
 
 def splice_confirmed_and_projected_loan_balances(
@@ -299,7 +235,7 @@ def splice_confirmed_and_projected_loan_balances(
     source per period.  Pure: no I/O; the caller
     (:func:`app.services.net_worth_kernel._build_amortizing_balance_map`) reads
     both maps, then splices here so the boundary rule lives in one place beside
-    the schedule-only :func:`compute_loan_period_balance_map` it overlays.
+    the forward :func:`compute_forward_loan_period_balance_map` it overlays.
 
     Args:
         periods: The pay periods to key the result by (the output domain and

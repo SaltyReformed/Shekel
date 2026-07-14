@@ -1937,11 +1937,11 @@ class TestDebtProgress:
     ):
         """C19-2 / F-21: year-end debt-progress is byte-identical to
         the pre-Commit-19 values after extracting the shared
-        :func:`compute_loan_period_balance_map` dispatcher.
+        period-balance dispatcher.
 
         Commit 19 moved the period-end-keyed walk verbatim from a
         local ``_schedule_to_period_balance_map`` into
-        ``account_projection.compute_loan_period_balance_map`` and
+        ``account_projection`` and
         wired the year-end net-worth liability column through it
         (debt-progress itself stays on the date-keyed
         ``_balance_from_schedule_at_date`` helper -- different

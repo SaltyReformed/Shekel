@@ -12,13 +12,22 @@ from astroid import nodes
 
 from pylint.checkers import BaseChecker
 
-# Loan period-balance map producers in app/services/account_projection.py. Both
-# take the loan's resolver-derived CURRENT balance as the pre-first-payment /
-# empty-schedule fallback -- their third positional argument, keyword
-# ``current_balance``.
-_LOAN_BALANCE_MAP_FUNCS = frozenset(
-    {"compute_loan_period_balance_map", "balance_from_schedule_at_date"},
-)
+# The loan-balance producers in app/services/account_projection.py that take a
+# BALANCE SEED -- the value reported when no schedule row precedes the target
+# (a date before the first upcoming payment, or an empty / paid-off schedule).
+# Each takes it as its third positional argument, keyword ``current_balance``.
+#
+# ``compute_loan_period_balance_map`` was the original offender and is now
+# DELETED (the ledger owns every begun period; C2b of the fail-loud arc). The two
+# FORWARD producers inherited its seed argument, so they inherit its hazard and
+# join the fence: passing an origination amount to either of them reports a loan's
+# ORIGINAL principal for every future date before its next payment, which is
+# exactly the phantom net-worth jump W9905 exists to prevent.
+_LOAN_BALANCE_MAP_FUNCS = frozenset({
+    "balance_from_schedule_at_date",
+    "forward_balance_at_date",
+    "compute_forward_loan_period_balance_map",
+})
 _LOAN_BALANCE_ARG_INDEX = 2
 _LOAN_BALANCE_ARG_KEYWORD = "current_balance"
 # The two demoted, non-authoritative loan columns (app/models/loan_params.py):
@@ -33,7 +42,7 @@ _NON_AUTHORITATIVE_LOAN_BALANCE = frozenset(
 def _is_loan_balance_map_call(node: nodes.Call) -> bool:
     """Return True if ``node`` calls a loan period-balance map producer.
 
-    Matches the bare-name import form (``compute_loan_period_balance_map(...)``)
+    Matches the bare-name import form (``forward_balance_at_date(...)``)
     and the attribute form (``account_projection.balance_from_schedule_at_date(...)``)
     alike, mirroring ``_is_decimal_call``; name matching keeps the checker fast,
     and these identifiers are distinctive enough to carry no collision risk.
@@ -87,9 +96,10 @@ class ShekelLoanBalanceSourceChecker(BaseChecker):
             "(original_principal / current_principal); pass the resolver-derived "
             "current_balance instead",
             "shekel-original-principal-as-balance",
-            "compute_loan_period_balance_map and balance_from_schedule_at_date "
+            "balance_from_schedule_at_date, forward_balance_at_date and "
+            "compute_forward_loan_period_balance_map "
             "(app/services/account_projection.py) take the loan's CURRENT balance "
-            "as the pre-first-payment / empty-schedule fallback. The schedule is "
+            "as the pre-first-payment / empty-schedule seed. The schedule is "
             "today-forward, so a period before the first upcoming payment -- and "
             "every period of a paid-off loan whose schedule is empty -- sits at "
             "today's balance. LoanParams.original_principal (immutable origination "
@@ -107,9 +117,10 @@ class ShekelLoanBalanceSourceChecker(BaseChecker):
     def visit_call(self, node: nodes.Call) -> None:
         """Flag a loan balance-map call whose fallback argument is a stored column.
 
-        ``node`` is every call expression; only a call to one of the two loan
-        balance-map producers whose statically-readable balance argument reads
-        ``original_principal`` / ``current_principal`` is reported.
+        ``node`` is every call expression; only a call to one of the seeded loan
+        balance producers (:data:`_LOAN_BALANCE_MAP_FUNCS`) whose statically-readable
+        balance argument reads ``original_principal`` / ``current_principal`` is
+        reported.
         """
         if not _is_loan_balance_map_call(node):
             return

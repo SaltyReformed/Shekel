@@ -1,7 +1,7 @@
 # Fail-loud ledger authority: delete the schedule's answer for the past
 
-**Status: C1 + C1b DONE (2026-07-13); FU-4 FIXED. C2 (origination event) + C2b (fail-loud) + C3-C6
-pending.** Successor to `implementation_plan_loan_resolution_context.md`, whose adversarial review
+**Status: C1 + C1b + C2 + C2b DONE (2026-07-13); FU-4 FIXED. C3-C6 pending. R5 -> FU-7 (its own
+arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose adversarial review
 (2026-07-13) produced the findings below. Prerequisite reading:
 `recurring_loan_balance_root_cause.md` (the design rule this plan finally enforces),
 `implementation_plan_loan_read_switch.md` (which made the loan's PAST ledger-authoritative), and

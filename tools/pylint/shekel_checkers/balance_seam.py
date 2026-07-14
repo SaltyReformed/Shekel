@@ -62,7 +62,6 @@ _BALANCE_PRODUCERS = frozenset({
     "build_daily_series",
     "calculate_balances",
     "calculate_balances_with_interest",
-    "compute_loan_period_balance_map",
     "compute_forward_loan_period_balance_map",
     "balance_from_schedule_at_date",
     "forward_balance_at_date",

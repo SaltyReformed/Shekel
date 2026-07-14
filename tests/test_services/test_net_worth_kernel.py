@@ -355,7 +355,7 @@ class TestAmortizingReadSwitch:
         from datetime import date as _date
 
         from app.services.account_projection import (
-            compute_loan_period_balance_map,
+            compute_forward_loan_period_balance_map,
         )
         from app.services.loan_posting_service import confirmed_loan_balance_map
 
@@ -382,8 +382,9 @@ class TestAmortizingReadSwitch:
             confirmed = confirmed_loan_balance_map(
                 loan.id, scenario.id, periods,
             )
-            projected = compute_loan_period_balance_map(
-                debt_schedule.schedule, periods, debt_schedule.projection_seed,
+            projected = compute_forward_loan_period_balance_map(
+                debt_schedule.schedule, periods,
+                debt_schedule.projection_seed, debt_schedule.owed_from,
             )
 
             assert dense is not None
@@ -446,82 +447,3 @@ class TestInterestByPeriodForAccount:
             assert net_worth_kernel.interest_by_period_for_account(
                 account, object(), [], None,
             ) == {}
-
-
-class TestUnpaidScheduleRowsNeverReduceTheDebt:
-    """The no-ledger scalar walks CONFIRMED rows only -- never a phantom payment.
-
-    ``amortizing_balance_at`` falls back to a schedule walk when the genesis
-    ledger cannot answer (a loan with no OPENING posting: unconfigured,
-    un-backfilled, or a what-if never posted into).  That walk read the FULL
-    schedule, so any UNCONFIRMED row dated on or before the valuation date -- an
-    overdue installment, or every projected row since origination for a loan with
-    no payments at all -- reduced the reported balance by principal the borrower
-    never paid.
-
-    It is the same defect ``loan_owed_at_dates`` explicitly refuses to commit at
-    its own boundary, and the fallback's own comment always claimed it read the
-    confirmed rows.  Now it does.
-    """
-
-    def test_unpaid_loan_owes_its_full_anchor_balance(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """A loan originated in the past with NO payments still owes it all.
-
-        A $240,000 mortgage originated 18 months ago, never paid, and never opened
-        in the ledger.  Its resolver schedule carries ~17 PROJECTED rows dated on
-        or before today.  Walking those rows reported $236,853.27 -- the balance as
-        though 17 unpaid installments had been made.  The honest answer is the
-        full $240,000: no payment was ever confirmed, so no principal was ever
-        paid.
-        """
-        # Pylint: import-outside-toplevel -- the file-wide deferred-import
-        # convention keeps the top-level import block minimal.
-        # pylint: disable=import-outside-toplevel
-        from datetime import date as _date
-        from datetime import timedelta
-
-        from app.services.loan_posting_service import confirmed_loan_balance_at
-        from tests._test_helpers import clear_loan_ledger, create_loan_account
-
-        with app.app_context():
-            user_id = seed_user["user"].id
-            bctx = BalanceContext.build(user_id)
-            loan = create_loan_account(
-                seed_user, db.session, name="Never Paid",
-                principal=Decimal("240000.00"), rate=Decimal("0.06000"),
-                term=360,
-                origination_date=_date.today() - timedelta(days=548),
-            )
-            db.session.commit()
-            # The fallback under test is reachable ONLY on a loan with no opening
-            # posting, which production cannot produce (the params insert opens
-            # the ledger).  Build that broken loan explicitly.
-            clear_loan_ledger(loan.id)
-
-            # The premise: the ledger genuinely cannot answer for this loan, so
-            # the scalar is on the schedule-walk fallback (not the ledger path).
-            assert confirmed_loan_balance_at(
-                loan.id, bctx.scenario.id, bctx.as_of,
-            ) is None
-
-            # The schedule DOES carry unconfirmed rows dated on or before today --
-            # the rows the old walk counted.  Non-vacuity: without them the test
-            # would pass trivially.
-            schedule = net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id]
-            stale_projected = [
-                row for row in schedule
-                if not row.is_confirmed and row.payment_date <= bctx.as_of
-            ]
-            assert stale_projected, (
-                "fixture regressed: the schedule must carry unpaid rows dated on "
-                "or before today, or this test pins nothing"
-            )
-
-            owed = net_worth_kernel.amortizing_balance_at(
-                loan, bctx, bctx.as_of,
-            )
-            # Not one payment was confirmed, so not one dollar of principal was
-            # paid: the loan owes its full anchor balance.
-            assert owed == Decimal("240000.00")

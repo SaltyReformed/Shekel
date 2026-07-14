@@ -24,9 +24,9 @@ and pay periods are contiguous, so bounding CASH by ``pay_period.start_date <=
 as_of`` selects exactly the postings whose period has begun -- the same confirmed
 cut the walk (:func:`._walk.walk_loan_ledger`) applied when it produced them, not
 a recomputed special case.  This is why the per-period map (keyed by period start)
-IS the canonical period-END-keyed loan balance
-(:func:`app.services.account_projection.compute_loan_period_balance_map`): a
-posting's period start is a real boundary and periods are contiguous, so
+IS the canonical period-END-keyed loan balance the projection reports
+(:func:`app.services.account_projection.compute_forward_loan_period_balance_map`):
+a posting's period start is a real boundary and periods are contiguous, so
 ``<= period.start`` and ``<= period.end`` select the identical posting set.
 
 An ANCHOR (the opening, every true-up) is bounded by ``LEAST(entry_date,
@@ -182,11 +182,9 @@ def confirmed_loan_balance_map(
     grouped posting load plus a Python prefix sum, not a query per period.
 
     Because postings are period-ASSIGNED and periods are contiguous, this IS the
-    canonical period-END-keyed loan balance
-    (:func:`app.services.account_projection.compute_loan_period_balance_map`): a
-    posting's period start is a real boundary, so ``<= period.start`` and
-    ``<= period.end`` select the identical set (a payment "due in this period"
-    nets in as its period's posting either way).
+    canonical period-END-keyed loan balance: a posting's period start is a real
+    boundary, so ``<= period.start`` and ``<= period.end`` select the identical set
+    (a payment "due in this period" nets in as its period's posting either way).
 
     **Future periods carry flat** (the read-switch overlay contract): a period
     after today has no confirmed postings, so its cumulative -- and thus its
