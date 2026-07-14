@@ -316,13 +316,16 @@ def _compute_principal_paid_fraction(
 
     "All loans the pipeline surfaces" is, reachably, all of the user's
     NON-ARCHIVED (``is_active=True``) loan accounts that have a
-    ``LoanParams`` row.  Archived accounts are filtered out upstream by
-    ``_load_dashboard_core_data`` (``is_active=True``) and never reach
-    ``account_data``, so they cannot be included; a loan with no
-    ``LoanParams`` row carries no ``original_principal`` and is likewise
-    not a loan-ad here.  Paid-off loans, by contrast, remain active
-    accounts and DO appear in ``account_data`` carrying
-    ``is_paid_off=True``, so the all-loans-ever set is fully reachable.
+    ``LoanParams`` row AND HAVE ORIGINATED.  Archived accounts are
+    filtered out upstream by ``_load_dashboard_core_data``
+    (``is_active=True``) and never reach ``account_data``, so they cannot
+    be included; a loan with no ``LoanParams`` row carries no
+    ``original_principal`` and is likewise not a loan-ad here.  Paid-off
+    loans, by contrast, remain active accounts and DO appear in
+    ``account_data`` carrying ``is_paid_off=True``, so the
+    all-loans-ever set is fully reachable.  A loan the user has
+    configured but not yet BORROWED (a mortgage closing next month) is
+    excluded from both sums -- see the loop.
 
     ``original_principal`` is a NOT NULL, ``> 0`` column on
     :class:`~app.models.loan_params.LoanParams`, so any real loan-ad
@@ -346,6 +349,18 @@ def _compute_principal_paid_fraction(
     total_original = Decimal("0.00")
     total_current = Decimal("0.00")
     for ad in loan_ads:
+        # A loan that has not been BORROWED yet is in NEITHER sum.  Its principal
+        # is not money the user owes, and none of it has been repaid.  Counting it
+        # would put its full original principal in the denominator against a
+        # current balance of $0.00 -- the seam's correct answer for a debt that
+        # does not exist yet -- and report every cent of it as PAID: an unclosed
+        # $200,000 mortgage beside a never-paid $100,000 auto loan read 66.67%
+        # repaid on a borrower who had repaid nothing.  It would also break this
+        # marker's one design invariant below: the fraction would COLLAPSE from
+        # 66.67% to 0% on closing day, when the mortgage's balance steps from
+        # $0.00 to $200,000.
+        if not ad["is_originated"]:
+            continue
         # ALL loans ever: every loan-ad contributes its original
         # principal to the denominator.  A paid-off loan contributes
         # Decimal("0.00") to the current-balance sum (regardless of the

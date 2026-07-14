@@ -36,6 +36,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 
 from ._inputs import _require_scenario
@@ -59,16 +60,30 @@ class LoanFigures:
             replaced the retired ``LoanParams.interest_rate`` column.
         payoff_date: The last payment date in the committed (plan-aware)
             schedule -- the month the loan reaches zero.
-        is_paid_off: Whether the loan owes nothing: its LEDGER-confirmed balance
-            is ``<= 0`` AND it has at least one confirmed payment.  The
-            confirmed-payment guard keeps a brand-new loan with a degenerate zero
-            anchor from reading as retired.
+        is_paid_off: Whether the loan owes nothing: it has ORIGINATED, its
+            LEDGER-confirmed balance is ``<= 0``, and it has at least one
+            confirmed payment.  The confirmed-payment guard keeps a brand-new loan
+            with a degenerate zero anchor from reading as retired.
+        is_originated: Whether the loan EXISTS yet -- whether its
+            ``origination_date`` has arrived by the read pass's ``as_of``.
+
+            The seam publishes this because ``balance_at`` correctly answers
+            ``$0.00`` for a loan that has not been borrowed yet, and a consumer
+            that reads a zero balance as "this debt is gone" then reports the
+            opposite of the truth.  Three did: the dashboard's debt track counted
+            an unclosed mortgage's whole principal as REPAID (66.67% paid, on a
+            borrower who had paid nothing), the property equity chart dropped a
+            mortgage closing in 26 days and drew ten years of debt-free equity, and
+            the year-end panel reported -$198,049.28 of principal "paid".  A zero
+            balance means "owes nothing"; it does NOT mean "has no debt ahead of
+            it", and only this flag separates the two.
     """
 
     monthly_payment: Decimal
     current_rate: Decimal
     payoff_date: date | None
     is_paid_off: bool
+    is_originated: bool
 
 
 def loan_figures(
@@ -99,11 +114,31 @@ def loan_figures(
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
         payoff_date=state.payoff_date,
-        is_paid_off=_is_paid_off(resolved),
+        is_paid_off=_is_paid_off(resolved, ctx.as_of),
+        is_originated=_is_originated(resolved, ctx.as_of),
     )
 
 
-def _is_paid_off(resolved) -> bool:
+def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
+    """Return whether the loan has come into existence by *as_of*.
+
+    THE one definition of "does this loan exist yet", shared by
+    :attr:`LoanFigures.is_originated` and :func:`_is_paid_off` so the seam cannot
+    answer it two ways.  See :attr:`LoanFigures.is_originated` for why the seam
+    publishes it at all.
+
+    Args:
+        resolved: The loan's
+            :class:`~app.services.loan_resolution.ResolvedLoan`.
+        as_of: The read pass's as-of.
+
+    Returns:
+        ``True`` when the loan's ``origination_date`` has arrived.
+    """
+    return resolved.params.origination_date <= as_of
+
+
+def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
     """Return whether the loan owes nothing -- read from the genesis ledger.
 
     ``resolved.state.current_balance`` is the ledger-confirmed balance (the read
@@ -120,14 +155,29 @@ def _is_paid_off(resolved) -> bool:
     debt card's total.  Both are regression-tested
     (``followup_redundant_loan_resolution.md``).
 
+    **A loan that has not ORIGINATED is not paid off; it has not been taken out.**
+    That guard is not defensive -- it is load-bearing, and this function is where
+    the origination fix would otherwise have CREATED a bug.  ``current_balance``
+    is now correctly ``0.00`` for a loan configured before it closes, and a
+    settled transfer INTO such a loan is constructible through the ordinary
+    ``transfer_service`` (a down payment, an earnest deposit), which satisfies the
+    confirmed-payment guard below.  Without this check an unclosed mortgage would
+    render RETIRED: badged paid off, dropped from the debt card's total, and gone
+    from the Horizon's liabilities.  The confirmed-payment guard alone was assumed
+    to cover this and does not.
+
     Args:
         resolved: The loan's
             :class:`~app.services.loan_resolution.ResolvedLoan`.
+        as_of: The read pass's as-of, against which the loan's origination is
+            tested.
 
     Returns:
-        ``True`` when the ledger says nothing is owed and at least one payment is
-        confirmed.
+        ``True`` when the loan has originated, the ledger says nothing is owed,
+        and at least one payment is confirmed.
     """
+    if not _is_originated(resolved, as_of):
+        return False
     if not any(p.is_confirmed for p in resolved.context.payments):
         return False
     return resolved.state.current_balance <= ZERO_MONEY

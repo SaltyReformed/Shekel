@@ -1,10 +1,20 @@
 # Fail-loud ledger authority: delete the schedule's answer for the past
 
-**Status: C1 + C1b DONE (2026-07-13); FU-4 FIXED. C2-C6 pending.** Successor to
-`implementation_plan_loan_resolution_context.md`, whose adversarial review (2026-07-13) produced the
-findings below. Prerequisite reading: `recurring_loan_balance_root_cause.md` (the design rule this
-plan finally enforces), `implementation_plan_loan_read_switch.md` (which made the loan's PAST
-ledger-authoritative), and `followup_debt_schedule_attribute_fence.md`.
+**Status: C1 + C1b DONE (2026-07-13); FU-4 FIXED. C2 (origination event) + C2b (fail-loud) + C3-C6
+pending.** Successor to `implementation_plan_loan_resolution_context.md`, whose adversarial review
+(2026-07-13) produced the findings below. Prerequisite reading:
+`recurring_loan_balance_root_cause.md` (the design rule this plan finally enforces),
+`implementation_plan_loan_read_switch.md` (which made the loan's PAST ledger-authoritative), and
+`followup_debt_schedule_attribute_fence.md`.
+
+**Revision, 2026-07-13 (developer ruling).** A loan the user knows is coming -- a mortgage closing
+next month -- must be SUPPORTED, not forbidden. Probing that state found the app reports **$200,000
+owed on a mortgage that has not closed**, at every pay period, for four months. The plan's original
+"fork the seam on not-yet-originated" answer treated the symptom; the defect is that a loan's
+ORIGINATION is a balance event nothing models. **Section 3a** is the measurement and the replacement
+design, and it splits the old C2 into C2 (model the origination) and C2b (the fail-loud). The net
+effect on the seam is a rule REMOVED, not added: with the origination modelled, the fail-loud raise
+needs no exception.
 
 ---
 
@@ -138,6 +148,11 @@ All 15 reduce to two causes:
 > other's question, and there is no third source. A configured loan whose baseline ledger has no
 > opening posting is BROKEN, and a broken loan fails loud rather than producing a number.**
 
+And its corollary, which the arc's own review forced into the open (Section 3a):
+
+> **A loan's ORIGINATION is a balance event like any other. The ledger owns it once it has happened;
+> the projection owns it until it does. A loan owes NOTHING before it originates.**
+
 The codebase already states half of this in two places and then breaks it in two others:
 
 * `confirmed_loan_balance_at` RAISES on a future date (`loan_posting_service/_reader.py:200`).
@@ -171,6 +186,118 @@ that same list.
 (`loan_resolution.py:287-298`) deliberately passes `confirmed_view=None` to build the property chart's
 pure contractual back-projection, so the resolver's None path is a legitimate, used API. The resolver
 keeps its fallback; nothing can READ a balance out of it once C3 lands.
+
+---
+
+## 3a. The origination event -- the corollary, and why C2 cannot ship without it
+
+**Developer ruling, 2026-07-13: a loan the user knows is coming (a mortgage closing next month) is a
+state the app must SUPPORT, not forbid.** The plan's earlier "C2 DESIGN REQUIREMENT" proposed to fork
+the seam on `origination_date > today` and answer `$0.00`. That fork is wrong -- not because the
+answer is wrong, but because it treats a symptom. Measured, then fixed properly here.
+
+### 3a.1 What is actually broken (measured, 2026-07-13)
+
+A loan's balance moves on exactly three kinds of event: it comes INTO EXISTENCE at origination
+(+principal), payments reduce it, true-ups reset it. Every one of those is modelled -- except the
+first, for a loan whose origination has not arrived.
+
+* The genesis walk REFUSES to post an anchor dated after its as-of
+  (`_walk._merge_anchor_and_payment_events:356-359`), correctly: it has not happened. So a
+  not-yet-originated loan has no OPENING posting, and `confirmed_loan_balance_at` returns `None`.
+* The forward projection has no concept of a balance INCREASE. Its whole model is
+  "seed, less the payments scheduled by *target*" (`account_projection.forward_balance_at_date`).
+* So the origination gets smuggled in through a third door: `select_latest_anchor`
+  (`loan_resolver/_periods.py:345-348`) takes `max()` over the anchor facts with **no `as_of`
+  filter**, so a loan resolved TODAY seeds its balance from an anchor dated in the FUTURE.
+
+Probed against the real code (mortgage $200,000 @ 5%, 360 months, originating 2026-07-01, read on the
+suite's frozen 2026-03-20):
+
+| valuation date | app reports | truth |
+|---|---|---|
+| 2026-02-01 (past) | **$200,000.00** | $0.00 -- the loan does not exist |
+| today (2026-03-20) | **$200,000.00** | $0.00 |
+| 2026-05-01 (future, pre-origination) | **$200,000.00** | $0.00 |
+| 2026-07-15 (originated, before the first payment) | $200,000.00 | $200,000.00 (correct) |
+| 2026-08-15 (after the first payment) | $199,759.69 | $199,759.69 (correct) |
+
+Every pay period from January to May reports $200,000 owed on a mortgage that has not closed. Net
+worth is understated by $200,000 across that whole stretch. `LoanState.current_balance` is the single
+wrong number all of it flows from, and it is read by **six surfaces outside the seam** --
+`routes/loan/dashboard.py:259,482,511` (the loan detail page's "current principal"),
+`routes/loan/calculators.py:198,405,432,495` (payoff / refinance), `services/home_equity_service.py`,
+`services/property_equity_chart.py:496`, and `routes/accounts/detail.py:664,679` -- so this is not a
+seam-local defect and a seam-local guard cannot fix it.
+
+This is the exact mirror image of defect 2a. There, unpaid schedule rows paid DOWN a debt nobody had
+paid. Here, an unarrived origination CREATES a debt nobody has taken on. Same root cause: a producer
+answering a question with an event that has not happened.
+
+### 3a.2 Why the "fork the seam on not-yet-originated" answer is wrong
+
+It is a THIRD boundary rule, hand-synchronised with the other two, and it does not even close the
+hole. `if as_of < origination: return 0` fixes the past and the pre-origination future. It leaves the
+window between origination and the FIRST PAYMENT reporting whatever the seed says -- and once the
+resolver is corrected the seed is `$0.00`, so July 2026 would report the borrower owing nothing on a
+mortgage they closed three weeks earlier. Closing THAT needs a fourth rule. This is precisely the
+"two hand-synchronised boundary rules" pattern Section 3 exists to delete, and adding a third and a
+fourth is not a fix.
+
+### 3a.3 The fix: model the origination, do not special-case it
+
+One fact, stated once, applied by every producer that values a loan:
+
+> **A loan owes nothing before `origination_date`; from that date it owes its OPENING balance, less
+> whatever has since been paid.**
+
+The clean part -- and the reason this is a deduplication rather than a new rule -- is that the ledger
+ALREADY implements exactly this. Its OPENING posting IS the origination event, and once the date
+arrives the walk posts it and every reader gets the step-up for free. The projection simply has to
+carry the same fact for as long as the ledger cannot. **The same anchor the ledger will post as the
+OPENING is the one the projection seeds from until it does.** One fact, two owners, split on the one
+boundary the whole architecture already turns on.
+
+Concretely, three changes, each stating the SAME fact in the one place that question is asked:
+
+1. **The resolver stops reporting a balance for a loan that does not exist yet.**
+   `resolve_loan` derives `current_balance` from `_replay_from_anchor`, which seeds from the latest
+   anchor BY DATE regardless of `as_of`. Add the domain guard: `as_of < origination_date` ->
+   `current_balance = 0.00`. This is the resolver applying the rule the genesis walk already applies
+   to the same anchor list -- two copies of one rule become one. It fixes all six out-of-seam
+   surfaces at once, and `LoanState.current_balance` finally means what its name says at every
+   `as_of`.
+
+   The guard goes on the BALANCE only, NOT on `_replay_from_anchor` itself: the composer
+   (`compute_payoff_scenarios`) shares that replay for the schedule's STARTING STATE, and filtering
+   the anchor out there would collapse the loan's 360-row forward schedule to nothing. The balance
+   and the schedule's seed are two different questions, and this is where they finally separate.
+
+2. **The forward projection gains the origination as an event.** Both forward producers
+   (`forward_balance_at_date`, `compute_forward_loan_period_balance_map`) take the loan's
+   `owed_from` date and return `0.00` for any target before it, via ONE shared helper so the scalar
+   and the map cannot drift (the same discipline that failure 2a is about). For an already-originated
+   loan `origination <= ctx.as_of < target` always holds, so the guard never fires and the numbers are
+   byte-identical -- this cannot move a real loan.
+
+3. **The projection's seed is named for what it is.** `DebtSchedule.current_balance` is renamed
+   `projection_seed` and is:
+   * `state.current_balance` for a loan that HAS originated (the ledger-confirmed present), or
+   * the loan's OPENING ANCHOR BALANCE for one that has not (what it will owe the day it originates).
+
+   Sourcing the second from the loan's opening anchor fact -- `synthesize_origination_anchor`, the
+   very fact the ledger will post -- and never from the raw `params.original_principal` column is
+   deliberate: it keeps ONE definition of "the balance this loan opens at", and it keeps W9905
+   (`shekel-original-principal-as-balance`) meaningful. W9905 exists because an EXISTING loan's
+   balance was reported as its origination amount. A loan that has not originated legitimately owes
+   its opening balance, and that is a different statement -- but it is close enough in shape that it
+   gets a named source, a comment, and a test rather than a bare column read.
+
+**What this buys.** The fail-loud raise stays UNCONDITIONAL -- there is no `if not yet originated`
+branch beside the ledger check. A not-yet-originated loan never reaches it, because it has no
+confirmed past at all: the ledger has no domain, and the projection owns its whole timeline. That is
+not an exception to the design rule; it is the design rule, applied to a loan whose entire life is
+still in the future.
 
 ---
 
@@ -210,7 +337,7 @@ applies.
 
 **F2. `TestUnpaidScheduleRowsNeverReduceTheDebt` is deleted, not repaired.** **Proof:** it pins the
 behaviour of the no-ledger schedule fallback, and its own body asserts
-`confirmed_loan_balance_at(...) is None` as its PREMISE. C2 deletes that fallback, so the test asserts
+`confirmed_loan_balance_at(...) is None` as its PREMISE. C2b deletes that fallback, so the test asserts
 the behaviour of code that no longer exists. Replaced by `TestBrokenLoanFailsLoud`, which asserts the
 raise, and by `TestScalarAndMapAgree`, which is the invariant the deleted test was a one-sided proxy
 for.
@@ -283,7 +410,7 @@ says **$240,000**. Proven against the dev clone that the ledger's answer is prod
 Mortgage's past periods step down at each recorded event (178,103.41 -> 177,829.83 -> 177,554.69 ->
 177,277.97) rather than carrying today's balance flat backward. The three assertions pinned the
 no-ledger fallback. Their guard (PR #44 / `aba0242`) was against `compute_loan_period_balance_map`
-being **seeded with the original principal** -- a defect inside the very function C2 deletes.
+being **seeded with the original principal** -- a defect inside the very function C2b deletes.
 
 **Developer ruling:** re-point, do not re-value. Each test now asserts the trued-up balance at a
 period at/after the anchor (**number unchanged, $200,000**) and additionally pins the ledger's
@@ -430,16 +557,18 @@ schedule, so ~17 purely PROJECTED installments pay down principal the borrower n
 CONFIRMED rows, which is safe because it answers ONE date and RAISES for the future. This map answers
 the past AND the future in a single walk, so the same filter would flatten the forward projection to
 the last confirmed balance. Fixing it properly means splicing confirmed + forward -- which is precisely
-what the ledger path already does. **C2 deletes the branch; that is the fix.** The test is therefore not
+what the ledger path already does. **C2b deletes the branch; that is the fix.** The test is therefore not
 committed (a red test, or a band-aid, would both be worse), and the branch carries no coverage until
 then.
 
 **Reachability today: none.** After C1b every configured loan opens its ledger at params-create, and
 production runs a single baseline scenario, so `confirmed_loan_balance_map` never returns `None` for a
-real loan. The defect is latent, not live. C2 must delete `compute_loan_period_balance_map` outright --
+real loan. The defect is latent, not live. C2b must delete `compute_loan_period_balance_map` outright --
 not merely stop calling it.
 
 ### C2 DESIGN REQUIREMENT -- a not-yet-originated loan is not a broken loan
+
+**SUPERSEDED 2026-07-13 by Section 3a. Kept for the record; do not build the fork it proposes.**
 
 Surfaced by C1b's exit gate (below). ``origination_date`` carries NO not-future validator (unlike a
 true-up's ``anchor_date``), so a loan configured before it originates -- a mortgage closing next month --
@@ -447,14 +576,15 @@ is a legitimate, reachable production state. Its origination anchor post-dates t
 posts NO opening, and C2's fail-loud would RAISE on it: `/savings` and the year-end page would 500 for a
 user who did nothing wrong.
 
-C2 must therefore fork on WHY the opening is missing:
-
-* ``origination_date > today`` -- not yet originated. Legitimate. It owes nothing yet; answer $0.00 (here
-  the zero is TRUE, unlike Bug 2's).
-* ``origination_date <= today`` and still no opening -- BROKEN. Raise ``LoanLedgerNotOpenedError``.
+This section originally proposed to FORK the seam on ``origination_date > today`` and answer $0.00.
+The developer ruled (2026-07-13) that a known-upcoming loan must be SUPPORTED, and the adversarial
+probe then showed the fork treats a symptom: the real defect is that the ORIGINATION is a balance
+event nothing models, the app already reports **$200,000 owed on a mortgage that has not closed** at
+every period for four months, and the fork closes neither that nor the origination-to-first-payment
+window. See **Section 3a** for the measurement and the replacement design.
 
 `test_year_end_summary_service.py::TestMortgageInterest::test_mortgage_interest_partial_year` is the live
-test that forces this fork; it is the ONE remaining failure under the C2 simulation.
+test that forces the question; it is the ONE remaining failure under the C2 simulation.
 
 ### C1b EXIT GATE -- the C2 simulation (measured)
 
@@ -469,7 +599,7 @@ Making `_build_amortizing_balance_map` raise instead of falling back, and runnin
 The last one is the not-yet-originated loan above -- a C2 design requirement, not a fixture defect. C2
 therefore lands against a suite that is otherwise already green under its own semantics.
 
-### C2 PREREQUISITE -- the off-factory loan builders (measured, 2026-07-13)
+### C2b PREREQUISITE -- the off-factory loan builders (measured, 2026-07-13) -- **DONE in C1b**
 
 **C1 does NOT put the whole suite on the production path, and the plan is wrong to imply it does.**
 Nineteen test files construct `LoanParams` directly instead of going through `create_loan_account`,
@@ -489,44 +619,117 @@ tests across 8 files** -- and that is the MAP producer alone; the scalar's raise
 | `test_routes/test_debt_strategy.py` | 1 |
 | `test_integration/test_loan_resolver_single_source.py` | 1 |
 
-C2 therefore needs its own fixture step FIRST: route those local builders through the shared factory
+C2b therefore needs its own fixture step FIRST: route those local builders through the shared factory
 (they are a DRY violation regardless -- `test_balance_at.py::_make_mortgage` is a verbatim
 re-implementation of `create_loan_account` differing only in account type), or open their ledgers.
 Not doing this first means C2 lands as a 45-test red wall with no way to tell a real regression from
 a fixture that never modelled production.
 
-### C2 -- `fix(balance): the ledger owns a loan's past; a broken loan fails loud`
+### C2 -- `fix(loan): a loan's origination is a balance event; it owes nothing before it`
+
+**The corollary commit (Section 3a). Lands BEFORE C3 because C3's fail-loud is only unconditional
+once this exists.** Independently green and independently revertable; it moves no number for either
+real loan (both originated years ago, so every guard it adds is structurally unreachable for them --
+proven by the regression baseline, not asserted).
+
+* `loan_resolver/_state.resolve_loan` -- the domain guard on the derived balance:
+  `as_of < loan_params.origination_date` -> `current_balance = Decimal("0.00")`. Docstring states the
+  rule and why it is NOT applied inside `_replay_from_anchor` (the composer shares that replay for
+  the schedule's starting state; filtering the anchor there would collapse the forward schedule).
+* `account_projection` -- the forward producers learn the origination:
+  * new private `_projected_owed_at(forward_rows, target, seed, owed_from)` -- `0.00` before
+    *owed_from*, else `balance_from_schedule_at_date`. THE one place the rule is expressed.
+  * `forward_balance_at_date(schedule, target, seed, owed_from)` and
+    `compute_forward_loan_period_balance_map(schedule, periods, seed, owed_from)` both route through
+    it. Scalar and map cannot drift -- the structural lesson of 2a, applied pre-emptively.
+* `net_worth_kernel.DebtSchedule` -- `current_balance` renamed `projection_seed`, plus a new
+  `owed_from: date`. `generate_debt_schedules` fills them from the pass's ONE resolution:
+  `projection_seed = state.current_balance` when the loan has originated by `ctx.as_of`, else the
+  loan's OPENING ANCHOR balance (`synthesize_origination_anchor` -- the same fact the ledger will
+  post as the OPENING, never the raw `params.original_principal` column; see 3a.3).
+* `loan_owed_at_dates` -- passes `owed_from` through to `forward_balance_at_date`. The liability band
+  then reports `$0` for an upcoming loan's pre-origination samples instead of its full principal.
+* **[R3]** `balance_at/_loan_figures._is_paid_off` -- a loan that has not originated is NOT paid off.
+  **C2 CREATES this bug and must therefore fix it in the same commit.** `_is_paid_off` is
+  `(any confirmed payment) AND (current_balance <= 0)`. The confirmed-payment guard was assumed to
+  make an unoriginated loan safe; it does not. A settled transfer INTO a not-yet-originated loan is
+  constructible through the ordinary `transfer_service` (measured), giving one confirmed payment.
+  Today it reads `False` only because `current_balance` is the wrong `$200,000` C2 is about to zero.
+  Zero it, and an unclosed mortgage renders RETIRED: no debt on the Horizon, dropped from the debt
+  card's total. Guard on origination.
+* Tests -- `TestLoanNotYetOriginated` (new): the full trajectory of an upcoming mortgage, asserted on
+  the numbers in the 3a.1 table, across the scalar, the per-period map, `loan_owed_at_dates`, and
+  `LoanState.current_balance`. Specifically the FOUR regions, because three of them are wrong today:
+  before origination ($0), the origination-to-first-payment window (full opening balance), after the
+  first payment (amortizing), and `current_balance` today ($0). Plus `is_paid_off` is False with a
+  confirmed payment present (R3's negative control). Plus a negative control on the whole commit: an
+  already-originated loan's map and scalar are byte-identical before and after it.
+
+### C2b -- `fix(balance): the ledger owns a loan's past; a broken loan fails loud`
 
 **The correctness commit.**
 
 * New `LoanLedgerNotOpenedError(PostingError)` in `app/services/posting_reads.py` (beside
   `PostingError`, which already models exactly this family of invariant violation). Its message names
   the account, the scenario, and the repair (`sync_loan_postings_all_scenarios`).
-* `net_worth_kernel.amortizing_balance_at` -- when `as_of <= ctx.as_of` and
-  `confirmed_loan_balance_at` returns `None` for a loan that HAS a resolvable schedule, RAISE. Delete
-  the confirmed-rows walk added by `7b7c909b` (lines 437-443) and its 20-line comment block. Keep the
-  `debt_schedule is None` branch (that means no `LoanParams`, i.e. not a configured loan, which
-  legitimately routes to the cash producer -- it is not a boundary-rule fork).
-* `net_worth_kernel._build_amortizing_balance_map` -- when `confirmed_loan_balance_map` returns
-  `None`, RAISE. Delete the `compute_loan_period_balance_map` fallback (lines 873-877).
+* **[R2]** `net_worth_kernel.amortizing_balance_at` -- **the debt schedule must be resolved BEFORE
+  the ledger is read.** Today the ledger read comes first and its `None` is harmlessly ignored. An
+  AMORTIZING account with NO `LoanParams` -- a Mortgage account whose loan terms were never filled in
+  -- returns `None` from `confirmed_loan_balance_at` (measured), and a naive "`None` -> raise" would
+  turn that two-click user state into a 500 on `/savings`. So: resolve the schedule; `None` -> the
+  cash producer; only THEN read the ledger, and raise on its `None`. Delete the confirmed-rows walk
+  added by `7b7c909b` (lines 437-443) and its 20-line comment block.
+* **[R1]** `net_worth_kernel._build_amortizing_balance_map` -- when `confirmed_loan_balance_map`
+  returns `None`, ask the loan ONE question: **has it originated by `ctx.as_of`?**
+  * **No** -- then the ledger's answer is genuinely `$0.00` at every BEGUN period, because every begun
+    period starts on or before `ctx.as_of`, which is before origination. Say so explicitly (an
+    all-zeros confirmed map) and splice as normal.
+  * **Yes** -- then the loan is BROKEN. RAISE.
+
+  Delete the `compute_loan_period_balance_map` fallback (lines 873-877).
+
+  **The earlier draft of this plan said "the projection owns the whole timeline; return the forward
+  map for every period." That was wrong, and measuring it is what found this.** The forward map is
+  period-END keyed; the confirmed map is period-START keyed. For a loan originating INSIDE the current
+  pay period (origination 2026-03-25, today 2026-03-20, period 2026-03-13..2026-03-26) the forward map
+  reports the full `$200,000` for EVERY begun period -- while the hero reports `$0`. One page
+  contradicting itself about one loan on one day: the arc's own opening symptom, recreated by the fix.
+  The splice is now used for EVERY loan, with no exception anywhere.
+
+  **Type the zeros.** The kernel now emits two different `$0.00`s and they must never be confused: this
+  one means *"the loan does not exist yet"* and is TRUE; the ledger's pre-opening zero means *"I have no
+  record"* and is FALSE (it is C1b's Bug 2, and it still lives at FU-4). The fact that tells them apart
+  is the origination date C2 introduces. Say this in the code, not just here.
 * `account_projection.compute_loan_period_balance_map` -- now dead. DELETE it. Confirm with a
-  repo-wide grep that `_build_amortizing_balance_map` was its only caller.
+  repo-wide grep that `_build_amortizing_balance_map` was its only caller (verified 2026-07-13: it
+  is, in `app/`).
 * `tools/pylint/shekel_checkers/` -- W9905 (`shekel-original-principal-as-balance`) currently guards
   `compute_loan_period_balance_map` AND `balance_from_schedule_at_date`. Drop the dead name, keep the
   live one. Update the checker's tests.
-* Keep `DebtSchedule.current_balance`: after this change it is read ONLY as the FORWARD projection's
-  seed (`compute_forward_loan_period_balance_map`, `forward_balance_at_date`), and it is
-  ledger-seeded. Add a docstring line saying so, since its old job (the pre-first-payment fallback) is
-  gone.
 * Tests:
   * `TestBrokenLoanFailsLoud` (new, in `test_net_worth_kernel.py`) -- a configured loan with its
-    opening posting deleted raises `LoanLedgerNotOpenedError` from BOTH the scalar and the map.
-    Replaces `TestUnpaidScheduleRowsNeverReduceTheDebt` (F2).
-  * `TestScalarAndMapAgree` (new, the structural invariant) -- for a matrix of loan shapes
-    (never-paid, mid-life-imported with a tracking start, trued-up, overpaid, short-paid, paid-off),
-    assert `balance_map(loan, ctx, periods)[p.id] == balance_at(loan, ctx, p.end_date)` for EVERY
-    period. This is the test that would have caught 2a, and it is the durable guard.
+    opening posting deleted (via C1's `clear_loan_ledger`) raises `LoanLedgerNotOpenedError` from
+    BOTH the scalar and the map. Replaces `TestUnpaidScheduleRowsNeverReduceTheDebt` (F2).
+    Plus **[R2]**: an AMORTIZING account with no `LoanParams` does NOT raise -- it routes to cash.
+  * **[R4]** `TestScalarAndMapAgree` (new, the structural invariant) -- for a matrix of loan shapes
+    (never-paid, mid-life-imported with a tracking start, trued-up, overpaid, short-paid, paid-off,
+    **and not-yet-originated**, **and originating inside the current period**), assert for EVERY
+    period:
+
+    ```
+    balance_map(loan, ctx, periods)[p.id] == balance_at(
+        loan, ctx, p.start_date if p.start_date <= ctx.as_of else p.end_date)
+    ```
+
+    **The plan previously specified `balance_at(p.end_date)` for every period. That invariant is FALSE
+    on a correct loan and would have been RED from the moment it was written** -- measured: a normal
+    never-paid loan reports `map[current period] = $50,000.00` against
+    `balance_at(current period.end_date) = $39,634.37`. The map is period-START keyed for BEGUN periods
+    (it reads the ledger) and period-END keyed for FUTURE ones (it reads the projection), so the probe
+    date must follow the same split. Building the guard as written would have meant "fixing" correct
+    code to make a wrong test green. (The $39,634.37 itself is a real defect -- see FU-7.)
   * The cross-page oracle gains the `cross_page_loan_unpaid_ctx` fixture from C1.
+  * A not-yet-originated loan does NOT raise (the regression guard on 3a's ruling).
 
 ### C3 -- `fix(balance): fence the context's loan handle; a route cannot hold a LoanState`
 
@@ -633,17 +836,17 @@ CONFIRMED CORRECT by the developer (2026-07-13):
 | Mortgage | 3 | **$177,277.97** | correct; history correct |
 | Van Loan | 8 | **$15,663.59** | correct; **history is NOT** (see FU-1) |
 
-Both current balances are correctness oracles. After C2 and C3, `/savings`, `/accounts/<id>` (loan
+Both current balances are correctness oracles. After C2, C2b and C3, `/savings`, `/accounts/<id>` (loan
 detail), the property detail page, `/debt-strategy`, and the analytics Taxes tab must each still report
 **$177,277.97** and **$15,663.59** to the cent. Any movement in either is a defect in this plan, not a
 correction, and the commit stops.
 
 **The Van Loan's HISTORY is not an oracle, and this plan must not change it either.** Its past-period
-balances are known-wrong (FU-1). C2 does not touch them: with the ledger open, begun periods ALREADY
+balances are known-wrong (FU-1). C2b does not touch them: with the ledger open, begun periods ALREADY
 read the confirmed ledger through
 `splice_confirmed_and_projected_loan_balances`, and C2 only deletes the branch taken when the ledger is
 absent. So the Van Loan's historical balances should come out of this plan byte-identical -- still
-wrong, and fixed separately. If they move, C2 changed something it should not have.
+wrong, and fixed separately. If they move, C2b changed something it should not have.
 
 That asymmetry is the point of the fail-loud design and worth stating plainly: **the Van Loan proves a
 correct current balance can sit on top of a wrong history.** Its current balance is right only because
@@ -656,10 +859,28 @@ precisely what failed us here.
 
 **The new structural guards** (these are the deliverable, as much as the fix):
 
-1. `TestScalarAndMapAgree` -- scalar == map at every period, across six loan shapes.
-2. `TestBrokenLoanFailsLoud` -- a loan with no opening posting raises from both producers.
-3. `cross_page_loan_unpaid_ctx` -- the cross-page oracle now covers a loan with past-dated unpaid rows.
-4. The C3 checker cases -- a route holding a `LoanState` is a build failure.
+1. `TestScalarAndMapAgree` -- scalar == map at every period, across EIGHT loan shapes, probing each
+   period at the date its own producer is keyed by (see C2b [R4] -- the naive period-END form is FALSE
+   on a correct loan).
+2. `TestBrokenLoanFailsLoud` -- a loan with no opening posting raises from both producers; an
+   AMORTIZING account with no `LoanParams` does NOT.
+3. `TestLoanNotYetOriginated` -- the four regions of an upcoming loan's trajectory (C2), on every
+   producer. Three of the four are wrong today.
+4. `cross_page_loan_unpaid_ctx` -- the cross-page oracle now covers a loan with past-dated unpaid rows.
+5. The C3 checker cases -- a route holding a `LoanState` is a build failure.
+
+**Every one of guards 1-3 exists because a PROBE found a bug the plan's prose had missed.** The
+adversarial review of C2 (2026-07-13) ran four throwaway probes against the real code and every one of
+them turned up a defect -- two in the C2 design itself (R1, R3), one in C2b (R2), one in the guard
+above (R4). The plan had been reasoned about, not executed. That is the same failure the whole arc is
+about: C1's thesis is that the suite was green because it never ran the path production runs. **The
+probes are therefore promoted to permanent tests rather than discarded.**
+
+**The C2 negative control.** C2 changes the resolver, which every loan touches. Its safety claim is
+that the guard is structurally unreachable for an originated loan (`origination <= ctx.as_of <
+target`, always). That is asserted, not assumed: an already-originated loan's scalar, map, and
+`current_balance` must be byte-identical across the commit, and the dev clone must still read
+Mortgage **$177,277.97** and Van Loan **$15,663.59** to the cent.
 
 ---
 
@@ -782,11 +1003,95 @@ pinned to a historical date resolves the loan with today's overpayment plan. Har
 caller pins as_of at or near today (C4 now enforces "not future"), but it is a latent wrong answer for
 any historical read and should be dated when one is built.
 
+### FU-5 -- A CONFIRMED payment on a loan that has not originated
+
+Found while designing C2 (Section 3a); not caused by it. Nothing forbids settling a transfer into a
+loan account whose `origination_date` has not arrived. The genesis walk would then split that payment
+against a running balance of zero and post it with no OPENING to correct against. C2 routes such a
+loan to the projection, whose forward walk reads only UNCONFIRMED rows -- so the payment would be
+silently ignored by every balance surface.
+
+It is broken data, and by the arc's own rule it should FAIL LOUD rather than be quietly dropped. Not
+folded into C2 because it needs its own reachability measurement first (can the recurring-payment
+generator even produce it, or does it require a hand-made transfer?) and because a wrong guard here
+would reject a legitimate loan. **C2 must add the assertion that a not-yet-originated loan has no
+confirmed payments, and report rather than paper over it if one turns up.**
+
+### FU-7 -- The forward projection PAYS DOWN overdue installments that were never paid (2a, forwards)
+
+**Its own arc. Found 2026-07-13 by the C2 adversarial review; NOT caused by this arc, and C2/C2b do
+not make it worse. Latent on real data (both loans carry ZERO past-dated unconfirmed rows -- verified
+against the clone), LIVE in the test suite -- the identical posture defect 2a had.**
+
+**The defect, measured.** An auto loan: $50,000 borrowed 2025-01-25, 6%, 60 months, due the 25th, no
+payments ever recorded. Read on 2026-03-20:
+
+| | |
+|---|---|
+| ledger / hero / net-worth trend, current period | **$50,000.00** |
+| net-worth trend, NEXT period (`balance_at(2026-03-26)`) | **$39,634.37** |
+
+A **$10,365.63** debt reduction in six days, with no payment recorded and no cash moved. The schedule
+carries 14 installments dated 2025-02-25 through 2026-03-25, all past, none paid; the forward walk
+counts every installment due on or before the target, so the moment you ask about any date past today,
+all 14 fire at once.
+
+**The diagnosis.** The PAST is cash-basis (the ledger counts only what settled). The FUTURE is
+due-basis (the projection counts every installment that came due, paid or not). The seam between them
+is `as_of`. That cliff IS the seam, made visible. It is defect 2a -- unpaid rows paying down a debt --
+pointed forward instead of backward, and `loan_owed_at_dates`' own docstring already calls it what it
+is ("silently UNDERSTATING the debt") while refusing to commit it in only one direction.
+
+**The naive fix is WRONG, and this is the finding that matters.** "Start the projection after `as_of`"
+was tried and measured: **26 failures.** It does not merely stop paying debt you did not pay -- it
+silently DROPS a payment you have planned and will make. Your mortgage is due Jul 1; today is Jul 13;
+you have not clicked "mark paid" yet, and a Projected payment record is already sitting there. Under
+that fix `project_forward` never visits July's month, so July's override is never applied
+(`_projection.py:674`): the balance holds flat, the payoff date jumps a month later, the loan grows a
+balloon at maturity -- and it all snaps back the moment you record the payment. **A payoff date that
+flickers every month between the due date and the mark-paid.**
+
+**The distinction the fix must turn on** (which the two-option framing missed entirely):
+
+| shape | payment RECORD? | meaning |
+|---|---|---|
+| never-paid loan (every fixture; a delinquent loan) | none | never planned, never happened |
+| your mortgage, mid-period | Projected | planned, just not recorded yet |
+
+Today's behaviour treats BOTH as paid. The naive fix treats BOTH as never happening. Neither is right.
+
+**Starting proposal for the arc (measure before promising):** an installment BACKED by a payment record
+(confirmed or projected) is projected; one with NO record behind it never happened and never pays the
+debt down. That kills the cliff (the never-paid loan has no records) without touching the mid-period
+case (yours has one). It touches the loan detail page, the payoff date, and the schedule table, so it
+is a modelling decision with UI consequences -- not a balance-seam change, and not something to bolt
+onto C2.
+
+### FU-6 -- The payoff / refinance calculators on a not-yet-originated loan
+
+`routes/loan/calculators.py:405` computes `refi_principal = state.current_balance + closing_costs`.
+After C2, `current_balance` is correctly `$0.00` for a loan that has not originated, so "refinance"
+would quote the closing costs alone. `:495` already guards the payoff calculator
+(`state.current_balance <= 0` -> no scenarios), which after C2 correctly reports nothing to pay off.
+
+Neither is a wrong NUMBER -- they are degenerate answers to a question that makes no sense for a loan
+that does not exist. The right fix is a UI-tier "this loan has not originated yet" state on the loan
+detail page, which is a design question for the loan-detail surface, not a balance-seam one. Recorded
+so it is a decision rather than an oversight.
+
 ---
 
 ## 8. Rollback
 
-C1 is test-only. C3-C6 are fence and documentation. **C2 is the only commit that changes what a
-production surface computes**, and its change is "raise instead of returning a number." Reverting it
-restores the fallback and the divergence; nothing else depends on it having landed. The Mortgage's
-$177,277.97 is the single check that tells you whether the arc is behaving.
+C1 is test-only. C3-C6 are fence and documentation. **C2 and C2b are the only commits that change
+what a production surface computes.**
+
+* **C2b**'s change is "raise instead of returning a number." Reverting it restores the fallback and
+  the divergence; nothing else depends on it having landed.
+* **C2**'s change is confined, by construction, to a loan whose `origination_date` is in the future.
+  Neither real loan is one, so reverting it moves nothing on production data -- it only restores the
+  $200,000 phantom for an upcoming loan. C2b depends on C2 having landed (without it, C2b's
+  unconditional raise would 500 the `/savings` page for a user with an upcoming mortgage), so revert
+  C2b first.
+
+The Mortgage's $177,277.97 is the single check that tells you whether the arc is behaving.

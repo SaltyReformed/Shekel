@@ -291,11 +291,11 @@ class TestBalanceMapLoan:
                 if anchor_date <= p.end_date < first_payment
             ]
             assert post_anchor, "expected a post-anchor pre-first-payment period"
-            assert seam[post_anchor[0].id] == schedule.current_balance
+            assert seam[post_anchor[0].id] == schedule.projection_seed
             # ...which is the trued-up current balance, never the original
             # principal (the PR #44 / aba0242 boundary bug).
-            assert schedule.current_balance == Decimal("200000.00")
-            assert schedule.current_balance != Decimal("240000.00")
+            assert schedule.projection_seed == Decimal("200000.00")
+            assert schedule.projection_seed != Decimal("240000.00")
 
             # A period that ENDED before the true-up: the ledger's answer.  The
             # loan opened at $240,000 and no payment was ever recorded, so that is
@@ -344,7 +344,7 @@ class TestBalanceMapLoan:
             assert seam == expected
             # Paid off -> empty schedule -> $0 current balance everywhere.
             assert schedule.schedule == []
-            assert schedule.current_balance == Decimal("0.00")
+            assert schedule.projection_seed == Decimal("0.00")
             assert seam[periods[0].id] == Decimal("0.00")
             assert seam[periods[-1].id] == Decimal("0.00")
 
@@ -831,7 +831,7 @@ class TestBalanceAt:
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
             expected = balance_from_schedule_at_date(
-                schedule.schedule, as_of, schedule.current_balance,
+                schedule.schedule, as_of, schedule.projection_seed,
             )
             assert seam == expected
 
@@ -2284,11 +2284,11 @@ class TestLiabilityOwedAtDates:
 
             # The seam's answer IS the schedule's arithmetic, to the cent.
             assert owed[acct.id][1] == (
-                debt.current_balance - principal_retired
+                debt.projection_seed - principal_retired
             )
             # And it agrees with the shared primitive every loan surface reads.
             assert owed[acct.id][1] == balance_from_schedule_at_date(
-                forward_rows, far_out, debt.current_balance,
+                forward_rows, far_out, debt.projection_seed,
             )
             # Sanity on the oracle: many payments fell due, not zero and not one.
             assert len(due_by_target) > 12
@@ -2334,7 +2334,7 @@ class TestLiabilityOwedAtDates:
             # The fixture really is in the hazardous state.
             assert overdue, "expected overdue unconfirmed rows in this fixture"
             walk_at_today = balance_from_schedule_at_date(
-                forward_rows, today, debt.current_balance,
+                forward_rows, today, debt.projection_seed,
             )
             assert walk_at_today < confirmed, (
                 "a schedule walk at today should understate the debt here"
@@ -2347,3 +2347,425 @@ class TestLiabilityOwedAtDates:
             # The seam reports what is OWED, not what the schedule wishes was paid.
             assert owed[acct.id] == [confirmed]
             assert owed[acct.id][0] != walk_at_today
+
+
+class TestLoanNotYetOriginated:
+    """An upcoming loan owes NOTHING until it originates.
+
+    ``origination_date`` carries no not-future validator (unlike a true-up's
+    ``anchor_date``), so configuring a mortgage that closes next month is a
+    legitimate, reachable state -- and the developer ruled (2026-07-13) that the
+    app must SUPPORT it.
+
+    Before the origination-event fix the app reported the loan's FULL PRINCIPAL as
+    owed at every pay period, for months before it closed.  The cause was not in
+    the seam: ``select_latest_anchor`` picks the latest anchor BY DATE with no
+    ``as_of`` filter, so the resolver seeded ``current_balance`` from an anchor
+    dated in the FUTURE.  Six surfaces outside the seam read that field.
+
+    The loan here originates 2026-04-15 -- AFTER the suite's frozen today
+    (2026-03-20) and INSIDE the seeded period range -- so all four regions of its
+    trajectory are assertable:
+
+      1. before origination                 -> $0.00 (it does not exist)
+      2. originated, before first payment   -> $200,000.00 (the opening balance)
+      3. after the first payment            -> amortizing
+      4. ``current_balance`` today          -> $0.00 (it owes nothing)
+
+    Arithmetic (200,000 @ 5.000% / 360 months, payment day 1):
+      monthly P&I = 1,073.64
+      first payment 2026-05-01: interest = round(200000 * 0.05/12) = 833.33;
+                                principal = 1073.64 - 833.33 = 240.31;
+                                remaining = 200000.00 - 240.31 = 199,759.69
+    """
+
+    ORIGINATION = date(2026, 4, 15)
+    OPENING = Decimal("200000.00")
+    AFTER_FIRST_PAYMENT = Decimal("199759.69")
+    ZERO = Decimal("0.00")
+
+    def _upcoming_mortgage(self, seed_user, db_session, periods):
+        """Create the mortgage that has not closed yet."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account
+
+        return create_loan_account(
+            seed_user, db_session, name="Closing In April",
+            principal=self.OPENING, rate=Decimal("0.05000"),
+            term=360, origination_date=self.ORIGINATION, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        )
+
+    def test_scalar_owes_nothing_before_origination_then_its_opening(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """balance_at across all four regions of the trajectory."""
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            assert bctx.as_of == date(2026, 3, 20)
+
+            # 1. The PAST, before it exists.  The ledger has no opening posting
+            #    for it -- correctly, nothing has happened -- and the projection
+            #    answers the honest zero.
+            assert balance_at.balance_at(
+                acct, bctx, date(2026, 2, 1)) == self.ZERO
+            # ...including TODAY.  This read $200,000.00 before the fix.
+            assert balance_at.balance_at(
+                acct, bctx, bctx.as_of) == self.ZERO
+            # 2. The FUTURE, still before it exists.
+            assert balance_at.balance_at(
+                acct, bctx, date(2026, 4, 14)) == self.ZERO
+            # 3. Originated, before the first payment: the full opening balance.
+            assert balance_at.balance_at(
+                acct, bctx, date(2026, 4, 20)) == self.OPENING
+            assert balance_at.balance_at(
+                acct, bctx, date(2026, 4, 30)) == self.OPENING
+            # 4. After the first payment (2026-05-01): amortizing.
+            assert balance_at.balance_at(
+                acct, bctx, date(2026, 5, 7)) == self.AFTER_FIRST_PAYMENT
+
+    def test_period_map_owes_nothing_before_origination(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The per-period map walks the same four regions as the scalar.
+
+        Periods 0-5 have BEGUN (they start on or before the frozen today), so
+        they read the ledger -- which knows nothing about this loan, and whose
+        zero is TRUE here: the loan did not exist in any of them.
+        """
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            bmap = balance_at.balance_map(acct, bctx, periods)
+
+            # Periods 0-5: BEGUN, all before origination.  Every one read
+            # $200,000.00 before the fix.
+            for period in periods[:6]:
+                assert period.start_date <= bctx.as_of
+                assert bmap[period.id] == self.ZERO
+            # Period 6 (2026-03-27..2026-04-09): future, still pre-origination.
+            assert bmap[periods[6].id] == self.ZERO
+            # Period 7 (2026-04-10..2026-04-23): contains the 2026-04-15
+            # origination, and its end precedes the first payment (2026-05-01),
+            # so the loan owes exactly its opening balance.
+            assert bmap[periods[7].id] == self.OPENING
+            # Periods 8-9: the first payment (2026-05-01) has landed.
+            assert bmap[periods[8].id] == self.AFTER_FIRST_PAYMENT
+            assert bmap[periods[9].id] == self.AFTER_FIRST_PAYMENT
+
+    def test_current_period_agrees_with_the_hero_when_origination_is_inside_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The cross-page guard: origination INSIDE the current pay period.
+
+        This is the shape that killed the first design of the fix.  The forward
+        map is period-END keyed; the confirmed map is period-START keyed.  The
+        current period runs 2026-03-13..2026-03-26 and today is 2026-03-20, so a
+        loan originating 2026-03-25 sits inside it -- AFTER today but BEFORE the
+        period ends.
+
+        Reading the current period off the forward map alone therefore reports the
+        full $200,000.00 while the hero (``balance_at`` today) reports $0.00: one
+        page contradicting itself about one loan on one day, which is the exact
+        failure this arc exists to delete.  The splice is what prevents it, and
+        this test is why the splice runs for EVERY loan with no exception.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from app.services.account_projection import (
+            compute_forward_loan_period_balance_map,
+        )
+        from app.services.net_worth_kernel import generate_debt_schedules
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            periods = seed_periods
+            acct = create_loan_account(
+                seed_user, db.session, name="Closing Friday",
+                principal=self.OPENING, rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 3, 25), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            )
+            bctx = BalanceContext.build(seed_user["user"].id)
+            current = next(
+                p for p in periods
+                if p.start_date <= bctx.as_of <= p.end_date
+            )
+            assert current.start_date == date(2026, 3, 13)
+            assert current.end_date == date(2026, 3, 26)
+
+            hero = balance_at.balance_at(acct, bctx, bctx.as_of)
+            trend = balance_at.balance_map(acct, bctx, periods)[current.id]
+            assert hero == self.ZERO
+            assert trend == hero, (
+                "the /savings hero and the net-worth trend's current-period "
+                f"point disagree: hero={hero} trend={trend}"
+            )
+
+            # Negative control: the forward map ALONE -- the producer the first
+            # design would have used for this period -- really does report the
+            # full opening balance here.  The splice is load-bearing, not
+            # decorative.
+            debt = generate_debt_schedules([acct], bctx)[acct.id]
+            forward_only = compute_forward_loan_period_balance_map(
+                debt.schedule, periods, debt.projection_seed, debt.owed_from,
+            )
+            assert forward_only[current.id] == self.OPENING
+
+    def test_liability_band_owes_nothing_before_origination(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The long-horizon liability band walks the same trajectory."""
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            current = balance_at.balance_at(acct, bctx, bctx.as_of)
+
+            owed = balance_at.liability_owed_at_dates(
+                [acct], bctx,
+                [date(2026, 4, 14), date(2026, 4, 20), date(2026, 5, 7)],
+                {acct.id: current},
+            )
+            assert owed[acct.id] == [
+                self.ZERO, self.OPENING, self.AFTER_FIRST_PAYMENT,
+            ]
+
+    def test_resolver_reports_nothing_owed_today(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``LoanState.current_balance`` is the number six surfaces read.
+
+        The loan detail page's "current principal", the payoff and refinance
+        calculators, home equity, and the property equity chart all read this
+        field directly.  It reported $200,000.00 for a mortgage that had not
+        closed; the guard lives in the resolver precisely so all of them are fixed
+        at once, which no seam-local guard could have done.
+
+        The SCHEDULE must survive that guard: it is what the projection walks once
+        the loan closes, and filtering the anchor out of ``_replay_from_anchor``
+        (rather than guarding the derived balance) would have collapsed it to
+        nothing.
+        """
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            resolved = bctx.loan(acct)
+
+            assert resolved.state.current_balance == self.ZERO
+            # The schedule is intact: 360 contractual rows from the first payment.
+            assert len(resolved.state.schedule) == 360
+            assert resolved.state.schedule[0].payment_date == date(2026, 5, 1)
+            assert (resolved.state.schedule[0].remaining_balance
+                    == self.AFTER_FIRST_PAYMENT)
+
+    def test_not_paid_off_even_with_a_confirmed_payment(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan that has not originated is NOT retired -- the R3 guard.
+
+        ``_is_paid_off`` is ``(any confirmed payment) AND (current_balance <= 0)``.
+        Zeroing ``current_balance`` (above) satisfies the second clause, and a
+        settled transfer INTO the loan -- a down payment, an earnest deposit --
+        satisfies the first through the ordinary ``transfer_service``.  Without the
+        origination guard an unclosed mortgage would render RETIRED: badged paid
+        off, dropped from the debt card's total, gone from the Horizon.
+
+        This bug did not exist before the origination fix; the fix CREATES it, and
+        this is the test that keeps it dead.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_account_of_type, create_settled_transfer,
+        )
+
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            checking = create_account_of_type(
+                seed_user, db.session, "Checking", "Chk",
+                anchor_balance=Decimal("9000.00"),
+            )
+            db.session.commit()
+            create_settled_transfer(
+                seed_user, db.session, checking, acct, periods[4],
+                amount=Decimal("1200.00"),
+            )
+            db.session.commit()
+
+            bctx = BalanceContext.build(seed_user["user"].id)
+            resolved = bctx.loan(acct)
+            # The two clauses that would otherwise conspire.
+            assert any(p.is_confirmed for p in resolved.context.payments)
+            assert resolved.state.current_balance == self.ZERO
+
+            assert balance_at.loan_figures(acct, bctx).is_paid_off is False
+
+
+class TestUpcomingLoanDoesNotCorruptTheSurfaces:
+    """The consumers that read a $0.00 balance as "this debt is gone".
+
+    ``balance_at`` correctly answers ``$0.00`` for a loan that has not been
+    borrowed yet.  Three surfaces then read that zero as "repaid" and reported the
+    OPPOSITE of the truth.  All three were found by an adversarial review of the
+    origination fix, which CREATED them -- the pre-fix code reported the loan's
+    full principal as owed, which was wrong in a different direction and happened
+    not to trip these particular consumers.
+
+    ``LoanFigures.is_originated`` is the one fact that separates "owes nothing"
+    from "has no debt ahead of it", and each test below is the negative control for
+    one consumer that needs it.
+    """
+
+    ORIGINATION = date(2026, 4, 15)
+    MORTGAGE = Decimal("200000.00")
+    AUTO = Decimal("100000.00")
+
+    def _both_loans(self, seed_user, db_session, periods):
+        """An unclosed mortgage beside a real, never-paid auto loan."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account
+
+        auto = create_loan_account(
+            seed_user, db_session, name="Auto",
+            principal=self.AUTO, rate=Decimal("0.06000"),
+            term=60, origination_date=date(2026, 1, 5), payment_day=5,
+            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+        )
+        mortgage = create_loan_account(
+            seed_user, db_session, name="Closing In April",
+            principal=self.MORTGAGE, rate=Decimal("0.05000"),
+            term=360, origination_date=self.ORIGINATION, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        )
+        return auto, mortgage
+
+    def test_debt_track_does_not_count_an_unborrowed_loan_as_repaid(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The dashboard debt marker: 0% repaid, not 66.67%.
+
+        ``_compute_principal_paid_fraction`` is an ALL-LOANS-EVER basis: every loan
+        contributes its ``original_principal`` to the denominator, and a loan owing
+        $0.00 therefore counts as fully repaid.  An unclosed $200,000 mortgage owes
+        $0.00, so it landed in the denominator with its whole principal in the
+        "paid" portion: beside a never-paid $100,000 auto loan the marker read
+        200000/300000 = **66.67% of principal repaid** for a borrower who had
+        repaid nothing.
+
+        It also broke the marker's one design invariant -- monotonicity.  On
+        closing day the mortgage's balance steps $0 -> $200,000 and the fraction
+        would COLLAPSE from 66.67% to 0%.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._metrics import (
+            _compute_principal_paid_fraction,
+        )
+
+        with app.app_context():
+            periods = seed_periods
+            auto, mortgage = self._both_loans(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            def _ad(acct):
+                figures = balance_at.loan_figures(acct, bctx)
+                return {
+                    "loan_params": bctx.loan(acct).params,
+                    "current_balance": balance_at.balance_at(
+                        acct, bctx, bctx.as_of),
+                    "is_paid_off": figures.is_paid_off,
+                    "is_originated": figures.is_originated,
+                }
+
+            # The fixture really is in the hazardous state.
+            assert _ad(mortgage)["current_balance"] == Decimal("0.00")
+            assert _ad(mortgage)["is_paid_off"] is False
+            assert _ad(mortgage)["is_originated"] is False
+            assert _ad(auto)["is_originated"] is True
+
+            fraction = _compute_principal_paid_fraction(
+                [_ad(auto), _ad(mortgage)],
+            )
+            # The auto loan is originated and never paid: 0 of 100,000 repaid.
+            # The mortgage is in NEITHER sum -- it has not been borrowed.
+            assert fraction == Decimal("0")
+
+    def test_year_end_reports_no_principal_progress_for_an_unborrowed_loan(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The year-end panel: the loan is absent, not reported as -$198,049.28 paid.
+
+        The C1b ledger-domain clamp skips a loan whose record begins after the year
+        -- but an unborrowed loan has NO ledger at all, so ``domain is None`` and
+        the clamp fails OPEN.  Its Jan-1 balance is a true $0.00 and its Dec-31
+        balance is the debt it will take on, so the difference was reported as
+        principal PAID, with ``tracked_from`` absent so the surface presented it as
+        a full calendar year.  That is the same inverted figure C1b was written to
+        delete, arriving through a door the clamp does not cover.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.net_worth_kernel import debt_schedule_rows
+        from app.services.year_end_summary_service._net_worth import (
+            _compute_debt_progress,
+        )
+
+        with app.app_context():
+            periods = seed_periods
+            auto, mortgage = self._both_loans(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            rows = debt_schedule_rows([auto, mortgage], bctx)
+
+            progress = _compute_debt_progress(
+                2026, [auto, mortgage], rows, bctx,
+            )
+            reported = {row["account_name"] for row in progress}
+            assert "Closing In April" not in reported, (
+                "an unborrowed loan has no principal progress to report; "
+                f"got {progress}"
+            )
+            assert "Auto" in reported
+
+    def test_property_chart_keeps_a_mortgage_that_closes_next_month(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The equity chart: the upcoming mortgage is charted, not dropped.
+
+        The chart dropped any loan whose ``current_balance <= 0`` -- a test whose
+        INTENT is "retired", and which an unborrowed loan satisfies.  So a $200,000
+        mortgage closing in 26 days vanished, the no-outstanding-debt fallback
+        fired, and the page drew ten years of debt-free equity on a house that is
+        about to carry a mortgage.
+
+        Today's $0.00 debt is right.  The chart is a FORWARD projection, and it was
+        omitting a real liability for its entire horizon.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import property_equity_chart
+        from app.routes.accounts.detail import _secured_loan_series
+
+        with app.app_context():
+            periods = seed_periods
+            _auto, mortgage = self._both_loans(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            series = _secured_loan_series([mortgage], bctx)
+            assert len(series) == 1
+            loan = series[0]
+            # It owes nothing today -- and it is NOT retired.
+            assert loan.current_balance == Decimal("0.00")
+            assert loan.is_originated is False
+            assert loan.is_retired is False
+
+            chart = property_equity_chart.build_property_equity_chart(
+                series, Decimal("400000.00"), Decimal("0.03000"), bctx.as_of,
+            )
+            assert chart.chart_state != property_equity_chart.CHART_STATE_NO_LOANS
+            # The mortgage really is drawn: the debt line reaches its principal
+            # once the loan closes.
+            assert max(chart.debt) >= self.MORTGAGE - Decimal("500.00")

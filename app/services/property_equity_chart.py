@@ -117,14 +117,36 @@ class SecuredLoanSeries:
             (``confirmed`` tier), the rest are the committed projection
             (``projected`` tier).
         current_balance: The loan's authoritative balance today
-            (``LoanState.current_balance``) -- the same figure the equity hero
+            (the ``balance_at`` seam's figure) -- the same one the equity hero
             nets, so the chart and the hero reconcile at the last confirmed
             month by construction.
+        is_originated: Whether the loan EXISTS yet
+            (:attr:`~app.services.balance_at.LoanFigures.is_originated`).  A loan
+            that has not been borrowed owes ``$0.00`` today and is NOT retired;
+            without this flag the ``current_balance <= 0`` test below would drop a
+            mortgage closing in 26 days and draw ten years of debt-free equity.
     """
 
     back_projection: list["AmortizationRow"]
     schedule: list["AmortizationRow"]
     current_balance: Decimal
+    is_originated: bool
+
+    @property
+    def is_retired(self) -> bool:
+        """Whether this loan is DONE -- borrowed, and now owing nothing.
+
+        THE single definition of "drop this loan from the chart", so the route
+        that packs the series and the producer that charts it cannot answer it two
+        ways.  They previously each carried their own ``current_balance <= 0``
+        test, which is exactly how both came to conflate "retired" with "not
+        borrowed yet" the moment the seam started reporting an honest ``$0.00``
+        for an upcoming loan.
+
+        A loan that has not originated owes nothing and is emphatically not
+        retired: its entire debt line is still ahead of it.
+        """
+        return self.is_originated and self.current_balance <= _ZERO_MONEY
 
 
 @dataclass(frozen=True)
@@ -487,14 +509,14 @@ def build_property_equity_chart(
         A :class:`PropertyEquityChart` -- ``Decimal`` series the route floats at
         its JSON serialization boundary.
     """
-    # A loan is charted only while it has a balance to owe TODAY -- decided by
-    # the current balance, NOT by schedule emptiness (a loan paid off through
-    # confirmed payments keeps its whole confirmed schedule, so an
+    # A loan is charted unless it is RETIRED -- decided by
+    # :attr:`SecuredLoanSeries.is_retired`, NOT by schedule emptiness (a loan paid
+    # off through confirmed payments keeps its whole confirmed schedule, so an
     # "is the schedule empty" test never fired the fallback; the H1 fix).  A
     # property whose every secured loan is paid off falls through to the arc.
-    outstanding = [
-        loan for loan in secured_loans if loan.current_balance > _ZERO_MONEY
-    ]
+    # A loan that has not been BORROWED yet also owes $0.00 and is charted, since
+    # its debt line is entirely ahead of it.
+    outstanding = [loan for loan in secured_loans if not loan.is_retired]
     if not outstanding:
         return _fallback_chart(market_value, appreciation_rate, today)
 

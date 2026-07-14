@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -81,10 +80,8 @@ from app.utils.period_projections import project_balance_horizons
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
-    from app.models.loan_params import LoanParams
     from app.models.pay_period import PayPeriod
     from app.services.balance_resolver import AnchorPoint
-    from app.services.loan_resolver import LoanState
 
 logger = logging.getLogger(__name__)
 
@@ -637,34 +634,48 @@ def update_interest_params(account_id):
 
 
 def _secured_loan_series(
-    resolved_loans: list[tuple[LoanParams, LoanState]],
+    loan_accounts: list,
+    balance_ctx: BalanceContext,
 ) -> list[property_equity_chart.SecuredLoanSeries]:
-    """Pack each OUTSTANDING resolved loan's rows for the equity chart.
+    """Pack each secured loan's rows for the equity chart.
 
-    For every secured loan with a positive balance today, builds its pre-tracking
-    contractual back-projection
+    For every secured loan, builds its pre-tracking contractual back-projection
     (:func:`app.services.loan_resolution.contractual_schedule_from_origination`,
     clipped to the months before the resolved schedule begins) and packs it with
-    the resolved schedule and current balance.  A paid-off loan (zero balance)
-    contributes nothing, so the chart's no-outstanding-debt fallback fires when
-    every secured loan is paid off (the H1 fix).  Reads each loan's rate-change
-    feed for the back-projection; the heavy resolution was already done once by
-    the caller.
+    the resolved schedule, the loan's balance today, and whether it exists yet.
+    Every figure comes from the read pass's ONE memoized resolution, so the chart
+    cannot disagree with the equity hero beside it.
+
+    **Neither "has it originated" nor "is it retired" is decided here.**  The first
+    is the seam's
+    (:attr:`~app.services.balance_at.LoanFigures.is_originated`); the second is
+    :attr:`~app.services.property_equity_chart.SecuredLoanSeries.is_retired`, which
+    the chart producer applies.  This route and that producer each used to carry
+    their own copy of a ``current_balance <= 0`` test, and two copies of a rule is
+    how BOTH came to drop a mortgage that closes next month -- it owes ``$0.00``
+    today, which is true, and it is not remotely retired.  Packing every loan and
+    letting the one predicate decide costs a back-projection walk for a paid-off
+    loan and removes a whole class of divergence.
 
     Args:
-        resolved_loans: The ``(LoanParams, LoanState)`` pairs the route resolved
-            once for this page load.
+        loan_accounts: The Property's secured loan accounts.  A non-loan (no
+            ``LoanParams``) is skipped, as it is for the equity hero.
+        balance_ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext`.
 
     Returns:
         One :class:`~app.services.property_equity_chart.SecuredLoanSeries` per
-        outstanding loan (empty when every secured loan is paid off).
+        configured secured loan.
     """
     series: list[property_equity_chart.SecuredLoanSeries] = []
-    for loan_params, state in resolved_loans:
-        if state.current_balance <= Decimal("0"):
+    for loan in loan_accounts:
+        resolved = balance_ctx.loan(loan)
+        if resolved is None:
             continue
+        figures = balance_at.loan_figures(loan, balance_ctx)
+        state = resolved.state
         full_contractual = contractual_schedule_from_origination(
-            loan_params, load_rate_changes(loan_params.account_id),
+            resolved.params, load_rate_changes(resolved.params.account_id),
         )
         tracking_start = (
             state.schedule[0].payment_date if state.schedule else None
@@ -676,7 +687,10 @@ def _secured_loan_series(
         series.append(property_equity_chart.SecuredLoanSeries(
             back_projection=back_projection,
             schedule=state.schedule,
-            current_balance=state.current_balance,
+            current_balance=balance_at.balance_at(
+                loan, balance_ctx, balance_ctx.as_of,
+            ),
+            is_originated=figures.is_originated,
         ))
     return series
 
@@ -684,8 +698,8 @@ def _secured_loan_series(
 def _property_chart_context(
     params: AssetAppreciationParams,
     equity: home_equity_service.HomeEquity,
-    resolved_loans: list[tuple[LoanParams, LoanState]],
-    today: date,
+    loan_accounts: list,
+    balance_ctx: BalanceContext,
 ) -> dict[str, object]:
     """Serialize the property equity-over-time chart for the detail band.
 
@@ -712,9 +726,11 @@ def _property_chart_context(
         equity: The :class:`~app.services.home_equity_service.HomeEquity`
             snapshot (its ``market_value`` gates ``has_equity_chart`` and is the
             chart's anchor).
-        resolved_loans: The ``(LoanParams, LoanState)`` pairs resolved once for
-            this load (shared with the equity hero).
-        today: The as-of / compounding-origin date.
+        loan_accounts: The Property's secured loan accounts (each resolved once
+            for this load through *balance_ctx*, shared with the equity hero).
+        balance_ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext`; its ``as_of``
+            is the chart's compounding origin.
 
     Returns:
         The ``has_equity_chart`` / ``chart_json`` / ``chart_state`` context the
@@ -731,10 +747,10 @@ def _property_chart_context(
             "has_estimated_debt": False,
         }
     chart = property_equity_chart.build_property_equity_chart(
-        _secured_loan_series(resolved_loans),
+        _secured_loan_series(loan_accounts, balance_ctx),
         equity.market_value,
         params.annual_appreciation_rate,
-        today,
+        balance_ctx.as_of,
     )
     return {
         "has_equity_chart": True,
@@ -792,7 +808,6 @@ def property_detail(account_id):
         db.session.commit()
 
     balance_ctx = BalanceContext.build(current_user.id)
-    today = balance_ctx.as_of
 
     # Every secured loan is read from the read pass's ONE memoized resolution,
     # so the equity hero, the equity chart, and the /savings cockpit's equity
@@ -800,13 +815,6 @@ def property_detail(account_id):
     # itself and hand the pure ``compute_home_equity`` its own figures, a second
     # equity path parallel to ``resolve_home_equity``.
     equity = home_equity_service.resolve_home_equity(account, balance_ctx)
-    resolved_loans: list[tuple[LoanParams, LoanState]] = [
-        (resolved.params, resolved.state)
-        for resolved in (
-            balance_ctx.loan(loan) for loan in account.secured_loans
-        )
-        if resolved is not None
-    ]
 
     return render_template(
         "accounts/property_detail.html",
@@ -814,7 +822,9 @@ def property_detail(account_id):
         params=params,
         equity=equity,
         secured_loans=account.secured_loans,
-        **_property_chart_context(params, equity, resolved_loans, today),
+        **_property_chart_context(
+            params, equity, account.secured_loans, balance_ctx,
+        ),
     )
 
 

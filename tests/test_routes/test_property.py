@@ -291,6 +291,7 @@ def _series_for(loan, scenario_id, today):
         back_projection=back_projection,
         schedule=state.schedule,
         current_balance=state.current_balance,
+        is_originated=True,
     )
 
 
@@ -358,6 +359,10 @@ class TestPropertyEquityChartProducer:
             paid_off = property_equity_chart.SecuredLoanSeries(
                 back_projection=[], schedule=state.schedule,
                 current_balance=Decimal("0.00"),
+                # Borrowed, and now owing nothing -- RETIRED.  A loan that has not
+                # been borrowed yet also owes $0.00 and must NOT be dropped; that
+                # is what ``is_originated`` separates.
+                is_originated=True,
             )
 
             chart = property_equity_chart.build_property_equity_chart(
@@ -581,6 +586,7 @@ class TestPropertyEquityChartProducer:
                 back_projection=back_projection,
                 schedule=state.schedule,
                 current_balance=state.current_balance,
+                is_originated=True,
             )
             equity = home_equity_service.compute_home_equity(
                 _FOUR_HUNDRED_K, [state.current_balance],
@@ -720,6 +726,7 @@ class TestPropertyEquityChartProducer:
             series = property_equity_chart.SecuredLoanSeries(
                 back_projection=[], schedule=schedule,
                 current_balance=Decimal("700.00"),
+                is_originated=True,
             )
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0"), today,
@@ -758,6 +765,7 @@ class TestPropertyEquityChartProducer:
             series = property_equity_chart.SecuredLoanSeries(
                 back_projection=[], schedule=schedule,
                 current_balance=Decimal("800.00"),
+                is_originated=True,
             )
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0"), today,

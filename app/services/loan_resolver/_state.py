@@ -40,9 +40,14 @@ class LoanState:
     the same instance cannot be silently amended between consumers.
 
     Attributes:
-        current_balance: Loan balance after replaying confirmed
-            payments forward from the latest anchor.  Display this
-            instead of ``LoanParams.current_principal``.
+        current_balance: What the loan owes AS OF ``as_of`` -- the balance
+            after replaying confirmed payments forward from the latest anchor.
+            Display this instead of ``LoanParams.current_principal``.
+            ``Decimal("0.00")`` for a loan whose ``origination_date`` is after
+            ``as_of``: it does not exist yet, so it owes nothing (see
+            :func:`resolve_loan`).  This is NOT the forward projection's seed --
+            for a not-yet-originated loan the two differ, and the seed is the
+            seam's (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`).
         monthly_payment: P&I payment as of ``as_of``.  For an ARM
             inside its fixed-rate window this is held constant for
             every ``as_of`` in the window (E-02 invariant).  Outside
@@ -167,7 +172,11 @@ def resolve_loan(
        replay via :func:`._periods._replay_from_anchor` (independent of
        the schedule walk -- the resolver owns its balance derivation so a
        future projection change cannot silently change
-       ``state.current_balance``).
+       ``state.current_balance``) -- unless *as_of* PRECEDES the loan's
+       ``origination_date``, in which case the loan does not exist yet and
+       owes ``0.00``.  See the inline comment: the replay's anchor selection
+       is not ``as_of``-filtered, so without this guard a loan configured
+       before it closes reports its full principal as owed today.
     5. Compute the monthly payment per ARM-in-window vs.
        ARM-out-of-window vs. fixed-rate rules.
     6. Return the LoanState; consumers read its fields without
@@ -253,11 +262,36 @@ def resolve_loan(
     # cannot desync off-schedule.  The schedule-replay call stays independent
     # of the composer's own so a future projection change cannot silently
     # move the unseeded balance.
-    current_balance_full = (
-        _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
-        if confirmed_view is None
-        else confirmed_view.balance
-    )
+    if as_of < loan_inputs.loan_params.origination_date:
+        # A loan does not exist before it originates, and cannot owe anything.
+        # The replay would answer otherwise: ``select_latest_anchor`` picks the
+        # latest anchor BY DATE with no ``as_of`` filter, so a loan resolved
+        # today seeds its balance from an origination anchor dated in the
+        # FUTURE and reports its full principal as owed NOW.  Measured: a
+        # $200,000 mortgage originating 2026-07-01, read on 2026-03-20, showed
+        # $200,000 owed at every pay period back to January -- four months
+        # before it closed.
+        #
+        # The genesis walk already applies exactly this rule to the same anchor
+        # list (``_walk._merge_anchor_and_payment_events`` drops anchors after
+        # its as-of, which is why such a loan posts no OPENING); this is the
+        # resolver applying it to the balance it derives, so the two agree by
+        # construction instead of by luck.
+        #
+        # It guards the BALANCE only, deliberately NOT ``_replay_from_anchor``:
+        # ``compute_payoff_scenarios`` shares that replay for the SCHEDULE's
+        # starting state, and filtering the anchor out there would collapse the
+        # loan's whole forward schedule to nothing.  "What is owed now" and
+        # "what balance does the schedule start from" are two questions, and
+        # this is where they separate.  The projection's seed is supplied by
+        # the seam (``net_worth_kernel.DebtSchedule.projection_seed``).
+        current_balance_full = ZERO_MONEY
+    else:
+        current_balance_full = (
+            _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
+            if confirmed_view is None
+            else confirmed_view.balance
+        )
 
     # Monthly P&I is the current rate period's level payment, held
     # constant within the period and recast only at an adjustment

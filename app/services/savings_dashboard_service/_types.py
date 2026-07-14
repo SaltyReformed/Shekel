@@ -8,7 +8,6 @@ a long positional parameter list.
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
@@ -17,6 +16,7 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
+from app.services.balance_at import LoanFigures
 from app.services.resolution_context import BalanceContext
 
 
@@ -95,18 +95,28 @@ class _ProjectionContext:
 
 @dataclass(frozen=True)
 class _LoanAccountResult:
-    """Resolver-derived figures for one loan account.
+    """One loan account's balance, plus the seam's rich figures for it.
 
-    Carries the figures the per-account dict needs from the loan
-    resolver so ``_compute_loan_account`` can return them as one cohesive
-    value instead of a positional tuple.  The loan tile renders the current
-    balance, monthly payment, rate, and payoff date; it shows no
-    projected-balance horizons (those are the :mod:`app.services.balance_at`
-    seam's job for the non-loan kinds), so none are carried here.
+    What ``_compute_loan_account`` returns, so it hands back one cohesive value
+    instead of a positional tuple.  The loan tile renders the current balance,
+    monthly payment, rate, and payoff date; it shows no projected-balance horizons
+    (those are the :mod:`app.services.balance_at` seam's job for the non-loan
+    kinds), so none are carried here.
+
+    It COMPOSES :class:`~app.services.balance_at.LoanFigures` rather than
+    re-declaring its fields.  It used to copy them, and the copy silently went
+    stale the moment the seam grew ``is_originated`` -- a field whose whole purpose
+    is to stop a consumer misreading a loan's balance.  A bundle that must be
+    hand-synchronised with the seam it mirrors is the seam's fence with a hole in
+    it, so the duplication is not merely untidy.
+
+    Attributes:
+        current_balance: The seam's balance-at-today for the loan
+            (:func:`app.services.balance_at.balance_at`).
+        figures: The seam's :class:`~app.services.balance_at.LoanFigures` -- the
+            rich, non-balance detail (payment, rate, payoff, and whether the loan
+            is retired or not yet borrowed).
     """
 
     current_balance: Decimal
-    monthly_payment: Decimal
-    current_rate: Decimal
-    payoff_date: date | None
-    is_paid_off: bool
+    figures: LoanFigures

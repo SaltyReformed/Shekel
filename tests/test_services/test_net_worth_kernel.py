@@ -10,6 +10,7 @@ no-drift guard for the move; these tests pin the kernel's public
 contract independently of either consumer.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app.services import net_worth_kernel, pay_period_service
@@ -250,7 +251,9 @@ class TestBuildAccountBalanceMap:
             balances = net_worth_kernel.build_account_balance_map(
                 acct, bctx, all_periods,
                 debt_schedule=net_worth_kernel.DebtSchedule(
-                    schedule=[], current_balance=Decimal("240000.00"),
+                    schedule=[],
+                    projection_seed=Decimal("240000.00"),
+                    owed_from=date(2024, 1, 1),
                 ),
                 investment_params=None,
                 deductions=[],
@@ -380,7 +383,7 @@ class TestAmortizingReadSwitch:
                 loan.id, scenario.id, periods,
             )
             projected = compute_loan_period_balance_map(
-                debt_schedule.schedule, periods, debt_schedule.current_balance,
+                debt_schedule.schedule, periods, debt_schedule.projection_seed,
             )
 
             assert dense is not None

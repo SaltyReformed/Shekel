@@ -327,16 +327,98 @@ def splice_confirmed_and_projected_loan_balances(
     return result
 
 
+ZERO_MONEY = Decimal("0.00")
+
+
+def _forward_rows(schedule: list) -> list:
+    """Return the schedule's UNCONFIRMED rows, chronological.
+
+    The row set BOTH forward producers project over
+    (:func:`forward_balance_at_date` and
+    :func:`compute_forward_loan_period_balance_map`), extracted so the two
+    cannot drift on which rows count as "still to come" -- the structural
+    lesson of the scalar/map divergence recorded at
+    ``docs/audits/balance_architecture/implementation_plan_fail_loud_ledger_authority.md``
+    Section 2a, applied pre-emptively.
+
+    Args:
+        schedule: The resolver's :class:`AmortizationRow` list (confirmed
+            history rows plus committed forward rows).
+
+    Returns:
+        The unconfirmed rows, sorted ascending by ``payment_date``.
+    """
+    return sorted(
+        (row for row in schedule if not row.is_confirmed),
+        key=lambda row: row.payment_date,
+    )
+
+
+def _projected_owed_at(
+    forward_rows: list,
+    target: date,
+    seed: Decimal,
+    owed_from: date,
+) -> Decimal:
+    """Return the projected balance at *target* -- ``0.00`` before *owed_from*.
+
+    THE one place the origination rule is expressed:
+
+        **A loan owes nothing before it originates.**
+
+    Both forward producers route through this, so the scalar and the per-period
+    map cannot answer that question differently (see :func:`_forward_rows`).
+
+    *owed_from* is the loan's ``origination_date``.
+
+    **Why this cannot move a live loan's number, stated precisely.**  For a loan
+    that has originated, the guard CAN fire -- :func:`compute_forward_loan_period_balance_map`
+    is handed EVERY period, begun ones included, so a period that ended before the
+    loan was taken out probes ``target < owed_from`` and gets ``0.00``.  What makes
+    that harmless is not the guard's unreachability but the SPLICE
+    (:func:`splice_confirmed_and_projected_loan_balances`): it reads the forward map
+    only for periods that have NOT begun, and for an originated loan every such
+    period starts after ``ctx.as_of >= owed_from``.  So the zeros are computed and
+    then discarded, never read.  The scalar (:func:`forward_balance_at_date`) has no
+    such subtlety: it is only ever asked for a date after ``ctx.as_of``.
+
+    The guard therefore only CHANGES an answer for a loan configured BEFORE it
+    closes (a mortgage closing next month), which the app permits and which, before
+    it, reported its full principal as owed at every pay period back to the
+    beginning of the user's history.
+
+    Args:
+        forward_rows: The unconfirmed rows from :func:`_forward_rows`.
+        target: The date to value the loan at.
+        seed: The balance in effect before the first row -- the loan's
+            ledger-confirmed present, or (for a loan that has not originated) the
+            balance it will OPEN at.  See
+            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`.
+        owed_from: The loan's ``origination_date``.  Before it the loan does not
+            exist and owes ``0.00``.
+
+    Returns:
+        The projected ``Decimal`` balance owed at *target*.
+    """
+    if target < owed_from:
+        return ZERO_MONEY
+    return balance_from_schedule_at_date(forward_rows, target, seed)
+
+
 def forward_balance_at_date(
     schedule: list,
     target: date,
     current_balance: Decimal,
+    owed_from: date,
 ) -> Decimal:
     """Return a loan's PROJECTED balance at a future date.
 
     *current_balance* -- the confirmed present, which the read switch seeds from
     the genesis ledger -- reduced by the scheduled payments still TO COME by
-    *target*.  Walks ONLY the schedule's UNCONFIRMED rows, and that exclusion is
+    *target*.  ``0.00`` before *owed_from* (the loan's origination): it does not
+    exist yet, so it owes nothing (:func:`_projected_owed_at`).
+
+    Walks ONLY the schedule's UNCONFIRMED rows, and that exclusion is
     the whole point:
 
     * A confirmed row's paydown is ALREADY inside *current_balance* (the ledger
@@ -357,25 +439,27 @@ def forward_balance_at_date(
     (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) and the
     future to this projection; no consumer should derive one from the other.  An
     OVERDUE payment (unconfirmed, already past due) stays in the walk, preserving
-    the project's due-basis treatment of it.
+    the project's due-basis treatment of it -- a known defect, recorded as FU-7
+    (it pays down installments that were never paid; see the plan).
 
     Args:
         schedule: The resolver's :class:`AmortizationRow` list (confirmed
             history rows plus committed forward rows).
         target: The future date to value the loan at.
-        current_balance: The loan's confirmed balance today (the resolver's
-            ledger-seeded ``current_balance``) -- the projection's seed, and the
-            answer when no forward payment has come due by *target*.
+        current_balance: The projection's SEED -- the balance in effect before
+            the first unconfirmed row.  For a loan that has originated this is
+            its ledger-confirmed balance today; for one that has not, the balance
+            it will OPEN at (the two differ, which is why the seam names the field
+            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`
+            rather than "current balance").
+        owed_from: The loan's ``origination_date``.  Before it the loan does not
+            exist and owes ``0.00`` (:func:`_projected_owed_at`).
 
     Returns:
         The projected ``Decimal`` balance owed at *target*.
     """
-    forward_rows = sorted(
-        (row for row in schedule if not row.is_confirmed),
-        key=lambda row: row.payment_date,
-    )
-    return balance_from_schedule_at_date(
-        forward_rows, target, current_balance,
+    return _projected_owed_at(
+        _forward_rows(schedule), target, current_balance, owed_from,
     )
 
 
@@ -383,38 +467,43 @@ def compute_forward_loan_period_balance_map(
     schedule: list,
     periods: list,
     current_balance: Decimal,
+    owed_from: date,
 ) -> "OrderedDict[int, Decimal]":
     """Map a loan's FORWARD projection to per-period balances.
 
-    The per-period form of :func:`forward_balance_at_date` (same boundary rule,
-    keyed by ``period.end_date`` like its schedule-only sibling
-    :func:`compute_loan_period_balance_map`): each period reports the confirmed
-    present reduced by the scheduled payments due by that period's end.
+    The per-period form of :func:`forward_balance_at_date`, keyed by
+    ``period.end_date``: each period reports the confirmed present reduced by the
+    scheduled payments due by that period's end, and ``0.00`` for a period ending
+    before the loan originates.  Both route through :func:`_projected_owed_at`
+    over the same :func:`_forward_rows`, so the scalar and the map cannot drift.
 
     This is the projection half of the genesis per-period read switch --
     :func:`splice_confirmed_and_projected_loan_balances` overlays the confirmed
-    ledger on every BEGUN period and keeps this for the future -- so it is only
-    ever read for periods after ``as_of``.  It answers those periods from the
-    confirmed present forward, rather than re-deriving them from confirmed
-    history rows that the ledger has already superseded.
+    ledger on every BEGUN period and keeps this for the future -- so for a loan
+    that has originated it is only ever read for periods after ``as_of``.  It
+    answers those periods from the confirmed present forward, rather than
+    re-deriving them from confirmed history rows that the ledger has already
+    superseded.
 
     Args:
         schedule: The resolver's :class:`AmortizationRow` list.
         periods: The pay periods to key the result by.
-        current_balance: The loan's ledger-seeded confirmed balance today.
+        current_balance: The projection's SEED (see
+            :func:`forward_balance_at_date`): the loan's ledger-confirmed balance
+            today, or -- for a loan that has not originated -- the balance it will
+            OPEN at.
+        owed_from: The loan's ``origination_date``.  A period ending before it
+            reports ``0.00``: the loan does not exist yet.
 
     Returns:
         ``OrderedDict`` mapping ``period.id`` to the projected ``Decimal``
         balance at that period's end.
     """
-    forward_rows = sorted(
-        (row for row in schedule if not row.is_confirmed),
-        key=lambda row: row.payment_date,
-    )
+    forward_rows = _forward_rows(schedule)
     balances: "OrderedDict[int, Decimal]" = OrderedDict()
     for period in periods:
-        balances[period.id] = balance_from_schedule_at_date(
-            forward_rows, period.end_date, current_balance,
+        balances[period.id] = _projected_owed_at(
+            forward_rows, period.end_date, current_balance, owed_from,
         )
     return balances
 

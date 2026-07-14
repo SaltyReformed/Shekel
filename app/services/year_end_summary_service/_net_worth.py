@@ -16,7 +16,6 @@ from app.services.resolution_context import BalanceContext
 # year-end net-worth tests keep calling ``_sum_net_worth_at_period``
 # unchanged while the one definition lives in the kernel.
 from app.services.net_worth_kernel import (
-    DebtSchedule,
     sum_net_worth_at_period as _sum_net_worth_at_period,
 )
 from app.services.year_end_summary_service._periods import (
@@ -152,7 +151,7 @@ def _compute_monthly_values(
 def _compute_debt_progress(
     year: int,
     debt_accounts: list,
-    debt_schedules: dict[int, DebtSchedule],
+    debt_schedules: dict[int, list],
     balance_ctx: BalanceContext,
 ) -> list[dict]:
     """Compute principal paid for each debt account during the year.
@@ -228,6 +227,19 @@ def _compute_debt_progress(
     for account in debt_accounts:
         schedule_rows = debt_schedules.get(account.id)
         if not schedule_rows:
+            continue
+
+        # A loan that has not been BORROWED yet has no principal progress: it has
+        # no ledger AT ALL, so the clamp below cannot see it (``domain is None``
+        # fails OPEN).  Its Jan-1 balance is a true $0.00 and its Dec-31 balance
+        # is the projected debt it will take on, so the difference would be
+        # reported as principal PAID -- an unclosed mortgage read as -$198,049.28
+        # repaid, with ``tracked_from`` absent so the surface presents it as a
+        # full calendar year.  That is the same inverted figure the ledger-domain
+        # clamp was written to delete, arriving through a door the clamp does not
+        # cover.
+        figures = balance_at.loan_figures(account, balance_ctx)
+        if figures is not None and not figures.is_originated:
             continue
 
         # Clamp the opening read to a window the ledger can answer (see above).

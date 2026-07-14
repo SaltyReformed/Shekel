@@ -130,10 +130,7 @@ def _compute_loan_account(acct, ctx):
         current_balance=balance_at.balance_at(
             acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
         ),
-        monthly_payment=figures.monthly_payment,
-        current_rate=figures.current_rate,
-        payoff_date=figures.payoff_date,
-        is_paid_off=figures.is_paid_off,
+        figures=figures,
     )
 
 
@@ -234,7 +231,14 @@ def _project_one_account(acct, ctx, balance_maps):
         "current_balance": current_bal,
         "projected": projected,
         "needs_setup": needs_setup,
-        "is_paid_off": loan_result.is_paid_off if loan_result else False,
+        "is_paid_off": loan_result.figures.is_paid_off if loan_result else False,
+        # A loan the user has configured but not yet BORROWED owes $0.00 today,
+        # and a consumer that reads that zero as "this debt is repaid" reports
+        # the opposite of the truth (the debt track counted an unclosed
+        # mortgage as 100% paid).  See ``LoanFigures.is_originated``.
+        "is_originated": (
+            loan_result.figures.is_originated if loan_result else True
+        ),
         # Category-keyed liability flag (the id-based canonical classifier),
         # so the cockpit cell balance can take the danger token the group
         # subtotal, chip, and bar segment already do -- one quantity, one
@@ -247,12 +251,12 @@ def _project_one_account(acct, ctx, balance_maps):
         ad["investment_params"] = acct_investment_params
     if acct_loan_params:
         ad["loan_params"] = acct_loan_params
-        ad["monthly_payment"] = loan_result.monthly_payment
+        ad["monthly_payment"] = loan_result.figures.monthly_payment
         # DH-#56: the loan's current rate (resolver-derived) replaces the
         # retired ``LoanParams.interest_rate`` column read on the /savings
         # debt card and in the weighted-average-rate metric.
-        ad["current_rate"] = loan_result.current_rate
-        ad["payoff_date"] = loan_result.payoff_date
+        ad["current_rate"] = loan_result.figures.current_rate
+        ad["payoff_date"] = loan_result.figures.payoff_date
     return ad
 
 
