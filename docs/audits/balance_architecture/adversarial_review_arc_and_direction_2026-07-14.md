@@ -657,8 +657,17 @@ your real data:
 |---|---|---|
 | grid, Mortgage, 2028-06 | $222,055.26 (**rising** $1,910.95/mo) | $170,456.89 -- off by **$51,598.37** |
 | dashboard, Checking | $1,979.39 | balance sheet says $648.13 -- off by **$1,331.26** |
-| year-end 2026 net worth | "grew $255,300.26" | fabricated from `jan1 = 0` |
-| Van Loan, period 0 | $0.00 owed | $17,134.85 |
+| /savings net-worth trend, Van Loan period 0 | $0.00 owed | $17,134.85 |
+| mortgage payment (loan card vs grid) | $1,911.29 vs $1,910.95 | two derivations, **$0.34/mo**, nothing reconciles them |
+
+> **CORRECTION (2026-07-14, same day).** An earlier version of this table listed *"year-end 2026 net
+> worth: grew $255,300.26, fabricated from `jan1 = 0`"* as LIVE. **It is not.**
+> `compute_year_end_summary` has **zero non-test callers** and `/analytics/year-end` 302s to
+> `/analytics` (`app/routes/analytics.py:347-362`) -- the year-end summary service is **dead code on
+> `dev`**. Findings **B-10** and **B-7** are real but **unreachable**; **B-11** is still live, via
+> `/savings`'s per-period map rather than year-end; **B-6** (the Taxes tab) stands, because that tab
+> is live. I got the severity wrong by trusting the audit's reachability label instead of grepping for
+> the caller. The lesson is the document's own: **if you cannot cite it, you cannot claim it.**
 
 And there is **no independent oracle**. Your only real oracle today is four hand-maintained numbers on
 a dev clone. Mutation testing (Section 7) confirms the consequence: deleting the `is_confirmed` filter
