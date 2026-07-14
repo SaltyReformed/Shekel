@@ -1,11 +1,28 @@
 # Fail-loud ledger authority: delete the schedule's answer for the past
 
-**Status: C1 + C1b + C2 + C2b + C3 DONE (2026-07-13); FU-4 FIXED. C3b, C3c, C4-C6 pending. R5 ->
-FU-7 (its own arc).** Successor to `implementation_plan_loan_resolution_context.md`, whose
-adversarial review (2026-07-13) produced the findings below. Prerequisite reading:
-`recurring_loan_balance_root_cause.md` (the design rule this plan finally enforces),
-`implementation_plan_loan_read_switch.md` (which made the loan's PAST ledger-authoritative), and
-`followup_debt_schedule_attribute_fence.md`.
+> ## SUPERSEDED FOR "WHAT TO DO NEXT" -- read `audit_loan_balance_producers.md` FIRST
+>
+> **2026-07-14.** C3 shipped, and a four-lens adversarial audit of this whole arc then ran against the
+> running code (17 loan shapes on a cloned DB, plus negative controls applied to every guard the arc
+> added). It found **15 defects**, worth up to **$299,701.35**, two of them LIVE on real production
+> data and one a **guaranteed outage fired by the clock with no user action**.
+>
+> **The good news, and it is this plan's vindication: the `balance_at` seam is CORRECT.** Across all
+> 17 shapes every seam producer agrees with every other. The defects are all in surfaces that never
+> joined the seam.
+>
+> `docs/audits/balance_architecture/audit_loan_balance_producers.md` carries the findings register,
+> the root cause, the recommended design (one fold over an event stream), the ordered arc, and **four
+> BLOCKING developer rulings**. **C3b and C3c below are ABSORBED into that document's S6/S8 -- do not
+> build them as scoped here.** Sections 1-9 of this plan remain the authoritative record of C1 .. C3
+> AS BUILT.
+
+**Status: C1 + C1b + C2 + C2b + C3 DONE, all on `dev`, none on `main`. FU-4 NOT fixed (it is B-11 in
+the new audit, and it is LIVE). C4-C6 pending. FU-7 quantified (B-9) and still needs its ruling.**
+Successor to `implementation_plan_loan_resolution_context.md`, whose adversarial review (2026-07-13)
+produced the findings below. Prerequisite reading: `recurring_loan_balance_root_cause.md` (the design
+rule this plan finally enforces), `implementation_plan_loan_read_switch.md` (which made the loan's
+PAST ledger-authoritative), and `followup_debt_schedule_attribute_fence.md`.
 
 ---
 
@@ -24,7 +41,18 @@ and after ANY further commit; if one moves, the commit is wrong, not the number:
 | Year-end 2026 principal paid | **+$2,505.02** / **+$4,251.65** |
 | Scalar-vs-map divergences, 2 loans x 59 periods | **0** |
 
-### Next up: C3b, then C3c (developer-approved 2026-07-13)
+### Next up: NOT C3b. See `audit_loan_balance_producers.md` Section 6.
+
+**The 2026-07-14 audit re-ordered everything.** C3b (below) is real, but it is now step **S6** of a
+longer arc, and three higher-severity defects sit in front of it -- including a guaranteed outage
+(B-1) and two surfaces that are wrong on real production data today (B-3 the grid, B-10/B-11 the
+year-end). **Four developer rulings are BLOCKING; nothing should be built until they are answered.**
+
+The C3b analysis below stands as the record of WHY the loan detail route is broken. The three-option
+fork it ends with is MOOT: once there is one balance function (audit S1/S8), the loan page simply
+calls it, and `LoanState.current_balance` is deleted because nothing is left for it to be.
+
+### C3b -- the finding (still true; the FIX is now audit S6)
 
 **C3 closed the fence but NOT the hole it was written to close.** C3's own charter (Section 3) says:
 *"The resolver keeps its fallback; nothing can READ a balance out of it once C3 lands."* **That was
@@ -64,6 +92,14 @@ luck: the exact failure signature the whole arc exists to end.
   **Design detail still to settle:** what a ROWS-ONLY consumer (`debt_schedule_rows`, used by the
   year-end interest section and the trend's honest-history gate) does for a broken loan -- it needs no
   balance, so it must not be made to raise for one.
+
+**The three-option fork C3b ended on is MOOT** (it was: widen the memo allowlist, vs grow
+`LoanFigures`, vs collapse the pre-existing double-compose first). Measured 2026-07-14: the loan page
+already runs **2 amortization walks, 2 ledger reads and 2 scenario lookups per load, and never touches
+`BalanceContext`** -- and the two walks are the SAME composition (`resolve_loan` computes
+`compute_payoff_scenarios` and discards `original_forward`, which `build_baseline_scenarios` then
+recomputes from identical inputs). Once the audit's S1/S8 give the app ONE balance function, the page
+calls it like everyone else and this fork does not arise. Do not re-litigate it.
 
 Then C4, C5, C6. C5 has grown: several of its "correct the false claims" items were already fixed in
 C2/C2b/C3; re-verify each before rewriting it.
@@ -1216,12 +1252,21 @@ correcting legs that land on the wrong side of the 05-22 boundary. Either way th
 lands right because the 2026-06-23 true-up pins it -- which is precisely how a wrong history hides
 behind a right present.
 
-### FU-4 -- A period BEFORE a loan's opening renders $0 owed -- **FIXED in C1b**
+### FU-4 -- A period BEFORE a loan's opening renders $0 owed -- **NOT FIXED. STILL LIVE.**
 
-**Found 2026-07-13 while verifying C1. Turned out to be far worse than "one period, one loan": it
-inverted the year-end debt-progress section on real data (see C1b). Fixed there -- the seam now exposes
-the ledger's DOMAIN and the year-end clamps its window to it. The net-worth trend / grid display
-question below is the remaining open piece.**
+**C1b fixed ONE consumer (the year-end debt-progress section), not the producer.** The per-period map
+still emits the false `$0.00`, and the 2026-07-14 audit found a SECOND consumer spending it, in the
+same file C1b edited: `_compute_net_worth` (`year_end_summary_service/_net_worth.py:66-70`), 180 lines
+above the one C1b clamped, has no clamp at all. Live on the clone: the year-end panel reports
+**"net worth grew $255,300.26 in 2026"**, fabricated from `jan1 = ZERO`, beside a debt-progress
+section that correctly says "tracked_from 2026-03-31" because C1b taught THAT one to.
+
+Now tracked as **B-11** (the producer's false zero, $17,134.85 on the Van Loan) and **B-10** (the
+second consumer, $255,300.26) in `audit_loan_balance_producers.md`. **C1b built
+`balance_at.loan_ledger_domain` and did not wire it into the map**, so the producer that emits the
+false zero now has the fact that identifies it, one call away, and still emits it.
+
+**The original note (2026-07-13), kept for the record:**
 
 `confirmed_loan_balance_map` returns `Decimal("0.00")` for any period preceding the loan's opening
 posting (`_reader.py:257`, documented as "nothing confirmed yet as of that date"), and
@@ -1284,12 +1329,21 @@ C3 shipped the C-1 phantom into review -- the moment the drop predicate was (wro
 `is_paid_off`, the loan was charted, the clip fired, and the chart drew **$197,049.32** of debt
 beside an equity hero reporting `$0.00`. The clip did not change; only its guard did.
 
-**Why it is not fixed here, and what the fix needs.** The obvious fix ("empty schedule -> empty
-back_projection") is NOT obviously right. There is a second shape with an empty schedule: a loan PAST
-MATURITY that still owes a balance (a balloon). It is not retired, so it IS charted -- and for it the
-contractual walk is arguably the only history estimate available. Emptying the back-projection would
-leave it charted with NO rows at all, which `_axis_span` may not survive. **Measure that shape before
-designing.** Two candidate answers, and the choice is a modelling decision, not a seam one:
+**MEASURED 2026-07-14 -- the balloon shape was the right thing to worry about, and it is worth
+$80,000.** A loan past maturity still owing $80,000 is NOT retired, so the chart keeps it -- and its
+schedule IS empty, so the clip admits the whole contractual walk. The chart's axis becomes Feb 2023 -
+Jan 2025 (entirely in the past), `today_index` clamps to the last month, and the Today marker shows
+**debt $0.00 / equity $500,000** beside a hero reporting **debt $80,000 / equity $420,000**. The hero
+is right. **Now tracked as B-2 in `audit_loan_balance_producers.md`, together with two sibling
+mechanisms in the same chart (a mis-clamped axis worth $299,701.35, and a debt line that cannot see a
+true-up). All three have ONE fix: the chart's <= today debt must come from the LEDGER, and its axis
+must span `min(origination, today) .. max(payoff, today)` rather than the row span.**
+
+**Why it was not fixed in C3, and what the fix needs.** The obvious fix ("empty schedule -> empty
+back_projection") is NOT obviously right, which is why it was filed rather than guessed at. The
+balloon is charted, and for it the contractual walk is arguably the only history estimate available;
+emptying the back-projection would leave it charted with NO rows at all, which `_axis_span` may not
+survive. Two candidate answers, and the choice is a modelling decision, not a seam one:
 
 * clip the back-projection to the ledger's DOMAIN (`balance_at.loan_ledger_domain`), so the estimated
   tier can never assert a balance for a date the ledger can actually answer -- this also subsumes
@@ -1345,9 +1399,23 @@ above; start from it rather than re-deriving it.
 
 ### FU-7 -- The forward projection PAYS DOWN overdue installments that were never paid (2a, forwards)
 
+**QUANTIFIED 2026-07-14. Now tracked as B-9 in `audit_loan_balance_producers.md`; the ruling (R2) is
+still owed.** Measured across generated shapes on a cloned DB:
+
+| shape | map cliff in ONE pay period | year-end says "principal paid" | actually paid |
+|---|---|---|---|
+| 41 installments overdue | **-$15,755.38** | **$17,906.63** | **$0.00** |
+| 30 overdue | -$6,426.95 | $7,594.73 | $0.00 |
+| mid-life import | -$2,383.04 | $5,418.14 | $0.00 |
+| recurring, 3 overdue | -$1,205.41 | $2,746.39 | $0.00 |
+| delinquent | -$906.31 | $2,746.39 | $1,199.10 |
+
+It lands on the /savings net-worth trend, the Horizon band, and year-end debt progress
+simultaneously. **Reachable** (a user who misses payments produces it), not merely latent.
+
 **Its own arc. Found 2026-07-13 by the C2 adversarial review; NOT caused by this arc, and C2/C2b do
-not make it worse. Latent on real data (both loans carry ZERO past-dated unconfirmed rows -- verified
-against the clone), LIVE in the test suite -- the identical posture defect 2a had.**
+not make it worse. Latent on the two REAL loans (both carry ZERO past-dated unconfirmed rows --
+verified against the clone), LIVE in the test suite -- the identical posture defect 2a had.**
 
 **The defect, measured.** An auto loan: $50,000 borrowed 2025-01-25, 6%, 60 months, due the 25th, no
 payments ever recorded. Read on 2026-03-20:
