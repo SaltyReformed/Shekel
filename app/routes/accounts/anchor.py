@@ -44,6 +44,29 @@ from app.utils.dates import to_display_tz
 logger = logging.getLogger(__name__)
 
 
+# The kind-refusal body shared by the PATCH gate and the editor-form GET
+# gate (ruling D4 / step A1): an amortizing loan's balance is
+# ledger-derived and is asserted on the loan's own page
+# (``apply_loan_anchor_true_up``), never as a cash anchor (B-15).
+_LOAN_ANCHOR_REFUSAL = (
+    "A loan's balance is not a cash anchor. Record a balance true-up "
+    "on the loan's own page instead."
+)
+
+
+def _is_amortizing(account: Account) -> bool:
+    """Return True when *account* is an amortizing loan.
+
+    The route-layer twin of the loan package's ``_load_loan_account``
+    kind test (``account_type.has_amortization``, a boolean column --
+    never a type-name string).  Used to refuse the CASH anchor editor
+    for a loan; the service-layer backstop is
+    :class:`~app.services.anchor_service.AmortizingAccountAnchorError`.
+    """
+    acct_type = account.account_type
+    return acct_type is not None and acct_type.has_amortization
+
+
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
 
 
@@ -150,6 +173,58 @@ def _true_up_success_response(
     return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
 
 
+def _true_up_request_gates(
+    account: Account, revert_context: str | None,
+) -> tuple[Decimal | None, object, tuple | None]:
+    """Run every pre-mutation gate for ``true_up`` in one place.
+
+    The route grew a fifth early-return gate when the amortizing-kind
+    refusal landed (ruling D4 / step A1), tripping Pylint's
+    return-statement ceiling; consolidating the gates into a
+    ``(values, failure)`` helper mirrors ``_validate_update_account``'s
+    established shape.  Gate order: kind refusal first (a loan is
+    rejected before its form is even validated -- the KIND of edit is
+    wrong, not the payload), then schema validation, the C-17 stale-form
+    check, and the current-period resolution.
+
+    Args:
+        account: The owned, attached :class:`Account` under edit.
+        revert_context: The normalized opener-surface token, threaded
+            into the 409 conflict response so its retry reopens the
+            correct surface.
+
+    Returns:
+        ``(new_balance, current_period, failure)``.  On success,
+        ``failure`` is ``None`` and the first two carry the validated
+        values.  On rejection, ``failure`` is the ready-to-return Flask
+        response and the values are ``None``.
+    """
+    if _is_amortizing(account):
+        return None, None, (_LOAN_ANCHOR_REFUSAL, 422)
+
+    errors = _anchor_schema.validate(request.form)
+    if errors:
+        return None, None, (jsonify(errors=errors), 400)
+
+    data = _anchor_schema.load(request.form)
+    new_balance = Decimal(str(data["anchor_balance"]))
+
+    submitted_version = data.get("version_id")
+    if submitted_version is not None and submitted_version != account.version_id:
+        logger.info(
+            "Stale-form conflict on true_up id=%d "
+            "(submitted=%d, current=%d)",
+            account.id, submitted_version, account.version_id,
+        )
+        return None, None, _anchor_conflict_response(account, revert_context)
+
+    current_period = pay_period_service.get_current_period(current_user.id)
+    if current_period is None:
+        return None, None, ("No current pay period found", 400)
+
+    return new_balance, current_period, None
+
+
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
 @login_required
 @require_owner
@@ -158,6 +233,10 @@ def true_up(account_id):
 
     Records the true-up in anchor_history for audit trail, then
     triggers a balance recalculation via HX-Trigger.
+
+    Refuses an AMORTIZING account with 422 (ruling D4 / step A1,
+    finding B-15): a loan's balance is ledger-derived and is asserted
+    through the loan page's own true-up, never as a cash anchor.
 
     Optimistic locking (commit C-17 / F-009): the grid edit form
     submits ``version_id`` as a hidden input.  When the value no
@@ -180,35 +259,26 @@ def true_up(account_id):
     # against the allowlist so the token is never interpolated unvalidated.
     revert_context = _normalize_revert_context(request.args.get("revert"))
 
-    errors = _anchor_schema.validate(request.form)
-    if errors:
-        return jsonify(errors=errors), 400
-
-    data = _anchor_schema.load(request.form)
-    new_balance = Decimal(str(data["anchor_balance"]))
-
-    submitted_version = data.get("version_id")
-    if submitted_version is not None and submitted_version != account.version_id:
-        logger.info(
-            "Stale-form conflict on true_up id=%d "
-            "(submitted=%d, current=%d)",
-            account_id, submitted_version, account.version_id,
-        )
-        return _anchor_conflict_response(account, revert_context)
-
-    # Find the current pay period and set it as the anchor period.
-    current_period = pay_period_service.get_current_period(current_user.id)
-    if current_period is None:
-        return "No current pay period found", 400
+    # Every pre-mutation gate (the D4/A1 amortizing-kind refusal, schema
+    # validation, the C-17 stale-form check, current-period resolution)
+    # lives in ``_true_up_request_gates``; a failure is returned as-is.
+    new_balance, current_period, failure = _true_up_request_gates(
+        account, revert_context,
+    )
+    if failure is not None:
+        return failure
 
     # Canonical anchor true-up path: route the mutation, history-row
     # append, conditional entries reconcile, and commit through the
     # single authoritative helper (``anchor_service.apply_anchor_true_up``)
     # so the C-17 optimistic lock and the F-103 / C-22 same-day
-    # same-balance idempotency rules cannot drift.  The success-response
-    # composition (the updated cell, the optional OOB "as-of" snippet,
-    # and the ``HX-Trigger: balanceChanged`` header) lives in
-    # ``_true_up_success_response``.
+    # same-balance idempotency rules cannot drift.  The route pre-gates
+    # the amortizing kind, so the service's
+    # ``AmortizingAccountAnchorError`` backstop is unreachable here (a
+    # bypassing caller correctly surfaces it as a 500).  The
+    # success-response composition (the updated cell, the optional OOB
+    # "as-of" snippet, and the ``HX-Trigger: balanceChanged`` header)
+    # lives in ``_true_up_success_response``.
     outcome = anchor_service.apply_anchor_true_up(
         account=account,
         new_balance=new_balance,
@@ -308,6 +378,13 @@ def anchor_form(account_id):
     account = get_or_404(Account, account_id)
     if account is None:
         return "Not found", 404
+
+    # Ruling D4 / step A1: never OPEN the cash anchor editor for an
+    # amortizing loan -- the PATCH would be refused (B-15), so offering
+    # the form would be a dead-end affordance.  The cockpit's loan cards
+    # render their balance read-only for the same reason.
+    if _is_amortizing(account):
+        return _LOAN_ANCHOR_REFUSAL, 422
 
     revert_context = _normalize_revert_context(request.args.get("revert"))
     revert_url = _anchor_revert_url(account_id, revert_context)

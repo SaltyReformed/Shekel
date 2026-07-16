@@ -7095,3 +7095,62 @@ class TestGridInterestAccrual:
         # Both surfaces render the live-income accrued balance -- no flicker.
         assert f"${accrued_live:,.0f}" in full
         assert f"${accrued_live:,.0f}" in refresh
+
+
+class TestGridKindGate:
+    """The D4 / A1 gate: the grid never renders an AMORTIZING account.
+
+    Finding B-3 (live): with ``?account_id=<loan>`` the grid rendered
+    the real Mortgage's balance RISING by the full PITI each month --
+    the cash-flow producer reads payment transfers INTO the loan as
+    inflows.  The resolver now treats a loan override exactly like a
+    missing account and falls back.
+    """
+
+    @staticmethod
+    def _mortgage(seed_user):
+        """Create a bare active Mortgage-type account (kind is the gate)."""
+        mortgage_type = db.session.query(AccountType).filter_by(
+            name="Mortgage",
+        ).one()
+        loan = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Gate Mortgage",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.commit()
+        return loan
+
+    def test_account_id_override_with_loan_falls_back_to_checking(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /grid?account_id=<loan> renders the checking fallback."""
+        with app.app_context():
+            loan = self._mortgage(seed_user)
+
+            response = auth_client.get(f"/grid?account_id={loan.id}")
+
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Gate Mortgage Balance" not in response.data
+
+    def test_default_grid_setting_with_loan_falls_back_to_checking(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A saved loan default (pre-gate data) no longer re-points the grid."""
+        with app.app_context():
+            loan = self._mortgage(seed_user)
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            settings.default_grid_account_id = loan.id
+            db.session.commit()
+
+            response = auth_client.get("/grid")
+
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Gate Mortgage Balance" not in response.data

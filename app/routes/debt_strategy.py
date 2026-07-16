@@ -23,9 +23,7 @@ from marshmallow import ValidationError
 
 from app.utils.auth_helpers import require_owner
 
-from app.extensions import db
 from app.models.account import Account
-from app.models.ref import AccountType
 from app.schemas.validation import DebtStrategyCalculateSchema
 from app.services.debt_strategy_service import (
     DebtAccount,
@@ -36,7 +34,7 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services import balance_at
+from app.services import account_service, balance_at
 from app.services.resolution_context import BalanceContext
 
 logger = logging.getLogger(__name__)
@@ -121,13 +119,7 @@ def _load_debt_accounts(user_id):
             has_arm: bool indicating whether any loaded account is ARM.
     """
     accounts = (
-        db.session.query(Account)
-        .join(Account.account_type)
-        .filter(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-            AccountType.has_amortization.is_(True),
-        )
+        account_service.active_accounts_query(user_id, amortizing=True)
         .order_by(Account.sort_order, Account.name)
         .all()
     )

@@ -995,3 +995,62 @@ class TestApplyLoanAnchorTrueUpModuleContract:
                 if hasattr(idx, "name")
             }
             assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX in index_names
+
+
+class TestApplyAnchorTrueUpKindGate:
+    """The D4 / A1 amortizing-kind guard on the CASH true-up entry point."""
+
+    def test_refuses_amortizing_loan_before_staging(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An amortizing account raises, with NOTHING staged or written.
+
+        Finding B-15: this entry point wrote
+        ``accounts.current_anchor_balance`` for a loan -- a second,
+        stored, never-reconciled loan balance.  The guard fires before
+        ``stage_anchor_true_up``, so the session holds no pending
+        mutation and no history row: the column, the history count, and
+        the session's dirty/new sets are all unchanged.
+        """
+        with app.app_context():
+            mortgage_type = db.session.query(AccountType).filter_by(
+                name="Mortgage",
+            ).one()
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Kind Gate Loan",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.commit()
+            column_before = loan.current_anchor_balance
+            history_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            )
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            with pytest.raises(
+                anchor_service.AmortizingAccountAnchorError,
+            ) as excinfo:
+                apply_anchor_true_up(
+                    account=loan,
+                    new_balance=Decimal("1.00"),
+                    anchor_period=current_period,
+                    user_id=seed_user["user"].id,
+                )
+
+            # The message names the correct path for the caller.
+            assert "apply_loan_anchor_true_up" in str(excinfo.value)
+            # Raised BEFORE staging: session clean, nothing written.
+            assert not db.session.dirty
+            assert not db.session.new
+            assert loan.current_anchor_balance == column_before
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            ) == history_before

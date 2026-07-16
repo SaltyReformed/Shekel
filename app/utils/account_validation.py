@@ -44,6 +44,8 @@ exists to keep route bodies thin.  No Flask request globals are
 touched -- callers pass the current user id in explicitly.
 """
 
+from decimal import Decimal
+
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
@@ -336,6 +338,35 @@ def _validate_collateral_link(collateral_account_id, source_account, user_id):
     return None
 
 
+def _account_type_gates(account, data, user_id):
+    """Run both ``account_type_id`` gates for ``_validate_update_account``.
+
+    Combines the C-28 multi-tenant visibility check and the C6
+    posting-boundary re-type check behind ONE return site in the parent,
+    which reached Pylint's return-statement ceiling when the A1
+    amortizing-anchor gate was added.  Both fire only when the form
+    submitted an ``account_type_id``; order is preserved (visibility
+    first, so the boundary check only ever sees a resolvable type id).
+
+    Args:
+        account: The ``Account`` row about to be mutated.
+        data: The schema-loaded form payload.
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        The ``(message, category)`` failure tuple from whichever gate
+        rejected, or ``None`` when both pass (or the field was not
+        submitted).
+    """
+    if "account_type_id" not in data:
+        return None
+    if not _account_type_is_visible(data["account_type_id"], user_id):
+        return ("Invalid account type.", "danger")
+    if data["account_type_id"] != account.account_type_id:
+        return _validate_account_type_change(account, data["account_type_id"])
+    return None
+
+
 def _validate_update_account(account, form, user_id):
     """Run every non-mutating gate for ``update_account`` in one place.
 
@@ -373,31 +404,34 @@ def _validate_update_account(account, form, user_id):
 
     data = _update_schema.load(form)
 
-    # Multi-tenant guard (commit C-28 / F-044): when the form
-    # re-parents the account to a different account_type_id, the
-    # new value must be a seeded built-in or one of this owner's
-    # custom types.  Identical to the create path -- see
-    # ``_account_type_is_visible`` for the rationale.  Skip when
-    # the field was not submitted (partial update).
-    if (
-        "account_type_id" in data
-        and not _account_type_is_visible(data["account_type_id"], user_id)
-    ):
-        return {}, ("Invalid account type.", "danger")
+    # Both account_type_id gates (the C-28 multi-tenant visibility
+    # check and the C6 posting-boundary re-type check) live in
+    # ``_account_type_gates`` behind one return site.
+    type_failure = _account_type_gates(account, data, user_id)
+    if type_failure is not None:
+        return {}, type_failure
 
-    # C6 boundary guard (Build-Order Step 5): a re-type that crosses the
-    # amortizing or Asset/Liability boundary is refused while the account
-    # has ledger postings.  Runs after the visibility gate so the type id
-    # is proven resolvable.
-    if (
-        "account_type_id" in data
-        and data["account_type_id"] != account.account_type_id
-    ):
-        failure = _validate_account_type_change(
-            account, data["account_type_id"],
-        )
-        if failure is not None:
-            return {}, failure
+    # Amortizing-kind anchor gate (ruling D4 / step A1, finding B-15):
+    # a loan's balance is ledger-derived and asserted through the loan
+    # page's own true-up; the cash anchor column must not become a
+    # second stored loan balance through the full-form edit.  Gated on
+    # the CURRENT type (the anchor branch in ``update_account`` writes
+    # before any re-type applies) and only on a CHANGED value -- the
+    # form round-trips the current balance on every edit, and an
+    # unchanged echo is not an assertion.
+    if "anchor_balance" in data:
+        acct_type = account.account_type
+        submitted_anchor = Decimal(str(data["anchor_balance"]))
+        if (
+            acct_type is not None
+            and acct_type.has_amortization
+            and submitted_anchor != account.current_anchor_balance
+        ):
+            return {}, (
+                "A loan's balance is not a cash anchor. Record a "
+                "balance true-up on the loan's own page instead.",
+                "danger",
+            )
 
     # Stale-form check.  Performed before any mutation so the audit
     # trail (AccountAnchorHistory, audit_log triggers) records only

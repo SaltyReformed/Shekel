@@ -270,6 +270,43 @@ def list_active_accounts(user_id: int) -> list[Account]:
     )
 
 
+def active_accounts_query(user_id: int, *, amortizing: bool):
+    """Return the query for a user's active accounts on ONE amortizing side.
+
+    The kind-boundary query composer shared by every surface that
+    partitions active accounts on ``AccountType.has_amortization``: the
+    debt-strategy loader (``amortizing=True`` -- every loan account) and
+    the grid's resolver + Default Grid Account picker
+    (``amortizing=False`` -- ruling D4 / step A1: the grid refuses an
+    amortizing account).  ``amortizing`` is a filter VALUE, not a
+    behavior switch; both sides are the identical query shape, which is
+    why one definition exists (the duplicate-code gate caught the
+    copies).  Returns the UNORDERED query so each caller adds its own
+    tail -- the pickers order by ``(sort_order, name)``, the grid
+    resolver's fallback by ``(sort_order, id)`` -- the same
+    build-the-expression contract as
+    :func:`app.services.loan_posting_service._asof.scope_to_linked_ledger`.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner whose accounts to query.
+        amortizing: Which side of the ``has_amortization`` boundary to
+            return.
+
+    Returns:
+        The filtered ``Account`` query; the caller adds ordering and an
+        executor (``.all()`` / ``.first()``).
+    """
+    return (
+        db.session.query(Account)
+        .join(Account.account_type)
+        .filter(
+            Account.user_id == user_id,
+            Account.is_active.is_(True),
+            AccountType.has_amortization.is_(amortizing),
+        )
+    )
+
+
 def get_account_type_ids_in_use(user_id: int) -> set[int]:
     """Return the account_type_ids the user currently has accounts of.
 

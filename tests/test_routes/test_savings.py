@@ -3620,3 +3620,33 @@ class TestCockpitBalance:
             )
             assert resp.status_code == 200
             assert "acct-card__num--liability" not in resp.data.decode()
+
+
+class TestCockpitBalanceKindGate:
+    """The D4 / A1 gate: a loan's cockpit balance cell is read-only."""
+
+    def test_cockpit_balance_loan_cell_is_read_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan's cell shows the balance but never offers the anchor editor.
+
+        Finding B-15's UI door: the cockpit's click-to-edit cell opened
+        the CASH anchor editor for a loan card, whose save wrote
+        ``accounts.current_anchor_balance`` on the loan.  The cell still
+        renders the (ledger-derived) balance with its liability ink; the
+        editor affordance (hx-get to anchor-form, the edit modifier, the
+        pencil icon) is absent -- a loan's true-up lives on the loan page.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user)
+            resp = auth_client.get(
+                f"/savings/cockpit/{loan.id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "anchor-form" not in body
+            assert "acct-card__num--edit" not in body
+            assert "acct-card__edit-icon" not in body
+            # The balance itself still renders, with the liability ink.
+            assert "acct-card__num--liability" in body
