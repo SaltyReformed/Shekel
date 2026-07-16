@@ -7,7 +7,7 @@ step gets its checkbox ticked with its commit hash HERE, and no new planning doc
 written for this arc.
 
 **State as of 2026-07-16:** design verified and locked; ALL rulings answered (D1-D5 and
-R-A..R-D, Section 4); **nothing in Section 5 is built yet**. Next commit: **A1**.
+R-A..R-D, Section 4); **A1 shipped** (`f11382a0`). Next commit: **A2**.
 
 ---
 
@@ -149,10 +149,15 @@ what is written here is decided in the commit itself, not in a new document.
 
 ### Phase A -- stop the bleeding, build the net (no model change)
 
-- [ ] **A1** `fix(accounts): a loan is not a cash account` -- gate `PATCH /accounts/<id>/true-up`
-  on account kind (it set the real Mortgage's stored anchor to $1.00 with HTTP 200; both real
-  loans already carry stray cash-anchor rows) and gate the grid picker + `?account_id=` on cash
-  kinds. Kills the LIVE grid defect (Mortgage rendered rising to $181,925.31 by 2026-08-27).
+- [x] **A1** `fix(accounts): a loan is not a cash account` -- **SHIPPED `f11382a0`
+  (2026-07-16).** As built, two more doors than scoped: the Net Worth Cockpit's click-to-edit
+  cell offered the CASH anchor editor on loan cards (the live UI door -- now read-only for
+  amortizing kinds), and the full-form edit wrote anchors kind-blind (now refuses a CHANGED
+  loan anchor).  Service guard (`AmortizingAccountAnchorError`) + route 422s + all three
+  resolver steps + the settings picker.  Closes B-3 and B-15; residue recorded as N-4/N-5
+  (the reset's balance-preserving re-anchor and the create factory's origination anchor).
+  Verified live on the dev clone: `?account_id=3` resolves to Checking; the $1.00 Mortgage
+  true-up is refused; baseline unmoved.
 - [ ] **A2** `test(loan): the shape matrix must contain a PAID loan, asserted on the forward
   tail` -- add settled-payments-plus-later-true-up to `test_every_loan_shape`, with assertions
   on FUTURE periods (the forward producers). This is what makes the `_forward_rows`
@@ -261,7 +266,7 @@ archive names so old references resolve here.
 |---|---|---|---|---|
 | B-1 | Future-origination loan posts no OPENING; seam 500s five pages when the date arrives | outage | open (bounded by container-restart backfill) | A3 |
 | B-2 | Property equity chart derives debt from schedule rows; wrong on 8/13 shapes | $299,701.35 | open, reachable | C5 |
-| B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **LIVE** | A1 (gate), D4 |
+| B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **closed (`f11382a0`)** | A1 |
 | B-4 | `_forward_rows` `is_confirmed` filter has zero discriminating tests | $4,449.72 | guard gap | A2 |
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | latent | A3 (mechanism), E1 (invariant) |
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | latent, live tab | C3/C6 |
@@ -272,7 +277,7 @@ archive names so old references resolve here.
 | B-12 | Unfenced producer tier below the fence; `loan_resolver` package wholly unfenced | -- | guard gap | Phase D |
 | B-13 | Loan detail route answers a broken loan from the money-blind replay | $199,600.80 | latent | C4 |
 | B-14 | `loan_recurrence_sync` persists a payoff date off the blind walk | -- | reachable | C8 |
-| B-15 | Kind-blind true-up writes a cash anchor onto a LOAN (has fired: both real loans carry rows) | -- | **fired on real data** | A1 |
+| B-15 | Kind-blind true-up writes a cash anchor onto a LOAN (had fired: both real loans carry rows) | -- | **closed (`f11382a0`)**; residue N-4/N-5 | A1 |
 | B-16 | Horizon uses `is_paid_off` where the contract says `is_retired` | -- | latent | collapses at C3/C4 |
 | B-17 | Debt-track `is_originated` wiring unguarded (guard tests a hand-built dict) | -- | guard gap | A2-adjacent; flag deleted at C3 |
 | B-18 | Cash scalar fabricates pre-anchor balances from today's anchor | -- | live | X3 |
@@ -291,6 +296,8 @@ archive names so old references resolve here.
 | N-1 (07-16) | Archived X0 rule would double-count early-settled transactions | 15 real pairs | plan defect, corrected | R-B / X1 |
 | N-2 (07-16) | Settle-time freeze reads the clock (`loan_payment_service.py:762`) | -- | recorded risk | D3/C7 surfaces it |
 | N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | latent hazard | E1 |
+| N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
+| N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | B-15 residue | C-phase |
 
 ## 7. Verification standard (what "done" means for every step)
 
