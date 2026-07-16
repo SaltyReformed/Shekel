@@ -6,8 +6,8 @@ document are at the bottom (Section 9); the short version: amendments are edits 
 step gets its checkbox ticked with its commit hash HERE, and no new planning documents get
 written for this arc.
 
-**State as of 2026-07-16:** design verified and locked; rulings D1-D5 answered; two rulings open
-(Section 4); **nothing in Section 5 is built yet**. Next commit: **A1**.
+**State as of 2026-07-16:** design verified and locked; ALL rulings answered (D1-D5 and
+R-A..R-D, Section 4); **nothing in Section 5 is built yet**. Next commit: **A1**.
 
 ---
 
@@ -130,16 +130,16 @@ review, all gates green throughout). The fold deletes the generator; the minimal
 | D2 | Pre-tracking history is contractual back-projection, rendered as an explicit ESTIMATED tier. The visible step where the estimate meets the tracking-start assertion is honest; keep it. |
 | D3 | A future payment uses PLANNED cash (the transfer's amount), plus a drift warning vs contractual PITI + `extra_principal` with a one-click "update the transfer" action. A deliberate overpayment never trips it. |
 | D4 | The grid refuses amortizing accounts (picker + `?account_id=` + `PATCH /accounts/<id>/true-up` all gated on kind). A loan's balance is not a transaction sum. |
-| D5 | ONE clock: origination on `origination_date`, an assertion on `anchor_date`, a payment on its real date -- **with R-A below still to be confirmed for which date an ACTUAL payment's is**. Ties: payments before anchors on the same date; anchors by `created_at`. Rate/escrow resolve at the payment's effective date (verified to move nothing on current data; gate it anyway). |
+| D5 | ONE clock: origination on `origination_date`, an assertion on `anchor_date`, an ACTUAL payment VISIBLE on its settled date (R-A below). Ties: payments before anchors on the same date; anchors by `created_at`. The split inputs (ordering, rate, escrow) key on the DUE date -- contract time -- so out-of-order or late settlement can never re-split an installment; verified to move nothing on current data (period-start -> due-date windows contain no rate/escrow version change); gate it anyway. |
 
-### OPEN -- must be ruled before the step that consumes them
+### Answered (developer ruling, 2026-07-16: all four as recommended)
 
-| # | question | options and recommendation | blocks |
-|---|---|---|---|
-| **R-A** | Which date is an ACTUAL payment's balance event? Real July payment: due 07-01, settled 07-07, cash $1,910.95. | (a) due date: net worth double-counts ~$1,911 for the days between due and settle, every month (debt already down, cash not yet gone). (b) **settled date (`paid_at` civil date), SEQUENCED by due date so out-of-order settlement cannot reorder the split math; fall back to due date when `paid_at` is NULL. Recommended** -- it is the record's date, and the cash ledger already dates cash by `paid_at`. | C2 |
-| **R-B** | Cash: replace the dropped-settled rule. | Count a settled transaction in the projection iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- the posting walk's existing rule, shared not copied. (The archived X0 "post-anchor period" rule double-counts: 15 measured real-data pairs settle before an anchor but sit in later periods.) **Ratify as stated.** | X1 |
-| **R-C** | A settled payment INTO a loan that has not originated silently vanishes (measured: $1,200 leaves checking, nothing records it against the loan; when the loan originates it owes full principal). | (a) **Reject at the transfer write boundary (root-cause fix). Recommended.** (b) Model as a prepayment reducing the opening. (c) Leave + document. | C-phase close-out |
-| **R-D** | The year-end summary service is dead code (`/analytics/year-end` 302s; zero non-test callers) carrying two real defects (B-7, B-10). | (a) **Delete the service and its tests now; rebuild on `positions()` later if wanted. Recommended.** (b) Revive it during C-phase. | F2 |
+| # | ruling | consumed by |
+|---|---|---|
+| **R-A** | An ACTUAL payment's balance event is VISIBLE on its **settled date** (`paid_at` civil date; due date is the fallback when `paid_at` is NULL). The split math stays keyed to the DUE date -- ordering, rate, AND escrow -- so out-of-order or late settlement can never reorder installments or re-split one (concretely: the July payment settled 2026-07-07, one day after the 07-06 escrow change; due-date keying keeps its escrow $616.99, where settled-date keying would move the split by $0.34 and the baseline with it). Rejected: due-date visibility, which double-counts ~$1,911 in net worth for the days between due and settle every month (real case: due 07-01, settled 07-07). The cash ledger already dates cash by `paid_at`, so loan and checking now move together. | C2 |
+| **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. | X1 |
+| **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. | C9 |
+| **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. `_income_tax` survives -- the live Taxes tab uses it. | F2 |
 
 ## 5. The steps
 
@@ -189,11 +189,12 @@ what is written here is decided in the commit itself, not in a new document.
   enters the stream (the row is in the database and is excluded today, `loan_loaders.py:187-196`);
   a tracking-start becomes an ordinary ASSERTION. Kills the false pre-opening zero (B-11, live
   via /savings). Cleanup: the dead `insert_origination_event` test helper.
-- [ ] **C2** `fix(loan): one clock -- an event happens on the date it happened` -- **blocked on
-  R-A; MUST land after C1** (probe-proven: one-clock without the origination event reads $0 for
-  6 days x $178k at the Mortgage's tracking boundary). Deletes `_asof.py`. History repositions
-  within bounded windows (verified: 26 days Mortgage / 13 days Van Loan, today's balance
-  unchanged); every moved number is signed off via B2.
+- [ ] **C2** `fix(loan): one clock -- an event happens on the date it happened` -- R-A ruled
+  2026-07-16: settled-date visibility, due-date split keying. **MUST land after C1**
+  (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the
+  Mortgage's tracking boundary). Deletes `_asof.py`. History repositions within bounded windows
+  (verified: 26 days Mortgage / 13 days Van Loan, today's balance unchanged); every moved
+  number is signed off via B2.
 - [ ] **C3** `refactor(balance): the seam's AMORTIZING dispatch is the fold` -- deletes the
   splice, `_projection_seed`, `owed_from`, `loan_ledger_domain`, `LoanLedgerNotOpenedError`,
   both forward producers, `generate_debt_schedules`/`DebtSchedule`, and the two-zeros doctrine.
@@ -210,7 +211,8 @@ what is written here is decided in the commit itself, not in a new document.
   2026-07-06 escrow change).
 - [ ] **C8** `fix(loan): the payoff date is derived, never persisted from a schedule` -- kills
   B-14 (recurrence sync persisting a blind-walk payoff) and B-20.
-- [ ] **C9** close R-C (pre-origination payment) per its ruling.
+- [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
+  ruled 2026-07-16: reject at the transfer write boundary.
 
 ### Phase D -- structure replaces policy
 
@@ -229,8 +231,9 @@ what is written here is decided in the commit itself, not in a new document.
 ### Phase X -- cash (after the loan cutover proves the machinery)
 
 - [ ] **X1** `fix(balance): a settled transaction counts from the instant it settled` -- R-B's
-  instant partition, shared with `account_posting_service/_walk.py`. Recovers the dropped
-  settled activity (measured: $9,431.72 uncounted across 17 days until a manual re-anchor).
+  instant partition (ruled 2026-07-16), shared with `account_posting_service/_walk.py`.
+  Recovers the dropped settled activity (measured: $9,431.72 uncounted across 17 days until a
+  manual re-anchor).
 - [ ] **X2** `refactor(balance): a cash account is an event stream` -- the fold; deletes
   `calculate_balances`' Projected-only premise, `_detect_stale_anchor` (nothing left to
   detect), and the scalar/daily-series fork (they disagreed by $999.48 on 2026-07-16).
@@ -245,7 +248,8 @@ what is written here is decided in the commit itself, not in a new document.
 
 - [ ] **F1** FU-1: the Van Loan's known-wrong history (duplicate same-day anchors, a $452.37
   step with no payment) -- a DATA correction, made only after B2's oracle can validate it.
-- [ ] **F2** R-D: delete (or rebuild) the year-end service.
+- [ ] **F2** `refactor(analytics): delete the dead year-end summary service` -- R-D ruled
+  2026-07-16: delete now (with its tests); `_income_tax` stays for the live Taxes tab.
 - [ ] **F3** prod ship: dev -> main PR for the whole arc per the standard pipeline.
 
 ## 6. The findings ledger
@@ -261,7 +265,7 @@ archive names so old references resolve here.
 | B-4 | `_forward_rows` `is_confirmed` filter has zero discriminating tests | $4,449.72 | guard gap | A2 |
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | latent | A3 (mechanism), E1 (invariant) |
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | latent, live tab | C3/C6 |
-| B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | **dead code** | R-D / F2 |
+| B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
 | B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | latent | C3 |
 | B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
 | B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **LIVE** (/savings map) | C1 |
@@ -278,7 +282,7 @@ archive names so old references resolve here.
 | B-22 | Dead `insert_origination_event` fixture helper | -- | open | C1 |
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
-| FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case | open ruling | R-C -> C9 |
+| FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case | ruled: reject at write boundary (R-C) | C9 |
 | FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | latent | C5 |
 | cash D1 | Settled post-anchor transactions counted by NO producer | $9,431.72/17 days | **LIVE** (the re-anchor treadmill) | X1 |
 | cash D2 | Scalar is period-flat; contradicts the daily series | $999.48 on 07-16 | **LIVE** | X2 |
