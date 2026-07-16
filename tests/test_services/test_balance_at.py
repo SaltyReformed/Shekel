@@ -11,6 +11,15 @@ money values for the parity itself (the kernel and resolver already own
 those), only for the few sanity checks that confirm the right dispatch
 branch ran.
 
+**Parity is not the whole file, and must not be.**  A structural-equality test
+proves two producers AGREE; it says nothing about whether either is right, and
+where the two share code it degenerates to ``f(x) == f(x)``.  So the classes
+that pin VALUES against hand-computed arithmetic --
+:class:`TestForwardWalkExcludesLedgerBookedRows` above all -- are load-bearing
+in a way the parity classes are not: they are what stands between a shared-code
+defect and production.  Read the plan's Section 7.2 before adding a test here
+that proves a producer with a producer.
+
 The five account kinds are seeded with the suite's established factory
 patterns: a Checking (PLAIN), an HYSA + InterestParams (INTEREST), a
 Mortgage + LoanParams + origination event/rate (AMORTIZING), a 401(k) +
@@ -20,7 +29,7 @@ InvestmentParams (INVESTMENT), and a Property + AssetAppreciationParams
 the past (period 2) or at the current period (period 4).
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -61,6 +70,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
+    create_settled_transfer,
     insert_trueup_event,
     loan_params_for,
     make_appreciating_account,
@@ -114,6 +124,68 @@ def _make_mortgage(
         account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
     )
     return acct, loan_params_for(db.session, acct.id)
+
+
+# The paid-loan fixture's own arithmetic.  The divisor is the $2,000.00 of cash
+# the payment actually moved -- NOT the loan's ~$1,498.88 contractual P&I -- because
+# the ledger splits the REAL cash and its rows are what the schedule carries for the
+# confirmed region (``_payoff.py:285``).  At 6%/yr = 0.005/mo on a $250,000.00
+# origination:
+#   02-01: interest 250000.00 * 0.005 = 1250.00 -> principal  750.00
+#          remaining 250000.00 -  750.00 = 249250.00
+#   03-01: interest 249250.00 * 0.005 = 1246.25 -> principal  753.75
+#          remaining 249250.00 -  753.75 = 248496.25
+PAID_LOAN_LAST_CONFIRMED_REMAINING = Decimal("248496.25")
+PAID_LOAN_TRUED_UP_TO = Decimal("200000.00")
+
+
+def _paid_then_trued_loan(seed_user, db_session, periods):
+    """Create a loan with two SETTLED payments and a LATER true-up.
+
+    The shape the forward producers exist for, and the one the suite's fixture
+    matrix lacked (plan Section 7.4): real settled cash -- so the schedule
+    carries CONFIRMED rows at all -- followed by an operator true-up dated after
+    the last of them, so the ledger's confirmed balance and those rows'
+    ``remaining_balance`` genuinely disagree.  Without the true-up both derive
+    from the same ledger and every assertion over them is vacuous.
+
+    Shared by :class:`TestScalarAndMapAgree` (which needs the shape present) and
+    :class:`TestForwardWalkExcludesLedgerBookedRows` (which pins its value), so
+    the two cannot drift on what "a paid loan" means.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        periods: The ``seed_periods`` list (payments land in indices 1 and 3).
+
+    Returns:
+        The committed loan :class:`~app.models.account.Account`.
+    """
+    loan = create_loan_account(
+        seed_user, db_session, name="Paid Then Trued",
+        principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+        term=360, origination_date=date(2025, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+    )
+    # Settled payments due 2026-02-01 (period 1) and 2026-03-01 (period 3);
+    # both pay periods have begun by the frozen 2026-03-20, so the replay
+    # confirms both.  Explicit paid instants keep the fixture off the wall clock
+    # (``create_settled_transfer`` otherwise settles at ``now()``).
+    for idx, paid in ((1, date(2026, 2, 1)), (3, date(2026, 3, 1))):
+        create_settled_transfer(
+            seed_user, db_session, seed_user["account"], loan,
+            periods[idx], amount=Decimal("2000.00"),
+            paid_at=datetime(
+                paid.year, paid.month, paid.day, 12, 0, tzinfo=timezone.utc,
+            ),
+        )
+    db_session.commit()
+    insert_trueup_event(
+        loan_params_for(db_session, loan.id),
+        PAID_LOAN_TRUED_UP_TO, date(2026, 3, 15),
+    )
+    db_session.commit()
+    return loan
 
 
 def _add_flat_deduction(db, profile, account, amount):
@@ -2897,8 +2969,15 @@ class TestBrokenLoanFailsLoud:
             assert confirmed_loan_balance_at(
                 acct.id, bctx.scenario.id, bctx.as_of) is None
 
-            # And it degrades to the cash producer instead of raising.
-            assert balance_at.balance_at(acct, bctx, bctx.as_of) is not None
+            # And it degrades to the cash producer instead of raising -- pinned
+            # by VALUE, not by ``is not None``.  The account carries a
+            # $150,000.00 anchor and no transactions, so the cash producer owes
+            # exactly the anchor; asserting only non-None would have passed on
+            # any number the fallback invented, including a $0.00 that would
+            # render this Mortgage debt-free (B-21).
+            assert balance_at.balance_at(
+                acct, bctx, bctx.as_of,
+            ) == Decimal("150000.00")
 
 
 class TestScalarAndMapAgree:
@@ -2907,7 +2986,27 @@ class TestScalarAndMapAgree:
     Defect 2a was a $3,455.79 divergence between ``balance_at`` and ``balance_map``
     for the same loan on the same day -- two producers the code's own docstrings
     called siblings.  Nothing compared them, so nothing caught it.  This does, on
-    every loan shape the app can produce.
+    the seven shapes enumerated below.
+
+    **What this class does NOT prove, stated plainly so the next reader does not
+    over-trust it.**  It is a CONSISTENCY check between two producers, and its
+    reach ends where they stop being independent:
+
+    * On a BEGUN period the two sides are genuinely different readers
+      (``confirmed_loan_balance_at`` vs ``confirmed_loan_balance_map``), and that
+      is where its value is -- it is what caught defect 2a.
+    * On a FUTURE period both sides reduce to the SAME call,
+      ``_projected_owed_at(_forward_rows(schedule), period.end_date,
+      projection_seed, owed_from)`` (``net_worth_kernel.py:510`` and ``:995``).
+      There the assertion is ``f(x) == f(x)`` -- a tautology that holds however
+      wrong ``f`` is.  Adding shapes here cannot change that; the forward tail's
+      VALUES are pinned by
+      :class:`TestForwardWalkExcludesLedgerBookedRows` instead (plan Section 7.2:
+      never two producers that share code proving each other).
+
+    "Every loan shape the app can produce" is what this docstring used to claim.
+    It is a fixture matrix, not a proof of exhaustiveness, and the shapes are
+    enumerated rather than generated.
 
     **The probe date follows each period's OWN keying, and that is not a detail.**
     The map reads the confirmed LEDGER for a period that has BEGUN (keyed by the
@@ -2933,8 +3032,13 @@ class TestScalarAndMapAgree:
                 f"map={bmap[period.id]} scalar@{probe}={scalar}"
             )
 
-    def test_every_loan_shape(self, app, db, seed_user, seed_periods):
-        """Six shapes, including the two this arc was built to handle."""
+    def test_every_enumerated_loan_shape(self, app, db, seed_user, seed_periods):
+        """Seven shapes, including the two this arc was built to handle.
+
+        The frozen 2026-03-20 clock (this package's autouse fixture) puts six of
+        ``seed_periods`` in the past and four ahead, so both splice branches run
+        for every shape.
+        """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
         from tests._test_helpers import (
@@ -3001,6 +3105,13 @@ class TestScalarAndMapAgree:
                 account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
             )
             db.session.commit()
+            # 7. PAID, then trued up -- the shape the forward producers exist
+            # for, and the one this matrix lacked (plan Section 7.4).  Its
+            # CONFIRMED rows are what make the begun half a real two-reader
+            # check rather than a walk over an all-unconfirmed schedule.
+            paid_then_trued = _paid_then_trued_loan(
+                seed_user, db.session, periods,
+            )
 
             bctx = BalanceContext.build(bctx_user)
             for acct, shape in [
@@ -3010,5 +3121,97 @@ class TestScalarAndMapAgree:
                 (paid_off, "paid-off"),
                 (upcoming, "not-yet-originated"),
                 (closing_now, "originating inside the current period"),
+                (paid_then_trued, "paid, then trued up"),
             ]:
                 self._assert_agrees(acct, bctx, periods, shape)
+
+
+class TestForwardWalkExcludesLedgerBookedRows:
+    """A payment the ledger already booked is not a future event.
+
+    :func:`~app.services.account_projection._forward_rows` drops the schedule's
+    CONFIRMED rows before either forward producer walks it, and that filter is
+    load-bearing: a confirmed row's ``remaining_balance`` is what the loan owed
+    back THEN, so admitting it to a FORWARD walk reports a historical balance for
+    a future date.  A true-up recorded after the last payment makes that stale
+    number arbitrarily wrong -- here by $48,496.25.
+
+    **Nothing guarded it.**  Deleting the filter left the ENTIRE suite green
+    (7,401 tests, measured 2026-07-16), for two independent reasons this class
+    exists to fix:
+
+    * :class:`TestScalarAndMapAgree` compares the scalar against the map, but on
+      the forward tail BOTH sides are ``_projected_owed_at(_forward_rows(...))``
+      -- literally the same call with the same arguments
+      (``net_worth_kernel.py:510`` and ``:995``).  A consistency check cannot see
+      a change to the code its two sides SHARE (plan Section 7.2), so no shape
+      added to that matrix can catch this.
+    * :func:`~app.services.account_projection.balance_from_schedule_at_date`
+      returns the LAST qualifying row's ``remaining_balance`` rather than
+      subtracting principal, so the filter changes the answer ONLY on dates
+      between ``ctx.as_of`` and the first UNCONFIRMED row's due date.  Every
+      future period end-date the suite probes (04-09, 04-23, 05-07, 05-21) lands
+      PAST that window, where the filter is a measured no-op.
+
+    So the guard needs a VALUE pinned INSIDE the window -- which is what this is.
+    Recorded as B-4 in the plan's findings ledger.
+    """
+
+    def test_a_confirmed_rows_stale_balance_never_answers_a_future_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Inside the window, the forward walk answers the LEDGER, not a paid row.
+
+        On 2026-03-25 the loan owes exactly what the operator asserted on 03-15
+        ($200,000.00): nothing is due until 04-01, so nothing has paid it down.
+        The unfiltered walk instead reaches back to the 03-01 payment row and
+        reports $248,496.25 -- the balance the loan owed three weeks BEFORE the
+        true-up, and $48,496.25 too much.
+        """
+        with app.app_context():
+            periods = seed_periods
+            loan = _paid_then_trued_loan(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            # ``debt_schedule_rows`` is the fence-clean accessor for an
+            # out-of-cluster reader: rows, carrying no balance.  Every balance
+            # below comes from the seam, which is the architecture this suite
+            # exists to defend.
+            rows = sorted(
+                net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id],
+                key=lambda row: row.payment_date,
+            )
+            confirmed = [row for row in rows if row.is_confirmed]
+            unconfirmed = [row for row in rows if not row.is_confirmed]
+
+            # The fixture really is the shape this guards (non-vacuity): the
+            # ledger booked two payments, and the stale balance their rows carry
+            # is NOT the balance the loan actually owes.
+            assert len(confirmed) == 2
+            assert confirmed[-1].payment_date == date(2026, 3, 1)
+            stale = confirmed[-1].remaining_balance
+            assert stale == PAID_LOAN_LAST_CONFIRMED_REMAINING
+            assert balance_at.balance_at(
+                loan, bctx, bctx.as_of,
+            ) == PAID_LOAN_TRUED_UP_TO
+
+            # The probe sits INSIDE the only window where the filter decides
+            # anything: after the resolver's now, before the next payment falls
+            # due.  Outside it the walk lands on an unconfirmed row either way
+            # and the filter is a measured no-op.
+            probe = date(2026, 3, 25)
+            assert bctx.as_of < probe < unconfirmed[0].payment_date
+
+            owed = balance_at.balance_at(loan, bctx, probe)
+
+            # THE CONTROL, and the only line here that can fail: nothing is due
+            # between 03-20 and 03-25, so the loan still owes exactly what was
+            # asserted on 03-15.  Delete the ``is_confirmed`` filter and this
+            # reads $248,496.25 -- the 03-01 row's stale balance -- which is how
+            # it was measured to fire (2026-07-16).
+            assert owed == PAID_LOAN_TRUED_UP_TO
+            # Documentation, not a control: with both operands pinned to
+            # literals above, the arithmetic below holds however wrong the
+            # producer is.  It records the blast radius -- $48,496.25, and
+            # unbounded in the size of the true-up -- next to the code that
+            # bounds it.
+            assert stale - owed == Decimal("48496.25")
