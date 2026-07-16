@@ -7,7 +7,8 @@ step gets its checkbox ticked with its commit hash HERE, and no new planning doc
 written for this arc.
 
 **State as of 2026-07-16:** design verified and locked; ALL rulings answered (D1-D5 and
-R-A..R-D, Section 4); **A1 shipped** (`f11382a0`). Next commit: **A2**.
+R-A..R-D, Section 4); **A1** (`f11382a0`) and **A2** (`c96c62be`) shipped, plus the live
+Schedule A defect A2 uncovered (N-9, `44cbd028`). Next commit: **A3**.
 
 ---
 
@@ -139,7 +140,7 @@ review, all gates green throughout). The fold deletes the generator; the minimal
 | **R-A** | An ACTUAL payment's balance event is VISIBLE on its **settled date** (`paid_at` civil date; due date is the fallback when `paid_at` is NULL). The split math stays keyed to the DUE date -- ordering, rate, AND escrow -- so out-of-order or late settlement can never reorder installments or re-split one (concretely: the July payment settled 2026-07-07, one day after the 07-06 escrow change; due-date keying keeps its escrow $616.99, where settled-date keying would move the split by $0.34 and the baseline with it). Rejected: due-date visibility, which double-counts ~$1,911 in net worth for the days between due and settle every month (real case: due 07-01, settled 07-07). The cash ledger already dates cash by `paid_at`, so loan and checking now move together. | C2 |
 | **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. | X1 |
 | **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. | C9 |
-| **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. `_income_tax` survives -- the live Taxes tab uses it. | F2 |
+| **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. ~~`_income_tax` survives -- the live Taxes tab uses it.~~ **Corrected 2026-07-16 (A2):** only TWO functions are live -- `_compute_mortgage_interest` -> `_loan_year_interest` -- reached because `tax_report_service.py:84` imports a PRIVATE name across packages, and their only real coverage sits in the file F2 deletes (`TestMortgageInterestGenesisHybrid`). Both die at **C3**, which deletes their input type; by F2 nothing is stranded, so F2 stays a clean whole-package deletion. If C3 has not landed when F2 runs, F2 must move the two functions to `tax_report_service` (their only caller) rather than leave the private import. | F2 (C3 first) |
 
 ## 5. The steps
 
@@ -158,13 +159,28 @@ what is written here is decided in the commit itself, not in a new document.
   (the reset's balance-preserving re-anchor and the create factory's origination anchor).
   Verified live on the dev clone: `?account_id=3` resolves to Checking; the $1.00 Mortgage
   true-up is refused; baseline unmoved.
-- [ ] **A2** `test(loan): the shape matrix must contain a PAID loan, asserted on the forward
-  tail` -- add settled-payments-plus-later-true-up to `test_every_loan_shape`, with assertions
-  on FUTURE periods (the forward producers). This is what makes the `_forward_rows`
-  `is_confirmed` filter's deletion visible ($4,449.72 measured; currently 0 discriminating
-  tests). While in the file: fix the class docstring's "every loan shape" overclaim, and add one
-  negative control for the `is_confirmed` / `settled_due_months` guard pair in
-  `_loan_year_interest` (currently redundant-by-overlap; the tax number itself is guarded).
+- [x] **A2** `test(loan): pin the forward walk's value, not two producers agreeing` -- **SHIPPED
+  `c96c62be` (2026-07-16).** **As scoped, this step could not do its job, and the correction was
+  the step.** Adding a paid shape to `test_every_loan_shape` does NOT make the
+  `_forward_rows` `is_confirmed` filter's deletion
+  visible: `_assert_agrees` compares the scalar to the map, and on the forward tail both sides
+  are the SAME call, `_projected_owed_at(_forward_rows(schedule), p.end_date, projection_seed,
+  owed_from)` (`net_worth_kernel.py:510` and `:995`) -- `f(x) == f(x)`, exactly the shape
+  Section 7.2 forbids. **Measured 2026-07-16: with the filter deleted, all 7,401 tests pass.**
+  Second, `balance_from_schedule_at_date` returns the LAST qualifying row's `remaining_balance`
+  rather than subtracting principal, so the filter changes an answer ONLY between `ctx.as_of`
+  and the first UNCONFIRMED row's due date; every future period end-date the matrix probes
+  (04-09, 04-23, 05-07, 05-21) lands past that window, where it is a measured no-op. So: pin
+  the VALUE inside the window on a paid-then-trued-up loan (new
+  `TestForwardWalkExcludesLedgerBookedRows`; the fixture measures $48,496.25 -- the delta is
+  `last_confirmed_row.remaining_balance - projection_seed`, unbounded in the true-up's size).
+  Still add the paid shape to the matrix (Section 7.4; its BEGUN half IS a real two-reader
+  check) and fix the "every loan shape" overclaim. Also B-21 (assert the value, not
+  `is not None`) and an independent hand-computed oracle for the LIVE Taxes number -- its only
+  live-path test spends `_compute_mortgage_interest` as its own oracle, so a double-count ships
+  green (shown to fire). NOT done: a negative control for `_loan_year_interest`'s
+  `not row.is_confirmed` -- it is unreachable by construction (N-6). Building that oracle
+  surfaced a LIVE tax defect off the arc's path, fixed in its own commit (N-9, `44cbd028`).
 - [ ] **A3** `fix(loan): the ledger records what is KNOWN; the readers decide what has
   HAPPENED` -- delete `as_of` from the loan write walk; post every anchor; the readers already
   bound by visibility. Kills the clock-fired outage (B-1), the $7,643.80 split corruption, and
@@ -203,6 +219,14 @@ what is written here is decided in the commit itself, not in a new document.
 - [ ] **C3** `refactor(balance): the seam's AMORTIZING dispatch is the fold` -- deletes the
   splice, `_projection_seed`, `owed_from`, `loan_ledger_domain`, `LoanLedgerNotOpenedError`,
   both forward producers, `generate_debt_schedules`/`DebtSchedule`, and the two-zeros doctrine.
+  **C3 therefore OWNS interest-in-year** (found 2026-07-16, A2): deleting `DebtSchedule` deletes
+  `_loan_year_interest`'s input type (`_income_tax.py:190-195`, fed by `debt_schedule_rows` at
+  `tax_report_service.py:645`), so the live Taxes tab breaks unless this commit moves the figure
+  onto `positions().cum_interest` (Section 3 already assigns it there). That deletes BOTH guards
+  of the ledger/schedule overlap (`is_confirmed` + `settled_due_months`) along with the
+  month-keyed approximation they patch (`loan_loaders.py:599-608`) -- one stream, one row per
+  installment, nothing to de-duplicate. Grade the rebuild against A2's hand-computed live oracle,
+  never against `_compute_mortgage_interest` (N-7). Closes B-6.
 - [ ] **C4** `fix(loan): the loan page reads the seam like everyone else` -- deletes the route's
   private double-compose and `LoanState.current_balance` (7 route reads).
 - [ ] **C5** `fix(accounts): the equity chart's debt line is the fold` -- kills B-2
@@ -267,7 +291,7 @@ archive names so old references resolve here.
 | B-1 | Future-origination loan posts no OPENING; seam 500s five pages when the date arrives | outage | open (bounded by container-restart backfill) | A3 |
 | B-2 | Property equity chart derives debt from schedule rows; wrong on 8/13 shapes | $299,701.35 | open, reachable | C5 |
 | B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **closed (`f11382a0`)** | A1 |
-| B-4 | `_forward_rows` `is_confirmed` filter has zero discriminating tests | $4,449.72 | guard gap | A2 |
+| B-4 | `_forward_rows` `is_confirmed` filter had zero discriminating tests -- **measured: the filter could be deleted and all 7,401 tests passed** | $4,449.72 archived; $48,496.25 on A2's fixture; unbounded (= `last_confirmed.remaining_balance - projection_seed`) | **closed (`c96c62be`)** -- value pinned inside the only window where the filter decides anything, control shown to fire | A2 |
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | latent | A3 (mechanism), E1 (invariant) |
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | latent, live tab | C3/C6 |
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
@@ -283,7 +307,7 @@ archive names so old references resolve here.
 | B-18 | Cash scalar fabricates pre-anchor balances from today's anchor | -- | live | X3 |
 | B-19 | False `DebtSchedule` type hints in `_income_tax` | -- | open | fix on first C-phase touch |
 | B-20 | True-up-paid-off loan shows origination as payoff date, no badge | -- | open | C8 |
-| B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | guard gap | A2 |
+| B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
 | B-22 | Dead `insert_origination_event` fixture helper | -- | open | C1 |
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
@@ -298,6 +322,10 @@ archive names so old references resolve here.
 | N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | latent hazard | E1 |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | B-15 residue | C-phase |
+| N-6 (A2) | `_loan_year_interest`'s `not row.is_confirmed` guard fires on NO live path today: it would only matter when the ledger answers for interest but not for the schedule, and both gate on the same `_has_opening_posting` (`_reader.py:310` vs `:152`), so `_payoff.py:285` has already swapped the replay's redistributed rows for raw-due-dated ledger rows that `settled_due_months` alone excludes. **That unreachability is a cross-module coincidence, not a structural guarantee** -- `confirmed_loan_view` ALSO returns `None` for `as_of > today` (`loan_payment_service.py:529`) where the interest reader has no `as_of` at all, so a caller passing a year-end `as_of` makes this guard the only thing between the Taxes tab and a double-count. Kept, untested: the state is unreachable, so a control would have to hand-build the rows (the anti-pattern B-17 names) | -- | recorded, code untouched | C3 (deletes both guards with `DebtSchedule`) |
+| N-9 (A2) | **Schedule A counted a CAR LOAN's interest as home-mortgage interest.** The pre-fix `_load_debt_accounts` selected on `has_amortization` alone -- set on AUTO_LOAN, STUDENT_LOAN, PERSONAL_LOAN and HELOC as well as MORTGAGE -- so every amortizing account fed `_compute_mortgage_interest`. Personal interest is not deductible at all; student-loan interest is above-the-line, never Schedule A. Root cause is its own docstring: "Mirrors `_load_common_data`'s `debt_accounts` selection" -- one predicate answering two questions (Section 8's lesson, live) | **$5,221.16** measured on the suite's split-loan fixture; inflates itemize-vs-standard, so it can advise itemizing when the standard deduction wins | **closed (`44cbd028`)** -- `_load_debt_accounts` -> `_load_mortgage_accounts`, selected by account_type ID; HELOC deliberately excluded (use-of-proceeds unknown, documented like property tax); negative control shown to fire | own commit, found building A2's oracle |
+| N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
+| N-8 (A2) | The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)` under a suite frozen to 2026-03-20 -- the clock read A3 deletes, observed live | -- | corroborates B-1 | A3 |
 
 ## 7. Verification standard (what "done" means for every step)
 
