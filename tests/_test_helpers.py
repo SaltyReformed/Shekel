@@ -842,7 +842,7 @@ def add_escrow_line(
 def create_loan_with_trueup(
     seed_user, db_session, *, origination_principal, anchor_balance,
     anchor_date, rate, origination_date, name="Split Loan", term=360,
-    payment_day=1, escrow_annual=None,
+    payment_day=1, escrow_annual=None, account_type=None,
 ):
     """Create an amortizing loan carrying an origination AND a user-trueup anchor.
 
@@ -871,18 +871,26 @@ def create_loan_with_trueup(
         payment_day: The day-of-month payment day (default 1).
         escrow_annual: Optional annual escrow amount (Decimal); when given, one
             escrow component effective from ``origination_date`` is added.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create the
+            account as; defaults to :func:`create_loan_account`'s own default
+            (``AUTO_LOAN``).  Pass ``MORTGAGE`` when the test's assertions depend
+            on the loan's KIND rather than just its amortization -- Schedule A's
+            mortgage-interest deduction is the case that does, and a fixture that
+            takes the default silently pins an auto loan's interest into a
+            home-mortgage figure.
 
     Returns:
         The created loan :class:`~app.models.account.Account`.
     """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
-    from app.models.loan_params import LoanParams
+    # Pylint: ``import-outside-toplevel`` -- same circular-dep avoidance as the
+    # loan helpers above; these pull the models/services package, which must not
+    # load at tests/_test_helpers import time.
+    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
 
     loan = create_loan_account(
         seed_user, db_session, name=name, principal=origination_principal,
         rate=rate, term=term, origination_date=origination_date,
-        payment_day=payment_day,
+        payment_day=payment_day, account_type=account_type,
     )
     params = (
         db_session.query(LoanParams).filter_by(account_id=loan.id).one()

@@ -28,6 +28,7 @@ year-periods query the producer runs):
 from datetime import date, timedelta
 from decimal import Decimal
 
+from app.enums import AcctTypeEnum
 from app.extensions import db as _db
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -593,6 +594,10 @@ class TestScheduleAMortgageInterest:
 
         _seed_and_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
+        # A MORTGAGE, which is what this test's name and docstring always
+        # claimed: the fixture took ``create_loan_with_trueup``'s AUTO_LOAN
+        # default, so before ``_load_mortgage_accounts`` existed this asserted
+        # a nonzero HOME-MORTGAGE deduction built from a car loan.
         loan = create_loan_with_trueup(
             seed_user, db.session,
             origination_principal=SPLIT_LOAN.origination_principal,
@@ -600,6 +605,7 @@ class TestScheduleAMortgageInterest:
             anchor_date=SPLIT_LOAN.anchor_date,
             rate=SPLIT_LOAN.rate,
             origination_date=SPLIT_LOAN.origination_date,
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         db.session.commit()
 
@@ -626,3 +632,49 @@ class TestScheduleAMortgageInterest:
             report.schedule_a.itemized_estimate - Decimal("16100.00")
         )
         assert report.schedule_a.components.property_tax is None
+
+    def test_a_car_loans_interest_is_not_home_mortgage_interest(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """An AUTO_LOAN contributes NOTHING to the Schedule A mortgage term.
+
+        Personal interest is not deductible.  The pre-fix ``_load_debt_accounts``
+        selected on ``has_amortization`` alone -- which is set on AUTO_LOAN,
+        STUDENT_LOAN, PERSONAL_LOAN and HELOC just as it is on MORTGAGE -- so
+        this exact fixture reported **$5,221.16** of a car loan's interest as
+        home mortgage interest (measured 2026-07-16 by restoring the old
+        selection).
+
+        The loan here is otherwise identical to the mortgage the sibling test
+        seeds -- same principal, rate, dates, and true-up -- so the ONLY thing
+        producing the zero is the account's KIND.
+
+        Both assertions discriminate: restore the amortization-only selection and
+        the first reads $5,221.16 and the second is off by the same.  ``margin``
+        is deliberately NOT asserted -- the standard deduction happens to win
+        either way here, so it would pass while the number was wrong, and this
+        file has enough of those already.  The harm is not that this fixture
+        flips the election; it is that the deduction is overstated by $5,221.16,
+        which flips it for anyone near the threshold.
+        """
+        freeze_today(monkeypatch, date(2026, 6, 1))
+        _seed_and_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        create_loan_with_trueup(
+            seed_user, db.session,
+            origination_principal=SPLIT_LOAN.origination_principal,
+            anchor_balance=SPLIT_LOAN.anchor_balance,
+            anchor_date=SPLIT_LOAN.anchor_date,
+            rate=SPLIT_LOAN.rate,
+            origination_date=SPLIT_LOAN.origination_date,
+            account_type=AcctTypeEnum.AUTO_LOAN,
+        )
+        db.session.commit()
+
+        report = compute_tax_report(
+            seed_user["user"].id, 2026, date(2026, 6, 1),
+        )
+
+        assert report.schedule_a.components.mortgage_interest == ZERO
+        # Nothing but the state withholding is left to itemize.
+        assert report.schedule_a.itemized_estimate == report.withholding.total.state

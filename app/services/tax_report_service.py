@@ -64,6 +64,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import net_worth_kernel, paycheck_calculator, tax_calculator
@@ -622,10 +624,11 @@ def _build_schedule_a(
     """Build the informational Schedule A itemize-vs-standard check.
 
     Mortgage interest REUSES the year-end summary's ledger-actual +
-    schedule-projected hybrid: it loads the user's debt accounts, generates
-    their amortization schedules via the shared
-    :func:`net_worth_kernel.generate_debt_schedules`, and delegates to the
-    same ``_compute_mortgage_interest`` the orchestrator calls (no second
+    schedule-projected hybrid: it loads the user's MORTGAGE accounts
+    (:func:`_load_mortgage_accounts` -- NOT every amortizing account; a car
+    loan's interest is not deductible), generates their amortization schedules
+    via the shared :func:`net_worth_kernel.debt_schedule_rows`, and delegates to
+    the same ``_compute_mortgage_interest`` the orchestrator calls (no second
     implementation).  The state income-tax component is the hybrid state
     withholding.  Property tax is omitted (no unambiguous source).
 
@@ -641,9 +644,9 @@ def _build_schedule_a(
     Returns:
         The populated :class:`ScheduleACheck`.
     """
-    debt_accounts = _load_debt_accounts(user_id)
+    mortgage_accounts = _load_mortgage_accounts(user_id)
     debt_schedules = net_worth_kernel.debt_schedule_rows(
-        debt_accounts, balance_ctx,
+        mortgage_accounts, balance_ctx,
     )
     mortgage_interest = _compute_mortgage_interest(
         year, debt_schedules, balance_ctx.scenario.id,
@@ -665,23 +668,48 @@ def _build_schedule_a(
     )
 
 
-def _load_debt_accounts(user_id: int) -> list:
-    """Return the user's active amortizing (loan) accounts.
+def _load_mortgage_accounts(user_id: int) -> list:
+    """Return the user's active MORTGAGE accounts -- Schedule A line 8's domain.
 
-    Mirrors ``_load_common_data``'s ``debt_accounts`` selection: the shared
-    :func:`~app.services.projection_inputs.load_active_accounts_with_types`
-    loader (account_type eager-loaded, no N+1) filtered to the accounts
-    whose ``account_type.has_amortization`` is set.
+    Deliberately NOT ``_load_common_data``'s ``debt_accounts`` selection, which
+    this used to mirror, and the divergence IS the fix.  The two answer different
+    questions: that one asks "what do I owe on?" and rightly takes every
+    amortizing account; this one asks "whose interest is deductible as home
+    mortgage interest?", and only a mortgage's is.
+
+    Mirroring the debt selection put a CAR LOAN's interest into the home-mortgage
+    deduction.  ``has_amortization`` is set on ``AUTO_LOAN``, ``STUDENT_LOAN``,
+    ``PERSONAL_LOAN`` and ``HELOC`` as well as ``MORTGAGE``, so every one of them
+    was summed into ``schedule_a.components.mortgage_interest``.  Personal
+    interest (car, personal loan) is not deductible at all, and student-loan
+    interest is an above-the-line adjustment, never Schedule A -- so a user with
+    a car loan had their itemize-vs-standard comparison inflated by its full
+    annual interest, and could be told to itemize when the standard deduction
+    wins.
+
+    Selected by account_type ID (the project's ref-table rule: IDs for logic),
+    not by a collateral link: the TYPE is the user's own declaration that the
+    account is a mortgage, whereas ``collateral_account_id`` is optional and a
+    real mortgage may simply not have it filled in.
+
+    **Known omission, deliberate.**  A HELOC's interest IS deductible when the
+    proceeds bought, built, or substantially improved the residence, and is not
+    otherwise -- a use-of-proceeds fact the app does not record.  This Schedule A
+    is an informational itemize-vs-standard check that already omits what it
+    cannot source unambiguously (property tax, ``property_tax_included=False``);
+    excluding the HELOC follows that stance rather than guessing at the
+    taxpayer's intent.  Revisit if the app ever records use of proceeds.
 
     Args:
         user_id: The owning user.
 
     Returns:
-        The active loan account list (possibly empty).
+        The active mortgage account list (possibly empty).
     """
+    mortgage_type_id = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
     return [
         a for a in load_active_accounts_with_types(user_id)
-        if a.account_type and a.account_type.has_amortization
+        if a.account_type_id == mortgage_type_id
     ]
 
 
