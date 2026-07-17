@@ -31,7 +31,7 @@ from app.services.auth_service import hash_password
 import pytest
 from app.services import account_service
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import create_loan_account, freeze_today
 
 
 @pytest.fixture(autouse=True)
@@ -321,6 +321,113 @@ class TestProfileCreate:
             assert response.status_code == 200
             assert b"active account" in response.data
             assert b"/accounts/new" in response.data
+
+    def test_create_profile_refuses_a_loan_only_user(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """With only a loan active, /salary refuses and posts nothing to it.
+
+        A salary profile deposits recurring income; depositing it onto a loan
+        would have the recurrence engine generate raw income transactions the
+        loan fold cannot see (finding N-11 / ruling D4).  The picker excludes
+        amortizing accounts, so a user whose only active account is a loan is
+        told to create a real account, and no profile, template, or transaction
+        lands on the loan.
+        """
+        with app.app_context():
+            for acct in (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, is_active=True).all()
+            ):
+                acct.is_active = False
+            loan = create_loan_account(
+                seed_user, db.session, name="Only Loan",
+                principal=Decimal("200000.00"), rate=Decimal("0.06"),
+                origination_date=date(2026, 1, 1),
+            )
+            db.session.commit()
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            resp = auth_client.post("/salary", data={
+                "name": "Day Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"not a loan" in resp.data
+            assert (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id).count() == 0
+            )
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=loan.id).count() == 0
+            )
+
+    def test_create_profile_picks_a_non_loan_over_a_loan(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The picker skips a loan EVEN WHEN the loan would win query order.
+
+        A real negative control: every seeded account is deactivated, then the
+        loan is created FIRST (so it is the lowest active id an unordered
+        ``.first()`` returns), then a non-loan account AFTER it.  Without the
+        ``has_amortization`` exclusion the picker would return the loan and
+        generate income onto it; the exclusion sends the deposit to the later
+        non-loan account instead.  Reverting the filter makes this test pick the
+        loan and fail -- which the vacuous version (checking already lower-id)
+        could not do.
+        """
+        with app.app_context():
+            for acct in (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, is_active=True).all()
+            ):
+                acct.is_active = False
+            db.session.flush()
+            loan = create_loan_account(
+                seed_user, db.session, name="First Loan",
+                principal=Decimal("200000.00"), rate=Decimal("0.06"),
+                origination_date=date(2026, 1, 1),
+            )
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            deposit_account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Late Checking",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.add(deposit_account)
+            db.session.commit()
+            # The loan is the lower-id active account, so an unordered .first()
+            # would return it if the exclusion were removed.
+            assert loan.id < deposit_account.id
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            resp = auth_client.post("/salary", data={
+                "name": "Day Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+            profile = db.session.query(SalaryProfile).filter_by(
+                user_id=seed_user["user"].id, name="Day Job",
+            ).one()
+            assert profile.template.account_id == deposit_account.id
+            assert profile.template.account_id != loan.id
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=loan.id).count() == 0
+            )
 
     def test_create_profile_double_submit(self, app, auth_client, seed_user, seed_periods):
         """POST /salary twice results in an error on the second attempt."""

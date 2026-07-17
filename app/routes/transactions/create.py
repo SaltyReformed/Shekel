@@ -20,6 +20,10 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.utils.auth_helpers import require_owner
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
@@ -30,6 +34,45 @@ from app.routes.transactions._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The refusal body for a raw transaction typed onto an amortizing loan
+# account (ruling D4 / finding N-11): a loan's balance is ledger-derived,
+# not a transaction sum.  A payment is a transfer the app splits into
+# interest / escrow / principal; a balance correction is a true-up on the
+# loan's own page.
+_LOAN_TRANSACTION_REFUSAL = (
+    "A loan's balance is not a transaction sum. Record a payment as a "
+    "transfer, or a balance correction as a true-up on the loan's page."
+)
+
+
+def _reject_transaction_on_loan(account: Account) -> tuple[str, int] | None:
+    """Refuse a raw transaction typed onto an amortizing loan account.
+
+    A loan's balance is ledger-derived, not a transaction sum (ruling D4).
+    A raw transaction posted onto a loan account books a bare cash leg onto
+    the loan's linked ledger that the sum-of-postings reader counts as a
+    real paydown while the loan fold cannot see it -- finding N-11, the one
+    balance shape where the two producers diverge with nothing to reconcile
+    them.  So it is forbidden at the transaction-create chokepoint, exactly
+    as a transfer OUT of a loan is forbidden at the transfer-create
+    chokepoint
+    (:func:`app.services._transfer_loan_posting._reject_transfer_out_of_loan`,
+    review R6).  The grid picker already refuses a loan account (step A1);
+    this closes the ad-hoc and inline create endpoints the picker does not
+    gate.
+
+    Args:
+        account: The resolved, ownership-checked destination
+            :class:`~app.models.account.Account` for the new transaction.
+
+    Returns:
+        A ready-to-return ``(message, 422)`` Flask response tuple when
+        *account* is an amortizing loan, else ``None``.
+    """
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
+        return _LOAN_TRANSACTION_REFUSAL, 422
+    return None
 
 
 @transactions_bp.route("/transactions/inline", methods=["POST"])
@@ -82,6 +125,9 @@ def create_inline():
     ])
     if err is not None:
         return err
+    loan_refusal = _reject_transaction_on_loan(objs[Account])
+    if loan_refusal is not None:
+        return loan_refusal
     category = objs[Category]
 
     # Born Projected: a transaction can only ever be created Projected; the sole
@@ -129,8 +175,8 @@ def create_transaction():
     # ``Transaction(**data)``, so it must be ownership-checked here too:
     # a foreign category_id otherwise satisfies the FK constraint (the row
     # exists) and links another user's category onto this transaction.
-    # None of the resolved rows are needed afterward.
-    _, err = _resolve_owned_fks([
+    # The resolved Account is checked for the loan-kind refusal below.
+    objs, err = _resolve_owned_fks([
         (Account, data["account_id"], "Not found"),
         (Category, data["category_id"], "Category not found"),
         (PayPeriod, data["pay_period_id"], "Pay period not found"),
@@ -138,6 +184,9 @@ def create_transaction():
     ])
     if err is not None:
         return err
+    loan_refusal = _reject_transaction_on_loan(objs[Account])
+    if loan_refusal is not None:
+        return loan_refusal
 
     # Born Projected: see create_inline.  ``status_id`` is not a schema field,
     # so any submitted value was dropped; assign Projected unconditionally so
