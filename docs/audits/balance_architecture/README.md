@@ -7,8 +7,9 @@ step gets its checkbox ticked with its commit hash HERE, and no new planning doc
 written for this arc.
 
 **State as of 2026-07-16:** design verified and locked; ALL rulings answered (D1-D5 and
-R-A..R-D, Section 4); **A1** (`f11382a0`) and **A2** (`c96c62be`) shipped, plus the live
-Schedule A defect A2 uncovered (N-9, `44cbd028`). Next commit: **A3**.
+R-A..R-D, Section 4); **A1** (`f11382a0`), **A2** (`c96c62be`) and **A3** (`4e46a0a8`)
+shipped, plus the live Schedule A defect A2 uncovered (N-9, `44cbd028`). **Phase A is
+complete.** Next commit: **B1** (the fold, as an oracle only).
 
 ---
 
@@ -181,13 +182,29 @@ what is written here is decided in the commit itself, not in a new document.
   green (shown to fire). NOT done: a negative control for `_loan_year_interest`'s
   `not row.is_confirmed` -- it is unreachable by construction (N-6). Building that oracle
   surfaced a LIVE tax defect off the arc's path, fixed in its own commit (N-9, `44cbd028`).
-- [ ] **A3** `fix(loan): the ledger records what is KNOWN; the readers decide what has
-  HAPPENED` -- delete `as_of` from the loan write walk; post every anchor; the readers already
-  bound by visibility. Kills the clock-fired outage (B-1), the $7,643.80 split corruption, and
-  the negative-liability mechanism (B-5). Also close G1 (`grid.create_baseline` resyncs account
-  anchors but not loans). NOTE in the commit: a second write-path clock read remains by design
-  -- the settle-time freeze resolves P&I as of today (`loan_payment_service.py:762`); D3's drift
-  warning is what surfaces it (C7).
+- [x] **A3** `fix(loan): the ledger records what is KNOWN; the readers decide what has
+  HAPPENED` -- **SHIPPED `4e46a0a8` (2026-07-16).** The clock is out of the loan write walk
+  and G1 is closed. **"The readers already bound by visibility" was FALSE, and correcting it
+  was the step.** Two regressions measured from naively posting every anchor: (1) an anchor's
+  read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`) -- a
+  period-START rule, so a FUTURE anchor resolves to a PAST date and a loan originating INSIDE
+  the current period read its full principal as owed TODAY ($200,000.00 five days early),
+  trend contradicting hero; (2) `confirmed_loan_view` stopped returning `None`, and the
+  ledger's honest `0.00` for a loan that does not exist yet seeded `_build_forward_inputs`,
+  collapsing a 360-row schedule to **ZERO rows** (payoff = origination date, $200,000 flat
+  forever). Root cause of both: the map and the view INFERRED "not originated" from the
+  ledger's SILENCE -- an inference that held only because the clock forced it. Fix: both ask
+  the FACT (`origination_date`), as the scalar `amortizing_balance_at` already did and
+  documented. `confirmed_loan_view` now takes `params` (all 4 callers already held it: no
+  re-load, and the origination cannot be mismatched to the account).
+  Also: `loan_balance_anchor_history` applies the display bound to the walk's OUTPUT;
+  `_test_helpers`' future-anchor guard deleted (its reason is gone); `create_baseline`'s body
+  moved to a new `baseline_service` (grid.py sat at exactly 1000/1000 lines and the route was
+  orchestrating two posting packages; `scenario_resolver` cannot host it -- both packages
+  import it, so pylint reports R0401). Every control shown to fire. Residue: **N-10**.
+  **N-8 is NOT closed: it was misattributed** (see its row). NOTE: a second write-path clock
+  read remains by design -- the settle-time freeze resolves P&I as of today
+  (`loan_payment_service.py:762`); D3's drift warning is what surfaces it (C7).
 
 ### Phase B -- the fold, as an oracle only
 
@@ -288,11 +305,12 @@ archive names so old references resolve here.
 
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
-| B-1 | Future-origination loan posts no OPENING; seam 500s five pages when the date arrives | outage | open (bounded by container-restart backfill) | A3 |
+| B-1 | Future-origination loan posts no OPENING; seam 500s five pages when the date arrives | outage | **closed (`4e46a0a8`)** -- reproduced (configure 2026-03-20 / close 04-15 / read 05-07, no re-sync: hero AND map both raised), control fires | A3 |
+| G1 | `grid.create_baseline` resynced account anchors but NOT loans, so a loan configured while its owner had no baseline (its opening posts per SCENARIO, and there was none) stayed opening-less through the one recovery path -- every loan surface 500s, with no way back short of re-saving the loan's params | outage | **closed (`4e46a0a8`)** -- reproduced (delete the baseline, POST /create-baseline, read the loan: raised); control fires | A3 |
 | B-2 | Property equity chart derives debt from schedule rows; wrong on 8/13 shapes | $299,701.35 | open, reachable | C5 |
 | B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **closed (`f11382a0`)** | A1 |
 | B-4 | `_forward_rows` `is_confirmed` filter had zero discriminating tests -- **measured: the filter could be deleted and all 7,401 tests passed** | $4,449.72 archived; $48,496.25 on A2's fixture; unbounded (= `last_confirmed.remaining_balance - projection_seed`) | **closed (`c96c62be`)** -- value pinned inside the only window where the filter decides anything, control shown to fire | A2 |
-| B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | latent | A3 (mechanism), E1 (invariant) |
+| B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | **mechanism closed (`4e46a0a8`)** -- the clock-dropped opening that let a payment split against a ZERO balance is gone; reproduced on the ordinary settle path (payment settled early, due AFTER a future origination: interest $0.00 / principal $0.00 / **excess $1,073.64**, whole payment booked as a Refund Receivable and the Schedule-A interest erased -> $833.33 / $240.31 / $0.00). The linked ledger netted to exactly $0.00 -- the loan reading as owing NOTHING while the borrower's cash sat in a Refund. Invariant still open | A3 (mechanism), E1 (invariant) |
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | latent, live tab | C3/C6 |
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
 | B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | latent | C3 |
@@ -325,7 +343,8 @@ archive names so old references resolve here.
 | N-6 (A2) | `_loan_year_interest`'s `not row.is_confirmed` guard fires on NO live path today: it would only matter when the ledger answers for interest but not for the schedule, and both gate on the same `_has_opening_posting` (`_reader.py:310` vs `:152`), so `_payoff.py:285` has already swapped the replay's redistributed rows for raw-due-dated ledger rows that `settled_due_months` alone excludes. **That unreachability is a cross-module coincidence, not a structural guarantee** -- `confirmed_loan_view` ALSO returns `None` for `as_of > today` (`loan_payment_service.py:529`) where the interest reader has no `as_of` at all, so a caller passing a year-end `as_of` makes this guard the only thing between the Taxes tab and a double-count. Kept, untested: the state is unreachable, so a control would have to hand-build the rows (the anti-pattern B-17 names) | -- | recorded, code untouched | C3 (deletes both guards with `DebtSchedule`) |
 | N-9 (A2) | **Schedule A counted a CAR LOAN's interest as home-mortgage interest.** The pre-fix `_load_debt_accounts` selected on `has_amortization` alone -- set on AUTO_LOAN, STUDENT_LOAN, PERSONAL_LOAN and HELOC as well as MORTGAGE -- so every amortizing account fed `_compute_mortgage_interest`. Personal interest is not deductible at all; student-loan interest is above-the-line, never Schedule A. Root cause is its own docstring: "Mirrors `_load_common_data`'s `debt_accounts` selection" -- one predicate answering two questions (Section 8's lesson, live) | **$5,221.16** measured on the suite's split-loan fixture; inflates itemize-vs-standard, so it can advise itemizing when the standard deduction wins | **closed (`44cbd028`)** -- `_load_debt_accounts` -> `_load_mortgage_accounts`, selected by account_type ID; HELOC deliberately excluded (use-of-proceeds unknown, documented like property tax); negative control shown to fire | own commit, found building A2's oracle |
 | N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
-| N-8 (A2) | The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)` under a suite frozen to 2026-03-20 -- the clock read A3 deletes, observed live | -- | corroborates B-1 | A3 |
+| N-8 (A2) | ~~The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)`~~ **WITHDRAWN 2026-07-16 (A3): misattributed, on two counts.** (a) **Source 6 is `account_opening`** (`PostingSourceEnum` order: transfer 1, transaction 2, loan_payment 3, loan_opening 4, loan_trueup 5, account_opening 6) -- that log line is the ACCOUNT anchor path, not the loan walk. (b) That path reads **no clock at all** (`grep date.today() app/services/account_posting_service/` is empty); its `entry_date` is the assertion's own instant. The 2026-07-16 under a frozen-to-2026-03-20 suite is fixture ORDERING: `seed_user` creates Checking before `freeze_today` applies. The LOAN's anchor corrections stamp the **anchor's own date** (observed: `source 4 as of 2026-04-15` for an origination dated 2026-04-15), never the clock -- the walk's clock read was in the FILTER (which anchors were admitted), never in the stamp, and the filter is what A3 deleted. No defect here | -- | **withdrawn, no code change** | -- |
+| N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | recorded, contained, pinned | C2 (retires all four) |
 
 ## 7. Verification standard (what "done" means for every step)
 
