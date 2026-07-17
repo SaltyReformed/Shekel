@@ -395,6 +395,16 @@ def _sync_loan_ledger(loan_account_id):
     Flushes but does NOT commit -- the caller owns the transaction boundary, the
     same contract the production chokepoints keep.
 
+    **No future-anchor guard, because there is nothing left to guard.**  This
+    helper used to assert that no user-asserted anchor was dated after the sync's
+    as-of, because the walk DROPPED such an anchor and left the loan half-opened
+    (opening present, true-up missing) -- a state that looked ledger-backed and
+    was not.  The walk no longer reads a clock: it records every anchor the loan
+    carries, whatever its date, and the readers decide what has happened
+    (``loan_posting_service._walk.walk_loan_ledger``).  So a fixture's anchor
+    posts whatever its date, and a fixture can no longer build the half-opened
+    loan by accident.
+
     Args:
         loan_account_id: The loan whose genesis ledger to reconcile.
     """
@@ -403,50 +413,10 @@ def _sync_loan_ledger(loan_account_id):
     # tests/_test_helpers import time.
     # pylint: disable=import-outside-toplevel
     from app.extensions import db
-    from app.services import loan_loaders, loan_posting_service
-    from app.services.loan_posting_service import _sync as _loan_sync
+    from app.services import loan_posting_service
 
     loan_posting_service.sync_loan_postings_all_scenarios(loan_account_id)
     db.session.flush()
-
-    # The sync bounds its walk at ``date.today()``, and an anchor dated after that
-    # is DROPPED -- it posts nothing (``_walk._merge_anchor_and_payment_events``).
-    # A fixture that writes a future USER-ASSERTED anchor therefore gets a loan
-    # carrying an opening but missing its true-up: it LOOKS ledger-backed and is
-    # not, which is the exact class of divergence this arc exists to delete.
-    #
-    # Only the user-asserted anchors are checked, and that boundary is production's
-    # own: a ``user_trueup`` and a ``tracking_start`` are both submitted through
-    # ``LoanAnchorTrueupSchema``, which REJECTS an ``anchor_date`` after today
-    # (``app/schemas/validation/loans.py::validate_not_future``), so a future one is
-    # a fixture bug.  A future ORIGINATION is NOT: ``origination_date`` carries no
-    # such validator, so a loan that has not originated yet is a legitimate,
-    # reachable production state -- it simply owes nothing and posts no opening
-    # until its origination date arrives.  Failing loud on THAT would be this
-    # helper inventing a rule the app does not have.
-    #
-    # The clock is read from the sync's OWN module: ``freeze_today`` patches the
-    # ``date`` symbol per-module, and this module deliberately holds the real one
-    # (as ``_real_date``), so asking it would compare against the wrong today.
-    as_of = _loan_sync.date.today()
-    params = loan_loaders.load_loan_params(loan_account_id)
-    if params is None:
-        return
-    dropped = sorted(
-        fact.anchor_date
-        for fact in loan_loaders.load_loan_anchor_facts(params)
-        if fact.anchor_date > as_of
-        and (not fact.is_opening or fact.is_tracking_start)
-    )
-    if dropped:
-        raise AssertionError(
-            f"loan {loan_account_id}: user-asserted anchor(s) dated "
-            f"{[d.isoformat() for d in dropped]} are AFTER the sync's as-of "
-            f"({as_of.isoformat()}), so they post nothing and the loan is left "
-            f"half-opened (opening present, true-up missing).  Production forbids "
-            f"a future anchor date; re-date the fixture's anchor to on/before the "
-            f"effective today, or move the frozen clock past it."
-        )
 
 
 def clear_loan_ledger(loan_account_id):

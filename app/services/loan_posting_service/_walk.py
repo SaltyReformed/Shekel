@@ -124,7 +124,7 @@ class LoanAnchorCorrection:
 
 @dataclass(frozen=True)
 class LoanLedgerWalk:
-    """A loan's full genesis correction set for one scenario, as of a date.
+    """A loan's full genesis correction set for one scenario.
 
     The complete output of the single chronological running-balance walk
     (:func:`walk_loan_ledger`) the whole genesis loan ledger derives from: the
@@ -133,14 +133,19 @@ class LoanLedgerWalk:
     payment split are guaranteed mutually consistent (they can never disagree on
     the balance interest accrued on, the way three independent walks could).
 
+    Carries no as-of, because the walk takes none: it is the loan's FACTS
+    replayed, whole, and a reader bounds them to a date (see
+    :func:`walk_loan_ledger`).
+
     Attributes:
         payment_splits: One :class:`LoanPaymentSplit` per settled payment --
             including one whose pay period has not yet begun (settlement is the
             confirming event; the readers' period bound governs display) --
             chronological.
-        anchor_corrections: One :class:`LoanAnchorCorrection` per anchor
-            (origination + user-trueups) dated on or before ``as_of``,
-            chronological.
+        anchor_corrections: One :class:`LoanAnchorCorrection` per anchor the loan
+            carries (its origination + every user-trueup), whatever its date,
+            chronological.  A reader that shows them applies its own display
+            bound (:func:`.._display.loan_balance_anchor_history`).
     """
 
     payment_splits: list[LoanPaymentSplit]
@@ -311,7 +316,6 @@ def _merge_anchor_and_payment_events(
     anchor_facts: list[LoanAnchorFact],
     shadows: list[Transaction],
     payment_day: int,
-    as_of: date,
 ) -> list[tuple[bool, object]]:
     """Merge a loan's anchors and payments into one chronological event stream.
 
@@ -329,32 +333,64 @@ def _merge_anchor_and_payment_events(
     ledger and the replayed balance drift on which payments a given anchor
     subsumes.
 
-    Anchors dated after ``as_of`` are dropped (an anchor cannot reset the balance
-    as of a date before it); the shadows are NOT capped -- every settled payment
-    walks (see :func:`_settled_income_shadows`), and a not-yet-begun payment's
-    future due date simply sorts after every in-window anchor, so it can never
-    perturb an anchor's ``owed_before``.  Within a type, ties break
-    deterministically -- anchors by
-    ``created_at`` (mirroring :func:`select_latest_anchor`; the synthesized
-    origination fact carries the earliest possible instant), payments by their
-    caller-supplied ``(pay_period.start_date, id)`` order -- preserved by a stable
-    sort of the payments-then-anchors concatenation.
+    **EVERY anchor enters the stream, whatever its date, and nothing here reads
+    the clock.**  A loan's anchors are FACTS -- the origination is a verbatim copy
+    of the immutable :class:`LoanParams`, a true-up is the operator's dated
+    assertion -- and this walk RECORDS them; deciding which have HAPPENED as of a
+    given date is the READERS' job.  It is the same rule the payments 130 lines up
+    already keep ("posting early changes when the fact is RECORDED, never when it
+    is SHOWN", :func:`_settled_income_shadows`), and the same one the cash ledger
+    keeps by taking no as-of at all
+    (:func:`app.services.account_posting_service.walk_account_ledger`).
+
+    **The readers do not yet do that job correctly, and the callers cover for
+    them.  Do not "simplify" those callers away.**  A posting's visible-on date
+    (:func:`.._asof.effective_date`) dates an ANCHOR from its pay period's START,
+    so a future-dated origination is visible from a PAST date: asked on
+    2026-03-20 about a loan originating 2026-03-25,
+    :func:`.._reader.confirmed_loan_balance_at` answers its full $200,000.00
+    principal.  Nothing renders it, because each of the four consumers asks the
+    FACT (``origination_date``) first --
+    :func:`app.services.net_worth_kernel.amortizing_balance_at`,
+    :func:`app.services.net_worth_kernel._build_amortizing_balance_map`,
+    :func:`app.services.loan_payment_service.confirmed_loan_view`, and
+    :func:`app.services.balance_at.loan_ledger_domain`.  That is four predicates
+    standing where one honest rule belongs, and it is recorded as N-10 in
+    ``docs/audits/balance_architecture/README.md``; step C2 replaces the bound
+    with the anchor's own civil date and retires all four.
+
+    Dropping a future-dated anchor -- what this did while it took an ``as_of`` --
+    made the PERSISTED ledger a function of the wall clock at the moment the sync
+    happened to run, which is a corruption generator, not a cache.  Two measured
+    consequences, both fixed by admitting every anchor: a loan configured before
+    its closing date posted no OPENING and took five pages down with a 500 the day
+    the date arrived (nothing re-syncs on a date arriving); and a payment settled
+    early against it split against a ZERO balance, routing its entire cash to
+    Refund and erasing its deductible interest ($833.33 interest + $240.31
+    principal booked instead as $1,073.64 of refund, on a payment due AFTER that
+    origination).
+
+    The shadows are likewise not capped -- every settled payment walks (see
+    :func:`_settled_income_shadows`).  Within a type, ties break deterministically
+    -- anchors by ``created_at`` (mirroring :func:`select_latest_anchor`; the
+    synthesized origination fact carries the earliest possible instant), payments
+    by their caller-supplied ``(pay_period.start_date, id)`` order -- preserved by
+    a stable sort of the payments-then-anchors concatenation.
 
     Args:
         anchor_facts: The loan's :class:`~app.services.loan_loaders.LoanAnchorFact`
-            list (any order; filtered to ``anchor_date <= as_of`` and sorted here).
-        shadows: The confirmed income shadows, PRE-SORTED by
-            ``(pay_period.start_date, id)`` (:func:`_confirmed_shadows_through`).
+            list (any order; sorted here).
+        shadows: The settled income shadows, PRE-SORTED by
+            ``(pay_period.start_date, id)`` (:func:`_settled_income_shadows`).
         payment_day: The loan's contractual due day (drives each payment's due date).
-        as_of: The evaluation date; anchors after it are excluded.
 
     Returns:
         ``(is_anchor, item)`` tuples in walk order (``item`` is a
         :class:`~app.services.loan_loaders.LoanAnchorFact` when ``is_anchor``,
         else a settled income :class:`~app.models.transaction.Transaction`).
     """
-    anchors_in_window = sorted(
-        (anchor for anchor in anchor_facts if anchor.anchor_date <= as_of),
+    anchors = sorted(
+        anchor_facts,
         key=lambda anchor: (anchor.anchor_date, anchor.created_at),
     )
     # Payment tag 0 sorts before anchor tag 1 on an equal date, so a payment due
@@ -365,7 +401,7 @@ def _merge_anchor_and_payment_events(
         (loan_loaders.loan_payment_due_date(shadow, payment_day), 0, shadow)
         for shadow in shadows
     ] + [
-        (anchor.anchor_date, 1, anchor) for anchor in anchors_in_window
+        (anchor.anchor_date, 1, anchor) for anchor in anchors
     ]
     events.sort(key=lambda event: (event[0], event[1]))
     return [(tag == 1, item) for _date, tag, item in events]
@@ -416,7 +452,7 @@ def _replay_events(
 
 
 def walk_loan_ledger(
-    loan_account_id: int, scenario_id: int, as_of: date,
+    loan_account_id: int, scenario_id: int,
 ) -> LoanLedgerWalk:
     """Replay a loan's anchors and confirmed payments into genesis corrections.
 
@@ -427,9 +463,9 @@ def walk_loan_ledger(
     each anchor as a RESET and splits each confirmed payment on the reset-aware
     balance:
 
-    * At an anchor (origination or user-trueup) dated on or before ``as_of``:
-      record a :class:`LoanAnchorCorrection` carrying the balance JUST BEFORE the
-      reset, then reset the running balance to the anchor's verified value.  The
+    * At an anchor (origination or user-trueup): record a
+      :class:`LoanAnchorCorrection` carrying the balance JUST BEFORE the reset,
+      then reset the running balance to the anchor's verified value.  The
       origination anchor is always the first event, so its ``owed_before`` is
       zero and its correction is the OPENING; a user-trueup's correction is the
       append-only TRUE-UP that reproduces the resolver's balance jump.
@@ -449,6 +485,17 @@ def walk_loan_ledger(
     single-origination-anchor loan the reset is a no-op and the walk equals the
     from-origination replay.
 
+    **Takes no as-of, and reads no clock**: it walks the loan's FACTS and records
+    every one of them, whatever their date (see
+    :func:`_merge_anchor_and_payment_events` for what dropping a future-dated
+    anchor cost, and for the reader bound that does NOT yet hold up its end).  Its
+    output is therefore a function of the loan's data ALONE -- which is what makes
+    the posted ledger a re-derivable projection of those facts rather than a record
+    of when a sync happened to run.  Deciding which facts have HAPPENED as of a
+    date belongs to the readers.  The cash ledger's walk
+    (:func:`app.services.account_posting_service.walk_account_ledger`) has taken no
+    as-of since Step 3; this is the loan half catching up.
+
     Reads only (no writes, no commit).  Each payment's escrow is the amount IN
     EFFECT ON that payment's date (effective-dated, NO inflation), so a later
     escrow change never re-splits a past payment.
@@ -456,9 +503,6 @@ def walk_loan_ledger(
     Args:
         loan_account_id: The loan account whose ledger to walk.
         scenario_id: The budget scenario the payments live in.
-        as_of: The anchor boundary; anchors after it do not reset.  Payments are
-            NOT bounded by it -- every settled payment splits, whatever its pay
-            period (see :func:`_settled_income_shadows`).
 
     Returns:
         A :class:`LoanLedgerWalk` (payment splits + anchor corrections, both
@@ -487,7 +531,7 @@ def walk_loan_ledger(
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
     shadows = _settled_income_shadows(loan_account_id, scenario_id)
     events = _merge_anchor_and_payment_events(
-        anchor_facts, shadows, params.payment_day, as_of,
+        anchor_facts, shadows, params.payment_day,
     )
     payment_splits, anchor_corrections = _replay_events(
         events, periods, escrow_lines,
@@ -496,7 +540,7 @@ def walk_loan_ledger(
 
 
 def compute_loan_payment_splits(
-    loan_account_id: int, scenario_id: int, as_of: date,
+    loan_account_id: int, scenario_id: int,
 ) -> list[LoanPaymentSplit]:
     """Return the real split of a loan's confirmed payments from origination.
 
@@ -520,8 +564,6 @@ def compute_loan_payment_splits(
     Args:
         loan_account_id: The loan account whose confirmed payments to split.
         scenario_id: The budget scenario the payments live in.
-        as_of: The anchor boundary (anchors after it do not reset).  Payments
-            are NOT bounded by it (see :func:`_settled_income_shadows`).
 
     Returns:
         One :class:`LoanPaymentSplit` per settled payment, in chronological
@@ -529,6 +571,4 @@ def compute_loan_payment_splits(
         :class:`LoanParams` (not yet resolvable -- the N1 guard) or no settled
         payment.
     """
-    return walk_loan_ledger(
-        loan_account_id, scenario_id, as_of,
-    ).payment_splits
+    return walk_loan_ledger(loan_account_id, scenario_id).payment_splits

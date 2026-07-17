@@ -668,7 +668,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             extra_monthly=Decimal("0.00"),
             as_of=today,
             confirmed_view=loan_payment_service.confirmed_loan_view(
-                account.id, scenario_id, today,
+                loan_params, scenario_id, today,
             ),
             extra_principal=extra,
         )

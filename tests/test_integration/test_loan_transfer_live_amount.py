@@ -349,7 +349,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         # cash == split: the genesis split reads the frozen cash and subtracts
         # the same escrow, leaving principal = P&I.
         splits = loan_posting_service.compute_loan_payment_splits(
-            loan.id, scenario_id, date.today(),
+            loan.id, scenario_id,
         )
         assert len(splits) == 1
         split = splits[0]
@@ -643,7 +643,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
 
         # The genesis split routes the extra into principal (cash == split).
         splits = loan_posting_service.compute_loan_payment_splits(
-            loan.id, scenario_id, date.today(),
+            loan.id, scenario_id,
         )
         assert len(splits) == 1
         split = splits[0]

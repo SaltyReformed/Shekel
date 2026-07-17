@@ -903,10 +903,12 @@ class TestReadSwitchSeedHelpers:
     These pin the SAFETY half of the loan read switch: the view reader falls
     back to ``None`` -- routing the resolver to its anchor replay, exactly
     the pre-switch behaviour -- whenever the genesis ledger cannot answer (no
-    scenario, a future date, or a loan with no OPENING posting).  ``_create_loan_account`` builds a loan with a linked ledger but
-    NO genesis postings, so it exercises that fallback directly; the "reads the
-    real ledger balance" half is pinned end-to-end by the reconciliation oracle
-    (``TestReadSwitchProductionPath``), which needs posted genesis.
+    scenario, a future date, a loan that has not originated yet, or a loan with
+    no OPENING posting).  ``_create_loan_account`` builds a loan with a linked
+    ledger but NO genesis postings, so it exercises that fallback directly; the
+    "reads the real ledger balance" half is pinned end-to-end by the
+    reconciliation oracle (``TestReadSwitchProductionPath``), which needs posted
+    genesis.
     """
 
     def test_seed_is_none_without_a_scenario(self, app, db, seed_user):
@@ -914,7 +916,8 @@ class TestReadSwitchSeedHelpers:
         with app.app_context():
             loan = _create_loan_account(seed_user)
             db.session.commit()
-            assert confirmed_loan_view(loan.id, None, date.today()) is None
+            params = load_loan_params(loan.id)
+            assert confirmed_loan_view(params, None, date.today()) is None
 
     def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
         """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
@@ -928,7 +931,74 @@ class TestReadSwitchSeedHelpers:
             db.session.commit()
             future = date.today() + timedelta(days=1)
             assert confirmed_loan_view(
-                loan.id, seed_user["scenario"].id, future,
+                load_loan_params(loan.id), seed_user["scenario"].id, future,
+            ) is None
+
+    def test_seed_is_none_before_the_loan_originates(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An ``as_of`` before origination -> ``None`` (nothing has happened yet).
+
+        The confirmed ledger has no domain for a loan that does not exist, so the
+        resolver's replay owns its whole timeline.  Without this the ledger's
+        honest ``0.00`` is threaded in as the forward projection's starting
+        balance and collapses the loan's whole schedule.
+
+        **Built by the SHARED factory, which is the whole point.**  This class's
+        local ``_create_loan_account`` never opens the genesis ledger, so its loans
+        read ``None`` from the reader and the ``balance is None`` fallback below
+        answers regardless -- a test built on it cannot see this guard at all.
+        ``create_loan_account`` syncs, so the walk has posted this loan's opening
+        (it records every anchor whatever its date) and the reader answers a VALUE.
+
+        The guard decides in TWO shapes, and this is the louder one.  Origination
+        2026-03-25 is INSIDE the current pay period (2026-03-13..2026-03-26), five
+        days after this package's frozen today, so the ledger's anchor bound -- its
+        pay period's START (N-10) -- hands the raw reader the FULL PRINCIPAL for a
+        mortgage that has not closed.  (The other shape: an origination in a LATER
+        period, where the reader answers an honest ``0.00`` that is not ``None``,
+        so the view would thread it in as the projection's seed and collapse the
+        schedule -- what the paragraph above describes.  That one is caught by
+        ``TestLoanNotYetOriginated``, whose reads all break on a 0-row schedule.)
+
+        The first assert PINS the leak, so C2 has a test to flip when it retires
+        the bound; the second pins the guard that keeps it off every surface until
+        then.
+
+        NEGATIVE CONTROL: delete the ``as_of < params.origination_date`` guard in
+        ``confirmed_loan_view`` and the second assert gets a
+        ``ConfirmedLedgerView(balance=200000.00, history_rows=[])`` instead of
+        ``None``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from app.services.loan_posting_service import confirmed_loan_balance_at
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Closing Friday",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 3, 25), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=seed_periods[0],
+            )
+            scenario_id = seed_user["scenario"].id
+            params = load_loan_params(loan.id)
+            assert params.origination_date == date(2026, 3, 25)
+            assert date.today() == date(2026, 3, 20)
+
+            # N-10, pinned: the raw reader really does hand back the full
+            # principal for a loan that will not exist for another five days,
+            # because it dates the opening from its pay period's START.
+            assert confirmed_loan_balance_at(
+                loan.id, scenario_id, date.today(),
+            ) == Decimal("200000.00")
+
+            # ...and the view -- the read switch's single injection point --
+            # withholds it, so no consumer can spend that number.
+            assert confirmed_loan_view(
+                params, scenario_id, date.today(),
             ) is None
 
     def test_seed_is_none_for_an_unopened_loan(self, app, db, seed_user):
@@ -942,7 +1012,8 @@ class TestReadSwitchSeedHelpers:
             loan = _create_loan_account(seed_user)
             db.session.commit()
             assert confirmed_loan_view(
-                loan.id, seed_user["scenario"].id, date.today(),
+                load_loan_params(loan.id), seed_user["scenario"].id,
+                date.today(),
             ) is None
 
     def test_resolve_loan_seeded_falls_back_to_anchor_replay_without_genesis(

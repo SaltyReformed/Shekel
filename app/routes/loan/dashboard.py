@@ -396,6 +396,14 @@ def _build_measured_context(account_id, scenario_id, as_of, current_year):
     the template hides the corresponding chip or section on ``None`` rather than
     showing a misleading zero.
 
+    A loan that has not ORIGINATED yet is NOT one of those, and only the CHIPS
+    change: its ledger is open (the genesis walk records every anchor whatever its
+    date), so the two YTD figures come back a true ``$0.00`` -- it has genuinely
+    paid nothing -- and the template gates those two on ``is not none``, so the
+    page now SHOWS "$0.00 paid YTD" where it used to hide the chips.  The payment
+    history and the anchor scorecard both come back a true EMPTY, and the template
+    gates those two on truthiness, so ``[]`` hides them exactly as ``None`` did.
+
     Args:
         account_id: The loan account id.
         scenario_id: The baseline scenario id (or ``None``).

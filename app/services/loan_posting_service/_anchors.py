@@ -223,7 +223,7 @@ def reconcile_loan_anchor_corrections(
         loan_account_id: The loan whose anchor corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
         corrections: The loan's anchor corrections from :func:`walk_loan_ledger`
-            (origination opening + user-trueups on or before the walk's as-of).
+            (its origination opening + every user-trueup).
 
     Raises:
         PostingError: If the loan has anchor corrections to post but its owner has
@@ -267,7 +267,7 @@ def reconcile_loan_anchor_corrections(
 
 
 def sync_loan_anchor_corrections(
-    loan_account_id: int, scenario_id: int, as_of: date,
+    loan_account_id: int, scenario_id: int,
 ) -> None:
     """Walk a loan's anchors and reconcile ONLY their opening / true-up corrections.
 
@@ -280,13 +280,16 @@ def sync_loan_anchor_corrections(
     single-half entry point remains for reconciling anchors in isolation (the
     opening / true-up unit tests).
 
-    A loan with no anchors (unresolvable) is a no-op.  Flushes but does not
-    commit (the caller owns the transaction).
+    Posts EVERY anchor the loan carries, whatever its date -- the walk reads no
+    clock, and which anchors have HAPPENED as of a date is the readers' decision
+    (:func:`._walk.walk_loan_ledger`, which also records where that decision is
+    currently made by the readers' CALLERS rather than the readers: N-10).  A loan
+    with no anchors (unresolvable) is a no-op.  Flushes but does not commit (the
+    caller owns the transaction).
 
     Args:
         loan_account_id: The loan whose anchor corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date; anchors after it are not yet corrections.
 
     Raises:
         PostingError: If the loan has anchor corrections to post but its owner has
@@ -294,5 +297,5 @@ def sync_loan_anchor_corrections(
     """
     reconcile_loan_anchor_corrections(
         loan_account_id, scenario_id,
-        walk_loan_ledger(loan_account_id, scenario_id, as_of).anchor_corrections,
+        walk_loan_ledger(loan_account_id, scenario_id).anchor_corrections,
     )

@@ -278,9 +278,18 @@ def loan_balance_anchor_history(
     opening / true-up postings are reconciled from, so a drift row and the posted
     correction it describes can never disagree.
 
+    **The *as_of* bound is applied HERE, on the walk's output, not inside it.**
+    The walk records every anchor the loan carries whatever its date (it reads no
+    clock); deciding which have HAPPENED by a display date is this reader's job,
+    and an anchor dated after *as_of* has not yet reset the balance, so it is not
+    yet a drift row.  Filtering after the walk cannot change what the surviving
+    rows say: an anchor's ``owed_before`` is the running balance of the events
+    BEFORE it, which admitting a LATER anchor cannot move.
+
     Returns ``None`` when the loan has no :class:`LoanParams` (unconfigured -- not
     a loan yet), so the caller hides the card.  A configured loan always has at
-    least the synthesized origination opening.
+    least the synthesized origination opening -- though a loan that has not
+    originated by *as_of* correctly shows NO rows: nothing has happened to it yet.
 
     Reads only -- no writes, no commit.
 
@@ -288,7 +297,7 @@ def loan_balance_anchor_history(
         loan_account_id: The loan account whose anchor history to read.
         scenario_id: The budget scenario the payments live in (drives the running
             balance the drift is measured against).
-        as_of: The evaluation date; an anchor dated after it has not yet reset
+        as_of: The display boundary; an anchor dated after it has not yet reset
             the balance and is excluded.
 
     Returns:
@@ -297,9 +306,13 @@ def loan_balance_anchor_history(
     """
     if load_loan_params(loan_account_id) is None:
         return None
-    corrections = walk_loan_ledger(
-        loan_account_id, scenario_id, as_of,
-    ).anchor_corrections
+    corrections = [
+        correction
+        for correction in walk_loan_ledger(
+            loan_account_id, scenario_id,
+        ).anchor_corrections
+        if correction.anchor.anchor_date <= as_of
+    ]
     return [
         LoanAnchorDrift(
             anchor_date=correction.anchor.anchor_date,

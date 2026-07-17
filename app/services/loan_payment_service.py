@@ -465,7 +465,7 @@ def prepare_payments_for_engine(
 
 
 def confirmed_loan_view(
-    account_id: int, scenario_id: int | None, as_of: date,
+    params: LoanParams, scenario_id: int | None, as_of: date,
 ) -> "loan_resolver.ConfirmedLedgerView | None":
     """Read a loan's genesis-ledger confirmed view (balance + history), or None.
 
@@ -492,13 +492,33 @@ def confirmed_loan_view(
       scope postings to);
     * ``as_of`` is after today (a future date is a forward projection, out of
       the confirmed readers' domain -- the resolver projects it, and asking
-      a reader would raise); or
+      a reader would raise);
+    * *as_of* PRECEDES the loan's ``origination_date`` -- nothing has happened
+      to it yet, so the confirmed ledger has no domain for it at all and the
+      resolver's replay owns its whole timeline (the same rule, stated in full,
+      as :func:`app.services.net_worth_kernel.amortizing_balance_at`'s
+      not-yet-originated branch); or
     * a reader returns ``None`` -- the loan has no OPENING posting in the
       scenario (an unconfigured loan, a what-if the opening was never posted
       into -- the C4 M2 case -- or any loan not yet backfilled), or no
       :class:`LoanParams` (the history reader's extra guard).
 
-    For those cases the ``None`` fallback makes the read switch safe by
+    **The origination bound is asked of the FACT, and it is load-bearing.**  The
+    genesis walk records every anchor whatever its date and lets the readers
+    decide what has happened (:func:`._walk.walk_loan_ledger`), so a loan
+    configured before it closes HAS an opening posting -- and would hand this
+    function a view.  That view's balance seeds the forward projection
+    (:func:`app.services.loan_resolver._payoff._build_forward_inputs`), and the
+    ledger's honest ``0.00`` for a loan that does not exist yet would collapse
+    the whole schedule to nothing: measured, an upcoming $200,000 mortgage lost
+    all 360 of its rows, reported its origination date as its payoff date, and
+    held $200,000 flat forever.  The ledger's zero means "nothing has happened",
+    which is TRUE and is exactly why it must not be spent as a projection seed.
+    Withholding the view here -- rather than guarding each consumer -- is what
+    keeps the read switch's single injection point the single place that decides
+    whether the ledger answers at all.
+
+    For every ``None`` case the fallback makes the read switch safe by
     construction: a loan the ledger has not opened resolves exactly as it did
     before the switch.  The ONE case that does NOT fall back is a genuinely
     broken chart-of-accounts -- a loan account with no linked ledger account at
@@ -509,11 +529,14 @@ def confirmed_loan_view(
     in practice.
 
     Args:
-        account_id: The loan account whose confirmed view to read.  The
-            caller MUST have already established that the current user owns it
-            (the readers trust this arg, matching the sibling
-            ``account_posting_total`` convention); the scenario scope is a
-            second guard, since a cross-owner account has no postings in this
+        params: The loan's :class:`~app.models.loan_params.LoanParams` -- its
+            ``account_id`` identifies the loan and its ``origination_date`` is
+            the bound above.  Taken as ONE object because every caller already
+            holds it, so neither costs a re-load and the two can never be
+            mismatched.  The caller MUST have already established that the
+            current user owns the account (the readers trust it, matching the
+            sibling ``account_posting_total`` convention); the scenario scope is
+            a second guard, since a cross-owner account has no postings in this
             user's scenario and so reads ``None``.
         scenario_id: The baseline scenario id, or ``None``.
         as_of: The evaluation date; typically ``date.today()``.
@@ -528,6 +551,11 @@ def confirmed_loan_view(
     """
     if scenario_id is None or as_of > date.today():
         return None
+    if as_of < params.origination_date:
+        # The loan does not exist yet: the confirmed ledger has no domain for it,
+        # and its honest "nothing has happened" 0.00 must never seed the forward
+        # projection (see the docstring).  The replay owns its whole timeline.
+        return None
     # Pylint: ``import-outside-toplevel`` -- the confirmed-ledger readers
     # (``loan_posting_service``) are imported HERE, inside the read switch's
     # sole injection point, ON PURPOSE rather than at module top: it keeps the
@@ -539,12 +567,12 @@ def confirmed_loan_view(
     # reader must stay function-local.)
     from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
     balance = loan_posting_service.confirmed_loan_balance_at(
-        account_id, scenario_id, as_of,
+        params.account_id, scenario_id, as_of,
     )
     if balance is None:
         return None
     history_rows = loan_posting_service.confirmed_loan_history_rows(
-        account_id, scenario_id, as_of,
+        params.account_id, scenario_id, as_of,
     )
     if history_rows is None:
         # Belt-and-braces: the two readers share the opening-posting guard,

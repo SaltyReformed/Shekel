@@ -13,8 +13,21 @@ $0.00, subtracted a real $175,870.41 year-end balance from it, and reported the
 borrower having ADDED $175,870.41 of debt in a year they had steadily paid it down.
 
 This module holds the bound that prevents it.  A caller measuring a CHANGE across a
-window clamps that window to :func:`confirmed_loan_ledger_domain`, so it only ever
-asks the readers a question they can answer.
+window clamps that window to the loan's domain, so it only ever asks the readers a
+question they can answer.
+
+**It answers "where does the RECORD begin", never "does this loan exist yet".**
+Those are different questions, and this one takes no as-of because it is not asked
+of a date: it reports what the ledger CONTAINS.  A loan that has not originated has
+an opening posting all the same (the genesis walk records every anchor whatever its
+date, and the readers decide what has happened), so this producer would happily
+report a $200,000.00 opening for a mortgage that has not closed -- dated from its
+pay period's START (N-10).  The existence question belongs to whoever holds the
+as-of, which is the seam entry
+(:func:`app.services.balance_at.loan_ledger_domain`); it asks the FACT
+(``origination_date``) and answers ``None`` for such a loan, and the W9906 fence
+makes it the only door consumers may use.  So the promise above holds for every
+legal caller -- but this function alone does not carry it.
 
 Reads only -- no writes, no commit.
 """

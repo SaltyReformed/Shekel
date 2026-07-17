@@ -23,8 +23,6 @@ anchor corrections alike -- touches only the loan's own ledgers, never Checking,
 so it is invisible to the Step-2 cash path.
 """
 
-from datetime import date
-
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
@@ -100,8 +98,8 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
 
     When *xfer* pays down an amortizing loan, reconcile that loan's FULL genesis
     ledger (:func:`app.services.loan_posting_service.sync_loan_postings`) to the
-    transfer's now-current settled state, in the transfer's own scenario, as of
-    today -- BOTH the per-payment principal / interest / escrow split corrections
+    transfer's now-current settled state, in the transfer's own scenario -- BOTH
+    the per-payment principal / interest / escrow split corrections
     AND the opening / true-up anchor corrections.  The anchor half matters
     because a change to a payment that came due BEFORE a true-up moves that
     true-up's ``owed_before`` (the running balance it corrects from), so the
@@ -124,7 +122,7 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
     """
     if classify_account(xfer.to_account) is AccountProjectionKind.AMORTIZING:
         loan_posting_service.sync_loan_postings(
-            xfer.to_account_id, xfer.scenario_id, date.today(),
+            xfer.to_account_id, xfer.scenario_id,
         )
         # R-4: an extra-principal payment shifts payoff earliest, so re-bound the
         # recurring payment's end_date to the new projected payoff (baseline).
@@ -172,7 +170,7 @@ def _resync_loan_postings_after_delete(
     Run AFTER the deleted transfer's row is gone (its payment correction already
     reversed by :func:`_reverse_loan_payment_before_delete`): re-reconciles the
     loan's full genesis ledger
-    (:func:`app.services.loan_posting_service.sync_loan_postings` as of today) --
+    (:func:`app.services.loan_posting_service.sync_loan_postings`) --
     re-splitting the LATER confirmed payments whose running balance the deletion
     changed AND re-deriving any true-up whose ``owed_before`` the deletion moved
     (deleting a pre-true-up payment).  Takes the loan / scenario ids explicitly
@@ -183,9 +181,7 @@ def _resync_loan_postings_after_delete(
         loan_account_id: The loan whose downstream ledger to re-reconcile.
         scenario_id: The deleted payment's scenario.
     """
-    loan_posting_service.sync_loan_postings(
-        loan_account_id, scenario_id, date.today(),
-    )
+    loan_posting_service.sync_loan_postings(loan_account_id, scenario_id)
     # R-4: deleting a payment moves the projected payoff, so re-bound the
     # recurring payment's end_date to it (baseline scenario).
     loan_recurrence_sync.sync_recurring_payment_end_date(loan_account_id)

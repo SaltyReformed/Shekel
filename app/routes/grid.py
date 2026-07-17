@@ -19,14 +19,13 @@ from sqlalchemy.orm import selectinload
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.services import (
-    account_posting_service,
     balance_at,
     balance_resolver,
+    baseline_service,
     grid_view_service,
     pay_period_admin,
     pay_period_service,
@@ -35,7 +34,6 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.resolution_context import BalanceContext
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -652,30 +650,18 @@ def index():
 def create_baseline():
     """Create a missing baseline scenario, idempotently.
 
-    Also the Build-Order Step 5 recovery path: accounts created while no
-    baseline existed had their anchor corrections loudly skipped, so the
-    per-user resync posts the stranded openings into the fresh baseline.
+    Thin wrapper over
+    :func:`app.services.baseline_service.create_baseline_scenario`, which owns
+    the create-or-noop AND the recovery of both posting ledgers that had no
+    scenario to post into while the baseline was missing.  ``None`` means the
+    user already had one, so nothing was created and nothing is logged.
     """
-    existing = get_baseline_scenario(current_user.id)
-    if existing:
-        return redirect(url_for("grid.index"))
-
-    scenario = Scenario(
-        user_id=current_user.id,
-        name="Baseline",
-        is_baseline=True,
-    )
-    db.session.add(scenario)
-    account_posting_service.resync_user_account_anchor_postings(
-        current_user.id,
-    )
-    db.session.commit()
-
-    logger.info(
-        "action=create_baseline user_id=%s scenario_id=%s",
-        current_user.id, scenario.id,
-    )
-
+    scenario = baseline_service.create_baseline_scenario(current_user.id)
+    if scenario is not None:
+        logger.info(
+            "action=create_baseline user_id=%s scenario_id=%s",
+            current_user.id, scenario.id,
+        )
     return redirect(url_for("grid.index"))
 
 

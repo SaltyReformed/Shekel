@@ -220,11 +220,11 @@ def _projection_seed(resolved: ResolvedLoan, as_of: date) -> Decimal:
       ledger-confirmed present, which is what the projection amortizes down.
     * **NOT originated yet** -- the resolver correctly reports ``0.00`` owed (the
       loan does not exist), but the projection still has to know what it will owe
-      the day it closes.  That is the loan's OPENING ANCHOR balance -- the very
-      fact the genesis walk will post as the ``loan_opening`` once its date
-      arrives (:func:`app.services.loan_loaders._opening_anchor_fact`).  ONE fact,
-      two owners, split on the boundary the architecture turns on: the ledger owns
-      the origination once it has happened, the projection until it does.
+      the day it closes.  That is the loan's OPENING ANCHOR balance -- the same
+      fact the genesis walk posts as the ``loan_opening``
+      (:func:`app.services.loan_loaders._opening_anchor_fact`).  ONE fact, two
+      readers, split on the boundary the architecture turns on: the ledger owns the
+      origination once it has HAPPENED, the projection until it does.
 
     Sourced from the opening anchor and NEVER from the raw
     ``params.original_principal`` column, deliberately.  The two are equal for a
@@ -446,13 +446,15 @@ def amortizing_balance_at(
       generally mid-period) depends on: it walks to the exact date rather than
       rounding to a period-end map value.  Do NOT "simplify" it to read the
       period map.
-
     * **A loan not yet ORIGINATED by ``ctx.as_of``: the projection, for every
-      date.**  Nothing has happened to it, so the ledger has no domain at all (it
-      posts no OPENING for an anchor dated after its as-of) and the projection owns
-      its whole timeline: ``0.00`` before origination, its opening balance forward.
-      Not an exception to the rule above -- it IS the rule, for a loan whose entire
-      life is still ahead of it.
+      date.**  Nothing has happened to it, so the ledger has no domain and the
+      projection owns its whole timeline: ``0.00`` before origination, its opening
+      balance forward.  Not an exception to the rule above -- it IS the rule, for a
+      loan whose entire life is still ahead of it.  Asked of the FACT
+      (``owed_from``), never inferred from the ledger's silence: the walk records
+      every anchor whatever its date, so this loan's opening IS posted, and the
+      ledger dates an anchor from its pay period's START -- it would hand back the
+      full opening balance for one originating later in the current period.
 
     **An ORIGINATED loan the ledger cannot answer for is BROKEN, and RAISES**
     (:class:`~app.services.posting_reads.LoanLedgerNotOpenedError`).  It does not
@@ -465,8 +467,8 @@ def amortizing_balance_at(
     were never filled in -- also has no OPENING posting, so the ledger answers
     ``None`` for it exactly as a broken loan does.  Asking the loan first keeps them
     apart: no schedule means "not a configured loan", which degrades to the cash
-    producer; a schedule with no ledger means a loan that is broken (or not yet
-    born).  The resolution is memoized on *ctx*, so asking costs nothing.
+    producer; a schedule with no ledger means a BROKEN loan.  The resolution is
+    memoized on *ctx*, so asking costs nothing.
 
     **The two dates.**  ``ctx.as_of`` is the resolver's NOW -- the moment the loan
     is RESOLVED at, which decides what is confirmed and what it currently owes.
@@ -922,21 +924,20 @@ def _build_amortizing_balance_map(
     make, not ones they did.  The direct reader call is fence-clean: this module is
     in the W9906 seam cluster the reader joins at plan Section 11.
 
-    **A loan that has not ORIGINATED reads a map of TRUE zeros for its begun
-    periods, and the splice runs unchanged.**  Every begun period starts on or
-    before ``ctx.as_of``, which is before origination, so the loan owed nothing in
-    any of them -- and the ledger, which posts no OPENING for an anchor dated after
-    its as-of, says exactly that.  Stating it as an explicit zeros map (rather than
-    letting the ``None`` sentinel be misread) is what keeps this producer on ONE
-    path for every loan.
+    **A loan that has not ORIGINATED by ``ctx.as_of`` reads a map of TRUE zeros for
+    its begun periods, and the splice runs unchanged** -- every begun period
+    precedes origination, so it owed nothing in any of them.  Asked of the FACT
+    (``owed_from``) BEFORE the ledger is read, exactly as the scalar
+    :func:`amortizing_balance_at` does and documents in full.  Reading the ledger's
+    ``None`` as "not originated" worked only while the walk's clock forced it.
 
     **The two zeros, which must never be confused.**  The zeros above mean *"the
     loan does not exist yet"* and are TRUE.  The ledger's own pre-opening zero
     (``confirmed_loan_balance_map`` answers ``0.00`` for a period preceding the
     OPENING) means *"I have no record"* and is FALSE for a mid-life import, whose
     loan was owed long before tracking began; spending THAT as money is what made
-    the year-end report the borrower ADDING debt they had paid down.  The fact
-    that tells them apart is ``debt_schedule.owed_from``.
+    the year-end report the borrower ADDING debt they had paid down.  ``owed_from``
+    is the fact that tells them apart.
 
     Args:
         account: The loan account (its id and the scenario scope the ledger
@@ -967,26 +968,25 @@ def _build_amortizing_balance_map(
     from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
         confirmed_loan_balance_map,
     )
-    confirmed_map = confirmed_loan_balance_map(
-        account.id, ctx.scenario.id, periods,
-    )
-    if confirmed_map is None:
-        if debt_schedule.owed_from > ctx.as_of:
-            # Not originated yet: the ledger has no domain, and every BEGUN period
-            # precedes origination, so its confirmed balance is a TRUE 0.00 (see
-            # the docstring).  The splice then hands the future to the projection
-            # exactly as it does for every other loan.
-            #
-            # It must be the SPLICE and not the forward map alone: the forward map
-            # is period-END keyed, so for a loan originating INSIDE the current
-            # period it would report the full opening balance for a period the
-            # ledger-keyed hero reports as 0.00 -- one page contradicting itself
-            # about one loan on one day, which is the very failure this arc opened
-            # with.
-            confirmed_map = OrderedDict(
-                (period.id, ZERO_MONEY) for period in periods
-            )
-        else:
+    if debt_schedule.owed_from > ctx.as_of:
+        # Not originated yet: nothing has happened to it, so every BEGUN period's
+        # confirmed balance is a TRUE 0.00 and the ledger is not asked (see the
+        # docstring).  The splice then hands the future to the projection exactly
+        # as it does for every other loan.
+        #
+        # It must be the SPLICE and not the forward map alone: the forward map is
+        # period-END keyed, so for a loan originating INSIDE the current period it
+        # would report the full opening balance for a period the ledger-keyed hero
+        # reports as 0.00 -- one page contradicting itself about one loan on one
+        # day, which is the very failure this arc opened with.
+        confirmed_map = OrderedDict(
+            (period.id, ZERO_MONEY) for period in periods
+        )
+    else:
+        confirmed_map = confirmed_loan_balance_map(
+            account.id, ctx.scenario.id, periods,
+        )
+        if confirmed_map is None:
             # An ORIGINATED loan whose ledger cannot answer is BROKEN.  Fail loud.
             raise _loan_ledger_not_opened(account, ctx)
     return splice_confirmed_and_projected_loan_balances(

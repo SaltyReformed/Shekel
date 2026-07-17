@@ -20,8 +20,6 @@ the balance interest accrued on and no chokepoint walks the loan twice:
 Flushes but never commits -- the caller owns the transaction boundary.
 """
 
-from datetime import date
-
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -72,9 +70,7 @@ def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
     return sorted(row[0] for row in rows)
 
 
-def sync_loan_postings(
-    loan_account_id: int, scenario_id: int, as_of: date,
-) -> None:
+def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     """Reconcile a loan's FULL genesis ledger in one scenario, off ONE walk.
 
     The unified per-scenario chokepoint: walks the loan's anchors and confirmed
@@ -91,18 +87,21 @@ def sync_loan_postings(
     Idempotent and self-healing: a re-run at the same state writes nothing.
     Touches ONLY the loan's own ledgers (linked, interest, escrow, refund,
     opening-equity) -- never Checking, so a loan sync can never move a cash
-    balance.  ``as_of`` bounds the walk's ANCHORS only; every settled payment
-    splits, whatever its pay period (settlement is the confirming event -- see
-    :func:`._walk._settled_income_shadows`).  The go-forward wiring passes
-    ``date.today()``.  Flushes but does not commit (the caller owns the
+    balance.
+
+    **Takes no as-of, and reads no clock.**  It posts what the loan's facts say,
+    every one of them; WHEN each fact becomes visible is the readers' decision,
+    not this writer's (:func:`._walk.walk_loan_ledger`).  So a re-run posts the
+    same ledger tomorrow as today -- the property that makes these postings a
+    re-derivable projection of the loan's data rather than a record of when a
+    sync happened to run.  Flushes but does not commit (the caller owns the
     transaction).
 
     Args:
         loan_account_id: The loan whose full ledger to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The walk's anchor boundary (an anchor after it does not reset).
     """
-    walk = walk_loan_ledger(loan_account_id, scenario_id, as_of)
+    walk = walk_loan_ledger(loan_account_id, scenario_id)
     reconcile_loan_payment_splits(
         loan_account_id, scenario_id, walk.payment_splits,
     )
@@ -112,14 +111,13 @@ def sync_loan_postings(
 
 
 def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
-    """Reconcile a loan's full genesis ledger across EVERY scenario, as of today.
+    """Reconcile a loan's full genesis ledger across EVERY scenario.
 
     The loan-GLOBAL chokepoint entry point (loan-params create / edit, a balance
     true-up, a rate change): the anchor and rate live on the loan account, not
     the scenario, so such a change re-bases the confirmed-payment split AND the
     anchor corrections in every scenario the loan is displayed in.  Loops
-    :func:`sync_loan_postings` (as of ``date.today()``, the same as-of the loan
-    reads use) over the union of:
+    :func:`sync_loan_postings` over the union of:
 
     * every scenario the loan has a payment in
       (:func:`_scenarios_with_loan_payments`), and
@@ -136,7 +134,6 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
         loan_account_id: The loan whose corrections to reconcile across every
             scenario it is displayed in.
     """
-    as_of = date.today()
     scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
     owner_id = account_owner_id(loan_account_id)
     if owner_id is not None:
@@ -144,7 +141,7 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
         if baseline is not None:
             scenario_ids.add(baseline.id)
     for scenario_id in sorted(scenario_ids):
-        sync_loan_postings(loan_account_id, scenario_id, as_of)
+        sync_loan_postings(loan_account_id, scenario_id)
 
 
 def sync_all_scenarios_or_duplicate(

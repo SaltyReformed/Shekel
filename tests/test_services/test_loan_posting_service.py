@@ -34,6 +34,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    AcctTypeEnum,
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -233,7 +234,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
             split = splits[0]
@@ -262,7 +263,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("500.00"), Decimal("500.00")),
@@ -287,7 +288,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("1000.00")
             assert splits[0].excess == Decimal("0.00")
@@ -309,7 +310,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("500.00")
             assert splits[0].principal == Decimal("-100.00")
@@ -331,7 +332,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].escrow == Decimal("100.00")
             assert splits[0].principal == Decimal("400.00")
@@ -375,7 +376,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             # Chronological: P1 start 2026-01-16 (V1 $100); P_late start
             # 2026-03-13 (V2 $200).  Distinct escrow proves the as-of keying.
@@ -393,7 +394,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             resplits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert [s.escrow for s in resplits] == [
                 Decimal("100.00"), Decimal("200.00"),
@@ -416,7 +417,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("1.50")
             assert splits[0].principal == Decimal("300.00")
@@ -442,7 +443,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 2
             assert splits[1].interest == Decimal("0.00")
@@ -473,7 +474,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("500.00"), Decimal("500.00")),
@@ -499,7 +500,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("800.00")
 
@@ -534,7 +535,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
@@ -562,7 +563,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("1250.00"), Decimal("-250.00")),
@@ -586,7 +587,7 @@ class TestComputeLoanPaymentSplits:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+                loan.id, seed_user["scenario"].id,
             )
             assert splits == []
 
@@ -595,9 +596,143 @@ class TestComputeLoanPaymentSplits:
         with app.app_context():
             checking = seed_user["account"]  # a plain Checking, no LoanParams
             splits = loan_posting_service.compute_loan_payment_splits(
-                checking.id, seed_user["scenario"].id, _AS_OF,
+                checking.id, seed_user["scenario"].id,
             )
             assert splits == []
+
+
+# ---------------------------------------------------------------------------
+# the write walk reads no clock -- A3
+# ---------------------------------------------------------------------------
+
+
+class TestWalkReadsNoClock:
+    """The persisted ledger is a function of the loan's DATA, not the wall clock.
+
+    The walk used to drop any anchor dated after the sync's as-of, which made what
+    the ledger PERSISTED depend on the moment the sync happened to run.  That is
+    not a cache; it is a corruption generator, and it had two live consequences a
+    loan configured before its closing date could reach through the ordinary UI.
+
+    Both tests here use a $200,000 / 5% / 360mo mortgage originating 2026-04-15 --
+    AFTER the suite's frozen today (2026-03-20), which ``origination_date``
+    permits (unlike a true-up's ``anchor_date``, it carries no not-future
+    validator, and the developer ruled the app must support it).
+
+    Arithmetic (200,000 @ 5.000%, payment_day=1):
+      monthly P&I = 1,073.64
+      first installment 2026-05-01:
+        interest  = round(200000 * 0.05/12) = 833.33
+        principal = 1073.64 - 833.33        =   240.31
+    """
+
+    ORIGINATION = date(2026, 4, 15)
+    PRINCIPAL = Decimal("200000.00")
+
+    def _upcoming_mortgage(self, seed_user):
+        """Create the mortgage that has not closed yet."""
+        return create_loan_account(
+            seed_user, _db.session, name="Closing In April",
+            principal=self.PRINCIPAL, rate=Decimal("0.05000"),
+            term=360, origination_date=self.ORIGINATION, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+
+    def test_early_settled_payment_splits_against_the_real_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment settled before origination still splits on the opening balance.
+
+        The payment is settled TODAY (2026-03-20) into the pay period starting
+        2026-04-24, so its installment is DUE 2026-05-01 -- after the 2026-04-15
+        origination.  Settling early is a supported state, not an abuse: the walk
+        deliberately splits every settled payment whatever its pay period
+        ("posting early changes when the fact is RECORDED, never when it is
+        SHOWN").
+
+        Before A3 the sync's as-of was 2026-03-20, so the origination anchor was
+        dropped, the running balance seeded at $0.00, and ``_split_one_payment``'s
+        ``balance <= 0`` arm routed the ENTIRE $1,073.64 to ``excess`` -- real
+        mortgage cash reclassified as a Refund Receivable asset, with the whole
+        Schedule-A deductible interest erased.  Measured on the real Mortgage, the
+        same line cost $7,643.80.
+
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
+        ``_walk._merge_anchor_and_payment_events`` and this reports
+        ``excess=1073.64`` with interest, escrow and principal all $0.00.
+        """
+        with app.app_context():
+            loan = self._upcoming_mortgage(seed_user)
+            due_period = next(
+                p for p in seed_periods if p.start_date >= date(2026, 4, 24)
+            )
+            _settle_payment(
+                seed_user, loan, due_period, Decimal("1073.64"),
+            )
+            db.session.commit()
+
+            splits = loan_posting_service.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert len(splits) == 1
+            split = splits[0]
+            # The installment this payment satisfies is due after origination, so
+            # the loan exists by then and the cash divides normally.
+            assert split.interest == Decimal("833.33")
+            assert split.principal == Decimal("240.31")
+            assert split.escrow == Decimal("0.00")
+            assert split.excess == Decimal("0.00")
+
+    def test_the_posted_ledger_is_identical_at_two_different_clocks(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Syncing before vs after origination persists the SAME ledger.
+
+        The property A3 exists to establish, stated directly: the walk's output is
+        a function of the loan's facts alone.  The loan is configured and synced at
+        2026-03-20 (before it closes); the clock then moves past origination to
+        2026-05-07 and the SAME sync re-runs.  Reconcile-to-target means an
+        already-correct ledger is not re-posted, so an unchanged ledger is the
+        proof: the first sync already recorded everything.
+
+        Both halves are asserted, because the clock moved both: the OPENING leg
+        (-$200,000.00 on the linked ledger) and the payment's split correction.
+
+        NEGATIVE CONTROL (measured): restore the ``anchor.anchor_date <= as_of``
+        filter and the first sync posts no opening AND routes the whole payment to
+        Refund, so the linked ledger nets to exactly ``0.00`` -- the loan reads as
+        owing NOTHING while $1,073.64 of the borrower's cash sits in a Refund
+        Receivable.  The assert below then fails ``0.00 != -199759.69``.
+        """
+        with app.app_context():
+            loan = self._upcoming_mortgage(seed_user)
+            due_period = next(
+                p for p in seed_periods if p.start_date >= date(2026, 4, 24)
+            )
+            _settle_payment(
+                seed_user, loan, due_period, Decimal("1073.64"),
+            )
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+            linked_id = _linked_ledger_id(loan)
+
+            # The settle already synced, as of 2026-03-20 -- before origination.
+            linked_after_first = _ledger_net(linked_id, scenario_id)
+            entries_after_first = _genesis_entry_count(seed_user["user"].id)
+            # -200,000.00 opening + 1,073.64 cash - 833.33 interest
+            # - 0.00 escrow = -199,759.69 owed, from a sync run 26 days before
+            # the loan even closes.
+            assert linked_after_first == Decimal("-199759.69")
+
+            # The clock crosses origination; the same sync re-runs.
+            freeze_today(monkeypatch, date(2026, 5, 7))
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            assert _ledger_net(linked_id, scenario_id) == linked_after_first
+            assert _genesis_entry_count(
+                seed_user["user"].id,
+            ) == entries_after_first
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +786,7 @@ class TestTrackingStartOpening:
             db.session.commit()
 
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, as_of,
+                loan.id, scenario_id,
             )
             assert len(splits) == 1
             split = splits[0]
@@ -736,7 +871,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -794,7 +929,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert all(len(_correction_entries(s.id)) == 1 for s in shadows)
@@ -804,7 +939,7 @@ class TestSyncLoanPaymentPostings:
 
             # Idempotent across the whole loan: a re-sync adds no entries.
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert all(len(_correction_entries(s.id)) == 1 for s in shadows)
@@ -820,13 +955,13 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_correction_entries(shadow.id)) == 1
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_correction_entries(shadow.id)) == 1
@@ -844,7 +979,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -870,7 +1005,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -906,7 +1041,7 @@ class TestSyncLoanPaymentPostings:
                 checking.id, scenario_id,
             )
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             checking_after = posting_service.account_posting_total(
@@ -935,7 +1070,7 @@ class TestSyncLoanPaymentPostings:
 
             loan_ledger = _linked_ledger_id(loan)
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -979,7 +1114,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             interest_ledger = _find_loan_ledger(
@@ -996,7 +1131,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1027,7 +1162,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             entries_before = len(_correction_entries(shadow.id))
@@ -1203,7 +1338,7 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             interest_ledger = _find_loan_ledger(
@@ -1274,7 +1409,7 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert posting_service.account_posting_total(
@@ -1287,7 +1422,7 @@ class TestReverseLoanPaymentPostings:
             ).update({"status_id": ref_cache.status_id(StatusEnum.PROJECTED)})
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1348,7 +1483,7 @@ class TestSyncLoanAnchorCorrections:
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1382,7 +1517,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)  # origination 250000, trueup 100000
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1413,7 +1548,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             before = len(_anchor_correction_entries(
@@ -1424,7 +1559,7 @@ class TestSyncLoanAnchorCorrections:
             assert before == 2
 
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             after = len(_anchor_correction_entries(
@@ -1447,7 +1582,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user, anchor_balance=Decimal("250000.00"))
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1481,10 +1616,10 @@ class TestSyncLoanAnchorCorrections:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1518,7 +1653,7 @@ class TestSyncLoanAnchorCorrections:
             # The opening + true-up (and their per-loan equity ledger) are posted
             # lazily on this first sync.
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             equity_ledger = _find_loan_ledger(
@@ -1553,7 +1688,7 @@ class TestSyncLoanAnchorCorrections:
                 loan.id, scenario_id, PostingSourceEnum.LOAN_TRUEUP,
             ))
             loan_posting_service.sync_loan_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_anchor_correction_entries(
@@ -1591,7 +1726,7 @@ class TestSyncLoanAnchorCorrections:
 
             # P1 is split BEFORE the reset -> interest on the origination balance.
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
@@ -1599,10 +1734,10 @@ class TestSyncLoanAnchorCorrections:
             # With opening + true-up the reader lands on the verified 100000 --
             # P1's principal subsumed by the reset (a swapped tie-break -> -99500).
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert posting_service.account_posting_total(

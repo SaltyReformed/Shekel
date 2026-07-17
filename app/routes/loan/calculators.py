@@ -265,7 +265,7 @@ def payoff_calculate(account_id):
     # ``require_owner`` already gated ownership above.
     scenario = get_baseline_scenario(current_user.id)
     view = confirmed_loan_view(
-        account_id, scenario.id if scenario else None, date.today(),
+        params, scenario.id if scenario else None, date.today(),
     )
     # The loan's standing overpayment: the committed baseline BOTH modes preview
     # additional extra on top of (step 5).
@@ -510,7 +510,7 @@ def refinance_calculate(account_id):
     # owed balance the loan card shows.
     scenario = get_baseline_scenario(current_user.id)
     view = confirmed_loan_view(
-        account_id, scenario.id if scenario else None, date.today(),
+        params, scenario.id if scenario else None, date.today(),
     )
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=_loan_inputs(params, ctx),

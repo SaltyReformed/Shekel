@@ -108,8 +108,8 @@ def resolve_loan_seeded(
       seed, and its ledger-derived rows become the schedule's confirmed slice,
       so the balance, the history, and the projection cannot desync
       off-schedule.  When the ledger cannot answer (``None`` -- a loan it has not
-      opened) the resolver falls back to its anchor replay, the pre-switch
-      behaviour.
+      opened, or one that has not originated by *as_of*) the resolver falls back
+      to its anchor replay, the pre-switch behaviour.
     * The loan's standing overpayment
       (:func:`recurring_transfer_query.loan_standing_extra_for_account`): applied
       to every forward month so ``LoanState``'s schedule, payoff, and interest
@@ -127,7 +127,8 @@ def resolve_loan_seeded(
         loan_inputs: The loan's loaded :class:`LoanInputs` bundle.  The caller
             builds it, since the three loaders each load slightly different
             surrounding data (the route also needs the context, the savings
-            tile the paid-off probe).
+            tile the paid-off probe).  Its ``loan_params`` identifies the loan to
+            both loads below, so neither can be asked about a different one.
         account_id: The loan account, already owner-checked by the caller.
         scenario_id: The baseline scenario id, or ``None``.
         as_of: The evaluation date; typically ``date.today()``.
@@ -135,7 +136,7 @@ def resolve_loan_seeded(
     Returns:
         The resolved :class:`~app.services.loan_resolver.LoanState`.
     """
-    view = confirmed_loan_view(account_id, scenario_id, as_of)
+    view = confirmed_loan_view(loan_inputs.loan_params, scenario_id, as_of)
     return loan_resolver.resolve_loan(
         loan_inputs, as_of, confirmed_view=view,
         extra_principal=loan_standing_extra_for_account(account_id),

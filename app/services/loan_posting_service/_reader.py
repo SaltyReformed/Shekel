@@ -123,6 +123,17 @@ def confirmed_loan_balance_at(
     balance flat for the caller to overlay the projection on -- is
     :func:`confirmed_loan_balance_map`.)
 
+    **Do NOT ask this about a loan that has not ORIGINATED by *as_of*; it answers
+    WRONG, and its callers are what stop that (N-10).**  An anchor's visible-on
+    date is its pay period's START (:func:`._asof.effective_date`), so a
+    future-dated origination is visible from a PAST date: this reader answers a
+    2026-03-25 loan's full $200,000.00 principal when asked about 2026-03-20.  The
+    honest bound is the anchor's own civil date, which moves history and so waits
+    for step C2; until then every caller asks the FACT (``origination_date``)
+    first -- :func:`app.services.net_worth_kernel.amortizing_balance_at` and
+    :func:`app.services.loan_payment_service.confirmed_loan_view` are the only
+    two, and both do.  A new caller must too.
+
     Reads only -- no writes, no commit.
 
     Args:
@@ -198,6 +209,14 @@ def confirmed_loan_balance_map(
     unconfigured loan), for the same reason as the scalar -- the caller routes to
     needs-setup, not a map of zeros.  A period preceding the opening's period
     gets ``Decimal("0.00")`` (nothing confirmed yet as of that period).
+
+    **Do NOT ask this about a loan that has not ORIGINATED; it answers WRONG for
+    the period its origination falls in** -- the full opening balance, from that
+    period's START, for a loan that closes later in it (N-10; see
+    :func:`confirmed_loan_balance_at` for the mechanism and the fix that retires
+    it).  Its one caller,
+    :func:`app.services.net_worth_kernel._build_amortizing_balance_map`, asks the
+    FACT (``owed_from``) before reading this.  A new caller must too.
 
     Reads only -- no writes, no commit.
 
@@ -603,9 +622,13 @@ def _classify_linked_nets(
        transfer OUT of the loan (forbidden at creation since review R6 -- see
        :func:`app.services._transfer_loan_posting._reject_transfer_out_of_loan`
        -- so this arm now defends only any pre-guard legacy row), a raw settled
-       transaction typed onto the loan account -- applied at its ``entry_date``
-       (the write walk's anchor rule); events dated after *as_of* are dropped,
-       mirroring the walk's anchor bound.
+       transaction typed onto the loan account -- applied at its own
+       ``entry_date``, with events dated after *as_of* dropped.  That bound is
+       THIS reader's, and the write walk no longer has one to mirror: it records
+       every anchor whatever its date and leaves the date decision here
+       (:func:`.._walk.walk_loan_ledger`).  Dating each event at its ``entry_date``
+       still matches the walk's ORDERING, which is what keeps these rows and the
+       posted ledger on one chronology.
 
     Args:
         entry_nets: The per-entry nets from :func:`_linked_entry_nets`.

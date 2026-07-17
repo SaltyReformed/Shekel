@@ -435,7 +435,8 @@ def reconcile_loan_payment_splits(
             stale-shadow reversal query).
         scenario_id: The budget scenario to reconcile within.
         splits: The loan's confirmed payment splits from
-            :func:`walk_loan_ledger` (the WHOLE list through the walk's as-of).
+            :func:`walk_loan_ledger` -- the WHOLE list (the walk bounds nothing;
+            it replays every settled payment).
     """
     synced_shadow_ids: set[int] = set()
     for split in splits:
@@ -455,7 +456,7 @@ def reconcile_loan_payment_splits(
 
 
 def sync_loan_payment_postings(
-    loan_account_id: int, scenario_id: int, as_of: date,
+    loan_account_id: int, scenario_id: int,
 ) -> None:
     """Walk a loan's confirmed payments and reconcile ONLY their split corrections.
 
@@ -472,20 +473,19 @@ def sync_loan_payment_postings(
 
     Idempotent and self-healing: a re-run with no change writes nothing, and a
     missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
-    (never Checking).  ``as_of`` bounds the walk's ANCHORS only; every settled
-    payment splits, whatever its pay period (settlement is the confirming
-    event -- see :func:`.._walk._settled_income_shadows`).  The go-forward
-    wiring passes ``date.today()``.  Flushes but does not commit (the caller
-    owns the transaction).
+    (never Checking).  Every settled payment splits, whatever its pay period
+    (settlement is the confirming event -- see
+    :func:`.._walk._settled_income_shadows`), and the walk reads no clock, so
+    this posts the same ledger whenever it runs.  Flushes but does not commit
+    (the caller owns the transaction).
 
     Args:
         loan_account_id: The loan whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The walk's anchor boundary (anchors after it do not reset).
     """
     reconcile_loan_payment_splits(
         loan_account_id, scenario_id,
-        compute_loan_payment_splits(loan_account_id, scenario_id, as_of),
+        compute_loan_payment_splits(loan_account_id, scenario_id),
     )
 
 

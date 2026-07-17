@@ -229,15 +229,19 @@ def _compute_debt_progress(
         if not schedule_rows:
             continue
 
-        # A loan that has not been BORROWED yet has no principal progress: it has
-        # no ledger AT ALL, so the clamp below cannot see it (``domain is None``
-        # fails OPEN).  Its Jan-1 balance is a true $0.00 and its Dec-31 balance
-        # is the projected debt it will take on, so the difference would be
-        # reported as principal PAID -- an unclosed mortgage read as -$198,049.28
-        # repaid, with ``tracked_from`` absent so the surface presents it as a
-        # full calendar year.  That is the same inverted figure the ledger-domain
-        # clamp was written to delete, arriving through a door the clamp does not
-        # cover.
+        # A loan that has not been BORROWED yet has no principal progress.  Its
+        # Jan-1 balance is a true $0.00 and its Dec-31 balance is the projected
+        # debt it will take on, so the difference would be reported as principal
+        # PAID -- an unclosed mortgage read as -$198,049.28 repaid, with
+        # ``tracked_from`` absent so the surface presents it as a full calendar
+        # year.  That is the same inverted figure the ledger-domain clamp below
+        # was written to delete, arriving through a different door.
+        #
+        # The clamp answers ``None`` for such a loan too (``loan_ledger_domain``
+        # asks the same ``is_originated`` fact), so this is belt-and-braces, not
+        # the only thing standing between the report and that number -- but it is
+        # the guard that says WHY the row is skipped, where the clamp's ``None``
+        # would silently mean "unclamped".
         figures = balance_at.loan_figures(account, balance_ctx)
         if figures is not None and not figures.is_originated:
             continue

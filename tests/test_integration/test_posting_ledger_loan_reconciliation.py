@@ -603,7 +603,7 @@ def _assert_completeness(
     guarantee, not outside it.
     """
     splits = loan_posting_service.compute_loan_payment_splits(
-        loan_account_id, scenario_id, as_of,
+        loan_account_id, scenario_id,
     )
     # Every caller settles at least one payment before reconciling, so an empty
     # split walk means the loader silently found nothing (a scenario-scope or
@@ -956,7 +956,7 @@ class TestParallelRunAgainstResolver:
 
             # Genesis SPLITS the pre-trueup payment (Step 4 excluded it).
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
@@ -964,7 +964,7 @@ class TestParallelRunAgainstResolver:
 
             # Post the opening + true-up (the read-switch corrections).
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -2220,7 +2220,7 @@ class TestReaderParallelRunAgainstResolver:
             # split-invariant): the pre-true-up payment splits on the $250,000
             # origination balance -> interest round(250000 * 0.005) = 1250.00.
             splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             assert splits[0].interest == Decimal("1250.00")
 

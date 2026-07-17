@@ -272,11 +272,17 @@ def resolve_loan(
         # $200,000 owed at every pay period back to January -- four months
         # before it closed.
         #
-        # The genesis walk already applies exactly this rule to the same anchor
-        # list (``_walk._merge_anchor_and_payment_events`` drops anchors after
-        # its as-of, which is why such a loan posts no OPENING); this is the
-        # resolver applying it to the balance it derives, so the two agree by
-        # construction instead of by luck.
+        # This guard is the resolver's half of ONE rule the whole loan stack
+        # keeps: a loan owes nothing until it originates.  The rule is asked of
+        # the FACT -- ``origination_date`` -- everywhere it is asked, so every
+        # asker agrees by construction rather than by luck.  The genesis walk
+        # deliberately does NOT apply it: it RECORDS every anchor whatever its
+        # date and leaves "has this happened yet?" to the readers
+        # (``_walk.walk_loan_ledger``).  ``loan_payment_service.confirmed_loan_view``
+        # is the reader that applies it here, withholding a ledger view for a
+        # loan that has not originated -- which is what keeps the branch below
+        # on the replay, and what keeps the ledger's honest "nothing has
+        # happened" 0.00 out of the projection's seed.
         #
         # It guards the BALANCE only, deliberately NOT ``_replay_from_anchor``:
         # ``compute_payoff_scenarios`` shares that replay for the SCHEDULE's

@@ -1743,6 +1743,54 @@ class TestCreateBaseline:
                 checking_id, new_baseline.id,
             ) == Decimal("1000.00")
 
+    def test_create_baseline_reposts_a_stranded_loan_opening(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):
+        """G1: the recovery path must repost the LOAN openings too, not just cash.
+
+        The loan half of the test above, and it fails harder.  A loan's opening
+        posts per SCENARIO, so a baseline-less owner's loan has nowhere to put it;
+        deleting the baseline reproduces that state exactly (the CASCADE disposes
+        its journal entries, the loan's opening among them).
+
+        The route recovered the ACCOUNT anchors and not the loans, which is not a
+        quiet gap: an ORIGINATED loan with no OPENING posting makes the balance
+        seam refuse to answer (``LoanLedgerNotOpenedError``), so every loan surface
+        500s -- and there was no way back short of re-saving the loan's params.
+
+        NEGATIVE CONTROL: drop the ``resync_user_loan_postings`` call from
+        ``baseline_service.create_baseline_scenario`` and ``balance_at`` raises
+        instead of answering $200,000.00.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from app.services import balance_at
+        from app.services.resolution_context import BalanceContext
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 1, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=seed_periods[0],
+            )
+            loan_id = loan.id
+            Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).delete()
+            db.session.commit()
+
+            assert auth_client.post("/create-baseline").status_code == 302
+
+            bctx = BalanceContext.build(seed_user["user"].id)
+            reloaded = db.session.get(Account, loan_id)
+            # No payment has been made, so the loan still owes its opening.
+            assert balance_at.balance_at(
+                reloaded, bctx, bctx.as_of,
+            ) == Decimal("200000.00")
+
     def test_create_baseline_requires_login(self, app, client):
         """POST /create-baseline without authentication redirects to login.
 

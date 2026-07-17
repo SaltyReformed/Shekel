@@ -485,9 +485,7 @@ def build_baseline_scenarios(
     Returns:
         The baseline :class:`loan_resolver.PayoffScenarios`.
     """
-    view = confirmed_loan_view(
-        loan_inputs.loan_params.account_id, scenario_id, as_of,
-    )
+    view = confirmed_loan_view(loan_inputs.loan_params, scenario_id, as_of)
     return loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
         extra_monthly=Decimal("0.00"),

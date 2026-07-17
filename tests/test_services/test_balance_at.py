@@ -2690,6 +2690,74 @@ class TestLoanNotYetOriginated:
             # an unborrowed mortgage is not RETIRED either, so it stays charted.
             assert figures.is_retired is False
 
+    def test_the_ledger_has_no_domain_for_a_loan_that_has_not_closed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An upcoming loan's ledger has no DOMAIN -- there is nothing to bound.
+
+        ``loan_ledger_domain`` is the clamp a caller measuring a CHANGE across a
+        window uses so it never asks the readers a question they cannot answer.
+        For a loan that does not exist yet the honest answer is ``None``: its
+        ledger has not begun.
+
+        This became askable only when the write walk stopped dropping future-dated
+        anchors -- such a loan now HAS an opening posting, so the underlying
+        reader (which keys on one) would hand back a real ``opening_balance`` of
+        $200,000.00 for a mortgage that has not closed, dated from its pay
+        period's START (N-10).  A clamp that fabricates the window it is clamping
+        is worse than no clamp.
+
+        NEGATIVE CONTROL: drop the ``_is_originated`` check from
+        ``balance_at.loan_ledger_domain`` and this returns a ``LoanLedgerDomain``
+        carrying ``opening_balance=Decimal("200000.00")``.
+        """
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            assert balance_at.loan_ledger_domain(acct, bctx) is None
+
+    def test_the_day_it_closes_the_seam_answers_without_a_re_sync(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """B-1: the loan must not break simply because its closing date arrived.
+
+        The loan is configured on 2026-03-20 (the suite's frozen today) to close
+        on 2026-04-15.  Then the CLOCK MOVES to 2026-05-07 and nothing else
+        happens -- which is production: no chokepoint fires because a date
+        arrived, so no sync re-runs between configuring the loan and reading it.
+
+        Before A3 the write walk dropped any anchor dated after its as-of, so the
+        params-create sync posted NO OPENING for this loan.  The moment the clock
+        passed 2026-04-15 the seam considered it originated, found no opening, and
+        raised ``LoanLedgerNotOpenedError`` -- taking the loan card, /savings, the
+        net-worth trend, the Horizon and the property equity chart down with a 500,
+        fired by the clock alone, with the user's data untouched and correct.
+
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
+        ``_walk._merge_anchor_and_payment_events`` and both asserts below raise.
+
+        $200,000.00 owed, not $199,759.69: the 2026-05-01 installment has NO
+        payment record behind it, and an installment nobody paid pays nothing down
+        (plan D1).  The map's last period is future, so the projection amortizes it.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import freeze_today
+
+        with app.app_context():
+            periods = seed_periods
+            acct = self._upcoming_mortgage(seed_user, db.session, periods)
+
+            freeze_today(monkeypatch, date(2026, 5, 7))
+            bctx = BalanceContext.build(seed_user["user"].id)
+            assert bctx.as_of == date(2026, 5, 7)
+
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.OPENING
+            assert balance_at.balance_map(acct, bctx, periods)[
+                periods[-1].id
+            ] == self.AFTER_FIRST_PAYMENT
+
 
 class TestUpcomingLoanDoesNotCorruptTheSurfaces:
     """The consumers that read a $0.00 balance as "this debt is gone".
