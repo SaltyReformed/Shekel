@@ -278,7 +278,7 @@ def resolve_loan(
         # asker agrees by construction rather than by luck.  The genesis walk
         # deliberately does NOT apply it: it RECORDS every anchor whatever its
         # date and leaves "has this happened yet?" to the readers
-        # (``_walk.walk_loan_ledger``).  ``loan_payment_service.confirmed_loan_view``
+        # (``loan_ledger.walk_loan_ledger``).  ``loan_payment_service.confirmed_loan_view``
         # is the reader that applies it here, withholding a ledger view for a
         # loan that has not originated -- which is what keeps the branch below
         # on the replay, and what keeps the ledger's honest "nothing has

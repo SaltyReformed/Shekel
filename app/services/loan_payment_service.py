@@ -505,7 +505,7 @@ def confirmed_loan_view(
 
     **The origination bound is asked of the FACT, and it is load-bearing.**  The
     genesis walk records every anchor whatever its date and lets the readers
-    decide what has happened (:func:`._walk.walk_loan_ledger`), so a loan
+    decide what has happened (:func:`app.services.loan_ledger.walk_loan_ledger`), so a loan
     configured before it closes HAS an opening posting -- and would hand this
     function a view.  That view's balance seeds the forward projection
     (:func:`app.services.loan_resolver._payoff._build_forward_inputs`), and the
@@ -637,7 +637,7 @@ def _shadow_live_amount(
     from, so they can never disagree.  The escrow term is
     :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
     shadow's OWN pay-period start -- the exact date and function the genesis
-    split reads (``_walk._replay_events``) -- so the cash built into a payment
+    split reads (``loan_ledger.walk_loan_ledger``) -- so the cash built into a payment
     and the escrow its split subtracts are the same figure by construction
     (the cash==split invariant), never by coincidence.  ``extra_principal`` (the
     standing overpayment, spec Sec. 6) is added on top in BOTH the display and

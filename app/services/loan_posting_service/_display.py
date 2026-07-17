@@ -24,6 +24,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.enums import LedgerAccountKindEnum
+from app.services.loan_ledger import walk_loan_ledger
 from app.services.loan_loaders import load_loan_params, loan_payment_due_date
 from app.services.posting_service import _ledger_account_for
 from app.utils.money import round_money
@@ -36,7 +37,6 @@ from ._reader import (
     _net_by_shadow_for_kind,
     _principal_net_by_shadow,
 )
-from ._walk import walk_loan_ledger
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -57,7 +57,7 @@ class LoanPaymentHistoryRow:
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
-    :func:`app.services.loan_posting_service._walk._split_one_payment`.
+    :func:`app.services.loan_ledger.split_one_payment`.
 
     Attributes:
         due_date: The monthly installment the payment satisfies
@@ -274,7 +274,7 @@ def loan_balance_anchor_history(
     that replaces the old use of the amortization schedule as a trust check.
 
     Derived from the SAME deterministic walk
-    (:func:`app.services.loan_posting_service.walk_loan_ledger`) the loan's
+    (:func:`app.services.loan_ledger.walk_loan_ledger`) the loan's
     opening / true-up postings are reconciled from, so a drift row and the posted
     correction it describes can never disagree.
 

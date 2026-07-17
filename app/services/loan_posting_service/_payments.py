@@ -18,7 +18,7 @@ balanced entry that moves the non-principal off the loan::
              0
 
 The loan's NET (Step-2 cash + this correction) is then exactly the real principal
-paid.  The split (:mod:`._walk`) is computed from the ACTUAL cash
+paid.  The split (:mod:`app.services.loan_ledger`) is computed from the ACTUAL cash
 (``principal = cash - interest - escrow``), so an extra or short payment is
 captured honestly.
 
@@ -61,7 +61,10 @@ from app.services.posting_service import (
 
 from app.services._posting_reconcile import delta_legs, summed_posting_legs
 
-from ._walk import LoanPaymentSplit, compute_loan_payment_splits
+from app.services.loan_ledger import (
+    LoanPaymentSplit,
+    compute_loan_payment_splits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +478,7 @@ def sync_loan_payment_postings(
     missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
     (never Checking).  Every settled payment splits, whatever its pay period
     (settlement is the confirming event -- see
-    :func:`.._walk._settled_income_shadows`), and the walk reads no clock, so
+    :func:`app.services.loan_loaders.settled_income_shadows`), and the walk reads no clock, so
     this posts the same ledger whenever it runs.  Flushes but does not commit
     (the caller owns the transaction).
 

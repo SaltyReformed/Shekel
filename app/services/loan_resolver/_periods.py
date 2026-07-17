@@ -149,7 +149,7 @@ def resolve_periods(loan_params, rate_changes):
     :func:`._payoff.compute_payoff_scenarios`) so the period set they read
     cannot drift apart.  Re-exported from the package so the out-of-package
     Build-Order Step 4 split walk
-    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) reads the
+    (:func:`app.services.loan_ledger.compute_loan_payment_splits`) reads the
     identical period set -- its accrued-interest rate per payment is sampled
     from these very periods, so a posted loan-payment split can never disagree
     with the resolver's replayed balance on the rate in effect.
@@ -315,7 +315,7 @@ def select_latest_anchor(anchor_events: list) -> object:
     event.
 
     Re-exported from the package so the out-of-package Build-Order Step 4
-    split walk (:func:`app.services.loan_posting_service.compute_loan_payment_splits`)
+    split walk (:func:`app.services.loan_ledger.compute_loan_payment_splits`)
     seeds its running balance from the IDENTICAL anchor the resolver replays
     from -- the posted loan-payment ledger and the resolver's balance can never
     disagree on which dated balance is the opening point.

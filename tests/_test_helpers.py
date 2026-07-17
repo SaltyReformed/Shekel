@@ -401,7 +401,7 @@ def _sync_loan_ledger(loan_account_id):
     (opening present, true-up missing) -- a state that looked ledger-backed and
     was not.  The walk no longer reads a clock: it records every anchor the loan
     carries, whatever its date, and the readers decide what has happened
-    (``loan_posting_service._walk.walk_loan_ledger``).  So a fixture's anchor
+    (``loan_ledger.walk_loan_ledger``).  So a fixture's anchor
     posts whatever its date, and a fixture can no longer build the half-opened
     loan by accident.
 

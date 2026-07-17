@@ -24,6 +24,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    loan_ledger,
     loan_payment_service,
     loan_posting_service,
     transfer_recurrence,
@@ -348,7 +349,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
 
         # cash == split: the genesis split reads the frozen cash and subtracts
         # the same escrow, leaving principal = P&I.
-        splits = loan_posting_service.compute_loan_payment_splits(
+        splits = loan_ledger.compute_loan_payment_splits(
             loan.id, scenario_id,
         )
         assert len(splits) == 1
@@ -642,7 +643,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         assert settled.actual_amount == Decimal("1599.10")
 
         # The genesis split routes the extra into principal (cash == split).
-        splits = loan_posting_service.compute_loan_payment_splits(
+        splits = loan_ledger.compute_loan_payment_splits(
             loan.id, scenario_id,
         )
         assert len(splits) == 1

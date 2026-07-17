@@ -151,6 +151,7 @@ from app.models.transaction import Transaction
 from app.services import (
     anchor_service,
     balance_at,
+    loan_ledger,
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
@@ -602,7 +603,7 @@ def _assert_completeness(
     now the confirming event, so an early-settled payment is inside this
     guarantee, not outside it.
     """
-    splits = loan_posting_service.compute_loan_payment_splits(
+    splits = loan_ledger.compute_loan_payment_splits(
         loan_account_id, scenario_id,
     )
     # Every caller settles at least one payment before reconciling, so an empty
@@ -955,7 +956,7 @@ class TestParallelRunAgainstResolver:
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
 
             # Genesis SPLITS the pre-trueup payment (Step 4 excluded it).
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, scenario_id,
             )
             assert len(splits) == 1
@@ -1488,11 +1489,11 @@ class TestOracleIsNotVacuous:
             )[1].monthly_payment
 
             # Inject $10 of phantom interest into the WALK's accrual only.  The
-            # module binding ``_walk.accrue_monthly_interest`` is patched; the
+            # module binding ``_split.accrue_monthly_interest`` is patched; the
             # resolver's ``rate_period_engine.accrue_monthly_interest`` is a
             # DISTINCT import and stays honest, so the two diverge by exactly $10.
             monkeypatch.setattr(
-                "app.services.loan_posting_service._walk"
+                "app.services.loan_ledger._split"
                 ".accrue_monthly_interest",
                 lambda balance, rate: (
                     accrue_monthly_interest(balance, rate) + Decimal("10.00")
@@ -2219,7 +2220,7 @@ class TestReaderParallelRunAgainstResolver:
             # Pin the split value directly (the reader value below is
             # split-invariant): the pre-true-up payment splits on the $250,000
             # origination balance -> interest round(250000 * 0.005) = 1250.00.
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, scenario_id,
             )
             assert splits[0].interest == Decimal("1250.00")

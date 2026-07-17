@@ -2736,7 +2736,8 @@ class TestLoanNotYetOriginated:
         fired by the clock alone, with the user's data untouched and correct.
 
         NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``_walk._merge_anchor_and_payment_events`` and both asserts below raise.
+        ``loan_ledger.merge_anchor_and_payment_events`` and both asserts below
+        raise.
 
         $200,000.00 owed, not $199,759.69: the 2026-05-01 installment has NO
         payment record behind it, and an installment nobody paid pays nothing down

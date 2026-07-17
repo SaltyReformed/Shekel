@@ -315,7 +315,7 @@ def load_rate_changes(account_id: int) -> list[RateChangeRecord] | None:
     and maps them to the engine's :class:`RateChangeRecord` feed via
     :func:`_rate_change_records_from`.  The standalone loader for callers that
     need ONLY the feed -- the Build-Order Step 4 split walk
-    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`)
+    (:func:`app.services.loan_ledger.compute_loan_payment_splits`)
     builds the loan's rate periods from it via
     :func:`app.services.loan_resolver.resolve_periods` -- without paying for
     the rest of ``load_loan_context``'s payment-history / escrow /
@@ -337,9 +337,9 @@ def load_loan_params(account_id: int) -> LoanParams | None:
 
     The one-line "is this a configured loan, and if so what are its terms"
     lookup shared by every loan consumer
-    (:func:`app.services.loan_payment_service.resolve_account_loan`, the loan
-    PITI resolver, and the Step-4
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits`), so
+    (:func:`app.services.loan_resolution.resolve_account_loan`, the loan
+    PITI resolver, and the fold's
+    :func:`app.services.loan_ledger.compute_loan_payment_splits`), so
     none of them re-spells the same query and a future change to how a loan's
     params are loaded (eager-loads, soft-delete handling) touches one site.
     ``None`` means the account has no loan configuration yet -- not an
@@ -366,7 +366,7 @@ def load_all_loan_account_ids() -> list[int]:
     The account id of every :class:`LoanParams` row -- one per amortizing loan,
     across all owners.  A loan can carry a Build-Order Step 4 split correction
     only once it has a :class:`LoanParams` row (:func:`load_loan_params`;
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits` returns
+    :func:`app.services.loan_ledger.compute_loan_payment_splits` returns
     ``[]`` otherwise), so this is exactly the set the one-time historical backfill
     (:func:`app.services.loan_posting_service.backfill_all_loan_postings`)
     iterates.  Deliberately NOT user-scoped: it is a system / deploy-time sweep
@@ -452,42 +452,81 @@ def load_escrow_lines(account_id: int) -> list:
     )
 
 
-def _settled_income_shadows(
+def settled_income_shadows(
     account_id: int, scenario_id: int,
 ) -> list[Transaction]:
-    """Return a loan's SETTLED shadow-income rows (the shared settled-payment set).
+    """Return a loan's SETTLED income shadows, in payment order, NO period bound.
 
-    The single "which payments are settled" derivation that every settled-payment
-    guard builds on: the shared :func:`query_shadow_income` predicate narrowed to
-    the settled statuses.  Both :func:`_settled_payment_due_dates` (mapping each to
-    its monthly due date for the anchor-ordering guards) and
-    :func:`latest_settled_payment_period_start` (taking the greatest pay-period
-    start for the escrow forward-only guard) read this ONE set, so they -- and the
-    genesis walk's own settled-shadow set -- can never disagree on WHICH payments
-    are settled.  ``pay_period`` is eager-loaded by :func:`query_shadow_income`, so
-    callers read each shadow's period without an N+1.
+    The project's SINGLE "which payments are settled, and in what order" derivation:
+    the shared :func:`query_shadow_income` predicate (transfer-linked, Income type,
+    non-deleted, non-excluded) narrowed to the settled statuses -- and NOTHING ELSE.
+    Every settled-payment consumer reads this ONE set, so no two can disagree on
+    which payments are settled: the fold's event stream
+    (:func:`app.services.loan_ledger.walk_loan_ledger`), the fold's display bound
+    (:func:`app.services.loan_ledger.confirmed_shadows_through`), the ledger's
+    per-payment principal reader, :func:`_settled_payment_due_dates` (the
+    anchor-ordering guards), and :func:`latest_settled_payment_period_start` (the
+    escrow forward-only guard).
+
+    It was TWO functions of this name until the fold moved to its own leaf -- this
+    one (unordered) and the genesis walk's private copy (sorted) -- each claiming in
+    its docstring to be the single derivation the other could not disagree with.
+    They issued the identical query, so they never did disagree; two copies of a
+    predicate that answers one question is nonetheless exactly the shape the arc's
+    process lessons name (``docs/audits/balance_architecture/README.md`` Section 8).
+
+    Two bounds the resolver's
+    :func:`app.services.rate_period_engine.is_confirmed_payment_eligible` filter
+    applies are deliberately ABSENT:
+
+    * **No post-anchor LOWER bound.**  The fold walks EVERY settled payment from
+      origination, because an anchor is a running-balance RESET
+      (:func:`app.services.loan_ledger.walk_loan_ledger`), not a payment exclusion.
+      A pre-anchor payment is split and posted (its principal effect is later
+      subsumed by the anchor correction), never silently dropped.
+    * **No period-begun UPPER bound.**  Settlement is the confirming event: the
+      Step-2 cash entry posts the moment a payment settles, so the split correction
+      must post in the SAME moment or the loan-linked ledger holds raw cash with no
+      interest / escrow backout from the payment's period start until the next loan
+      write (the 2026-07-02 adversarial review's H2 -- demonstrated as a ~$1,636
+      understatement on the real Mortgage).  Both entries carry the payment's
+      ``pay_period_id``, so the READERS' period bound still keeps an early-settled
+      payment out of every displayed balance until its period begins -- posting
+      early changes when the fact is RECORDED, never when it is SHOWN.
+
+    Sorted by pay-period start -- the app's canonical payment chronology
+    (``get_payment_history`` orders identically) and the order the fold's running
+    balance is walked in; ``id`` is the deterministic tie-breaker.  The order is
+    immaterial to the guards (they take a ``min`` / ``max`` / set), and load-bearing
+    for the walk, so it is applied ONCE here rather than by each caller.  These are
+    the RAW shadows; the resolver's biweekly-collision redistribution (a display
+    fix) is NOT applied, and is immaterial to a sequentially walked running balance.
+    ``pay_period`` is eager-loaded by :func:`query_shadow_income`, so callers read
+    each shadow's period without an N+1.
 
     Args:
-        account_id: The loan account whose settled payments to scan.
+        account_id: The loan account whose settled payments to load.
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        The account's settled shadow-income :class:`Transaction` rows (unordered),
-        or ``[]`` when the loan has no settled payment.
+        Every settled income shadow, ascending by ``(pay_period.start_date, id)``;
+        ``[]`` when the loan has no settled payment.
     """
-    return (
+    settled = (
         query_shadow_income(account_id, scenario_id)
         .filter(Transaction.status_id.in_(settled_status_ids()))
         .all()
     )
+    settled.sort(key=lambda shadow: (shadow.pay_period.start_date, shadow.id))
+    return settled
 
 
 def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     """Return the monthly installment a loan payment shadow satisfies.
 
     The project's SINGLE derivation of "which contractual installment is this
-    payment?" -- read by the genesis write walk
-    (:func:`app.services.loan_posting_service._walk._merge_anchor_and_payment_events`),
+    payment?" -- read by the fold's event stream
+    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`),
     the ledger history reader
     (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`), the
     payment-history table
@@ -525,8 +564,8 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     every-paycheck transfer would not, and would keep regenerating pay-period
     starts into a column the posting walk now reads.
 
-    This value is a POSTING INPUT, not display metadata: the genesis write walk
-    (``loan_posting_service._walk._merge_anchor_and_payment_events``) orders
+    This value is a POSTING INPUT, not display metadata: the fold's event stream
+    (``loan_ledger.merge_anchor_and_payment_events``) orders
     payments by it and applies its strict ``anchor_date < due_date`` post-anchor
     boundary against it, so moving it moves the POSTED balance.  Any writer of
     ``due_date`` must therefore follow it with a posting reconcile --
@@ -555,9 +594,9 @@ def _settled_payment_due_dates(
     The single settled-payment-due-date derivation that both
     :func:`load_settled_payment_due_months` (the year-end tax exclusion set) and
     :func:`earliest_settled_payment_due_date` (the tracking-start guard) build on,
-    so the two provably agree with each other -- and with the genesis walk's own
-    settled-shadow set -- on WHICH payments are settled and on each one's due date.
-    The settled shadow set comes from :func:`_settled_income_shadows`; each is
+    so the two provably agree with each other -- and with the fold's own event
+    stream -- on WHICH payments are settled and on each one's due date.
+    The settled shadow set comes from :func:`settled_income_shadows`; each is
     dated by :func:`loan_payment_due_date` (its stored ``due_date``, falling back
     to a derivation from its pay-period start).
 
@@ -575,7 +614,7 @@ def _settled_payment_due_dates(
         return []
     return [
         loan_payment_due_date(shadow, params.payment_day)
-        for shadow in _settled_income_shadows(account_id, scenario_id)
+        for shadow in settled_income_shadows(account_id, scenario_id)
     ]
 
 
@@ -593,8 +632,7 @@ def load_settled_payment_due_months(
     confirmed payments by "pay period has begun", so an EARLY-settled payment
     (settled before its pay period starts) stays ``is_confirmed=False`` on the
     schedule while its interest is already posted (the write side splits at
-    settlement -- see
-    :func:`app.services.loan_posting_service._walk._settled_income_shadows`).
+    settlement -- see :func:`settled_income_shadows`).
 
     Keyed by due (year, month) rather than the exact due date so the exclusion
     still matches a schedule row whose display date the resolver's
@@ -670,15 +708,15 @@ def latest_settled_payment_period_start(
     cannot be the greatest ``effective_date <= start`` for any settled payment, so
     no settled split moves.
 
-    Keys on ``pay_period.start_date`` -- the EXACT date the genesis split
-    (:func:`app.services.loan_posting_service._walk._replay_events`) and the
+    Keys on ``pay_period.start_date`` -- the EXACT date the fold's walk
+    (:func:`app.services.loan_ledger.walk_loan_ledger`) and the
     settle-time cash freeze
     (:func:`app.services.loan_payment_service._shadow_live_amount`) resolve each
     payment's escrow at -- NOT the monthly due date
     :func:`_settled_payment_due_dates` derives for the anchor-ordering guards
     (those compare against the walk's anchor-vs-payment due-date sort; escrow
     resolves on the period start, so the boundary differs).  Shares
-    :func:`_settled_income_shadows` with those, so the escrow guard and the split
+    :func:`settled_income_shadows` with those, so the escrow guard and the split
     walk provably agree on which payments are settled.
 
     NOTE: point-in-time -- scans only payments settled at call time, mirroring
@@ -698,7 +736,7 @@ def latest_settled_payment_period_start(
     """
     starts = [
         shadow.pay_period.start_date
-        for shadow in _settled_income_shadows(account_id, scenario_id)
+        for shadow in settled_income_shadows(account_id, scenario_id)
     ]
     return max(starts) if starts else None
 

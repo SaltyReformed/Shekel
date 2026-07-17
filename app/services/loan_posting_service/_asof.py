@@ -54,15 +54,16 @@ def effective_date():
     * **Cash** (a payment's split correction): its pay period's ``start_date``.
       This is deliberate and load-bearing -- a payment settled BEFORE its pay period
       begins must not appear in a displayed balance until that period starts
-      (:func:`._walk._settled_income_shadows`: "posting early changes when the fact
-      is RECORDED, never when it is SHOWN").
+      (:func:`app.services.loan_loaders.settled_income_shadows`: "posting early
+      changes when the fact is RECORDED, never when it is SHOWN").
     * **An anchor** (opening / true-up): ``LEAST(entry_date, pay_period.start)``.
 
     The ``LEAST`` repairs a lie the storage layer is forced into.  An anchor's
     ``entry_date`` IS its ``anchor_date`` (the real civil date it asserts), but
     ``journal_entries.pay_period_id`` is NOT NULL, so an anchor that predates every
     pay period the user has must still be filed under one --
-    :func:`._anchors._resolve_anchor_pay_period` falls back to the EARLIEST period.
+    :func:`._anchors._resolve_anchor_pay_period` falls back to the EARLIEST
+    period.
     That fallback can only ever push an anchor LATER than it truly happened, and a
     period-bounded reader then believes it did.  A loan originated 2025-01-01 whose
     owner's pay periods begin 2026-01-02 was reported as owing NOTHING for the whole

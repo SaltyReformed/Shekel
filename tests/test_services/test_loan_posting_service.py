@@ -48,6 +48,7 @@ from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
+    loan_ledger,
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
@@ -233,7 +234,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
@@ -262,7 +263,7 @@ class TestComputeLoanPaymentSplits:
                 _settle_payment(seed_user, loan, period, Decimal("1000.00"))
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
@@ -287,7 +288,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("1000.00")
@@ -309,7 +310,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("500.00")
@@ -331,7 +332,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits[0].escrow == Decimal("100.00")
@@ -375,7 +376,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             # Chronological: P1 start 2026-01-16 (V1 $100); P_late start
@@ -393,7 +394,7 @@ class TestComputeLoanPaymentSplits:
             ))
             db.session.commit()
 
-            resplits = loan_posting_service.compute_loan_payment_splits(
+            resplits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert [s.escrow for s in resplits] == [
@@ -416,7 +417,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("1.50")
@@ -442,7 +443,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 2
@@ -473,7 +474,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
@@ -499,7 +500,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("800.00")
@@ -534,7 +535,7 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
@@ -562,7 +563,7 @@ class TestComputeLoanPaymentSplits:
             _settle_payment(seed_user, loan, seed_periods[_P2], Decimal("1000.00"))
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
@@ -586,7 +587,7 @@ class TestComputeLoanPaymentSplits:
             ).update({"status_id": ref_cache.status_id(StatusEnum.PROJECTED)})
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert splits == []
@@ -595,7 +596,7 @@ class TestComputeLoanPaymentSplits:
         """An account with no LoanParams is not yet resolvable -- no splits."""
         with app.app_context():
             checking = seed_user["account"]  # a plain Checking, no LoanParams
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 checking.id, seed_user["scenario"].id,
             )
             assert splits == []
@@ -651,14 +652,14 @@ class TestWalkReadsNoClock:
         SHOWN").
 
         Before A3 the sync's as-of was 2026-03-20, so the origination anchor was
-        dropped, the running balance seeded at $0.00, and ``_split_one_payment``'s
+        dropped, the running balance seeded at $0.00, and ``split_one_payment``'s
         ``balance <= 0`` arm routed the ENTIRE $1,073.64 to ``excess`` -- real
         mortgage cash reclassified as a Refund Receivable asset, with the whole
         Schedule-A deductible interest erased.  Measured on the real Mortgage, the
         same line cost $7,643.80.
 
         NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
-        ``_walk._merge_anchor_and_payment_events`` and this reports
+        ``loan_ledger.merge_anchor_and_payment_events`` and this reports
         ``excess=1073.64`` with interest, escrow and principal all $0.00.
         """
         with app.app_context():
@@ -671,7 +672,7 @@ class TestWalkReadsNoClock:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
@@ -785,7 +786,7 @@ class TestTrackingStartOpening:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, scenario_id,
             )
             assert len(splits) == 1
@@ -1725,7 +1726,7 @@ class TestSyncLoanAnchorCorrections:
             db.session.commit()
 
             # P1 is split BEFORE the reset -> interest on the origination balance.
-            splits = loan_posting_service.compute_loan_payment_splits(
+            splits = loan_ledger.compute_loan_payment_splits(
                 loan.id, scenario_id,
             )
             assert len(splits) == 1
@@ -3121,7 +3122,7 @@ class TestLedgerDomainAndPrePeriodAnchor:
     Direct coverage for ``_asof.effective_date`` and ``_domain``.  Both exist
     because of one production defect: a journal entry carries its true civil
     ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor predates
-    every pay period the user has, ``_resolve_anchor_pay_period`` is FORCED to file
+    every pay period the user has, ``resolve_anchor_pay_period`` is FORCED to file
     it under the earliest period -- pushing it later than it happened.  A
     period-bounded reader believed that, so a loan originated before the user's
     pay-period history read as owing NOTHING for the whole span in between, and the

@@ -3,7 +3,7 @@
 The entry points that drive a loan's FULL genesis reconcile -- both the
 per-payment split corrections (:mod:`._payments`) and the opening / true-up
 anchor corrections (:mod:`._anchors`) -- off ONE running-balance walk
-(:func:`._walk.walk_loan_ledger`) per (loan, scenario), so the two halves share
+(:func:`app.services.loan_ledger.walk_loan_ledger`) per (loan, scenario), so the two halves share
 the balance interest accrued on and no chokepoint walks the loan twice:
 
 * :func:`sync_loan_postings` -- one scenario, one walk, both reconciles.
@@ -31,9 +31,10 @@ from app.services._posting_reconcile import account_owner_id
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.db_errors import is_unique_violation
 
+from app.services.loan_ledger import walk_loan_ledger
+
 from ._anchors import reconcile_loan_anchor_corrections
 from ._payments import reconcile_loan_payment_splits
-from ._walk import walk_loan_ledger
 
 
 def _scenarios_with_loan_payments(loan_account_id: int) -> list[int]:
@@ -91,7 +92,7 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
 
     **Takes no as-of, and reads no clock.**  It posts what the loan's facts say,
     every one of them; WHEN each fact becomes visible is the readers' decision,
-    not this writer's (:func:`._walk.walk_loan_ledger`).  So a re-run posts the
+    not this writer's (:func:`app.services.loan_ledger.walk_loan_ledger`).  So a re-run posts the
     same ledger tomorrow as today -- the property that makes these postings a
     re-derivable projection of the loan's data rather than a record of when a
     sync happened to run.  Flushes but does not commit (the caller owns the

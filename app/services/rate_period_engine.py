@@ -334,7 +334,7 @@ def is_confirmed_payment_eligible(
     disagree on which payments an anchor subsumes.
 
     :func:`replay_schedule` (the resolver's confirmed-payment replay) and
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits` (the
+    :func:`app.services.loan_ledger.compute_loan_payment_splits` (the
     Build-Order Step 4 real-split walk) BOTH gate on this one predicate, so the
     posted loan-payment ledger and the resolver's replayed balance can never
     drift on which payment set they consider.

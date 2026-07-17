@@ -85,7 +85,7 @@ logger = logging.getLogger(__name__)
 #
 # ``due_date`` IS here, and its inclusion is load-bearing: on a LOAN payment the
 # due date is the installment the payment satisfies, which the genesis write walk
-# (``loan_posting_service._walk._merge_anchor_and_payment_events``) orders
+# (``loan_ledger.merge_anchor_and_payment_events``) orders
 # payments by AND applies its strict ``anchor_date < due_date`` post-anchor
 # boundary against -- so moving it changes which payments an anchor SUBSUMES, and
 # therefore the POSTED balance.  Editing it without a reconcile would leave the

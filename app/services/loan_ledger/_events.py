@@ -1,0 +1,131 @@
+"""The loan fold's EVENT STREAM: what happened to a loan, in the order it happened.
+
+A loan's balance is a fold over its event stream, and this module builds that
+stream.  Two kinds of fact enter it, and nothing else:
+
+* an **ASSERTION** -- the loan's opening (its origination, or the
+  ``tracking_start`` of a mid-life import) and every user balance true-up, loaded
+  as :class:`~app.services.loan_loaders.LoanAnchorFact`;
+* a **PAYMENT** -- a settled loan-side income shadow, the record that cash
+  actually moved (:func:`~app.services.loan_loaders.settled_income_shadows`).
+
+**Every fact enters the stream, whatever its date, and nothing here reads the
+clock.**  A loan's anchors are FACTS -- the origination is a verbatim copy of the
+immutable :class:`~app.models.loan_params.LoanParams`, a true-up is the
+operator's dated assertion -- and this module RECORDS them; deciding which have
+HAPPENED as of a given date is a READER's job.  Dropping a future-dated anchor --
+what the walk did while it took an ``as_of`` -- made the persisted ledger a
+function of the wall clock at the moment the sync happened to run, which is a
+corruption generator, not a cache (step A3, ``4e46a0a8``).
+
+The one exception is :func:`confirmed_shadows_through`, which IS a reader's
+bound and lives here only because it is the same settled-payment set narrowed:
+see its docstring.
+"""
+
+from datetime import date
+
+from app.models.transaction import Transaction
+from app.services import loan_loaders
+from app.services.loan_loaders import LoanAnchorFact
+
+
+def confirmed_shadows_through(
+    loan_account_id: int,
+    scenario_id: int,
+    as_of: date,
+) -> list[Transaction]:
+    """Return the settled shadows whose pay period has begun by ``as_of``.
+
+    The DISPLAY subset of
+    :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the
+    balance readers count as confirmed history at ``as_of`` (their shared "period
+    has begun" bound).  The ledger's history reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`)
+    consumes this so its rows match the balance readers' cut; the fold's own walk
+    deliberately does NOT (it splits every settled payment -- see
+    :func:`~app.services.loan_loaders.settled_income_shadows` for why).
+
+    This is the PAYMENT half of the current visibility rule, in Python; the SQL
+    half is :func:`app.services.loan_posting_service._asof.effective_date`, and
+    the two must agree (both key a payment on its ``pay_period.start_date``).
+    Step C2 replaces both with the payment's settled date (ruling R-A).
+
+    Args:
+        loan_account_id: The loan account whose shadows to load.
+        scenario_id: The budget scenario to scope to.
+        as_of: The display boundary; a payment whose pay period has not begun
+            by it is a forward projection, excluded.
+
+    Returns:
+        The settled income shadows through ``as_of``, ascending by pay-period
+        start then ``id``.
+    """
+    return [
+        shadow
+        for shadow in loan_loaders.settled_income_shadows(
+            loan_account_id, scenario_id,
+        )
+        if shadow.pay_period.start_date <= as_of
+    ]
+
+
+def merge_anchor_and_payment_events(
+    anchor_facts: list[LoanAnchorFact],
+    shadows: list[Transaction],
+    payment_day: int,
+) -> list[tuple[bool, object]]:
+    """Merge a loan's anchors and payments into one chronological event stream.
+
+    Returns ``(is_anchor, item)`` tuples in the order the running-balance walk
+    must process them so each anchor's RESET lands at the right point relative to
+    the payments.  The ordering key is each item's governing date -- an anchor's
+    ``anchor_date``, a payment's
+    :func:`app.services.loan_loaders.loan_payment_due_date` -- with a PAYMENT
+    sorted BEFORE an anchor on a tie, so a payment due exactly on an anchor's date
+    is subsumed by (walked before, then overwritten by) that anchor's reset.  That
+    is the SAME strict ``anchor_date < due_date`` post-anchor boundary the
+    resolver's replay uses (:func:`is_confirmed_payment_eligible`, fed the same
+    derivation via :attr:`PaymentRecord.due_date`), applied at EVERY anchor rather
+    than the latest only -- the two MUST stay on one derivation, or the posted
+    ledger and the replayed balance drift on which payments a given anchor
+    subsumes.
+
+    **This is CONTRACT time, not cash time.**  A payment is ordered by the
+    installment it satisfies (its DUE date), never by when its cash settled, so a
+    late or out-of-order settlement can never reorder installments or re-split one
+    (ruling R-A).  Ties within a type break deterministically -- anchors by
+    ``created_at`` (mirroring the resolver's latest-anchor rule; the synthesized
+    origination fact carries the earliest possible instant), payments by their
+    caller-supplied ``(pay_period.start_date, id)`` order -- preserved by a stable
+    sort of the payments-then-anchors concatenation.
+
+    Args:
+        anchor_facts: The loan's :class:`~app.services.loan_loaders.LoanAnchorFact`
+            list (any order; sorted here).
+        shadows: The settled income shadows, PRE-SORTED by
+            ``(pay_period.start_date, id)``
+            (:func:`~app.services.loan_loaders.settled_income_shadows`).
+        payment_day: The loan's contractual due day (drives each payment's due date).
+
+    Returns:
+        ``(is_anchor, item)`` tuples in walk order (``item`` is a
+        :class:`~app.services.loan_loaders.LoanAnchorFact` when ``is_anchor``,
+        else a settled income :class:`~app.models.transaction.Transaction`).
+    """
+    anchors = sorted(
+        anchor_facts,
+        key=lambda anchor: (anchor.anchor_date, anchor.created_at),
+    )
+    # Payment tag 0 sorts before anchor tag 1 on an equal date, so a payment due
+    # on an anchor's date is walked (and then overwritten) before the reset.  A
+    # stable sort of [payments..., anchors...] keeps each type's pre-sorted order
+    # for equal keys.
+    events = [
+        (loan_loaders.loan_payment_due_date(shadow, payment_day), 0, shadow)
+        for shadow in shadows
+    ] + [
+        (anchor.anchor_date, 1, anchor) for anchor in anchors
+    ]
+    events.sort(key=lambda event: (event[0], event[1]))
+    return [(tag == 1, item) for _date, tag, item in events]

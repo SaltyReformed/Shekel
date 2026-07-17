@@ -6,7 +6,7 @@ confirmed balance is fully reconstructable as ``-(sum of its linked postings)``
 with no external anchor read (the foundation the read switch and Step-5 reporting
 move onto).
 
-Every anchor a loan carries posts one balanced correction (:mod:`._walk` computes
+Every anchor a loan carries posts one balanced correction (:mod:`app.services.loan_ledger` computes
 its ``owed_before``)::
 
     loan-linked ledger   (owed_before - anchor_balance)   [opening | trueup]
@@ -49,14 +49,12 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
+from app.services.loan_ledger import LoanAnchorCorrection, walk_loan_ledger
+from app.services.loan_loaders import LoanAnchorFact
 from app.services.posting_service import (
     PostingError,
     _ledger_account_for,
 )
-
-from app.services.loan_loaders import LoanAnchorFact
-
-from ._walk import LoanAnchorCorrection, walk_loan_ledger
 
 
 def _anchor_correction_kinds(
@@ -282,7 +280,7 @@ def sync_loan_anchor_corrections(
 
     Posts EVERY anchor the loan carries, whatever its date -- the walk reads no
     clock, and which anchors have HAPPENED as of a date is the readers' decision
-    (:func:`._walk.walk_loan_ledger`, which also records where that decision is
+    (:func:`app.services.loan_ledger.walk_loan_ledger`, which also records where that decision is
     currently made by the readers' CALLERS rather than the readers: N-10).  A loan
     with no anchors (unresolvable) is a no-op.  Flushes but does not commit (the
     caller owns the transaction).

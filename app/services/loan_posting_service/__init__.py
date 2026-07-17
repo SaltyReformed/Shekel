@@ -5,10 +5,10 @@ Posts a loan's confirmed history into the append-only double-entry ledger so its
 balance is fully reconstructable as ``-(sum of its linked postings)`` -- the
 genesis (opening-equity) design that lets the read switch retire the resolver's
 read-time replay of confirmed history.  A loan's ledger is TWO kinds of balanced
-correction, both computed by ONE deterministic running-balance walk function
-(:mod:`._walk`), invoked per sync -- so the split and the anchor corrections
-agree on the balance interest accrues on, never the drift separate walk
-implementations would risk:
+correction, both PROJECTED from ONE deterministic running-balance walk
+(:func:`app.services.loan_ledger.walk_loan_ledger`), invoked per sync -- so the
+split and the anchor corrections agree on the balance interest accrues on, never
+the drift separate walk implementations would risk:
 
 * **Payment splits** (:mod:`._payments`, Step 4): the real principal / interest /
   escrow / refund split of each confirmed payment, layered as a correction on top
@@ -18,6 +18,20 @@ implementations would risk:
   every user balance TRUE-UP, so the from-origination sum-of-postings reproduces
   the resolver on a trued-up loan.
 
+## Where the walk lives, and why it is not here
+
+**This package is the GENERAL ledger -- the balance sheet, the statements, the
+attribution.  It is not the answer to "what do I owe."**  The walk every
+correction is projected from is :mod:`app.services.loan_ledger`, a LEAF this
+package depends on: a loan's balance is a fold over its event stream, and these
+postings are a PROJECTION of that fold onto the chart of accounts.  The walk
+lived here until plan step B1, which put the general ledger in the position of
+owning the balance and left every other consumer reaching through this package's
+privates for the split.  The direction now runs one way, which is what lets the
+posted rows become a CHECKED projection of the fold (``sum(postings) ==
+fold(ACTUAL events)``, plan step E1) instead of the source of truth they were
+mistaken for.
+
 ## Package layout
 
 Split by concern (the module outgrew the size limit; mirrors
@@ -25,8 +39,6 @@ Split by concern (the module outgrew the size limit; mirrors
 ``from app.services import loan_posting_service`` and ``loan_posting_service.X``
 keep working unchanged:
 
-* :mod:`._walk` -- the shared foundation: the single chronological walk that
-  produces every correction, plus the split / correction dataclasses.
 * :mod:`._payments` -- the per-payment split reconcile + payment-only sync.
 * :mod:`._anchors` -- the opening + true-up correction reconcile + anchor-only sync.
 * :mod:`._sync` -- the UNIFIED per-scenario sync (``sync_loan_postings``: one walk,
@@ -95,22 +107,11 @@ from ._sync import (
     sync_loan_postings,
     sync_loan_postings_all_scenarios,
 )
-from ._walk import (
-    LoanAnchorCorrection,
-    LoanLedgerWalk,
-    LoanPaymentSplit,
-    compute_loan_payment_splits,
-    walk_loan_ledger,
-)
 
 __all__ = [
-    "LoanAnchorCorrection",
     "LoanAnchorDrift",
-    "LoanLedgerWalk",
     "LoanPaymentHistoryRow",
-    "LoanPaymentSplit",
     "backfill_all_loan_postings",
-    "compute_loan_payment_splits",
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
     "LoanLedgerDomain",
@@ -127,5 +128,4 @@ __all__ = [
     "sync_loan_payment_postings",
     "sync_loan_postings",
     "sync_loan_postings_all_scenarios",
-    "walk_loan_ledger",
 ]

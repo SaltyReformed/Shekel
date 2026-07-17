@@ -22,7 +22,8 @@ historical date, and the per-period map applies it at every period boundary.
 attributed to a whole pay period (its journal entry's NOT NULL ``pay_period_id``),
 and pay periods are contiguous, so bounding CASH by ``pay_period.start_date <=
 as_of`` selects exactly the postings whose period has begun -- the same confirmed
-cut the walk (:func:`._walk.walk_loan_ledger`) applied when it produced them, not
+cut the walk (:func:`app.services.loan_ledger.walk_loan_ledger`) applied when it
+produced them, not
 a recomputed special case.  This is why the per-period map (keyed by period start)
 IS the canonical period-END-keyed loan balance the projection reports
 (:func:`app.services.account_projection.compute_forward_loan_period_balance_map`):
@@ -34,7 +35,8 @@ period.start)`` instead.  For the ordinary anchor -- one a pay period CONTAINS -
 that collapses to the period start, exactly as before, and nothing moves.  It differs
 only for an anchor that predates EVERY pay period the user has, which
 ``journal_entries.pay_period_id`` being NOT NULL forces to be filed under the
-earliest period anyway (:func:`._anchors._resolve_anchor_pay_period`); that fallback
+earliest period anyway
+(:func:`._anchors._resolve_anchor_pay_period`); that fallback
 can only ever push such an anchor LATER than it truly happened, and a period-bounded
 reader believed it.  The ``LEAST`` restores the anchor's own civil date, which is
 the only date it ever asserted.  Both readers take the key from the one place that
@@ -70,6 +72,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import loan_loaders, loan_resolver
 from app.services.amortization_engine import AmortizationRow
+from app.services.loan_ledger import confirmed_shadows_through
 from app.services.posting_service import _ledger_account_for
 from app.services.rate_period_engine import (
     RatePeriod,
@@ -81,7 +84,6 @@ from app.utils.money import round_money
 
 from ._asof import effective_date, scope_to_linked_ledger
 from ._domain import _has_opening_posting, _visible_nets
-from ._walk import _confirmed_shadows_through, _settled_income_shadows
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -444,7 +446,7 @@ def _principal_net_by_shadow(
         ``{shadow transaction id: net principal Decimal}`` (unrounded running
         sums; the caller rounds); empty when the loan has no settled payment.
     """
-    shadows = _settled_income_shadows(loan_account_id, scenario_id)
+    shadows = loan_loaders.settled_income_shadows(loan_account_id, scenario_id)
     shadow_ids = {shadow.id for shadow in shadows}
     shadow_id_by_transfer = {
         shadow.transfer_id: shadow.id for shadow in shadows
@@ -626,14 +628,14 @@ def _classify_linked_nets(
        ``entry_date``, with events dated after *as_of* dropped.  That bound is
        THIS reader's, and the write walk no longer has one to mirror: it records
        every anchor whatever its date and leaves the date decision here
-       (:func:`.._walk.walk_loan_ledger`).  Dating each event at its ``entry_date``
-       still matches the walk's ORDERING, which is what keeps these rows and the
-       posted ledger on one chronology.
+       (:func:`app.services.loan_ledger.walk_loan_ledger`).  Dating each event at
+       its ``entry_date`` still matches the walk's ORDERING, which is what keeps
+       these rows and the posted ledger on one chronology.
 
     Args:
         entry_nets: The per-entry nets from :func:`_linked_entry_nets`.
         shadows: The confirmed payment shadows through *as_of*
-            (:func:`._walk._confirmed_shadows_through`).
+            (:func:`app.services.loan_ledger.confirmed_shadows_through`).
         lineage_transfer_ids: Every payment transfer the loan has ever carried
             (:func:`_payment_lineage_transfer_ids`), confirmed or not.
         as_of: The evaluation date bounding the non-payment events.
@@ -806,7 +808,7 @@ def _confirmed_history_inputs(
     linked = _ledger_account_for(loan_account_id)
     if not _has_opening_posting(linked.id, scenario_id):
         return None
-    shadows = _confirmed_shadows_through(loan_account_id, scenario_id, as_of)
+    shadows = confirmed_shadows_through(loan_account_id, scenario_id, as_of)
     return params, linked, shadows
 
 
@@ -846,7 +848,7 @@ def confirmed_loan_history_rows(
     settled late is still dated at the installment it paid rather than at the
     NEXT month's), numbered continuously from origination (:func:`payment_number`),
     and tagged with the governing period's rate.  Event ORDER mirrors the write
-    walk (:func:`._walk._merge_anchor_and_payment_events`): payments by due
+    walk (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`): payments by due
     date, non-payment balance events at their entry date, a payment sorting
     BEFORE a same-date event so a true-up dated on a due date subsumes the
     payment it follows.  On an on-schedule loan every row is therefore

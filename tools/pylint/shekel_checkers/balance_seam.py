@@ -152,13 +152,14 @@ _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     # ``confirmed_loan_ledger_start`` is a non-producer.
     "confirmed_loan_ledger_domain",
     # The running-balance walk the two readers above are built on: it IS the
-    # balance-at-T computation over the posting rows.  Only the ledger package
-    # itself calls it (verified 2026-07-13), which the wider allowlist already
-    # permits, so fencing it costs nothing and closes the door on a consumer
-    # reaching the raw walk instead of a reader.
+    # balance-at-T computation over a loan's events.  It now lives in the
+    # ``loan_ledger`` LEAF that both the posting ledger and the read seam derive
+    # from (plan step B1), so its allowlist admits its own defining package; the
+    # fence still keeps a consumer from reaching the raw walk instead of a reader.
     "walk_loan_ledger",
 })
 _LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
+    "app.services.loan_ledger",
     "app.services.loan_posting_service",
     "app.services.loan_payment_service",
 })
@@ -285,6 +286,7 @@ _ENGINE_CLUSTER_MODULES = _BALANCE_SEAM_MODULES - frozenset({
     "app.services.balance_at",
 })
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
+    "app.services.loan_ledger",
     "app.services.loan_posting_service",
 })
 # The loan-RESOLVER defining modules.  They were fenced as a CALL surface
@@ -358,9 +360,32 @@ _FENCED_MODULE_RULINGS = {
         "find_period_containing_date",
     })),
     "app.services.daily_balance_series": (_BALANCE_PRODUCERS, frozenset()),
+    # The loan FOLD leaf (plan step B1): the event stream, the split, and the one
+    # running-balance walk over them, which the posting ledger and the read seam
+    # both derive from.  Scoped WHOLE for the same reason its sibling below is: a
+    # new balance-at-T reader born in any of its submodules would reproduce
+    # exactly the hole this check exists to kill.  Its walk IS a balance-at-T
+    # computation and is fenced as one (:data:`_LOAN_LEDGER_READER_PRODUCERS`);
+    # everything else it exports must say why it is not.
+    "app.services.loan_ledger": (
+        _LOAN_LEDGER_READER_PRODUCERS, frozenset({
+            # The real principal/interest/escrow split of an actual payment --
+            # a decomposition of CASH, not an account balance.  The whole-loan
+            # list and its per-payment step carry the same ruling.
+            "compute_loan_payment_splits",
+            "split_one_payment",
+            # The event stream's ORDER: which fact the walk applies next.  It is
+            # chronology, not balance -- it says WHEN things happened, and the
+            # walk says what that cost.
+            "merge_anchor_and_payment_events",
+            # A date-bounded loader of settled payment ROWS.  It selects records,
+            # and carries no balance of any kind.
+            "confirmed_shadows_through",
+        }),
+    ),
     # The genesis loan-ledger package.  Scoped WHOLE, not just ``_reader``: a new
-    # balance-at-T reader born in ``_display`` or ``_walk`` would reproduce
-    # exactly the hole this check exists to kill.
+    # balance-at-T reader born in ``_display`` would reproduce exactly the hole
+    # this check exists to kill.
     "app.services.loan_posting_service": (
         _LOAN_LEDGER_READER_PRODUCERS, frozenset({
             # Rich row detail the view seam composes (the ledger analog of
@@ -379,9 +404,6 @@ _FENCED_MODULE_RULINGS = {
             # they are the plumbing a producer is built FROM.
             "effective_date",
             "scope_to_linked_ledger",
-            # The real principal/interest/escrow split of an actual payment --
-            # a decomposition of CASH, not an account balance.
-            "compute_loan_payment_splits",
             # WRITERS.  Everything below emits or reconciles postings; a writer
             # is not a balance reader, and the ledger-write path has its own
             # seams (``posting_service._emit_balanced_entry``).

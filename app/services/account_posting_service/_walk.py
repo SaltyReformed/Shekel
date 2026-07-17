@@ -28,7 +28,7 @@ nets to zero and drops out regardless of partition) and future-proof for new
 source kinds (any transaction- or transfer-linked entry is attributed by its
 linkage, not by an enumerated source-kind list).
 
-The loan analogue is :mod:`app.services.loan_posting_service._walk`; loans
+The loan analogue is :mod:`app.services.loan_ledger`; loans
 never walk here (their anchors are dated ``LoanAnchorEvent`` facts replayed
 with amortization, a different mechanism), and :func:`walk_account_ledger`
 refuses an amortizing account outright.
