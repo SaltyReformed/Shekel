@@ -6,13 +6,16 @@ document are at the bottom (Section 9); the short version: amendments are edits 
 step gets its checkbox ticked with its commit hash HERE, and no new planning documents get
 written for this arc.
 
-**State as of 2026-07-17:** design verified and locked; ALL rulings answered (D1-D5 and
-R-A..R-D, Section 4); **A1** (`f11382a0`), **A2** (`c96c62be`), **A3** (`4e46a0a8`), the
-live Schedule A defect A2 uncovered (N-9, `44cbd028`), **B0** (`d1586254`) and **B1**
-(`e227de08`) shipped. **Phase A is complete; the fold exists and is total.** Next
-commit: **B2** (the exhaustive oracle, which gates all of Phase C). **One ruling is
-open and blocks nothing before B2: N-11** (Section 6) -- a raw transaction typed onto a
-loan account moves the posted balance but not the fold.
+**State as of 2026-07-17:** design verified and locked; ALL rulings answered (D1-D5,
+R-A..R-D, and R-E, Section 4); **A1** (`f11382a0`), **A2** (`c96c62be`), **A3**
+(`4e46a0a8`), the live Schedule A defect A2 uncovered (N-9, `44cbd028`), **B0**
+(`d1586254`), **B1** (`e227de08`), the **N-11 forbid-at-source guard** (**BG**,
+`dba91dc0`) and **B2** the exhaustive oracle (`8f070386`) shipped. **Phases A and B are
+complete; the fold exists, is total, and is proven equivalent to the posted reader on
+every day of the shape matrix.** N-11 is RULED (R-E: forbid at the source) and closed by
+construction; its reachability proved BROADER than the plan's cited `create.py:78` (the
+template form and the salary-profile picker were the second and third sources). Next
+commit: **C1** (origination always enters the stream).
 
 ---
 
@@ -148,6 +151,7 @@ review, all gates green throughout). The fold deletes the generator; the minimal
 | **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. | X1 |
 | **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. | C9 |
 | **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. ~~`_income_tax` survives -- the live Taxes tab uses it.~~ **Corrected 2026-07-16 (A2):** only TWO functions are live -- `_compute_mortgage_interest` -> `_loan_year_interest` -- reached because `tax_report_service.py:84` imports a PRIVATE name across packages, and their only real coverage sits in the file F2 deletes (`TestMortgageInterestGenesisHybrid`). Both die at **C3**, which deletes their input type; by F2 nothing is stranded, so F2 stays a clean whole-package deletion. If C3 has not landed when F2 runs, F2 must move the two functions to `tax_report_service` (their only caller) rather than leave the private import. | F2 (C3 first) |
+| **R-E** (N-11; answered 2026-07-17) | A raw transaction typed onto a loan account (which moves the posted balance but not the fold) is **FORBIDDEN AT THE SOURCE**, not modeled as a third event kind. Every write path that could type one onto an amortizing loan refuses it on the D4/R6 predicate (`classify_account is AMORTIZING` / `has_amortization`): the two transaction-create routes, the recurrence-template form, AND -- found in the guard's own adversarial review, so BROADER than the plan's cited `create.py:78` -- the salary-profile account picker (which copies `template.account_id` into `recurrence_engine`). Rejected: a third event kind, which keeps a cash-basis paydown path the grid refuses to render and contradicts D4. This makes the fold complete BY CONSTRUCTION, so B2's every-day equality needs no N-11 exception. Any pre-guard row is an F1-class data item; the two real loans carry none (B1's 212-day match). | BG (guard), B2 |
 
 ## 5. The steps
 
@@ -244,7 +248,21 @@ what is written here is decided in the commit itself, not in a new document.
   an alignment but its only divergence vector -- a window (the shape the grid passes, and the
   shape C3 hands the seam's AMORTIZING branch) moved the balance $150,000.00. The parameter
   is gone; the fold and the writer now share one `owner_pay_periods` query.
-- [ ] **B2** `test(loan): the reference fold is the oracle, and it is exhaustive` --
+- [x] **BG** `fix(loan): a loan's balance is not a transaction sum` -- **SHIPPED
+  `dba91dc0` (2026-07-17).** R-E's forbid-at-source guard, pulled ahead of B2 because B2's
+  completeness premise (no raw loan transaction can exist) rests on it. Three sources gated
+  on the D4/R6 predicate: `_reject_transaction_on_loan` on both transaction-create routes;
+  the `_validate_template_form` kind check on the recurrence-template form; and the
+  salary-profile picker, which now deposits via the shared
+  `account_service.active_accounts_query(amortizing=False)` composer (no inline copy). **The
+  template and salary sources are BROADER than the plan's cited `create.py:78`** -- found
+  tracing every `TransactionTemplate` build and `generate_for_template` caller; the salary
+  source was caught in adversarial review (a loan as the user's first active account made the
+  auto-picker post salary income onto it). Read-inert (no read path, no data touched), so the
+  baseline cannot move; every guard's control is shown to fire (the salary control fails when
+  the `amortizing` filter is flipped). Closes N-11 at the source.
+- [x] **B2** `test(loan): the reference fold is the oracle, and it is exhaustive` --
+  **SHIPPED `8f070386` (2026-07-17).**
   parallel-run fold vs seam on **EVERY DAY** of every loan's domain, over generated shapes
   (including A2's paid shapes) plus real data. **Sampling is forbidden**: a 14-day sample once
   scored perfect while wrong by $178,103.41 on 22% of days. Every divergence is explained and
@@ -260,8 +278,13 @@ what is written here is decided in the commit itself, not in a new document.
   the correctness proof; it is the equivalence proof. **Required shapes** (Section 7.4): the
   A2 paid shapes, a tracking-start import, an ARM step, escrow, a payoff overpayment, a
   pre-anchor payment, a late-settled payment whose period does not contain its due date, and
-  **N-11's raw-transaction-on-a-loan shape, which is BLOCKING** -- it is a known live
-  divergence, not a hypothetical.
+  **N-11's raw-transaction-on-a-loan shape -- now closed by construction (BG)**: B2 both
+  demonstrates the divergence is real (a forced raw transaction moves the reader by its amount
+  while the fold holds) and asserts the create route refuses the only user path, so the
+  every-day equality needs no N-11 exception. Each shape carries a realization assert (the
+  ARM rate, the escrow slice, the payoff reaching zero) so a feature no-oping in BOTH
+  producers cannot pass green, and a negative control proves the harness fails on a forced $1
+  divergence.
 
 ### Phase C -- the cutover (order is load-bearing)
 
@@ -387,7 +410,7 @@ archive names so old references resolve here.
 | N-9 (A2) | **Schedule A counted a CAR LOAN's interest as home-mortgage interest.** The pre-fix `_load_debt_accounts` selected on `has_amortization` alone -- set on AUTO_LOAN, STUDENT_LOAN, PERSONAL_LOAN and HELOC as well as MORTGAGE -- so every amortizing account fed `_compute_mortgage_interest`. Personal interest is not deductible at all; student-loan interest is above-the-line, never Schedule A. Root cause is its own docstring: "Mirrors `_load_common_data`'s `debt_accounts` selection" -- one predicate answering two questions (Section 8's lesson, live) | **$5,221.16** measured on the suite's split-loan fixture; inflates itemize-vs-standard, so it can advise itemizing when the standard deduction wins | **closed (`44cbd028`)** -- `_load_debt_accounts` -> `_load_mortgage_accounts`, selected by account_type ID; HELOC deliberately excluded (use-of-proceeds unknown, documented like property tax); negative control shown to fire | own commit, found building A2's oracle |
 | N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
 | N-8 (A2) | ~~The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)`~~ **WITHDRAWN 2026-07-16 (A3): misattributed, on two counts.** (a) **Source 6 is `account_opening`** (`PostingSourceEnum` order: transfer 1, transaction 2, loan_payment 3, loan_opening 4, loan_trueup 5, account_opening 6) -- that log line is the ACCOUNT anchor path, not the loan walk. (b) That path reads **no clock at all** (`grep date.today() app/services/account_posting_service/` is empty); its `entry_date` is the assertion's own instant. The 2026-07-16 under a frozen-to-2026-03-20 suite is fixture ORDERING: `seed_user` creates Checking before `freeze_today` applies. The LOAN's anchor corrections stamp the **anchor's own date** (observed: `source 4 as of 2026-04-15` for an origination dated 2026-04-15), never the clock -- the walk's clock read was in the FILTER (which anchors were admitted), never in the stamp, and the filter is what A3 deleted. No defect here | -- | **withdrawn, no code change** | -- |
-| N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). Reachable -- `app/routes/transactions/create.py:78` accepts any owned `account_id` with no kind gate, and A1 gated the GRID picker, not transaction creation. **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Named in `fold_loan_balances`' docstring; B2 carries it as a blocking shape. **Needs a ruling:** (a) REJECT at the write boundary, the D4/R-C shape ("a loan's balance is not a transaction sum"; R6 already forbids a transfer OUT of a loan) -- recommended, and it makes the fold complete by construction; or (b) model a third event kind, which keeps a cash-basis paydown path the grid refuses to render | **$300.00** measured on a probe; unbounded (any typed amount) | **open, needs a ruling** | ruling, then C-phase |
+| N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Ruled R-E (forbid at the source). **Reachability proved BROADER than first recorded:** beyond the create routes (`create.py:78` accepted any owned `account_id`), a recurrence TEMPLATE targeting a loan (the engine copies `template.account_id`) and the SALARY-PROFILE auto-picker (found in adversarial review) each generate raw transactions onto the loan -- all three now refuse an amortizing account. B2 demonstrates the divergence is real ($300 forced) and asserts the sources refuse it. | **$300.00** measured on a probe; unbounded (any typed amount) | **closed (`dba91dc0`)** -- all three sources gated; control shown to fire | BG |
 | N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | recorded, contained, pinned | C2 (retires all four) |
 
 ## 7. Verification standard (what "done" means for every step)
