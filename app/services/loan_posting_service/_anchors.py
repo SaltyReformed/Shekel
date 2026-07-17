@@ -29,17 +29,13 @@ re-derives the target and posts the balancing delta, so a stale true-up
 self-heals.  Flushes but never commits -- the caller owns the transaction.
 """
 
-from datetime import date
-
 from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
 )
-from app.extensions import db
-from app.models.pay_period import PayPeriod
-from app.services import account_projection, ledger_account_service
+from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
@@ -49,7 +45,12 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
-from app.services.loan_ledger import LoanAnchorCorrection, walk_loan_ledger
+from app.services.loan_ledger import (
+    LoanAnchorCorrection,
+    owner_pay_periods,
+    resolve_anchor_pay_period,
+    walk_loan_ledger,
+)
 from app.services.loan_loaders import LoanAnchorFact
 from app.services.posting_service import (
     PostingError,
@@ -164,33 +165,6 @@ def _anchor_correction_targets(
     return target
 
 
-def _resolve_anchor_pay_period(
-    periods: list[PayPeriod], target_date: date,
-) -> PayPeriod:
-    """Return the pay period an anchor correction dated *target_date* books in.
-
-    ``journal_entries.pay_period_id`` is NOT NULL, so an anchor correction needs a
-    period even though the anchor date can predate every period (an imported loan
-    whose origination is years before the app's first period).  Uses the period
-    CONTAINING *target_date*, falling back to the user's EARLIEST period when the
-    date precedes all of them -- so an opening is attributed to a real period and
-    the reader (which bounds by period start) counts it from the first period on.
-
-    Args:
-        periods: The owner's pay periods, ascending by ``period_index`` (non-empty;
-            the caller guarantees it).
-        target_date: The anchor's date.
-
-    Returns:
-        The containing :class:`~app.models.pay_period.PayPeriod`, or the earliest
-        when *target_date* precedes all periods.
-    """
-    containing = account_projection.find_period_containing_date(
-        periods, target_date,
-    )
-    return containing if containing is not None else periods[0]
-
-
 def reconcile_loan_anchor_corrections(
     loan_account_id: int,
     scenario_id: int,
@@ -232,12 +206,12 @@ def reconcile_loan_anchor_corrections(
     owner_id = account_owner_id(loan_account_id)
     if owner_id is None:
         return
-    periods = (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == owner_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
+    # The SAME calendar load the fold's visibility rule uses
+    # (:func:`app.services.loan_ledger.owner_pay_periods`), so the period this
+    # writer FILES an anchor under and the period the fold derives its visible-on
+    # date FROM can never come from two different lists.  That is what makes
+    # "two consumers, one rule" true of the period set as well as the lookup.
+    periods = owner_pay_periods(loan_account_id)
     if not periods:
         raise PostingError(
             f"Loan account {loan_account_id} has anchor corrections to post but "
@@ -258,7 +232,7 @@ def reconcile_loan_anchor_corrections(
         legs = delta_legs(target.get(key, {}), posted.get(key, {}))
         if not legs:
             continue
-        period = _resolve_anchor_pay_period(periods, key[1])
+        period = resolve_anchor_pay_period(periods, key[1])
         emit_anchor_correction_entry(
             owner_id, scenario_id, key, period.id, legs,
         )

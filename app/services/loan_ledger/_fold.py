@@ -24,7 +24,9 @@ no as-of since Step 3; the loan half caught up at step A3 (``4e46a0a8``).
 Reads the loan's rows; no writes, no commit.
 """
 
+from bisect import bisect_right
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.services import (
@@ -33,9 +35,11 @@ from app.services import (
     loan_resolver,
 )
 from app.services.loan_loaders import LoanAnchorFact
+from app.utils.money import round_money
 
 from ._events import merge_anchor_and_payment_events
 from ._split import LoanPaymentSplit, split_one_payment
+from ._visible import anchor_visible_on, owner_pay_periods, payment_visible_on
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -254,3 +258,183 @@ def compute_loan_payment_splits(
         N1 guard) or no settled payment.
     """
     return walk_loan_ledger(loan_account_id, scenario_id).payment_splits
+
+
+def _dated_deltas(
+    walk: LoanLedgerWalk, loan_account_id: int,
+) -> list[tuple[date, Decimal]]:
+    """Return the walk's ``(visible_on, delta)`` steps, ascending by visible date.
+
+    The bridge from the walk (which orders events by when they HAPPENED) to a
+    balance read (which counts them from when they became VISIBLE).  Each event
+    contributes the amount it moved the running balance by:
+
+    * an anchor: ``anchor_balance - owed_before`` -- the jump its reset booked;
+    * a payment: ``-principal`` -- the debt its cash actually paid down.
+
+    Those are exactly the amounts the posting writer books onto the loan's linked
+    ledger (negated for the debit-positive convention), which is why prefix-summing
+    them reproduces the sum-of-postings readers.
+
+    **The deltas are computed in EVENT order and then re-keyed by VISIBLE date,
+    and that is deliberate -- it is not the same function as re-folding the
+    visible prefix.**  A payment's split depends on the balance at its
+    installment, so the walk must run in contract order; the ledger then stores
+    those amounts and a reader sums whichever are visible.  The two orders can
+    disagree (a payment's visibility is its budgeted period's start, its event
+    date is its due date -- the real Mortgage's July payment is due 07-01 and
+    visible 07-02), and where they do, this reproduces what the posted ledger
+    actually does rather than an idealisation of it.  Step C2's one clock
+    collapses the distinction: visible date IS event date, and the two functions
+    become one.
+
+    Args:
+        walk: The loan's :class:`LoanLedgerWalk` (:func:`walk_loan_ledger`).
+        loan_account_id: The loan, to load its owner's calendar from (the anchor
+            visibility rule needs it).
+
+    Returns:
+        ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``, where a
+        PAYMENT tags before an ANCHOR on a shared date -- mirroring the walk's own
+        tie-break (:func:`._events.merge_anchor_and_payment_events`), so reading
+        the list shows the same chronology the walk applied.  The order within a
+        date is immaterial to the prefix sum (addition commutes); it is mirrored
+        so that step C2, which collapses visible-date onto event-date, finds the
+        two already agreeing rather than silently reconciling them.
+
+    Raises:
+        ValueError: When the loan has facts to date but its owner has no pay
+            periods -- there is no calendar to date an assertion against.  The
+            posting writer refuses the same state
+            (:func:`app.services.loan_posting_service._anchors.reconcile_loan_anchor_corrections`).
+    """
+    if not walk.anchor_corrections:
+        # No LoanParams -> no facts at all (walk_loan_ledger's N1 guard; a
+        # configured loan ALWAYS has its opening fact, per
+        # ``load_loan_anchor_facts``).  Nothing to date, so no calendar needed --
+        # which is what keeps the fold total for a non-loan account.
+        return []
+    periods = owner_pay_periods(loan_account_id)
+    if not periods:
+        raise ValueError(
+            f"loan account {loan_account_id} has balance facts to date but its "
+            f"owner has no pay periods; an assertion's visible-on date is "
+            f"derived from the period containing it, so there is no calendar to "
+            f"date it against.  Generate the owner's pay periods "
+            f"(pay_period_service.generate_pay_periods) and re-read."
+        )
+    # Tag 0 = payment, 1 = anchor: the same tie-break the walk applies, so a
+    # payment sharing an anchor's date reads before it here too.
+    tagged: list[tuple[date, int, Decimal]] = [
+        (
+            anchor_visible_on(correction.anchor.anchor_date, periods),
+            1,
+            correction.anchor.anchor_balance - correction.owed_before,
+        )
+        for correction in walk.anchor_corrections
+    ] + [
+        (payment_visible_on(split.income_shadow), 0, -split.principal)
+        for split in walk.payment_splits
+    ]
+    tagged.sort(key=lambda step: (step[0], step[1]))
+    return [(visible_on, delta) for visible_on, _tag, delta in tagged]
+
+
+def fold_loan_balances(
+    loan_account_id: int,
+    scenario_id: int,
+    dates: list[date],
+) -> dict[date, Decimal]:
+    """Return the loan's folded balance at each of *dates* -- from SOURCE events.
+
+    The fold's read side, and the reference the optimized readers are graded
+    against (plan step B2).  ONE walk of the loan's facts
+    (:func:`walk_loan_ledger`), re-keyed by each event's visible-on date
+    (:func:`_dated_deltas`), prefix-summed, and sampled at every requested date --
+    so N dates cost one walk, not N.
+
+    **It reads the loan's SOURCE rows and never the postings table.**  That is the
+    whole point: the posted ledger is a PROJECTION of this fold, so an answer
+    derived independently of it is what can prove the projection faithful.  Where
+    the two disagree, the ledger is a stale cache -- a detectable, repairable
+    inconsistency -- rather than the outage a missing posting is today.
+
+    **TOTAL over every DATE and every ACCOUNT.**  There is no date it refuses and
+    no account it refuses: asked about a date before any event -- or about an
+    account with no :class:`~app.models.loan_params.LoanParams` at all -- it
+    returns ``0.00``, the correct fold of an empty prefix; asked about a future
+    date it answers rather than raising.  This is the property the whole arc turns
+    on (plan Section 3): the posting readers' partiality (``None`` for an unopened
+    ledger, a RAISE for a future date) is what forces every caller to compose them
+    with a projection, a seed, a flag or a fallback, and every composition is a new
+    producer that can disagree with the others.  A total function has nothing to
+    compose with.  A caller that must distinguish "owed nothing" from "no loan"
+    asks the FACT (``origination_date``), never this function's zero.
+
+    That totality is over its QUESTION, not over a corrupt database.  One state
+    still raises, loudly and on purpose: a loan with balance facts whose owner has
+    NO pay periods has no calendar to date an assertion against, and the posting
+    writer already refuses it (see :func:`_dated_deltas`).  Papering that over
+    with a zero would be the "no record" / "no debt" confusion this arc exists to
+    end.
+
+    **ACTUAL events only.**  It folds what is RECORDED -- the loan's anchors and
+    its settled payments -- so it answers the past.  PLANNED payments (the future)
+    arrive with the plan at step C3; asked about a future date today it holds the
+    last recorded balance flat, which is honest for what it knows but is NOT the
+    projection the seam shows.  Grade it on the past.
+
+    **KNOWN GAP (N-11), and it is the fold that is incomplete, not the ledger.**
+    A raw settled transaction typed directly onto a loan account posts onto the
+    loan's linked ledger and the sum-of-postings readers count it as a real
+    balance event; the fold does not see it, because its payment set is
+    transfer-linked shadows only
+    (:func:`~app.services.loan_loaders.settled_income_shadows`).  The two then
+    disagree by that transaction's amount ($300.00 measured).  Do NOT read a
+    disagreement in that shape as a stale cache to be repaired -- the ledger is
+    holding a genuine event the fold is blind to.  Awaiting a developer ruling
+    (forbid the write, as R-C forbids a pre-origination payment; or model the
+    third fact); B2 must carry it as a blocking shape either way.
+
+    Reads only -- no writes, no commit.  Not wired into any production path (plan
+    step B1): its consumer is B2's parallel-run oracle until C3 makes the seam's
+    AMORTIZING dispatch read it.
+
+    Args:
+        loan_account_id: The loan account to fold.
+        scenario_id: The budget scenario the payments live in.
+        dates: The dates to value the loan at, in any order.  Duplicates collapse.
+
+    Returns:
+        ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
+        date.  ``{}`` for an empty *dates*.
+
+    Raises:
+        ValueError: When the loan has facts to date but its owner has no pay
+            periods (see :func:`_dated_deltas`).
+    """
+    steps = _dated_deltas(
+        walk_loan_ledger(loan_account_id, scenario_id), loan_account_id,
+    )
+    # The prefix cumulative at each distinct visible date, ascending, so each
+    # requested date is one bisect rather than a re-sum.
+    boundaries: list[date] = []
+    cumulative_at_boundary: list[Decimal] = []
+    running = _ZERO_MONEY
+    for visible_on, delta in steps:
+        running += delta
+        if boundaries and boundaries[-1] == visible_on:
+            cumulative_at_boundary[-1] = running
+            continue
+        boundaries.append(visible_on)
+        cumulative_at_boundary.append(running)
+
+    folded: dict[date, Decimal] = {}
+    for on_date in dates:
+        # The count of boundaries at or before this date; the last one's prefix is
+        # the answer (0.00 when none precede -- the empty prefix's honest fold).
+        count = bisect_right(boundaries, on_date)
+        folded[on_date] = round_money(
+            cumulative_at_boundary[count - 1] if count > 0 else _ZERO_MONEY
+        )
+    return folded

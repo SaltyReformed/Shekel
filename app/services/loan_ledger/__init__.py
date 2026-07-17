@@ -59,17 +59,29 @@ from ._fold import (
     LoanAnchorCorrection,
     LoanLedgerWalk,
     compute_loan_payment_splits,
+    fold_loan_balances,
     walk_loan_ledger,
 )
 from ._split import LoanPaymentSplit, split_one_payment
+from ._visible import (
+    anchor_visible_on,
+    owner_pay_periods,
+    payment_visible_on,
+    resolve_anchor_pay_period,
+)
 
 __all__ = [
     "LoanAnchorCorrection",
     "LoanLedgerWalk",
     "LoanPaymentSplit",
+    "anchor_visible_on",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
+    "fold_loan_balances",
     "merge_anchor_and_payment_events",
+    "owner_pay_periods",
+    "payment_visible_on",
+    "resolve_anchor_pay_period",
     "split_one_payment",
     "walk_loan_ledger",
 ]

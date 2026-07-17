@@ -154,9 +154,17 @@ _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     # The running-balance walk the two readers above are built on: it IS the
     # balance-at-T computation over a loan's events.  It now lives in the
     # ``loan_ledger`` LEAF that both the posting ledger and the read seam derive
-    # from (plan step B1), so its allowlist admits its own defining package; the
+    # from (plan step B0), so its allowlist admits its own defining package; the
     # fence still keeps a consumer from reaching the raw walk instead of a reader.
     "walk_loan_ledger",
+    # The fold's read side: "what did this loan owe on date D", answered from the
+    # loan's SOURCE events rather than the postings (plan step B1).  A balance-at-T
+    # in the most literal sense there is, and fenced from birth -- the two holes
+    # this checker exists to close (``investment_base_balance_map``,
+    # ``loan_owed_at_dates``) were both producers that went unlisted while they had
+    # no consumer yet.  It has none today (B2's oracle is a test); C3 makes the
+    # seam's AMORTIZING dispatch its first, and the seam is already allowlisted.
+    "fold_loan_balances",
 })
 _LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
     "app.services.loan_ledger",
@@ -374,10 +382,20 @@ _FENCED_MODULE_RULINGS = {
             # list and its per-payment step carry the same ruling.
             "compute_loan_payment_splits",
             "split_one_payment",
-            # The event stream's ORDER: which fact the walk applies next.  It is
-            # chronology, not balance -- it says WHEN things happened, and the
-            # walk says what that cost.
+            # Chronology, not balance: each answers WHEN a fact happened or
+            # becomes countable, and the walk answers what it COST.
+            #   * the event stream's ORDER (which fact the walk applies next).  It
+            #     yields the loan's anchor FACTS, which carry an asserted
+            #     ``anchor_balance`` -- but a user-asserted stored fact is not a
+            #     balance-at-T, the same ruling ``resolve_anchor`` carries above.
+            #   * the two visibility rules and the calendar they resolve against:
+            #     these return a ``date`` / a ``PayPeriod`` / a list of them, and
+            #     cannot yield a figure at all.
             "merge_anchor_and_payment_events",
+            "resolve_anchor_pay_period",
+            "owner_pay_periods",
+            "anchor_visible_on",
+            "payment_visible_on",
             # A date-bounded loader of settled payment ROWS.  It selects records,
             # and carries no balance of any kind.
             "confirmed_shadows_through",

@@ -36,7 +36,7 @@ that collapses to the period start, exactly as before, and nothing moves.  It di
 only for an anchor that predates EVERY pay period the user has, which
 ``journal_entries.pay_period_id`` being NOT NULL forces to be filed under the
 earliest period anyway
-(:func:`._anchors._resolve_anchor_pay_period`); that fallback
+(:func:`app.services.loan_ledger.resolve_anchor_pay_period`); that fallback
 can only ever push such an anchor LATER than it truly happened, and a period-bounded
 reader believed it.  The ``LEAST`` restores the anchor's own civil date, which is
 the only date it ever asserted.  Both readers take the key from the one place that
