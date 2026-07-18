@@ -24,9 +24,11 @@ overdue-installment paydown preserved until C6). **C3b is itself DECOMPOSED into
 per-period MAP has no equivalence proof yet, and `positions()` lives ABOVE `net_worth_kernel` (at its
 1000-line cap) so the map branch must MOVE INTO the seam. **C3b1** (`f410afa9`, the scalar + the
 liability band read `positions()`; the read pass memoizes the loan walk; scalar now FOLDS a broken
-loan instead of raising -- closes B-8 at the scalar) shipped. The C2 real-clone live-render (~26 days
-Mortgage / ~13 days Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. Next
-commit: **C3b2** (the additive per-period map oracle).
+loan instead of raising -- closes B-8 at the scalar) and **C3b2** (`28f8fe51`, the additive
+`positions_period_map` producer + its every-period oracle vs the shipping map; current-period clamp
+proven load-bearing, incl. the N-10 originate-inside-current-period `0.00`) shipped. The C2 real-clone
+live-render (~26 days Mortgage / ~13 days Van Loan, today UNMOVED) is still outstanding before the F3
+prod ship. Next commit: **C3b3** (the map dispatch cutover).
 
 ---
 
@@ -387,14 +389,24 @@ what is written here is decided in the commit itself, not in a new document.
       a PRE-EXISTING dev-only checker failure `test_classification_sets_match_the_real_fenced_modules`:
       C2 (`eb5de4ac`) deleted `_asof.py` but left `effective_date`/`scope_to_linked_ledger` in the
       loan-ledger non-producer set (stale fence entry; uncaught because dev is not CI-gated).
-    - [ ] **C3b2** `test(balance): the positions-based per-period map is proven equal` -- ADDITIVE,
-      mirror of C3a. Adds a period-map form built from `positions()` -- begun periods valued at
-      `min(period.end, as_of)` (the current period at today, since the ledger cannot see past today),
-      future periods at `period.end`, reproducing the splice's `period.start <= as_of` boundary -- and
-      an every-PERIOD oracle proving it equals `_build_amortizing_balance_map` across the shape matrix
-      + real data. Deletes nothing. (The current-period boundary is the one subtlety B2's scalar proof
-      did not cover: `positions([period.end])` would hand the current period to the projection, moving
-      it whenever a payment falls between today and period end.)
+    - [x] **C3b2** `test(balance): the positions-based per-period map is proven equal` -- **SHIPPED
+      `28f8fe51`.** `positions_period_map` samples `positions()` -- begun periods at
+      `min(period.end, ctx.as_of)`, future periods at `period.end` -- reproducing the splice's
+      `period.start <= ctx.as_of` boundary; additive and unwired (only its oracle calls it). The
+      current-period clamp is the subtlety B2's scalar proof did not cover: `positions([period.end])`
+      would hand the current period to the projection, moving it whenever a payment falls between today
+      and period end. **Caller-trace VERIFIED: the per-period map is NEVER read with
+      `ctx.as_of != today` in production** (every map caller builds `BalanceContext.build(user_id)` =
+      today; the one explicit-`as_of` site is the Taxes tab, which reaches `loan_interest_in_year`, not
+      a map), so the clamp reproduces `_build_amortizing_balance_map` exactly -- the historical-`as_of`
+      case where the two would diverge is unreachable. The every-period oracle
+      (`test_loan_positions_period_map_oracle.py`) parallel-runs vs the shipping `balance_map` over four
+      shapes (trued-up + payments, tracking-start plateau, payoff, not-yet-originated) plus a forced-$1
+      teeth test, and proves the clamp load-bearing on TWO shapes -- including a loan originating INSIDE
+      the current period reading `0.00` not its opening (the N-10 shape, added beyond the plan).
+      Adversarial review clean (equivalence correct; the no-posting-after-today invariant the clamp
+      rests on confirmed ENFORCED -- server-set `paid_at`, `anchor_date <= today`, the `owed_from`
+      gate). Deletes nothing.
     - [ ] **C3b3** `refactor(balance): the per-period map reads positions()` -- points the map
       dispatch, MOVED into the seam's `_account_balance_map` (the kernel cannot import the seam), at
       C3b2's producer; deletes `_build_amortizing_balance_map`, the kernel's AMORTIZING branch,
@@ -407,7 +419,14 @@ what is written here is decided in the commit itself, not in a new document.
       (1) `positions()` RAISES for a schedule-less AMORTIZING account (Mortgage-typed, no `LoanParams`)
       where the scalar degrades to cash -- the seam's map branch keeps the `debt_schedule is not None`
       gate so an unconfigured mortgage degrades, not 500s; (2) the map now FOLDS a broken loan (the
-      same E1-covered decision as C3b1).
+      same E1-covered decision as C3b1). **From the C3b2 build + review:** (3) an IMPORT-CYCLE trap --
+      the branch's new home `_account_balance_map` (`_inputs.py`) must call `positions_period_map`
+      (`_positions.py`), but `_positions` imports `_require_scenario` from `_inputs`; break the cycle
+      by importing `require_scenario` from `resolution_context` directly in `_positions`. (4) the
+      `current_anchor_period_id is None -> None` guard sits UPSTREAM of the amortizing branch in
+      `build_account_balance_map` (`net_worth_kernel.py:576`) -- preserve it in the moved seam branch
+      (`positions_period_map` does not replicate it; unreachable today since the column is NOT NULL,
+      but keeps the map's contract identical).
     - [ ] **C3b4** `refactor(balance): delete the dead ledger-domain readers` -- deletes the seam
       `loan_ledger_domain`, the reader `confirmed_loan_ledger_domain`, and `LoanLedgerDomain` (0
       production callers since F2 deleted the year-end summary -- verified) plus their tests. The
