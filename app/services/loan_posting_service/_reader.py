@@ -81,7 +81,7 @@ from app.services.rate_period_engine import (
 from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
-from ._domain import _has_opening_posting, _visible_nets
+from ._linked_ledger import _has_opening_posting, _visible_nets
 
 _ZERO_MONEY = Decimal("0.00")
 

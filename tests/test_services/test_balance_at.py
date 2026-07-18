@@ -2710,34 +2710,6 @@ class TestLoanNotYetOriginated:
             # an unborrowed mortgage is not RETIRED either, so it stays charted.
             assert figures.is_retired is False
 
-    def test_the_ledger_has_no_domain_for_a_loan_that_has_not_closed(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An upcoming loan's ledger has no DOMAIN -- there is nothing to bound.
-
-        ``loan_ledger_domain`` is the clamp a caller measuring a CHANGE across a
-        window uses so it never asks the readers a question they cannot answer.
-        For a loan that does not exist yet the honest answer is ``None``: its
-        ledger has not begun.
-
-        This became askable only when the write walk stopped dropping future-dated
-        anchors -- such a loan now HAS an opening posting, so the underlying
-        reader (which keys on one) would hand back a real ``opening_balance`` of
-        $200,000.00 for a mortgage that has not closed, dated from its pay
-        period's START (N-10).  A clamp that fabricates the window it is clamping
-        is worse than no clamp.
-
-        NEGATIVE CONTROL: drop the ``_is_originated`` check from
-        ``balance_at.loan_ledger_domain`` and this returns a ``LoanLedgerDomain``
-        carrying ``opening_balance=Decimal("200000.00")``.
-        """
-        with app.app_context():
-            periods = seed_periods
-            acct = self._upcoming_mortgage(seed_user, db.session, periods)
-            bctx = BalanceContext.build(seed_user["user"].id)
-
-            assert balance_at.loan_ledger_domain(acct, bctx) is None
-
     def test_the_day_it_closes_the_seam_answers_without_a_re_sync(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):

@@ -62,12 +62,10 @@ work exists to kill.
   the shape a long-horizon liability band needs, which neither the period-keyed
   maps nor the scalar can serve without re-resolving each loan per date.  See
   :mod:`._liability`.
-* The LOAN-FIGURES entries (:func:`loan_figures`, :func:`loan_ledger_domain`)
-  answer everything a loan tile wants BESIDE its balance -- the payment, the rate,
-  the payoff date, whether it is retired -- and deliberately carry NO balance, so a
-  consumer holding them cannot render a wrong one.  ``loan_ledger_domain`` reports
-  where the confirmed ledger BEGINS, so a caller measuring a change across a window
-  never spends a pre-ledger ``$0.00`` as money.  See :mod:`._loan_figures`.
+* The LOAN-FIGURES entry (:func:`loan_figures`) answers everything a loan tile
+  wants BESIDE its balance -- the payment, the rate, the payoff date, whether it
+  is retired -- and deliberately carries NO balance, so a consumer holding it
+  cannot render a wrong one.  See :mod:`._loan_figures`.
 * The SECURED-DEBT entry (:func:`secured_loan_series`) packs each loan a property
   secures into the rows its equity chart draws a debt line from.  That line is a
   balance-at-T series, and the assembly used to live in the property ROUTE, which
@@ -130,7 +128,7 @@ from ._kind_correct import (
     investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
-from ._loan_figures import LoanFigures, loan_figures, loan_ledger_domain
+from ._loan_figures import LoanFigures, loan_figures
 from ._loan_interest import loan_interest_in_year
 from ._positions import positions, positions_period_map
 from ._secured_debt import SecuredLoanSeries, secured_loan_series
@@ -165,7 +163,6 @@ __all__ = [
     "liability_owed_at_dates",
     "loan_figures",
     "loan_interest_in_year",
-    "loan_ledger_domain",
     "positions",
     "positions_period_map",
     "secured_loan_series",

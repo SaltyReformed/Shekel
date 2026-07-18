@@ -39,8 +39,6 @@ from app.models.account import Account
 from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 
-from ._inputs import _require_scenario
-
 ZERO_MONEY = Decimal("0.00")
 
 
@@ -241,62 +239,3 @@ def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
     if not _is_retired(resolved, as_of):
         return False
     return any(p.is_confirmed for p in resolved.context.payments)
-
-
-def loan_ledger_domain(
-    account: Account, ctx: BalanceContext,
-) -> "LoanLedgerDomain | None":
-    """Return where a loan's confirmed ledger begins, and what balance it opens at.
-
-    The seam's view of the ledger's DOMAIN -- its lower edge.  A caller measuring a
-    CHANGE in a loan's balance across a window (the year-end summary's
-    principal-paid) must clamp the window to start here: before this date
-    :func:`balance_at` reports ``$0.00``, and that zero means "no record", not "no
-    debt".  Subtracting a real balance from that fabricated zero is what made the
-    year-end summary report the borrower ADDING $188,753 of debt they had actually
-    been paying down.
-
-    **Loan-only, and guarded.**  Returns ``None`` for anything that is not a
-    configured loan, exactly as :func:`loan_figures` does.  The guard is
-    load-bearing rather than defensive: the underlying reader keys on an
-    OPENING-kind posting, and EVERY account carries one (a non-loan's is its
-    ``account_opening``), so without the guard a Checking account would resolve
-    happily and hand back its asset balance SIGN-INVERTED as an ``opening_balance``
-    -- a negative "owed" for a positive asset, from the one seam every consumer is
-    told to call.
-
-    **A loan that has not ORIGINATED by ``ctx.as_of`` has no domain, and that is
-    asked of the FACT** (:func:`_is_originated` -- the seam's one definition of
-    "does this loan exist yet", shared with :attr:`LoanFigures.is_originated`).
-    It reads ``None``, which is what it read before the write walk stopped
-    dropping future-dated anchors; now that such a loan's opening IS posted, the
-    underlying reader would otherwise hand back a real ``opening_balance`` for a
-    mortgage that has not closed, dated from its pay period's START (N-10).  The
-    year-end principal-progress clamp depends on this ``None``: its own
-    not-borrowed guard runs first today, but a domain that answered here would
-    make that ordering load-bearing rather than belt-and-braces, and a clamp is
-    exactly what must not fabricate the window it is clamping.
-
-    Args:
-        account: The loan :class:`~app.models.account.Account`.
-        ctx: The read pass's :class:`BalanceContext` (supplies the scenario and
-            the as-of the origination is measured against).
-
-    Returns:
-        The loan's
-        :class:`~app.services.loan_posting_service.LoanLedgerDomain` (its
-        ``start_date``, ``opening_date`` and ``opening_balance``), or ``None`` when
-        the account is not a configured loan, has not originated by ``ctx.as_of``,
-        or is one whose ledger was never opened.
-    """
-    # Pylint: ``import-outside-toplevel`` -- the lazy-seam import pattern this
-    # package uses for the loan ledger, so the static import graph carries no
-    # ``balance_at -> loan_posting_service`` cycle at module load.
-    # pylint: disable=import-outside-toplevel
-    from app.services.loan_posting_service import confirmed_loan_ledger_domain
-
-    _require_scenario(ctx)
-    resolved = ctx.resolved_loan(account)
-    if resolved is None or not _is_originated(resolved, ctx.as_of):
-        return None
-    return confirmed_loan_ledger_domain(account.id, ctx.scenario.id)

@@ -66,7 +66,6 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
-    loan_params_for,
     ledger_accounts_for_account,
     ledger_net,
     loan_correction_entries,
@@ -3150,19 +3149,19 @@ class TestUserScopedResync:
             assert loan2.id not in posted
 
 
-class TestLedgerDomainAndPrePeriodAnchor:
-    """The ledger's DOMAIN, and an anchor older than the user's pay periods.
+class TestPrePeriodAnchor:
+    """An anchor older than every pay period the user has.
 
-    Direct coverage for the ``entry_date`` reader bound (step C2's one clock) and
-    ``_domain``.  The shape that once needed a special rule: a journal entry
-    carries its true civil ``entry_date`` AND a NOT NULL ``pay_period_id``, and
-    when an anchor predates every pay period the user has,
-    ``resolve_anchor_pay_period`` is FORCED to file it under the earliest period.
-    A reader bounding by the pay period believed that and reported a loan
-    originated before the user's pay-period history as owing NOTHING for the whole
-    span in between (the year-end summary turned that $0 into a NEGATIVE
-    principal-paid figure).  Bounding by ``entry_date`` -- the anchor's own civil
-    date -- reads it correctly with no special case, which is what these pin.
+    Direct coverage for the ``entry_date`` reader bound (step C2's one clock).
+    The shape that once needed a special rule: a journal entry carries its true
+    civil ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor
+    predates every pay period the user has, ``resolve_anchor_pay_period`` is
+    FORCED to file it under the earliest period.  A reader bounding by the pay
+    period believed that and reported a loan originated before the user's
+    pay-period history as owing NOTHING for the whole span in between (the
+    year-end summary turned that $0 into a NEGATIVE principal-paid figure).
+    Bounding by ``entry_date`` -- the anchor's own civil date -- reads it
+    correctly with no special case, which is what these pin.
     """
 
     def test_anchor_older_than_every_pay_period_is_still_owed(
@@ -3227,58 +3226,3 @@ class TestLedgerDomainAndPrePeriodAnchor:
                         loan.id, scenario_id, period.end_date,
                     )
                 ), f"map and scalar disagree at period {period.end_date}"
-
-
-    def test_domain_reports_the_origination_opening(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A mid-life import's domain is its ORIGINATION now (step C1).
-
-        The loan originated 2025-06-01 at $250,000 and was later tracked from
-        2026-02-10 at $180,000.  Since C1 the ledger OPENS at the origination (the
-        tracking-start is an ordinary true-up, not the opening), so the domain
-        reports the origination -- opening_date 2025-06-01, opening_balance
-        $250,000 -- and start_date is the date that origination opening becomes
-        visible (its own civil date, since it precedes every pay period).
-
-        (The ``_domain`` module is superseded by C1 and slated for deletion at C3;
-        its sole consumer, the dead year-end principal-progress clamp, is deleted
-        at F2.  This pins the post-C1 output so the change is explicit.)
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = create_loan_account(
-                seed_user, db.session, name="Imported Loan",
-                principal=Decimal("250000.00"), rate=_RATE, term=360,
-                origination_date=date(2025, 6, 1),
-            )
-            insert_tracking_start_event(
-                loan_params_for(db.session, loan.id),
-                Decimal("180000.00"), date(2026, 2, 10),
-            )
-            db.session.commit()
-
-            domain = loan_posting_service.confirmed_loan_ledger_domain(
-                loan.id, scenario_id,
-            )
-            assert domain is not None
-            assert domain.opening_date == date(2025, 6, 1)
-            assert domain.opening_balance == Decimal("250000.00")
-            # start_date is the origination opening's visibility date; it is on or
-            # before the origination civil date and well before the tracking-start
-            # (now a true-up, not the opening).
-            assert domain.start_date <= date(2025, 6, 1)
-
-    def test_domain_is_none_for_a_loan_whose_ledger_was_never_opened(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """No opening posting -> no domain (the same sentinel the readers use)."""
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
-                rate=_RATE, origination_date=_ORIGINATION_DATE,
-            )
-            clear_loan_ledger(loan.id)
-            assert loan_posting_service.confirmed_loan_ledger_domain(
-                loan.id, seed_user["scenario"].id,
-            ) is None
