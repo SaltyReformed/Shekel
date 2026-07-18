@@ -607,5 +607,8 @@ archive names so old references resolve here.
 2. When a step ships: tick its box, append the commit hash, and move anything it closed in
    Section 6 to status "closed (hash)".
 3. When a ruling in Section 4 is answered: record the answer and date in place.
-4. Keep this file under ~500 lines. If it grows past that, something is being planned instead
-   of built.
+4. Keep the PLANNING surface small; ~500 lines is the target for it. Growth from marking work
+   COMPLETED -- ticking boxes with hashes, "as built" step detail, moving findings to closed -- is
+   fine and may push the file past ~500; that is the ledger doing its job, do not trim it for length.
+   The limit exists to catch NEW planning/design prose accumulating (the "documents rot" lesson), not
+   to cap the record of what shipped.
