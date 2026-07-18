@@ -151,10 +151,11 @@ def test_no_display_read_of_current_principal():
         # column.  ``routes/loan.py`` became the ``routes/loan/``
         # package in the Phase 3 pylint-cleanup split; the directory
         # prefix matches every sub-module.  The grep still matches
-        # docstring references (the ``_load_loan_context`` /
-        # ``true_up_balance`` docstrings document the demoted contract
-        # in ``_helpers.py`` / ``params.py``); removing the entry would
-        # force every future docstring touch to bypass the lock.
+        # docstring / comment references (the ``_PARAM_FIELDS`` allowlist
+        # comment and the ``update_params`` / ``true_up_balance`` docstrings
+        # document the demoted contract in ``_helpers.py`` / ``params.py``);
+        # removing the entry would force every future docstring touch to
+        # bypass the lock.
         "routes/loan/",
         # Commit 16 extends ``anchor_service`` for loan trueups; the
         # module's docstring and the ``apply_loan_anchor_true_up``

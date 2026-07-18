@@ -18,7 +18,7 @@ from flask_login import current_user, login_required
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _load_loan_account,
-    _load_loan_context,
+    _load_route_context,
     _loan_inputs,
     _payoff_schema,
     _refinance_schema,
@@ -28,7 +28,6 @@ from app.services import amortization_engine, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_payment_service import confirmed_loan_view
 from app.services.recurring_transfer_query import loan_standing_extra
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
 
@@ -64,14 +63,14 @@ def _payoff_committed_savings(scenarios):
     return committed_months_saved, committed_interest_saved
 
 
-def _build_payoff_summary(scenarios, state):
+def _build_payoff_summary(scenarios, monthly_payment):
     """Assemble the AmortizationSummary for the extra-payment partial.
 
-    monthly_payment from the resolver (single source of truth);
+    monthly_payment from the seam figures (single source of truth);
     committed/accelerated totals and payoff dates from the composer.
     """
     return AmortizationSummary(
-        monthly_payment=state.monthly_payment,
+        monthly_payment=monthly_payment,
         total_interest=scenarios.total_interest_committed,
         payoff_date=scenarios.payoff_date_committed,
         total_interest_with_extra=scenarios.total_interest_accelerated,
@@ -100,7 +99,7 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
     Args:
         params: ORM :class:`LoanParams` instance (also the anchor-fact
             synthesis source).
-        ctx: Loan context from :func:`_load_loan_context`.
+        ctx: The route context from :func:`_load_route_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
         confirmed_view: The genesis-ledger confirmed view, read once by the
             caller; threaded into the composer so the projected payoff
@@ -115,7 +114,7 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
     """
     extra = Decimal(str(data.get("extra_monthly", "0")))
     scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=_loan_inputs(params, ctx),
+        loan_inputs=_loan_inputs(params, ctx.loan),
         extra_monthly=extra,
         as_of=date.today(),
         confirmed_view=confirmed_view,
@@ -128,7 +127,7 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
     return render_template(
         "loan/_payoff_results.html",
         mode="extra_payment",
-        payoff_summary=_build_payoff_summary(scenarios, ctx.state),
+        payoff_summary=_build_payoff_summary(scenarios, ctx.monthly_payment),
         overlay=accelerated_overlay(scenarios),
         has_payments=len(ctx.loan.payments) > 0,
         committed_months_saved=committed_months_saved,
@@ -143,8 +142,8 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
     show both" 2026-06-11):
 
     * The RAW required extra -- the engine's binary search against the
-      contractual schedule alone, anchored at the resolver-derived
-      current balance with the loan's rate-period terms feed
+      contractual schedule alone, anchored at the seam's current
+      balance (the fold) with the loan's rate-period terms feed
       (``loan_resolver.engine_terms``), whose governing entry today IS
       the loan card's P&I -- so the rendered ``total_monthly =
       monthly_payment + required_extra`` is internally consistent (D-2
@@ -165,15 +164,14 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
     Args:
         params: ORM :class:`LoanParams` instance (also the anchor-fact
             synthesis source for the plan-aware outlook).
-        ctx: Loan context from :func:`_load_loan_context`.
+        ctx: The route context from :func:`_load_route_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
         confirmed_view: The genesis-ledger confirmed view, read once by the
             caller; threaded into the plan-aware outlook so its
             required-extra search runs against the real owed balance.  The
-            RAW search already uses ``ctx.state.current_balance``, which is
-            the same ledger balance (``ctx`` resolves through
-            ``resolve_loan_seeded``).  ``None`` falls back to the anchor
-            replay.
+            RAW search already uses ``ctx.current_balance``, which is the same
+            ledger balance (the seam's fold, plan C4).  ``None`` falls back to
+            the anchor replay.
         extra_principal: The loan's standing monthly overpayment (``0.00`` when
             none); part of the plan-aware committed baseline, netted out of the
             outlook's required extra (the RAW contractual search ignores it).
@@ -188,14 +186,13 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
             error="Target date is required.",
         )
 
-    state = ctx.state
-    monthly_payment = state.monthly_payment
+    monthly_payment = ctx.monthly_payment
     remaining_months = amortization_engine.calculate_remaining_months(
         params.origination_date, params.term_months,
     )
     required_extra = amortization_engine.calculate_payoff_by_date(
         amortization_engine.PayoffRequest(
-            current_principal=state.current_balance,
+            current_principal=ctx.current_balance,
             remaining_months=remaining_months,
             target_date=target_date,
             origination_date=date.today().replace(day=1),
@@ -210,7 +207,7 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
     outlook = None
     if has_payments:
         outlook = loan_resolver.target_date_outlook(
-            loan_inputs=_loan_inputs(params, ctx),
+            loan_inputs=_loan_inputs(params, ctx.loan),
             target_date=target_date,
             as_of=date.today(),
             confirmed_view=confirmed_view,
@@ -252,20 +249,20 @@ def payoff_calculate(account_id):
     data = _payoff_schema.load(request.form)
     mode = data["mode"]
 
-    # Shared loan context: payments, rate changes, resolver state.
+    # Shared loan context: payments, rate changes, seam balance + figures.
     # Identical to the dashboard's data loading so calculations are
-    # consistent.  ``state.current_balance`` is the same dollar figure
-    # rendered on the loan card (E-18 / Commit 15).
-    ctx = _load_loan_context(account, params)
+    # consistent.  ``ctx.current_balance`` is the same dollar figure
+    # rendered on the loan card (the seam's fold, plan C4).
+    ctx = _load_route_context(account, params)
 
     # Read switch: read the genesis-ledger confirmed view ONCE and thread it
     # into whichever mode's forward projection runs, so the payoff /
     # target-date results project from the same real owed balance -- and
     # chart the same ledger-derived confirmed history -- the loan card shows.
-    # ``require_owner`` already gated ownership above.
-    scenario = get_baseline_scenario(current_user.id)
+    # ``require_owner`` already gated ownership above; the scenario comes off the
+    # read pass's context (no second baseline lookup).
     view = confirmed_loan_view(
-        params, scenario.id if scenario else None, date.today(),
+        params, ctx.balance_ctx.scenario_id, date.today(),
     )
     # The loan's standing overpayment: the committed baseline BOTH modes preview
     # additional extra on top of (step 5).
@@ -362,21 +359,22 @@ def _refinance_break_even(closing_costs, monthly_savings):
     )
 
 
-def _build_refinance_comparison(state, scenarios, data, params):
+def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
     """Build the refinance side-by-side comparison from validated form data.
 
     Compares the current loan's CONTRACTUAL forward trajectory against a
     hypothetical refinance.  Since the resolver seam went plan-aware (step 8,
-    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), ``state.schedule``
-    reflects the loan's standing extra; a refinance comparison must instead be
-    like-for-like -- minimum-payment current vs minimum-payment refi -- because a
-    borrower could pay the same extra on either loan.  So the current side reads
-    the pure-contractual ``scenarios.original_forward`` slice (override- and
-    extra-free), while ``state`` still supplies the current monthly P&I and real
-    balance (both independent of committed-vs-contractual).  The refinance
-    principal defaults to the current real balance + closing costs; the user may
-    override for cash-out refinances.  The principal delta and its absolute
-    magnitude are pre-computed server-side (MED-04 / E-16).
+    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), the loan's
+    committed schedule reflects its standing extra; a refinance comparison must
+    instead be like-for-like -- minimum-payment current vs minimum-payment refi
+    -- because a borrower could pay the same extra on either loan.  So the
+    current side reads the pure-contractual ``scenarios.original_forward`` slice
+    (override- and extra-free), while ``ctx`` supplies the current monthly P&I
+    (the seam figure) and real balance (the seam's fold, both independent of
+    committed-vs-contractual).  The refinance principal defaults to the current
+    real balance + closing costs; the user may override for cash-out refinances.
+    The principal delta and its absolute magnitude are pre-computed server-side
+    (MED-04 / E-16).
 
     The current side is measured FORWARD-ONLY -- ``original_forward`` is already
     the from-today contractual remainder -- because the refinance side is
@@ -386,8 +384,12 @@ def _build_refinance_comparison(state, scenarios, data, params):
     from-today refinance.
 
     Args:
-        state: Resolver :class:`LoanState` for the current loan (its monthly
-            payment and current balance; the plan-aware schedule is NOT read).
+        current_balance: The loan's balance-at-today (the seam's fold), read
+            ONCE by the caller and threaded in so this and the paid-off gate do
+            not each re-sample the seam.
+        ctx: The :class:`~app.routes.loan._helpers._RouteLoanContext` for the
+            current loan (its ``monthly_payment`` and ``payoff_date``; the
+            plan-aware schedule is NOT read).
         scenarios: The loan's :class:`loan_resolver.PayoffScenarios`; its
             ``original_forward`` slice is the contractual current-side baseline.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
@@ -402,7 +404,7 @@ def _build_refinance_comparison(state, scenarios, data, params):
     if data["new_principal"] is not None:
         refi_principal = data["new_principal"]
     else:
-        refi_principal = state.current_balance + closing_costs
+        refi_principal = current_balance + closing_costs
     refi_term = data["new_term_months"]
 
     refi_monthly, refi_total_interest, refi_payoff = _project_refinance(
@@ -417,19 +419,18 @@ def _build_refinance_comparison(state, scenarios, data, params):
         (row.interest for row in forward_rows), Decimal("0.00"),
     ))
 
-    monthly_savings = state.monthly_payment - refi_monthly
-    break_even_months = _refinance_break_even(closing_costs, monthly_savings)
-    principal_diff = refi_principal - state.current_balance
+    monthly_savings = ctx.monthly_payment - refi_monthly
+    principal_diff = refi_principal - current_balance
 
     return {
-        "current_monthly": state.monthly_payment,
+        "current_monthly": ctx.monthly_payment,
         "current_total_interest": current_remaining_interest,
         "current_payoff": (
             forward_rows[-1].payment_date if forward_rows
-            else state.payoff_date
+            else ctx.payoff_date
         ),
         "current_remaining_months": len(forward_rows),
-        "current_principal": state.current_balance,
+        "current_principal": current_balance,
         "refi_monthly": refi_monthly,
         "refi_total_interest": refi_total_interest,
         "refi_payoff": refi_payoff,
@@ -441,7 +442,7 @@ def _build_refinance_comparison(state, scenarios, data, params):
         "refi_principal": refi_principal,
         "monthly_savings": monthly_savings,
         "interest_savings": current_remaining_interest - refi_total_interest,
-        "break_even_months": break_even_months,
+        "break_even_months": _refinance_break_even(closing_costs, monthly_savings),
         "closing_costs": closing_costs,
         "principal_diff": principal_diff,
         "principal_diff_abs": abs(principal_diff),
@@ -482,17 +483,20 @@ def refinance_calculate(account_id):
 
     data = _refinance_schema.load(request.form)
 
-    # Shared loan context: resolver state.  Identical to the dashboard's
+    # Shared loan context: seam balance + figures.  Identical to the dashboard's
     # data loading so the "current" refinance baseline matches the card.
-    ctx = _load_loan_context(account, params)
-    state = ctx.state
+    ctx = _load_route_context(account, params)
 
-    # Paid-off loan: no refinance comparison is meaningful.  Use the
-    # resolver-derived current_balance for the gate so editing the
-    # stored ``current_principal`` column (still legal until Commit 16)
-    # cannot trick the route into rendering a refinance form against an
-    # already-paid-off loan.
-    if not state.schedule or state.current_balance <= Decimal("0.00"):
+    # Paid-off loan: no refinance comparison is meaningful.  Read the seam's
+    # balance (the fold, plan C4) ONCE, and gate on it: a loan that owes nothing
+    # needs no refinance.  This gate replaces the pre-C4 ``not state.schedule or
+    # state.current_balance <= 0``; the schedule half was redundant for every
+    # normal loan (an empty committed schedule implies a zero balance) and its
+    # only divergent case -- a past-term balloon still owing a positive balance
+    # with no forward rows -- is more honestly served BY a refinance comparison
+    # than blocked as "paid off", so gating on the balance alone is correct.
+    current_balance = ctx.current_balance
+    if current_balance <= Decimal("0.00"):
         return render_template(
             "loan/_refinance_results.html",
             error=(
@@ -504,22 +508,23 @@ def refinance_calculate(account_id):
     # Contractual current-side baseline (step 8 / Sec. 16): a like-for-like
     # comparison holds any standing extra constant on both sides, so the current
     # side reads the pure-contractual ``original_forward`` slice -- NOT the
-    # committed ``state.schedule`` (plan-aware since the resolver seam) -- against
-    # a from-today minimum-payment refi.  ``original_forward`` is override- and
+    # committed schedule (plan-aware since the resolver seam) -- against a
+    # from-today minimum-payment refi.  ``original_forward`` is override- and
     # extra-free regardless of inputs; the confirmed view seeds it from the real
     # owed balance the loan card shows.
-    scenario = get_baseline_scenario(current_user.id)
     view = confirmed_loan_view(
-        params, scenario.id if scenario else None, date.today(),
+        params, ctx.balance_ctx.scenario_id, date.today(),
     )
     scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=_loan_inputs(params, ctx),
+        loan_inputs=_loan_inputs(params, ctx.loan),
         extra_monthly=Decimal("0.00"),
         as_of=date.today(),
         confirmed_view=view,
     )
 
-    comparison = _build_refinance_comparison(state, scenarios, data, params)
+    comparison = _build_refinance_comparison(
+        current_balance, ctx, scenarios, data, params,
+    )
     return render_template(
         "loan/_refinance_results.html",
         comparison=comparison,

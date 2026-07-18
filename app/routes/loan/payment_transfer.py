@@ -27,9 +27,9 @@ from app.routes._transfer_creation_helpers import (
 )
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
+    _loan_figures_now,
     _payment_extra_schema,
     _require_configured_loan,
-    _resolve_loan_state,
     _transfer_schema,
 )
 from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
@@ -41,7 +41,7 @@ from app.utils.auth_helpers import require_owner
 logger = logging.getLogger(__name__)
 
 
-def _resolve_transfer_amount(account, params, data):
+def _resolve_transfer_amount(account, data):
     """Resolve the loan-payment transfer amount and live-derivation flag.
 
     A user-supplied amount is respected verbatim (no live derivation);
@@ -50,15 +50,13 @@ def _resolve_transfer_amount(account, params, data):
     tracks the loan's monthly payment after an escrow or rate change
     instead of staying frozen at the default.
 
-    Resolver state owns the P&I figure for both ARM (re-amortized from
-    the latest anchor's balance over the remaining term) and fixed-rate
-    (contractual payment from origination), so the computed default
-    matches the dashboard's displayed "Total Monthly (with escrow)"
-    exactly (E-18 / Commit 15).
+    The seam figure owns the P&I for both ARM (re-amortized from the latest
+    anchor's balance over the remaining term) and fixed-rate (contractual payment
+    from origination), so the computed default matches the dashboard's displayed
+    "Total Monthly (with escrow)" exactly (the loan card reads the same figure).
 
     Args:
         account: ORM :class:`Account` instance for the loan account.
-        params: ORM :class:`LoanParams` instance.
         data: Validated transfer form data (mapping).
 
     Returns:
@@ -67,13 +65,12 @@ def _resolve_transfer_amount(account, params, data):
     if "amount" in data and data["amount"] is not None:
         return data["amount"], False
 
-    state = _resolve_loan_state(account, params)
     escrow_lines = loan_loaders.load_escrow_lines(account.id)
     escrow_components = escrow_calculator.resolve_active_lines(
         escrow_lines, date.today(),
     )
     transfer_amount = escrow_calculator.calculate_total_payment(
-        state.monthly_payment, escrow_components,
+        _loan_figures_now(account).monthly_payment, escrow_components,
     )
     return transfer_amount, True
 
@@ -138,7 +135,7 @@ def create_payment_transfer(account_id):
     # loan's monthly payment after an escrow or rate change instead of
     # staying frozen at default_amount.
     transfer_amount, derive_from_loan = _resolve_transfer_amount(
-        account, params, data,
+        account, data,
     )
     # The standing overpayment (spec Sec. 6): stored on the settings row and
     # added live to every payment, in BOTH modes -- NOT baked into

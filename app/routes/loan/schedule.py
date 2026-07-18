@@ -6,20 +6,23 @@ The full month-by-month amortization schedule, demoted off the loan detail page
 occasionally, not the page's centre of gravity) into its own route linked from
 the detail page's footer.  Renders the same planned trajectory the loan card
 carries -- confirmed actuals from the genesis ledger plus the plan-aware
-projected payments (``LoanState.schedule`` -- the committed trajectory
-reflecting recurring payments and any standing extra since the step-8 seam fix)
--- so the table cannot diverge from the card.
+projected payments (the committed trajectory reflecting recurring payments and
+any standing extra since the step-8 seam fix) -- so the table cannot diverge
+from the card.
 """
+
+from datetime import date
 
 from flask import render_template
 from flask_login import login_required
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
-    _load_loan_context,
     _require_configured_loan,
     build_schedule_context,
+    load_baseline_scenarios,
 )
+from app.services import loan_resolver
 from app.utils.auth_helpers import require_owner
 
 
@@ -29,19 +32,31 @@ from app.utils.auth_helpers import require_owner
 def schedule(account_id):
     """Standalone month-by-month amortization schedule for a loan.
 
-    Resolves the loan once (the same resolver state the detail page reads) and
-    renders its planned schedule as the full statement table.  Guards via
-    :func:`._require_configured_loan`: a cross-owner / non-loan account 404s, an
-    un-configured loan redirects to its detail page (the setup surface).
+    A schedule TABLE, not a balance surface, so it does not read the balance
+    seam: it composes its planned trajectory ONCE off the same load-and-compose
+    the detail page's band chart shares (:func:`._helpers.load_baseline_scenarios`,
+    ``history_rows + committed_forward``) with the loan's standing extra -- the
+    identical committed trajectory the card carries -- and reads the current rate
+    (the ARM rate-column fallback) via the cheap rate-period accessor
+    :func:`loan_resolver.current_rate_baseline` rather than a full resolve, so the
+    schedule is derived exactly once.  Guards via :func:`._require_configured_loan`:
+    a cross-owner / non-loan account 404s, an un-configured loan redirects to its
+    detail page (the setup surface).
     """
     account, params, account_type = _require_configured_loan(account_id)
-    ctx = _load_loan_context(account, params)
+    loan, scenarios = load_baseline_scenarios(account, params)
+    planned_schedule = (
+        list(scenarios.history_rows) + list(scenarios.committed_forward)
+    )
+    current_rate = loan_resolver.current_rate_baseline(
+        params, loan.rate_changes, date.today(),
+    )
     context = {
         "account": account,
         "account_type": account_type,
-        "monthly_escrow": ctx.loan.monthly_escrow,
+        "monthly_escrow": loan.monthly_escrow,
     }
     context.update(build_schedule_context(
-        ctx.state.schedule, ctx.loan.monthly_escrow, ctx.current_rate, params,
+        planned_schedule, loan.monthly_escrow, current_rate, params,
     ))
     return render_template("loan/schedule.html", **context)

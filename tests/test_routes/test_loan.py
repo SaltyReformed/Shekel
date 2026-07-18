@@ -26,6 +26,8 @@ from app.services import account_service, escrow_calculator, loan_loaders
 
 from tests._test_helpers import (
     add_escrow_line,
+    clear_loan_ledger,
+    create_account_of_type,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -174,6 +176,57 @@ class TestLoanDashboard:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         assert b"Balance owed" in resp.data
+
+    def test_broken_loan_detail_page_folds_not_the_money_blind_replay(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A broken loan's detail page shows the seam's fold, not the replay (B-13, C4).
+
+        Before C4 the loan route rendered ``LoanState.current_balance``: for a loan
+        whose genesis POSTING ledger is missing, the resolver falls back to the
+        MONEY-BLIND anchor replay, which advances only the SCHEDULED principal per
+        payment and discards the actual cash.  C4 points the route at the
+        ``balance_at`` seam, which FOLDS the loan's source facts (origination anchor
+        + settled shadows), so the page shows what the borrower actually owes.
+
+        The $240,000 loan (6%, originated 2024-09-01) receives ONE $10,000 payment:
+        $1,200 interest that month ($240,000 x 0.06 / 12) and $8,800 principal, so
+        the fold owes $240,000 - $8,800 = $231,200.00.  The money-blind replay
+        advances only the scheduled first-month principal of $238.92 ->
+        $239,761.08, silently ignoring the $8,561.08 the borrower actually paid
+        down.  The posting ledger is cleared EXPLICITLY (``clear_loan_ledger`` --
+        production cannot make this state) so the resolver's fallback is the one
+        under test.
+
+        Control that fires: asserting the pre-C4 replay value ($239,761.08) is
+        ABSENT proves the route moved off the money-blind path -- reverting C4 to
+        ``ctx.state.current_balance`` renders that value and turns this red.
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Broken Mortgage",
+            principal=Decimal("240000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+        )
+        checking = create_account_of_type(
+            seed_user, db.session, "Checking", "Chk",
+            anchor_balance=Decimal("50000.00"),
+        )
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, checking, acct, seed_periods[0],
+            amount=Decimal("10000.00"),
+            paid_at=settle_instant_on(seed_periods[0].start_date),
+        )
+        db.session.commit()
+        # The BROKEN state, built on purpose: only the postings are removed; the
+        # LoanParams + settled shadows the fold reads are untouched.
+        clear_loan_ledger(acct.id)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"$231,200.00" in resp.data          # the seam's fold (C4)
+        assert b"$239,761.08" not in resp.data       # the money-blind replay
 
     @pytest.mark.parametrize("payment_day,expected", [
         (1, "1st"), (2, "2nd"), (3, "3rd"),
@@ -4554,7 +4607,7 @@ class TestDashboardPayoffConsistency:
         """Payoff committed chart data matches dashboard committed chart.
 
         Both routes render committed balance data for Chart.js.  Since
-        both use _load_loan_context for payment preparation, the
+        both use _load_route_context for payment preparation, the
         committed balance arrays must be identical.
 
         Origination is pinned to March 1, 2026 so seed_periods[7]
@@ -4591,7 +4644,7 @@ class TestDashboardPayoffConsistency:
         overlay = _parse_chart_array(payoff_resp.data.decode(), "overlay")
         assert overlay is not None, "Payoff missing overlay chart data"
 
-        # Both derive from _load_loan_context -> compute_payoff_scenarios, so the
+        # Both derive from _load_route_context -> compute_payoff_scenarios, so the
         # overlay's forward slice must byte-match the band's committed forward
         # slice; the overlay is null across the confirmed-history region.
         current_index = band["current_index"]
@@ -4606,7 +4659,7 @@ class TestDashboardPayoffConsistency:
     ):
         """Payoff calculator with prepared payments does not crash.
 
-        After the DRY refactor, both routes use _load_loan_context.
+        After the DRY refactor, both routes use _load_route_context.
         Verify the payoff calculator handles prepared payments correctly
         in both extra_payment and target_date modes.
         """
@@ -5956,8 +6009,10 @@ class TestRefinanceForwardOnlyBaseline:
             "new_rate": Decimal("0.05"),
         }
 
+        # C4: the balance is threaded in explicitly (read once by the route);
+        # ``state`` stands in for the route context's monthly_payment / payoff_date.
         comparison = _build_refinance_comparison(
-            state, scenarios, data, params,
+            state.current_balance, state, scenarios, data, params,
         )
 
         # Current side reads the CONTRACTUAL original_forward: 2 months,

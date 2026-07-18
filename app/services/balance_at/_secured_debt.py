@@ -14,12 +14,13 @@ binds on function names -- is structurally incapable of noticing.  Moving the
 assembly here is what lets the fence bind: the property route now calls one seam
 entry and never sees a resolver bundle at all.
 
-(The loan DETAIL route is NOT yet on this footing.  ``app/routes/loan/`` still
-resolves through ``resolve_loan_seeded`` and renders ``state.current_balance``
-directly -- a balance-at-T produced outside the seam, which for a loan whose
-genesis ledger is missing answers from the money-blind anchor replay while the
-seam RAISES.  That is the next commit's work; it is not fixed here, and this
-module does not claim it is.)
+(The loan DETAIL route reached this footing at plan step C4: ``app/routes/loan/``
+now reads its balance from :func:`~app.services.balance_at.balance_at` and its
+payment / rate / payoff figures from :func:`~app.services.balance_at.loan_figures`
+through one ``BalanceContext``, instead of resolving ``resolve_loan_seeded`` and
+rendering ``state.current_balance``.  So for a loan whose genesis ledger is
+missing it now FOLDS the source facts -- as the scalar has since step C3b1 --
+rather than rendering the money-blind anchor replay, closing finding B-13.)
 
 **The series carries NO balance, and that is the point.**  ``SecuredLoanSeries``
 used to carry ``current_balance``, for exactly one purpose: re-deriving an

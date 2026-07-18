@@ -105,6 +105,7 @@ from ._periods import (
 from ._state import (
     LoanState,
     compute_monthly_payment_baseline,
+    current_rate_baseline,
     resolve_loan,
 )
 
@@ -116,6 +117,7 @@ __all__ = [
     "TargetDateOutlook",
     "compute_monthly_payment_baseline",
     "compute_payoff_scenarios",
+    "current_rate_baseline",
     "engine_terms",
     "resolve_loan",
     "resolve_periods",

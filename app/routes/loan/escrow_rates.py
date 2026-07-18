@@ -27,8 +27,8 @@ from app.routes.loan._helpers import (
     _escrow_version_schema,
     _forward_boundary,
     _load_loan_account,
+    _loan_figures_now,
     _rate_schema,
-    _resolve_loan_state,
     build_loan_band_chart,
 )
 from app.services import (
@@ -72,17 +72,16 @@ def _render_rate_history(account, params, band_chart=None):
         .order_by(RateHistory.effective_date.desc())
         .all()
     )
-    # DH-#56: the OOB swap shows the resolver-derived current rate (the
-    # rate in effect today after the just-committed rate history), not the
-    # retired ``LoanParams.interest_rate`` column.  Resolve once here so
-    # the swapped Overview "Interest Rate" reflects the new change.
-    state = _resolve_loan_state(account, params)
+    # DH-#56: the OOB swap shows the seam's current rate (the rate in effect
+    # today after the just-committed rate history), not the retired
+    # ``LoanParams.interest_rate`` column.  Read the seam figure here so the
+    # swapped Overview "Interest Rate" reflects the new change.
     return render_template(
         "loan/_rate_history.html",
         account=account,
         params=params,
         rate_history=rate_history,
-        current_rate=state.current_rate,
+        current_rate=_loan_figures_now(account).current_rate,
         band_chart=band_chart,
         oob_swaps=True,
     )

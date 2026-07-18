@@ -126,6 +126,41 @@ def compute_monthly_payment_baseline(
     ).period_pi
 
 
+def current_rate_baseline(
+    loan_params,
+    rate_changes: list[RateChangeRecord] | None,
+    as_of: date,
+) -> Decimal:
+    """Return the loan's current annual interest rate -- the rate-period rate.
+
+    Single source of truth for "what rate is in effect on ``as_of``" for callers
+    that need the rate WITHOUT the full balance replay and schedule generation
+    :func:`resolve_loan` runs -- the standalone amortization-schedule route,
+    whose ARM rate column falls back to it for rows carrying no per-row rate, and
+    which composes its own schedule (so a full resolve just to read the rate
+    would derive the schedule twice).  Returns the same value as
+    ``resolve_loan(...).current_rate`` for the same inputs -- the governing rate
+    period's annual rate (DH-#56: the resolver-derived rate that replaced the
+    retired ``LoanParams.interest_rate`` column) -- by the same cheap rate-period
+    lookup :func:`compute_monthly_payment_baseline` uses for the payment.
+
+    Args:
+        loan_params: Loan parameter object exposing the fields
+            :func:`build_rate_periods` reads (origination, principal,
+            base rate, term, ARM cadence).
+        rate_changes: Optional ARM rate-history feeding each period's
+            rate.  ``None`` or empty for a fixed-rate loan.
+        as_of: Evaluation date; selects the governing rate period.
+
+    Returns:
+        The Decimal annual rate (a fraction, e.g. ``Decimal("0.06000")``),
+        equal to ``resolve_loan(...).current_rate`` for the same inputs.
+    """
+    return period_for_date(
+        resolve_periods(loan_params, rate_changes), as_of,
+    ).annual_rate
+
+
 def resolve_loan(
     loan_inputs: LoanInputs,
     as_of: date,
