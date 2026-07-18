@@ -33,18 +33,21 @@ keeps the two equal on every day (step B2).
 Before C2 the reader bounded cash by its pay period's ``start_date`` and an
 anchor by ``LEAST(entry_date, period.start)`` -- two boundary predicates standing
 in for the instant, and the anchor one made a future-dated opening visible early
-(N-10).  The per-period map (keyed by period start) is still the canonical
-period-END-keyed loan balance the projection reports
-(:func:`app.services.account_projection.compute_forward_loan_period_balance_map`):
-periods are contiguous, so summing the postings whose ``entry_date`` falls on or
-before a period's start is that period's confirmed balance.
+(N-10).  The per-period reader (:func:`confirmed_loan_balance_map`) sums the
+postings whose ``entry_date`` falls on or before each period's END, so it answers
+the same period-END balance the scalar reports at that date.
 
-**Wiring status.**  The current-balance scalar AND the history rows are wired
-through the ``loan_payment_service.confirmed_loan_view`` seam (read switch C8,
-bundled at C11), the per-period map through
-``net_worth_kernel._build_amortizing_balance_map`` (C9), and the tax interest
-through the year-end hybrid (C10); the readers join the balance-producer fence
-in the final read-switch commit.  Reads only -- no writes, no commit.
+**Wiring status.**  The current-balance scalar (:func:`confirmed_loan_balance_at`)
+and the per-period map (:func:`confirmed_loan_balance_map`) are no longer the
+production balance surface: the balance seam cut its loan reads over to the event
+FOLD (:func:`app.services.balance_at.positions`; the scalar at plan step C3b1,
+the map at C3b3), so a cold posting cache is a repairable inconsistency, not a
+read outage.  They read the POSTING ledger as the general ledger now -- the
+reconciliation oracle's independent window onto the postings
+(``tests/test_integration/test_posting_ledger_loan_reconciliation.py``), and the
+checked projection the fold validates at write time (plan E1).  The history rows
+and the tax-interest reader keep their own consumers.  Reads only -- no writes,
+no commit.
 """
 
 from bisect import bisect_right
@@ -197,11 +200,11 @@ def confirmed_loan_balance_map(
     exists to answer the future periods carried flat), and computed from ONE
     grouped posting load plus a Python prefix sum, not a query per period.
 
-    **Keyed by period END** (step C2), which is what makes it the period-END
-    balance the projection reports
-    (:func:`app.services.account_projection.compute_forward_loan_period_balance_map`,
-    also period-END-keyed) and lets the splice overlay them at the boundary.
-    Under the one clock a posting carries its own event date, which can fall mid
+    **Keyed by period END** (step C2), which matches the period-END balance the
+    forward projection reports (:func:`app.services.balance_at.positions` keys the
+    same way), so the fold the seam now reads and this postings map agree at every
+    period boundary.  Under the one clock a posting carries its own event date,
+    which can fall mid
     period, so a payment settled during period P must count in P's balance -- which
     ``entry_date <= period.end`` selects and ``<= period.start`` would miss.  (Pre
     C2 every posting was dated at a period START, so the two bounds coincided; they
@@ -224,10 +227,12 @@ def confirmed_loan_balance_map(
     A loan that has not ORIGINATED reads ``0.00`` for every period ending before
     its future origination date -- the honest empty-prefix fold, no longer the
     N-10 leak (the opening's ``entry_date`` is the future origination, so
-    ``entry_date <= period.end`` selects nothing).  Its one caller,
-    :func:`app.services.net_worth_kernel._build_amortizing_balance_map`, still
-    short-circuits such a loan to a true-zero map on the ``owed_from`` fact (a now
-    redundant belt-and-braces the clock made unnecessary; both go at C3).
+    ``entry_date <= period.end`` selects nothing).  It has no PRODUCTION caller
+    since the balance seam's per-period map cut over to the event fold
+    (:func:`app.services.balance_at.positions_period_map`, plan step C3b3); the
+    reconciliation oracle reads it as an independent window onto the postings,
+    proving they project the fold at every period boundary (kept for that until
+    plan E1 designs the general ledger's read/reconcile surface).
 
     Reads only -- no writes, no commit.
 

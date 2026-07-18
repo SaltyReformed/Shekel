@@ -7,8 +7,11 @@ dispatch reads: the event FOLD
 walk) for a date at or before the resolver's NOW, and the forward schedule
 projection after.  The seam's SCALAR
 (:func:`app.services.balance_at.balance_at`) and its LIABILITY band
-(:func:`app.services.balance_at.liability_owed_at_dates`) read it as of step C3b;
-the per-period map cuts over in the same step's map commit.
+(:func:`app.services.balance_at.liability_owed_at_dates`) read it as of step C3b1;
+the per-period map (:func:`app.services.balance_at._account_balance_map`'s
+AMORTIZING branch) reads :func:`positions_period_map` as of step C3b3, so every
+loan balance surface -- point, band, and map -- now answers from this one
+producer.
 
 **The past reads the FOLD, not the postings -- that is the cutover's heart.**
 Before this the seam's past balance was a sum of POSTINGS
@@ -57,9 +60,7 @@ from app.models.account import Account
 from app.services import net_worth_kernel
 from app.services.account_projection import forward_balance_at_date
 from app.services.loan_ledger import fold_from_walk
-from app.services.resolution_context import BalanceContext
-
-from ._inputs import _require_scenario
+from app.services.resolution_context import BalanceContext, require_scenario
 
 
 def positions(
@@ -109,7 +110,7 @@ def positions(
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
-    _require_scenario(ctx)
+    require_scenario(ctx)
     debt_schedule = net_worth_kernel.generate_debt_schedules(
         [account], ctx,
     ).get(account.id)
@@ -158,20 +159,19 @@ def positions_period_map(
 ) -> "OrderedDict[int, Decimal]":
     """Return a loan's per-period balance map, built from :func:`positions`.
 
-    The per-period form of :func:`positions`, and the producer step C3b's map
-    commit points the seam's AMORTIZING map dispatch at.  It reproduces the
-    genesis per-period read switch the kernel's ``_build_amortizing_balance_map``
-    runs today -- ledger past, projection future -- but from the ONE total loan
-    producer instead of the sum-of-postings map plus a splice, so the scalar, the
-    map, and the liability band all answer a loan from :func:`positions` and cannot
-    disagree.
+    The per-period form of :func:`positions`, read by the seam's AMORTIZING map
+    dispatch (:func:`app.services.balance_at._account_balance_map`) as of step
+    C3b3.  It reproduces the genesis per-period read switch the kernel's retired
+    ``_build_amortizing_balance_map`` ran -- ledger past, projection future -- but
+    from the ONE total loan producer instead of the sum-of-postings map plus a
+    splice, so the scalar, the map, and the liability band all answer a loan from
+    :func:`positions` and cannot disagree.
 
-    **The sampling rule reproduces the splice's boundary.**  The kernel map splices
-    on ``period.start_date <= ctx.as_of``
-    (:func:`app.services.account_projection.splice_confirmed_and_projected_loan_balances`):
-    a BEGUN period reads the confirmed ledger at its END, a FUTURE period the
-    forward projection at its end.  This samples :func:`positions` at the date that
-    reproduces each side:
+    **The sampling rule reproduces the retired splice's boundary.**  That splice
+    (the deleted ``splice_confirmed_and_projected_loan_balances``) keyed on
+    ``period.start_date <= ctx.as_of``: a BEGUN period read the confirmed ledger at
+    its END, a FUTURE period the forward projection at its end.  This samples
+    :func:`positions` at the date that reproduces each side:
 
     * **A BEGUN period (``period.start_date <= ctx.as_of``): valued at**
       ``min(period.end_date, ctx.as_of)``.  For a period that ENDED by the NOW the
@@ -189,28 +189,24 @@ def positions_period_map(
       current period IS its balance-at-today; the clamp reproduces it exactly.)
     * **A FUTURE period (``period.start_date > ctx.as_of``): valued at**
       ``period.end_date``.  :func:`positions` answers it from the forward projection
-      -- the identical ``forward_balance_at_date`` walk over the same resolver
-      schedule and seed the kernel's
-      :func:`~app.services.account_projection.compute_forward_loan_period_balance_map`
-      runs, so the future side matches by construction.
+      -- the same ``forward_balance_at_date`` walk over the same resolver schedule
+      and seed the retired kernel forward map ran period-END-keyed, so the future
+      side matches by construction.
 
     A not-yet-originated loan folds nothing: :func:`positions` routes every date
     (begun periods clamp to a date before ``owed_from``) to the projection's
     origination gate, which returns ``0.00`` before the loan exists -- exactly the
     kernel map's true-zero confirmed side for such a loan.
 
-    **Equal to ``_build_amortizing_balance_map`` for the production read pass, and
-    the map commit adopts one behaviour change.**  For a configured loan with an
-    intact posting ledger this returns the same map the kernel produces today
-    (proven every-period by ``test_loan_positions_period_map_oracle.py``).  The one
-    place it will differ once wired is a BROKEN loan (originated, no OPENING
-    posting): this folds the loan's SOURCE facts and answers, where the kernel map
-    RAISES :class:`~app.services.posting_reads.LoanLedgerNotOpenedError` -- the same
+    **Equal to the retired ``_build_amortizing_balance_map`` for the production
+    read pass, with one behaviour change adopted at the cutover.**  For a
+    configured loan with an intact posting ledger this returns the same map the
+    kernel produced (proven every-period by the C3b2 oracle, which retired with the
+    cutover since the map it graded against is now this producer).  The one place
+    it differs is a BROKEN loan (originated, no OPENING posting): this folds the
+    loan's SOURCE facts and answers, where the kernel map RAISED for it -- the same
     E1 repairable-cache decision the scalar already took at step C3b1 (a cold
     posting cache is a repairable inconsistency, not a read-time outage).
-
-    **Additive and unwired** (plan step C3b2, mirroring C3a's :func:`positions`):
-    only its oracle calls it; the map dispatch cuts over in step C3b3's commit.
 
     Args:
         account: The amortizing loan account (the caller owns the ownership check).
@@ -236,7 +232,7 @@ def positions_period_map(
     # does -- positions() guards too, but guarding here keeps the contract's
     # failure at the surface the consumer called rather than deep inside the
     # composed producer (the same defensive double-guard balance_at() runs).
-    _require_scenario(ctx)
+    require_scenario(ctx)
     # The date to value each period at, reproducing the splice's begun/future
     # boundary (see the docstring).  positions() collapses duplicate dates, so a
     # boundary period landing on ctx.as_of costs nothing extra.

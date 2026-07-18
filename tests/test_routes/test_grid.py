@@ -1748,23 +1748,29 @@ class TestCreateBaseline:
     ):
         """G1: the recovery path must repost the LOAN openings too, not just cash.
 
-        The loan half of the test above, and it fails harder.  A loan's opening
-        posts per SCENARIO, so a baseline-less owner's loan has nowhere to put it;
-        deleting the baseline reproduces that state exactly (the CASCADE disposes
-        its journal entries, the loan's opening among them).
+        The loan half of the test above.  A loan's opening posts per SCENARIO, so a
+        baseline-less owner's loan has nowhere to put it; deleting the baseline
+        reproduces that state exactly (the CASCADE disposes its journal entries,
+        the loan's opening among them).
 
-        The route recovered the ACCOUNT anchors and not the loans, which is not a
-        quiet gap: an ORIGINATED loan with no OPENING posting makes the balance
-        seam refuse to answer (``LoanLedgerNotOpenedError``), so every loan surface
-        500s -- and there was no way back short of re-saving the loan's params.
+        The route recovered the ACCOUNT anchors and not the loans.  Before the fold
+        cutover an ORIGINATED loan with no OPENING posting made the balance seam
+        500 every loan surface; since steps C3b1/C3b3 the seam folds the balance
+        from SOURCE facts, so a missing opening no longer breaks reads -- but the
+        POSTING ledger (the general ledger the balance sheet and statements read)
+        is out of sync until this reposts the opening.  So the recovery is pinned
+        by the POSTING reader, not ``balance_at``: the reader answers ONLY when the
+        opening was reposted, where ``balance_at`` folds $200,000 from source
+        either way and cannot tell reposted from not.
 
         NEGATIVE CONTROL: drop the ``resync_user_loan_postings`` call from
-        ``baseline_service.create_baseline_scenario`` and ``balance_at`` raises
-        instead of answering $200,000.00.
+        ``baseline_service.create_baseline_scenario`` and
+        ``confirmed_loan_balance_at`` returns ``None`` (the opening is never
+        reposted), while ``balance_at`` still folds $200,000.00 from source.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
-        from app.services import balance_at
+        from app.services import balance_at, loan_posting_service
         from app.services.resolution_context import BalanceContext
         from tests._test_helpers import create_loan_account
 
@@ -1786,7 +1792,18 @@ class TestCreateBaseline:
 
             bctx = BalanceContext.build(seed_user["user"].id)
             reloaded = db.session.get(Account, loan_id)
-            # No payment has been made, so the loan still owes its opening.
+            new_baseline = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True,
+            ).one()
+            # The recovery REPOSTED the loan's opening: the posting reader answers
+            # $200,000 from the reconciled general ledger (None if still missing).
+            # This is what pins the recovery -- balance_at cannot, since it folds
+            # the same $200,000 from source whether or not the opening was reposted.
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan_id, new_baseline.id, bctx.as_of,
+            ) == Decimal("200000.00")
+            # And the user-facing balance is correct: no payment made, so the loan
+            # still owes its opening.
             assert balance_at.balance_at(
                 reloaded, bctx, bctx.as_of,
             ) == Decimal("200000.00")

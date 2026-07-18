@@ -18,15 +18,17 @@ from pylint.checkers import BaseChecker
 # Each takes it as its third positional argument, keyword ``current_balance``.
 #
 # ``compute_loan_period_balance_map`` was the original offender and is now
-# DELETED (the ledger owns every begun period; C2b of the fail-loud arc). The two
-# FORWARD producers inherited its seed argument, so they inherit its hazard and
-# join the fence: passing an origination amount to either of them reports a loan's
-# ORIGINAL principal for every future date before its next payment, which is
-# exactly the phantom net-worth jump W9905 exists to prevent.
+# DELETED (the ledger owns every begun period; C2b of the fail-loud arc), and the
+# per-period FORWARD map ``compute_forward_loan_period_balance_map`` that inherited
+# its seed retired at C3b3 (the seam's positions()-based map replaced it). The two
+# schedule-seed producers that remain -- the scalar forward walk and its
+# schedule-lookup primitive -- carry the SAME hazard and stay fenced: passing an
+# origination amount as the seed reports a loan's ORIGINAL principal for every
+# future date before its next payment, which is exactly the phantom net-worth jump
+# W9905 exists to prevent.
 _LOAN_BALANCE_MAP_FUNCS = frozenset({
     "balance_from_schedule_at_date",
     "forward_balance_at_date",
-    "compute_forward_loan_period_balance_map",
 })
 _LOAN_BALANCE_ARG_INDEX = 2
 _LOAN_BALANCE_ARG_KEYWORD = "current_balance"
@@ -96,8 +98,7 @@ class ShekelLoanBalanceSourceChecker(BaseChecker):
             "(original_principal / current_principal); pass the resolver-derived "
             "current_balance instead",
             "shekel-original-principal-as-balance",
-            "balance_from_schedule_at_date, forward_balance_at_date and "
-            "compute_forward_loan_period_balance_map "
+            "balance_from_schedule_at_date and forward_balance_at_date "
             "(app/services/account_projection.py) take the loan's CURRENT balance "
             "as the pre-first-payment / empty-schedule seed. The schedule is "
             "today-forward, so a period before the first upcoming payment -- and "

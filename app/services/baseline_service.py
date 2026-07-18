@@ -37,14 +37,16 @@ def create_baseline_scenario(user_id: int) -> Scenario | None:
       -- a loan's opening posts per scenario at params-create
       (``loan_posting_service.sync_loan_postings_all_scenarios`` iterates the
       scenarios the loan is displayed in, and a baseline-less owner has none), so
-      a loan configured while the baseline was gone carries no OPENING.  That is
-      not a quiet gap: the balance seam REFUSES to answer for an originated loan
-      whose ledger was never written
-      (:class:`~app.services.posting_reads.LoanLedgerNotOpenedError`), so every
-      loan surface 500s until this runs -- and before this recovery existed there
-      was no path back short of re-saving the loan's params.  Its ``LoanParams``
-      and ``user_trueup`` rows carry no ``pay_period_id`` and survive, so the
-      openings and true-ups re-derive exactly.
+      a loan configured while the baseline was gone carries no OPENING posting.
+      The balance seam still ANSWERS such a loan correctly -- it folds the loan's
+      SOURCE facts (origination, anchors, settled payments), so a cold posting
+      cache is a repairable inconsistency, not a read outage (plan steps
+      C3b1/C3b3; before them the seam raised and every loan surface 500'd until
+      this ran).  What this restores is the POSTING ledger itself -- the general
+      ledger the balance sheet and statements read, and the checked projection of
+      the fold (plan E1) -- so it reconciles again.  Its ``LoanParams`` and
+      ``user_trueup`` rows carry no ``pay_period_id`` and survive, so the openings
+      and true-ups re-derive exactly.
     * **Non-loan accounts**
       (:func:`app.services.account_posting_service.resync_user_account_anchor_postings`)
       -- an account created without a baseline has its anchor correction skipped

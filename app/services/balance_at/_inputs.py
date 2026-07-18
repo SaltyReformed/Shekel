@@ -6,11 +6,17 @@ the ONE per-kind dispatch site (:func:`_account_balance_map`), and the
 :func:`_require_scenario` guard every public entry (bar the liability view --
 see :mod:`._liability`) runs first.
 
-Kept in one leaf submodule so the view modules (:mod:`._kind_correct`,
+Kept in one submodule so the view modules (:mod:`._kind_correct`,
 :mod:`._cash_flow`, :mod:`._grid`, :mod:`._liability`) depend only on these
 primitives and never on each other's internals.  The package's SOLID dependency
-direction is ``<view module> -> _inputs``, and ``_inputs`` imports nothing back
-from the package.
+direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends only on
+the leaf PRODUCERS its dispatch fans out to -- the engine cluster
+(:mod:`app.services.net_worth_kernel`) and the loan producer
+(:func:`._positions.positions_period_map`, the one per-kind branch that lives in
+the seam because it reads ``positions`` above the kernel).  Neither producer
+imports ``_inputs`` back (``_positions`` takes its no-baseline guard straight
+from :mod:`app.services.resolution_context`, the C3b3 cycle break), so the
+direction stays acyclic.
 """
 
 from collections import OrderedDict
@@ -32,6 +38,8 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 from app.services.resolution_context import BalanceContext, require_scenario
+
+from ._positions import positions_period_map
 
 ZERO = Decimal("0")
 
@@ -182,31 +190,57 @@ def _account_balance_map(
     inputs: _AssembledInputs,
     amount_overrides: dict[int, Decimal] | None,
 ) -> OrderedDict[int, Decimal] | None:
-    """Dispatch ONE account's per-period balance map from *inputs*.
+    """Dispatch ONE account's per-period balance map.
 
-    The seam's single dispatch site, shared by
+    The seam's single per-period dispatch site, shared by
     :func:`~app.services.balance_at.balance_map` and
-    :func:`~app.services.balance_at.build_maps`.  Delegates to the shared
-    :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
-    which unpacks the bundle for *account* and calls the kernel's per-kind
-    dispatcher -- the same unpack the year-end adapter's
-    ``_dispatch_account_balance_map`` runs, hoisted into the engine cluster
-    so the two cannot drift (R0801).  The seam never re-implements the
-    classify ladder; it supplies this account's assembled inputs.
+    :func:`~app.services.balance_at.build_maps`.  It has exactly two arms:
+
+    * **AMORTIZING loans** read the seam's own :func:`positions_period_map`
+      (plan step C3b3): the fold for begun periods, the projection for the
+      future, from the ONE total loan producer
+      (:func:`app.services.balance_at.positions`) -- so the scalar, the map, and
+      the liability band all answer a loan from ``positions`` and cannot
+      disagree.  This one per-kind branch lives HERE in the seam, not in the
+      kernel's dispatcher, because ``positions`` sits ABOVE
+      :mod:`app.services.net_worth_kernel` (at its module-size cap, and it cannot
+      import the seam back).
+    * **Every other kind** delegates to the shared
+      :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
+      which unpacks the bundle for *account* and calls the kernel's per-kind
+      ladder (cash / interest / investment / appreciation).  The seam does not
+      re-implement that ladder.
 
     Args:
         account: The account to project.
         ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
         periods: The pay periods to project over (the output domain).
-        inputs: The :class:`_AssembledInputs` bundle for the account's set.
+        inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
+            ``debt_schedules`` membership gates the loan arm.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
             forwarded to the kernel's cash path; ``None`` for the net-worth
-            batch path, which never applies live overrides.
+            batch path, which never applies live overrides.  The loan arm never
+            reads it (a loan's balance is not a transaction sum).
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
-        account has no anchor period (the kernel's own no-anchor contract).
+        account has no anchor period (the kernel's own no-anchor contract, which
+        the loan arm reproduces).
     """
+    # AMORTIZING loans read the seam's positions()-based per-period map.  The gate
+    # is the same debt-schedule membership the retired kernel AMORTIZING branch
+    # used: a Mortgage-typed account with no LoanParams is absent from
+    # ``debt_schedules``, so it falls through to the kernel's cash producer here
+    # rather than reaching positions()'s fail-loud for an unconfigured loan.
+    if (classify_account(account) is AccountProjectionKind.AMORTIZING
+            and account.id in inputs.debt_schedules):
+        # The no-anchor-period contract build_account_balance_map enforced
+        # upstream of its (now-retired) AMORTIZING branch; positions_period_map
+        # does not replicate it.  Unreachable today (the column is NOT NULL) but
+        # keeps the map's contract identical.
+        if account.current_anchor_period_id is None:
+            return None
+        return positions_period_map(account, ctx, periods)
     return net_worth_kernel.account_balance_map_from_inputs(
         account, ctx, periods, inputs, amount_overrides=amount_overrides,
     )

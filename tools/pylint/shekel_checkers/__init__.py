@@ -34,9 +34,8 @@ Rules implemented:
 * ``shekel-original-principal-as-balance`` (W9905, :mod:`.loan_balance`): flags
   passing a stored loan column (``original_principal`` / ``current_principal``)
   as the pre-first-payment / empty-schedule seed to
-  ``balance_from_schedule_at_date``, ``forward_balance_at_date`` or
-  ``compute_forward_loan_period_balance_map``. That seed must be the
-  resolver-derived ``current_balance``; a stored column
+  ``balance_from_schedule_at_date`` or ``forward_balance_at_date``. That seed
+  must be the resolver-derived ``current_balance``; a stored column
   makes a loan's projected balance leap to its real value when the first payment
   lands -- the recurring net-worth defect fixed in F-21 / Commit 19 and PR #44.
 * ``shekel-balance-producer-bypass`` (W9906, :mod:`.balance_seam`): flags any

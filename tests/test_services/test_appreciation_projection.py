@@ -80,7 +80,7 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                debt_schedule=None, investment_params=None,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
 
@@ -123,7 +123,7 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                debt_schedule=None, investment_params=None,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             # rate 0 -> no growth; every period equals the anchor value.
@@ -146,7 +146,7 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                debt_schedule=None, investment_params=None,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             for period in all_periods:
@@ -195,7 +195,7 @@ class TestSavingsDashboardProjection:
             modeled_map = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id),
                 seed_periods_today,
-                debt_schedule=None, investment_params=None,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             assert entry["current_balance"] == modeled_map[current_period.id]

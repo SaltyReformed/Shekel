@@ -51,34 +51,6 @@ class PostingError(ShekelError):
     """
 
 
-class LoanLedgerNotOpenedError(PostingError):
-    """A configured loan that HAS originated carries no OPENING posting.
-
-    The second invariant in the fail-loud family
-    (``docs/audits/balance_architecture/implementation_plan_fail_loud_ledger_authority.md``).
-    The first is :func:`_ledger_account_for`'s: a real account must have a linked
-    ledger account.  This one is: **a loan that exists must have an opening.**
-
-    The opening is written in the SAME transaction as the ``LoanParams``
-    (``app/routes/loan/params.py``), the Step-4 migration backfilled every
-    pre-existing loan, and ``pay_period_admin.reset_pay_periods`` re-syncs.  So a
-    configured, originated loan without one is not a state the app can produce; it
-    is corruption, and the only honest response is to refuse to answer.
-
-    **Why raising beats degrading.**  The balance seam used to fall back to the
-    loan's amortization SCHEDULE when the ledger could not answer for a past date.
-    A schedule row is a payment the borrower was SUPPOSED to make, not one they
-    did, so the fallback quietly paid the debt down with money that never moved: a
-    $240,000 loan originated 18 months ago and never paid read as $236,544.21 owed.
-    A wrong balance that looks plausible is worse than a page that fails, because
-    nobody investigates a plausible number.
-
-    A loan that has NOT yet originated is NOT this error.  It legitimately has no
-    opening -- nothing has happened to it -- and the projection owns its whole
-    timeline (see :func:`app.services.balance_at.positions`).
-    """
-
-
 def _ledger_account_for(account_id: int) -> LedgerAccount:
     """Return the LINKED ledger account paired with a real account, or fail loudly.
 

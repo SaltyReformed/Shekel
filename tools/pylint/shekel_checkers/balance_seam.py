@@ -62,7 +62,6 @@ _BALANCE_PRODUCERS = frozenset({
     "build_daily_series",
     "calculate_balances",
     "calculate_balances_with_interest",
-    "compute_forward_loan_period_balance_map",
     "balance_from_schedule_at_date",
     "forward_balance_at_date",
     "build_account_balance_map",
@@ -370,10 +369,6 @@ _FENCED_MODULE_RULINGS = {
         # account metadata, not balances.
         "classify_account",
         "is_payroll_deduction_funded",
-        # A pure COMBINATOR over two maps the caller can only obtain from fenced
-        # producers -- safe by construction, since it cannot be reached without
-        # already holding producer output.
-        "splice_confirmed_and_projected_loan_balances",
         # A period lookup by date, not a balance.
         "find_period_containing_date",
     })),

@@ -20,7 +20,6 @@ worries with :mod:`app.ref_cache` while preserving the IDs-for-logic
 standard (``docs/coding-standards.md:174-178``).
 """
 
-from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 from enum import Enum
@@ -179,9 +178,10 @@ def balance_from_schedule_at_date(
     principal the moment the first payment landed -- a phantom liability drop,
     and net-worth jump, of (original principal - current balance).
 
-    The shared primitive behind :func:`_projected_owed_at` -- and therefore behind
-    BOTH forward producers, the scalar and the per-period map -- so the two cannot
-    drift on how a loan balance is read from a schedule.
+    The shared primitive behind :func:`_projected_owed_at`, and therefore behind
+    the forward projection :func:`forward_balance_at_date` -- the one place a loan
+    balance is read off a schedule (the per-period forward map that once shared it
+    retired at plan step C3b3, replaced by the seam's positions()-based map).
 
     Args:
         sorted_schedule: Non-empty ``AmortizationRow`` list sorted ascending
@@ -202,80 +202,21 @@ def balance_from_schedule_at_date(
     return balance
 
 
-def splice_confirmed_and_projected_loan_balances(
-    periods: list,
-    confirmed_map: "OrderedDict[int, Decimal]",
-    projected_map: "OrderedDict[int, Decimal]",
-    as_of: date,
-) -> "OrderedDict[int, Decimal]":
-    """Read the confirmed ledger for begun periods, the projection for the future.
-
-    The genesis per-period read switch (plan Section 9): a loan's per-period
-    balance map is authoritative from two producers over two disjoint regions,
-    keyed on whether each period has BEGUN by *as_of* (today):
-
-    * **Begun (``period.start_date <= as_of``): the confirmed ledger.**  The
-      genesis sum-of-postings map
-      (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`),
-      which reflects the REAL principal booked by every settled payment -- so
-      an off-schedule payment (extra or short) lands in the balance exactly,
-      where the resolver's replay-driven *projected_map* would show only the
-      SCHEDULED principal.  This is the whole point of the read switch: the
-      past reads facts, not a re-amortization.
-    * **Future (``period.start_date > as_of``): the re-seeded projection.**  The
-      *projected_map* forward rows, which the read switch already re-seeds from
-      the ledger's confirmed balance (the ``ConfirmedLedgerView`` threaded into
-      the resolver), so the loan amortizes its REAL owed balance over the
-      remaining term.  The confirmed
-      map cannot answer the future -- it carries the last confirmed balance
-      flat -- so the projection owns the future tail.
-
-    Both inputs are keyed by ``period.id`` over the SAME *periods*, so every
-    period is present in each; the splice simply chooses the authoritative
-    source per period.  Pure: no I/O; the caller
-    (:func:`app.services.net_worth_kernel._build_amortizing_balance_map`) reads
-    both maps, then splices here so the boundary rule lives in one place beside
-    the forward :func:`compute_forward_loan_period_balance_map` it overlays.
-
-    Args:
-        periods: The pay periods to key the result by (the output domain and
-            order).  Each must appear in both *confirmed_map* and
-            *projected_map*.
-        confirmed_map: The genesis ledger per-period map (begun periods read
-            this).  Keyed by ``period.id``.
-        projected_map: The resolver schedule per-period map (future periods
-            read this).  Keyed by ``period.id``.
-        as_of: The confirmed/projection boundary date (typically
-            ``date.today()``): a period whose ``start_date`` is on or before it
-            has begun and reads the ledger; a later period reads the
-            projection.
-
-    Returns:
-        An ``OrderedDict`` mapping ``period.id`` to the authoritative
-        cent-quantized balance for each period.
-    """
-    result: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        if period.start_date <= as_of:
-            result[period.id] = confirmed_map[period.id]
-        else:
-            result[period.id] = projected_map[period.id]
-    return result
-
-
 ZERO_MONEY = Decimal("0.00")
 
 
 def _forward_rows(schedule: list) -> list:
     """Return the schedule's UNCONFIRMED rows, chronological.
 
-    The row set BOTH forward producers project over
-    (:func:`forward_balance_at_date` and
-    :func:`compute_forward_loan_period_balance_map`), extracted so the two
-    cannot drift on which rows count as "still to come" -- the structural
-    lesson of the scalar/map divergence recorded at
+    The row set the forward projection :func:`forward_balance_at_date` projects
+    over.  It was extracted as a shared primitive when a per-period forward map
+    projected over the same rows, so the two could not drift on which rows count
+    as "still to come" -- the structural lesson of the scalar/map divergence
+    recorded at
     ``docs/audits/balance_architecture/implementation_plan_fail_loud_ledger_authority.md``
-    Section 2a, applied pre-emptively.
+    Section 2a.  That map retired at plan step C3b3 (the seam's
+    positions()-based map replaced it); this stays the forward projection's one
+    definition of the unconfirmed row set.
 
     Args:
         schedule: The resolver's :class:`AmortizationRow` list (confirmed
@@ -302,26 +243,23 @@ def _projected_owed_at(
 
         **A loan owes nothing before it originates.**
 
-    Both forward producers route through this, so the scalar and the per-period
-    map cannot answer that question differently (see :func:`_forward_rows`).
+    The forward projection :func:`forward_balance_at_date` routes through this,
+    and so does the per-period map that samples it, so neither can answer the
+    origination question differently (see :func:`_forward_rows`).
 
     *owed_from* is the loan's ``origination_date``.
 
     **Why this cannot move a live loan's number, stated precisely.**  For a loan
-    that has originated, the guard CAN fire -- :func:`compute_forward_loan_period_balance_map`
-    is handed EVERY period, begun ones included, so a period that ended before the
-    loan was taken out probes ``target < owed_from`` and gets ``0.00``.  What makes
-    that harmless is not the guard's unreachability but the SPLICE
-    (:func:`splice_confirmed_and_projected_loan_balances`): it reads the forward map
-    only for periods that have NOT begun, and for an originated loan every such
-    period starts after ``ctx.as_of >= owed_from``.  So the zeros are computed and
-    then discarded, never read.  The scalar (:func:`forward_balance_at_date`) has no
-    such subtlety: it is only ever asked for a date after ``ctx.as_of``.
-
-    The guard therefore only CHANGES an answer for a loan configured BEFORE it
-    closes (a mortgage closing next month), which the app permits and which, before
-    it, reported its full principal as owed at every pay period back to the
-    beginning of the user's history.
+    that has ORIGINATED, this guard never fires.  The seam's
+    :func:`app.services.balance_at.positions` routes a date to the forward
+    projection only when it is AFTER ``ctx.as_of`` -- a past date reads the fold
+    -- and for an originated loan ``ctx.as_of >= owed_from``, so every date this
+    sees satisfies ``target > ctx.as_of >= owed_from``.  The guard therefore only
+    CHANGES an answer for a loan configured BEFORE it closes (a mortgage closing
+    next month), whose whole timeline ``positions`` routes forward because none of
+    it has happened yet: a pre-origination date then correctly reports ``0.00``
+    where the pre-fix code reported the loan's full principal at every pay period
+    back to the beginning of the user's history.
 
     Args:
         forward_rows: The unconfirmed rows from :func:`_forward_rows`.
@@ -397,51 +335,6 @@ def forward_balance_at_date(
     return _projected_owed_at(
         _forward_rows(schedule), target, current_balance, owed_from,
     )
-
-
-def compute_forward_loan_period_balance_map(
-    schedule: list,
-    periods: list,
-    current_balance: Decimal,
-    owed_from: date,
-) -> "OrderedDict[int, Decimal]":
-    """Map a loan's FORWARD projection to per-period balances.
-
-    The per-period form of :func:`forward_balance_at_date`, keyed by
-    ``period.end_date``: each period reports the confirmed present reduced by the
-    scheduled payments due by that period's end, and ``0.00`` for a period ending
-    before the loan originates.  Both route through :func:`_projected_owed_at`
-    over the same :func:`_forward_rows`, so the scalar and the map cannot drift.
-
-    This is the projection half of the genesis per-period read switch --
-    :func:`splice_confirmed_and_projected_loan_balances` overlays the confirmed
-    ledger on every BEGUN period and keeps this for the future -- so for a loan
-    that has originated it is only ever read for periods after ``as_of``.  It
-    answers those periods from the confirmed present forward, rather than
-    re-deriving them from confirmed history rows that the ledger has already
-    superseded.
-
-    Args:
-        schedule: The resolver's :class:`AmortizationRow` list.
-        periods: The pay periods to key the result by.
-        current_balance: The projection's SEED (see
-            :func:`forward_balance_at_date`): the loan's ledger-confirmed balance
-            today, or -- for a loan that has not originated -- the balance it will
-            OPEN at.
-        owed_from: The loan's ``origination_date``.  A period ending before it
-            reports ``0.00``: the loan does not exist yet.
-
-    Returns:
-        ``OrderedDict`` mapping ``period.id`` to the projected ``Decimal``
-        balance at that period's end.
-    """
-    forward_rows = _forward_rows(schedule)
-    balances: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        balances[period.id] = _projected_owed_at(
-            forward_rows, period.end_date, current_balance, owed_from,
-        )
-    return balances
 
 
 def find_period_containing_date(periods: list, target: date):
