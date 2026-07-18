@@ -40,8 +40,12 @@ fate is decided at E1). The C2 real-clone history-window live-render (~26 days M
 Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. **C4** (`c98ea07b`, the loan
 route reads the seam through ONE `BalanceContext` and drops its private `resolve_loan_seeded`;
 `LoanState.current_balance` KEPT for its two in-cluster readers, deletion deferred to C6-adjacent;
-B-13 closed, B-13-route control pins the fold vs the money-blind replay) shipped. Next commit: **C5**
-(the equity chart's debt line is the fold; kills B-2, the axis clamp, the empty-schedule clip).
+B-13 closed, B-13-route control pins the fold vs the money-blind replay) shipped. **C5** (`821dd0eb`,
+the equity chart's debt line is the fold: the CONFIRMED and PROJECTED tiers read
+`balance_at.positions()`, the pre-tracking ESTIMATED back-projection KEPT per D2, the axis spans
+`min(origination, today)..max(payoff, today)` so the today-clamp is retired and the empty-schedule
+clip is gone; the chart reconciles with the equity hero AT today via a shared `window_sample_date`;
+B-2 and FU-8 closed) shipped. Next commit: **C6**.
 
 ---
 
@@ -493,9 +497,36 @@ what is written here is decided in the commit itself, not in a new document.
   broken loan's page renders the fold `$231,200.00`, never the money-blind replay `$239,761.08`. Full
   suite 7359, pylint 10.00, adversarial review clean (its Medium -- the schedule double-compose -- and
   4 Lows all fixed pre-commit).
-- [ ] **C5** `fix(accounts): the equity chart's debt line is the fold` -- kills B-2
-  ($299,701.35), the axis clamp, the empty-schedule clip (FU-8). Axis spans
-  `min(origination, today)..max(payoff, today)`.
+- [x] **C5** `fix(accounts): the equity chart's debt line is the fold` -- **SHIPPED
+  `821dd0eb`.** The chart derived each month's debt from the resolver's CONTRACTUAL schedule rows
+  (`remaining_balance`), which advance one installment whether or not the borrower paid it; it
+  disagreed with the equity hero (the fold) on eight of thirteen shapes by up to $299,701.35 (B-2).
+  It now folds: `SecuredLoanSeries` drops its `back_projection`/`schedule` row lists for a tiered
+  `month_balances` map, and the seam samples `balance_at.positions()` once per calendar month -- the
+  fold of actual cash at or before today, the same forward projection after. **"The debt line is
+  the fold" is the CONFIRMED and PROJECTED tiers; the pre-tracking ESTIMATED contractual
+  back-projection STAYS (ruling D2)** -- the fold holds a flat plateau there, not the declining
+  curve the loan amortized unseen. Sampling uses the per-period map's begun/future rule, extracted
+  here to a SHARED `_positions.window_sample_date` so the map and the chart cannot drift on the
+  boundary C3b2 proved load-bearing: a begun month reads `min(month end, as_of)`, so the CURRENT
+  month reads today's fold and the chart reconciles with the hero AT today -- closing the M1 gap
+  (today's month was `projected` and one payment low; now `confirmed` and equal). The producer
+  loses `_loan_month_tiers` (schedule-row derivation) and `_dense_month_balances` (gap-fill,
+  unnecessary once the fold samples every month), and `_build_axis` spans `min(origination, today)
+  .. max(payoff, today)`, retiring the "defensive" `today_index` clamp (the mechanism that clamped
+  a not-yet-originated mortgage's principal onto today, $299,701.35). The empty-schedule clip is
+  gone: an empty schedule draws NO back-projection, so FU-8's phantom contractual walk cannot
+  recur. **Two sub-points decided this session, mirroring C3b/C4's deletion-list corrections:** a
+  RETIRED loan is still DROPPED, not charted with its history (developer ruling: C5 stays a pure
+  B-2 fix; retired-history is a later feature); and a mid-life import's ORIGINATION month reads the
+  fold's recorded opening principal tagged `confirmed`, NOT `estimated` (developer-ratified: the
+  opening is a hard fact, and it renders inside the dotted segment regardless; pinned by a test).
+  Dev-clone live-render UNMOVED: the real Mortgage reconciles to the baseline $177,277.97 at today
+  (== hero == `positions`), axis Dec 2018 (origination) .. Dec 2048 (payoff), tiers confirmed
+  opening $202,000 -> estimated back-projection -> confirmed tracking (Apr 2026) -> projected,
+  contiguous, no gaps. Full suite 7359, pylint 10.00, adversarial review clean (no
+  Critical/High/Medium; two Low fixed pre-commit -- the shared-helper DRY extraction and the pinned
+  origination-month tier).
 - [ ] **C6** `feat(loan): a plan is payment RECORDS, not schedule rows` (D1) -- deletes
   `_forward_rows`, `balance_from_schedule_at_date`, `AmortizationRow.remaining_balance`. Kills
   B-9 (overdue installments paying down debt). Also STRUCTURALLY deletes C3c's settled-slot de-dup:
@@ -568,7 +599,7 @@ archive names so old references resolve here.
 |---|---|---|---|---|
 | B-1 | Future-origination loan posts no OPENING; seam 500s five pages when the date arrives | outage | **closed (`4e46a0a8`)** -- reproduced (configure 2026-03-20 / close 04-15 / read 05-07, no re-sync: hero AND map both raised), control fires | A3 |
 | G1 | `grid.create_baseline` resynced account anchors but NOT loans, so a loan configured while its owner had no baseline (its opening posts per SCENARIO, and there was none) stayed opening-less through the one recovery path -- every loan surface 500s, with no way back short of re-saving the loan's params | outage | **closed (`4e46a0a8`)** -- reproduced (delete the baseline, POST /create-baseline, read the loan: raised); control fires | A3 |
-| B-2 | Property equity chart derives debt from schedule rows; wrong on 8/13 shapes | $299,701.35 | open, reachable | C5 |
+| B-2 | Property equity chart derives debt from schedule rows; wrong on 8/13 shapes | $299,701.35 | **closed (`821dd0eb`)** -- the debt line reads `balance_at.positions()` (the fold) for the confirmed + projected tiers; the axis clamp and empty-schedule clip are gone; dev-clone live-render reconciles to the hero at today ($177,277.97) | C5 |
 | B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **closed (`f11382a0`)** | A1 |
 | B-4 | `_forward_rows` `is_confirmed` filter had zero discriminating tests -- **measured: the filter could be deleted and all 7,401 tests passed** | $4,449.72 archived; $48,496.25 on A2's fixture; unbounded (= `last_confirmed.remaining_balance - projection_seed`) | **closed (`c96c62be`)** -- value pinned inside the only window where the filter decides anything, control shown to fire | A2 |
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | **mechanism closed (`4e46a0a8`)** -- the clock-dropped opening that let a payment split against a ZERO balance is gone; reproduced on the ordinary settle path (payment settled early, due AFTER a future origination: interest $0.00 / principal $0.00 / **excess $1,073.64**, whole payment booked as a Refund Receivable and the Schedule-A interest erased -> $833.33 / $240.31 / $0.00). The linked ledger netted to exactly $0.00 -- the loan reading as owing NOTHING while the borrower's cash sat in a Refund. Invariant still open | A3 (mechanism), E1 (invariant) |
@@ -592,7 +623,7 @@ archive names so old references resolve here.
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
 | FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case | ruled: reject at write boundary (R-C) | C9 |
-| FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | latent | C5 |
+| FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | **closed (`821dd0eb`)** -- an empty schedule now draws NO back-projection (`_back_projection_by_month` returns `{}`); the loan's real balance comes from the fold, which answers $0.00 after payoff | C5 |
 | cash D1 | Settled post-anchor transactions counted by NO producer | $9,431.72/17 days | **LIVE** (the re-anchor treadmill) | X1 |
 | cash D2 | Scalar is period-flat; contradicts the daily series | $999.48 on 07-16 | **LIVE** | X2 |
 | cash D3 | Pre-anchor: scalar fabricates, map omits; every re-anchor rewrites the whole past | -- | live | X3 |
