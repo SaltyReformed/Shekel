@@ -37,9 +37,11 @@ closing the C3b arc.
 **`confirmed_loan_balance_map` is KEPT** (C3b3 deletion-list correction, developer ruling 2026-07-18:
 it reads the KEPT posting ledger and is the Step-4 reconciliation oracle's independent window; its
 fate is decided at E1). The C2 real-clone history-window live-render (~26 days Mortgage / ~13 days
-Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C4** (the loan
-page reads the seam like everyone else; delete `LoanState.current_balance`, the route's private
-double-compose).
+Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. **C4** (`c98ea07b`, the loan
+route reads the seam through ONE `BalanceContext` and drops its private `resolve_loan_seeded`;
+`LoanState.current_balance` KEPT for its two in-cluster readers, deletion deferred to C6-adjacent;
+B-13 closed, B-13-route control pins the fold vs the money-blind replay) shipped. Next commit: **C5**
+(the equity chart's debt line is the fold; kills B-2, the axis clamp, the empty-schedule clip).
 
 ---
 
@@ -457,8 +459,40 @@ what is written here is decided in the commit itself, not in a new document.
       pylint 10.00, the fence classification-completeness guard green, adversarial review clean (its one
       catch -- a gate-invisible orphaned test import, `tests/` being outside the pylint gate -- fixed
       pre-commit). Closes the C3b arc.
-- [ ] **C4** `fix(loan): the loan page reads the seam like everyone else` -- deletes the route's
-  private double-compose and `LoanState.current_balance` (7 route reads).
+- [x] **C4** `fix(loan): the loan page reads the seam like everyone else` -- **SHIPPED
+  `c98ea07b`.** The loan ROUTE rendered its balance from the money-blind anchor replay for a broken
+  loan (B-13); it reads the seam now. **Scope corrected 2026-07-18 (developer ruling), on two counts
+  the one-liner got wrong:**
+  (1) **`LoanState.current_balance` was NOT deleted here** -- beyond the route's reads, the field is
+  still consumed by TWO in-cluster readers: `net_worth_kernel._projection_seed` (the seed for
+  `positions()`'s FORWARD projection -- `positions()` is its only reader) and
+  `balance_at._loan_figures._is_retired`. Both equal the fold for an intact loan today, so deleting
+  the field means making the seam's forward SEED fold-native, which belongs where `positions()` goes
+  fold-native (C6-adjacent). C4 KEPT the field and read the ROUTE off the seam (mirrors C3b3's
+  KEEP-correcting-the-deletion-list); the field dies in its own later commit.
+  (2) **The migration was the WHOLE loan route package, not "7 reads"** (developer ruling: full, not
+  surgical): reading only the balance off a new `BalanceContext` while the route still resolved a
+  private `LoanState` for the payment/rate/schedule would resolve each loan TWICE per request -- the
+  redundant derivation the arc exists to kill. So the route DROPPED `resolve_loan_seeded` entirely and
+  reads through ONE `BalanceContext`: balance from `balance_at.balance_at`, payment/rate/payoff/arm from
+  `loan_figures`, schedule from the composer it already runs (`build_baseline_scenarios`'s
+  `history_rows + committed_forward` == the dropped `LoanState.schedule`, same `compute_payoff_scenarios`
+  call, reviewer-verified). Touches `dashboard`/`calculators`/`schedule`/`escrow_rates`/`payment_transfer`/`_helpers`.
+  **Broader than scoped in three places** (found building it + adversarial review): the standalone
+  SCHEDULE route is a TABLE, not a balance surface, so it does NOT read the seam -- it composes ONCE via
+  a new shared `load_baseline_scenarios` helper and reads its rate off a new cheap
+  `loan_resolver.current_rate_baseline` accessor (proven `== resolve_loan(...).current_rate`), not a full
+  resolve (else it derived its schedule twice); the refinance paid-off gate now reads the seam balance
+  once and drops the redundant `not state.schedule` half (an empty committed schedule implies a zero
+  balance; its only divergent case -- a past-term balloon still owing -- is better served by a comparison
+  than blocked); the stale `_secured_debt.py` docstring is corrected (the seam FOLDS a broken loan since
+  C3b1, no longer raises). A no-baseline user cannot reach a configured loan (baseline created at
+  registration), so the seam's `require_scenario` fail-loud is unreachable here -- matched to
+  `debt_strategy`, deliberately not guarded. Baseline UNMOVED on real data by proof (intact loans: fold
+  == the replay, by B2; `test_cross_page_balance_equality` green); a new route test pins the fix -- a
+  broken loan's page renders the fold `$231,200.00`, never the money-blind replay `$239,761.08`. Full
+  suite 7359, pylint 10.00, adversarial review clean (its Medium -- the schedule double-compose -- and
+  4 Lows all fixed pre-commit).
 - [ ] **C5** `fix(accounts): the equity chart's debt line is the fold` -- kills B-2
   ($299,701.35), the axis clamp, the empty-schedule clip (FU-8). Axis spans
   `min(origination, today)..max(payoff, today)`.
@@ -544,7 +578,7 @@ archive names so old references resolve here.
 | B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
 | B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **closed (`18fd3a04`)** -- origination is the opening now, so a pre-tracking date reads the origination principal held flat (the plateau), never debt-free; verified $0 -> $202,000/$32,402.45 on the real loans; aged-out of the /savings trend window meanwhile, closed at the producer; B2's tracking-start shape pins the plateau | C1 |
 | B-12 | Unfenced producer tier below the fence; `loan_resolver` package wholly unfenced | -- | guard gap | Phase D |
-| B-13 | Loan detail route answers a broken loan from the money-blind replay | $199,600.80 | latent | C4 |
+| B-13 | Loan detail route answers a broken loan from the money-blind replay | $199,600.80 | **closed (`c98ea07b`)** -- the route reads `balance_at.balance_at` (the fold) now, not `LoanState.current_balance`; the route test renders a broken loan's page at the fold `$231,200.00`, never the replay `$239,761.08` (control fires) | C4 |
 | B-14 | `loan_recurrence_sync` persists a payoff date off the blind walk | -- | reachable | C8 |
 | B-15 | Kind-blind true-up writes a cash anchor onto a LOAN (had fired: both real loans carry rows) | -- | **closed (`f11382a0`)**; residue N-4/N-5 | A1 |
 | B-16 | Horizon uses `is_paid_off` where the contract says `is_retired` | -- | latent | collapses at C3b/C4 |
