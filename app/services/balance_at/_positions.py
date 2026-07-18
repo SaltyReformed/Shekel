@@ -49,6 +49,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
+from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
 
@@ -150,3 +151,102 @@ def positions(
             debt_schedule.projection_seed, debt_schedule.owed_from,
         )
     return result
+
+
+def positions_period_map(
+    account: Account, ctx: BalanceContext, periods: list,
+) -> "OrderedDict[int, Decimal]":
+    """Return a loan's per-period balance map, built from :func:`positions`.
+
+    The per-period form of :func:`positions`, and the producer step C3b's map
+    commit points the seam's AMORTIZING map dispatch at.  It reproduces the
+    genesis per-period read switch the kernel's ``_build_amortizing_balance_map``
+    runs today -- ledger past, projection future -- but from the ONE total loan
+    producer instead of the sum-of-postings map plus a splice, so the scalar, the
+    map, and the liability band all answer a loan from :func:`positions` and cannot
+    disagree.
+
+    **The sampling rule reproduces the splice's boundary.**  The kernel map splices
+    on ``period.start_date <= ctx.as_of``
+    (:func:`app.services.account_projection.splice_confirmed_and_projected_loan_balances`):
+    a BEGUN period reads the confirmed ledger at its END, a FUTURE period the
+    forward projection at its end.  This samples :func:`positions` at the date that
+    reproduces each side:
+
+    * **A BEGUN period (``period.start_date <= ctx.as_of``): valued at**
+      ``min(period.end_date, ctx.as_of)``.  For a period that ENDED by the NOW the
+      clamp is a no-op (``period.end_date``), and :func:`positions` folds the ledger
+      there -- equal to the kernel's period-END-keyed confirmed balance (step B2
+      proves the fold equals the sum-of-postings reader on every day).  For the
+      CURRENT period (begun, but ending after the NOW) the clamp is ``ctx.as_of``,
+      and that clamp is load-bearing: sampling at ``period.end_date`` would hand the
+      current period to the forward PROJECTION (its end is after the NOW), moving it
+      by any payment scheduled between the NOW and period end -- where the confirmed
+      ledger holds today's balance flat to period end.  The clamp keeps the current
+      period on the fold, matching the confirmed map.  (Under the one clock no
+      confirmed posting is dated after today, so for the production read pass -- whose
+      ``ctx.as_of`` is always today -- the confirmed map's period-END value for the
+      current period IS its balance-at-today; the clamp reproduces it exactly.)
+    * **A FUTURE period (``period.start_date > ctx.as_of``): valued at**
+      ``period.end_date``.  :func:`positions` answers it from the forward projection
+      -- the identical ``forward_balance_at_date`` walk over the same resolver
+      schedule and seed the kernel's
+      :func:`~app.services.account_projection.compute_forward_loan_period_balance_map`
+      runs, so the future side matches by construction.
+
+    A not-yet-originated loan folds nothing: :func:`positions` routes every date
+    (begun periods clamp to a date before ``owed_from``) to the projection's
+    origination gate, which returns ``0.00`` before the loan exists -- exactly the
+    kernel map's true-zero confirmed side for such a loan.
+
+    **Equal to ``_build_amortizing_balance_map`` for the production read pass, and
+    the map commit adopts one behaviour change.**  For a configured loan with an
+    intact posting ledger this returns the same map the kernel produces today
+    (proven every-period by ``test_loan_positions_period_map_oracle.py``).  The one
+    place it will differ once wired is a BROKEN loan (originated, no OPENING
+    posting): this folds the loan's SOURCE facts and answers, where the kernel map
+    RAISES :class:`~app.services.posting_reads.LoanLedgerNotOpenedError` -- the same
+    E1 repairable-cache decision the scalar already took at step C3b1 (a cold
+    posting cache is a repairable inconsistency, not a read-time outage).
+
+    **Additive and unwired** (plan step C3b2, mirroring C3a's :func:`positions`):
+    only its oracle calls it; the map dispatch cuts over in step C3b3's commit.
+
+    Args:
+        account: The amortizing loan account (the caller owns the ownership check).
+            Loan-only, and fails loud otherwise: a non-configured account (no
+            :class:`~app.models.loan_params.LoanParams`) is the seam dispatch's
+            cash-degrade case, resolved before this is reached, so
+            :func:`positions` raises for it.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            -- its ``as_of`` is the resolver's NOW and the begun/future boundary
+            (the SAME ``ctx.as_of`` the kernel map splices on).
+        periods: The pay periods to key the map by, in the desired output order.
+
+    Returns:
+        ``OrderedDict`` period_id -> cent-quantized ``Decimal`` balance, in
+        *periods* order.  ``OrderedDict()`` for an empty *periods*.
+
+    Raises:
+        ValueError: When ``scenario`` is None (callers that resolve a nullable
+            baseline must guard first), or when *account* is not a configured loan
+            (:func:`positions`' own contract).
+    """
+    # Fail loud at the entry on a missing baseline, as every public seam entry
+    # does -- positions() guards too, but guarding here keeps the contract's
+    # failure at the surface the consumer called rather than deep inside the
+    # composed producer (the same defensive double-guard balance_at() runs).
+    _require_scenario(ctx)
+    # The date to value each period at, reproducing the splice's begun/future
+    # boundary (see the docstring).  positions() collapses duplicate dates, so a
+    # boundary period landing on ctx.as_of costs nothing extra.
+    sample_on: dict[int, date] = {}
+    for period in periods:
+        if period.start_date <= ctx.as_of:
+            sample_on[period.id] = min(period.end_date, ctx.as_of)
+        else:
+            sample_on[period.id] = period.end_date
+    valued = positions(account, ctx, list(sample_on.values()))
+    return OrderedDict(
+        (period.id, valued[sample_on[period.id]]) for period in periods
+    )

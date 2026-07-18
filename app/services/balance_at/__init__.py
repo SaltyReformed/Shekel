@@ -132,7 +132,7 @@ from ._kind_correct import (
 from ._liability import liability_owed_at_dates
 from ._loan_figures import LoanFigures, loan_figures, loan_ledger_domain
 from ._loan_interest import loan_interest_in_year
-from ._positions import positions
+from ._positions import positions, positions_period_map
 from ._secured_debt import SecuredLoanSeries, secured_loan_series
 
 # The seam's public surface, re-exported so every consumer's existing
@@ -167,5 +167,6 @@ __all__ = [
     "loan_interest_in_year",
     "loan_ledger_domain",
     "positions",
+    "positions_period_map",
     "secured_loan_series",
 ]
