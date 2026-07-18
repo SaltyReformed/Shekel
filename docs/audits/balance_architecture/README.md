@@ -12,14 +12,14 @@ R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
 happened -- the date its posting already carries in `entry_date`; closed the N-10 leak and
-N-12, moved the per-period map to period-END keying), and **C3a** (`df775017`) shipped. **C3 is
-DECOMPOSED** (developer ruling 2026-07-18): it was too large for one revertable commit and
-reached into dead year-end code, so it ships as **C3a** (build `positions()`) -> **F2**
-(delete the dead year-end service, pulled AHEAD) -> **C3c** (interest-in-year onto
-`positions()`) -> **C3b** (cut the seam over + delete the machinery), each a REFACTOR
-(baseline unmoved; B-9's overdue-installment paydown preserved until C6). The C2 real-clone
-live-render (~26 days Mortgage / ~13 days Van Loan, today UNMOVED) is still outstanding
-before the F3 prod ship. Next commit: **F2**, then **C3c**.
+N-12, moved the per-period map to period-END keying), **C3a** (`df775017`, `positions()` -- the
+total loan producer), and **F2** (`3aecceb0`, the dead year-end service deleted) shipped. **C3 is
+DECOMPOSED** (developer ruling 2026-07-18): too large for one revertable commit and reaching into
+dead year-end code, so it ships **C3a** -> **F2** (pulled AHEAD) -> **C3c** (interest-in-year onto
+`positions()`) -> **C3b** (cut the seam over + delete the machinery), each a REFACTOR (baseline
+unmoved; B-9's overdue-installment paydown preserved until C6). The C2 real-clone live-render (~26
+days Mortgage / ~13 days Van Loan, today
+UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C3c**.
 
 ---
 
@@ -394,8 +394,17 @@ what is written here is decided in the commit itself, not in a new document.
 
 - [ ] **F1** FU-1: the Van Loan's known-wrong history (duplicate same-day anchors, a $452.37
   step with no payment) -- a DATA correction, made only after B2's oracle can validate it.
-- [ ] **F2** `refactor(analytics): delete the dead year-end summary service` -- R-D ruled
-  2026-07-16: delete now (with its tests); `_income_tax` stays for the live Taxes tab.
+- [x] **F2** `refactor(analytics): delete the dead year-end summary service` -- **SHIPPED
+  `3aecceb0`.** The whole `year_end_summary_service` package + its two test files deleted (the route
+  302s; `compute_year_end_summary` had no live caller). R-D's two still-live functions
+  (`_compute_mortgage_interest` -> `_loan_year_interest`) RELOCATED to their only caller
+  `tax_report_service` (C3c has not landed, so they move rather than die), B-19's false
+  `DebtSchedule` hints fixed to the real row-list type, their unique hybrid coverage moved to
+  `test_tax_mortgage_interest.py`. **Broader than R-D scoped** (the full suite caught it): four LIVE
+  cross-consistency tests reached into the package internals -- repointed to the live producers, or
+  the deleted year-end surface dropped from the equality checks. The obsolete pre-fence
+  `calculate_balances` git-grep guard went with it (the W9906 fence supersedes it). ~12 stale
+  docstring PROVENANCE mentions remain (deferred doc-sweep; not broken code). Net -6.7k lines.
 - [ ] **F3** prod ship: dev -> main PR for the whole arc per the standard pipeline.
 
 ## 6. The findings ledger
@@ -423,7 +432,7 @@ archive names so old references resolve here.
 | B-16 | Horizon uses `is_paid_off` where the contract says `is_retired` | -- | latent | collapses at C3b/C4 |
 | B-17 | Debt-track `is_originated` wiring unguarded (guard tests a hand-built dict) | -- | guard gap | A2-adjacent; flag deleted at C3b |
 | B-18 | Cash scalar fabricates pre-anchor balances from today's anchor | -- | live | X3 |
-| B-19 | False `DebtSchedule` type hints in `_income_tax` | -- | open | fix on first C-phase touch |
+| B-19 | False `DebtSchedule` type hints in `_income_tax` | -- | **closed (`3aecceb0`)** -- hints fixed to the real `dict[int, list]` / `list` row type on the relocation to `tax_report_service` | F2 |
 | B-20 | True-up-paid-off loan shows origination as payoff date, no badge | -- | open | C8 |
 | B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
 | B-22 | Dead `insert_origination_event` fixture helper | -- | **closed (`18fd3a04`)** -- helper + its no-op seeds deleted; test loans now match production (origination synthesized, no stored row) | C1 |
