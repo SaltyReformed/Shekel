@@ -496,8 +496,7 @@ def confirmed_loan_view(
     * *as_of* PRECEDES the loan's ``origination_date`` -- nothing has happened
       to it yet, so the confirmed ledger has no domain for it at all and the
       resolver's replay owns its whole timeline (the same rule, stated in full,
-      as :func:`app.services.net_worth_kernel.amortizing_balance_at`'s
-      not-yet-originated branch); or
+      as :func:`app.services.balance_at.positions`'s not-yet-originated branch); or
     * a reader returns ``None`` -- the loan has no OPENING posting in the
       scenario (an unconfigured loan, a what-if the opening was never posted
       into -- the C4 M2 case -- or any loan not yet backfilled), or no

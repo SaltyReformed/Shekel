@@ -75,7 +75,7 @@ class LoanLedgerNotOpenedError(PostingError):
 
     A loan that has NOT yet originated is NOT this error.  It legitimately has no
     opening -- nothing has happened to it -- and the projection owns its whole
-    timeline (see :func:`app.services.net_worth_kernel.amortizing_balance_at`).
+    timeline (see :func:`app.services.balance_at.positions`).
     """
 
 

@@ -59,6 +59,7 @@ from ._fold import (
     LoanAnchorCorrection,
     LoanLedgerWalk,
     compute_loan_payment_splits,
+    fold_from_walk,
     fold_loan_balances,
     walk_loan_ledger,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "anchor_visible_on",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
+    "fold_from_walk",
     "fold_loan_balances",
     "merge_anchor_and_payment_events",
     "owner_pay_periods",

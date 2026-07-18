@@ -2201,33 +2201,6 @@ class TestLiabilityOwedAtDates:
                     {acct.id: Decimal("200000.00")},
                 )
 
-    def test_kernel_producer_rejects_today_or_earlier(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """The kernel's forward projection refuses a today-or-earlier date.
-
-        ``forward_balance_at_date`` walks the schedule's UNCONFIRMED rows, and an
-        OVERDUE payment (past due, still unpaid) is deliberately among them.  So
-        at ``today`` the walk would report the balance net of a payment that was
-        NEVER MADE -- understating the debt.  The producer therefore rejects the
-        present as well as the past; the confirmed present is the resolver's
-        ``current_balance``, which the seam supplies.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
-            bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            acct, _params = _make_mortgage(
-                db, seed_user, periods[0], Decimal("200000.00"),
-                date.today() - timedelta(days=365),
-            )
-
-            with pytest.raises(ValueError, match="STRICTLY FORWARD"):
-                net_worth_kernel.loan_owed_at_dates(
-                    [acct], bctx, [date.today()],
-                )
-
     def test_projection_is_joined_by_date_not_by_position(
         self, app, db, seed_user, seed_periods_today,
     ):
@@ -2905,24 +2878,33 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
 
 
 class TestBrokenLoanFailsLoud:
-    """A configured, ORIGINATED loan with no OPENING posting refuses to answer.
+    """A configured, ORIGINATED loan whose POSTING ledger is missing.
 
     The seam used to fall back to the loan's amortization SCHEDULE when the genesis
     ledger could not answer for a past date.  A schedule row is a payment the
     borrower was SUPPOSED to make, not one they did, so the fallback quietly paid
     the debt down with money that never moved: a $240,000 loan originated 18 months
     ago and never paid read as $236,544.21 owed by the per-period map, while the
-    scalar said $240,000 -- two producers, one loan, one day, $3,455.79 apart.
+    scalar said $240,000 -- two producers, one loan, one day, $3,455.79 apart.  A
+    wrong balance that looks plausible is worse than a page that fails, so both
+    producers were made to RAISE rather than walk the schedule.
 
-    A wrong balance that looks plausible is worse than a page that fails, because
-    nobody investigates a plausible number.  Both producers now raise.
+    **The SCALAR no longer raises -- it FOLDS the loan's SOURCE facts (step C3b).**
+    ``balance_at.balance_at`` reads :func:`~app.services.balance_at.positions`,
+    which folds the loan's origination anchor and settled shadows -- neither of
+    which lives in the posting ledger -- so a missing OPENING posting is a
+    repairable cache inconsistency (plan step E1), not a read-time outage (B-8).
+    It answers the CORRECT balance the schedule-walk fallback could not, without
+    the posting cache.  The per-period MAP still reads the posting ledger and still
+    raises here until its own cutover (step C3b's map commit), which is what the
+    surviving map test below pins.
 
     Replaces ``TestUnpaidScheduleRowsNeverReduceTheDebt``, which pinned the
     behaviour of the fallback this deletes.
     """
 
     def _broken_loan(self, seed_user, db_session, periods):
-        """A configured loan whose genesis ledger has been removed."""
+        """A configured loan whose genesis POSTING ledger has been removed."""
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
         from tests._test_helpers import clear_loan_ledger, create_loan_account
@@ -2934,27 +2916,34 @@ class TestBrokenLoanFailsLoud:
             account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
         )
         # The ONE way to build a ledger-less loan: production cannot make one.
+        # It clears only the POSTINGS; the source facts (LoanParams + shadows) that
+        # the fold reads are untouched.
         clear_loan_ledger(acct.id)
         return acct
 
-    def test_scalar_raises_rather_than_walking_the_schedule(
+    def test_scalar_folds_source_events_when_the_posting_ledger_is_missing(
         self, app, db, seed_user, seed_periods,
     ):
-        """balance_at on a broken loan raises LoanLedgerNotOpenedError."""
-        # pylint: disable=import-outside-toplevel
-        from app.services.posting_reads import LoanLedgerNotOpenedError
+        """balance_at answers a broken loan from the fold, not a raise (step C3b).
 
+        The $240,000 loan originated 2024-09-01 and never paid; its posting ledger
+        is cleared.  The scalar folds the loan's SOURCE facts -- the synthesized
+        origination anchor ($240,000) plus its (empty) settled shadows -- and
+        returns $240,000.00 held flat: the honest balance of a loan borrowed and
+        never paid down.  The missing posting is a repairable cache miss (plan E1),
+        not the read-time outage the old fail-loud raised, and NOT the
+        schedule-walk's phantom $236,544.21 paid down by installments never made.
+        """
         with app.app_context():
             periods = seed_periods
             acct = self._broken_loan(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
 
-            with pytest.raises(LoanLedgerNotOpenedError) as excinfo:
-                balance_at.balance_at(acct, bctx, bctx.as_of)
-            # The message names the account, the scenario, and the REPAIR.
-            message = str(excinfo.value)
-            assert str(acct.id) in message
-            assert "sync_loan_postings_all_scenarios" in message
+            # Originated 2024-09-01, no payments: the fold holds the origination
+            # principal flat -- no debt paid, because no cash moved.
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) == (
+                Decimal("240000.00")
+            )
 
     def test_map_raises_rather_than_walking_the_schedule(
         self, app, db, seed_user, seed_periods,

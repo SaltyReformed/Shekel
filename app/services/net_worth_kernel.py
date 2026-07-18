@@ -49,7 +49,6 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
     compute_forward_loan_period_balance_map,
-    forward_balance_at_date,
     splice_confirmed_and_projected_loan_balances,
 )
 from app.services.loan_resolution import ResolvedLoan
@@ -296,110 +295,18 @@ def debt_schedule_rows(
     }
 
 
-def loan_owed_at_dates(
-    loan_accounts: list,
-    ctx: "BalanceContext",
-    sample_dates: list[date],
-) -> dict[int, list[Decimal]]:
-    """Return each loan's PROJECTED owed balance at several FUTURE dates.
-
-    The batch, multi-date forward loan projection behind the seam's
-    :func:`app.services.balance_at.liability_owed_at_dates`: a long-horizon
-    liability band needs every loan's owed balance at ~25 annual sample dates,
-    and the scalar per-date accessors would regenerate each loan's resolver
-    schedule once per date.  This generates every loan's schedule ONCE (via
-    :func:`generate_debt_schedules`, the same resolver output the debt card
-    and the ``2 years`` liability series consume) and projects each loan to
-    every date through the ONE forward rule
-    (:func:`~app.services.account_projection.forward_balance_at_date`: the
-    ledger-seeded confirmed balance today, reduced by the scheduled payments
-    still to come by that date), so a liability band cannot drift from the loan
-    balance the rest of the app reports.  Lives in the kernel -- inside the
-    balance-seam cluster, beside :func:`generate_debt_schedules` whose output it
-    projects -- so the rule stays fenced with the per-period
-    :func:`~app.services.account_projection.compute_forward_loan_period_balance_map`
-    it is the multi-date sibling of.  Consumers reach it ONLY through the seam
-    entry (the W9906 fence).
-
-    **Domain: STRICTLY FUTURE dates -- enforced, not merely documented.**  This
-    is a projection, not a history reader, and a date at or before today is
-    REJECTED rather than answered.  Two distinct reasons, both fatal:
-
-    * The PAST belongs to the genesis ledger
-      (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`, via
-      :func:`amortizing_balance_at`), which alone books the balance events --
-      true-ups above all -- that never appear as schedule rows.
-    * The answer here would not even be the confirmed balance held flat.
-      :func:`~app.services.account_projection.forward_balance_at_date` walks the
-      schedule's UNCONFIRMED rows, and an OVERDUE payment (past due, still
-      unpaid) is deliberately among them (the project's due-basis treatment).  A
-      past-or-today date would therefore report the balance net of a payment that
-      was never made -- silently UNDERSTATING the debt.  ``today`` itself is
-      excluded for exactly this reason: the confirmed present is the resolver's
-      ``current_balance``, which the seam entry supplies, not a schedule walk.
-
-    A loan the resolver returns nothing for (no ``LoanParams``) is absent from
-    the result, mirroring how the per-period map skips it; the seam then holds
-    that loan flat at its own current balance (the no-forward-model rule).
-
-    Args:
-        loan_accounts: The amortizing loan accounts to value.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
-            Its ``as_of`` is the present/future boundary this guard splits on AND
-            the date each loan is resolved at -- ONE clock, so the seam entry, its
-            sample axis, this guard, and the resolver cannot disagree.  They were
-            two independent ``date.today()`` reads before, which a midnight
-            crossing between them could turn into a rejection of the caller's own
-            index-0 sample.
-        sample_dates: The calendar dates to value each loan at, in the desired
-            output order.  Every date must be STRICTLY AFTER ``ctx.as_of``.
-
-    Returns:
-        ``{account_id: [Decimal owed at each sample date]}`` -- one list per
-        loan with a resolvable schedule, aligned with *sample_dates*.
-
-    Raises:
-        ValueError: When any sample date is on or before ``ctx.as_of``.  The past
-            (and the present) is the ledger's; see the domain note above.
-    """
-    today = ctx.as_of
-    past = sorted({d for d in sample_dates if d <= today})
-    if past:
-        raise ValueError(
-            "loan_owed_at_dates projects STRICTLY FORWARD; it cannot answer a "
-            "date on or before today (an overdue unconfirmed payment would "
-            "understate the debt). Read the past through the genesis ledger "
-            "(balance_at.balance_at / amortizing_balance_at). Rejected dates: "
-            f"{[d.isoformat() for d in past]} (today={today.isoformat()})"
-        )
-    schedules = generate_debt_schedules(loan_accounts, ctx)
-    result: dict[int, list[Decimal]] = {}
-    for account in loan_accounts:
-        schedule_info = schedules.get(account.id)
-        if schedule_info is None:
-            continue
-        # Returned verbatim -- the schedule rows and the seed are already
-        # cent-quantized by the resolver.
-        result[account.id] = [
-            forward_balance_at_date(
-                schedule_info.schedule,
-                sample_date,
-                schedule_info.projection_seed,
-                schedule_info.owed_from,
-            )
-            for sample_date in sample_dates
-        ]
-    return result
-
 
 def _loan_ledger_not_opened(
     account: Account, ctx: "BalanceContext",
 ) -> "LoanLedgerNotOpenedError":
     """Build the fail-loud error for an originated loan with no OPENING posting.
 
-    Shared by the scalar (:func:`amortizing_balance_at`) and the map
-    (:func:`_build_amortizing_balance_map`), so the two cannot report the same
-    corruption two different ways -- and so the REPAIR is named in one place.
+    Used by the per-period map (:func:`_build_amortizing_balance_map`), the last
+    balance producer still reading the POSTING ledger for a loan's past.  The
+    scalar cut over to the fold (:func:`app.services.balance_at.positions`, step
+    C3b), which answers such a loan from its SOURCE facts and so does not raise;
+    the map raises here until its own cutover, keeping the corruption named in one
+    place while it still reads the postings.
 
     Args:
         account: The broken loan account.
@@ -418,116 +325,6 @@ def _loan_ledger_not_opened(
         f"loan_posting_service.sync_loan_postings_all_scenarios({account.id})."
     )
 
-
-def amortizing_balance_at(
-    account: Account, ctx: "BalanceContext", as_of: date,
-) -> Decimal:
-    """Return an amortizing loan's balance at *as_of*: ledger past, projected future.
-
-    The scalar sibling of :func:`_build_amortizing_balance_map` (per-period) and
-    :func:`loan_owed_at_dates` (multi-date), and the producer the seam's
-    :func:`app.services.balance_at.balance_at` dispatches an AMORTIZING account
-    to.  All three split on the one boundary the loan architecture turns on:
-
-    * **``as_of`` at or before today: the genesis ledger.**
-      :func:`app.services.loan_posting_service.confirmed_loan_balance_at` -- the
-      SAME producer the loan card, the net-worth hero, and the ``2 years`` band's
-      begun periods read, so this scalar cannot disagree with them.  The ledger is
-      the only COMPLETE record of the past: it books every balance event, where
-      the schedule carries payment rows only.  Walking the schedule here (the
-      pre-fix behaviour) missed a true-up dated after the last payment row and
-      reported a balance the loan does not owe -- a real $3.94 divergence between
-      year-end debt progress and the loan card on production data.
-    * **``as_of`` after today: the forward projection.**
-      :func:`app.services.account_projection.forward_balance_at_date` -- the
-      confirmed balance today, reduced by the payments scheduled by *as_of*.  The
-      ledger cannot answer a future date (its reader raises), and this keeps the
-      scalar DATE-precise, which the year-end debt-progress (a Dec 31 as_of,
-      generally mid-period) depends on: it walks to the exact date rather than
-      rounding to a period-end map value.  Do NOT "simplify" it to read the
-      period map.
-    * **A loan not yet ORIGINATED by ``ctx.as_of``: the projection, for every
-      date.**  Nothing has happened to it, so the ledger has no domain and the
-      projection owns its whole timeline: ``0.00`` before origination, its opening
-      balance forward.  Not an exception to the rule above -- it IS the rule, for a
-      loan whose entire life is still ahead of it.  Asked of the FACT
-      (``owed_from``), never inferred from the ledger's silence: the walk records
-      every anchor whatever its date, so this loan's opening IS posted, and the
-      ledger dates an anchor from its pay period's START -- it would hand back the
-      full opening balance for one originating later in the current period.
-
-    **An ORIGINATED loan the ledger cannot answer for is BROKEN, and RAISES**
-    (:class:`~app.services.posting_reads.LoanLedgerNotOpenedError`).  It does not
-    fall back to the schedule: those rows are payments the borrower was SUPPOSED to
-    make, and walking them for the past pays the debt down with money that never
-    moved.  There is no third source for a loan's history.
-
-    **The schedule is resolved BEFORE the ledger is read, and the order matters.**
-    An AMORTIZING account with no ``LoanParams`` -- a Mortgage account whose terms
-    were never filled in -- also has no OPENING posting, so the ledger answers
-    ``None`` for it exactly as a broken loan does.  Asking the loan first keeps them
-    apart: no schedule means "not a configured loan", which degrades to the cash
-    producer; a schedule with no ledger means a BROKEN loan.  The resolution is
-    memoized on *ctx*, so asking costs nothing.
-
-    **The two dates.**  ``ctx.as_of`` is the resolver's NOW -- the moment the loan
-    is RESOLVED at, which decides what is confirmed and what it currently owes.
-    *as_of* is the VALUATION date -- the moment to value it AT.  They are
-    different questions, and this producer splits on their comparison.  While
-    "now" was an implicit ``date.today()`` read inside this function, the two were
-    silently conflated: a caller could ask for a historical valuation and get it
-    measured against a loan resolved at today, with no way to say otherwise.
-
-    Args:
-        account: The amortizing loan account (the caller owns the ownership
-            check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
-            (its scenario scopes the ledger; its ``as_of`` is the resolver's NOW
-            and the past/future boundary).
-        as_of: The date to value the loan at.
-
-    Returns:
-        The ``Decimal`` balance owed at *as_of*.
-
-    Raises:
-        LoanLedgerNotOpenedError: When an ORIGINATED loan has no OPENING posting in
-            the scenario -- its history cannot be read, and the schedule is not a
-            substitute for it.
-    """
-    debt_schedule = generate_debt_schedules([account], ctx).get(account.id)
-    if debt_schedule is None:
-        # No resolvable schedule (no ``LoanParams`` -- not a configured loan):
-        # degrade to the cash producer over the loan's own transaction rows (the
-        # seam's documented AMORTIZING fallback).
-        return balance_resolver.balance_as_of_date(
-            account, ctx.scenario.id, as_of,
-        )
-
-    # The projection answers TWO cases: any future valuation, and every valuation
-    # of a loan that has not originated yet (which has no confirmed past for the
-    # ledger to own -- see the docstring).  Both are the same producer because
-    # they are the same question: "what will this loan owe, given what has not
-    # happened yet?"
-    if as_of > ctx.as_of or debt_schedule.owed_from > ctx.as_of:
-        return forward_balance_at_date(
-            debt_schedule.schedule, as_of,
-            debt_schedule.projection_seed, debt_schedule.owed_from,
-        )
-
-    # Pylint: ``import-outside-toplevel`` -- imported from the defining
-    # ``_reader`` submodule rather than the package, so the static import graph
-    # carries no ``net_worth_kernel -> loan_posting_service`` cycle at module load
-    # (the same lazy-seam pattern ``_build_amortizing_balance_map`` uses for the
-    # map reader).
-    from app.services.loan_posting_service._reader import (  # pylint: disable=import-outside-toplevel
-        confirmed_loan_balance_at,
-    )
-    confirmed = confirmed_loan_balance_at(account.id, ctx.scenario.id, as_of)
-    if confirmed is not None:
-        return confirmed
-
-    # An ORIGINATED loan whose ledger cannot answer is BROKEN.  Fail loud.
-    raise _loan_ledger_not_opened(account, ctx)
 
 
 def _account_interest_projection(
@@ -927,9 +724,9 @@ def _build_amortizing_balance_map(
     **A loan that has not ORIGINATED by ``ctx.as_of`` reads a map of TRUE zeros for
     its begun periods, and the splice runs unchanged** -- every begun period
     precedes origination, so it owed nothing in any of them.  Asked of the FACT
-    (``owed_from``) BEFORE the ledger is read, exactly as the scalar
-    :func:`amortizing_balance_at` does and documents in full.  Reading the ledger's
-    ``None`` as "not originated" worked only while the walk's clock forced it.
+    (``owed_from``) BEFORE the ledger is read, exactly as the seam's total producer
+    :func:`app.services.balance_at.positions` does.  Reading the ledger's ``None``
+    as "not originated" worked only while the walk's clock forced it.
 
     **The two zeros, which must never be confused.**  The zeros above mean *"the
     loan does not exist yet"* and are TRUE.  The ledger's own pre-opening zero

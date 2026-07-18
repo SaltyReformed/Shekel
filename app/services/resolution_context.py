@@ -59,6 +59,7 @@ from datetime import date
 
 from app.models.account import Account
 from app.models.scenario import Scenario
+from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.loan_resolution import ResolvedLoan, resolve_loan_bundle
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -91,6 +92,9 @@ class BalanceContext:
     scenario: Scenario | None
     as_of: date
     _loans: dict[int, ResolvedLoan | None] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _walks: dict[int, LoanLedgerWalk] = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -178,6 +182,52 @@ class BalanceContext:
                 account.id, self.scenario_id, self.as_of,
             )
         return self._loans[account.id]
+
+    def loan_walk(self, account: Account) -> LoanLedgerWalk:
+        """Return *account*'s ledger walk for this pass, walking it at most once.
+
+        The memo that collapses a read pass's N folds of one loan to one WALK.
+        The seam's total loan producer
+        (:func:`app.services.balance_at.positions`) folds a loan's SOURCE events
+        for the past, and the scalar, the per-period map, and the liability band
+        each read it in a single ``/savings`` render.  The walk
+        (:func:`~app.services.loan_ledger.walk_loan_ledger`) is the expensive part
+        -- it loads the loan's params, anchors, rate periods, escrow lines and
+        settled shadows -- so re-walking it per producer is exactly the redundant
+        derivation :meth:`resolved_loan` already removes for the resolver.  The
+        first call walks; every later call in the same pass samples that same
+        :class:`~app.services.loan_ledger.LoanLedgerWalk` through
+        :func:`~app.services.loan_ledger.fold_from_walk`.
+
+        The walk takes NO as-of and reads no clock -- it replays the loan's FACTS
+        whole (:func:`~app.services.loan_ledger.walk_loan_ledger`) -- so this memo
+        is a pure function of the loan and the pass's pinned ``scenario``, exactly
+        like the resolver memo above.  A reader bounds the walk to a date; the memo
+        does not.
+
+        **FENCED (W9906), the same as :meth:`resolved_loan`.**  The walk is a
+        balance-at-T computation over a loan's events, so only the seam
+        (:mod:`app.services.balance_at`) and the kernel cluster it composes may
+        reach it; a consumer that wants a loan's balance takes
+        :func:`app.services.balance_at.balance_at`.
+
+        Args:
+            account: The loan account to walk.  Must belong to ``user_id`` (the
+                caller owns the ownership check).  A non-loan / unconfigured
+                account walks to an empty
+                :class:`~app.services.loan_ledger.LoanLedgerWalk` (the leaf's own
+                no-params contract), which the seam never reaches for -- it
+                resolves the schedule first.
+
+        Returns:
+            The memoized :class:`~app.services.loan_ledger.LoanLedgerWalk` for
+            this loan under the pass's scenario.
+        """
+        if account.id not in self._walks:
+            self._walks[account.id] = walk_loan_ledger(
+                account.id, self.scenario_id,
+            )
+        return self._walks[account.id]
 
 
 def require_scenario(ctx: BalanceContext) -> None:

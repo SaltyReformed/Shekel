@@ -21,7 +21,6 @@ from app.models.account import Account
 from app.services import (
     balance_resolver,
     net_worth_investment,
-    net_worth_kernel,
     pay_period_service,
 )
 from app.services.account_projection import (
@@ -34,6 +33,7 @@ from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext
 
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
+from ._positions import positions
 
 
 def balance_map(
@@ -177,13 +177,16 @@ def balance_at(
       its own period loading and intra-period entry-date precision.  PLAIN is
       the only kind whose KIND-CORRECT balance IS its transaction balance, so
       the scalar can answer it date-precisely.
-    * **AMORTIZING (loan)** -> :func:`~app.services.net_worth_kernel.amortizing_balance_at`:
-      the genesis LEDGER for a date at or before today (the only complete record
-      of the past -- it books the true-ups that never appear as schedule rows),
-      and the forward schedule projection after.  This is also the accessor a
-      consumer wanting a loan's PAST balance must use; the seam's forward-only
-      liability view (:func:`~app.services.balance_at.liability_owed_at_dates`)
-      deliberately refuses a past date.
+    * **AMORTIZING (loan)** -> :func:`~app.services.balance_at.positions`: the event
+      FOLD over the loan's SOURCE facts for a date at or before the resolver's now
+      (the only complete record of the past -- it books the true-ups that never
+      appear as schedule rows), and the forward schedule projection after (step
+      C3b).  An AMORTIZING account with no ``LoanParams`` has no schedule to fold and
+      degrades to the cash producer here (``positions()`` is loan-only).  This
+      scalar is also the accessor a consumer wanting a loan's PAST balance must use;
+      the seam's forward-only liability view
+      (:func:`~app.services.balance_at.liability_owed_at_dates`) deliberately refuses
+      a past date.
     * **INTEREST / INVESTMENT / APPRECIATING** -> the value of
       :func:`balance_map` at the period containing *as_of* (these kinds are
       period-granular: their model is period-keyed, so a date resolves to its
@@ -251,10 +254,19 @@ def balance_at(
         )
 
     if kind is AccountProjectionKind.AMORTIZING:
-        # Ledger for the past, forward projection after -- the kernel producer
-        # that keeps this scalar on the same source as the loan card and the
-        # ``2 years`` band's begun periods.
-        return net_worth_kernel.amortizing_balance_at(account, ctx, as_of)
+        # A configured loan reads the ONE total producer positions(): the FOLD over
+        # source events for a past date, the schedule projection after (step C3b).
+        # An AMORTIZING account with no LoanParams -- a Mortgage typed but never
+        # filled in -- has no schedule to fold, so it degrades to the cash producer
+        # over its own transaction rows.  positions() fails loud for such an
+        # account, so the degrade is decided HERE on the resolver's fact, exactly
+        # the routing amortizing_balance_at did internally before the cutover
+        # (``ctx.resolved_loan is None`` iff generate_debt_schedules would skip it).
+        if ctx.resolved_loan(account) is None:
+            return balance_resolver.balance_as_of_date(
+                account, ctx.scenario.id, as_of,
+            )
+        return positions(account, ctx, [as_of])[as_of]
 
     # INTEREST / INVESTMENT / APPRECIATING: locate the period containing as_of
     # and read the period-keyed map's value there.  INTEREST routes here (not

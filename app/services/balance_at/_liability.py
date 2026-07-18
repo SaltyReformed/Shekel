@@ -5,11 +5,12 @@ and the scalar-at-a-date: every liability's owed magnitude at a list of FORWARD
 calendar dates, answered in ONE loan-resolution pass.
 
 It exists because a long-horizon liability band needs each debt's owed balance
-at ~25 annual sample dates, and the scalar
-(:func:`~app.services.balance_at.balance_at`) would re-resolve each loan once per
-date.  Before this view existed, the horizon band reached PAST the seam into
-``net_worth_kernel.loan_owed_at_dates`` directly -- a consumer holding a
-balance-at-T boundary rule, the exact pattern the W9906 fence exists to prevent
+at ~25 annual sample dates, and the caller should not have to know which forward
+rule each liability takes.  It composes the seam's total loan producer
+(:func:`~app.services.balance_at.positions`) once per amortizing loan over the
+whole future sample axis, and holds every other liability flat -- so the band
+cannot drift from the balance the rest of the app reports, and no consumer holds a
+balance-at-T boundary rule the W9906 fence exists to keep out of consumer hands
 (``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``).
 """
 
@@ -17,7 +18,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import net_worth_kernel
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -25,6 +25,7 @@ from app.services.account_projection import (
 from app.services.resolution_context import BalanceContext
 
 from ._inputs import ZERO
+from ._positions import positions
 
 
 def _spliced_owed_series(
@@ -39,14 +40,15 @@ def _spliced_owed_series(
     the caller supplied, which is the figure the net-worth hero renders -- and a
     strictly-future date reads its OWN projected value out of *owed_by_date*.
 
-    The join is BY DATE, not by position.  An earlier draft consumed the
-    producer's list positionally, which was correct only because
-    :func:`~app.services.net_worth_kernel.loan_owed_at_dates` happens to build it
-    in the caller's order with no sort and no dedupe -- an unwritten cross-module
-    contract that a future "harmless" tidy-up (sorting or de-duplicating the
-    sample dates before the expensive schedule walk) would have broken SILENTLY,
-    mis-valuing every point of the liability band with no crash and no failing
-    test.  Keying on the date makes that state impossible to reach.
+    The join is BY DATE, not by position.  An earlier draft consumed the forward
+    producer's list positionally, which was correct only because it happened to
+    build the list in the caller's order with no sort and no dedupe -- an unwritten
+    cross-module contract that a future "harmless" tidy-up (sorting or
+    de-duplicating the sample dates before the expensive schedule walk) would have
+    broken SILENTLY, mis-valuing every point of the liability band with no crash and
+    no failing test.  :func:`~app.services.balance_at.positions` now returns a
+    date-keyed dict, so keying on the date here makes that state impossible to
+    reach by construction.
 
     ``abs`` is applied to the projected value for the same reason it is applied
     to *current*: this view's contract is a POSITIVE owed magnitude at every
@@ -84,13 +86,15 @@ def liability_owed_at_dates(
     The seam's multi-date, multi-account LIABILITY view.  It owns BOTH forward
     rules a liability can take, so no consumer has to know which is which:
 
-    * **AMORTIZING with a resolvable schedule** -- the ledger-seeded confirmed
-      balance today, reduced by the payments scheduled by each date, batched
-      through :func:`~app.services.net_worth_kernel.loan_owed_at_dates` (ONE
-      :func:`~app.services.net_worth_kernel.generate_debt_schedules` pass for the
-      whole set, not one per date).  The same amortization the debt card and the
-      ``2 years`` liability series consume, so a band built on this cannot drift
-      from them.
+    * **AMORTIZING with a resolvable schedule** -- the seam's total loan producer
+      :func:`~app.services.balance_at.positions` over the whole future sample axis:
+      every date is strictly future here (filtered below), so positions answers
+      each from the forward schedule projection, seeded from the loan's confirmed
+      balance and reduced by the payments scheduled by that date.  The same
+      amortization the debt card and the ``2 years`` liability series consume, so a
+      band built on this cannot drift from them.  The pass's memoized resolution
+      means resolving each loan once serves every sample date, not one walk per
+      date.
     * **Every other liability** -- a revolving Credit Card, a loan with no
       ``LoanParams``, or ANY liability when there is no baseline scenario -- has
       NO forward model, so it holds FLAT at its current owed magnitude.  This is
@@ -119,9 +123,9 @@ def liability_owed_at_dates(
     figure the net-worth hero renders, so a band built on this reconciles with
     the hero at index 0 by construction.  A schedule walk at ``today`` would
     instead report the balance net of any OVERDUE unconfirmed payment
-    (understating the debt), which is exactly why
-    :func:`~app.services.net_worth_kernel.loan_owed_at_dates` REJECTS a
-    today-or-earlier date and only strictly-future dates are forwarded to it.
+    (understating the debt), which is why only STRICTLY-future dates are forwarded
+    to :func:`~app.services.balance_at.positions`; ``today`` itself reads
+    *current_balances* through the splice, never the projection.
 
     *today* is the CALLER'S as-of date, not a fresh :func:`datetime.date.today`
     read here, and that is deliberate.  The caller already built *sample_dates*
@@ -179,17 +183,22 @@ def liability_owed_at_dates(
     # walk; the result is joined BY DATE below, so the producer's order and
     # cardinality are its own business, not an implicit contract.
     future_dates = sorted({d for d in sample_dates if d > today})
-    loan_accounts = [
-        account for account in liabilities
-        if classify_account(account) is AccountProjectionKind.AMORTIZING
-    ]
-    owed_by_loan = (
-        net_worth_kernel.loan_owed_at_dates(
-            loan_accounts, ctx, future_dates,
-        )
-        if ctx.scenario is not None and loan_accounts and future_dates
-        else {}
-    )
+    owed_by_loan: dict[int, dict[date, Decimal]] = {}
+    if ctx.scenario is not None and future_dates:
+        for account in liabilities:
+            if classify_account(account) is not AccountProjectionKind.AMORTIZING:
+                continue
+            if ctx.resolved_loan(account) is None:
+                # No LoanParams: no forward model.  Omit it here so the flat-hold
+                # branch below carries it at its current owed magnitude -- the same
+                # no-forward-model rule the batch producer skipped it under.
+                continue
+            # Every date is strictly future (filtered above), so positions()
+            # answers each from the forward projection -- the SAME
+            # ``forward_balance_at_date`` walk the retired batch producer ran,
+            # over the resolver's schedule and seed, so the band does not move.
+            # It returns the date-keyed dict the splice consumes directly.
+            owed_by_loan[account.id] = positions(account, ctx, future_dates)
 
     result: dict[int, list[Decimal]] = {}
     for account in liabilities:
@@ -201,6 +210,6 @@ def liability_owed_at_dates(
             result[account.id] = [current] * len(sample_dates)
             continue
         result[account.id] = _spliced_owed_series(
-            sample_dates, today, current, dict(zip(future_dates, forward)),
+            sample_dates, today, current, forward,
         )
     return result

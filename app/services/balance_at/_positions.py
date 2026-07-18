@@ -1,20 +1,24 @@
 """Balance-at-T seam -- a loan's balance at many dates: fold past, projection future.
 
-Plan step **C3a** (``docs/audits/balance_architecture/README.md``).  :func:`positions`
-is the ONE total loan balance-at-T producer the seam's AMORTIZING dispatch reads
-once step C3b cuts over: the event FOLD
-(:func:`app.services.loan_ledger.fold_loan_balances`) for a date at or before the
-resolver's NOW, and the forward schedule projection after, split on the SAME
-boundary the shipping scalar
-:func:`app.services.net_worth_kernel.amortizing_balance_at` splits on.
+Plan step **C3a/C3b** (``docs/audits/balance_architecture/README.md``).
+:func:`positions` is the ONE total loan balance-at-T producer the seam's AMORTIZING
+dispatch reads: the event FOLD
+(:func:`app.services.loan_ledger.fold_from_walk` over the read pass's memoized
+walk) for a date at or before the resolver's NOW, and the forward schedule
+projection after.  The seam's SCALAR
+(:func:`app.services.balance_at.balance_at`) and its LIABILITY band
+(:func:`app.services.balance_at.liability_owed_at_dates`) read it as of step C3b;
+the per-period map cuts over in the same step's map commit.
 
 **The past reads the FOLD, not the postings -- that is the cutover's heart.**
-Today the seam's past balance is a sum of POSTINGS
+Before this the seam's past balance was a sum of POSTINGS
 (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).  Here it is
 the fold over the loan's SOURCE events, which step B2 proves equal to the postings
 on every day (``tests/test_services/test_loan_fold_oracle.py``): the postings
 become a checked projection of the fold (plan step E1), not the answer to "what do
-I owe".
+I owe".  A loan whose POSTING ledger is missing (a cache miss) still folds
+correctly from its source facts, so the read is no longer an outage when the cache
+is cold -- it is a repairable inconsistency (B-8).
 
 **The future reproduces today's behaviour on purpose (plan C3 is a REFACTOR).**
 It walks the resolver's UNCONFIRMED schedule rows through the existing
@@ -34,11 +38,12 @@ to the seam + engine cluster.  Composing the fold with the resolver is a SEAM
 responsibility, not a leaf one; the leaf stays pure.  Step C6 makes this fold-native
 (no resolver, no schedule rows), at which point it can move to ``loan_ledger``.
 
-**Additive, not yet wired.**  Only the C3a oracle
-(``tests/test_services/test_loan_positions_oracle.py``) calls this; step C3b points
-the seam's scalar and per-period map at it.  Reproducing ``amortizing_balance_at``
-on EVERY day first is what lets the cutover claim "no money moved" from a proof,
-not a hope (plan Section 7.2).
+**Proven equal before it was wired.**  C3a shipped this ADDITIVE, with an oracle
+that parallel-ran it against the scalar it replaced on EVERY day past and future,
+so C3b's cutover moved no money by proof, not hope (plan Section 7.2).  That oracle
+retired with the cutover (the scalar IS this now); the ongoing every-day guarantee
+is B2's fold-vs-reader oracle (``test_loan_fold_oracle.py``) plus the seam's own
+tests.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -50,7 +55,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services import net_worth_kernel
 from app.services.account_projection import forward_balance_at_date
-from app.services.loan_ledger import fold_loan_balances
+from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext
 
 from ._inputs import _require_scenario
@@ -61,15 +66,14 @@ def positions(
 ) -> dict[date, Decimal]:
     """Return *account*'s loan balance at each of *dates* -- fold past, projection future.
 
-    The total loan balance-at-T producer (see the module docstring).  Dispatches
-    each date the same way the shipping scalar
-    :func:`app.services.net_worth_kernel.amortizing_balance_at` dispatches its one
-    date -- applied to the whole list so N dates cost one fold walk, not N:
+    The total loan balance-at-T producer (see the module docstring), applied to
+    the whole date list so N dates cost one fold walk, not N.  It dispatches each
+    date on the loan's own timeline:
 
     * **A date at or before the resolver's NOW, for an ORIGINATED loan: the fold**
-      (:func:`app.services.loan_ledger.fold_loan_balances`) over the loan's source
-      events -- the past that step B2 proves equal to the sum-of-postings reader
-      the scalar reads today.
+      (:func:`app.services.loan_ledger.fold_from_walk` over the read pass's memoized
+      walk) over the loan's source events -- the past that step B2 proves equal to
+      the sum-of-postings reader the seam read before the cutover.
     * **A date after the NOW, OR any date for a loan not yet originated by it: the
       forward projection** (:func:`~app.services.account_projection.forward_balance_at_date`)
       over the resolver's unconfirmed schedule rows, seeded from
@@ -130,8 +134,12 @@ def positions(
 
     result: dict[date, Decimal] = {}
     if past_dates:
+        # Fold the pass's MEMOIZED walk (:meth:`BalanceContext.loan_walk`): the
+        # scalar, the per-period map, and the liability band all read this loan in
+        # one render, so walking it once and sampling here is what keeps the cutover
+        # from re-walking the loan per producer.
         result.update(
-            fold_loan_balances(account.id, ctx.scenario.id, past_dates),
+            fold_from_walk(ctx.loan_walk(account), past_dates),
         )
     for on_date in forward_dates:
         # Returned verbatim: the schedule rows and the seed are already

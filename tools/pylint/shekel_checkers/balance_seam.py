@@ -65,22 +65,12 @@ _BALANCE_PRODUCERS = frozenset({
     "compute_forward_loan_period_balance_map",
     "balance_from_schedule_at_date",
     "forward_balance_at_date",
-    "amortizing_balance_at",
     "build_account_balance_map",
     "base_account_balance_map",
     "account_balance_map_from_inputs",
     "investment_base_balance_map",
     "build_investment_balance_map",
     "build_appreciation_balance_map",
-    # The batch multi-date FORWARD loan projection the seam's
-    # ``liability_owed_at_dates`` composes.  It answers "what does loan A owe at
-    # date T" for many (A, T) at once, so it is a balance producer in every
-    # sense -- but it was born INSIDE the cluster (the horizon liability band,
-    # 2026-07-12) and so was never listed, and the horizon consumer called it
-    # directly for a month with the fence silent.  That miss is what the W9909
-    # completeness check below now makes impossible; see
-    # ``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``.
-    "loan_owed_at_dates",
     # The resolver bundle: an amortization schedule AND the loan's
     # ledger-confirmed ``current_balance``.  It was ruled a non-producer while
     # the claim "no consumer reads that attribute" held -- but the fence binds on
@@ -165,11 +155,25 @@ _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     # no consumer yet.  It has none today (B2's oracle is a test); C3 makes the
     # seam's AMORTIZING dispatch its first, and the seam is already allowlisted.
     "fold_loan_balances",
+    # The date-sampling core of ``fold_loan_balances``, taking an already-computed
+    # walk so a read pass can walk one loan ONCE and sample the memoized walk at
+    # several date lists (step C3b: the scalar, the map, and the liability band all
+    # read the fold through ``balance_at.positions``).  A balance-at-T producer like
+    # its parent, and fenced the same -- only the seam (which memoizes the walk on
+    # its context) and the leaf itself reach it.
+    "fold_from_walk",
 })
 _LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
     "app.services.loan_ledger",
     "app.services.loan_posting_service",
     "app.services.loan_payment_service",
+    # The read pass's memo (``BalanceContext.loan_walk``) walks a loan's ledger
+    # ONCE per pass and hands the memoized walk to ``fold_from_walk``, so the
+    # scalar, map, and liability band that all fold the same loan (step C3b) do not
+    # each re-walk it -- the same redundant-derivation the context's resolver memo
+    # already kills.  It composes the walk exactly as it composes the resolver, so
+    # it joins this allowlist beside the resolver one it already sits on.
+    "app.services.resolution_context",
 })
 
 # ── The loan RESOLVER entries (W9906) ───────────────────────────────
@@ -239,6 +243,12 @@ _LOAN_RESOLVER_MODULES = frozenset({
 # ``balance_at.balance_at`` (the balance).
 _CONTEXT_LOAN_PRODUCERS = frozenset({
     "resolved_loan",
+    # The read pass's memoized loan WALK (``BalanceContext.loan_walk``), the fold
+    # analog of ``resolved_loan``: it hands back a ``LoanLedgerWalk``, which a
+    # single ``fold_from_walk`` turns into a balance-at-T, so it is fenced like the
+    # resolver memo beside it -- only the seam and the kernel cluster compose it,
+    # and a consumer that wants a balance takes ``balance_at.balance_at``.
+    "loan_walk",
 })
 _CONTEXT_LOAN_MODULES = frozenset({
     "app.services.balance_at",
@@ -416,12 +426,6 @@ _FENCED_MODULE_RULINGS = {
             # The anchor EVENT rows (the source documents behind a balance), not
             # the balance itself.
             "loan_balance_anchor_history",
-            # Query-expression builders (``_asof``).  ``effective_date`` is the
-            # as-of KEY both readers bound by and ``scope_to_linked_ledger`` is
-            # their shared join; they compute no balance and execute nothing --
-            # they are the plumbing a producer is built FROM.
-            "effective_date",
-            "scope_to_linked_ledger",
             # WRITERS.  Everything below emits or reconciles postings; a writer
             # is not a balance reader, and the ledger-write path has its own
             # seams (``posting_service._emit_balanced_entry``).

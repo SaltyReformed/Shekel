@@ -318,6 +318,57 @@ def _dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
     return [(visible_on, delta) for visible_on, _tag, delta in tagged]
 
 
+def fold_from_walk(
+    walk: LoanLedgerWalk, dates: list[date],
+) -> dict[date, Decimal]:
+    """Sample an ALREADY-COMPUTED walk at each of *dates* -- the fold's core.
+
+    The date-sampling half of :func:`fold_loan_balances`, taking the walk as a
+    parameter rather than computing it, so a read pass that folds one loan at
+    several date lists (the seam's scalar, per-period map, and liability band all
+    read :func:`app.services.balance_at.positions`) can walk it ONCE and sample the
+    memoized walk here each time -- the redundant-derivation the read pass's
+    context exists to kill (:meth:`~app.services.resolution_context.BalanceContext.loan_walk`).
+
+    Re-keys each event by its visible-on date (:func:`_dated_deltas`), prefix-sums
+    the deltas, and reads each requested date off the cumulative -- ``0.00`` for a
+    date before any event (the empty prefix's honest fold).  Identical output to
+    :func:`fold_loan_balances` for the same walk, so threading a memoized walk
+    through here moves no balance.
+
+    Args:
+        walk: The loan's :class:`LoanLedgerWalk` (:func:`walk_loan_ledger`).
+        dates: The dates to value the loan at, in any order.  Duplicates collapse.
+
+    Returns:
+        ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
+        date.  ``{}`` for an empty *dates*.
+    """
+    steps = _dated_deltas(walk)
+    # The prefix cumulative at each distinct visible date, ascending, so each
+    # requested date is one bisect rather than a re-sum.
+    boundaries: list[date] = []
+    cumulative_at_boundary: list[Decimal] = []
+    running = _ZERO_MONEY
+    for visible_on, delta in steps:
+        running += delta
+        if boundaries and boundaries[-1] == visible_on:
+            cumulative_at_boundary[-1] = running
+            continue
+        boundaries.append(visible_on)
+        cumulative_at_boundary.append(running)
+
+    folded: dict[date, Decimal] = {}
+    for on_date in dates:
+        # The count of boundaries at or before this date; the last one's prefix is
+        # the answer (0.00 when none precede -- the empty prefix's honest fold).
+        count = bisect_right(boundaries, on_date)
+        folded[on_date] = round_money(
+            cumulative_at_boundary[count - 1] if count > 0 else _ZERO_MONEY
+        )
+    return folded
+
+
 def fold_loan_balances(
     loan_account_id: int,
     scenario_id: int,
@@ -327,9 +378,11 @@ def fold_loan_balances(
 
     The fold's read side, and the reference the optimized readers are graded
     against (plan step B2).  ONE walk of the loan's facts
-    (:func:`walk_loan_ledger`), re-keyed by each event's visible-on date
-    (:func:`_dated_deltas`), prefix-summed, and sampled at every requested date --
-    so N dates cost one walk, not N.
+    (:func:`walk_loan_ledger`), sampled at every requested date
+    (:func:`fold_from_walk`) -- so N dates cost one walk, not N.  A read pass that
+    would fold the same loan more than once memoizes the walk on its context and
+    calls :func:`fold_from_walk` directly; this entry is the standalone form for a
+    caller (B2's oracle) that holds no context.
 
     **It reads the loan's SOURCE rows and never the postings table.**  That is the
     whole point: the posted ledger is a PROJECTION of this fold, so an answer
@@ -373,9 +426,12 @@ def fold_loan_balances(
     row and asserts the sources refuse it.  Do NOT read a disagreement in that
     shape as a stale cache to be repaired.
 
-    Reads only -- no writes, no commit.  Not wired into any production path (plan
-    step B1): its consumer is B2's parallel-run oracle until C3 makes the seam's
-    AMORTIZING dispatch read it.
+    Reads only -- no writes, no commit.  This standalone entry (walk + sample in
+    one call) is B2's parallel-run oracle subject; it DELEGATES to
+    :func:`fold_from_walk`, which is the code the seam's AMORTIZING dispatch now
+    runs in production (over the read pass's memoized walk, step C3b) -- so the
+    oracle grades the exact sampling the user's balance is answered by, not a copy
+    of it.
 
     Args:
         loan_account_id: The loan account to fold.
@@ -386,26 +442,6 @@ def fold_loan_balances(
         ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
         date.  ``{}`` for an empty *dates*.
     """
-    steps = _dated_deltas(walk_loan_ledger(loan_account_id, scenario_id))
-    # The prefix cumulative at each distinct visible date, ascending, so each
-    # requested date is one bisect rather than a re-sum.
-    boundaries: list[date] = []
-    cumulative_at_boundary: list[Decimal] = []
-    running = _ZERO_MONEY
-    for visible_on, delta in steps:
-        running += delta
-        if boundaries and boundaries[-1] == visible_on:
-            cumulative_at_boundary[-1] = running
-            continue
-        boundaries.append(visible_on)
-        cumulative_at_boundary.append(running)
-
-    folded: dict[date, Decimal] = {}
-    for on_date in dates:
-        # The count of boundaries at or before this date; the last one's prefix is
-        # the answer (0.00 when none precede -- the empty prefix's honest fold).
-        count = bisect_right(boundaries, on_date)
-        folded[on_date] = round_money(
-            cumulative_at_boundary[count - 1] if count > 0 else _ZERO_MONEY
-        )
-    return folded
+    return fold_from_walk(
+        walk_loan_ledger(loan_account_id, scenario_id), dates,
+    )
