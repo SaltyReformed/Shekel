@@ -26,12 +26,13 @@ sees assigned ids; the caller owns the transaction boundary.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_reads import PostingError
+from app.utils.dates import utc_civil_date
 
 # A double-entry journal entry has at least two legs (one debit, one credit).
 # Mirrors the ``COUNT(*) >= 2`` half of the deferred balanced-journal trigger
@@ -73,24 +74,20 @@ class _PostingLeg:
 def _utc_civil_date(instant: datetime) -> date:
     """Return the UTC calendar date of a stored instant.
 
-    The Python counterpart of the historical backfill's
-    ``(paid_at AT TIME ZONE 'UTC')::date``: a settle date is the civil date
-    of its instant in UTC, the app's storage convention, NOT the display
-    timezone (``app.utils.dates.to_display_date`` would shift a
-    late-evening Eastern settle onto the wrong day and diverge from the
-    backfill).
+    A thin alias for :func:`app.utils.dates.utc_civil_date` kept as this leaf's
+    local name so its one remaining consumer (the account-anchor poster,
+    :mod:`app.services.account_posting_service._anchors`) reads uniformly; the
+    derivation itself lives once in ``app.utils.dates`` (the pure module the fold's
+    payment-visibility rule and ``posting_service._civil_settle_date`` both share
+    -- balance step C2).
 
     Args:
-        instant: A stored ``paid_at`` / ``created_at`` instant.
-            Timezone-aware values are converted to UTC; a naive value is
-            assumed UTC (every ``timestamptz`` in this app is stored UTC).
+        instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at`` instant.
 
     Returns:
         The UTC calendar date of *instant*.
     """
-    if instant.tzinfo is None:
-        return instant.date()
-    return instant.astimezone(timezone.utc).date()
+    return utc_civil_date(instant)
 
 
 def _emit_balanced_entry(

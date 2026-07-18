@@ -947,24 +947,21 @@ class TestReadSwitchSeedHelpers:
         ``create_loan_account`` syncs, so the walk has posted this loan's opening
         (it records every anchor whatever its date) and the reader answers a VALUE.
 
-        The guard decides in TWO shapes, and this is the louder one.  Origination
-        2026-03-25 is INSIDE the current pay period (2026-03-13..2026-03-26), five
-        days after this package's frozen today, so the ledger's anchor bound -- its
-        pay period's START (N-10) -- hands the raw reader the FULL PRINCIPAL for a
-        mortgage that has not closed.  (The other shape: an origination in a LATER
-        period, where the reader answers an honest ``0.00`` that is not ``None``,
-        so the view would thread it in as the projection's seed and collapse the
-        schedule -- what the paragraph above describes.  That one is caught by
-        ``TestLoanNotYetOriginated``, whose reads all break on a 0-row schedule.)
+        Origination 2026-03-25 is INSIDE the current pay period (five days after
+        this package's frozen today).  Since C2's one clock the reader dates the
+        opening at its ``entry_date`` -- the 2026-03-25 origination -- so a read at
+        2026-03-20 sees no visible posting and returns the HONEST ``0.00`` (N-10's
+        leak, the full principal five days early, is closed at the source).
 
-        The first assert PINS the leak, so C2 has a test to flip when it retires
-        the bound; the second pins the guard that keeps it off every surface until
-        then.
+        The ``confirmed_loan_view`` guard nonetheless STAYS, because its reason is
+        independent of the clock: that honest ``0.00`` must never seed the forward
+        projection, or it collapses the loan's whole schedule (outage B-1, fixed at
+        A3).  So the view still withholds a pre-origination read.
 
         NEGATIVE CONTROL: delete the ``as_of < params.origination_date`` guard in
         ``confirmed_loan_view`` and the second assert gets a
-        ``ConfirmedLedgerView(balance=200000.00, history_rows=[])`` instead of
-        ``None``.
+        ``ConfirmedLedgerView(balance=0.00, history_rows=[])`` instead of ``None``
+        -- the schedule-collapsing seed B-1 names.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
@@ -984,15 +981,15 @@ class TestReadSwitchSeedHelpers:
             assert params.origination_date == date(2026, 3, 25)
             assert date.today() == date(2026, 3, 20)
 
-            # N-10, pinned: the raw reader really does hand back the full
-            # principal for a loan that will not exist for another five days,
-            # because it dates the opening from its pay period's START.
+            # C2's one clock: the opening is dated at its 2026-03-25 origination,
+            # so a read five days earlier sees nothing and returns the honest 0.00
+            # (the N-10 leak -- the full principal early -- is gone).
             assert confirmed_loan_balance_at(
                 loan.id, scenario_id, date.today(),
-            ) == Decimal("200000.00")
+            ) == Decimal("0.00")
 
-            # ...and the view -- the read switch's single injection point --
-            # withholds it, so no consumer can spend that number.
+            # ...and the view still withholds it (its 0.00 would collapse the
+            # forward schedule -- B-1 -- a reason independent of the clock).
             assert confirmed_loan_view(
                 params, scenario_id, date.today(),
             ) is None

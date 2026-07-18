@@ -41,6 +41,7 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    settle_instant_on,
 )
 
 
@@ -636,14 +637,18 @@ class TestPropertyEquityChartProducer:
             )
             loan.collateral_account_id = prop.id
             db.session.commit()
-            # Two confirmed monthly payments, both historical (Jan/Feb periods).
+            # Two confirmed monthly payments, both historical (Jan/Feb periods),
+            # settled on their period starts so they are visible by the frozen
+            # April today under C2's settled-date clock.
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[1], amount=Decimal("1500.00"),
+                paid_at=settle_instant_on(seed_periods[1].start_date),
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[3], amount=Decimal("1500.00"),
+                paid_at=settle_instant_on(seed_periods[3].start_date),
             )
             db.session.commit()
 

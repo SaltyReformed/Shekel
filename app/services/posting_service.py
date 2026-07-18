@@ -77,8 +77,8 @@ from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
     _PostingLeg,
     _emit_balanced_entry,
-    _utc_civil_date,
 )
+from app.utils.dates import to_utc_civil_date
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +106,17 @@ def _civil_settle_date(paid_at: datetime | None, pay_period: PayPeriod) -> date:
     The shared tail of the transfer and transaction entry-date helpers
     (:func:`_entry_date`, :func:`_transaction_entry_date`): a recorded
     ``paid_at`` maps to its UTC civil date (the storage-timezone date, NOT the
-    display timezone -- see :func:`_utc_civil_date`); a NULL ``paid_at`` (a
-    historical settle recorded before the ``paid_at`` sync, or a reverted row
-    whose timestamp was cleared) falls back to the pay period's ``start_date``.
-    ``journal_entries.entry_date`` is NOT NULL, so the fallback is load-bearing.
-    Mirrors the historical backfill's
+    display timezone); a NULL ``paid_at`` (a historical settle recorded before
+    the ``paid_at`` sync, or a reverted row whose timestamp was cleared) falls
+    back to the pay period's ``start_date``.  ``journal_entries.entry_date`` is
+    NOT NULL, so the fallback is load-bearing.  Mirrors the historical backfill's
     ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``.
+
+    Delegates to :func:`app.utils.dates.to_utc_civil_date` -- the ONE derivation
+    the loan fold's payment-visibility rule
+    (:func:`app.services.loan_ledger._visible.payment_visible_on`) also calls, so
+    the STORED ``entry_date`` this writes and the day the fold counts a payment on
+    cannot drift (balance step C2).
 
     Args:
         paid_at: The settle instant read back from the source row, or None.
@@ -120,9 +125,7 @@ def _civil_settle_date(paid_at: datetime | None, pay_period: PayPeriod) -> date:
     Returns:
         The UTC civil settle date, or the pay period's ``start_date``.
     """
-    if paid_at is not None:
-        return _utc_civil_date(paid_at)
-    return pay_period.start_date
+    return to_utc_civil_date(paid_at, pay_period.start_date)
 
 
 def _posted_by_period(source_filter) -> tuple[

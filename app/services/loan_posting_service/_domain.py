@@ -45,8 +45,6 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_service import _ledger_account_for
 from app.utils.money import round_money
 
-from ._asof import effective_date, scope_to_linked_ledger
-
 _ZERO_MONEY = Decimal("0.00")
 
 
@@ -93,11 +91,11 @@ def _has_opening_posting(linked_ledger_id: int, scenario_id: int) -> bool:
 def _visible_nets(
     linked_ledger_id: int, scenario_id: int,
 ) -> list[tuple[date, Decimal]]:
-    """Return ``(visible_on, net)`` per date, ascending -- the one grouped load.
+    """Return ``(entry_date, net)`` per date, ascending -- the one grouped load.
 
-    Each date a posting becomes visible on (:func:`._asof.effective_date`) with
-    that date's net movement on the loan's linked ledger.  Shared by
-    :func:`confirmed_loan_balance_map` (which prefix-sums it) and
+    Each posting's ``entry_date`` (the day the event it records happened -- step
+    C2's one clock) with that date's net movement on the loan's linked ledger.
+    Shared by :func:`confirmed_loan_balance_map` (which prefix-sums it) and
     :func:`_confirmed_loan_ledger_start` (which finds where the prefix first turns
     non-zero), so the two cannot disagree about what the ledger contains.
 
@@ -106,15 +104,22 @@ def _visible_nets(
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        ``[(visible_on, net), ...]`` ascending by date.
+        ``[(entry_date, net), ...]`` ascending by date.
     """
-    return scope_to_linked_ledger(
+    return (
         db.session.query(
-            effective_date().label("visible_on"),
+            JournalEntry.entry_date,
             db.func.sum(Posting.amount),
-        ),
-        linked_ledger_id, scenario_id,
-    ).group_by(effective_date()).order_by(effective_date()).all()
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked_ledger_id,
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .group_by(JournalEntry.entry_date)
+        .order_by(JournalEntry.entry_date)
+        .all()
+    )
 
 
 @dataclass(frozen=True)
@@ -126,9 +131,9 @@ class LoanLedgerDomain:
 
     Attributes:
         start_date: The VISIBILITY date -- the earliest date the ledger carries a
-            non-zero balance.  Use it to decide whether a window needs clamping,
-            and for nothing else: it is a pay-period start, so it can sit a few
-            days BEFORE the balance was actually asserted.
+            non-zero balance.  Since step C2's one clock this is the ``entry_date``
+            of the first balance event (the origination opening), i.e. the date it
+            was actually asserted; use it to decide whether a window needs clamping.
         opening_date: The CIVIL date the opening balance was asserted on -- the
             loan's origination (since step C1 the ledger opens there always, even
             for a mid-life import).  This is the instant ``opening_balance`` is
@@ -136,23 +141,15 @@ class LoanLedgerDomain:
         opening_balance: The balance the ledger OPENS at, ``-(sum of the linked
             ledger's OPENING-kind postings)``.
 
-    **The two dates are different on purpose, and confusing them prints a lie.**  On
-    the real Mortgage the tracking-start asserts $178,375.43 on 2026-03-31, but its
-    pay period begins 2026-03-26, so ``start_date`` is 2026-03-26 -- a date on which
-    the readers say the balance was $178,103.41.  Publishing the pair
-    ``(start_date, opening_balance)`` would therefore show a balance the seam itself
-    contradicts, five days before it was asserted.  ``opening_date`` is the honest
-    label; ``start_date`` is the correct clamp.
-
-    ``opening_balance`` is deliberately NOT ``confirmed_loan_balance_at(start_date)``.
-    Postings are visible from their pay period's START, so a payment falling in the
-    same pay period as the opening shares its visibility date -- on the real
-    Mortgage, the April-1 payment sits in the pay period that begins 2026-03-26, the
-    very period the 2026-03-31 tracking-start lands in.  Reading the balance AT the
-    start date would therefore net that payment away, folding principal the borrower
-    paid INSIDE the window into the window's opening balance, and under-reporting
-    principal paid by exactly that amount ($272.02).  The opening-kind sum is the
-    balance BEFORE any payment in the window, which is what an opening balance means.
+    Since step C2 ``start_date`` and ``opening_date`` coincide for an ordinary loan
+    -- both are the origination's ``entry_date`` -- because an event is now visible
+    from the day it happened, not from its pay period's start.  (Before C2 the
+    opening was visible from its pay period's START, which could sit days before it
+    was asserted, so the two dates diverged and the pair had to be published with
+    care.)  ``opening_balance`` stays the OPENING-kind sum rather than
+    ``confirmed_loan_balance_at(start_date)`` so it is the balance BEFORE any
+    later same-day payment nets against it -- the balance an opening MEANS -- which
+    is what a change-across-a-window caller must subtract from.
     """
 
     start_date: date
@@ -187,15 +184,21 @@ def confirmed_loan_ledger_domain(
     # 2018-12-01 origination carries the whole -$202,000.00; the 2026-03-31
     # tracking-start is now a true-up, not an OPENING leg, so it does not appear
     # here, and the pre-C1 tracking-start OPENING it replaced nets to $0.00).
-    by_civil_date = scope_to_linked_ledger(
+    by_civil_date = (
         db.session.query(
             JournalEntry.entry_date,
             db.func.coalesce(db.func.sum(Posting.amount), _ZERO_MONEY),
-        ),
-        linked.id, scenario_id,
-    ).filter(
-        Posting.posting_kind_id == opening_kind_id,
-    ).group_by(JournalEntry.entry_date).order_by(JournalEntry.entry_date).all()
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            JournalEntry.scenario_id == scenario_id,
+            Posting.posting_kind_id == opening_kind_id,
+        )
+        .group_by(JournalEntry.entry_date)
+        .order_by(JournalEntry.entry_date)
+        .all()
+    )
 
     live = [(when, net) for when, net in by_civil_date if net != _ZERO_MONEY]
     if not live:

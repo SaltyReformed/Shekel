@@ -39,7 +39,7 @@ from app.utils.money import round_money
 
 from ._events import merge_anchor_and_payment_events
 from ._split import LoanPaymentSplit, split_one_payment
-from ._visible import anchor_visible_on, owner_pay_periods, payment_visible_on
+from ._visible import anchor_visible_on, payment_visible_on
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -260,14 +260,12 @@ def compute_loan_payment_splits(
     return walk_loan_ledger(loan_account_id, scenario_id).payment_splits
 
 
-def _dated_deltas(
-    walk: LoanLedgerWalk, loan_account_id: int,
-) -> list[tuple[date, Decimal]]:
+def _dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
     """Return the walk's ``(visible_on, delta)`` steps, ascending by visible date.
 
-    The bridge from the walk (which orders events by when they HAPPENED) to a
-    balance read (which counts them from when they became VISIBLE).  Each event
-    contributes the amount it moved the running balance by:
+    The bridge from the walk (which orders events by when they HAPPENED, in
+    CONTRACT time) to a balance read (which counts them from when they became
+    VISIBLE).  Each event contributes the amount it moved the running balance by:
 
     * an anchor: ``anchor_balance - owed_before`` -- the jump its reset booked;
     * a payment: ``-principal`` -- the debt its cash actually paid down.
@@ -276,58 +274,38 @@ def _dated_deltas(
     ledger (negated for the debit-positive convention), which is why prefix-summing
     them reproduces the sum-of-postings readers.
 
-    **The deltas are computed in EVENT order and then re-keyed by VISIBLE date,
-    and that is deliberate -- it is not the same function as re-folding the
-    visible prefix.**  A payment's split depends on the balance at its
-    installment, so the walk must run in contract order; the ledger then stores
-    those amounts and a reader sums whichever are visible.  The two orders can
-    disagree (a payment's visibility is its budgeted period's start, its event
-    date is its due date -- the real Mortgage's July payment is due 07-01 and
-    visible 07-02), and where they do, this reproduces what the posted ledger
-    actually does rather than an idealisation of it.  Step C2's one clock
-    collapses the distinction: visible date IS event date, and the two functions
-    become one.
+    **The deltas are computed in EVENT (contract) order and then re-keyed by
+    VISIBLE date, and that is deliberate.**  A payment's split depends on the
+    balance at its installment, so the walk must run in due-date order
+    (:func:`._events.merge_anchor_and_payment_events`); the ledger then stores
+    those amounts and a reader sums whichever are visible.  Under step C2's one
+    clock a payment's visible date is its SETTLED date and an anchor's is its own
+    date (:mod:`._visible`) -- the same day each posting carries in ``entry_date``
+    -- so a late-settled payment's principal is shown from the day its cash moved,
+    while its split stays fixed to the installment it paid.  Visibility no longer
+    needs the owner's calendar, so this is a pure re-key of the walk with no query.
 
     Args:
         walk: The loan's :class:`LoanLedgerWalk` (:func:`walk_loan_ledger`).
-        loan_account_id: The loan, to load its owner's calendar from (the anchor
-            visibility rule needs it).
 
     Returns:
         ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``, where a
         PAYMENT tags before an ANCHOR on a shared date -- mirroring the walk's own
         tie-break (:func:`._events.merge_anchor_and_payment_events`), so reading
         the list shows the same chronology the walk applied.  The order within a
-        date is immaterial to the prefix sum (addition commutes); it is mirrored
-        so that step C2, which collapses visible-date onto event-date, finds the
-        two already agreeing rather than silently reconciling them.
-
-    Raises:
-        ValueError: When the loan has facts to date but its owner has no pay
-            periods -- there is no calendar to date an assertion against.  The
-            posting writer refuses the same state
-            (:func:`app.services.loan_posting_service._anchors.reconcile_loan_anchor_corrections`).
+        date is immaterial to the prefix sum (addition commutes); mirroring it
+        keeps the two chronologies reading identically.
     """
     if not walk.anchor_corrections:
         # No LoanParams -> no facts at all (walk_loan_ledger's N1 guard; a
         # configured loan ALWAYS has its opening fact, per
-        # ``load_loan_anchor_facts``).  Nothing to date, so no calendar needed --
-        # which is what keeps the fold total for a non-loan account.
+        # ``load_loan_anchor_facts``).  Nothing to date.
         return []
-    periods = owner_pay_periods(loan_account_id)
-    if not periods:
-        raise ValueError(
-            f"loan account {loan_account_id} has balance facts to date but its "
-            f"owner has no pay periods; an assertion's visible-on date is "
-            f"derived from the period containing it, so there is no calendar to "
-            f"date it against.  Generate the owner's pay periods "
-            f"(pay_period_service.generate_pay_periods) and re-read."
-        )
     # Tag 0 = payment, 1 = anchor: the same tie-break the walk applies, so a
     # payment sharing an anchor's date reads before it here too.
     tagged: list[tuple[date, int, Decimal]] = [
         (
-            anchor_visible_on(correction.anchor.anchor_date, periods),
+            anchor_visible_on(correction.anchor.anchor_date),
             1,
             correction.anchor.anchor_balance - correction.owed_before,
         )
@@ -371,12 +349,10 @@ def fold_loan_balances(
     compose with.  A caller that must distinguish "owed nothing" from "no loan"
     asks the FACT (``origination_date``), never this function's zero.
 
-    That totality is over its QUESTION, not over a corrupt database.  One state
-    still raises, loudly and on purpose: a loan with balance facts whose owner has
-    NO pay periods has no calendar to date an assertion against, and the posting
-    writer already refuses it (see :func:`_dated_deltas`).  Papering that over
-    with a zero would be the "no record" / "no debt" confusion this arc exists to
-    end.
+    That totality is genuine since step C2: an event's visible-on date is its own
+    date (an anchor) or its settled date (a payment), neither of which needs the
+    owner's calendar, so the fold no longer has a "loan has facts but its owner has
+    no pay periods" state to raise on.  It answers from the loan's facts alone.
 
     **ACTUAL events only.**  It folds what is RECORDED -- the loan's anchors and
     its settled payments -- so it answers the past.  PLANNED payments (the future)
@@ -409,14 +385,8 @@ def fold_loan_balances(
     Returns:
         ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
         date.  ``{}`` for an empty *dates*.
-
-    Raises:
-        ValueError: When the loan has facts to date but its owner has no pay
-            periods (see :func:`_dated_deltas`).
     """
-    steps = _dated_deltas(
-        walk_loan_ledger(loan_account_id, scenario_id), loan_account_id,
-    )
+    steps = _dated_deltas(walk_loan_ledger(loan_account_id, scenario_id))
     # The prefix cumulative at each distinct visible date, ascending, so each
     # requested date is one bisect rather than a re-sum.
     boundaries: list[date] = []

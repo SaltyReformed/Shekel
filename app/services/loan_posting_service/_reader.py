@@ -7,7 +7,7 @@ ledger account (:func:`app.services.posting_service._ledger_account_for`); this
 module reads them back, so a loan's confirmed balance is::
 
     owed(as_of) = round_money(-(sum of the loan's linked-ledger postings whose
-                                 pay period has begun by as_of))
+                                 entry_date is on or before as_of))
 
 with no external anchor read and no post-anchor eligibility filter -- the plain
 sum the read-switch arc exists to reach, superseding the resolver's read-time
@@ -15,33 +15,29 @@ replay of confirmed history.  Because every source posts onto the one linked
 ledger, at ``as_of = date.today()`` this equals
 ``round_money(-posting_service.account_posting_total(loan, scenario))`` -- the
 quantity the reconciliation oracle already proves equals the resolver's
-replayed ``current_balance``; the pay-period-start bound generalises it to any
+replayed ``current_balance``; the ``entry_date`` bound generalises it to any
 historical date, and the per-period map applies it at every period boundary.
 
-**The as-of bound is period assignment, not a boundary rule.**  Each posting is
-attributed to a whole pay period (its journal entry's NOT NULL ``pay_period_id``),
-and pay periods are contiguous, so bounding CASH by ``pay_period.start_date <=
-as_of`` selects exactly the postings whose period has begun -- the same confirmed
-cut the walk (:func:`app.services.loan_ledger.walk_loan_ledger`) applied when it
-produced them, not
-a recomputed special case.  This is why the per-period map (keyed by period start)
-IS the canonical period-END-keyed loan balance the projection reports
-(:func:`app.services.account_projection.compute_forward_loan_period_balance_map`):
-a posting's period start is a real boundary and periods are contiguous, so
-``<= period.start`` and ``<= period.end`` select the identical posting set.
+**The as-of bound is ONE clock: each posting counts from its ``entry_date`` --
+the day the event it records happened** (step C2).  The writer already stamps
+that day honestly: a payment's cash and split legs carry its SETTLED date
+(:func:`app.services.posting_service._civil_settle_date`), an anchor correction
+carries the ``anchor_date`` it asserts
+(:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  So
+``entry_date <= as_of`` selects exactly the events that have happened by *as_of*,
+with no per-source special-casing and no pay-period join -- the same cut the fold
+applies from source (:func:`app.services.loan_ledger.fold_loan_balances`, whose
+visible-on rule is the SAME settled-date / anchor-date derivation), which is what
+keeps the two equal on every day (step B2).
 
-An ANCHOR (the opening, every true-up) is bounded by ``LEAST(entry_date,
-period.start)`` instead.  For the ordinary anchor -- one a pay period CONTAINS --
-that collapses to the period start, exactly as before, and nothing moves.  It differs
-only for an anchor that predates EVERY pay period the user has, which
-``journal_entries.pay_period_id`` being NOT NULL forces to be filed under the
-earliest period anyway
-(:func:`app.services.loan_ledger.resolve_anchor_pay_period`); that fallback
-can only ever push such an anchor LATER than it truly happened, and a period-bounded
-reader believed it.  The ``LEAST`` restores the anchor's own civil date, which is
-the only date it ever asserted.  Both readers take the key from the one place that
-defines it (:func:`._asof.effective_date`), so they cannot drift on which postings a
-date selects.
+Before C2 the reader bounded cash by its pay period's ``start_date`` and an
+anchor by ``LEAST(entry_date, period.start)`` -- two boundary predicates standing
+in for the instant, and the anchor one made a future-dated opening visible early
+(N-10).  The per-period map (keyed by period start) is still the canonical
+period-END-keyed loan balance the projection reports
+(:func:`app.services.account_projection.compute_forward_loan_period_balance_map`):
+periods are contiguous, so summing the postings whose ``entry_date`` falls on or
+before a period's start is that period's confirmed balance.
 
 **Wiring status.**  The current-balance scalar AND the history rows are wired
 through the ``loan_payment_service.confirmed_loan_view`` seam (read switch C8,
@@ -82,7 +78,6 @@ from app.services.rate_period_engine import (
 from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
-from ._asof import effective_date, scope_to_linked_ledger
 from ._domain import _has_opening_posting, _visible_nets
 
 _ZERO_MONEY = Decimal("0.00")
@@ -94,7 +89,7 @@ def confirmed_loan_balance_at(
     """Return a loan's confirmed balance as of a past date (genesis sum-of-postings).
 
     ``owed(as_of) = round_money(-(sum of the loan's linked-ledger postings,
-    scenario-scoped, whose pay period has begun by as_of))`` -- the opening
+    scenario-scoped, whose ``entry_date`` is on or before as_of))`` -- the opening
     (``-original_principal``), every confirmed payment's net principal (the
     Step-2 cash leg plus the Step-4 split correction), and every true-up, with
     no kind filter and no eligibility lower bound (see the module docstring).
@@ -126,16 +121,19 @@ def confirmed_loan_balance_at(
     balance flat for the caller to overlay the projection on -- is
     :func:`confirmed_loan_balance_map`.)
 
-    **Do NOT ask this about a loan that has not ORIGINATED by *as_of*; it answers
-    WRONG, and its callers are what stop that (N-10).**  An anchor's visible-on
-    date is its pay period's START (:func:`._asof.effective_date`), so a
-    future-dated origination is visible from a PAST date: this reader answers a
-    2026-03-25 loan's full $200,000.00 principal when asked about 2026-03-20.  The
-    honest bound is the anchor's own civil date, which moves history and so waits
-    for step C2; until then every caller asks the FACT (``origination_date``)
-    first -- :func:`app.services.net_worth_kernel.amortizing_balance_at` and
-    :func:`app.services.loan_payment_service.confirmed_loan_view` are the only
-    two, and both do.  A new caller must too.
+    **A loan that has not ORIGINATED by *as_of* reads ``0.00`` -- the honest fold
+    of an empty prefix, no longer the N-10 leak.**  The opening correction carries
+    the ``origination_date`` in its ``entry_date`` (step C2's one clock), so a
+    future-dated origination is simply not selected by ``entry_date <= as_of``:
+    a 2026-03-25 loan asked about 2026-03-20 sums nothing and returns ``0.00``.
+    Before C2 the reader bounded the opening by its pay period's START and so
+    handed back the full $200,000.00 principal five days early (N-10); the one
+    clock closes that leak at the SOURCE, so the four ``origination_date`` guards
+    that contained it are now redundant belt-and-braces (deleted at C3 with
+    ``owed_from`` -- except ``confirmed_loan_view``'s, which stays for a reason
+    independent of the clock: its ``0.00`` must not seed the forward projection,
+    B-1).  A caller that must tell "owed nothing" from "no loan" still asks the
+    FACT (``origination_date``), never this ``0.00`` -- but it is now the RIGHT zero.
 
     Reads only -- no writes, no commit.
 
@@ -144,7 +142,7 @@ def confirmed_loan_balance_at(
         scenario_id: The budget scenario to scope to (postings are
             scenario-scoped via ``journal_entries.scenario_id``).
         as_of: The evaluation date; must be on or before ``date.today()``.  Only
-            postings whose pay period has begun by it are summed.
+            postings whose ``entry_date`` is on or before it are summed.
 
     Returns:
         The confirmed balance owed as a cent-quantized ``Decimal``, or ``None``
@@ -166,13 +164,15 @@ def confirmed_loan_balance_at(
     if not _has_opening_posting(linked.id, scenario_id):
         return None
     net = (
-        scope_to_linked_ledger(
-            db.session.query(
-                db.func.coalesce(db.func.sum(Posting.amount), _ZERO_MONEY)
-            ),
-            linked.id, scenario_id,
+        db.session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), _ZERO_MONEY)
         )
-        .filter(effective_date() <= as_of)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.entry_date <= as_of,
+        )
         .scalar()
     )
     # Debit-positive ledger: the linked net is -(owed), so owed is its negation,
@@ -190,18 +190,26 @@ def confirmed_loan_balance_map(
 
     The batch, per-period form of :func:`confirmed_loan_balance_at`: for each
     :class:`~app.models.pay_period.PayPeriod` in *periods*, the confirmed balance
-    is ``round_money(-(cumulative linked-ledger net of every posting attributed
-    to a period beginning on or before this one))`` -- identical to
-    ``confirmed_loan_balance_at(loan, scenario, period.start_date)`` but from ONE
+    is ``round_money(-(cumulative linked-ledger net of every posting whose
+    ``entry_date`` falls on or before this period's END))`` -- equal to
+    ``confirmed_loan_balance_at(loan, scenario, period.end_date)`` for a past
+    period (the scalar RAISES for a future ``period.end``, which is why this map
+    exists to answer the future periods carried flat), and computed from ONE
     grouped posting load plus a Python prefix sum, not a query per period.
 
-    Because postings are period-ASSIGNED and periods are contiguous, this IS the
-    canonical period-END-keyed loan balance: a posting's period start is a real
-    boundary, so ``<= period.start`` and ``<= period.end`` select the identical set
-    (a payment "due in this period" nets in as its period's posting either way).
+    **Keyed by period END** (step C2), which is what makes it the period-END
+    balance the projection reports
+    (:func:`app.services.account_projection.compute_forward_loan_period_balance_map`,
+    also period-END-keyed) and lets the splice overlay them at the boundary.
+    Under the one clock a posting carries its own event date, which can fall mid
+    period, so a payment settled during period P must count in P's balance -- which
+    ``entry_date <= period.end`` selects and ``<= period.start`` would miss.  (Pre
+    C2 every posting was dated at a period START, so the two bounds coincided; they
+    no longer do.)
 
-    **Future periods carry flat** (the read-switch overlay contract): a period
-    after today has no confirmed postings, so its cumulative -- and thus its
+    **Future periods carry flat** (the read-switch overlay contract): every
+    confirmed posting has an ``entry_date`` on or before today, hence on or before
+    any future period's end, so a future period's cumulative -- and thus its
     balance -- equals the last confirmed period's.  The per-period read switch
     overlays the forward projection on those future periods; the map returns the
     carried-flat confirmed value for them rather than raising, so the caller can
@@ -210,16 +218,16 @@ def confirmed_loan_balance_map(
 
     Returns ``None`` when the loan has no OPENING posting in the scenario (an
     unconfigured loan), for the same reason as the scalar -- the caller routes to
-    needs-setup, not a map of zeros.  A period preceding the opening's period
+    needs-setup, not a map of zeros.  A period ending before the origination
     gets ``Decimal("0.00")`` (nothing confirmed yet as of that period).
 
-    **Do NOT ask this about a loan that has not ORIGINATED; it answers WRONG for
-    the period its origination falls in** -- the full opening balance, from that
-    period's START, for a loan that closes later in it (N-10; see
-    :func:`confirmed_loan_balance_at` for the mechanism and the fix that retires
-    it).  Its one caller,
-    :func:`app.services.net_worth_kernel._build_amortizing_balance_map`, asks the
-    FACT (``owed_from``) before reading this.  A new caller must too.
+    A loan that has not ORIGINATED reads ``0.00`` for every period ending before
+    its future origination date -- the honest empty-prefix fold, no longer the
+    N-10 leak (the opening's ``entry_date`` is the future origination, so
+    ``entry_date <= period.end`` selects nothing).  Its one caller,
+    :func:`app.services.net_worth_kernel._build_amortizing_balance_map`, still
+    short-circuits such a loan to a true-zero map on the ``owed_from`` fact (a now
+    redundant belt-and-braces the clock made unnecessary; both go at C3).
 
     Reads only -- no writes, no commit.
 
@@ -243,10 +251,10 @@ def confirmed_loan_balance_map(
     linked = _ledger_account_for(loan_account_id)
     if not _has_opening_posting(linked.id, scenario_id):
         return None
-    # One load: each date a posting BECOMES VISIBLE on
-    # (:func:`._asof.effective_date` -- a pay-period start for cash, an anchor's
-    # own civil date when it predates every period), with that date's net.
-    # Ascending, so a single forward pass builds the prefix cumulative.
+    # One load: each date a posting became visible on -- its ``entry_date``, the
+    # settled date of a payment or the assert date of an anchor (step C2's one
+    # clock) -- with that date's net.  Ascending, so a single forward pass builds
+    # the prefix cumulative.
     grouped = _visible_nets(linked.id, scenario_id)
     boundaries: list[date] = []
     cumulative_at_boundary: list[Decimal] = []
@@ -258,11 +266,12 @@ def confirmed_loan_balance_map(
 
     balances: "OrderedDict[int, Decimal]" = OrderedDict()
     for period in periods:
-        # The cumulative net of every posting-bearing period starting on or
-        # before this one: bisect_right gives the count of such boundaries, so
-        # the last one's prefix is the answer (0 when none precede -- a period
-        # before the loan's opening).
-        count = bisect_right(boundaries, period.start_date)
+        # The cumulative net of every posting whose ``entry_date`` falls on or
+        # before this period's END (step C2 -- period-END keyed, so a payment
+        # settled MID-period counts in it): bisect_right gives the count of such
+        # boundaries, so the last one's prefix is the answer (0 when none precede
+        # -- a period ending before the loan's opening).
+        count = bisect_right(boundaries, period.end_date)
         cumulative = (
             cumulative_at_boundary[count - 1] if count > 0 else _ZERO_MONEY
         )
@@ -613,11 +622,11 @@ def _classify_linked_nets(
        soft-deleted, all reversed to net zero; or SET-NULL residue of a hard
        delete), and a ``transfer``-source group whose transfer is in the
        loan's payment lineage but not confirmed (same states, plus a settled
-       payment whose pay period has not begun by *as_of*).  Dropping is exact:
+       payment whose settled date has not arrived by *as_of*).  Dropping is exact:
        the reversed states net to zero -- but at TWO entry dates, so keeping
        them as dated events would transiently corrupt the row balances between
-       those dates -- and the future-period payment is exactly what the
-       balance readers' period bound excludes.  A ``transfer``-source group
+       those dates -- and the not-yet-visible payment is exactly what the
+       balance readers' settled-date bound excludes.  A ``transfer``-source group
        with a NULL ``transfer_id`` (hard-delete residue, reversed to zero
        before the SET NULL) drops for the same reason, as does a
        ``transaction``-source group with a NULL ``transaction_id``.
@@ -820,7 +829,7 @@ def confirmed_loan_history_rows(
 
     The ledger-derived amortization HISTORY adapter (the read switch's final
     surface): one :class:`~app.services.amortization_engine.AmortizationRow`
-    per confirmed payment whose pay period has begun by *as_of*, chronological,
+    per confirmed payment whose SETTLED date has arrived by *as_of*, chronological,
     each carrying the payment's ACTUAL economics read from the posted ledger
     legs -- never the resolver's contractual replay, which shows only scheduled
     principal / interest and is therefore wrong for an off-schedule payment:
@@ -871,7 +880,7 @@ def confirmed_loan_history_rows(
         loan_account_id: The loan account whose confirmed history to read.
         scenario_id: The budget scenario to scope to.
         as_of: The evaluation date; must be on or before ``date.today()``.
-            A payment whose pay period has not begun by it is a forward
+            A payment whose SETTLED date has not arrived by it is a forward
             projection, excluded (its row belongs to the projection).
 
     Returns:

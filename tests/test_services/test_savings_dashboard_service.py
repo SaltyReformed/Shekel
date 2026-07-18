@@ -1047,15 +1047,18 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import create_settled_transfer
+        from tests._test_helpers import create_settled_transfer, settle_instant_on
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             # The production settle chokepoint, so the payment posts its REAL
-            # split to the genesis ledger exactly as a live settle does.
+            # split to the genesis ledger exactly as a live settle does.  Settled
+            # on the current period's start (a past date), so it is visible today
+            # under C2's settled-date clock regardless of the UTC/display offset.
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 seed_periods_today[4], amount=Decimal("1100.00"),
+                paid_at=settle_instant_on(seed_periods_today[4].start_date),
             )
             db.session.commit()
 

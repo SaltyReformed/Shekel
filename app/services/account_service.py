@@ -284,8 +284,8 @@ def active_accounts_query(user_id: int, *, amortizing: bool):
     copies).  Returns the UNORDERED query so each caller adds its own
     tail -- the pickers order by ``(sort_order, name)``, the grid
     resolver's fallback by ``(sort_order, id)`` -- the same
-    build-the-expression contract as
-    :func:`app.services.loan_posting_service._asof.scope_to_linked_ledger`.
+    build-the-expression contract the reconcile readers follow (a caller
+    completes the query with its own tail).
 
     Args:
         user_id: ``auth.users.id`` of the owner whose accounts to query.

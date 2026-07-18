@@ -43,7 +43,12 @@ from app.services import (
     transfer_service,
     year_end_summary_service,
 )
-from tests._test_helpers import create_loan_account, loan_params_for
+from tests._test_helpers import (
+    create_loan_account,
+    create_settled_transfer,
+    loan_params_for,
+    settle_instant_on,
+)
 
 
 # -- Hand-computed reference values (mirror principal-settle ones) ---------
@@ -138,47 +143,20 @@ def _create_arm_loan(seed_user, period):
 
 
 def _settle_one_payment(seed_user, loan_account, period, auth_client):
-    """Drive a PITI transfer through the production mark-done route.
+    """Settle a PITI transfer through the sole writer, pinned to the period start.
 
-    Mirrors the integration test in
-    ``test_loan_principal_settles.py``: create the transfer Projected,
-    then POST ``/transactions/<shadow_id>/mark-done`` so both shadows
-    reach the DONE settled status via the live state machine.
+    Routes through ``create_settled_transfer`` -- transfer_service, the same
+    settle state machine (``update_transfer`` to DONE) the mark-done route drives
+    -- with ``paid_at`` pinned to the period's start, so the payment is visible
+    today under C2's settled-date clock.  The HTTP mark-done route stamps
+    ``now()``, whose UTC-civil date can sit a day ahead of the host's
+    ``date.today()`` and hide the payment; that route path is covered directly by
+    ``test_loan_principal_settles.py``.  ``auth_client`` is kept for call-site
+    symmetry though the settle no longer uses it.
     """
-    checking = seed_user["account"]
-    scenario = seed_user["scenario"]
-    category = seed_user["categories"]["Car Payment"]
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    xfer = transfer_service.create_transfer(
-        transfer_service.TransferSpec(
-            user_id=seed_user["user"].id,
-            from_account_id=checking.id,
-            to_account_id=loan_account.id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            amount=FIXED_PI,
-            status_id=projected_id,
-            category_id=category.id,
-            notes="C15 PITI settle",
-        ),
-    )
-    db.session.commit()
-
-    income_shadow = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == xfer.id,
-            Transaction.account_id == loan_account.id,
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .one()
-    )
-    resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
-    assert resp.status_code == 200, (
-        f"mark-done failed with {resp.status_code}: {resp.data!r}"
+    create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan_account, period,
+        amount=FIXED_PI, paid_at=settle_instant_on(period.start_date),
     )
     db.session.expire_all()
 

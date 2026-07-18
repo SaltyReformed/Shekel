@@ -380,31 +380,32 @@ class TestConfirmedLoanPaymentHistory:
                 (row.principal, row.interest) for row in schedule
             ]
 
-    def test_payment_in_a_not_yet_begun_period_is_excluded(
+    def test_a_payment_is_excluded_until_its_settled_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """A settled payment whose pay period has not begun by as_of is excluded.
+        """A settled payment is excluded from the table until its SETTLED date (C2).
 
-        The table shares the balance readers' 'period has begun' cut: reading as
-        of the day BEFORE the payment's period start yields no row; on the start
-        it yields one.
+        The table shares the balance readers' visibility cut, which is a payment's
+        SETTLED date since C2.  This payment is budgeted to period 5 (a March
+        period) but settled 2026-06-01, so reading the day BEFORE it settled yields
+        no row; on the settled date it yields one.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_split_loan(seed_user, db.session)
-            period = seed_periods[_P3]
+            settled = date(2026, 6, 1)
             _settle(
-                seed_user, db.session, loan, period, Decimal("1000.00"),
-                paid_at=_paid_on(2026, 6, 1),
+                seed_user, db.session, loan, seed_periods[_P3],
+                Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
             )
             db.session.commit()
 
-            before = period.start_date - timedelta(days=1)
+            before = settled - timedelta(days=1)
             assert loan_posting_service.confirmed_loan_payment_history(
                 loan.id, scenario_id, before,
             ) == []
             assert len(loan_posting_service.confirmed_loan_payment_history(
-                loan.id, scenario_id, period.start_date,
+                loan.id, scenario_id, settled,
             )) == 1
 
     def test_reverted_payment_drops_from_the_table(

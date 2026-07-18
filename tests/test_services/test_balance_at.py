@@ -3078,22 +3078,30 @@ class TestScalarAndMapAgree:
     enumerated rather than generated.
 
     **The probe date follows each period's OWN keying, and that is not a detail.**
-    The map reads the confirmed LEDGER for a period that has BEGUN (keyed by the
-    period's START) and the PROJECTION for one that has not (keyed by its END).  The
-    plan originally specified ``balance_at(p.end_date)`` for every period; measured
-    against a correct loan that invariant is FALSE -- ``map[current period]`` is
-    $50,000.00 against ``balance_at(current period.end_date)`` of $39,634.37 -- and
-    building the guard as written would have meant "fixing" correct code to make a
-    wrong test green.  (That $39,634.37 is itself a real defect: FU-7.)
+    The map is period-END keyed since step C2 (a posting counts from its own
+    ``entry_date``, which can fall mid period, so a payment settled during a period
+    must count in it): a BEGUN period's confirmed value is the ledger at its END,
+    and a FUTURE period's is the projection at its END.  The scalar reader,
+    though, RAISES / PROJECTS for a future date, so the current period (begun, but
+    its end is future) is probed at TODAY -- where the confirmed map, carrying every
+    posting flat, equals the confirmed scalar.  Probing the current period at its
+    END instead would compare the confirmed map to ``balance_at(period.end_date)``,
+    which projects FORWARD (reducing by an overdue-but-unpaid installment -- FU-7)
+    and is a different, smaller number.  Hence ``min(period.end_date, today)`` for a
+    begun period, ``period.end_date`` for a future one.
     """
 
     # pylint: disable=too-many-arguments
     def _assert_agrees(self, acct, bctx, periods, shape):
-        """Every period: map[p] == balance_at(p, keyed the way that period is)."""
+        """Every period: map[p] == balance_at at the day that period is keyed to."""
         bmap = balance_at.balance_map(acct, bctx, periods)
         for period in periods:
             begun = period.start_date <= bctx.as_of
-            probe = period.start_date if begun else period.end_date
+            # Period-END keyed (C2), clamped to today for the current period,
+            # whose end is future (the scalar would project there, not confirm).
+            probe = (
+                min(period.end_date, bctx.as_of) if begun else period.end_date
+            )
             scalar = balance_at.balance_at(acct, bctx, probe)
             assert bmap[period.id] == scalar, (
                 f"{shape}: period {period.start_date}..{period.end_date} "

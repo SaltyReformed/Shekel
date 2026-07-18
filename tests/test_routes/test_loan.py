@@ -34,6 +34,7 @@ from tests._test_helpers import (
     insert_trueup_event,
     loan_params_for,
     select_option_values,
+    settle_instant_on,
 )
 
 
@@ -982,6 +983,7 @@ class TestEscrow:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("2000.00"),
+            paid_at=settle_instant_on(seed_periods[0].start_date),
         )
         db.session.commit()
         backfill_all_loan_postings()

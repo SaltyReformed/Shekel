@@ -179,6 +179,7 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    settle_instant_on,
     SPLIT_LOAN,
 )
 
@@ -245,17 +246,29 @@ def _make_loan(
     )
 
 
-def _settle(user, loan, period, amount=Decimal("1000.00"), scenario=None):
+def _settle(
+    user, loan, period, amount=Decimal("1000.00"), scenario=None,
+    settled_on=None,
+):
     """Settle a Checking -> loan payment transfer through the service.
 
     Routes through ``create_settled_transfer`` (the sole transfer writer), which
     posts the Step-2 cash entry AND fires the Commit-5 wiring that posts the
     Step-4 correction -- so the returned payment is fully posted, exactly as
     marking it Paid produces it.
+
+    Settles ON the period's start by default (``settled_on=None``), so the
+    payment is visible from its period start under C2's settled-date clock -- the
+    on-time basis the resolver's confirmed-payment eligibility uses, keeping the
+    reader-vs-resolver parallel run exact.  A test exercising an early / late
+    settle passes an explicit ``settled_on`` civil date.
     """
     return create_settled_transfer(
         user, _db.session, user["account"], loan, period,
         amount=amount, scenario=scenario,
+        paid_at=settle_instant_on(
+            period.start_date if settled_on is None else settled_on,
+        ),
     )
 
 
@@ -2272,16 +2285,17 @@ class TestReaderParallelRunAgainstResolver:
     def test_reader_bounds_confirmed_postings_at_the_year_boundary(
         self, app, db, bare_user,
     ):
-        """The reader's pay-period-start bound separates December from January.
+        """The reader's settled-date bound separates December from January.
 
         A pay period straddling 2025-12-31 (start 2025-12-25) holds a December
-        payment; a later period (start 2026-01-22) holds a January one.  The reader
-        bounds by pay-period START, so as of 2025-12-31 it counts the straddling
-        period's payment (start 12-25 <= 12-31) but NOT the January one (start
-        01-22 > 12-31) -- matching the resolver, which caps its replay by the same
-        pay-period start.  As of a later date it counts both.  This proves the date
-        bound (and the resolver parallel run) hold across a calendar-year rollover,
-        the foundation the year-end / tax surfaces (plan 3.6 / commit 10) build on.
+        payment settled on its 12-25 start; a later period (start 2026-01-22) holds
+        a January one settled on its 01-22 start.  The reader bounds by each
+        payment's SETTLED date (step C2), so as of 2025-12-31 it counts the
+        December payment (settled 12-25 <= 12-31) but NOT the January one (settled
+        01-22 > 12-31) -- matching the resolver, which caps its replay at the same
+        boundary.  As of a later date it counts both.  This proves the date bound
+        (and the resolver parallel run) hold across a calendar-year rollover, the
+        foundation the year-end / tax surfaces (plan 3.6 / commit 10) build on.
 
         Uses ``bare_user`` via ``_seed_boundary_loan``: ``seed_periods`` locks its
         owner to 2026 and ``generate_pay_periods`` rejects backfilling earlier
@@ -2298,9 +2312,11 @@ class TestReaderParallelRunAgainstResolver:
             # (2026-01-22 .. 2026-02-04, due 02-01) is a distinct January month.
             create_settled_transfer(
                 ctx, db.session, checking, loan, periods[0], amount=scheduled_pi,
+                paid_at=settle_instant_on(periods[0].start_date),
             )
             create_settled_transfer(
                 ctx, db.session, checking, loan, periods[2], amount=scheduled_pi,
+                paid_at=settle_instant_on(periods[2].start_date),
             )
             db.session.commit()
 

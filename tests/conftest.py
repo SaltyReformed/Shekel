@@ -1679,6 +1679,7 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     from tests._test_helpers import (
         create_loan_with_trueup,
         create_settled_transfer,
+        settle_instant_on,
     )
 
     user = seed_user["user"]
@@ -1707,9 +1708,12 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
         i for i, p in enumerate(all_periods) if p.id == anchor_period.id
     )
     payment_period = all_periods[anchor_idx - 2]
+    # Settled on its own period start (a past date), so it is visible today under
+    # C2's settled-date clock regardless of the UTC/display-tz offset.
     create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, payment_period,
         amount=Decimal("5000.00"),
+        paid_at=settle_instant_on(payment_period.start_date),
     )
     db.session.commit()
 

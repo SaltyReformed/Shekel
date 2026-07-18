@@ -118,7 +118,7 @@ def _as_utc_instant(instant: datetime) -> datetime:
     """Return *instant* as an aware-UTC ``datetime``.
 
     The instant-level counterpart of
-    :func:`app.services.posting_service._utc_civil_date`, sharing its
+    :func:`app.utils.dates.utc_civil_date`, sharing its
     convention: an aware value converts to UTC, a naive value is assumed
     UTC (every ``timestamptz`` in this app is stored UTC).  Normalizing
     every attribution and assertion instant through this one helper makes

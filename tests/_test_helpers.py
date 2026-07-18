@@ -1444,6 +1444,28 @@ def clear_postings_for_transaction(transaction_id):
 _UNSET_PAID_AT = object()
 
 
+def settle_instant_on(day):
+    """Return a deterministic settle instant on a given civil date (noon UTC).
+
+    A test-side helper for pinning a fixture's ``paid_at`` to a specific day
+    without a wall-clock read -- pass it to :func:`create_settled_transfer` /
+    :func:`create_settled_cash_transaction` when a test must place a settled
+    payment on a known date (balance step C2 keys a payment's visibility on its
+    SETTLED date, so a loan test reading a PAST balance settles at the day it
+    wants the payment visible from -- typically its pay-period ``start_date``).
+    Noon UTC is the same civil day in the display zone (Eastern), so the tax-year
+    (display-tz) attribution lands on that day too.
+
+    Args:
+        day: The civil :class:`datetime.date` to settle on.
+
+    Returns:
+        A timezone-aware :class:`datetime.datetime` at noon UTC on *day*.
+    """
+    from datetime import time, timezone  # pylint: disable=import-outside-toplevel
+    return _real_datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
+
+
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), actual_amount=None,
@@ -1479,9 +1501,12 @@ def create_settled_transfer(
             ``amount``).  Defaults to ``None`` (effective == estimated ==
             amount).
         paid_at: The settle timestamp written to both shadows.  Defaults to
-            ``db.func.now()`` (the realistic ``mark_done`` value); pass
-            ``None`` explicitly to settle with a NULL ``paid_at`` (the
-            historical state the backfill's period-start fallback covers).
+            ``db.func.now()`` (the realistic ``mark_done`` value).  A loan test
+            reading a PAST balance must pin this to the day it wants the payment
+            visible from -- balance step C2 keys visibility on the SETTLED date --
+            via :func:`settle_instant_on` (typically the period ``start_date``);
+            pass ``None`` to settle with a NULL ``paid_at`` (the historical state
+            the period-start fallback covers).
         name: Optional transfer display name.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
@@ -1579,9 +1604,10 @@ def create_settled_cash_transaction(
             description).
         paid_at: The settle instant.  Defaults to the seam-derived
             ``db.func.now()`` (the realistic ``mark_done`` value); pass an
-            explicit instant to pin the attribution moment, or ``None`` to
-            settle with a NULL ``paid_at`` (the historical period-start
-            fallback state).  Pinned BEFORE the ledger emission -- mirroring
+            explicit instant (see :func:`settle_instant_on`) to pin the
+            attribution moment for a past-balance read, or ``None`` to settle with
+            a NULL ``paid_at`` (the historical period-start fallback state).
+            Pinned BEFORE the ledger emission -- mirroring
             :func:`create_settled_transfer`'s ``paid_at`` -- so the posted
             ``entry_date`` and the Step-5 walk's attribution instant agree,
             exactly as production produces them.

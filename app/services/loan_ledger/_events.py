@@ -31,6 +31,8 @@ from app.models.transaction import Transaction
 from app.services import loan_loaders
 from app.services.loan_loaders import LoanAnchorFact
 
+from ._visible import payment_visible_on
+
 
 def confirmed_shadows_through(
     loan_account_id: int,
@@ -41,22 +43,24 @@ def confirmed_shadows_through(
 
     The DISPLAY subset of
     :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the
-    balance readers count as confirmed history at ``as_of`` (their shared "period
-    has begun" bound).  The ledger's history reader
+    balance readers count as confirmed history at ``as_of`` (their shared
+    visible-on bound).  The ledger's history reader
     (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`)
     consumes this so its rows match the balance readers' cut; the fold's own walk
     deliberately does NOT (it splits every settled payment -- see
     :func:`~app.services.loan_loaders.settled_income_shadows` for why).
 
-    This is the PAYMENT half of the current visibility rule, in Python; the SQL
-    half is :func:`app.services.loan_posting_service._asof.effective_date`, and
-    the two must agree (both key a payment on its ``pay_period.start_date``).
-    Step C2 replaces both with the payment's settled date (ruling R-A).
+    A payment's visible-on date is its SETTLED date (step C2, ruling R-A), read
+    through the SAME :func:`._visible.payment_visible_on` the fold uses, so the
+    history rows and the fold cannot key a payment on two different days.  The SQL
+    reader that must agree with this (:func:`app.services.loan_posting_service`)
+    bounds the same postings by their ``entry_date``, which the writer stamps with
+    that identical settled date.
 
     Args:
         loan_account_id: The loan account whose shadows to load.
         scenario_id: The budget scenario to scope to.
-        as_of: The display boundary; a payment whose pay period has not begun
+        as_of: The display boundary; a payment whose settled date has not arrived
             by it is a forward projection, excluded.
 
     Returns:
@@ -68,7 +72,7 @@ def confirmed_shadows_through(
         for shadow in loan_loaders.settled_income_shadows(
             loan_account_id, scenario_id,
         )
-        if shadow.pay_period.start_date <= as_of
+        if payment_visible_on(shadow) <= as_of
     ]
 
 

@@ -71,6 +71,7 @@ from tests._test_helpers import (
     ledger_net,
     loan_correction_entries,
     loan_income_shadow,
+    settle_instant_on,
     SPLIT_LOAN,
 )
 
@@ -127,16 +128,23 @@ def _add_rate_change(loan, effective_date, rate):
     _db.session.commit()
 
 
-def _settle_payment(seed_user, loan, period, cash, actual=None):
+def _settle_payment(seed_user, loan, period, cash, actual=None, settled_on=None):
     """Settle a Checking -> loan payment transfer; return its income shadow.
 
     Creates and settles the transfer through ``transfer_service`` (so the
     Step-2 cash entry auto-posts), then returns the loan-side income shadow the
     Step-4 correction books under.
+
+    ``settled_on`` (a civil date) pins the payment's ``paid_at``, so a test
+    reading a PAST balance can place the payment on a known day -- balance step
+    C2 keys a payment's visibility on its SETTLED date.  Left ``None`` it keeps
+    the fixture's realistic ``db.func.now()`` default.
     """
+    kwargs = {"amount": cash, "actual_amount": actual}
+    if settled_on is not None:
+        kwargs["paid_at"] = settle_instant_on(settled_on)
     xfer = create_settled_transfer(
-        seed_user, _db.session, seed_user["account"], loan, period,
-        amount=cash, actual_amount=actual,
+        seed_user, _db.session, seed_user["account"], loan, period, **kwargs,
     )
     return xfer, _income_shadow(xfer.id, loan.id)
 
@@ -1198,30 +1206,27 @@ class TestSyncLoanPaymentPostings:
     def test_early_settled_payment_splits_at_settle(
         self, app, db, monkeypatch, seed_user, seed_periods,
     ):
-        """A payment settled before its period begins posts its split immediately.
+        """A payment settled before its period begins posts its split AND shows at settle.
 
-        Settlement is the confirming event (the 2026-07-02 adversarial review's
-        R1, fixing H2): the Step-2 cash entry posts the moment a payment
-        settles, so the split correction must post in the SAME moment or the
-        loan-linked ledger holds raw cash with no interest backout from the
-        payment's period start until the next loan write.  Both entries carry
-        the payment's OWN pay period, so the readers' period bound still keeps
-        the early payment out of every balance displayed before its period
-        begins.
+        Two properties meet here.  The WRITE property (the 2026-07-02 review's R1,
+        fixing H2): the Step-2 cash entry posts the moment a payment settles, so the
+        split correction must post in the SAME moment or the loan-linked ledger
+        holds raw cash with no interest backout.  The C2 DISPLAY property: a payment
+        is visible from its SETTLED date, so an EARLY settle shows immediately -- its
+        REAL split, never the raw cash the pre-split ledger would have held.
 
-        Frozen today 2026-02-10: the P1 payment's period has begun, the P3
-        payment's (due 04-01) has not.  Arithmetic: P1 splits interest
-        100000 * 0.005 = 500.00 -> balance 99500; the early P3 payment splits
-        NEXT on that running balance -- interest round(99500 * 0.005) = 497.50,
-        principal 1000 - 497.50 = 502.50 -> balance 98997.50.  So:
+        Frozen today 2026-02-10.  P1 is settled 2026-01-20 (inside its period); P3
+        (budgeted to period 5, due 04-01) is settled EARLY on 2026-02-05 -- its
+        PERIOD has not begun, but its settle has.  The split keys on the DUE date,
+        so P1 (due 02-01) splits first -- interest 100000 * 0.005 = 500.00 -> 99500
+        -- then P3 -- interest round(99500 * 0.005) = 497.50, principal 502.50 ->
+        98997.50.  So:
 
         * the P3 correction exists AT SETTLE (no manual sync), legs
           Loan -497.50 / Interest +497.50, attributed to P3's period;
-        * the scalar reader at today still reads 99500.00 (period not begun);
-        * the map at P3's period reads the REAL 98997.50 -- NOT the raw-cash
-          98500.00 (= 99500 - 1000) the pre-fix ledger showed (H2's
-          demonstrated mis-statement, the assertion that fails on the old
-          code).
+        * BOTH settled dates (01-20, 02-05) are on or before the frozen today, so
+          the scalar reads the REAL 98997.50 -- never the raw cash
+          99500 - 1000 = 98500.00 the unsplit ledger would show (H2).
         """
         with app.app_context():
             frozen = date(2026, 2, 10)
@@ -1230,14 +1235,15 @@ class TestSyncLoanPaymentPostings:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
             )
             _, early_shadow = _settle_payment(
                 seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                settled_on=date(2026, 2, 5),
             )
             db.session.commit()
-            # The premise: P1's period has begun by the frozen today, P3's has
-            # not (its due 04-01 payment is an EARLY settle).
-            assert seed_periods[_P1].start_date <= frozen
+            # The premise: P3's PERIOD has not begun by the frozen today, but its
+            # settle (2026-02-05) has -- an EARLY settle.
             assert seed_periods[_P3].start_date > frozen
 
             # The correction posted at settle, through the transfer wiring --
@@ -1258,15 +1264,13 @@ class TestSyncLoanPaymentPostings:
                 ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
             )
 
-            # Display is untouched today: the scalar excludes the not-yet-begun
-            # period (100000 - 500 = 99500.00, the P1-only balance).
+            # C2: both payments are visible from their settled dates (<= frozen),
+            # so the scalar shows the REAL split -- never the raw cash 98500.00.
             assert loan_posting_service.confirmed_loan_balance_at(
                 loan.id, scenario_id, frozen,
-            ) == Decimal("99500.00")
+            ) == Decimal("98997.50")
 
-            # At P3's period the map shows the REAL principal drop: 99500 -
-            # 502.50 = 98997.50 -- never the raw cash 99500 - 1000 = 98500.00
-            # the unsplit ledger showed (H2).
+            # The map at P3's period agrees (period-END keyed).
             balance_map = loan_posting_service.confirmed_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
@@ -2003,24 +2007,24 @@ class TestConfirmedLoanBalanceReader:
             )
             assert _ledger_net(refund.id, scenario_id) == Decimal("49500.00")
 
-    def test_as_of_bounds_the_sum_by_pay_period_start(
+    def test_as_of_bounds_the_sum_by_settled_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """A historical as_of counts only the payments whose period has begun.
+        """A historical as_of counts only the payments SETTLED by then (step C2).
 
         Over the SAME fully-posted ledger (three $1,000 payments in periods 1/3/5,
-        due 02-01 / 03-01 / 04-01), the reader is a point-in-time sum bounded by
-        ``pay_period.start_date <= as_of``:
+        each settled ON its period start here), the reader is a point-in-time sum
+        bounded by each posting's ``entry_date`` -- a payment's SETTLED date:
 
-          * before P1's period (period-0 end): opening + true-up only -> 100000.00
-          * P1's period start .. its end:       + P1 -> 99500.00 (stable within the
-                                                period -- start and end agree, since
-                                                a posting's period start IS a
-                                                boundary)
-          * P2's period start:                  + P2 -> 98997.50
-          * P3's period start .. _AS_OF:         + P3 -> 98492.49
+          * before P1's settle (period-0 end): opening + true-up only -> 100000.00
+          * P1's settle .. period end:          + P1 -> 99500.00 (settled on the
+                                                period start, so stable through it)
+          * P2's settle:                        + P2 -> 98997.50
+          * P3's settle .. _AS_OF:              + P3 -> 98492.49
 
-        No re-walk and no boundary rule -- just which periods have begun.
+        No re-walk and no period boundary rule -- just which payments have settled.
+        The split still keys on the DUE date (02-01 / 03-01 / 04-01), so the
+        principal amounts are unchanged; only WHEN each is visible follows settle.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2028,7 +2032,10 @@ class TestConfirmedLoanBalanceReader:
             for period in (
                 seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
             ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1000.00"),
+                    settled_on=period.start_date,
+                )
             db.session.commit()
 
             def read(as_of):
@@ -2036,10 +2043,10 @@ class TestConfirmedLoanBalanceReader:
                     loan.id, scenario_id, as_of,
                 )
 
-            # P1 is in period 1; period 0 ends the day before it begins.
+            # P1 settled on period 1's start; period 0 ends the day before.
             assert read(seed_periods[0].end_date) == Decimal("100000.00")
             assert read(seed_periods[_P1].start_date) == Decimal("99500.00")
-            # Anywhere within P1's period gives P1's balance (start == end bound).
+            # Through P1's period its settle (the period start) is past -> 99500.
             assert read(seed_periods[_P1].end_date) == Decimal("99500.00")
             assert read(seed_periods[_P2].start_date) == Decimal("98997.50")
             assert read(seed_periods[_P3].start_date) == Decimal("98492.49")
@@ -2093,10 +2100,12 @@ class TestConfirmedLoanBalanceReader:
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
 
-            # In domain (<= the frozen 2027-01-01 today): reads the opening +
-            # true-up balance.
+            # In domain (<= the frozen 2027-01-01 today): reads the true-up
+            # balance at / after the true-up's own date (C2 -- an anchor counts
+            # from its own civil date, so an earlier date would still read the
+            # origination principal).
             assert loan_posting_service.confirmed_loan_balance_at(
-                loan.id, scenario_id, seed_periods[0].start_date,
+                loan.id, scenario_id, _ANCHOR_DATE,
             ) == Decimal("100000.00")
             # After today: refused, not clamped to today's balance.
             with pytest.raises(ValueError, match="as_of <= today"):
@@ -2145,8 +2154,9 @@ class TestConfirmedLoanBalanceReader:
         """The map gives each period the cumulative balance, flat between payments.
 
         Three $1,000 payments land in periods 1 / 3 / 5 (the opening + true-up in
-        period 0).  Each period holds the balance AFTER the payment attributed to
-        it, carried flat across payment-less periods:
+        period 0), each settled ON its period start.  The map is period-END keyed
+        (step C2), so each period holds the balance AFTER every payment settled by
+        its end, carried flat across payment-less periods:
 
           period 0: 100000.00 (opening + true-up, pre-payment)
           period 1: 99500.00  (+ P1)      period 2: 99500.00  (flat)
@@ -2161,7 +2171,10 @@ class TestConfirmedLoanBalanceReader:
             for period in (
                 seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
             ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1000.00"),
+                    settled_on=period.start_date,
+                )
             db.session.commit()
 
             result = loan_posting_service.confirmed_loan_balance_map(
@@ -2850,27 +2863,29 @@ class TestConfirmedLoanHistoryRows:
                 )
             )
 
-    def test_settled_payment_in_a_not_yet_begun_period_is_excluded(
+    def test_a_payment_not_yet_settled_is_excluded_from_history(
         self, app, db, seed_user, seed_periods,
     ):
-        """A payment settled ahead of its period stays out until the period begins.
+        """A payment whose SETTLED date is after the read stays out of history (C2).
 
-        With payments in periods 1 and 5, a read at 2026-02-10 -- after period
-        1 began (its 02-01 due row counts) but before period 5 begins on
-        03-27 -- must exclude the early-settled payment ENTIRELY, exactly as
-        the scalar reader's period bound does: one row, balance 99500.00,
-        equal to the scalar at the same as_of.  Treating the future payment's
-        postings as dated balance events would desync the schedule table from
-        the loan card by the full cash.
+        Two payments: P1 settled 2026-01-20, P3 settled 2026-03-15.  A read at
+        2026-02-10 -- after P1's settle but before P3's -- must exclude P3
+        ENTIRELY, exactly as the scalar reader's settled-date bound does: one row
+        (P1, dated at its 02-01 installment), balance 99500.00, equal to the scalar
+        at the same as_of.  The history row keeps the DUE date (02-01) while its
+        VISIBILITY follows the settle -- treating P3's not-yet-visible postings as
+        dated balance events would desync the schedule table from the loan card.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
             )
             _settle_payment(
                 seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 
@@ -3138,14 +3153,16 @@ class TestUserScopedResync:
 class TestLedgerDomainAndPrePeriodAnchor:
     """The ledger's DOMAIN, and an anchor older than the user's pay periods.
 
-    Direct coverage for ``_asof.effective_date`` and ``_domain``.  Both exist
-    because of one production defect: a journal entry carries its true civil
-    ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor predates
-    every pay period the user has, ``resolve_anchor_pay_period`` is FORCED to file
-    it under the earliest period -- pushing it later than it happened.  A
-    period-bounded reader believed that, so a loan originated before the user's
-    pay-period history read as owing NOTHING for the whole span in between, and the
-    year-end summary turned that $0 into a NEGATIVE principal-paid figure.
+    Direct coverage for the ``entry_date`` reader bound (step C2's one clock) and
+    ``_domain``.  The shape that once needed a special rule: a journal entry
+    carries its true civil ``entry_date`` AND a NOT NULL ``pay_period_id``, and
+    when an anchor predates every pay period the user has,
+    ``resolve_anchor_pay_period`` is FORCED to file it under the earliest period.
+    A reader bounding by the pay period believed that and reported a loan
+    originated before the user's pay-period history as owing NOTHING for the whole
+    span in between (the year-end summary turned that $0 into a NEGATIVE
+    principal-paid figure).  Bounding by ``entry_date`` -- the anchor's own civil
+    date -- reads it correctly with no special case, which is what these pin.
     """
 
     def test_anchor_older_than_every_pay_period_is_still_owed(
@@ -3182,11 +3199,12 @@ class TestLedgerDomainAndPrePeriodAnchor:
     def test_map_and_scalar_agree_with_a_pre_period_anchor(
         self, app, db, seed_user, seed_periods,
     ):
-        """map[P] == balance_at(P.start) still holds for a pre-period anchor.
+        """map[P] == balance_at(P.end) still holds for a pre-period anchor.
 
-        The invariant the two readers are built on.  ``effective_date`` is the ONE
-        as-of key both bound by, so introducing it must not let them drift -- least
-        of all on the very shape it was added for.
+        The invariant the two readers are built on.  Both bound the same postings
+        by ``entry_date`` (step C2), the scalar at ``as_of`` and the map at each
+        period's END, so the map at period P must equal the scalar at P's end date
+        -- and this pins that on the very shape the old special rule was added for.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -3199,17 +3217,16 @@ class TestLedgerDomainAndPrePeriodAnchor:
             bmap = loan_posting_service.confirmed_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
-            # The scalar reader's domain is as_of <= today (a future date is a
-            # projection, and it raises rather than pretend), so compare over the
-            # periods that have begun.
-            begun = [p for p in seed_periods if p.start_date <= date.today()]
-            assert begun, "expected at least one begun period"
-            for period in begun:
+            # The map is period-END keyed and the scalar raises for a future date,
+            # so compare over the periods that have fully ELAPSED (end <= today).
+            elapsed = [p for p in seed_periods if p.end_date <= date.today()]
+            assert elapsed, "expected at least one elapsed period"
+            for period in elapsed:
                 assert bmap[period.id] == (
                     loan_posting_service.confirmed_loan_balance_at(
-                        loan.id, scenario_id, period.start_date,
+                        loan.id, scenario_id, period.end_date,
                     )
-                ), f"map and scalar disagree at period {period.start_date}"
+                ), f"map and scalar disagree at period {period.end_date}"
 
 
     def test_domain_reports_the_origination_opening(

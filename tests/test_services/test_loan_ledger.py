@@ -27,6 +27,7 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_transfer,
     insert_tracking_start_event,
+    settle_instant_on,
 )
 
 # The controlled loan: $250,000 originated 2025-01-01 at 6%, trued up to
@@ -54,9 +55,22 @@ def _make_loan(seed_user, db, **kwargs):
 
 
 def _fold(loan, seed_user, on_dates):
-    """Fold *loan*'s balance at *on_dates* (the fold loads its own calendar)."""
+    """Fold *loan*'s balance at *on_dates*."""
     return loan_ledger.fold_loan_balances(
         loan.id, seed_user["scenario"].id, on_dates,
+    )
+
+
+def _settle(seed_user, db, loan, period, amount):
+    """Settle a Checking -> loan payment, visible from its period start (C2).
+
+    Pins ``paid_at`` to the period start so the payment is visible from that day
+    under C2's settled-date clock -- the deterministic past date these
+    hand-computed folds value the balance from.
+    """
+    return create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan, period,
+        amount=amount, paid_at=settle_instant_on(period.start_date),
     )
 
 
@@ -153,58 +167,59 @@ class TestFoldIsTotal:
                 early: Decimal("0.00"),
             }
 
-    def test_a_loan_whose_owner_has_no_calendar_FAILS_LOUD(
+    def test_the_fold_needs_no_owner_calendar(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """The one state the fold refuses -- and it names the repair.
+        """The fold consults NO owner calendar -- an anchor counts from its own date.
 
-        Totality is over the QUESTION (any date, any account), not over a corrupt
-        database.  An anchor's visible-on date is derived from the pay period
-        CONTAINING it, so an owner with no pay periods has no calendar to date an
-        assertion against.  The posting writer already refuses that state
-        (``reconcile_loan_anchor_corrections`` raises ``PostingError``); folding a
-        zero instead would be exactly the "no record" vs "no debt" confusion this
-        arc exists to end.
-
-        This is the input that breaks the bold claim in
-        :func:`fold_loan_balances`'s docstring, so it is pinned here rather than
-        left to the one shape (an unconfigured account) where the defect cannot
-        fire -- an account with NO anchors never consults the calendar at all.
+        Totality is over the QUESTION (any date, any account).  Pre-C2 an anchor's
+        visible-on date was ``LEAST(anchor_date, containing period.start)``, so the
+        fold loaded the owner's whole calendar and RAISED when it was empty.  The
+        one clock counts an anchor from its OWN date, so the fold reaches the
+        calendar loader NOT AT ALL -- pinned here by making ``owner_pay_periods``
+        raise if the fold ever calls it, and folding successfully anyway.
         """
+        def _must_not_call(account_id):
+            raise AssertionError(
+                "the fold must not consult the owner calendar (step C2)"
+            )
+        monkeypatch.setattr(
+            "app.services.loan_ledger._visible.owner_pay_periods",
+            _must_not_call,
+        )
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            monkeypatch.setattr(
-                "app.services.loan_ledger._fold.owner_pay_periods",
-                lambda account_id: [],
-            )
-            with pytest.raises(ValueError, match="no pay periods"):
-                _fold(loan, seed_user, [date(2026, 1, 20)])
+            # Trued up to $100,000 as of 2026-01-05; a later date holds it flat.
+            assert _fold(loan, seed_user, [date(2026, 1, 20)])[
+                date(2026, 1, 20)
+            ] == _ANCHOR_BALANCE
 
 
-class TestTheFoldLoadsItsOwnCalendar:
-    """The fold takes no period list, and that is a correctness property.
+class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
+    """The fold takes no period list, and since C2 needs no calendar at all.
 
-    An anchor's visible-on date is derived from the period CONTAINING it, so a
-    PARTIAL calendar silently moves the answer: the containing period is missing,
-    ``find_period_containing_date`` returns nothing, the ``periods[0]`` fallback
-    fires, and the anchor lands on the wrong date.  Measured while reviewing this
-    commit: the same loan on the same dates, folded against the owner's full
-    calendar versus a window excluding the true-up's period, differed by
-    $150,000.00.
+    Pre-C2 an anchor's visible-on date was derived from the period CONTAINING it,
+    so a PARTIAL calendar silently moved the answer (a window excluding the
+    true-up's period shifted the same loan by $150,000.00), and the fold had to
+    load the owner's WHOLE calendar itself rather than take one -- the balance
+    seam's period argument IS a six-period window in production (the grid).  Step
+    C2's one clock counts an anchor from its OWN date, so the fold consults no
+    calendar at all; the no-period-argument property below stays a structural
+    guard against re-introducing that coupling.
 
-    That mattered because the balance seam's period argument IS a window in
-    production -- the grid passes six periods -- and step C3 points the seam's
-    AMORTIZING branch at this fold.  So the parameter is gone: the fold loads the
-    whole calendar itself, with the same query the posting WRITER uses, and a
-    caller has no way to hand it a different one.
+    ``owner_pay_periods`` survives as the POSTING WRITER's loader
+    (:func:`app.services.loan_posting_service._anchors.reconcile_loan_anchor_corrections`
+    files each anchor's NOT NULL ``pay_period_id`` from it); the two tests below
+    pin its correctness for that consumer.
     """
 
     def test_fold_loan_balances_takes_no_period_argument(self):
         """The divergence vector is absent by signature, not by discipline.
 
-        A structural guard: if someone re-introduces a ``periods`` parameter, the
-        grid's six-period window reaches it again and the $150,000.00 divergence
-        is back with every other gate silent.
+        A structural guard: the fold must never take a ``periods`` parameter -- a
+        caller's window would either be silently ignored (C2 folds off event
+        dates) or, if a future change wired it in, reintroduce the $150,000.00
+        partial-calendar divergence with every other gate silent.
         """
         import inspect
         params = inspect.signature(loan_ledger.fold_loan_balances).parameters
@@ -283,10 +298,7 @@ class TestFoldValue:
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[1], amount=Decimal("1000.00"),
-            )
+            _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
             on = seed_periods[1].end_date
             assert _fold(loan, seed_user, [on])[on] == (
@@ -308,10 +320,7 @@ class TestFoldValue:
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[1], amount=Decimal("1500.00"),
-            )
+            _settle(seed_user, db, loan, seed_periods[1], Decimal("1500.00"))
             db.session.commit()
             on = seed_periods[1].end_date
             assert _fold(loan, seed_user, [on])[on] == (
@@ -337,10 +346,7 @@ class TestFoldValue:
         with app.app_context():
             loan = _make_loan(seed_user, db)
             for period in (seed_periods[1], seed_periods[3]):
-                create_settled_transfer(
-                    seed_user, db.session, seed_user["account"], loan,
-                    period, amount=Decimal("1000.00"),
-                )
+                _settle(seed_user, db, loan, period, Decimal("1000.00"))
             db.session.commit()
             on = seed_periods[3].end_date
             assert _fold(loan, seed_user, [on])[on] == (
@@ -358,10 +364,7 @@ class TestFoldValue:
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[1], amount=Decimal("1000.00"),
-            )
+            _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
             start = seed_periods[1].start_date
             folded = _fold(loan, seed_user, [
@@ -374,36 +377,41 @@ class TestFoldValue:
             assert folded[seed_periods[2].start_date] == Decimal("99500.00")
 
 
-class TestFoldReproducesTodaysVisibilityRule:
-    """The fold counts an event on the day the SHIPPING readers count it.
+class TestFoldCountsAnEventOnTheDayItHappened:
+    """The one clock (step C2, ruling R-A): an event counts from the day it HAPPENED.
 
-    These pin a rule the plan calls WRONG and step C2 deletes (ruling R-A).  They
-    are here so B2's parallel run is a clean equality and C3's cutover provably
-    moves no money -- and so C2 has an explicit test to FLIP rather than a silent
-    behaviour change.  See ``loan_ledger/_visible.py``.
+    A payment counts from its SETTLED date, an anchor from its OWN date -- the
+    same day each posting carries in ``entry_date``, so the fold and the shipping
+    readers agree by construction (B2).  These flipped the two tests that pinned
+    the pre-C2 boundary rules (a payment from its period start, an anchor from
+    ``LEAST(anchor_date, period.start)``, N-10).  See ``loan_ledger/_visible.py``.
     """
 
-    def test_a_payment_counts_from_its_PERIOD_START_not_its_due_date(
+    def test_a_payment_counts_from_its_SETTLED_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """Payment visibility is the pay period's start, not the installment date.
+        """Payment visibility is the SETTLED date -- not the period start, not the due date.
 
-        The loan's ``payment_day`` is the 1st, so a payment settled into period 1
-        (2026-01-16..01-29) satisfies the 2026-02-01 installment -- a date INSIDE
-        period 2.  The fold counts it from 2026-01-16 (its period's start), which
-        is 16 days BEFORE the installment it pays.  That is today's rule
-        faithfully: the posted split correction carries the payment's
-        ``pay_period_id`` and the reader bounds on that period's start.
+        A $1,000 payment budgeted to period 1 (2026-01-16..01-29) satisfies the
+        2026-02-01 installment but SETTLES on 2026-01-20.  Under the one clock the
+        balance steps on 2026-01-20 (the settled date), not on 2026-01-16 (the
+        period start, the pre-C2 rule) and not on 2026-02-01 (the due date, which
+        the split MATH still keys on).  Three axes, one visibility answer.
+
+        The loan is trued up to $100,000 as of 2026-01-05, so before the payment
+        the balance is $100,000; the $1,000 pays $500 interest + $500 principal,
+        stepping to $99,500.
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            shadow_period = seed_periods[1]
+            settled = date(2026, 1, 20)
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
-                shadow_period, amount=Decimal("1000.00"),
+                seed_periods[1], amount=Decimal("1000.00"),
+                paid_at=settle_instant_on(settled),
             )
             db.session.commit()
-            # The installment this payment satisfies is in FEBRUARY...
+            # The installment this payment satisfies is 2026-02-01 (the split key).
             params = loan_loaders.load_loan_params(loan.id)
             shadows = loan_loaders.settled_income_shadows(
                 loan.id, seed_user["scenario"].id,
@@ -412,27 +420,30 @@ class TestFoldReproducesTodaysVisibilityRule:
                 shadows[0], params.payment_day,
             )
             assert due == date(2026, 2, 1)
-            # ...yet the balance already stepped on the period's START in JANUARY.
             folded = _fold(loan, seed_user, [
-                shadow_period.start_date, due,
+                seed_periods[1].start_date,        # period start (pre-C2 rule)
+                settled - timedelta(days=1),       # day before settle
+                settled,                           # the settled date
+                due,                               # the installment date
             ])
-            assert folded[shadow_period.start_date] == Decimal("99500.00")
+            # NOT visible from the period start (pre-C2) or the day before settle...
+            assert folded[seed_periods[1].start_date] == Decimal("100000.00")
+            assert folded[settled - timedelta(days=1)] == Decimal("100000.00")
+            # ...steps exactly on the settled date, and stays down through the due date.
+            assert folded[settled] == Decimal("99500.00")
             assert folded[due] == Decimal("99500.00")
 
-    def test_an_anchor_counts_from_its_PERIOD_START_not_its_own_date(
+    def test_an_anchor_counts_from_its_own_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """N-10, pinned: an anchor is visible from its period's start -- days EARLY.
+        """N-10 closed: an anchor is visible from its OWN date, never days early.
 
-        A tracking-start asserted 2026-01-08 sits in period 0 (2026-01-02..01-15),
-        so ``LEAST(anchor_date, period.start)`` makes it visible from 2026-01-02 --
-        SIX DAYS before the operator asserted anything.  The balance the fold
-        reports on 2026-01-02 is a balance nobody claimed on that date.
-
-        This is the honest reproduction of a dishonest rule, and it is the test
-        step C2 must FLIP: under one clock (D5/R-A) the answer on 2026-01-02
-        becomes $0.00 -- the loan's tracking had not begun -- and $80,000.00 only
-        from 2026-01-08.
+        A tracking-start asserted 2026-01-08 sits in period 0 (2026-01-02..01-15).
+        Under the pre-C2 ``LEAST(anchor_date, period.start)`` it was visible from
+        2026-01-02 -- six days before the operator asserted anything (N-10).  The
+        one clock counts it from 2026-01-08: on 2026-01-02..01-07 the balance is
+        the ORIGINATION principal held flat (the C1 plateau, $250,000 -- the loan
+        exists, its tracking just has not begun), stepping to $80,000 on 01-08.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -446,22 +457,28 @@ class TestFoldReproducesTodaysVisibilityRule:
             )
             db.session.commit()
             folded = _fold(loan, seed_user, [
-                _P0_START, date(2026, 1, 7), date(2026, 1, 8),
+                date(2024, 12, 31), _P0_START, date(2026, 1, 7), date(2026, 1, 8),
             ])
-            assert folded[_P0_START] == Decimal("80000.00")
-            assert folded[date(2026, 1, 7)] == Decimal("80000.00")
+            # Before origination: 0.00.  From origination to the tracking-start:
+            # the $250,000 plateau (NOT visible-early at the period start).
+            assert folded[date(2024, 12, 31)] == Decimal("0.00")
+            assert folded[_P0_START] == _ORIGINATION_PRINCIPAL
+            assert folded[date(2026, 1, 7)] == _ORIGINATION_PRINCIPAL
+            # Steps to the tracking-start value on its OWN date.
             assert folded[date(2026, 1, 8)] == Decimal("80000.00")
 
     def test_an_anchor_predating_every_period_counts_from_its_own_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """The ``LEAST``'s other arm: an anchor before period 0 keeps its own date.
+        """An anchor before period 0 counts from its own date -- one clock, no calendar.
 
         The origination is 2025-01-01, a year before the user's first pay period.
-        ``journal_entries.pay_period_id`` is NOT NULL, so the writer files it under
-        the EARLIEST period (2026-01-02) -- which would push a 2025 fact into 2026
-        and report the loan owing NOTHING for all of 2025.  ``LEAST`` restores the
-        anchor's own civil date, so the fold reports $250,000.00 from 2025-01-01.
+        ``journal_entries.pay_period_id`` is NOT NULL, so the writer files the
+        opening under the EARLIEST period (2026-01-02) -- which, read by a
+        period-bounded reader, would push a 2025 fact into 2026 and report the loan
+        owing NOTHING for all of 2025.  The one clock counts the anchor from its
+        OWN civil date instead, so the fold reports $250,000.00 from 2025-01-01
+        with no calendar consulted at all.
 
         The loan here carries ONLY its origination (no true-up), so the figure is
         unambiguous.
@@ -504,10 +521,7 @@ class TestFoldAgreesWithTheShippingReader:
         with app.app_context():
             loan = _make_loan(seed_user, db)
             for period in (seed_periods[1], seed_periods[3], seed_periods[5]):
-                create_settled_transfer(
-                    seed_user, db.session, seed_user["account"], loan,
-                    period, amount=Decimal("1000.00"),
-                )
+                _settle(seed_user, db, loan, period, Decimal("1000.00"))
             db.session.commit()
             last = seed_periods[6].start_date
             # The reader refuses a future as_of, so pin today past the window.
@@ -561,10 +575,7 @@ class TestFoldNegativeControls:
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[1], amount=Decimal("1000.00"),
-            )
+            _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
 
             real_split = loan_ledger._fold.split_one_payment

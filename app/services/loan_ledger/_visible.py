@@ -1,37 +1,37 @@
-"""WHEN a loan event becomes visible to a balance read -- today's rule, reproduced.
+"""WHEN a loan event becomes visible to a balance read -- the ONE honest clock.
 
-The fold reads a loan's SOURCE events, but the balance every screen currently
-shows is a sum of POSTINGS.  For the fold to be gradeable against what ships, it
-must answer on the same days the posted ledger answers -- so this module
-reproduces, from source data, the visibility rule the posting readers apply in
-SQL (:func:`app.services.loan_posting_service._asof.effective_date`):
+The fold reads a loan's SOURCE events, but the balance every screen shows is a
+sum of POSTINGS, so the fold must count each event on the SAME day the posted
+ledger does or the two would diverge (step B2's parallel run is an EQUALITY).
+That day is the day the event HAPPENED, and it is already the day the posting
+carries in ``journal_entries.entry_date``:
 
-* a **PAYMENT** is visible from its pay period's ``start_date``.  A payment
-  settled BEFORE its period begins must not appear in a displayed balance until
-  it does: "posting early changes when the fact is RECORDED, never when it is
-  SHOWN" (:func:`~app.services.loan_loaders.settled_income_shadows`).
-* an **ANCHOR** is visible from ``LEAST(anchor_date, containing period.start)``.
+* a **PAYMENT** is visible from its **settled date** -- the UTC civil date of its
+  ``paid_at``, falling back to its pay period's ``start_date`` when ``paid_at`` is
+  NULL (an anomalous / legacy row).  This is the SAME
+  :func:`app.utils.dates.to_utc_civil_date` derivation the posting writer stamps
+  the payment's ``entry_date`` with
+  (:func:`app.services.posting_service._civil_settle_date`), and the SAME date the
+  checking outflow moves on, so the loan and checking move together (ruling R-A;
+  the period-start fallback is the developer ruling of 2026-07-17).
+* an **ANCHOR** is visible from its **own civil date** (``anchor_date``) -- the one
+  date it ever asserts, and the ``entry_date`` the anchor correction is posted at
+  (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).
 
-**This rule is wrong, it is reproduced deliberately, and C2 deletes it.**  Two of
-its three parts are a boundary predicate standing in for an instant -- this
-codebase's signature defect (``docs/audits/balance_architecture/README.md``
-Section 8).  An anchor asserts a CIVIL DATE and carries no budget dimension at
-all; it is dated from a pay period only because ``journal_entries.pay_period_id``
-is NOT NULL, and the ``LEAST`` is a repair for the lie that forces.  The repair is
-incomplete: a period that CONTAINS an anchor starts BEFORE it, so the ``LEAST``
-collapses to the period start and the anchor becomes visible days EARLY.  That is
-finding N-10 -- a loan originating 2026-03-25 reads its full $200,000.00
-principal on 2026-03-20 -- contained today only because four separate consumers
-each ask ``origination_date`` first.
+**This is step C2 -- the one clock that replaced the two boundary predicates the
+old rule used.**  Before it, a payment counted from its pay period's ``start_date``
+and an anchor from ``LEAST(anchor_date, containing period.start)`` -- both a
+boundary predicate standing in for an instant, this codebase's signature defect
+(``docs/audits/balance_architecture/README.md`` Section 8).  The anchor ``LEAST``
+in particular made an anchor visible days EARLY, so a loan originating 2026-03-25
+read its full $200,000.00 principal on 2026-03-20 (finding N-10).  Counting each
+event on its own date closes that at the source: an anchor dated in the future is
+simply not yet visible, and the four ``origination_date`` guards that contained
+the leak are retired (N-10).
 
-Reproducing it here is what makes step B2's parallel run an EQUALITY: the fold and
-the shipping readers agree on every day, so step C3's cutover provably moves no
-money.  Step C2 then replaces both this and the SQL rule with the one honest
-clock (ruling R-A: an assertion on its own date, an ACTUAL payment on its settled
-date), which MOVES history inside bounded windows -- and every number it moves is
-signed off there, against B2's oracle, rather than silently.
-
-Pure apart from the caller-supplied period list; no clock, no writes.
+Pure: no query, no clock, no writes.  An anchor's visible-on date no longer needs
+the owner's calendar at all -- it is the anchor's own date -- so the fold is now
+total over the loan's facts without a period list.
 """
 
 from datetime import date
@@ -41,6 +41,7 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import account_projection
+from app.utils.dates import to_utc_civil_date
 
 
 def owner_pay_periods(account_id: int) -> list[PayPeriod]:
@@ -118,35 +119,43 @@ def resolve_anchor_pay_period(
     return containing if containing is not None else periods[0]
 
 
-def anchor_visible_on(anchor_date: date, periods: list[PayPeriod]) -> date:
+def anchor_visible_on(anchor_date: date) -> date:
     """Return the date an anchor's balance correction becomes visible to a read.
 
-    ``LEAST(anchor_date, containing period.start)`` -- the Python twin of the
-    anchor arm of :func:`app.services.loan_posting_service._asof.effective_date`.
-    See the module docstring for why this rule is wrong and reproduced anyway.
+    The anchor's OWN civil date (step C2): an assertion happens on the date it
+    asserts, which is the ``entry_date`` its correction is posted at
+    (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  It no
+    longer needs the owner's calendar -- the pre-C2 rule
+    ``LEAST(anchor_date, containing period.start)`` did, only to reach the pay
+    period the NOT NULL ``pay_period_id`` forced the anchor under, and that
+    ``LEAST`` is exactly what made a future-dated anchor visible early (N-10).
+
+    Kept as a named one-liner rather than inlined so the fold reads with the same
+    vocabulary as :func:`payment_visible_on` (the two halves of the one clock).
 
     Args:
         anchor_date: The date the anchor asserts its balance on.
-        periods: The owner's pay periods, ascending by ``period_index``
-            (non-empty).
 
     Returns:
-        The date from which a balance read counts this anchor.
+        The date from which a balance read counts this anchor -- ``anchor_date``.
     """
-    period = resolve_anchor_pay_period(periods, anchor_date)
-    return min(anchor_date, period.start_date)
+    return anchor_date
 
 
 def payment_visible_on(shadow: Transaction) -> date:
     """Return the date a settled payment's principal becomes visible to a read.
 
-    Its pay period's ``start_date`` -- the Python twin of the cash arm of
-    :func:`app.services.loan_posting_service._asof.effective_date`.  Note this is
-    the period the payment's CASH is budgeted to, which need not contain its due
-    date: a payment settled late sits in the following period, so its visibility
-    can fall AFTER the installment it satisfies (the real Mortgage's July payment
-    is due 07-01 and visible from 07-02).  Ruling R-A replaces this with the
-    payment's settled date at C2.
+    Its **settled date** (step C2, ruling R-A): the UTC civil date of the shadow's
+    ``paid_at``, falling back to its pay period's ``start_date`` when ``paid_at``
+    is NULL.  This is the SAME :func:`app.utils.dates.to_utc_civil_date`
+    derivation the posting writer stamps the payment's ``entry_date`` with
+    (:func:`app.services.posting_service._civil_settle_date`), so the day the fold
+    counts this payment and the day the sum-of-postings reader counts it cannot
+    drift; and it is the day the checking outflow moves, so the loan and checking
+    move together.  The split MATH stays keyed to the DUE date
+    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`) -- a late or
+    out-of-order settlement changes only WHEN the paid-down principal is shown,
+    never HOW the payment splits.
 
     Args:
         shadow: The settled loan-side income shadow (its ``pay_period`` must be
@@ -156,4 +165,4 @@ def payment_visible_on(shadow: Transaction) -> date:
     Returns:
         The date from which a balance read counts this payment's principal.
     """
-    return shadow.pay_period.start_date
+    return to_utc_civil_date(shadow.paid_at, shadow.pay_period.start_date)

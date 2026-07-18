@@ -1752,8 +1752,8 @@ class TestDebtProgress:
         every one of this user's pay periods (they begin 2026-01-02) -- so the
         opening is FILED under the earliest period, and a period-bounded reader
         used to report $0.00 here.  The anchor is now bounded by its own civil date
-        (``_asof.effective_date``), which is what makes this $240,000 rather than a
-        fabricated zero.
+        (its ``entry_date`` -- step C2's one clock), which is what makes this
+        $240,000 rather than a fabricated zero.
 
         Dec 31 2026 balance = $234,701.02 -- a FUTURE date, so it is the forward
         projection from today's balance.
