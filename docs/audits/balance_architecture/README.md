@@ -13,13 +13,15 @@ R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
 happened -- the date its posting already carries in `entry_date`; closed the N-10 leak and
 N-12, moved the per-period map to period-END keying), **C3a** (`df775017`, `positions()` -- the
-total loan producer), and **F2** (`3aecceb0`, the dead year-end service deleted) shipped. **C3 is
+total loan producer), **F2** (`3aecceb0`, the dead year-end service deleted), and **C3c**
+(`99cc2816`, interest-in-year is the fold-based `balance_at.loan_interest_in_year`) shipped. **C3 is
 DECOMPOSED** (developer ruling 2026-07-18): too large for one revertable commit and reaching into
-dead year-end code, so it ships **C3a** -> **F2** (pulled AHEAD) -> **C3c** (interest-in-year onto
-`positions()`) -> **C3b** (cut the seam over + delete the machinery), each a REFACTOR (baseline
-unmoved; B-9's overdue-installment paydown preserved until C6). The C2 real-clone live-render (~26
-days Mortgage / ~13 days Van Loan, today
-UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C3c**.
+dead year-end code, so it ships **C3a** -> **F2** (pulled AHEAD) -> **C3c** (interest-in-year is a
+DEDICATED producer, NOT `positions().cum_interest` -- the tax figure keys on the display-tz paid
+year while the balance keys on UTC) -> **C3b** (cut the seam over + delete the machinery), each a
+REFACTOR (baseline unmoved; B-9's overdue-installment paydown preserved until C6). The C2 real-clone
+live-render (~26 days Mortgage / ~13 days Van Loan, today
+UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C3b**.
 
 ---
 
@@ -111,9 +113,13 @@ balance_at(loan, T) = fold(events where effective_date <= T, ordered by (effecti
   beyond it (ESTIMATED). An installment with NO record behind it never happened and never pays
   the debt down (delinquency reads honestly).
 * **Public API, three entries**: `positions(account, ctx, dates) -> {date: LoanPosition}`
-  (balance + cum_principal + cum_interest + status -- serves the scalar, the map, series,
-  interest-in-year, principal-in-window); `plan(account, ctx) -> [PlannedPayment]` (carries NO
+  (balance + cum_principal + status -- serves the scalar, the map, series, principal-in-window);
+  `plan(account, ctx) -> [PlannedPayment]` (carries NO
   balance; payoff date = `plan[-1].date`, derived, never stored); `events(account, ctx)`.
+  **Interest-in-year is NOT on `positions()`** (C3c, developer ruling 2026-07-18): it keys on the
+  DISPLAY-tz paid year (the tax clock) while every `positions()` figure keys on the UTC visible date
+  (the balance clock), so it is a DEDICATED `balance_at.loan_interest_in_year` -- two clocks, two
+  functions.
   `is_originated` / `is_retired` / `is_paid_off` are derived on demand, never copied into DTOs.
 * **The posting ledger STAYS** -- as the general ledger (balance sheet, statements,
   attribution), not as the answer to "what do I owe." It becomes a checked projection:
@@ -330,11 +336,21 @@ what is written here is decided in the commit itself, not in a new document.
     1000-line cap), so composing fold + resolver is a SEAM job -- it moves to `loan_ledger` at C6
     when fold-native. Reuses `generate_debt_schedules` + `forward_balance_at_date` (DRY), deletes
     nothing.
-  - [ ] **C3c** `refactor(analytics): interest-in-year is positions().cum_interest` -- extends
-    `positions()` with `cum_interest`, points the live Taxes tab at it, and deletes the
-    ledger/schedule hybrid's two guards (`is_confirmed` + `settled_due_months`) and the month-keyed
-    approximation (`loan_loaders.py:599-608`) -- one stream, one row per installment. Grade on A2's
-    hand-computed live oracle, never `_compute_mortgage_interest` (N-7). Closes B-6.
+  - [x] **C3c** `refactor(analytics): interest-in-year is balance_at.loan_interest_in_year` --
+    **SHIPPED `99cc2816`.** A DEDICATED seam producer, **NOT `positions().cum_interest`** (developer
+    ruling 2026-07-18): the tax figure keys on each payment's DISPLAY-tz civil paid year (the L9
+    rule), while the fold/balance keys on the UTC visible date -- a settle 8:05pm EST Dec 31 folds as
+    Jan 1 (UTC) yet deducts in the OLD year, so a UTC-keyed `cum_interest` sampled at year-ends
+    mis-years it. Two clocks, so interest gets its own function. It folds each settled payment's
+    actual interest by its display paid year and adds the schedule's unconfirmed rows for the future.
+    Points the live Taxes tab at it; deletes `_compute_mortgage_interest` / `_loan_year_interest` and
+    the `is_confirmed` guard (subsumed by reading only unconfirmed rows). **The `settled_due_months`
+    de-dup STAYS** -- the plan's "delete both guards" was wrong (corrected 2026-07-18, probe-measured):
+    while the future is schedule-row-driven a settled-but-unconfirmed (early-settled) installment is
+    in BOTH halves, so dropping the exclusion double-counts it (**+$489.97** measured). It is relocated
+    INTO the producer, derived from the SAME fold walk (non-drift); its STRUCTURAL deletion moves to
+    C6. Grade on A2's hand-computed live oracle, never the producer as its own oracle (N-7). Closes
+    B-6.
   - [ ] **C3b** `refactor(balance): the seam's AMORTIZING dispatch reads positions()` -- points the
     scalar + per-period map (+ liability band + savings net worth) at `positions()`; deletes the
     splice, `_projection_seed`, `owed_from`, `loan_ledger_domain`, `LoanLedgerNotOpenedError`, both
@@ -351,7 +367,12 @@ what is written here is decided in the commit itself, not in a new document.
   `min(origination, today)..max(payoff, today)`.
 - [ ] **C6** `feat(loan): a plan is payment RECORDS, not schedule rows` (D1) -- deletes
   `_forward_rows`, `balance_from_schedule_at_date`, `AmortizationRow.remaining_balance`. Kills
-  B-9 (overdue installments paying down debt).
+  B-9 (overdue installments paying down debt). Also STRUCTURALLY deletes C3c's settled-slot de-dup:
+  with the future as payment records there is one record per installment, so no fold/schedule slot
+  overlap to exclude. Fold in the second in-year interest producer here too: the loan detail page's
+  `interest_paid_ytd` chip still reads `confirmed_loan_interest_in_year` directly
+  (`routes/loan/dashboard.py:425`) -- settled-only YTD, so no user-visible disagreement with the
+  Taxes tab today, but it should read the one fold-based producer.
 - [ ] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- the drift
   warning + one-click sync (live today: transfer $1,910.95 vs contract $1,911.29 since the
   2026-07-06 escrow change).
@@ -420,7 +441,7 @@ archive names so old references resolve here.
 | B-3 | Grid renders a loan's balance RISING (cash producer on an amortizing account) | +$1,910.95/mo, unbounded | **closed (`f11382a0`)** | A1 |
 | B-4 | `_forward_rows` `is_confirmed` filter had zero discriminating tests -- **measured: the filter could be deleted and all 7,401 tests passed** | $4,449.72 archived; $48,496.25 on A2's fixture; unbounded (= `last_confirmed.remaining_balance - projection_seed`) | **closed (`c96c62be`)** -- value pinned inside the only window where the filter decides anything, control shown to fire | A2 |
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | **mechanism closed (`4e46a0a8`)** -- the clock-dropped opening that let a payment split against a ZERO balance is gone; reproduced on the ordinary settle path (payment settled early, due AFTER a future origination: interest $0.00 / principal $0.00 / **excess $1,073.64**, whole payment booked as a Refund Receivable and the Schedule-A interest erased -> $833.33 / $240.31 / $0.00). The linked ledger netted to exactly $0.00 -- the loan reading as owing NOTHING while the borrower's cash sat in a Refund. Invariant still open | A3 (mechanism), E1 (invariant) |
-| B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | latent, live tab | C3c/C6 |
+| B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | **closed (`99cc2816`)** -- the Taxes tab reads the fold-based `balance_at.loan_interest_in_year`, which answers from source events for the settled past (no schedule fallback for a loan the posting cache cannot value), so the interest figure and the balance come from the ONE total producer; the no-opening fallback is gone, demonstrated by `test_cleared_ledger_still_answers_from_the_fold` | C3c |
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
 | B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | latent | C3b |
 | B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
@@ -450,7 +471,7 @@ archive names so old references resolve here.
 | N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | latent hazard | E1 |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | B-15 residue | C-phase |
-| N-6 (A2) | `_loan_year_interest`'s `not row.is_confirmed` guard fires on NO live path today: it would only matter when the ledger answers for interest but not for the schedule, and both gate on the same `_has_opening_posting` (`_reader.py:310` vs `:152`), so `_payoff.py:285` has already swapped the replay's redistributed rows for raw-due-dated ledger rows that `settled_due_months` alone excludes. **That unreachability is a cross-module coincidence, not a structural guarantee** -- `confirmed_loan_view` ALSO returns `None` for `as_of > today` (`loan_payment_service.py:529`) where the interest reader has no `as_of` at all, so a caller passing a year-end `as_of` makes this guard the only thing between the Taxes tab and a double-count. Kept, untested: the state is unreachable, so a control would have to hand-build the rows (the anti-pattern B-17 names) | -- | recorded, code untouched | C3c (deletes both guards with `DebtSchedule`) |
+| N-6 (A2) | `_loan_year_interest`'s `not row.is_confirmed` guard fires on NO live path today: it would only matter when the ledger answers for interest but not for the schedule, and both gate on the same `_has_opening_posting` (`_reader.py:310` vs `:152`), so `_payoff.py:285` has already swapped the replay's redistributed rows for raw-due-dated ledger rows that `settled_due_months` alone excludes. **That unreachability is a cross-module coincidence, not a structural guarantee** -- `confirmed_loan_view` ALSO returns `None` for `as_of > today` (`loan_payment_service.py:529`) where the interest reader has no `as_of` at all, so a caller passing a year-end `as_of` makes this guard the only thing between the Taxes tab and a double-count. Kept, untested: the state is unreachable, so a control would have to hand-build the rows (the anti-pattern B-17 names) | -- | **closed (`99cc2816`)** -- `_loan_year_interest` deleted whole at C3c; the fold-based producer's `not row.is_confirmed` is the always-reachable projected-rows filter (source it only from unconfirmed rows), not a dead guard, so nothing unreachable is kept | C3c |
 | N-9 (A2) | **Schedule A counted a CAR LOAN's interest as home-mortgage interest.** The pre-fix `_load_debt_accounts` selected on `has_amortization` alone -- set on AUTO_LOAN, STUDENT_LOAN, PERSONAL_LOAN and HELOC as well as MORTGAGE -- so every amortizing account fed `_compute_mortgage_interest`. Personal interest is not deductible at all; student-loan interest is above-the-line, never Schedule A. Root cause is its own docstring: "Mirrors `_load_common_data`'s `debt_accounts` selection" -- one predicate answering two questions (Section 8's lesson, live) | **$5,221.16** measured on the suite's split-loan fixture; inflates itemize-vs-standard, so it can advise itemizing when the standard deduction wins | **closed (`44cbd028`)** -- `_load_debt_accounts` -> `_load_mortgage_accounts`, selected by account_type ID; HELOC deliberately excluded (use-of-proceeds unknown, documented like property tax); negative control shown to fire | own commit, found building A2's oracle |
 | N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
 | N-8 (A2) | ~~The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)`~~ **WITHDRAWN 2026-07-16 (A3): misattributed, on two counts.** (a) **Source 6 is `account_opening`** (`PostingSourceEnum` order: transfer 1, transaction 2, loan_payment 3, loan_opening 4, loan_trueup 5, account_opening 6) -- that log line is the ACCOUNT anchor path, not the loan walk. (b) That path reads **no clock at all** (`grep date.today() app/services/account_posting_service/` is empty); its `entry_date` is the assertion's own instant. The 2026-07-16 under a frozen-to-2026-03-20 suite is fixture ORDERING: `seed_user` creates Checking before `freeze_today` applies. The LOAN's anchor corrections stamp the **anchor's own date** (observed: `source 4 as of 2026-04-15` for an origination dated 2026-04-15), never the clock -- the walk's clock read was in the FILTER (which anchors were admitted), never in the stamp, and the filter is what A3 deleted. No defect here | -- | **withdrawn, no code change** | -- |
