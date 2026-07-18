@@ -30,11 +30,16 @@ proven load-bearing, incl. the N-10 originate-inside-current-period `0.00`) and 
 the map dispatch reads `positions_period_map`, MOVED into the seam's `_account_balance_map` since the
 kernel cannot import the seam; the map now FOLDS a broken loan -- B-8 closed at the map; dev-clone
 live-render UNMOVED to the cent, Mortgage $177,277.97 / Van Loan $15,663.59, map == scalar) shipped.
+**C3b4** (`5c62c995`, the dead ledger-domain readers deleted -- `loan_ledger_domain` /
+`confirmed_loan_ledger_domain` / `LoanLedgerDomain` gone; `_domain.py` RENAMED to `_linked_ledger.py`
+since it also held the two KEPT-reader query helpers `_has_opening_posting` / `_visible_nets`) shipped,
+closing the C3b arc.
 **`confirmed_loan_balance_map` is KEPT** (C3b3 deletion-list correction, developer ruling 2026-07-18:
 it reads the KEPT posting ledger and is the Step-4 reconciliation oracle's independent window; its
 fate is decided at E1). The C2 real-clone history-window live-render (~26 days Mortgage / ~13 days
-Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C3b4** (delete
-the dead ledger-domain readers).
+Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C4** (the loan
+page reads the seam like everyone else; delete `LoanState.current_balance`, the route's private
+double-compose).
 
 ---
 
@@ -435,11 +440,23 @@ what is written here is decided in the commit itself, not in a new document.
       a seam-level future-value pin restored the after-payment coverage the retired savings dispatcher
       unit tests carried. Baseline UNMOVED (dev-clone live-render + B2 + full suite 7360, pylint 10.00,
       adversarial review clean).
-    - [ ] **C3b4** `refactor(balance): delete the dead ledger-domain readers` -- deletes the seam
-      `loan_ledger_domain`, the reader `confirmed_loan_ledger_domain`, and `LoanLedgerDomain` (0
-      production callers since F2 deleted the year-end summary -- verified) plus their tests. The
-      shared `_is_originated` STAYS. Orthogonal cleanup enabled by F2, sequenced last so the cutover
-      commits stay focused.
+    - [x] **C3b4** `refactor(balance): delete the dead ledger-domain readers` -- **SHIPPED
+      `5c62c995`.** Deleted the seam `loan_ledger_domain`, the reader `confirmed_loan_ledger_domain`,
+      `LoanLedgerDomain`, and the private `_confirmed_loan_ledger_start` (0 production callers since F2
+      deleted the year-end summary -- whole-repo grep confirmed), plus the fence entry, both packages'
+      exports, and their tests. The shared `_is_originated` STAYS (still
+      `loan_figures`/`is_retired`/`is_paid_off`). **The plan's "delete `_domain.py`" was too broad, and
+      correcting it was the step:** that module ALSO held two load-bearing PRIVATE query helpers the
+      KEPT readers build on -- `_has_opening_posting` (the configured-loan sentinel
+      `confirmed_loan_balance_at`/`_map` and `_display` guard on) and `_visible_nets` (the grouped
+      per-date load `confirmed_loan_balance_map` prefix-sums). So `_domain.py` was RENAMED (`git mv`) to
+      `_linked_ledger.py`, stripped to those two helpers (kept VERBATIM) with a rewritten module
+      docstring; `_reader.py`'s import repointed, `_display.py` untouched (it takes the helper via
+      `_reader`). The deleted seam function's now-orphaned `_require_scenario` import went with it.
+      Baseline cannot move (no read path touched); full suite 7357 (= 7360 - 3 deleted domain tests),
+      pylint 10.00, the fence classification-completeness guard green, adversarial review clean (its one
+      catch -- a gate-invisible orphaned test import, `tests/` being outside the pylint gate -- fixed
+      pre-commit). Closes the C3b arc.
 - [ ] **C4** `fix(loan): the loan page reads the seam like everyone else` -- deletes the route's
   private double-compose and `LoanState.current_balance` (7 route reads).
 - [ ] **C5** `fix(accounts): the equity chart's debt line is the fold` -- kills B-2
@@ -556,7 +573,7 @@ archive names so old references resolve here.
 | N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
 | N-8 (A2) | ~~The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)`~~ **WITHDRAWN 2026-07-16 (A3): misattributed, on two counts.** (a) **Source 6 is `account_opening`** (`PostingSourceEnum` order: transfer 1, transaction 2, loan_payment 3, loan_opening 4, loan_trueup 5, account_opening 6) -- that log line is the ACCOUNT anchor path, not the loan walk. (b) That path reads **no clock at all** (`grep date.today() app/services/account_posting_service/` is empty); its `entry_date` is the assertion's own instant. The 2026-07-16 under a frozen-to-2026-03-20 suite is fixture ORDERING: `seed_user` creates Checking before `freeze_today` applies. The LOAN's anchor corrections stamp the **anchor's own date** (observed: `source 4 as of 2026-04-15` for an origination dated 2026-04-15), never the clock -- the walk's clock read was in the FILTER (which anchors were admitted), never in the stamp, and the filter is what A3 deleted. No defect here | -- | **withdrawn, no code change** | -- |
 | N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Ruled R-E (forbid at the source). **Reachability proved BROADER than first recorded:** beyond the create routes (`create.py:78` accepted any owned `account_id`), a recurrence TEMPLATE targeting a loan (the engine copies `template.account_id`) and the SALARY-PROFILE auto-picker (found in adversarial review) each generate raw transactions onto the loan -- all three now refuse an amortizing account. B2 demonstrates the divergence is real ($300 forced) and asserts the sources refuse it. | **$300.00** measured on a probe; unbounded (any typed amount) | **closed (`dba91dc0`)** -- all three sources gated; control shown to fire | BG |
-| N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | **leak closed (`eb5de4ac`)** -- the reader bounds the opening by its `entry_date` (the origination), so a future origination is not yet visible and reads the honest `0.00`; the pin flipped. The four guards become redundant: #1 `amortizing_balance_at` deleted at C3b1, #2 `_build_amortizing_balance_map` deleted at C3b3, `confirmed_loan_view`'s STAYS (B-1, clock-independent), `loan_ledger_domain`'s `_is_originated` STAYS (shared with `is_retired`/`is_paid_off`) | C2 (leak); C3b1/C3b3 (guards #1/#2) |
+| N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | **leak closed (`eb5de4ac`)** -- the reader bounds the opening by its `entry_date` (the origination), so a future origination is not yet visible and reads the honest `0.00`; the pin flipped. The four guards become redundant: #1 `amortizing_balance_at` deleted at C3b1, #2 `_build_amortizing_balance_map` deleted at C3b3, `confirmed_loan_view`'s STAYS (B-1, clock-independent), `loan_ledger_domain`'s guard SITE deleted at C3b4 (the reader is gone); the shared `_is_originated` fn STAYS (`loan_figures`/`is_retired`/`is_paid_off`) | C2 (leak); C3b1/C3b3 (guards #1/#2); C3b4 (guard #4 site) |
 | N-13 (C2) | **Editing a settled payment's `paid_at` does not re-date its postings**, so since C2's settled-date clock the balance's visibility date does not follow an edited settle date. `paid_at` is not in `transfer_service._POSTING_RELEVANT_FIELDS` (it changes no leg), and the loan reconcile is leg-delta based, so a `paid_at`-only edit resyncs the account anchors but leaves the loan correction at its original `entry_date`. Harmless pre-C2 (visibility was period-based); now latent. Not a live defect on current data (paid_at edits are rare and the app has no such edit flow surfaced) | -- | recorded, out of scope | write-side (E1 / C9) |
 
 ## 7. Verification standard (what "done" means for every step)
