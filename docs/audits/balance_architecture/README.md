@@ -9,15 +9,17 @@ written for this arc.
 **State as of 2026-07-17:** design verified and locked; ALL rulings answered (D1-D5,
 R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
-`dba91dc0`, **B2** `8f070386`). **Phase C has begun: C1** (`18fd3a04`) shipped -- a
-loan's origination is ALWAYS its ledger opening, and a `tracking_start` is now an
-ordinary `is_opening=False` balance assertion; the fold and the posted reader open at
-origination together (the deploy backfill re-syncs; no migration). Verified on the real
-clone: today's balance is UNMOVED on both loans (Mortgage $177,277.97, Van Loan
-$15,663.59), a pre-tracking date reads the origination principal held FLAT (the plateau:
-$202,000.00 / $32,402.45) instead of the false pre-opening zero (B-11), and
-pre-origination reads $0.00. The contractual back-projection that refines the plateau
-stays a later ESTIMATED tier per D2. Next commit: **C2** (one clock; MUST land after C1).
+`dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`) and **C2** (`eb5de4ac`)
+shipped. C1 made a loan's origination its ledger opening. **C2 is the ONE CLOCK:** an
+event counts from the day it happened -- an anchor on its own `anchor_date`, a payment on
+its SETTLED date -- which is the date the posting already carries in `entry_date`. The
+readers bound by `entry_date <= as_of` (`_asof.py` deleted); the fold reproduces it via
+one shared `to_utc_civil_date` the writer also uses, so fold == reader by construction.
+Closes the N-10 leak at the source and N-12; the per-period map moved to period-END
+keying. Verified on the B2 oracle + the full suite (7,446 green, pylint 10.00),
+adversarially reviewed clean; the real-clone live-render of the bounded history movement
+(~26 days Mortgage / ~13 days Van Loan, today UNMOVED) is outstanding before the F3 prod
+ship. Next commit: **C3** (the seam's AMORTIZING dispatch is the fold).
 
 ---
 
@@ -314,12 +316,21 @@ what is written here is decided in the commit itself, not in a new document.
   + its no-op seeds (test loans now match production); the now-false dead year-end
   mid-life-clamp regression lock removed. B2 stays green (shared walk); its tracking-start shape
   now pins the plateau ($250k flat, drift -$150k). Also corrected BG's stale `_fold.py` N-11 note.
-- [ ] **C2** `fix(loan): one clock -- an event happens on the date it happened` -- R-A ruled
-  2026-07-16: settled-date visibility, due-date split keying. **MUST land after C1**
-  (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the
-  Mortgage's tracking boundary). Deletes `_asof.py`. History repositions within bounded windows
-  (verified: 26 days Mortgage / 13 days Van Loan, today's balance unchanged); every moved
-  number is signed off via B2.
+- [x] **C2** `fix(loan): one clock -- an event happens on the date it happened` --
+  **SHIPPED `eb5de4ac`.** R-A (settled-date visibility, due-date split keying); NULL-`paid_at`
+  fallback is period-start (developer ruling 2026-07-17, so loan and checking move together).
+  **The one clock IS the posting's `entry_date`:** the readers bound by `entry_date <= as_of`
+  and the fold reproduces it via ONE shared `app.utils.dates.to_utc_civil_date` the writer
+  also calls -- fold == reader by construction. Deletes `_asof.py`. **Three things the
+  one-liner did not carry:** (a) `confirmed_loan_balance_map` moved to period-END keying (the
+  old START keying held only because postings were period-start-dated; a mid-period settled
+  payment must count in its period, and period-END aligns it with the projection map);
+  (b) the fold is now calendar-INDEPENDENT, so `_dated_deltas` dropped `owner_pay_periods`
+  and its no-periods raise (more total); (c) the four N-10 guards are NOT all retired here --
+  see the N-10 row (leak closed at source; #1/#2 at C3, `confirmed_loan_view`'s stays for
+  B-1). History repositions in bounded windows (~26 days Mortgage / ~13 days Van Loan, today
+  unchanged); signed off via B2 + the full suite (7,446 green, pylint 10.00) + an adversarial
+  review. Recorded, out of scope: **N-13**. The real-clone live-render remains before F3.
 - [ ] **C3** `refactor(balance): the seam's AMORTIZING dispatch is the fold` -- deletes the
   splice, `_projection_seed`, `owed_from`, `loan_ledger_domain`, `LoanLedgerNotOpenedError`,
   both forward producers, `generate_debt_schedules`/`DebtSchedule`, and the two-zeros doctrine.
@@ -414,7 +425,7 @@ archive names so old references resolve here.
 | B-20 | True-up-paid-off loan shows origination as payoff date, no badge | -- | open | C8 |
 | B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
 | B-22 | Dead `insert_origination_event` fixture helper | -- | **closed (`18fd3a04`)** -- helper + its no-op seeds deleted; test loans now match production (origination synthesized, no stored row) | C1 |
-| N-12 (B1) | **The two ledger readers disagree about when an anchor becomes visible.** `confirmed_loan_balance_at` bounds an anchor by `LEAST(entry_date, period.start)` (`_asof.effective_date`); `confirmed_loan_history_rows` bounds its non-payment events by raw `entry_date` (`_reader.py:_classify_linked_nets`). They therefore diverge for any `as_of` in `[period.start, entry_date)` -- two readers of ONE ledger, contradicting each other about one loan. Measured on the real Mortgage: on 2026-03-26..03-30 the scalar says **$178,103.41** and the history rows' last `remaining_balance` says **-$272.02** -- a NEGATIVE liability, the B-5 shape. Contained today, not by design but by two unrelated gates: a user true-up is schema-bound to `anchor_date <= today` (`routes/loan/params.py:244`), and the future-origination case is stopped by N-10's four `origination_date` predicates -- so no surface passes an `as_of` inside the window. One clock retires both bounds | $178,375.43 (the divergence; the rendered figure is a negative liability) | latent, contained, measured | C2 (`remaining_balance` itself dies at C6) |
+| N-12 (B1) | **The two ledger readers disagree about when an anchor becomes visible.** `confirmed_loan_balance_at` bounds an anchor by `LEAST(entry_date, period.start)` (`_asof.effective_date`); `confirmed_loan_history_rows` bounds its non-payment events by raw `entry_date` (`_reader.py:_classify_linked_nets`). They therefore diverge for any `as_of` in `[period.start, entry_date)` -- two readers of ONE ledger, contradicting each other about one loan. Measured on the real Mortgage: on 2026-03-26..03-30 the scalar says **$178,103.41** and the history rows' last `remaining_balance` says **-$272.02** -- a NEGATIVE liability, the B-5 shape. Contained today, not by design but by two unrelated gates: a user true-up is schema-bound to `anchor_date <= today` (`routes/loan/params.py:244`), and the future-origination case is stopped by N-10's four `origination_date` predicates -- so no surface passes an `as_of` inside the window. One clock retires both bounds | $178,375.43 (the divergence; the rendered figure is a negative liability) | **closed (`eb5de4ac`)** -- the scalar now bounds anchors by `entry_date` (their own civil date), the same rule the history reader already used, so the two agree | C2 (`remaining_balance` itself dies at C6) |
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
 | FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case | ruled: reject at write boundary (R-C) | C9 |
@@ -433,7 +444,8 @@ archive names so old references resolve here.
 | N-7 (A2) | The live Taxes number's only test used `_compute_mortgage_interest` as its own oracle -- a double-count inside it moved both sides and shipped green (demonstrated) | interest deduction, unbounded | **closed (`c96c62be`)** -- hand-computed live-path oracle ($500.00, paid-date basis) | A2; C3 must grade its rebuild on it |
 | N-8 (A2) | ~~The loan write walk stamps postings with the WALL CLOCK, visible in test logs as `Posted anchor correction (source 6 as of 2026-07-16)`~~ **WITHDRAWN 2026-07-16 (A3): misattributed, on two counts.** (a) **Source 6 is `account_opening`** (`PostingSourceEnum` order: transfer 1, transaction 2, loan_payment 3, loan_opening 4, loan_trueup 5, account_opening 6) -- that log line is the ACCOUNT anchor path, not the loan walk. (b) That path reads **no clock at all** (`grep date.today() app/services/account_posting_service/` is empty); its `entry_date` is the assertion's own instant. The 2026-07-16 under a frozen-to-2026-03-20 suite is fixture ORDERING: `seed_user` creates Checking before `freeze_today` applies. The LOAN's anchor corrections stamp the **anchor's own date** (observed: `source 4 as of 2026-04-15` for an origination dated 2026-04-15), never the clock -- the walk's clock read was in the FILTER (which anchors were admitted), never in the stamp, and the filter is what A3 deleted. No defect here | -- | **withdrawn, no code change** | -- |
 | N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Ruled R-E (forbid at the source). **Reachability proved BROADER than first recorded:** beyond the create routes (`create.py:78` accepted any owned `account_id`), a recurrence TEMPLATE targeting a loan (the engine copies `template.account_id`) and the SALARY-PROFILE auto-picker (found in adversarial review) each generate raw transactions onto the loan -- all three now refuse an amortizing account. B2 demonstrates the divergence is real ($300 forced) and asserts the sources refuse it. | **$300.00** measured on a probe; unbounded (any typed amount) | **closed (`dba91dc0`)** -- all three sources gated; control shown to fire | BG |
-| N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | recorded, contained, pinned | C2 (retires all four) |
+| N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | **leak closed (`eb5de4ac`)** -- the reader bounds the opening by its `entry_date` (the origination), so a future origination is not yet visible and reads the honest `0.00`; the pin flipped. The four guards become redundant: #1/#2 delete at C3 with `owed_from`, `confirmed_loan_view`'s STAYS (B-1, clock-independent), `loan_ledger_domain`'s `_is_originated` STAYS (shared with `is_retired`/`is_paid_off`) | C2 (leak); C3 (guards #1/#2) |
+| N-13 (C2) | **Editing a settled payment's `paid_at` does not re-date its postings**, so since C2's settled-date clock the balance's visibility date does not follow an edited settle date. `paid_at` is not in `transfer_service._POSTING_RELEVANT_FIELDS` (it changes no leg), and the loan reconcile is leg-delta based, so a `paid_at`-only edit resyncs the account anchors but leaves the loan correction at its original `entry_date`. Harmless pre-C2 (visibility was period-based); now latent. Not a live defect on current data (paid_at edits are rare and the app has no such edit flow surfaced) | -- | recorded, out of scope | write-side (E1 / C9) |
 
 ## 7. Verification standard (what "done" means for every step)
 
