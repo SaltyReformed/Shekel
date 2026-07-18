@@ -7,15 +7,17 @@ step gets its checkbox ticked with its commit hash HERE, and no new planning doc
 written for this arc.
 
 **State as of 2026-07-17:** design verified and locked; ALL rulings answered (D1-D5,
-R-A..R-D, and R-E, Section 4); **A1** (`f11382a0`), **A2** (`c96c62be`), **A3**
-(`4e46a0a8`), the live Schedule A defect A2 uncovered (N-9, `44cbd028`), **B0**
-(`d1586254`), **B1** (`e227de08`), the **N-11 forbid-at-source guard** (**BG**,
-`dba91dc0`) and **B2** the exhaustive oracle (`8f070386`) shipped. **Phases A and B are
-complete; the fold exists, is total, and is proven equivalent to the posted reader on
-every day of the shape matrix.** N-11 is RULED (R-E: forbid at the source) and closed by
-construction; its reachability proved BROADER than the plan's cited `create.py:78` (the
-template form and the salary-profile picker were the second and third sources). Next
-commit: **C1** (origination always enters the stream).
+R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+**A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
+`dba91dc0`, **B2** `8f070386`). **Phase C has begun: C1** (`18fd3a04`) shipped -- a
+loan's origination is ALWAYS its ledger opening, and a `tracking_start` is now an
+ordinary `is_opening=False` balance assertion; the fold and the posted reader open at
+origination together (the deploy backfill re-syncs; no migration). Verified on the real
+clone: today's balance is UNMOVED on both loans (Mortgage $177,277.97, Van Loan
+$15,663.59), a pre-tracking date reads the origination principal held FLAT (the plateau:
+$202,000.00 / $32,402.45) instead of the false pre-opening zero (B-11), and
+pre-origination reads $0.00. The contractual back-projection that refines the plateau
+stays a later ESTIMATED tier per D2. Next commit: **C2** (one clock; MUST land after C1).
 
 ---
 
@@ -288,10 +290,30 @@ what is written here is decided in the commit itself, not in a new document.
 
 ### Phase C -- the cutover (order is load-bearing)
 
-- [ ] **C1** `fix(loan): a loan's origination is an event, not a footnote` -- ORIGINATION always
-  enters the stream (the row is in the database and is excluded today, `loan_loaders.py:187-196`);
-  a tracking-start becomes an ordinary ASSERTION. Kills the false pre-opening zero (B-11, live
-  via /savings). Cleanup: the dead `insert_origination_event` test helper.
+- [x] **C1** `fix(loan): a loan's origination is an event, not a footnote` -- **SHIPPED
+  `18fd3a04`.** ORIGINATION is ALWAYS the loan's opening; a `tracking_start` is an ordinary
+  `is_opening=False` ASSERTION that RESETS the walk at its own date. **The plan's one-liner
+  predates the read switch, and the scope note is the correction:** origination is SYNTHESIZED
+  from params (not "a row excluded"), and the mechanism behind B-11 was
+  `_opening_anchor_fact`'s tracking-start SUPERSESSION (now deleted; `load_loan_anchor_facts`
+  reuses `synthesize_origination_anchor` for the one opening). The materialized ledger already
+  carried reversed origination openings, so the idempotent deploy backfill
+  (`init_database.backfill_all_loan_postings`, every deploy) re-instates them -- **no
+  migration**. **Today's balance is UNMOVED** (the tracking-start resets to the value the ledger
+  previously opened at; verified to the cent on both real loans, baseline held by B2); the only
+  movement is a pre-tracking date, which reads the origination principal FLAT (the plateau)
+  instead of $0 -- NOT rendered on /savings (its trend starts ~6 periods back, past the plateau
+  period), so B-11 was aged-out of the render window but is closed at the producer. A
+  `tracking_start` now STACKS like a true-up, so the pre-read-switch "latest tracking-start
+  supersedes across dates" is gone; real data has only same-date tracking-starts (Van Loan),
+  where latest-created still governs, so nothing moves. Display: the "Tracking start" badge moved
+  from the opening row to the tracking-start assertion row (`dashboard.html`); the Balance
+  anchors card gains an Origination row + a labeled tracking-start row with its honest drift.
+  `confirmed_loan_ledger_domain` now reports the origination (dead year-end clamp only; the
+  module dies at C3, the clamp's test at F2). Cleanup: the dead `insert_origination_event` helper
+  + its no-op seeds (test loans now match production); the now-false dead year-end
+  mid-life-clamp regression lock removed. B2 stays green (shared walk); its tracking-start shape
+  now pins the plateau ($250k flat, drift -$150k). Also corrected BG's stale `_fold.py` N-11 note.
 - [ ] **C2** `fix(loan): one clock -- an event happens on the date it happened` -- R-A ruled
   2026-07-16: settled-date visibility, due-date split keying. **MUST land after C1**
   (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the
@@ -380,7 +402,7 @@ archive names so old references resolve here.
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
 | B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | latent | C3 |
 | B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
-| B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **LIVE** (/savings map) | C1 |
+| B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **closed (`18fd3a04`)** -- origination is the opening now, so a pre-tracking date reads the origination principal held flat (the plateau), never debt-free; verified $0 -> $202,000/$32,402.45 on the real loans; aged-out of the /savings trend window meanwhile, closed at the producer; B2's tracking-start shape pins the plateau | C1 |
 | B-12 | Unfenced producer tier below the fence; `loan_resolver` package wholly unfenced | -- | guard gap | Phase D |
 | B-13 | Loan detail route answers a broken loan from the money-blind replay | $199,600.80 | latent | C4 |
 | B-14 | `loan_recurrence_sync` persists a payoff date off the blind walk | -- | reachable | C8 |
@@ -391,7 +413,7 @@ archive names so old references resolve here.
 | B-19 | False `DebtSchedule` type hints in `_income_tax` | -- | open | fix on first C-phase touch |
 | B-20 | True-up-paid-off loan shows origination as payoff date, no badge | -- | open | C8 |
 | B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
-| B-22 | Dead `insert_origination_event` fixture helper | -- | open | C1 |
+| B-22 | Dead `insert_origination_event` fixture helper | -- | **closed (`18fd3a04`)** -- helper + its no-op seeds deleted; test loans now match production (origination synthesized, no stored row) | C1 |
 | N-12 (B1) | **The two ledger readers disagree about when an anchor becomes visible.** `confirmed_loan_balance_at` bounds an anchor by `LEAST(entry_date, period.start)` (`_asof.effective_date`); `confirmed_loan_history_rows` bounds its non-payment events by raw `entry_date` (`_reader.py:_classify_linked_nets`). They therefore diverge for any `as_of` in `[period.start, entry_date)` -- two readers of ONE ledger, contradicting each other about one loan. Measured on the real Mortgage: on 2026-03-26..03-30 the scalar says **$178,103.41** and the history rows' last `remaining_balance` says **-$272.02** -- a NEGATIVE liability, the B-5 shape. Contained today, not by design but by two unrelated gates: a user true-up is schema-bound to `anchor_date <= today` (`routes/loan/params.py:244`), and the future-origination case is stopped by N-10's four `origination_date` predicates -- so no surface passes an `as_of` inside the window. One clock retires both bounds | $178,375.43 (the divergence; the rendered figure is a negative liability) | latent, contained, measured | C2 (`remaining_balance` itself dies at C6) |
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
