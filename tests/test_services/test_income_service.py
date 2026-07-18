@@ -41,7 +41,6 @@ from app.services import (
     pay_period_service,
     paycheck_calculator,
     savings_dashboard_service,
-    year_end_summary_service,
 )
 from app.services.tax_config_service import load_tax_configs
 from app.services.resolution_context import BalanceContext
@@ -565,15 +564,6 @@ class TestConsumerIntegration:
             )
             seam_inputs = balance_at._assemble_inputs([inv], bctx)
             assert seam_inputs.salary_gross_biweekly == canonical
-
-            # Year-end consumer: thin delegator over income_service
-            # (moved to the ._data sub-module in the Phase 2 split).
-            year_end_val = (
-                year_end_summary_service._data._load_salary_gross_biweekly(
-                    user_id, scenario,
-                )
-            )
-            assert year_end_val == canonical
 
             # Investment consumer: Commit 17 introduced a thin
             # ``_salary_gross_biweekly`` wrapper around

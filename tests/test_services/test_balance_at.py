@@ -2849,41 +2849,6 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             # The mortgage is in NEITHER sum -- it has not been borrowed.
             assert fraction == Decimal("0")
 
-    def test_year_end_reports_no_principal_progress_for_an_unborrowed_loan(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The year-end panel: the loan is absent, not reported as -$198,049.28 paid.
-
-        The C1b ledger-domain clamp skips a loan whose record begins after the year
-        -- but an unborrowed loan has NO ledger at all, so ``domain is None`` and
-        the clamp fails OPEN.  Its Jan-1 balance is a true $0.00 and its Dec-31
-        balance is the debt it will take on, so the difference was reported as
-        principal PAID, with ``tracked_from`` absent so the surface presented it as
-        a full calendar year.  That is the same inverted figure C1b was written to
-        delete, arriving through a door the clamp does not cover.
-        """
-        # pylint: disable=import-outside-toplevel
-        from app.services.net_worth_kernel import debt_schedule_rows
-        from app.services.year_end_summary_service._net_worth import (
-            _compute_debt_progress,
-        )
-
-        with app.app_context():
-            periods = seed_periods
-            auto, mortgage = self._both_loans(seed_user, db.session, periods)
-            bctx = BalanceContext.build(seed_user["user"].id)
-            rows = debt_schedule_rows([auto, mortgage], bctx)
-
-            progress = _compute_debt_progress(
-                2026, [auto, mortgage], rows, bctx,
-            )
-            reported = {row["account_name"] for row in progress}
-            assert "Closing In April" not in reported, (
-                "an unborrowed loan has no principal progress to report; "
-                f"got {progress}"
-            )
-            assert "Auto" in reported
-
     def test_property_chart_keeps_a_mortgage_that_closes_next_month(
         self, app, db, seed_user, seed_periods,
     ):

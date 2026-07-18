@@ -595,8 +595,8 @@ def load_settled_payment_due_months(
 ) -> set[tuple[int, int]]:
     """Return the ``(year, month)`` due slots of a loan's SETTLED payments.
 
-    The schedule-side partition key for the year-end mortgage-interest hybrid
-    (:func:`app.services.year_end_summary_service._income_tax._loan_year_interest`):
+    The schedule-side partition key for the Schedule A mortgage-interest hybrid
+    (:func:`app.services.tax_report_service._loan_year_interest`):
     a settled payment's actual interest is read from the genesis ledger and
     attributed to its civil PAID date, so the schedule's projected row for the
     same due slot must be excluded or the hybrid double-counts.  The resolver's

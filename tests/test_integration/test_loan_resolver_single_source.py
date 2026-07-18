@@ -41,7 +41,6 @@ from app.services import (
     loan_resolver,
     savings_dashboard_service,
     transfer_service,
-    year_end_summary_service,
 )
 from tests._test_helpers import (
     create_loan_account,
@@ -214,26 +213,6 @@ def _savings_debt_card_total_debt(user_id):
     return summary["total_debt"]
 
 
-def _net_worth_liability_balance(user_id, year, loan_account_id):
-    """Return the loan balance from the year-end net-worth section.
-
-    Drives ``year_end_summary_service.compute_year_end_summary`` so
-    the test asserts against the *real* service output -- not a
-    re-derivation -- and confirms the schedule-walking net-worth
-    branch reads the resolver's schedule for the loan.
-    """
-    summary = year_end_summary_service.compute_year_end_summary(user_id, year)
-    # ``debt_progress`` lists per-debt Dec-31 balances; the
-    # liability that nets against assets in the net-worth section is
-    # the same number.
-    for entry in summary["debt_progress"]:
-        if entry["account_id"] == loan_account_id:
-            return entry["dec31_balance"]
-    raise AssertionError(
-        f"Loan account {loan_account_id} not found in debt_progress"
-    )
-
-
 # -- C15-1 / C15-6 fixed-rate cross-surface tests --------------------------
 
 
@@ -243,7 +222,7 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
     """C15-1 (pre-settle): every surface displays the same $300,000 anchor.
 
     Fresh fixed-rate mortgage with one origination event and zero
-    confirmed payments.  All three display surfaces must show
+    confirmed payments.  Both display surfaces must show
     ``$300,000.00`` exactly -- the resolver's
     ``state.current_balance`` for ``as_of = date.today()``.
 
@@ -279,9 +258,6 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
 
         card_balance = _loan_card_principal(auth_client, account.id)
         debt_balance = _savings_debt_card_total_debt(seed_user["user"].id)
-        net_worth_balance = _net_worth_liability_balance(
-            seed_user["user"].id, ORIGINATION_DATE.year, account.id,
-        )
 
         assert card_balance == FIXED_PRINCIPAL, (
             f"Loan card displayed {card_balance}, expected {FIXED_PRINCIPAL}"
@@ -289,18 +265,6 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         assert debt_balance == FIXED_PRINCIPAL, (
             f"/savings debt card displayed {debt_balance}, "
             f"expected {FIXED_PRINCIPAL}"
-        )
-        # Net-worth balance is the Dec-31 value of the resolver's
-        # schedule.  With no settles in this test (and as_of=today),
-        # the schedule runs contractually forward and the Dec-31 row
-        # reflects ~11 months of contractual payments.  The lock here
-        # is that the SAME schedule populates every surface, not that
-        # the Dec-31 value equals the principal exactly.  Cross-
-        # surface principal alignment for the unmoved case is the
-        # card/debt-card pair; net-worth's role is the post-settle
-        # alignment test below.
-        assert isinstance(net_worth_balance, Decimal), (
-            "Net-worth liability missing for the loan account"
         )
 
 

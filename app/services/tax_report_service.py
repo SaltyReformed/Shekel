@@ -68,7 +68,13 @@ from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import net_worth_kernel, paycheck_calculator, tax_calculator
+from app.services import (
+    loan_loaders,
+    net_worth_kernel,
+    paycheck_calculator,
+    tax_calculator,
+)
+from app.services.loan_posting_service import confirmed_loan_interest_in_year
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
@@ -82,9 +88,6 @@ from app.services.tax_liability_service import (
 from app.services.tax_withholding_service import (
     WithholdingComponents,
     compute_withholding_to_date,
-)
-from app.services.year_end_summary_service._income_tax import (
-    _compute_mortgage_interest,
 )
 
 ZERO = Decimal("0")
@@ -195,8 +198,8 @@ class W2Preview:
 class ItemizedComponents:
     """The itemizable Schedule A components the app can source.
 
-    ``mortgage_interest`` REUSES the year-end summary's ledger-actual +
-    schedule-projected hybrid; ``state_income_tax`` is the hybrid state
+    ``mortgage_interest`` is the ledger-actual + schedule-projected hybrid
+    (:func:`_loan_year_interest`); ``state_income_tax`` is the hybrid state
     income tax withheld.  ``property_tax`` is ``None`` -- there is no
     unambiguous property-tax source to query (escrow line items are
     free-text named, with no ref-table kind separating a tax line from
@@ -410,8 +413,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 def _load_year_periods(user_id: int, year: int) -> list:
     """Return the user's pay periods whose payday falls in *year*.
 
-    Mirrors ``year_end_summary_service._data._load_common_data``: pay
-    periods with ``start_date`` in the calendar year, ordered by
+    Pay periods with ``start_date`` in the calendar year, ordered by
     ``period_index``.
 
     Args:
@@ -623,14 +625,15 @@ def _build_schedule_a(
 ) -> ScheduleACheck:
     """Build the informational Schedule A itemize-vs-standard check.
 
-    Mortgage interest REUSES the year-end summary's ledger-actual +
-    schedule-projected hybrid: it loads the user's MORTGAGE accounts
-    (:func:`_load_mortgage_accounts` -- NOT every amortizing account; a car
-    loan's interest is not deductible), generates their amortization schedules
-    via the shared :func:`net_worth_kernel.debt_schedule_rows`, and delegates to
-    the same ``_compute_mortgage_interest`` the orchestrator calls (no second
-    implementation).  The state income-tax component is the hybrid state
-    withholding.  Property tax is omitted (no unambiguous source).
+    Mortgage interest is a ledger-actual + schedule-projected hybrid: it loads
+    the user's MORTGAGE accounts (:func:`_load_mortgage_accounts` -- NOT every
+    amortizing account; a car loan's interest is not deductible), generates their
+    amortization schedules via the shared
+    :func:`net_worth_kernel.debt_schedule_rows`, and sums each loan's paid
+    interest through :func:`_compute_mortgage_interest` (this module's own, the
+    figure's sole caller since the year-end summary service was retired at F2).
+    The state income-tax component is the hybrid state withholding.  Property tax
+    is omitted (no unambiguous source).
 
     Args:
         user_id: The owning user (scopes the debt-account load).
@@ -711,6 +714,120 @@ def _load_mortgage_accounts(user_id: int) -> list:
         a for a in load_active_accounts_with_types(user_id)
         if a.account_type_id == mortgage_type_id
     ]
+
+
+def _compute_mortgage_interest(
+    year: int,
+    debt_schedules: dict[int, list],
+    scenario_id: int,
+) -> Decimal:
+    """Sum mortgage interest PAID during *year* across the given loans.
+
+    Schedule A (line 8) reports the interest a loan's payments actually paid
+    during the year, so accuracy is critical.  Per loan this is a HYBRID of
+    ledger-actual and schedule-projected interest (:func:`_loan_year_interest`):
+    the ACTUAL interest of confirmed (settled) payments comes from the genesis
+    ledger -- correct even for an off-schedule (extra / short) payment, where the
+    amortization schedule's replayed figure is not -- while the PROJECTED interest
+    of the year's not-yet-confirmed payments comes from the schedule.  A loan the
+    ledger does not own (no genesis opening posting) falls back to the schedule
+    alone.
+
+    Relocated from the retired ``year_end_summary_service`` (plan step F2, ruling
+    R-D); its only live caller is :func:`_build_schedule_a`.  Step C3c replaces
+    this hybrid with ``balance_at.positions(...).cum_interest`` -- one stream, so
+    the ledger/schedule de-duplication below disappears.
+
+    Args:
+        year: Calendar year to sum interest for.
+        debt_schedules: ``{loan_account_id: [AmortizationRow, ...]}`` from
+            :func:`app.services.net_worth_kernel.debt_schedule_rows` -- the
+            schedule ROWS, not a balance bundle.
+        scenario_id: The budget scenario the schedules were generated in; scopes
+            the ledger read to the same scenario.
+
+    Returns:
+        Total interest paid across all loans in the year.
+    """
+    return sum(
+        (
+            _loan_year_interest(loan_account_id, debt, scenario_id, year)
+            for loan_account_id, debt in debt_schedules.items()
+        ),
+        ZERO,
+    )
+
+
+def _loan_year_interest(
+    loan_account_id: int,
+    debt: list,
+    scenario_id: int,
+    year: int,
+) -> Decimal:
+    """Return one loan's interest PAID during *year* (ledger-actual + projected).
+
+    The per-loan hybrid behind :func:`_compute_mortgage_interest`:
+
+    * the ACTUAL interest of confirmed payments comes from the genesis ledger
+      (:func:`app.services.loan_posting_service.confirmed_loan_interest_in_year`),
+      attributed to each payment's display-timezone civil paid date (the L9
+      rule) -- the tax-correct basis, and correct for off-schedule payments where
+      the schedule's replayed interest is not; PLUS
+    * the schedule's PROJECTED interest for the year's genuinely projected rows:
+      not replay-confirmed (``not row.is_confirmed``) AND not occupying a due slot
+      a SETTLED payment already holds
+      (:func:`app.services.loan_loaders.load_settled_payment_due_months` -- an
+      early-settled payment's interest is already in the ledger term, so its
+      still-``is_confirmed=False`` schedule row must not count again).
+
+    When the loan has no genesis opening posting (an un-backfilled loan, or one
+    the ledger does not own) the reader returns ``None`` and this sums the FULL
+    schedule (confirmed history + projection) by ``payment_date``.
+
+    Args:
+        loan_account_id: The loan account whose paid interest to compute.
+        debt: The loan's ``[AmortizationRow, ...]`` schedule rows.
+        scenario_id: The budget scenario to scope the ledger read to.
+        year: The calendar year to sum interest for.
+
+    Returns:
+        The loan's interest paid during *year* as a ``Decimal``.
+    """
+    confirmed = confirmed_loan_interest_in_year(
+        loan_account_id, scenario_id, year,
+    )
+    if confirmed is None:
+        # No genesis authority: sum the FULL schedule (confirmed history +
+        # projection) by payment date.
+        return sum(
+            (
+                row.interest for row in debt
+                if row.payment_date.year == year
+            ),
+            ZERO,
+        )
+    # Ledger-actual (confirmed) + schedule-projected.  The projected term
+    # excludes a row when EITHER the replay confirmed it (``is_confirmed`` -- its
+    # interest is the ledger's actual figure) OR its due slot is occupied by a
+    # SETTLED payment the replay has not confirmed yet: an early-settled payment
+    # (settled before its pay period begins) already posted its actual interest at
+    # its paid date, while its schedule row stays ``is_confirmed=False`` --
+    # counting that row too would double-count the slot.  The partition rule is
+    # "a slot is projected iff no settled payment occupies it".
+    settled_due_months = loan_loaders.load_settled_payment_due_months(
+        loan_account_id, scenario_id,
+    )
+    projected = sum(
+        (
+            row.interest for row in debt
+            if not row.is_confirmed
+            and row.payment_date.year == year
+            and (row.payment_date.year, row.payment_date.month)
+            not in settled_due_months
+        ),
+        ZERO,
+    )
+    return confirmed + projected
 
 
 def _build_chips(

@@ -23,13 +23,10 @@ contract.
 
 # pylint: disable=protected-access
 # Cross-surface single-source-of-truth tests deliberately reach into
-# the year_end_summary_service package's private
-# ``_balances._generate_debt_schedules`` /
-# ``_income_tax._compute_mortgage_interest`` helpers (Phase 2 split)
-# because the public ``compute_year_end_summary`` aggregate exposes
-# derived dec31 balances, not the schedule rows themselves -- and the
-# schedule-row equality is exactly what HIGH-08 / F-017..F-023 demand
-# we lock.
+# ``tax_report_service._compute_mortgage_interest`` (the same hybrid the live
+# Schedule A path spends) because the public surfaces expose derived figures,
+# not the schedule rows themselves -- and the schedule-row equality is exactly
+# what HIGH-08 / F-017..F-023 demand we lock.
 
 import re
 import subprocess
@@ -49,10 +46,11 @@ from app.services import (
     loan_posting_service,
     loan_resolution,
     loan_resolver,
-    year_end_summary_service,
+    net_worth_kernel,
 )
 from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext
+from app.services.tax_report_service import _compute_mortgage_interest
 from tests._test_helpers import create_loan_account, loan_params_for
 
 
@@ -187,7 +185,7 @@ def test_per_period_principal_interest_single_source(
 
         state = _resolver_state(account, loan_params, date.today())
 
-        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
+        debt_schedules = net_worth_kernel.debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
         year_end_schedule = debt_schedules[account.id]
@@ -263,7 +261,7 @@ def test_total_interest_one_definition(
         # first eleven payments (payment_day=1, origination
         # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
         # 2026-12-01).
-        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
+        debt_schedules = net_worth_kernel.debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
         # The loan IS ledger-backed (the shared factory opens its genesis
@@ -273,7 +271,7 @@ def test_total_interest_one_definition(
         # to carry the whole figure: byte-identical to the labeled resolver
         # subset below.
         calendar_year_interest = (
-            year_end_summary_service._income_tax._compute_mortgage_interest(
+            _compute_mortgage_interest(
                 2026, debt_schedules, seed_user["scenario"].id,
             )
         )
@@ -521,7 +519,7 @@ def test_arm_payoff_date_consistent_across_surfaces(
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = year_end_summary_service._balances._debt_schedule_rows(
+        debt_schedules = net_worth_kernel.debt_schedule_rows(
             [account], BalanceContext.build(seed_user["user"].id),
         )
         ye_schedule = debt_schedules[account.id]
@@ -696,7 +694,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         # Year-end / net-worth debt aggregation reads the same seam
         # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
         debt_schedules = (
-            year_end_summary_service._balances._debt_schedule_rows(
+            net_worth_kernel.debt_schedule_rows(
                 [account], BalanceContext.build(seed_user["user"].id),
             )
         )
@@ -715,10 +713,9 @@ _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 _LOAN_SINGLE_SOURCE_FILES = (
     "services/debt_strategy_service.py",
     # Phase 3 pylint-cleanup split: routes/loan.py is now the routes/loan/
-    # package, and year_end_summary_service is a package; the grep below
-    # runs with -r --include=*.py so every sub-module is scanned.
+    # package; the grep below runs with -r --include=*.py so every sub-module
+    # is scanned.
     "routes/loan",
-    "services/year_end_summary_service",
     "services/loan_payment_service.py",
 )
 

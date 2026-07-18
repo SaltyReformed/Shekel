@@ -39,11 +39,12 @@ from app.services import net_worth_kernel, paycheck_calculator
 from app.services.auth_service import _seed_tax_data_for_user
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
-from app.services.tax_report_service import TaxReport, compute_tax_report
-from app.services.resolution_context import BalanceContext
-from app.services.year_end_summary_service._income_tax import (
+from app.services.tax_report_service import (
+    TaxReport,
     _compute_mortgage_interest,
+    compute_tax_report,
 )
+from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
     create_loan_with_trueup,

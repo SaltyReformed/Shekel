@@ -27,10 +27,7 @@ rendering surface MUST return the identical Decimal:
                                 re-call of the seam beneath it).
   4. Dashboard               -- ``dashboard_service.compute_balance_section``
                                 (the pulse hero) + ``GET /dashboard``.
-  5. Year-end net-worth      -- ``year_end_summary_service.compute_year_end_summary``
-                                's per-account input at the month
-                                containing the anchor period.
-  6. Calendar month-end      -- ``calendar_service.get_month_detail``'s
+  5. Calendar month-end      -- ``calendar_service.get_month_detail``'s
                                 ``projected_end_balance`` at the
                                 calendar month-end of the anchor
                                 period (the C9-3 boundary invariant
@@ -80,7 +77,6 @@ from app.services import (
     loan_resolution,
     net_worth_kernel,
     savings_dashboard_service,
-    year_end_summary_service,
 )
 from app.services.resolution_context import BalanceContext
 
@@ -296,25 +292,6 @@ def _accounts_checking_value(ctx):
     return Decimal(match.group(1))
 
 
-def _year_end_per_account_value(ctx):
-    """Read year-end net-worth's per-account input at the anchor month.
-
-    The year-end ``compute_year_end_summary`` aggregates net worth at
-    each month-end across every account.  With our single-account
-    fixture the per-account input is the value the aggregate
-    contributes for that month; for an asset account this equals the
-    account balance at the period whose ``end_date <= last_day_of_month``
-    -- the anchor period itself, because the anchor month's last day
-    IS ``anchor_period.end_date``.
-    """
-    summary = year_end_summary_service.compute_year_end_summary(
-        ctx["user_id"], ctx["year"],
-    )
-    monthly_values = summary["net_worth"]["monthly_values"]
-    # monthly_values is 12-long, ordered Jan..Dec -- index = month-1.
-    return monthly_values[ctx["month"] - 1]["balance"]
-
-
 def _calendar_value(ctx):
     """Read the calendar surface's ``projected_end_balance`` for the anchor month.
 
@@ -339,7 +316,6 @@ _SURFACE_READERS = {
     "dashboard": _dashboard_value,
     "savings": _savings_value,
     "accounts_checking": _accounts_checking_value,
-    "year_end_net_worth": _year_end_per_account_value,
     "calendar": _calendar_value,
 }
 
@@ -814,20 +790,6 @@ def _net_worth_series(ctx):
     return data["net_worth"]["series"]
 
 
-def _year_end_month_balance(ctx):
-    """Return year-end net worth at the anchor month (the aggregate input).
-
-    With a single isolated account this equals that account's signed
-    contribution to net worth at the anchor period: ``+balance`` for an
-    asset, ``-abs(balance)`` for a liability (the loan reader negates it
-    back to a positive balance).
-    """
-    summary = year_end_summary_service.compute_year_end_summary(
-        ctx["user_id"], ctx["year"],
-    )
-    return summary["net_worth"]["monthly_values"][ctx["month"] - 1]["balance"]
-
-
 def _savings_tile_value(ctx):
     """Read the ``/savings`` per-account tile current_balance for the account.
 
@@ -853,21 +815,6 @@ def _trend_liabilities_value(ctx):
     """
     series = _net_worth_series(ctx)
     return series["liabilities"][series["current_index"]]
-
-
-def _asset_year_end_value(ctx):
-    """Year-end balance for an isolated ASSET (its positive contribution)."""
-    return _year_end_month_balance(ctx)
-
-
-def _loan_year_end_value(ctx):
-    """Year-end balance for an isolated LOAN, negated to the positive balance.
-
-    The year-end aggregate subtracts a liability as ``-abs(balance)``, so an
-    isolated loan yields ``-C``; negating recovers the positive ``C`` every
-    other loan surface reports, keeping the equality assertion uniform.
-    """
-    return -_year_end_month_balance(ctx)
 
 
 def _loan_detail_value(ctx):
@@ -959,20 +906,17 @@ def _balance_at_scalar_value(ctx, target):
 _LOAN_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "loan_detail": _loan_detail_value,
-    "year_end": _loan_year_end_value,
     "net_worth_trend": _trend_liabilities_value,
     "schedule_table": _loan_schedule_table_value,
 }
 _PROPERTY_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "property_detail": _property_detail_value,
-    "year_end": _asset_year_end_value,
     "net_worth_trend": _trend_assets_value,
 }
 _INVESTMENT_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "investment_dashboard": _investment_dashboard_value,
-    "year_end": _asset_year_end_value,
     "net_worth_trend": _trend_assets_value,
 }
 
@@ -1394,7 +1338,6 @@ class TestInvestmentCrossPageEquality:
             modeled_readers = {
                 "savings": _savings_tile_value,
                 "investment_dashboard": _investment_dashboard_value,
-                "year_end": _asset_year_end_value,
                 "net_worth_trend": _trend_assets_value,
             }
             surface_values = {
@@ -1464,15 +1407,13 @@ class TestSecuredHomeEquityEquality:
                 f"savings_tile={mortgage_tile!r}, "
                 f"loan_detail={loan_detail!r}, MC={mc!r}"
             )
-            # Equity == year-end net worth == trend net == PV - MC.
-            year_end_nw = _year_end_month_balance(ctx)
+            # Equity == trend net == PV - MC.
             series = dashboard["net_worth"]["series"]
             trend_net = series["net"][series["current_index"]]
             # PV - MC = 400000.00 - 250000.00 = 150000.00.
-            assert equity.equity == year_end_nw == trend_net == (pv - mc), (
+            assert equity.equity == trend_net == (pv - mc), (
                 f"equity disagreed: equity={equity.equity!r}, "
-                f"year_end_nw={year_end_nw!r}, trend_net={trend_net!r}, "
-                f"PV-MC={(pv - mc)!r}"
+                f"trend_net={trend_net!r}, PV-MC={(pv - mc)!r}"
             )
 
 
