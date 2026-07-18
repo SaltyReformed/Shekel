@@ -18,10 +18,15 @@ total loan producer), **F2** (`3aecceb0`, the dead year-end service deleted), an
 DECOMPOSED** (developer ruling 2026-07-18): too large for one revertable commit and reaching into
 dead year-end code, so it ships **C3a** -> **F2** (pulled AHEAD) -> **C3c** (interest-in-year is a
 DEDICATED producer, NOT `positions().cum_interest` -- the tax figure keys on the display-tz paid
-year while the balance keys on UTC) -> **C3b** (cut the seam over + delete the machinery), each a
-REFACTOR (baseline unmoved; B-9's overdue-installment paydown preserved until C6). The C2 real-clone
-live-render (~26 days Mortgage / ~13 days Van Loan, today
-UNMOVED) is still outstanding before the F3 prod ship. Next commit: **C3b**.
+year while the balance keys on UTC) -> **C3b**, each a REFACTOR (baseline unmoved; B-9's
+overdue-installment paydown preserved until C6). **C3b is itself DECOMPOSED into C3b1-C3b4**
+(developer ruling 2026-07-18, mirroring C3a): the scalar cutover is proven by C3a's oracle but the
+per-period MAP has no equivalence proof yet, and `positions()` lives ABOVE `net_worth_kernel` (at its
+1000-line cap) so the map branch must MOVE INTO the seam. **C3b1** (`f410afa9`, the scalar + the
+liability band read `positions()`; the read pass memoizes the loan walk; scalar now FOLDS a broken
+loan instead of raising -- closes B-8 at the scalar) shipped. The C2 real-clone live-render (~26 days
+Mortgage / ~13 days Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. Next
+commit: **C3b2** (the additive per-period map oracle).
 
 ---
 
@@ -351,15 +356,63 @@ what is written here is decided in the commit itself, not in a new document.
     INTO the producer, derived from the SAME fold walk (non-drift); its STRUCTURAL deletion moves to
     C6. Grade on A2's hand-computed live oracle, never the producer as its own oracle (N-7). Closes
     B-6.
-  - [ ] **C3b** `refactor(balance): the seam's AMORTIZING dispatch reads positions()` -- points the
-    scalar + per-period map (+ liability band + savings net worth) at `positions()`; deletes the
-    splice, `_projection_seed`, `owed_from`, `loan_ledger_domain`, `LoanLedgerNotOpenedError`, both
-    forward producers, `generate_debt_schedules`/`DebtSchedule`, the two-zeros doctrine. **Two
-    cutover hazards (C3a review):** (1) `positions()` RAISES for a schedule-less AMORTIZING account
-    (Mortgage-typed, no `LoanParams`) where the scalar degrades to cash -- replicate the degrade at
-    the call site or an unconfigured mortgage 500s; (2) `positions()` FOLDS a broken (originated,
-    no opening posting) loan where the scalar raises -- losing that read-time outage is a conscious
-    E1-covered decision, not an accident.
+  - **C3b (DECOMPOSED, 2026-07-18)** `the seam's AMORTIZING dispatch reads positions()` -- the cutover
+    proper, split into FOUR independently-green commits mirroring C3a (developer ruling). Two facts
+    forced the split: C3a's oracle proved only the SCALAR equals `positions()` (the per-period MAP has
+    NO equivalence proof yet), and `positions()` lives in the seam ABOVE `net_worth_kernel` (at its
+    1000-line cap) which cannot import it back, so the map branch must MOVE INTO the seam -- not a
+    one-line redirect. **The plan's original single-commit deletion list was the END-of-C3 (post-C6)
+    state and is corrected here**: `positions()` (C3a) still consumes `generate_debt_schedules`,
+    `DebtSchedule` (`schedule`/`projection_seed`/`owed_from`), `_projection_seed`, and
+    `forward_balance_at_date`, and the savings trend history-gate consumes `generate_debt_schedules`
+    via `debt_schedule_rows` -- so ALL of those survive to C6, NOT C3b. Of "both forward producers"
+    only the MAP's `compute_forward_loan_period_balance_map` dies at C3b; `forward_balance_at_date`
+    lives to C6.
+    - [x] **C3b1** `refactor(balance): the scalar and the liability band read positions()` --
+      **SHIPPED `f410afa9`.** The seam's SCALAR (`balance_at.balance_at` AMORTIZING branch) and
+      LIABILITY band (`liability_owed_at_dates`) read `positions()`. A new `BalanceContext.loan_walk`
+      memo walks each loan's ledger ONCE per read pass and `fold_from_walk` samples it, so the
+      scalar/map/liability folding one loan in a render do not each re-walk it (the redundant-fold DRY
+      fix C3a earmarked). `fold_from_walk` is the shared sampling core, and B2's oracle subject
+      `fold_loan_balances` DELEGATES to it -- so the every-day oracle grades the exact code production
+      runs, not a copy (adversarial-review catch, fixed pre-commit). Deletes `amortizing_balance_at` +
+      `loan_owed_at_dates`. The scalar cutover
+      is proven by C3a's every-day oracle (RETIRED here, its job done -- ongoing proof is B2 + the
+      seam's own tests); the liability forward path is the IDENTICAL `forward_balance_at_date` call, so
+      the band cannot move. **Behaviour change (approved 2026-07-18): the SCALAR now FOLDS a broken
+      loan (originated, no opening posting) instead of raising `LoanLedgerNotOpenedError`** -- the fold
+      reads SOURCE facts, so a cold posting cache is a repairable inconsistency (E1), not a read-time
+      outage; the broken-loan test flips from expects-raise to expects-$240,000. The MAP still raises
+      until C3b3. Baseline UNMOVED on both real loans (C3a oracle + B2 + full suite 7367). Also fixed
+      a PRE-EXISTING dev-only checker failure `test_classification_sets_match_the_real_fenced_modules`:
+      C2 (`eb5de4ac`) deleted `_asof.py` but left `effective_date`/`scope_to_linked_ledger` in the
+      loan-ledger non-producer set (stale fence entry; uncaught because dev is not CI-gated).
+    - [ ] **C3b2** `test(balance): the positions-based per-period map is proven equal` -- ADDITIVE,
+      mirror of C3a. Adds a period-map form built from `positions()` -- begun periods valued at
+      `min(period.end, as_of)` (the current period at today, since the ledger cannot see past today),
+      future periods at `period.end`, reproducing the splice's `period.start <= as_of` boundary -- and
+      an every-PERIOD oracle proving it equals `_build_amortizing_balance_map` across the shape matrix
+      + real data. Deletes nothing. (The current-period boundary is the one subtlety B2's scalar proof
+      did not cover: `positions([period.end])` would hand the current period to the projection, moving
+      it whenever a payment falls between today and period end.)
+    - [ ] **C3b3** `refactor(balance): the per-period map reads positions()` -- points the map
+      dispatch, MOVED into the seam's `_account_balance_map` (the kernel cannot import the seam), at
+      C3b2's producer; deletes `_build_amortizing_balance_map`, the kernel's AMORTIZING branch,
+      `splice_confirmed_and_projected_loan_balances`, `compute_forward_loan_period_balance_map`,
+      `confirmed_loan_balance_map`, `_loan_ledger_not_opened`, `LoanLedgerNotOpenedError`, the
+      two-zeros doctrine. Flips `test_map_raises...` (map now folds), and updates the now-stale
+      raise-narratives the scalar cutover left behind (G1 `test_grid.py` + B-1 `test_balance_at.py`
+      both describe `balance_at` raising for a missing opening -- deferred here so those docstrings are
+      touched once, when the raise mechanism fully retires). **Cutover hazards (C3a review):**
+      (1) `positions()` RAISES for a schedule-less AMORTIZING account (Mortgage-typed, no `LoanParams`)
+      where the scalar degrades to cash -- the seam's map branch keeps the `debt_schedule is not None`
+      gate so an unconfigured mortgage degrades, not 500s; (2) the map now FOLDS a broken loan (the
+      same E1-covered decision as C3b1).
+    - [ ] **C3b4** `refactor(balance): delete the dead ledger-domain readers` -- deletes the seam
+      `loan_ledger_domain`, the reader `confirmed_loan_ledger_domain`, and `LoanLedgerDomain` (0
+      production callers since F2 deleted the year-end summary -- verified) plus their tests. The
+      shared `_is_originated` STAYS. Orthogonal cleanup enabled by F2, sequenced last so the cutover
+      commits stay focused.
 - [ ] **C4** `fix(loan): the loan page reads the seam like everyone else` -- deletes the route's
   private double-compose and `LoanState.current_balance` (7 route reads).
 - [ ] **C5** `fix(accounts): the equity chart's debt line is the fold` -- kills B-2
@@ -443,7 +496,7 @@ archive names so old references resolve here.
 | B-5 | Balance sheet renders a negative liability, HTTP 200 | -$7,643.80 | **mechanism closed (`4e46a0a8`)** -- the clock-dropped opening that let a payment split against a ZERO balance is gone; reproduced on the ordinary settle path (payment settled early, due AFTER a future origination: interest $0.00 / principal $0.00 / **excess $1,073.64**, whole payment booked as a Refund Receivable and the Schedule-A interest erased -> $833.33 / $240.31 / $0.00). The linked ledger netted to exactly $0.00 -- the loan reading as owing NOTHING while the borrower's cash sat in a Refund. Invariant still open | A3 (mechanism), E1 (invariant) |
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | **closed (`99cc2816`)** -- the Taxes tab reads the fold-based `balance_at.loan_interest_in_year`, which answers from source events for the settled past (no schedule fallback for a loan the posting cache cannot value), so the interest figure and the balance come from the ONE total producer; the no-opening fallback is gone, demonstrated by `test_cleared_ledger_still_answers_from_the_fold` | C3c |
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
-| B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | latent | C3b |
+| B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | **scalar closed (`f410afa9`)** -- the fold answers a broken loan from SOURCE facts for past AND future, so the scalar has no fail-loud path to be inconsistent about; the map's fail-loud raise retires at C3b3 | C3b1 (scalar); C3b3 (map) |
 | B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
 | B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **closed (`18fd3a04`)** -- origination is the opening now, so a pre-tracking date reads the origination principal held flat (the plateau), never debt-free; verified $0 -> $202,000/$32,402.45 on the real loans; aged-out of the /savings trend window meanwhile, closed at the producer; B2's tracking-start shape pins the plateau | C1 |
 | B-12 | Unfenced producer tier below the fence; `loan_resolver` package wholly unfenced | -- | guard gap | Phase D |
