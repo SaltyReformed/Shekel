@@ -73,18 +73,14 @@ def _create_loan_account(seed_user):
     )
     db.session.add(params)
     db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent.  This module
-    # does not exercise the resolver directly (it tests
-    # loan_payment_service which is a pure data-loading shim) but
-    # downstream tests calling load_loan_context + resolver expect
-    # an event-present invariant.  DH-#56: the rate now lives in the
-    # origination RateHistory row (the retired LoanParams.interest_rate
-    # column), so seed it alongside the anchor event.
+    # DH-#56: the loan's base rate lives in the origination RateHistory row
+    # (the retired LoanParams.interest_rate column), and the resolver raises on
+    # an empty rate-change feed, so seed it.  The origination balance anchor is
+    # synthesized from LoanParams (step C1 / the read switch) rather than stored
+    # as a LoanAnchorEvent, so no anchor-event insert is needed.
     from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event,
         insert_origination_rate,
     )
-    insert_origination_event(params)
     insert_origination_rate(params, Decimal("0.06500"))
     return account
 

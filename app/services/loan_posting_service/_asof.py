@@ -74,18 +74,24 @@ def effective_date():
     contains the anchor, ``entry_date >= period.start`` and the expression collapses
     to the period bound, leaving every existing balance untouched.
 
-    Verified against the production clone: of its 20 loan-anchor journal entries,
-    the only 4 the ``LEAST`` moves are the two superseded openings (the Mortgage's
-    2018-12-01 origination, the Van Loan's 2023-02-14) AND their two append-only
-    reversals -- each pair netting to exactly $0.00 on the linked ledger.  So no
-    production balance moves.  It is safe by structure too, not merely by luck:
+    Verified against the production clone: since step C1 the LIVE opening on each
+    loan is its ORIGINATION (the Mortgage's 2018-12-01, the Van Loan's 2023-02-14),
+    both years before the owner's first pay period (2026-03-26), so the ``LEAST``
+    resolves each to its own civil date and every rendered period sees the opening.
+    A mid-life ``tracking_start`` is now an ordinary true-up whose ``LEAST``
+    collapses to its containing-period start.  For a date strictly before a loan's
+    tracking-start this DOES move the confirmed balance -- the reader sees the
+    origination opening held flat, the honest pre-tracking plateau: the Van Loan's
+    first period (start 2026-03-26, before its 2026-04-11 tracking-start) reads its
+    $32,402.45 origination principal where it read $0.00 before (B-11, signed off at
+    C1).  The Mortgage's tracking-start falls in that first period, so its ``LEAST``
+    lands on the period start and the map does not move; a date at/after the
+    tracking-start is unchanged for both.  Safe by structure, not luck:
     :func:`app.services.account_projection.find_period_containing_date` falls back to
     the latest period ENDING on or before its target, so the ``periods[0]`` fallback
     fires only for a date preceding every period.  An anchor's effective date is
     therefore always either a period start or a date strictly before the first
-    period -- never strictly inside a period -- which is why the per-period MAP
-    cannot move at all, and only ``confirmed_loan_balance_at`` for an as-of before
-    the user's first period does.
+    period -- never strictly inside a period.
 
     Returns:
         A SQLAlchemy expression usable in a filter, GROUP BY, or ORDER BY over a

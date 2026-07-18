@@ -105,11 +105,12 @@ class LoanAnchorDrift:
         computed: The ledger's running balance JUST BEFORE this anchor's reset
             (the walk's ``owed_before``); ``0.00`` for the opening.
         drift: ``recorded - computed`` -- the correction the anchor booked.
-        is_opening: ``True`` for the loan's opening (origination or a mid-life
-            tracking-start), ``False`` for a user true-up.
-        is_tracking_start: ``True`` when the opening was synthesized from a
-            ``tracking_start`` event (a mid-life import), so the display labels
-            it "Tracking start" rather than "Origination".  ``False`` otherwise.
+        is_opening: ``True`` for the loan's opening (its origination), ``False``
+            for a tracking-start or a user true-up (both balance assertions).
+        is_tracking_start: ``True`` for a ``tracking_start`` assertion (a mid-life
+            import's balance-as-of-date), so the display badges that row "Tracking
+            start"; ``False`` for the origination opening (badged "Origination")
+            and every user true-up.
     """
 
     anchor_date: date

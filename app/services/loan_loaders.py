@@ -62,7 +62,7 @@ class LoanAnchorFact:
     final commit): the genesis posting walk derives its opening / true-up
     corrections from these, and the loan resolver's replay fallback consumes
     them as its duck-typed anchor events (it reads ``anchor_date`` /
-    ``anchor_balance`` / ``created_at``, all here).  Two provenances:
+    ``anchor_balance`` / ``created_at``, all here).  Three provenances:
 
     * **The origination anchor is SYNTHESIZED from the immutable
       :class:`LoanParams`** (``origination_date`` / ``original_principal``)
@@ -70,11 +70,23 @@ class LoanAnchorFact:
       :class:`LoanAnchorEvent` write is retired, since that row was always a
       verbatim copy of the params (verified on production data).  Legacy
       stored origination rows are ignored, not migrated: append-only history,
-      value-identical to the synthesis.
+      value-identical to the synthesis.  It is the loan's ONE opening
+      (``is_opening=True``), ALWAYS -- a loan originates before it can be
+      tracked, so the ledger opens at origination and there is no date it reads
+      the loan out of existence (plan step C1).
+    * **A tracking-start is a real stored fact** (the ``tracking_start``
+      :class:`LoanAnchorEvent` a mid-life import appends): the operator's real
+      balance as of a date at/before the first recorded payment.  It is an
+      ordinary balance ASSERTION (``is_opening=False``, ``is_tracking_start=True``)
+      that RESETS the running balance at its own date -- NOT the opening.  The
+      window between origination and it carries no payment record, so the walk
+      holds the opening balance flat across it (the honest ACTUAL fold; the
+      contractual back-projection that fills it is a separate ESTIMATED tier).
     * **A user true-up is a real stored fact** (the ``user_trueup``
       :class:`LoanAnchorEvent` the balance-edit flow appends): the operator's
       dated balance assertion, the source document the self-healing TRUEUP
-      correction is derived from and re-derived against.
+      correction is derived from and re-derived against.  Also an
+      ``is_opening=False`` assertion (``is_tracking_start=False``).
 
     Attributes:
         account_id: The loan account the assertion belongs to.
@@ -82,18 +94,17 @@ class LoanAnchorFact:
             the opening).
         anchor_balance: The asserted balance owed (the original principal for
             the opening), cent-quantized ``Decimal``.
-        is_opening: ``True`` for the loan's single opening anchor (the
-            synthesized origination, or the ``tracking_start`` event when a
-            mid-life import recorded one -- see
-            :func:`_opening_anchor_fact`), ``False`` for a user true-up --
-            drives the OPENING vs TRUEUP posting kinds.
+        is_opening: ``True`` ONLY for the loan's single opening, the synthesized
+            origination; ``False`` for a tracking-start or a user true-up (both
+            ordinary balance assertions) -- drives the OPENING vs TRUEUP posting
+            kinds.
         created_at: The assertion's creation instant (the latest-anchor
             tie-break); the synthesized origination uses the earliest
-            possible UTC instant so any same-day true-up wins.
-        is_tracking_start: ``True`` only for an ``is_opening`` fact synthesized
-            from a ``tracking_start`` event (a mid-life import), ``False`` for
-            the origination opening and every true-up.  Display provenance only
-            (the drift scorecard labels the opening row); the balance math never
+            possible UTC instant so any same-day assertion wins.
+        is_tracking_start: ``True`` for a ``tracking_start`` assertion (a
+            mid-life import's balance-as-of-date), ``False`` for the origination
+            opening and every user true-up.  Display provenance only (the drift
+            scorecard labels the tracking-start row); the balance math never
             branches on it.
     """
 
@@ -105,78 +116,35 @@ class LoanAnchorFact:
     is_tracking_start: bool = False
 
 
-def _opening_anchor_fact(
-    params: LoanParams,
-    tracking_start_events: list[LoanAnchorEvent],
-) -> LoanAnchorFact:
-    """Return a loan's single ``is_opening`` fact -- tracking-start, else origination.
-
-    The genesis ledger opens at exactly one anchor.  For a mid-life-imported loan
-    that recorded a ``tracking_start`` event (the operator's real balance as of a
-    date at/before the first recorded payment), the opening is synthesized from
-    that event -- so the confirmed ledger opens at the recent known balance and
-    there is no fictional origination-to-tracking-start plateau, and recorded
-    payments accrue interest on the correct balance.  For every other loan the
-    opening is synthesized from the immutable :class:`LoanParams`
-    (``origination_date`` / ``original_principal``) exactly as before -- a
-    complete-data or single-origination loan is byte-identical.
-
-    When more than one ``tracking_start`` event exists (an operator correction --
-    the table is append-only), the LATEST by ``created_at`` wins (the most
-    recently asserted genesis supersedes earlier ones, mirroring how a correcting
-    true-up supersedes an earlier one).  The opening fact always carries
-    :data:`_ORIGINATION_CREATED_AT` (the earliest instant) for the
-    ``(anchor_date, created_at)`` latest-anchor tie-break, so a true-up asserted
-    on the very opening date still outranks it -- the same rule the synthesized
-    origination uses.
-
-    Args:
-        params: The loan's :class:`LoanParams` row (the account id and the
-            immutable origination fields the fallback opening uses).
-        tracking_start_events: The loan's ``tracking_start``
-            :class:`LoanAnchorEvent` rows (possibly empty).
-
-    Returns:
-        The single opening :class:`LoanAnchorFact` (``is_opening=True``).
-    """
-    is_tracking_start = bool(tracking_start_events)
-    if is_tracking_start:
-        latest = max(tracking_start_events, key=lambda event: event.created_at)
-        anchor_date = latest.anchor_date
-        anchor_balance = Decimal(str(latest.anchor_balance))
-    else:
-        anchor_date = params.origination_date
-        anchor_balance = Decimal(str(params.original_principal))
-    return LoanAnchorFact(
-        account_id=params.account_id,
-        anchor_date=anchor_date,
-        anchor_balance=anchor_balance,
-        is_opening=True,
-        created_at=_ORIGINATION_CREATED_AT,
-        is_tracking_start=is_tracking_start,
-    )
-
-
 def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
-    """Return a loan's anchor facts: the opening + true-ups.
+    """Return a loan's anchor facts: the origination opening + every assertion.
 
     The one anchor loader every consumer shares (the genesis walk and every
     resolver-input builder), so no two sites can disagree on what a loan's
-    anchors are.  The single ``is_opening`` anchor is synthesized by
-    :func:`_opening_anchor_fact` -- from the loan's ``tracking_start`` event when
-    one exists (a mid-life import), else from the immutable *params* (the
-    origination, never read from a stored row -- see :class:`LoanAnchorFact`).
-    The user true-ups are the loan's ``user_trueup`` :class:`LoanAnchorEvent`
-    rows, in no guaranteed order (consumers sort by ``(anchor_date, created_at)``
-    where order matters).
+    anchors are.  The single ``is_opening`` anchor is ALWAYS the synthesized
+    origination (:func:`synthesize_origination_anchor` -- from the immutable
+    *params*, never a stored row; see :class:`LoanAnchorFact`).  Every stored
+    ``tracking_start`` and ``user_trueup`` :class:`LoanAnchorEvent` is loaded as
+    an ``is_opening=False`` balance ASSERTION -- the two differ only in
+    ``is_tracking_start`` (a display label; the walk resets on both identically).
+    Rows come in no guaranteed order (consumers sort by ``(anchor_date,
+    created_at)`` where order matters).
+
+    **Origination is the opening ALWAYS** (plan step C1): a loan originates
+    before it can be tracked, so opening at a mid-life ``tracking_start`` read the
+    loan out of existence for the whole pre-tracking window (the false pre-opening
+    zero, B-11).  A ``tracking_start`` now RESETS the running balance at its own
+    date like any true-up, so a date at/after it is unchanged, while a date before
+    it reads the origination opening held flat -- the honest fold of the recorded
+    facts.
 
     Args:
         params: The loan's :class:`LoanParams` row (supplies the account id
             and the immutable origination fields).
 
     Returns:
-        The :class:`LoanAnchorFact` list -- always non-empty (the opening
-        fact is always first), so a configured loan is always resolvable.
+        The :class:`LoanAnchorFact` list -- always non-empty (the origination
+        opening is always first), so a configured loan is always resolvable.
     """
     trueup_source_id = ref_cache.loan_anchor_source_id(
         LoanAnchorSourceEnum.USER_TRUEUP,
@@ -194,14 +162,7 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
         )
         .all()
     )
-    trueup_events = [
-        event for event in events if event.source_id == trueup_source_id
-    ]
-    tracking_start_events = [
-        event for event in events if event.source_id == tracking_start_source_id
-    ]
-
-    facts = [_opening_anchor_fact(params, tracking_start_events)]
+    facts = [synthesize_origination_anchor(params)]
     facts.extend(
         LoanAnchorFact(
             account_id=event.account_id,
@@ -209,8 +170,9 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
             anchor_balance=Decimal(str(event.anchor_balance)),
             is_opening=False,
             created_at=event.created_at,
+            is_tracking_start=(event.source_id == tracking_start_source_id),
         )
-        for event in trueup_events
+        for event in events
     )
     return facts
 
@@ -219,16 +181,19 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
     """Return a loan's ORIGINATION anchor, synthesized from its immutable params.
 
     The origination-dated opening -- ``(origination_date, original_principal)``
-    -- ALWAYS, regardless of any ``tracking_start`` event.  This is deliberately
-    NOT :func:`load_loan_anchor_facts`' opening fact, which a mid-life import's
-    ``tracking_start`` supersedes (:func:`_opening_anchor_fact`): a caller that
-    needs the loan's schedule FROM ORIGINATION -- the contractual back-projection
-    that fills a tracking-start loan's pre-tracking months
+    -- ALWAYS.  Since step C1 the origination is :func:`load_loan_anchor_facts`'
+    opening too (a ``tracking_start`` no longer supersedes it, it is an ordinary
+    assertion), so ``load_loan_anchor_facts(params)[0] == this``.  This function
+    stays the loan's ONE definition of the origination anchor, reused there and by
+    the callers that need JUST it -- the contractual back-projection that fills a
+    tracking-start loan's pre-tracking months
     (:func:`app.services.loan_resolution.contractual_schedule_from_origination`)
-    -- must seed from origination, not the recent tracking-start balance, or the
-    pre-tracking debt would be a flat plateau instead of a real amortization
-    curve.  Reuses the origination synthesis by passing NO tracking-start events,
-    so the origination anchor stays defined in exactly one place.
+    seeds from origination alone, without the loan's true-up assertions.
+
+    The synthesized origination carries :data:`_ORIGINATION_CREATED_AT` (the
+    earliest possible instant) for the ``(anchor_date, created_at)`` latest-anchor
+    tie-break, so an assertion made ON the origination date still outranks it --
+    exactly as the retired stored origination row (created at loan setup) did.
 
     Pure: reads only the immutable *params* fields, no query.
 
@@ -240,7 +205,14 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
         The origination :class:`LoanAnchorFact` (``is_opening=True``,
         ``is_tracking_start=False``).
     """
-    return _opening_anchor_fact(params, [])
+    return LoanAnchorFact(
+        account_id=params.account_id,
+        anchor_date=params.origination_date,
+        anchor_balance=Decimal(str(params.original_principal)),
+        is_opening=True,
+        created_at=_ORIGINATION_CREATED_AT,
+        is_tracking_start=False,
+    )
 
 
 def _rate_change_records_from(

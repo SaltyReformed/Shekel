@@ -33,9 +33,9 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.transaction import Transaction
 from app.services import (
+    loan_loaders,
     loan_payment_service,
     loan_posting_service,
     loan_resolver,
@@ -288,8 +288,7 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
                 loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
+                loan_loaders.load_loan_anchor_facts(loan_params),
                 ctx.payments,
                 ctx.rate_changes,
             ),
@@ -360,8 +359,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
                 loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
+                loan_loaders.load_loan_anchor_facts(loan_params),
                 ctx.payments,
                 ctx.rate_changes,
             ),
@@ -427,8 +425,7 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
                 loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
+                loan_loaders.load_loan_anchor_facts(loan_params),
                 ctx.payments,
                 ctx.rate_changes,
             ),

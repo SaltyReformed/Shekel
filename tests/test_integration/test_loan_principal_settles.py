@@ -51,9 +51,9 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.transaction import Transaction
 from app.services import (
+    loan_loaders,
     loan_payment_service,
     loan_resolver,
     transfer_service,
@@ -223,16 +223,15 @@ def _resolve_balance(
 ) -> Decimal:
     """Load the resolver inputs and return the current_balance Decimal.
 
-    Mirrors the consumer pattern Commit 15 will route through:
-    load anchor events from the database, prepare the payment feed
-    via :func:`loan_payment_service.load_loan_context`, then call
+    Mirrors the production consumer path (``loan_resolution.resolve_loan_bundle``):
+    load the anchor FACTS via :func:`loan_loaders.load_loan_anchor_facts` (the
+    origination opening SYNTHESIZED from params plus every stored true-up /
+    tracking-start assertion -- never a raw ``LoanAnchorEvent`` query, which since
+    the read switch would miss the synthesized origination), prepare the payment
+    feed via :func:`loan_payment_service.load_loan_context`, then call
     :func:`loan_resolver.resolve_loan`.
     """
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account_id)
-        .all()
-    )
+    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     context = loan_payment_service.load_loan_context(
         account_id, scenario_id, loan_params,
     )

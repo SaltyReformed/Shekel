@@ -1,20 +1,22 @@
 """The loan ledger's DOMAIN: from when does it know a balance at all?
 
-The confirmed balance readers (:mod:`._reader`) answer ``$0.00`` for any date
-before a loan's opening.  For a loan tracked from origination that zero is true --
-the debt did not exist yet.  For a MID-LIFE IMPORT, whose opening is a
-``tracking_start`` dated years after origination, it is not: the loan existed and
-was owed, and the ledger simply has no record of it.
+**SUPERSEDED by step C1, and slated for deletion at C3.**  This module was written
+when a mid-life import's ledger OPENED at its ``tracking_start`` (dated years after
+origination), so the readers answered a false ``$0.00`` for the whole pre-tracking
+window and a change-across-a-window caller misread that "no record" as "no debt" --
+the year-end summary read a Mortgage's opening as $0.00, subtracted a real year-end
+balance, and reported the borrower ADDING debt they had steadily paid down.  This
+module held the bound that prevented it: a caller clamped its window to the loan's
+domain, so it only ever asked the readers a question they could answer.
 
-The zero therefore means "no record", not "no debt", and a caller that treats it as
-money gets an answer that is not merely imprecise but inverted.  The year-end
-summary did exactly that: it read a mid-life-imported Mortgage's opening balance as
-$0.00, subtracted a real $175,870.41 year-end balance from it, and reported the
-borrower having ADDED $175,870.41 of debt in a year they had steadily paid it down.
-
-This module holds the bound that prevents it.  A caller measuring a CHANGE across a
-window clamps that window to the loan's domain, so it only ever asks the readers a
-question they can answer.
+Since step C1 the ledger opens at ORIGINATION and a ``tracking_start`` is an ordinary
+true-up, so a date before origination reads ``$0.00`` because the debt truly did not
+exist yet (see :func:`._reader.confirmed_loan_balance_at`).  ``confirmed_loan_ledger_domain``
+therefore now reports the ORIGINATION opening, not the tracking-start -- which no
+longer answers "where do the RECORDS begin" for a mid-life import (that is its
+tracking-start true-up).  Its only consumer, the year-end principal-progress clamp,
+is dead code (deleted at F2); the ``tracking_start``-as-opening narrative in the
+docstrings below is pre-C1 history.
 
 **It answers "where does the RECORD begin", never "does this loan exist yet".**
 Those are different questions, and this one takes no as-of because it is not asked
@@ -127,10 +129,10 @@ class LoanLedgerDomain:
             non-zero balance.  Use it to decide whether a window needs clamping,
             and for nothing else: it is a pay-period start, so it can sit a few
             days BEFORE the balance was actually asserted.
-        opening_date: The CIVIL date the opening balance was asserted on (the
-            loan's origination, or its ``tracking_start`` for a mid-life import).
-            This is the instant ``opening_balance`` is as-of, so it is the date to
-            SHOW a user.
+        opening_date: The CIVIL date the opening balance was asserted on -- the
+            loan's origination (since step C1 the ledger opens there always, even
+            for a mid-life import).  This is the instant ``opening_balance`` is
+            as-of, so it is the date to SHOW a user.
         opening_balance: The balance the ledger OPENS at, ``-(sum of the linked
             ledger's OPENING-kind postings)``.
 
@@ -181,9 +183,10 @@ def confirmed_loan_ledger_domain(
     # The OPENING-kind legs, grouped by the CIVIL date each was asserted on.  The
     # ledger is append-only, so a superseded opening still sits here beside its
     # reversal -- and nets to zero.  Skipping the zero-net dates is what leaves the
-    # LIVE opening: on the real Mortgage, the 2018-12-01 origination (reversed when
-    # the operator recorded a tracking-start) nets to $0.00 and the 2026-03-31
-    # tracking-start carries the whole -$178,375.43.
+    # LIVE opening: since step C1 that is the ORIGINATION (on the real Mortgage the
+    # 2018-12-01 origination carries the whole -$202,000.00; the 2026-03-31
+    # tracking-start is now a true-up, not an OPENING leg, so it does not appear
+    # here, and the pre-C1 tracking-start OPENING it replaced nets to $0.00).
     by_civil_date = scope_to_linked_ledger(
         db.session.query(
             JournalEntry.entry_date,

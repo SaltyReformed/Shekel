@@ -104,18 +104,19 @@ def confirmed_loan_balance_at(
     Returns ``None`` when the loan has no OPENING posting in the scenario (an
     unconfigured loan -- :func:`_has_opening_posting`), so the caller routes to
     its needs-setup path rather than showing a misleading ``$0``.  A configured
-    loan whose ``as_of`` precedes its OPENING (a mid-life import read before
-    tracking began) returns ``Decimal("0.00")`` -- see the caveat below.
+    loan whose ``as_of`` precedes its ORIGINATION returns ``Decimal("0.00")`` --
+    the correct fold of an empty prefix: the debt did not exist yet.
 
-    **Caveat: $0.00 before the opening is "no record", not "no debt".**  For a loan
-    whose opening IS its origination the two coincide and the zero is correct (the
-    debt did not exist yet).  For a mid-life import -- whose opening is a
-    ``tracking_start`` dated years after origination -- the loan DID exist and DID
-    owe money before that date, and the ledger simply has no record of it.  A caller
-    asking for such a date is asking a question the confirmed ledger cannot answer,
-    and must not present the zero as a balance: the year-end summary did, and
-    reported NEGATIVE principal paid on real data.  Bound the window to the loan's
-    opening instead.
+    **The opening IS the loan's origination (step C1), so a returned $0.00 means
+    "no debt".**  A mid-life import opens at its origination like any loan; its
+    ``tracking_start`` is an ordinary true-up
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`) that RESETS the
+    balance at its own date.  A date between origination and the tracking-start
+    therefore reads the origination opening held FLAT -- the honest pre-tracking
+    plateau (B-11) -- never ``$0.00``.  Before C1 the ledger opened at the
+    tracking-start, so that whole window read a false ``$0.00`` a change-across-a-
+    window caller misread as "no debt": the year-end summary reported NEGATIVE
+    principal paid on real data.  Opening at origination closes that at the source.
 
     **Domain: ``as_of <= today``.**  A future date is a forward projection, out
     of the confirmed ledger's domain; the reader RAISES rather than silently

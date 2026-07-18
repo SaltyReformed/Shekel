@@ -65,8 +65,10 @@ _ANCHOR_BALANCE = Decimal("100000.00")
 _ANCHOR_DATE = date(2026, 1, 5)
 _RATE = Decimal("0.06")
 
-# A date before every event, so each domain also pins the pre-origination /
-# pre-opening 0.00 the fold and reader must agree on (finding B-11's zone).
+# A date before every event (origination included), so each domain also pins the
+# pre-origination 0.00 -- truly "no debt" -- that the fold and reader must agree
+# on.  The window between origination and a tracking-start is the honest plateau
+# (finding B-11's zone, now the origination principal held flat), also walked.
 _BEFORE_ALL = date(2024, 12, 31)
 
 
@@ -164,16 +166,18 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
     def test_tracking_start_import(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """A mid-life import whose OPENING is a tracking-start (no origination).
+        """A mid-life import: origination opening + a tracking-start assertion (C1).
 
-        ``load_loan_anchor_facts`` supersedes the 2025-01-01 origination with the
-        tracking-start (:func:`_opening_anchor_fact`), and
+        ``load_loan_anchor_facts`` opens at the 2025-01-01 origination and loads
+        the tracking-start as an ordinary assertion, and
         ``insert_tracking_start_event`` re-syncs the posted ledger to match -- so
-        both producers open at the tracking-start and read 0.00 for the whole
-        pre-tracking year.  They must AGREE on that false pre-opening zero (B-11,
-        which C1 later replaces with contractual back-projection), day by day.
+        both producers open at ORIGINATION and read the $250,000 principal held
+        FLAT across the pre-tracking window (the honest plateau that replaces the
+        old false pre-opening zero, B-11), then reset at the tracking-start.  They
+        must AGREE on the plateau and the reset, day by day.
         """
         with app.app_context():
+            scenario_id = seed_user["scenario"].id
             loan = create_loan_account(
                 seed_user, db.session, name="Import Loan",
                 principal=_ORIGINATION_PRINCIPAL, rate=_RATE,
@@ -190,9 +194,19 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             end = seed_periods[5].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
             _assert_fold_matches_reader_every_day(
-                loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
-                min_days=400,
+                loan.id, scenario_id, _BEFORE_ALL, end, min_days=400,
             )
+            # C1 realization (Section 7.4): pin the VALUES the equality alone
+            # would miss if BOTH producers no-oped.  Before origination is 0.00
+            # (no debt); a date between origination (2025-01-01) and the
+            # tracking-start (2026-01-05) is the $250,000 origination principal
+            # held FLAT -- the plateau, never the pre-C1 false 0.00.
+            assert confirmed_loan_balance_at(
+                loan.id, scenario_id, _BEFORE_ALL,
+            ) == Decimal("0.00")
+            assert confirmed_loan_balance_at(
+                loan.id, scenario_id, date(2025, 6, 1),
+            ) == _ORIGINATION_PRINCIPAL
 
     def test_arm_rate_step(
         self, app, db, seed_user, seed_periods, monkeypatch,

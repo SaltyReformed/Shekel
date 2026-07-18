@@ -762,9 +762,9 @@ class TestRecordLoanTrackingStart:
           * outcome is COMMITTED
           * exactly one tracking_start event is appended (origination + tracking = 2)
           * it carries the TRACKING_START source, balance, and date
-          * the opening synthesized for the genesis walk is now that tracking-start
-            (``is_tracking_start`` True, balance 18000) -- proving the walk will
-            seed from it, not the 20000 origination.
+          * the loan still OPENS at its $20,000 origination (step C1); the
+            tracking-start loads as a non-opening assertion (``is_opening`` False,
+            ``is_tracking_start`` True, balance 18000) that RESETS the walk.
         """
         with app.app_context():
             account = _make_loan_account(seed_user)
@@ -798,12 +798,15 @@ class TestRecordLoanTrackingStart:
                 .filter_by(account_id=account.id)
                 .one()
             )
-            opening = next(
-                fact for fact in loan_loaders.load_loan_anchor_facts(params)
-                if fact.is_opening
-            )
-            assert opening.is_tracking_start is True
-            assert opening.anchor_balance == Decimal("18000.00")
+            facts = loan_loaders.load_loan_anchor_facts(params)
+            (opening,) = [fact for fact in facts if fact.is_opening]
+            assert opening.is_tracking_start is False
+            assert opening.anchor_balance == Decimal("20000.00")
+            (tracking_fact,) = [
+                fact for fact in facts if fact.is_tracking_start
+            ]
+            assert tracking_fact.is_opening is False
+            assert tracking_fact.anchor_balance == Decimal("18000.00")
 
     def test_double_call_same_returns_duplicate_same_day(
         self, app, db, seed_user, seed_periods_today,

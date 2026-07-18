@@ -395,9 +395,9 @@
               <td>
                 {{ anchor.anchor_date.strftime('%b %-d, %Y') }}
                 {% if anchor.is_opening %}
-                  <span class="badge bg-secondary ms-1">
-                    {% if anchor.is_tracking_start %}Tracking start{% else %}Origination{% endif %}
-                  </span>
+                  <span class="badge bg-secondary ms-1">Origination</span>
+                {% elif anchor.is_tracking_start %}
+                  <span class="badge bg-secondary ms-1">Tracking start</span>
                 {% endif %}
               </td>
               <td class="text-end font-mono">{{ money(anchor.recorded) }}</td>

@@ -40,11 +40,11 @@ from pathlib import Path
 from app import ref_cache
 from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    loan_loaders,
     loan_payment_service,
     loan_posting_service,
     loan_resolution,
@@ -151,11 +151,7 @@ def _resolver_state(account, loan_params, as_of):
     ctx = loan_payment_service.load_loan_context(
         account.id, None, loan_params,
     )
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account.id)
-        .all()
-    )
+    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     return loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
             loan_params, anchor_events, ctx.payments, ctx.rate_changes,
@@ -438,11 +434,7 @@ def test_months_saved_single_quantity(
         ctx = loan_payment_service.load_loan_context(
             account.id, None, loan_params,
         )
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
 
         extra = Decimal("200.00")
         scenarios = compute_payoff_scenarios(
@@ -650,11 +642,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         ctx = loan_payment_service.load_loan_context(
             account.id, scenario_id, loan_params,
         )
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # The committed (plan-aware) reference: the loan detail page's producer,
         # honoring the standing extra the operator committed to.  resolve_loan
         # composes ``state.schedule = history_rows + committed_forward`` and

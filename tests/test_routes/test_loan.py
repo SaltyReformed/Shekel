@@ -30,6 +30,7 @@ from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    insert_tracking_start_event,
     insert_trueup_event,
     loan_params_for,
     select_option_values,
@@ -68,14 +69,13 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     To preserve the test contract without rewriting every caller,
     this helper builds the loan with an ``original_principal`` of
     ``principal + 5000`` (simulating "$5,000 already paid down before
-    the test starts") and then appends:
-
-      * an ORIGINATION event at ``original_principal`` (matches
-        Commit 12's backfill semantics and production's create_params),
-        written by the shared factory,
-      * a USER_TRUEUP event one day after origination at the lower
-        ``principal`` value (represents "the user marked
-        the loan's true current balance as $X today").
+    the test starts") and then appends a USER_TRUEUP event one day
+    after origination at the lower ``principal`` value (represents
+    "the user marked the loan's true current balance as $X today").
+    The origination anchor is SYNTHESIZED from the params (no stored
+    ``LoanAnchorEvent`` -- matching production's ``create_params`` since
+    the read switch retired that write), so the loan carries exactly ONE
+    stored anchor event: the true-up.
 
     When ``principal == 0`` the gap is the full $5,000, so the
     trueup at $0 produces a paid-off loan state -- what
@@ -196,6 +196,38 @@ class TestLoanDashboard:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         assert f"{expected} of each month".encode() in resp.data
+
+    def test_dashboard_anchor_scorecard_badges(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The Balance anchors card badges origination AND a tracking-start (C1).
+
+        A mid-life-import loan (origination + a tracking-start assertion) renders
+        the anchor scorecard with an "Origination" badge on the origination
+        opening row and a "Tracking start" badge on the tracking-start assertion
+        row -- since C1 the label rides ``is_tracking_start``, not ``is_opening``
+        (the origination is the opening now, the tracking-start a non-opening
+        assertion).
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Imported Mortgage",
+            principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2023, 6, 1),
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        insert_tracking_start_event(
+            loan_params_for(db.session, acct.id),
+            Decimal("180000.00"), date(2026, 2, 10),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"Balance anchors" in resp.data
+        # Match the badge spans specifically, not the "Origination date" field
+        # label elsewhere on the page.
+        assert b">Origination</span>" in resp.data
+        assert b">Tracking start</span>" in resp.data
 
     def test_dashboard_setup_when_no_params(self, auth_client, seed_user, db, seed_periods):
         """Dashboard renders setup page when params don't exist yet."""
@@ -6203,16 +6235,16 @@ class TestLoanBalanceTrueUp:
     def test_trueup_appends_event(self, auth_client, seed_user, db, seed_periods):
         """POST trueup creates a new LoanAnchorEvent; no prior row mutated.
 
-        Hand-check: the ``_create_auto_loan`` fixture writes two
-        anchor events (origination at $30,000 plus a user_trueup at
-        $25,000).  After POSTing today / $24,000:
+        Hand-check: the ``_create_auto_loan`` fixture writes ONE stored
+        anchor event (a user_trueup at $25,000; the origination is
+        synthesized from params, not stored -- as production's create_params
+        does since the read switch).  After POSTing today / $24,000:
           * 302 redirect to /accounts/<id>/loan.
-          * Three anchor events on disk (origination + seed trueup +
-            new trueup).
+          * Two anchor events on disk (seed trueup + new trueup).
           * The new event has source_id == USER_TRUEUP id, balance
             $24,000, anchor_date == 2026-03-20 (the frozen "today"
             for this test file).
-          * The prior two events are byte-identical (no UPDATE).
+          * The prior event is byte-identical (no UPDATE).
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         from app import ref_cache  # pylint: disable=import-outside-toplevel
@@ -6229,8 +6261,9 @@ class TestLoanBalanceTrueUp:
             (e.id, e.anchor_date, e.anchor_balance, e.source_id, e.created_at)
             for e in before_events
         ]
-        assert len(before_snapshot) == 2, (
-            "Fixture is expected to seed two events; if this assertion "
+        assert len(before_snapshot) == 1, (
+            "Fixture is expected to seed one stored event (the true-up; "
+            "origination is synthesized, not stored); if this assertion "
             "fails the helper has drifted and the rest of this test "
             "is meaningless."
         )
@@ -6252,7 +6285,7 @@ class TestLoanBalanceTrueUp:
             .order_by(_LAE.id)
             .all()
         )
-        assert len(after_events) == 3
+        assert len(after_events) == 2
 
         after_by_id = {e.id: e for e in after_events}
         for snap in before_snapshot:
@@ -6429,9 +6462,10 @@ class TestLoanBalanceTrueUp:
     ):
         """Two distinct trueups produce two new rows; prior rows untouched.
 
-        Hand-check: starting from the seeded two events, post two
-        different trueups (different dates).  Final state must have
-        four events; all earlier rows byte-identical.
+        Hand-check: starting from the seeded ONE event (the true-up;
+        origination is synthesized, not stored), post two different
+        trueups (different dates).  Final state must have three events;
+        all earlier rows byte-identical.
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         acct = _create_auto_loan(seed_user, db.session)
@@ -6445,7 +6479,7 @@ class TestLoanBalanceTrueUp:
                 .all()
             )
         ]
-        assert len(snapshot_before) == 2
+        assert len(snapshot_before) == 1
 
         # First trueup -- different date than any seed event.
         auth_client.post(
@@ -6471,7 +6505,7 @@ class TestLoanBalanceTrueUp:
             .order_by(_LAE.id)
             .all()
         )
-        assert len(all_events) == 4
+        assert len(all_events) == 3
 
         events_by_id = {e.id: e for e in all_events}
         for snap in snapshot_before:

@@ -3,9 +3,11 @@
 A loan's balance is a fold over its event stream, and this module builds that
 stream.  Two kinds of fact enter it, and nothing else:
 
-* an **ASSERTION** -- the loan's opening (its origination, or the
-  ``tracking_start`` of a mid-life import) and every user balance true-up, loaded
-  as :class:`~app.services.loan_loaders.LoanAnchorFact`;
+* an **ASSERTION** -- the loan's opening (its origination, ALWAYS) plus every
+  balance assertion made after it: a mid-life ``tracking_start`` and every user
+  balance true-up, all loaded as
+  :class:`~app.services.loan_loaders.LoanAnchorFact` and all RESETTING the running
+  balance at their own date (a ``tracking_start`` is never the opening -- step C1);
 * a **PAYMENT** -- a settled loan-side income shadow, the record that cash
   actually moved (:func:`~app.services.loan_loaders.settled_income_shadows`).
 

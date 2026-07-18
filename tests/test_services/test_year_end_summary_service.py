@@ -74,7 +74,6 @@ from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
-    insert_tracking_start_event,
     loan_params_for,
 )
 
@@ -1690,82 +1689,23 @@ class TestNetWorth:
 
 
 class TestDebtProgressMidLifeImport:
-    """A loan whose ledger opens MID-YEAR reports progress from its opening.
+    """A loan whose ledger opens before the year is NOT clamped (origination case).
 
-    The regression lock for the defect this section shipped with: it read the
-    opening balance at Dec-31-of-the-prior-year, which for a mid-life-imported loan
-    precedes the loan's ``tracking_start`` -- a date the confirmed ledger has no
-    record for, and answers ``$0.00``.  Subtracting a real year-end balance from
-    that fabricated zero reported the borrower ADDING the loan's entire balance as
-    new debt.  Measured on the production clone before the fix::
+    This class shipped as the regression lock for a mid-life-import defect: the
+    year-end debt-progress clamp read jan1 at Dec-31-of-the-prior-year, which for a
+    loan opened at a ``tracking_start`` preceded the ledger's record and answered
+    ``$0.00``, so principal_paid inverted to a fabricated debt increase.  The clamp
+    narrowed the window to the tracking-start (``confirmed_loan_ledger_domain``) to
+    prevent it.
 
-        Mortgage  jan1=0.00  dec31=175,870.41  principal_paid=-175,870.41
-        Van Loan  jan1=0.00  dec31= 12,883.20  principal_paid= -12,883.20
-
-    The window is now clamped to where the ledger's knowledge begins, and
-    ``tracked_from`` says so.
+    Step C1 removed that premise at the SOURCE: the ledger now OPENS at the loan's
+    origination (a ``tracking_start`` is an ordinary true-up), so a mid-life import
+    no longer has a tracking-start domain to clamp to -- the mid-life-clamp test
+    that locked it is therefore gone.  The year-end summary itself is dead code
+    (``/analytics/year-end`` 302s) and is deleted WHOLE at step F2 (ruling R-D);
+    the surviving half below only pins that an origination-tracked loan (the normal
+    case, unchanged by C1) is not clamped.
     """
-
-    def test_tracking_start_clamps_the_window_and_paid_is_positive(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A loan tracked from mid-year opens at its tracking balance, not $0.
-
-        A $250,000 mortgage originated 2020-01-01 but only TRACKED from 2026-02-10
-        at $180,000 (the mid-life import: the operator asserts the real balance as
-        of the date they began recording it).  The confirmed ledger knows nothing
-        before 2026-02-10.
-
-        The old behaviour read jan1 at 2025-12-31 -> $0.00, making principal_paid
-        NEGATIVE (a fabricated debt increase of the whole balance).  The window now
-        opens at the tracking-start, so:
-
-          jan1_balance  == 180,000.00  (the ledger's OPENING balance)
-          principal_paid == 180,000.00 - dec31  (positive: debt is being paid down)
-          tracked_from   is not None   (the surface can say "since 2026-02-10")
-        """
-        user = seed_user["user"]
-        loan = create_loan_account(
-            {"user": user}, db.session, name="Imported Mortgage",
-            principal=Decimal("250000.00"), rate=Decimal("0.06000"),
-            term=360, origination_date=date(2020, 1, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
-        )
-        insert_tracking_start_event(
-            loan_params_for(db.session, loan.id),
-            Decimal("180000.00"), date(2026, 2, 10),
-        )
-        db.session.commit()
-
-        result = compute_year_end_summary(user.id, YEAR)
-        entry = next(
-            e for e in result["debt_progress"] if e["account_id"] == loan.id
-        )
-
-        # The opening is the ledger's OPENING balance -- never a fabricated $0.
-        assert entry["jan1_balance"] == Decimal("180000.00")
-        assert entry["tracked_from"] is not None, (
-            "a mid-life import must report the window it was actually measured "
-            "over, not imply a full calendar year"
-        )
-        # Debt is being paid DOWN, so principal_paid is positive.  Negative here
-        # is the exact inversion this class exists to prevent.
-        assert entry["principal_paid"] > ZERO, (
-            f"principal_paid {entry['principal_paid']} is not positive; the "
-            f"window opened on a date the ledger cannot answer"
-        )
-        # dec31 is pinned to a hand-computed figure, so this catches a wrong
-        # CLOSING balance instead of merely restating principal_paid = jan1 - dec31.
-        #
-        # The contractual P&I comes from the ORIGINAL params (not the tracked
-        # opening): $250,000, 6.0%, 360 months
-        #   M = 250000 * (0.005 * 1.005^360) / (1.005^360 - 1) = $1,498.88
-        # The ledger opens at $180,000 on 2026-02-10 and payment_day is 1, so ten
-        # payments land in 2026 (2026-03-01 .. 2026-12-01).  Amortizing $180,000 at
-        # 0.5%/month with a $1,498.88 payment for 10 months:
-        #   180,000.00 -> 173,874.65   (principal paid 6,125.35)
-        assert entry["dec31_balance"] == Decimal("173874.65")
-        assert entry["principal_paid"] == Decimal("6125.35")
 
     def test_loan_tracked_from_origination_is_unclamped(
         self, app, db, seed_user, seed_periods,

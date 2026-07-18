@@ -384,17 +384,18 @@ def fold_loan_balances(
     last recorded balance flat, which is honest for what it knows but is NOT the
     projection the seam shows.  Grade it on the past.
 
-    **KNOWN GAP (N-11), and it is the fold that is incomplete, not the ledger.**
-    A raw settled transaction typed directly onto a loan account posts onto the
-    loan's linked ledger and the sum-of-postings readers count it as a real
-    balance event; the fold does not see it, because its payment set is
-    transfer-linked shadows only
-    (:func:`~app.services.loan_loaders.settled_income_shadows`).  The two then
-    disagree by that transaction's amount ($300.00 measured).  Do NOT read a
-    disagreement in that shape as a stale cache to be repaired -- the ledger is
-    holding a genuine event the fold is blind to.  Awaiting a developer ruling
-    (forbid the write, as R-C forbids a pre-origination payment; or model the
-    third fact); B2 must carry it as a blocking shape either way.
+    **N-11 (a raw transaction typed onto a loan) is closed by construction (BG,
+    ruling R-E), not a live gap.**  A raw settled transaction typed directly onto a
+    loan account would post onto the loan's linked ledger where the sum-of-postings
+    readers count it, while the fold -- whose payment set is transfer-linked shadows
+    only (:func:`~app.services.loan_loaders.settled_income_shadows`) -- would not
+    see it, so the two would disagree by that transaction's amount ($300.00
+    measured).  Ruling R-E FORBIDS that write at every source (the two
+    transaction-create routes, the recurrence-template form, and the salary-profile
+    picker each refuse an amortizing account -- BG, ``dba91dc0``), so no such row
+    can enter the fold's domain; B2 both demonstrates the divergence on a forced
+    row and asserts the sources refuse it.  Do NOT read a disagreement in that
+    shape as a stale cache to be repaired.
 
     Reads only -- no writes, no commit.  Not wired into any production path (plan
     step B1): its consumer is B2's parallel-run oracle until C3 makes the seam's

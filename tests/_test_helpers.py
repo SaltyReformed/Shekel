@@ -257,54 +257,6 @@ def freeze_today(monkeypatch, target_date, modules=None):
             pass
 
 
-def insert_origination_event(loan_params):
-    """Append the origination :class:`LoanAnchorEvent` for a loan.
-
-    Mirrors the production-code pattern in
-    :func:`app.routes.loan.create_params` (E-18 / Commit 15) so test
-    fixtures that build :class:`LoanParams` directly remain
-    compatible with the resolver-routed display surfaces.  The
-    resolver raises ``ValueError`` on an empty anchor-event list, so
-    every fixture that hits the loan dashboard / debt strategy /
-    /savings debt card / year-end net-worth liability MUST call
-    this helper after inserting :class:`LoanParams`.
-
-    Uses ``original_principal`` as the anchor balance and
-    ``origination_date`` as the anchor date, matching both the
-    Commit-12 migration backfill and the production setup-flow
-    insert pattern.
-
-    Args:
-        loan_params: The :class:`LoanParams` ORM instance, already
-            flushed (``loan_params.account_id`` populated).
-
-    Returns:
-        The newly added :class:`LoanAnchorEvent` instance,
-        ``db.session.add()``'d but not committed.  The caller's
-        existing ``db.session.commit()`` carries the event into the
-        same transaction.
-    """
-    # pylint: disable=import-outside-toplevel  -- avoid module-load
-    # circular deps via models package; tests/_test_helpers loads
-    # early enough that an unconditional top-level import would
-    # snowball into ref_cache / Flask app bootstrapping.
-    from app import ref_cache
-    from app.enums import LoanAnchorSourceEnum
-    from app.extensions import db
-    from app.models.loan_anchor_event import LoanAnchorEvent
-
-    event = LoanAnchorEvent(
-        account_id=loan_params.account_id,
-        anchor_date=loan_params.origination_date,
-        anchor_balance=loan_params.original_principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    )
-    db.session.add(event)
-    return event
-
-
 def insert_origination_rate(loan_params, interest_rate):
     """Append the origination :class:`RateHistory` row for a loan.
 
@@ -538,7 +490,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
         postings, not committed).
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
-    # avoidance as insert_origination_event above.
+    # avoidance as insert_origination_rate above.
     from datetime import timedelta
     from app import ref_cache
     from app.enums import LoanAnchorSourceEnum
@@ -561,15 +513,17 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
 
 
 def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
-    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life opening).
+    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life import).
 
     Mirrors the production tracking-start path
     (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
     began tracking an already-amortizing loan and asserts its real balance as of a
-    date at/before the first recorded payment.  When present it becomes the loan's
-    confirmed-ledger OPENING (:func:`app.services.loan_loaders._opening_anchor_fact`
-    synthesizes the ``is_opening`` anchor from it in place of the origination), so
-    the genesis walk seeds from this balance/date instead of the origination.
+    date at/before the first recorded payment.  It is loaded as an ordinary
+    ``is_opening=False`` balance ASSERTION
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`) that RESETS the
+    genesis walk's running balance at its own date -- the loan still opens at its
+    origination (step C1), so a date at/after the tracking-start reads this
+    asserted balance and a date before it reads the origination opening held flat.
 
     Like production, the event is RECONCILED INTO POSTINGS in the same
     transaction (:func:`_sync_loan_ledger`): ``record_loan_tracking_start``
@@ -725,7 +679,6 @@ def create_loan_account(
     db_session.add(params)
     db_session.flush()
     insert_origination_rate(params, rate)
-    insert_origination_event(params)
     _sync_loan_ledger(account.id)
     db_session.commit()
     return account

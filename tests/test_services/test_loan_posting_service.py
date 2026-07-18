@@ -747,17 +747,21 @@ class TestTrackingStartOpening:
     def test_split_and_balance_open_from_tracking_start(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """A mid-life loan opens at its tracking-start balance; the payment accrues on it.
+        """A mid-life loan opens at ORIGINATION; a tracking-start resets it (step C1).
 
-        Origination is $250,000 @ 6% (2025-01-01), but the operator started
-        tracking with a $100,000 balance as of 2026-01-05.  The single $1,000
-        payment therefore accrues interest on $100,000:
+        Origination is $250,000 @ 6% (2025-01-01) and IS the ledger opening, but
+        the operator started tracking with a $100,000 balance as of 2026-01-05, an
+        ordinary assertion that RESETS the walk.  The single $1,000 payment
+        (2026-02-01, after the reset) therefore accrues interest on $100,000:
 
           * interest = round(100000 * 0.06 / 12) = 500.00 (NOT origination's
             250000 -> 1250.00, which is the pre-fix bug this pins against)
           * principal = 1000 - 500 - 0 = 500.00
-          * confirmed balance opens at 100000 and amortizes to 100000 - 500 =
-            99500.00 (origination's 250000 never enters the ledger)
+          * confirmed balance at/after the tracking-start is 100000, amortizing
+            to 100000 - 500 = 99500.00
+          * a date BETWEEN origination and the tracking-start reads the $250,000
+            origination opening held FLAT -- the honest pre-tracking plateau
+            (B-11), never $0.00
           * Schedule-A interest for 2026 is the same 500.00.
         """
         # ``confirmed_loan_balance_at`` answers only ``as_of <= today``; freeze
@@ -799,19 +803,29 @@ class TestTrackingStartOpening:
                 loan.id, scenario_id, as_of,
             ) == Decimal("99500.00")
 
+            # C1: a date between origination (2025-01-01) and the tracking-start
+            # (2026-01-05) reads the $250,000 origination opening held FLAT -- the
+            # honest pre-tracking plateau -- never $0.00 (the pre-C1 false zero).
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, date(2025, 6, 1),
+            ) == _ORIGINATION_PRINCIPAL
+
             assert loan_posting_service.confirmed_loan_interest_in_year(
                 loan.id, scenario_id, 2026,
             ) == Decimal("500.00")
 
-    def test_drift_scorecard_labels_the_tracking_start_opening(
+    def test_drift_scorecard_labels_the_tracking_start(
         self, app, db, seed_user,
     ):
-        """The anchor drift scorecard marks the opening as a tracking-start.
+        """The drift scorecard shows origination + a labeled tracking-start (C1).
 
-        A configured mid-life loan (no payments) shows exactly one drift row: the
-        tracking-start opening at its recorded balance, flagged
-        ``is_tracking_start`` so the display labels it "Tracking start" rather
-        than "Origination".
+        A configured mid-life loan (no payments) shows two drift rows,
+        chronological: the $250,000 origination OPENING (``is_opening``, no
+        drift), then the $100,000 tracking-start ASSERTION flagged
+        ``is_tracking_start`` so the display badges that row "Tracking start".
+        The tracking-start's drift is the honest pre-tracking gap it booked:
+        recorded 100000 - the walk's owed_before 250000 (origination held flat to
+        that date) = -150000.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -829,11 +843,16 @@ class TestTrackingStartOpening:
             rows = loan_posting_service.loan_balance_anchor_history(
                 loan.id, scenario_id, _AS_OF,
             )
-            assert len(rows) == 1
+            assert len(rows) == 2
             assert rows[0].is_opening is True
-            assert rows[0].is_tracking_start is True
-            assert rows[0].recorded == Decimal("100000.00")
-            assert rows[0].anchor_date == date(2026, 1, 5)
+            assert rows[0].is_tracking_start is False
+            assert rows[0].recorded == _ORIGINATION_PRINCIPAL
+            assert rows[0].anchor_date == _ORIGINATION_DATE
+            assert rows[1].is_opening is False
+            assert rows[1].is_tracking_start is True
+            assert rows[1].recorded == Decimal("100000.00")
+            assert rows[1].anchor_date == date(2026, 1, 5)
+            assert rows[1].drift == Decimal("-150000.00")
 
 
 # ---------------------------------------------------------------------------
@@ -3193,21 +3212,21 @@ class TestLedgerDomainAndPrePeriodAnchor:
                 ), f"map and scalar disagree at period {period.start_date}"
 
 
-    def test_domain_reports_the_tracking_start_it_was_opened_at(
+    def test_domain_reports_the_origination_opening(
         self, app, db, seed_user, seed_periods,
     ):
-        """A mid-life import's domain is its tracking-start date and balance.
+        """A mid-life import's domain is its ORIGINATION now (step C1).
 
-        The loan originated 2025-06-01 at $250,000 but was only TRACKED from
-        2026-02-10 at $180,000.  The ledger knows nothing before that, so:
+        The loan originated 2025-06-01 at $250,000 and was later tracked from
+        2026-02-10 at $180,000.  Since C1 the ledger OPENS at the origination (the
+        tracking-start is an ordinary true-up, not the opening), so the domain
+        reports the origination -- opening_date 2025-06-01, opening_balance
+        $250,000 -- and start_date is the date that origination opening becomes
+        visible (its own civil date, since it precedes every pay period).
 
-          start_date      -- the pay period the opening is VISIBLE from (the clamp)
-          opening_date    -- 2026-02-10, the civil date the balance was asserted
-          opening_balance -- $180,000.00, what the operator asserted
-
-        ``opening_date`` and ``start_date`` are deliberately different things:
-        showing a user the balance as-of the period start would print a figure the
-        readers contradict.
+        (The ``_domain`` module is superseded by C1 and slated for deletion at C3;
+        its sole consumer, the dead year-end principal-progress clamp, is deleted
+        at F2.  This pins the post-C1 output so the change is explicit.)
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -3226,13 +3245,12 @@ class TestLedgerDomainAndPrePeriodAnchor:
                 loan.id, scenario_id,
             )
             assert domain is not None
-            assert domain.opening_date == date(2026, 2, 10)
-            assert domain.opening_balance == Decimal("180000.00")
-            # The superseded origination opening (2025-06-01, $250,000) was
-            # REVERSED, not deleted -- the ledger is append-only.  The domain must
-            # skip it, or the clamp lands on a date carrying no balance.
-            assert domain.start_date > date(2025, 6, 1)
-            assert domain.start_date <= date(2026, 2, 10)
+            assert domain.opening_date == date(2025, 6, 1)
+            assert domain.opening_balance == Decimal("250000.00")
+            # start_date is the origination opening's visibility date; it is on or
+            # before the origination civil date and well before the tracking-start
+            # (now a true-up, not the opening).
+            assert domain.start_date <= date(2025, 6, 1)
 
     def test_domain_is_none_for_a_loan_whose_ledger_was_never_opened(
         self, app, db, seed_user, seed_periods,
