@@ -563,14 +563,16 @@ def _settled_payment_due_dates(
 ) -> list[date]:
     """Return the monthly due dates of a loan's SETTLED payments (shared derivation).
 
-    The single settled-payment-due-date derivation that both
-    :func:`load_settled_payment_due_months` (the year-end tax exclusion set) and
-    :func:`earliest_settled_payment_due_date` (the tracking-start guard) build on,
-    so the two provably agree with each other -- and with the fold's own event
-    stream -- on WHICH payments are settled and on each one's due date.
-    The settled shadow set comes from :func:`settled_income_shadows`; each is
-    dated by :func:`loan_payment_due_date` (its stored ``due_date``, falling back
-    to a derivation from its pay-period start).
+    The settled-payment-due-date derivation behind
+    :func:`earliest_settled_payment_due_date` (the tracking-start guard), built on
+    the same :func:`settled_income_shadows` set and the same
+    :func:`loan_payment_due_date` per-payment rule the fold's event stream walks --
+    so the guard, the walk, and the Schedule A interest merge
+    (:func:`app.services.balance_at.loan_interest_in_year`, which derives its
+    settled slots from that same fold walk) provably agree on WHICH payments are
+    settled and on each one's due date.  Each shadow is dated by
+    :func:`loan_payment_due_date` (its stored ``due_date``, falling back to a
+    derivation from its pay-period start).
 
     Args:
         account_id: The loan account whose settled payments to scan.
@@ -590,50 +592,6 @@ def _settled_payment_due_dates(
     ]
 
 
-def load_settled_payment_due_months(
-    account_id: int, scenario_id: int,
-) -> set[tuple[int, int]]:
-    """Return the ``(year, month)`` due slots of a loan's SETTLED payments.
-
-    The schedule-side partition key for the Schedule A mortgage-interest hybrid
-    (:func:`app.services.tax_report_service._loan_year_interest`):
-    a settled payment's actual interest is read from the genesis ledger and
-    attributed to its civil PAID date, so the schedule's projected row for the
-    same due slot must be excluded or the hybrid double-counts.  The resolver's
-    ``is_confirmed`` flag alone cannot make that cut -- its replay bounds
-    confirmed payments by "pay period has begun", so an EARLY-settled payment
-    (settled before its pay period starts) stays ``is_confirmed=False`` on the
-    schedule while its interest is already posted (the write side splits at
-    settlement -- see :func:`settled_income_shadows`).
-
-    Keyed by due (year, month) rather than the exact due date so the exclusion
-    still matches a schedule row whose display date the resolver's
-    biweekly-collision redistribution nudged within the month.  Known
-    approximation: when TWO payments share a due month (a biweekly collision)
-    and only one is settled early, the redistribution moves the second row to
-    the next month, so the month key excludes the settled slot and keeps the
-    shifted one -- matching intent; the reverse mismatch (excluding a shifted
-    row that belongs to the unsettled payment) requires the settled payment
-    itself to have been redistribution-shifted, which cannot happen (only
-    schedule DISPLAY rows shift, never the payment's own due month).
-
-    Args:
-        account_id: The loan account whose settled due slots to load.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``{(year, month)}`` of :func:`monthly_due_date` over the loan's settled
-        income shadows; empty for an unconfigured loan (no
-        :class:`LoanParams` -- there is no ``payment_day`` to derive a due date
-        from, and no split correction can exist either) or one with no settled
-        payment.
-    """
-    return {
-        (due.year, due.month)
-        for due in _settled_payment_due_dates(account_id, scenario_id)
-    }
-
-
 def earliest_settled_payment_due_date(
     account_id: int, scenario_id: int,
 ) -> date | None:
@@ -644,9 +602,9 @@ def earliest_settled_payment_due_date(
     genesis walk (which orders a payment before an anchor on an equal date), or
     the earliest payment would be subsumed by the opening's reset and dropped.
     The route rejects a tracking-start whose date is not strictly earlier than
-    this.  Shares :func:`_settled_payment_due_dates` with
-    :func:`load_settled_payment_due_months`, so the guard, the tax exclusion, and
-    the walk provably agree on each payment's date.
+    this.  Built on :func:`_settled_payment_due_dates`, whose per-payment due-date
+    rule the fold's event stream and the Schedule A interest merge share, so the
+    guard, the walk, and the tax figure provably agree on each payment's date.
 
     NOTE: point-in-time -- this scans only payments settled at record time.  A
     payment recorded LATER with a due date before the tracking-start would be

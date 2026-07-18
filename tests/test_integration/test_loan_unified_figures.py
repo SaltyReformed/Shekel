@@ -21,13 +21,6 @@ two files reinforce each other on the loan single-source-of-truth
 contract.
 """
 
-# pylint: disable=protected-access
-# Cross-surface single-source-of-truth tests deliberately reach into
-# ``tax_report_service._compute_mortgage_interest`` (the same hybrid the live
-# Schedule A path spends) because the public surfaces expose derived figures,
-# not the schedule rows themselves -- and the schedule-row equality is exactly
-# what HIGH-08 / F-017..F-023 demand we lock.
-
 import re
 import subprocess
 from datetime import date
@@ -41,6 +34,7 @@ from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    balance_at,
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
@@ -50,7 +44,6 @@ from app.services import (
 )
 from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext
-from app.services.tax_report_service import _compute_mortgage_interest
 from tests._test_helpers import create_loan_account, loan_params_for
 
 
@@ -257,23 +250,13 @@ def test_total_interest_one_definition(
             " -- the resolver's two derivation paths must agree."
         )
 
-        # The year-end calendar-year subset.  Year 2026 covers the
-        # first eleven payments (payment_day=1, origination
-        # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
-        # 2026-12-01).
-        debt_schedules = net_worth_kernel.debt_schedule_rows(
-            [account], BalanceContext.build(seed_user["user"].id),
-        )
-        # The loan IS ledger-backed (the shared factory opens its genesis
-        # posting ledger, as create_params does), but it has no confirmed
-        # payments -- so the hybrid's ledger-actual term is $0.00 and every 2026
-        # row is a genuinely projected one, leaving the schedule-projected term
-        # to carry the whole figure: byte-identical to the labeled resolver
-        # subset below.
-        calendar_year_interest = (
-            _compute_mortgage_interest(
-                2026, debt_schedules, seed_user["scenario"].id,
-            )
+        # The calendar-year subset, from the balance seam's one loan-interest
+        # producer.  The loan has no confirmed payments, so the fold's settled
+        # term is $0.00 and every 2026 row is a genuinely projected one -- the
+        # schedule-projected term carries the whole figure, byte-identical to the
+        # labeled resolver subset below.
+        calendar_year_interest = balance_at.loan_interest_in_year(
+            account, BalanceContext.build(seed_user["user"].id), 2026,
         )
 
         # Hand-derive the same subset directly from the resolver

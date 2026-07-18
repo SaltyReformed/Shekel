@@ -35,13 +35,11 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
-from app.services import net_worth_kernel, paycheck_calculator
+from app.services import balance_at, net_worth_kernel, paycheck_calculator
 from app.services.auth_service import _seed_tax_data_for_user
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (
     TaxReport,
-    _compute_mortgage_interest,
     compute_tax_report,
 )
 from app.services.resolution_context import BalanceContext
@@ -581,9 +579,9 @@ class TestScheduleAMortgageInterest:
     another's job:
 
     * :meth:`test_mortgage_interest_matches_year_end_hybrid` proves the WIRING --
-      that the Taxes tab spends the hybrid's figure and ties it into
-      ``itemized_estimate``.  Its oracle CALLS ``_compute_mortgage_interest``, so
-      it is a consistency check: it holds however wrong that function is.
+      that the Taxes tab spends the seam's figure and ties it into
+      ``itemized_estimate``.  Its oracle CALLS ``balance_at.loan_interest_in_year``,
+      so it is a consistency check: it holds however wrong that function is.
     * :meth:`test_schedule_a_deducts_the_hand_computed_interest_in_the_year_paid`
       proves the VALUE, against arithmetic done by hand.  It is the only thing
       standing under this number, and it is deliberately on the LIVE path so it
@@ -598,13 +596,13 @@ class TestScheduleAMortgageInterest:
     def test_mortgage_interest_matches_year_end_hybrid(
         self, app, db, seed_user, monkeypatch,
     ):
-        """A seeded mortgage gives nonzero 2026 interest == the hybrid.
+        """A seeded mortgage gives nonzero 2026 interest == the seam figure.
 
         Standing up a fresh liability/withholding fixture plus a full loan
         is disproportionate, so the mortgage term is pinned here as a
         CONSISTENCY ORACLE: the producer's
         ``schedule_a.components.mortgage_interest`` must equal
-        ``_compute_mortgage_interest`` over the same debt-schedule generation the
+        ``balance_at.loan_interest_in_year`` for the same loan and context the
         orchestrator uses (both resolve the loan at the frozen 2026-06-01 clock),
         and be strictly positive (non-vacuous).  ``itemized_estimate`` then ties
         out to mortgage + hybrid state withholding.
@@ -615,8 +613,6 @@ class TestScheduleAMortgageInterest:
         on alone.  The value is pinned by the hand-computed test beneath.
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
-        scenario_id = get_baseline_scenario(seed_user["user"].id).id
-
         _seed_and_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
         # A MORTGAGE, which is what this test's name and docstring always
@@ -638,15 +634,11 @@ class TestScheduleAMortgageInterest:
             seed_user["user"].id, 2026, date(2026, 6, 1),
         )
 
-        # Consistency oracle: the same hybrid over the same schedule.  NOT an
-        # independent check of the number -- see the class docstring.
+        # Consistency oracle: the same seam producer for the same loan.  NOT an
+        # independent check of the number -- see the class docstring.  With one
+        # mortgage, _build_schedule_a's sum over mortgage accounts is exactly this.
         bctx = BalanceContext.build(seed_user["user"].id)
-        debt_schedules = net_worth_kernel.debt_schedule_rows(
-            [loan], bctx,
-        )
-        oracle_interest = _compute_mortgage_interest(
-            2026, debt_schedules, scenario_id,
-        )
+        oracle_interest = balance_at.loan_interest_in_year(loan, bctx, 2026)
 
         assert oracle_interest > ZERO  # non-vacuous
         assert report.schedule_a.components.mortgage_interest == oracle_interest

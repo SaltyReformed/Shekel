@@ -131,6 +131,7 @@ from ._kind_correct import (
 )
 from ._liability import liability_owed_at_dates
 from ._loan_figures import LoanFigures, loan_figures, loan_ledger_domain
+from ._loan_interest import loan_interest_in_year
 from ._positions import positions
 from ._secured_debt import SecuredLoanSeries, secured_loan_series
 
@@ -163,6 +164,7 @@ __all__ = [
     "investment_seed_map",
     "liability_owed_at_dates",
     "loan_figures",
+    "loan_interest_in_year",
     "loan_ledger_domain",
     "positions",
     "secured_loan_series",
