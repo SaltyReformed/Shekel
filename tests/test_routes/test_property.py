@@ -10,7 +10,6 @@ the equity-over-time chart producer + its route context contract
 """
 
 import json
-from collections import namedtuple
 from datetime import date
 from decimal import Decimal
 
@@ -422,41 +421,34 @@ class TestPropertyEquityChartProducer:
             assert equity.total_debt == Decimal("0.00")
             assert equity.equity == _FOUR_HUNDRED_K
 
-    def test_paid_off_loan_dropped_and_falls_back(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """A zero-balance loan with a NON-EMPTY schedule still reaches the fallback.
+    def test_retired_loan_dropped_regardless_of_its_debt_map(self, app):
+        """A RETIRED loan is dropped even when its fold map still carries debt.
 
-        The H1 fix.  The old producer skipped a loan only when its schedule was
-        empty, but a loan paid off through confirmed payments KEEPS its whole
-        confirmed schedule -- so the paid-off fallback never fired.  The rebuild
-        decides on the balance today, not schedule emptiness: present a real
-        loan's (non-empty) schedule with a $0.00 current balance and the
-        producer drops it, returning the loan-less arc.
+        The H1 fix in the C5 shape.  The drop keys on the seam's ``is_retired``
+        predicate, NOT on the loan's data being absent: a retired loan whose fold
+        map still carries balances (its pre-payoff history) is dropped all the same,
+        and a property with only retired loans falls through to the 120-month
+        appreciation-only arc.  Pure -- the producer is fed a hand-built series, so
+        no DB or resolution is involved.
+
+        NEGATIVE CONTROL: flip ``is_retired`` to ``False`` and this loan is charted,
+        so the fallback does not fire and ``chart.debt`` is non-empty.
         """
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
-            loan = create_loan_account(
-                seed_user, db.session, name="Real",
-                principal=Decimal("2400.00"), term=24, origination_date=today,
-            )
-            _params, state = resolve_account_loan(loan.id, scenario_id, today)
-            assert state.schedule != []  # precondition: the schedule is NON-empty
-            paid_off = balance_at.SecuredLoanSeries(
-                account_id=loan.id,
-                back_projection=[], schedule=state.schedule,
-                # Borrowed, and now owing nothing -- RETIRED.  The seam's ONE
-                # predicate; a loan that has not been borrowed yet also owes $0.00
-                # but reads ``is_retired=False``, so it is NOT dropped.  The series
-                # no longer carries a balance for the chart to re-derive this from:
-                # two copies of that rule is how both the route and the producer
-                # came to drop an unclosed mortgage.
+            retired = balance_at.SecuredLoanSeries(
+                account_id=1,
+                # A non-empty debt map -- the loan owed $900 this month -- so the
+                # drop cannot be a side effect of the map being empty.
+                month_balances={
+                    (today.year, today.month): (
+                        Decimal("900.00"), property_equity_chart.TIER_CONFIRMED,
+                    ),
+                },
                 is_retired=True,
             )
-
             chart = property_equity_chart.build_property_equity_chart(
-                [paid_off], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
+                [retired], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
             )
             assert chart.chart_state == "no_loans"
             assert chart.debt == []
@@ -503,10 +495,11 @@ class TestPropertyEquityChartProducer:
                 len(chart.labels) == len(chart.value) == len(chart.debt)
                 == len(chart.equity) == len(chart.debt_tier)
             )
-            # The earliest axis month is the OLD loan's first row; the new loan
-            # has no row there, so the debt is the old loan's balance ALONE.
-            old_first = old_series.schedule[0].remaining_balance
-            new_first = new_series.schedule[0].remaining_balance
+            # The earliest axis month is the OLD loan's origination month; the new
+            # loan does not span it, so its map has no entry there and the debt is
+            # the old loan's fold balance ALONE.
+            old_first = old_series.month_balances[min(old_series.month_balances)][0]
+            new_first = new_series.month_balances[min(new_series.month_balances)][0]
             assert chart.debt[0] == old_first
             # Guard against the old front-aligned bug (new summed in at index 0).
             assert chart.debt[0] != old_first + new_first
@@ -666,11 +659,12 @@ class TestPropertyEquityChartProducer:
             # route calls.  The resolved schedule opens at the FIRST confirmed
             # payment, so the months from origination to that payment become the
             # estimated back-projection (a real, non-empty prefix here); the
-            # reconciliation still keys off the confirmed tier.
+            # reconciliation keys off the confirmed / fold tier.
             series = _series_for(prop, loan, today)
-            assert series.back_projection, (
-                "precondition: this loan has pre-tracking months to estimate"
-            )
+            assert any(
+                tier == property_equity_chart.TIER_ESTIMATED
+                for _balance, tier in series.month_balances.values()
+            ), "precondition: this loan has pre-tracking months to estimate"
             equity = home_equity_service.compute_home_equity(
                 _FOUR_HUNDRED_K, [state.current_balance],
             )
@@ -678,7 +672,9 @@ class TestPropertyEquityChartProducer:
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
             )
 
-            # Reconcile at the LAST CONFIRMED month, found by its label.
+            # Reconcile at the LAST CONFIRMED month, found by its label.  No payment
+            # settles between it and today, so the fold holds ``current_balance``
+            # flat from there to today.
             index = chart.labels.index(
                 last_confirmed.payment_date.strftime("%b %Y"),
             )
@@ -690,12 +686,15 @@ class TestPropertyEquityChartProducer:
             # flat anchor there -- equity == market_value - total_debt.
             assert chart.value[index] == _FOUR_HUNDRED_K
 
-            # The M1 point: today's month is NOT the reconciliation month.  This
-            # month's payment is still projected, so its balance sits one payment
-            # below current_balance and would MIS-reconcile against the hero.
+            # C5 closed the M1 gap: TODAY's month now reconciles too.  The fold
+            # values the current month at ``ctx.as_of`` itself (not a projected
+            # month end), so its debt is ``current_balance`` -- the hero's balance
+            # -- and its tier is ``confirmed``, where the pre-C5 schedule-row
+            # producer read today's still-projected row one payment below.
             assert index < chart.today_index
-            assert chart.debt_tier[chart.today_index] == "projected"
-            assert chart.debt[chart.today_index] < state.current_balance
+            assert chart.debt_tier[chart.today_index] == "confirmed"
+            assert chart.debt[chart.today_index] == state.current_balance
+            assert chart.equity[chart.today_index] == equity.equity
 
     def test_back_projection_estimated_tier_and_tracking_start_seam(
         self, app, db, seed_user, seed_periods_today,
@@ -736,18 +735,24 @@ class TestPropertyEquityChartProducer:
             db.session.commit()
 
             series = _series_for(prop, loan, today)
-            assert series.back_projection, (
-                "a tracking-start loan must have a pre-tracking back-projection"
-            )
+            assert any(
+                tier == property_equity_chart.TIER_ESTIMATED
+                for _balance, tier in series.month_balances.values()
+            ), "a tracking-start loan must have a pre-tracking back-projection"
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
             )
 
+            # The tracking start -- where the recorded ledger opens -- is the
+            # resolved schedule's first month, the same boundary the seam clips the
+            # back-projection at.
+            _params, state = resolve_account_loan(loan.id, scenario_id, today)
+            tracking_start = state.schedule[0].payment_date
+
             # Re-derive the expected pre-tracking rows from the same contractual
-            # producer the route feeds in, clipped to the months before tracking
+            # producer the seam feeds in, clipped to the months before tracking
             # begins.  This pins the chart's month-mapping and tiering of those
             # rows (not the amortization math -- that is test_loan_resolution.py).
-            tracking_start = series.schedule[0].payment_date
             oracle_pre = [
                 row for row in contractual_schedule_from_origination(
                     params, load_rate_changes(loan.id),
@@ -755,6 +760,15 @@ class TestPropertyEquityChartProducer:
                 if row.payment_date < tracking_start
             ]
             assert oracle_pre, "the oracle must have pre-tracking rows too"
+
+            # The ORIGINATION month (axis index 0, min(origination, today)) reads
+            # the fold's recorded opening principal tagged 'confirmed', NOT the
+            # estimated back-projection: its contractual grid opens a month later,
+            # so the opening -- a hard fact -- sits one 'confirmed' point before the
+            # estimated run.  Pinned so the choice is deliberate, not incidental.
+            assert chart.labels[0] == add_months(today, -60).strftime("%b %Y")
+            assert chart.debt_tier[0] == "confirmed"
+            assert chart.debt[0] == Decimal("300000.00")
 
             # Every pre-tracking month is 'estimated' and equals the contractual
             # balance to the cent.
@@ -765,97 +779,111 @@ class TestPropertyEquityChartProducer:
                 assert chart.debt_tier[month_index] == "estimated"
                 assert chart.debt[month_index] == row.remaining_balance
 
-            # The first tracked month is 'projected' (no confirmed payments).
+            # The first tracked month is 'confirmed': the fold reads the recorded
+            # $260,000 opening (this loan has no settled payments, so the balance
+            # holds flat there), where the pre-C5 schedule-row producer read the
+            # unconfirmed row as 'projected'.
             first_tracked = chart.labels.index(
                 tracking_start.strftime("%b %Y"),
             )
-            assert chart.debt_tier[first_tracked] == "projected"
+            assert chart.debt_tier[first_tracked] == "confirmed"
+            assert chart.debt[first_tracked] == Decimal("260000.00")
 
-            # The seam sits on the month immediately before the first tracked
-            # month (no gap), and the estimated contractual balance there (pinned
-            # by the loop above) differs from the recorded opening -- the producer
-            # does NOT reconcile it.
+            # The seam sits on the month immediately before the first tracked month
+            # (no gap), and the estimated contractual balance there (~$285k, pinned
+            # by the loop above) differs from the recorded $260k opening -- the
+            # producer shows the honest step, it does NOT reconcile it.
             seam = chart.labels.index(
                 oracle_pre[-1].payment_date.strftime("%b %Y"),
             )
             assert seam == first_tracked - 1
-            assert chart.debt[seam] != series.schedule[0].remaining_balance
+            assert chart.debt[seam] != chart.debt[first_tracked]
 
-    def test_gap_month_carries_prior_balance_not_zero(self, app):
-        """A calendar month with no schedule row carries the prior balance.
+    def test_producer_sums_overlapping_loans_and_takes_weakest_tier(self, app):
+        """The producer unions loan months, sums debt, and keeps the weakest tier.
 
-        The resolver's biweekly-to-monthly redistribution can leave a calendar
-        month with no row of its own (real data does: a June and an August row
-        bracket a rowless July), while the contiguous axis still has a slot for
-        that month.  The loan's balance there is unchanged from the prior
-        payment -- NOT ``$0.00``.  This reproduces the production defect where
-        the real mortgage's debt line collapsed to zero exactly at today (a
-        rowless month), fabricating a debt cliff and a phantom full-equity
-        spike, and breaking the chart-vs-hero reconciliation by the whole loan
-        balance.  The bracketing months keep their own balances; the gap month
-        carries the prior balance and its tier, so the debt line stays
-        continuous.
+        A pure unit test of the presentation layer (no DB): two loans' fold maps
+        are handed in directly.  The OLD loan spans two months the YOUNGER loan
+        does not, so there the debt is the old loan's ALONE -- a younger loan never
+        lands a balance in a month before it existed (the H2 guarantee).  Where the
+        two overlap the balances sum, and the least-confident contributing tier
+        wins (an estimated dollar beside a confirmed dollar reads as estimated).
+        Under C5 the fold has no gaps, so there is nothing to forward-fill; the
+        producer's job is this union and sum.
         """
-        row_cls = namedtuple(
-            "Row", ["payment_date", "remaining_balance", "is_confirmed"],
-        )
         with app.app_context():
-            today = date.today()
-            # A prior month and a next month bracket a rowless today (the gap).
-            schedule = [
-                row_cls(add_months(today, -1), Decimal("900.00"), True),
-                row_cls(add_months(today, 1), Decimal("700.00"), True),
-            ]
-            series = balance_at.SecuredLoanSeries(
-                account_id=1, back_projection=[], schedule=schedule,
+            today = date(2026, 6, 15)
+            old = balance_at.SecuredLoanSeries(
+                account_id=1,
+                month_balances={
+                    (2026, 4): (Decimal("300.00"), property_equity_chart.TIER_CONFIRMED),
+                    (2026, 5): (Decimal("290.00"), property_equity_chart.TIER_CONFIRMED),
+                    (2026, 6): (Decimal("280.00"), property_equity_chart.TIER_CONFIRMED),
+                    (2026, 7): (Decimal("270.00"), property_equity_chart.TIER_PROJECTED),
+                },
+                is_retired=False,
+            )
+            young = balance_at.SecuredLoanSeries(
+                account_id=2,
+                month_balances={
+                    (2026, 6): (Decimal("50.00"), property_equity_chart.TIER_ESTIMATED),
+                    (2026, 7): (Decimal("45.00"), property_equity_chart.TIER_PROJECTED),
+                },
                 is_retired=False,
             )
             chart = property_equity_chart.build_property_equity_chart(
-                [series], _FOUR_HUNDRED_K, Decimal("0"), today,
+                [old, young], _FOUR_HUNDRED_K, Decimal("0"), today,
             )
-            # Axis is today-1, today, today+1 -> today's month is index 1.
-            assert chart.today_index == 1
-            # The gap month (today) carries the prior 900.00, never 0.00.
-            assert chart.debt[1] == Decimal("900.00")
+            # Axis spans Apr..Jul; today (Jun) is index 2 (Apr, May, Jun).
+            assert chart.today_index == 2
+            # Apr, May: only the old loan exists -> its balance alone (H2).
+            assert chart.debt[0] == Decimal("300.00")
+            assert chart.debt_tier[0] == "confirmed"
+            assert chart.debt[1] == Decimal("290.00")
+            # Jun: 280 + 50 summed; weakest tier (confirmed vs estimated) wins.
+            assert chart.debt[2] == Decimal("330.00")
+            assert chart.debt_tier[2] == "estimated"
+            # Jul: 270 + 45; both projected.
+            assert chart.debt[3] == Decimal("315.00")
+            assert chart.debt_tier[3] == "projected"
+            # The young loan is never summed into a month before it existed.
+            assert chart.debt[0] != Decimal("300.00") + Decimal("50.00")
+
+    def test_producer_zero_fills_a_month_no_loan_spans(self, app):
+        """A calendar month no outstanding loan spans reads $0.00 debt.
+
+        The empty-month branch: two non-overlapping loans leave a gap month with no
+        contributor at all.  Its debt is ``$0.00`` and its tier is styled
+        ``confirmed`` up to today and ``projected`` after, purely to colour the
+        zero-line segment.  Pure (no DB).
+        """
+        with app.app_context():
+            today = date(2026, 6, 15)
+            early = balance_at.SecuredLoanSeries(
+                account_id=1,
+                month_balances={
+                    (2026, 4): (Decimal("100.00"), property_equity_chart.TIER_CONFIRMED),
+                },
+                is_retired=False,
+            )
+            late = balance_at.SecuredLoanSeries(
+                account_id=2,
+                month_balances={
+                    (2026, 8): (Decimal("200.00"), property_equity_chart.TIER_PROJECTED),
+                },
+                is_retired=False,
+            )
+            chart = property_equity_chart.build_property_equity_chart(
+                [early, late], _FOUR_HUNDRED_K, Decimal("0"), today,
+            )
+            # Axis Apr..Aug; today (Jun) is index 2.  May (1), Jun (2), Jul (3)
+            # have no contributor.
+            assert chart.debt[0] == Decimal("100.00")   # Apr, early loan
+            assert chart.debt[1] == Decimal("0.00")     # May gap, <= today
             assert chart.debt_tier[1] == "confirmed"
-            # The whole line is continuous: prior, carried, next.
-            assert chart.debt == [
-                Decimal("900.00"), Decimal("900.00"), Decimal("700.00"),
-            ]
-            # Equity nets the carried debt, never spiking to the full value.
-            assert chart.equity[1] == _FOUR_HUNDRED_K - Decimal("900.00")
-
-    def test_gap_month_after_today_carries_projected_tier(self, app):
-        """A gap in the projected (forward) region carries the prior projected row.
-
-        The forward-fill is direction-uniform: a rowless month AFTER today, in
-        the committed-projection region, carries the prior projected balance and
-        the ``projected`` tier -- never the NEXT row and never ``$0.00``.  Locks
-        the carry direction on the forward side (the confirmed side is pinned by
-        the gap-at-today test above).
-        """
-        row_cls = namedtuple(
-            "Row", ["payment_date", "remaining_balance", "is_confirmed"],
-        )
-        with app.app_context():
-            today = date.today()
-            # All projected (no confirmed history); a rowless month at today+1.
-            schedule = [
-                row_cls(today, Decimal("800.00"), False),
-                row_cls(add_months(today, 2), Decimal("600.00"), False),
-            ]
-            series = balance_at.SecuredLoanSeries(
-                account_id=1, back_projection=[], schedule=schedule,
-                is_retired=False,
-            )
-            chart = property_equity_chart.build_property_equity_chart(
-                [series], _FOUR_HUNDRED_K, Decimal("0"), today,
-            )
-            # Axis is today, today+1, today+2 -> the gap is index 1.
-            assert chart.debt == [
-                Decimal("800.00"), Decimal("800.00"), Decimal("600.00"),
-            ]
-            assert chart.debt_tier[1] == "projected"
+            assert chart.debt[3] == Decimal("0.00")     # Jul gap, > today
+            assert chart.debt_tier[3] == "projected"
+            assert chart.debt[4] == Decimal("200.00")   # Aug, late loan
 
 
 class TestPropertyDetailChartContext:

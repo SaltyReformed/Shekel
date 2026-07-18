@@ -131,7 +131,13 @@ from ._liability import liability_owed_at_dates
 from ._loan_figures import LoanFigures, loan_figures
 from ._loan_interest import loan_interest_in_year
 from ._positions import positions, positions_period_map
-from ._secured_debt import SecuredLoanSeries, secured_loan_series
+from ._secured_debt import (
+    TIER_CONFIRMED,
+    TIER_ESTIMATED,
+    TIER_PROJECTED,
+    SecuredLoanSeries,
+    secured_loan_series,
+)
 
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
@@ -146,6 +152,9 @@ __all__ = [
     "GridBalanceView",
     "LoanFigures",
     "SecuredLoanSeries",
+    "TIER_CONFIRMED",
+    "TIER_ESTIMATED",
+    "TIER_PROJECTED",
     "_AssembledInputs",
     "_account_balance_map",
     "_accruing_grid_view",

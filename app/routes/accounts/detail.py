@@ -646,9 +646,9 @@ def _property_chart_context(
     secured-debt / equity series come from
     :func:`app.services.property_equity_chart.build_property_equity_chart`
     (fed by the seam's :func:`app.services.balance_at.secured_loan_series`, which
-    packs each loan's rows off the read pass's ONE memoized resolution -- the same
-    one the equity hero reads -- so the chart and the hero cannot disagree, and
-    this route never holds a resolver bundle), floated here into the ``data-chart``
+    FOLDS each loan's per-month debt off the read pass's ONE memoized resolution --
+    the same one the equity hero reads, so the chart and the hero cannot disagree,
+    and this route never holds a resolver bundle), floated here into the ``data-chart``
     JSON the template hands to ``property_detail.js``; ``chart_state`` drives the caption
     variant (``standard`` / ``zero_rate`` / ``no_loans``), ``today_index`` the
     Today boundary, and ``debt_tier`` the per-month estimated / confirmed /

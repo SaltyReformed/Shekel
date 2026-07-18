@@ -63,6 +63,33 @@ from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
 
 
+def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
+    """Return the date that values a ``[start, end]`` window as of *as_of*.
+
+    The begun/future sampling rule shared by every :func:`positions` caller that
+    values a WINDOW rather than a point -- the per-period map
+    (:func:`positions_period_map`) and the property equity chart's per-month debt
+    line (:func:`app.services.balance_at.secured_loan_series`).  A window that has
+    BEGUN (its start on or before *as_of*) is valued at ``min(end_date, as_of)``:
+    its end for a fully-past window, *as_of* for the CURRENT one -- so the current
+    window reads today's FOLD, not a projected end (the clamp C3b2 proved
+    load-bearing).  A FUTURE window (start after *as_of*) is valued at ``end_date``,
+    the projected balance at its close.  ONE home, so the map and the chart cannot
+    drift on the boundary that clamp rests on.
+
+    Args:
+        start_date: The window's start (its ``period.start_date`` / month first).
+        end_date: The window's end (its ``period.end_date`` / month end).
+        as_of: The read pass's as-of.
+
+    Returns:
+        The date to sample :func:`positions` at for this window.
+    """
+    if start_date <= as_of:
+        return min(end_date, as_of)
+    return end_date
+
+
 def positions(
     account: Account, ctx: BalanceContext, dates: list[date],
 ) -> dict[date, Decimal]:
@@ -236,12 +263,12 @@ def positions_period_map(
     # The date to value each period at, reproducing the splice's begun/future
     # boundary (see the docstring).  positions() collapses duplicate dates, so a
     # boundary period landing on ctx.as_of costs nothing extra.
-    sample_on: dict[int, date] = {}
-    for period in periods:
-        if period.start_date <= ctx.as_of:
-            sample_on[period.id] = min(period.end_date, ctx.as_of)
-        else:
-            sample_on[period.id] = period.end_date
+    sample_on: dict[int, date] = {
+        period.id: window_sample_date(
+            period.start_date, period.end_date, ctx.as_of,
+        )
+        for period in periods
+    }
     valued = positions(account, ctx, list(sample_on.values()))
     return OrderedDict(
         (period.id, valued[sample_on[period.id]]) for period in periods
