@@ -53,9 +53,24 @@ from app.services.loan_payment_service import live_loan_transfer_amounts
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.rate_period_engine import period_for_date
 from app.services.resolution_context import BalanceContext, require_scenario
+from app.utils.dates import add_months
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
+
+# How far past the CONTRACTUAL payoff the ESTIMATED tier keeps synthesizing the
+# level monthly payment (finding N-16).  A loan paying below contract leaves a
+# balance behind the contractual schedule, so its fold does not reach zero at the
+# contractual last installment; these extra installments let it clear a few months
+# later -- a real (slightly-later) payoff instead of "no payoff".  The cap bounds
+# a SEVERE underpayment (never clears within five years past contract) back to the
+# ``None`` the fold reports for genuine non-amortization -- the drift that far past
+# contract is what C7's payment-drift warning exists to surface.  It costs nothing
+# for a healthy loan: the fold reaches zero AT the contractual date, so
+# :func:`plan_payoff_date` returns that FIRST crossing and these later installments
+# fold to no-ops (:func:`~app.services.loan_ledger.split_payment_cash` on a zero
+# balance).
+_PAYOFF_EXTENSION_MONTHS = 60
 
 
 def _month_slot(due: date) -> tuple[int, int]:
@@ -229,6 +244,15 @@ def _estimated_from_contract(
     carries none and the standing extra is pure principal (and escrow is a wash for
     the balance either way).
 
+    **Past the contractual last row it keeps synthesizing** the level monthly
+    payment for up to :data:`_PAYOFF_EXTENSION_MONTHS` more months (finding N-16):
+    an UNDERPAYING loan is a balance behind the contractual schedule, so it has not
+    reached zero at the contractual date, and these installments let it clear a few
+    months later -- a real payoff rather than the ``None`` a truncated plan would
+    report.  A HEALTHY or overpaying loan has already folded to zero by the
+    contractual date, so :func:`plan_payoff_date` returns THAT crossing and these
+    fold to no-ops (the balance cap) -- it cannot move.
+
     Args:
         contractual: The pure contractual schedule from origination to payoff.
         covered_slots: The ``{(year, month)}`` slots a PLANNED record OR a
@@ -240,29 +264,39 @@ def _estimated_from_contract(
 
     Returns:
         One :class:`PlannedPayment` per uncovered future contractual installment
-        (``is_estimated=True``).
+        (``is_estimated=True``), plus the post-contractual extension installments.
     """
     estimated: list[PlannedPayment] = []
     clamp_floor = fwd.as_of + _ONE_DAY
-    for row in contractual:
-        due = row.payment_date
-        if due < fwd.as_of:
-            # The past is ACTUAL-only; an overdue installment with no record
-            # pays nothing (finding B-9 / D1).
-            continue
-        if _month_slot(due) in covered_slots:
-            # A PLANNED record or a seed-included settled payment already covers
-            # this installment; synthesizing here too would double-count its
-            # paydown.
-            continue
+
+    def _synthesize(due: date, cash: Decimal) -> None:
+        """Append one uncovered future ESTIMATED installment."""
+        if due < fwd.as_of or _month_slot(due) in covered_slots:
+            # The past is ACTUAL-only (an overdue installment with no record pays
+            # nothing, B-9 / D1); a covered slot the PLANNED tier or the seed
+            # already folds would double-count here.
+            return
         estimated.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
-            cash=row.payment + fwd.extra_principal,
+            cash=cash + fwd.extra_principal,
             escrow=_ZERO_MONEY,
             annual_rate=period_for_date(fwd.periods, due).annual_rate,
             is_estimated=True,
         ))
+
+    for row in contractual:
+        _synthesize(row.payment_date, row.payment)
+
+    # Extend past the contractual payoff so an underpaying loan clears a few months
+    # late instead of reporting no payoff (N-16).  The level payment is the last
+    # rate period's P&I (period_for_date returns it for any date past the periods);
+    # the fold caps a healthy loan's extra installments to no-ops.
+    if contractual:
+        last_due = contractual[-1].payment_date
+        for months_out in range(1, _PAYOFF_EXTENSION_MONTHS + 1):
+            due = add_months(last_due, months_out)
+            _synthesize(due, period_for_date(fwd.periods, due).period_pi)
     return estimated
 
 
@@ -425,9 +459,11 @@ def plan_payoff_date(
     and the balance cannot disagree about when the loan clears) and return the DUE
     date of the FIRST payment whose running balance reaches ``<= 0`` -- the
     installment that pays the loan off.  This is a fold-to-zero, NOT
-    ``plan[-1].date``: the plan's ESTIMATED tail runs to the CONTRACTUAL payoff, so
-    a loan paying extra reaches zero at an EARLIER installment than the last one,
-    and this returns that earlier date (matching the resolver's committed payoff).
+    ``plan[-1].date``: the plan runs PAST the contractual payoff (the ESTIMATED
+    tail's extension, :data:`_PAYOFF_EXTENSION_MONTHS`), so a loan paying extra
+    reaches zero at an EARLIER installment (== the resolver's committed payoff) and
+    an underpaying one at a LATER installment in the extension (a real date, where
+    the resolver forces the contractual date via ``is_last_month``).
 
     Two ``None`` cases, kept distinct from a real payoff date so the caller can
     tell "already done" from "never pays off" (both differ from "pays off on date
@@ -439,13 +475,12 @@ def plan_payoff_date(
       state; this does not invent a future payoff for a loan already at zero (the
       first planned payment would otherwise look like a "payoff").
     * **Never reaches zero within the plan**: negative amortization (a payment
-      below the period interest, so the balance grows), OR an underpayment whose
-      payments pay the balance DOWN but leave a residue when the plan's contractual
-      tail ends -- either way no installment drives the balance to ``<= 0``.
-      Recurrence stays indefinite; the ``None`` the retired case and this share is
-      disambiguated by ``is_retired`` (retired here is False).  This is where the
-      derived payoff parts from the resolver, which forces a contractual date via
-      ``is_last_month`` regardless of the residue.
+      below the period interest, so the balance grows), or an underpayment so
+      severe the balance is still positive after the post-contractual extension.  A
+      MILDER underpayment is NOT here -- the extension lets it clear a few months
+      past the contractual date, and this returns that later date.  Recurrence
+      stays indefinite; the ``None`` the retired case and this share is
+      disambiguated by ``is_retired`` (retired here is False).
 
     The DUE date (contract time), not the EFFECTIVE (visible) date, is returned so
     the payoff month is the installment's own -- matching the resolver's

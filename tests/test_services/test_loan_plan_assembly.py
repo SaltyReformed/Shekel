@@ -15,7 +15,11 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import loan_loaders, transfer_service
-from app.services.balance_at._plan import fold_forward, loan_plan
+from app.services.balance_at._plan import (
+    _PAYOFF_EXTENSION_MONTHS,
+    fold_forward,
+    loan_plan,
+)
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
@@ -51,7 +55,10 @@ def _configured_loan(seed_user, db):
 def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     seed_user, db,
 ):
-    """No projected records -> every FUTURE contractual installment is ESTIMATED."""
+    """No projected records -> every FUTURE contractual installment is ESTIMATED,
+
+    followed by the post-contractual extension (C8c / N-16).
+    """
     account, ctx = _configured_loan(seed_user, db)
 
     plan = loan_plan(account, ctx)
@@ -62,17 +69,34 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     )
     future_rows = [row for row in contractual if row.payment_date >= _AS_OF]
 
-    # Every plan entry is ESTIMATED (no records exist), one per future installment.
+    # Every plan entry is ESTIMATED (no records exist).
     assert plan, "a configured loan must project a forward plan"
     assert all(payment.is_estimated for payment in plan)
-    assert [p.due_date for p in plan] == [r.payment_date for r in future_rows]
-    # The future installments are exactly 05-01, 06-01, 07-01 -- the PAST ones
+
+    # The plan splits into the future CONTRACTUAL installments then the EXTENSION.
+    plan_due = [p.due_date for p in plan]
+    contractual_due = plan_due[:len(future_rows)]
+    extension_due = plan_due[len(future_rows):]
+
+    # The contractual prefix is exactly 05-01, 06-01, 07-01 -- the PAST installments
     # (02-01, 03-01, 04-01) are absent: a missed installment is not synthesized.
-    assert [p.due_date for p in plan] == [
+    assert contractual_due == [r.payment_date for r in future_rows]
+    assert contractual_due == [
         date(2026, 5, 1), date(2026, 6, 1), date(2026, 7, 1),
     ]
-    # The ESTIMATED cash is the contractual P&I, escrow-free; the effective date
-    # is the due date (all future, so the as_of + 1d clamp is a no-op).
+    # Past the contractual payoff (07-01) the tier EXTENDS with the level payment
+    # for _PAYOFF_EXTENSION_MONTHS months (C8c), so a loan behind schedule can clear
+    # a few months late instead of reporting no payoff.
+    assert len(extension_due) == _PAYOFF_EXTENSION_MONTHS
+    assert extension_due[0] == date(2026, 8, 1)  # one month past the contractual last
+    # The extension pays the level P&I -- equal to a NON-last contractual
+    # installment's payment (05-01 here; no standing extra) -- not the reduced
+    # absorbed amount of the final contractual row.
+    first_extension = plan[len(future_rows)]
+    assert first_extension.cash == future_rows[0].payment
+    assert first_extension.escrow == Decimal("0.00")
+    # The CONTRACTUAL ESTIMATED cash is the contractual P&I, escrow-free; the
+    # effective date is the due date (all future, so the as_of + 1d clamp is a no-op).
     for payment, row in zip(plan, future_rows):
         assert payment.cash == row.payment
         assert payment.escrow == Decimal("0.00")

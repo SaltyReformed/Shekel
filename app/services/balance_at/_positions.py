@@ -307,23 +307,23 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     (``LoanState.payoff_date``, ``RecurrenceRule.end_date``) the arc retires (plan
     step C8).
 
-    It is a FOLD-TO-ZERO, not ``plan[-1].date``: the plan's ESTIMATED tail runs to
-    the contractual payoff, so a loan paying extra reaches zero at an EARLIER
-    installment, and this returns that earlier date.  **The baseline is unmoved for
-    a HEALTHY or OVERPAYING loan** -- the fold reaches zero at or before the
-    contractual last installment, the same date the resolver's committed payoff
-    reports.  It deliberately MOVES for an UNDERPAYING loan whose payments never
-    retire the balance within the modeled horizon: this returns ``None`` (the
-    residue case) where the resolver's ``project_forward`` forces a contractual
-    date via ``is_last_month`` (a phantom final payment).  The drift that produces
-    it is what C7's payment-drift warning surfaces.
+    It is a FOLD-TO-ZERO, not ``plan[-1].date``: the plan runs PAST the contractual
+    payoff (the ESTIMATED tail's extension), so a loan paying extra reaches zero at
+    an EARLIER installment, and this returns that earlier date.  **The baseline is
+    unmoved for a HEALTHY or OVERPAYING loan** -- the fold reaches zero at or before
+    the contractual last installment, the same date the resolver's committed payoff
+    reports.  An UNDERPAYING loan gets a slightly-LATER date -- the fold keeps
+    paying the level payment past the contractual date until it clears (the
+    extension) -- where the resolver's ``project_forward`` forces the contractual
+    date via ``is_last_month`` (a phantom final payment); a drift so severe it never
+    clears within the extension folds to ``None``.  The drift is what C7's
+    payment-drift warning surfaces.
 
     ``None`` for a loan already retired (``projection_seed <= 0`` -- no forward
-    crossing), one that never pays off (negative amortization), or one whose plan
-    pays DOWN but leaves a residue within the horizon (the underpayment above).  The
-    caller reads :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the
-    paid-off state (badge it) from the not-yet-cleared ones (recurrence stays
-    indefinite).
+    crossing), negative amortization, or an underpayment too severe to clear within
+    the post-contractual extension.  The caller reads
+    :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the paid-off
+    state (badge it) from the not-yet-cleared ones (recurrence stays indefinite).
 
     Args:
         account: The amortizing loan account (the caller owns the ownership
