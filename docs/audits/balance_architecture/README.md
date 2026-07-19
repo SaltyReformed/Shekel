@@ -799,7 +799,12 @@ what is written here is decided in the commit itself, not in a new document.
     axis (`_secured_debt.py:250`), the savings cockpit, and the refinance fallback read
     `loan_payoff_date`; `loan_recurrence_sync` derives its bound from it, disambiguating retired
     (halt at a past date) / never-pays-off (`None` = indefinite) via `is_retired` (B-14);
-    `LoanState.payoff_date` and the three inconsistent fallbacks retire.
+    `LoanState.payoff_date` and the three inconsistent fallbacks retire. **Three display states**
+    (developer ruling 2026-07-19): a date -> "Projected payoff <month>"; `is_retired` -> "Paid off"
+    badge (B-20); `None` + not retired (severe drift / negative amortization, no real loan) -> the chip
+    shows **"No payoff at current payment"** (legible text reinforcing C7's drift warning, not a hidden
+    chip). Is UI work: load `shekel-design` for the chip/badge before building. Checkpoint taken after
+    C8a/b/c (developer reviewing the six commits + dev-clone live-verify first).
 - [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
   ruled 2026-07-16: reject at the transfer write boundary.
 
