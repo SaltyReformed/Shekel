@@ -65,7 +65,7 @@ from app.services import net_worth_kernel
 from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
 
-from ._plan import fold_forward
+from ._plan import fold_forward, plan_payoff_date
 
 
 def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
@@ -286,4 +286,73 @@ def positions_period_map(
     valued = positions(account, ctx, list(sample_on.values()))
     return OrderedDict(
         (period.id, valued[sample_on[period.id]]) for period in periods
+    )
+
+
+def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
+    """Return *account*'s DERIVED payoff date -- the date its balance folds to zero.
+
+    The payoff-date sibling of :func:`positions`: it composes the SAME confirmed
+    present seed (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`)
+    and the SAME memoized forward plan
+    (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) and folds
+    them to zero (:func:`~app.services.balance_at._plan.plan_payoff_date`), so the
+    payoff is the date :func:`positions` shows the balance reaching ``0.00`` -- the
+    chip, the equity chart, and the payoff cannot disagree about WHETHER the loan
+    clears.  (They can differ on the DATE only in one rare edge: an overdue-but-
+    projected installment that itself clears the loan folds at its past DUE date
+    here but its future EFFECTIVE date in :func:`positions`; see
+    :func:`~app.services.balance_at._plan.plan_payoff_date`.)  DERIVED, never
+    stored: it replaces the persisted-from-a-blind-walk copies
+    (``LoanState.payoff_date``, ``RecurrenceRule.end_date``) the arc retires (plan
+    step C8).
+
+    It is a FOLD-TO-ZERO, not ``plan[-1].date``: the plan's ESTIMATED tail runs to
+    the contractual payoff, so a loan paying extra reaches zero at an EARLIER
+    installment, and this returns that earlier date.  **The baseline is unmoved for
+    a HEALTHY or OVERPAYING loan** -- the fold reaches zero at or before the
+    contractual last installment, the same date the resolver's committed payoff
+    reports.  It deliberately MOVES for an UNDERPAYING loan whose payments never
+    retire the balance within the modeled horizon: this returns ``None`` (the
+    residue case) where the resolver's ``project_forward`` forces a contractual
+    date via ``is_last_month`` (a phantom final payment).  The drift that produces
+    it is what C7's payment-drift warning surfaces.
+
+    ``None`` for a loan already retired (``projection_seed <= 0`` -- no forward
+    crossing), one that never pays off (negative amortization), or one whose plan
+    pays DOWN but leaves a residue within the horizon (the underpayment above).  The
+    caller reads :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the
+    paid-off state (badge it) from the not-yet-cleared ones (recurrence stays
+    indefinite).
+
+    Args:
+        account: The amortizing loan account (the caller owns the ownership
+            check).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+            -- its scenario scopes the resolution and plan, and its ``as_of`` is
+            the projection's now (the ``max(due, as_of + 1d)`` clamp floor).
+
+    Returns:
+        The DUE date the loan's balance first folds to ``<= 0``, or ``None`` when
+        the loan is already retired or never pays off.
+
+    Raises:
+        ValueError: When ``scenario`` is None (callers that resolve a nullable
+            baseline must guard first), or when *account* is not a configured loan
+            (the seam degrades a non-loan to the cash producer before reaching
+            here).
+    """
+    require_scenario(ctx)
+    debt_schedule = net_worth_kernel.generate_debt_schedules(
+        [account], ctx,
+    ).get(account.id)
+    if debt_schedule is None:
+        raise ValueError(
+            f"loan_payoff_date() requires a configured loan; account "
+            f"{account.id} ({account.name!r}) has no LoanParams. The seam's "
+            f"AMORTIZING dispatch degrades a non-loan account to the cash "
+            f"producer before reaching here."
+        )
+    return plan_payoff_date(
+        debt_schedule.projection_seed, ctx.loan_plan(account),
     )

@@ -134,7 +134,7 @@ from ._loan_interest import (
     loan_interest_paid_in_year,
     loan_principal_paid_in_year,
 )
-from ._positions import positions, positions_period_map
+from ._positions import loan_payoff_date, positions, positions_period_map
 from ._secured_debt import (
     TIER_CONFIRMED,
     TIER_ESTIMATED,
@@ -177,6 +177,7 @@ __all__ = [
     "loan_figures",
     "loan_interest_in_year",
     "loan_interest_paid_in_year",
+    "loan_payoff_date",
     "loan_principal_paid_in_year",
     "positions",
     "positions_period_map",

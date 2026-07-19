@@ -358,12 +358,19 @@ class _PlanSplit:
             balance before it (an Expense leg, ``>= 0``).
         principal: The debt this payment paid down (``cash - interest - escrow``,
             capped at the balance; may be NEGATIVE for an underpayment).
+        balance_after: The running balance AFTER this payment
+            (:attr:`~app.services.loan_ledger.PaymentCashSplit.balance_after`) --
+            what :func:`plan_payoff_date` scans for the first ``<= 0`` to find the
+            date the loan clears.  ``fold_forward`` does not read it (it prefix-sums
+            ``principal``); it is carried so the payoff derivation reuses the ONE
+            fold rather than re-walking the plan.
     """
 
     due_date: date
     effective_date: date
     interest: Decimal
     principal: Decimal
+    balance_after: Decimal
 
 
 def _split_plan(
@@ -403,8 +410,67 @@ def _split_plan(
             effective_date=payment.effective_date,
             interest=parts.interest,
             principal=parts.principal,
+            balance_after=balance,
         ))
     return splits
+
+
+def plan_payoff_date(
+    seed: Decimal, plan: list[PlannedPayment],
+) -> date | None:
+    """Return the DUE date *plan* drives *seed* to zero on, or ``None``.
+
+    The loan's derived payoff date: fold *plan* from *seed* in DUE order
+    (:func:`_split_plan`, the SAME fold :func:`fold_forward` runs, so the payoff
+    and the balance cannot disagree about when the loan clears) and return the DUE
+    date of the FIRST payment whose running balance reaches ``<= 0`` -- the
+    installment that pays the loan off.  This is a fold-to-zero, NOT
+    ``plan[-1].date``: the plan's ESTIMATED tail runs to the CONTRACTUAL payoff, so
+    a loan paying extra reaches zero at an EARLIER installment than the last one,
+    and this returns that earlier date (matching the resolver's committed payoff).
+
+    Two ``None`` cases, kept distinct from a real payoff date so the caller can
+    tell "already done" from "never pays off" (both differ from "pays off on date
+    D"):
+
+    * **Already retired** (``seed <= 0``): the loan owes nothing at the projection
+      seed, so there is no FORWARD crossing to date.  The caller reads
+      :attr:`~app.services.balance_at.LoanFigures.is_retired` for the paid-off
+      state; this does not invent a future payoff for a loan already at zero (the
+      first planned payment would otherwise look like a "payoff").
+    * **Never reaches zero within the plan**: negative amortization (a payment
+      below the period interest, so the balance grows), OR an underpayment whose
+      payments pay the balance DOWN but leave a residue when the plan's contractual
+      tail ends -- either way no installment drives the balance to ``<= 0``.
+      Recurrence stays indefinite; the ``None`` the retired case and this share is
+      disambiguated by ``is_retired`` (retired here is False).  This is where the
+      derived payoff parts from the resolver, which forces a contractual date via
+      ``is_last_month`` regardless of the residue.
+
+    The DUE date (contract time), not the EFFECTIVE (visible) date, is returned so
+    the payoff month is the installment's own -- matching the resolver's
+    ``committed_forward[-1].payment_date`` the payoff has always keyed on, and, for
+    a normal future loan, equal to the effective date anyway (they differ only for
+    an overdue-but-projected installment, which almost never clears a loan).
+
+    Args:
+        seed: The balance the projection starts from -- the loan's confirmed
+            present (an originated loan) or its opening balance (one not yet
+            originated), the SAME
+            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`
+            :func:`fold_forward` folds.
+        plan: The loan's :func:`loan_plan` payment records.
+
+    Returns:
+        The DUE date the balance first reaches ``<= 0``, or ``None`` when the loan
+        is already retired (``seed <= 0``) or never pays off.
+    """
+    if seed <= _ZERO_MONEY:
+        return None
+    for split in _split_plan(seed, plan):
+        if split.balance_after <= _ZERO_MONEY:
+            return split.due_date
+    return None
 
 
 def _paydown_steps(
