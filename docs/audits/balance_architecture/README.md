@@ -6,7 +6,7 @@ document are at the bottom (Section 9); the short version: amendments are edits 
 step gets its checkbox ticked with its commit hash HERE, and no new planning documents get
 written for this arc.
 
-**State as of 2026-07-18:** design verified and locked; ALL rulings answered (D1-D5,
+**State as of 2026-07-19:** design verified and locked; ALL rulings answered (D1-D5,
 R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
@@ -59,7 +59,12 @@ de-dup claim. **C6b** (`f445aa77`, the cutover: `positions()` forward folds `pla
 schedule-forward primitives + W9905 delete; `ctx.loan_plan` memo added) shipped -- **B-9 killed.**
 On real data the baseline stayed UNMOVED to the cent (both loans current, 0 overdue); the "baseline
 moves" only for delinquent loans / genuine live-vs-stored cash, which the delinquent test fixtures
-carry. Next: **C6c** (the interest chip reads the fold's settled interest).
+carry. **C6c is DECOMPOSED** (developer ruling 2026-07-19, mirroring C6a->C6b) to isolate the
+tax-figure move: **C6c-i** (`2ba0adcf`, the loan-detail paid-YTD chips fold the settled past --
+`balance_at.loan_interest_paid_in_year` / `loan_principal_paid_in_year`, TOTAL producers over the
+memoized walk; both posting readers `confirmed_loan_interest_in_year` /
+`confirmed_loan_principal_in_year` deleted; no figure moves) shipped. Next: **C6c-ii** (rewire
+`loan_interest_in_year`'s projection onto `plan()`; may move the Schedule A figure -- measure).
 
 ---
 
@@ -622,19 +627,44 @@ what is written here is decided in the commit itself, not in a new document.
     list still named the retired checker) + 2 doc/docstring cleanups + 1 Low, all fixed pre-commit. L1
     deferred: `fold_forward` is protected by the private `_plan` module but NOT name-fenced like the walk
     path's `fold_from_walk` (a D3 fence-pass candidate; developer ruling: keep it off the frozen fence).
-  - [ ] **C6c** `refactor(analytics): the interest chip follows the records` -- the loan-detail
-    `interest_paid_ytd` chip reads the fold's settled interest (no longer
-    `confirmed_loan_interest_in_year` at `routes/loan/dashboard.py:435`). **CORRECTION (C6a
-    adversarial review, 2026-07-18): C3c's settled-slot de-dup does NOT delete structurally.** The
-    plan's premise ("the future is payment RECORDS, so one record per installment, no slot overlap")
-    holds ONLY for the PLANNED tier -- a settled payment and a projected one are status-disjoint
-    (`settled_status_ids` vs `is_projected_clause` under one `query_shadow_income`), so they never
-    both cover a slot. But the ESTIMATED tier is contractual SYNTHESIS, not a record, so it collides
-    with a settled payment already in the seed exactly as C3c's schedule rows do (an early- or
-    on-day-settled installment due at or after `as_of`). C6a's `_estimated_from_contract` therefore
-    KEEPS a settled-slot exclusion (the `confirmed_shadows_through` seed slots), and the interest
-    producer must keep the analogous one. C6c relocates the exclusion onto the plan; it does not
-    delete it.
+  - **C6c (DECOMPOSED, 2026-07-19)** `the interest follows the records` -- decomposed into two
+    independently-green commits (developer ruling), mirroring C3a->C3b and C6a->C6b, to ISOLATE the
+    tax-figure move: **C6c-i** folds the chips (no figure moves), **C6c-ii** rewires the Taxes
+    producer's projection onto `plan()` (may move the Schedule A figure on delinquent / drifted loans).
+    Developer scope rulings (2026-07-19): rewire the Taxes producer onto `plan()` (not chip-only), and
+    fold BOTH chips (delete both posting readers), not interest alone.
+    - [x] **C6c-i** `refactor(loan): the paid-YTD chips fold the settled past` -- **SHIPPED
+      `2ba0adcf`.** The loan-detail `interest_paid_ytd` / `principal_paid_ytd` chips read new
+      settled-only fold producers `balance_at.loan_interest_paid_in_year` /
+      `loan_principal_paid_in_year` (each sums a settled split's interest / principal by the display-tz
+      paid year, via the read pass's memoized `ctx.loan_walk` the balance hero already folds -- one
+      walk for the whole page). The posting readers `confirmed_loan_interest_in_year` /
+      `confirmed_loan_principal_in_year` (zero other production callers) + their dead helper
+      `_attribute_net_by_shadow_to_year` are DELETED; the W9906 checker's stale classification entries
+      go with them. The producers are TOTAL (never `None`), so a cold posting cache folds the real
+      figure where the reader hid the chip -- a B-8-class improvement, no regression (the detail page
+      renders only for a configured loan). `loan_interest_in_year`'s settled half shares the new
+      `_settled_sum_in_year` (behavior-preserving); its projected half is untouched here. **No figure
+      moves** (fold == posting reader by B2 / E1; the chips are settled / past-only). New
+      `test_loan_paid_in_year.py` (11 hand-computed cases) + the four test files that used the deleted
+      readers reworked (settled cross-check re-pinned hand-computed, N-7). Full suite 7367, pylint
+      10.00, 149 checker tests, code-reviewer clean (one Low doc fix -- a stale
+      `_principal_net_by_shadow` docstring -- applied).
+    - [ ] **C6c-ii** `refactor(analytics): interest-in-year's projection folds the plan` -- rewire
+      `loan_interest_in_year`'s PROJECTED half from the resolver's schedule rows onto `plan()`'s
+      records (a new `plan_interest_in_year` + a `_split_plan` extraction shared with `fold_forward`),
+      so the tax interest's FUTURE and the balance's future come from ONE forward model (B-6 unified
+      the PAST; this unifies the future). The settled-slot de-dup relocates onto the plan (C6a's
+      `_estimated_from_contract` already carries `confirmed_shadows_through` seed-slot exclusion --
+      airtight because `as_of = date.today()` UTC bounds every settled payment into
+      `confirmed_shadows_through`, so the settled half is always a subset). **CORRECTION (C6a
+      adversarial review, 2026-07-18): C3c's settled-slot de-dup does NOT delete structurally.** The
+      "one record per installment" premise holds only for the PLANNED tier (status-disjoint from
+      settled); the ESTIMATED tier is contractual SYNTHESIS, so it collides with a seed-settled
+      early- / on-day-settled installment exactly as C3c's schedule rows do. The exclusion is
+      relocated, not deleted. **May move the Schedule A figure** on delinquent / drifted loans;
+      measure the real Mortgage (recurring transfer, live escrow drift) before / after and sign off.
+      Grade on A2's hand-computed live Taxes oracle, never the producer as its own oracle (N-7).
 - [ ] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- the drift
   warning + one-click sync (live today: transfer $1,910.95 vs contract $1,911.29 since the
   2026-07-06 escrow change). **NARROWED (developer ruling 2026-07-18):** C6b's PLANNED tier already
