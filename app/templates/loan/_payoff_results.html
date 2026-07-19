@@ -43,38 +43,33 @@
    over confirmed history), read by loan_detail.js. #}
 <div id="payoff-overlay-data" data-overlay='{{ overlay|tojson }}' hidden></div>
 {% elif mode == "target_date" %}
-{% if has_payments is defined and has_payments and outlook is not none %}
+{% if has_payments is defined and has_payments %}
 {# F-27 reframe: the user has a recurring payment plan, so the headline
-   answers relative to THAT plan (committed scenario, same machinery as
-   the extra-payment tab); the raw no-plan figure stays as a secondary
-   line below.  Route guarantees outlook is set whenever has_payments. #}
-{% if outlook.required_extra is none %}
+   answers relative to THAT plan; the raw no-plan figure stays as a secondary
+   line below.  Route guarantees plan_extra is set whenever has_payments.
+
+   C8f: the panel no longer prints "Current Plan Pays Off".  That is the payoff
+   CHIP's question, answered above by the same fold this figure searches; two
+   producers answering it on one page is how the panel came to contradict the
+   chip for a loan behind on its payments.  For the same reason the FOLD owns
+   every verdict here once the user has a plan -- including "not achievable" --
+   rather than falling through to the contractual answer below. #}
+{% if plan_extra is none %}
 <div class="alert alert-warning mb-0">
   Target date is not achievable -- it may be in the past or too soon.
 </div>
-{% elif outlook.required_extra == 0 %}
+{% elif plan_extra == 0 %}
 <div class="alert alert-success mb-0">
-  Your current payment plan already pays this loan off by the target date
-  {%- if outlook.committed_payoff_date %}
-  ({{ outlook.committed_payoff_date.strftime('%b %Y') }})
-  {%- endif %}.
+  Your current payment plan already pays this loan off by the target date.
 </div>
 {% else %}
 <div class="row g-3">
   <div class="col-md-6">
     <div class="text-muted small">Add on Top of Your Current Plan</div>
     <div class="fs-5 fw-bold font-mono text-accent">
-      {{ money(outlook.required_extra) }}/mo
+      {{ money(plan_extra) }}/mo
     </div>
   </div>
-  {% if outlook.committed_payoff_date %}
-  <div class="col-md-6">
-    <div class="text-muted small">Current Plan Pays Off</div>
-    <div class="fw-bold">
-      {{ outlook.committed_payoff_date.strftime('%b %Y') }}
-    </div>
-  </div>
-  {% endif %}
 </div>
 {% if required_extra is not none and required_extra > 0 %}
 <div class="text-muted small mt-2">

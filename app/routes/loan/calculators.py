@@ -24,7 +24,7 @@ from app.routes.loan._helpers import (
     _refinance_schema,
     accelerated_overlay,
 )
-from app.services import amortization_engine, loan_resolver
+from app.services import amortization_engine, balance_at, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_payment_service import confirmed_loan_view
 from app.services.recurring_transfer_query import loan_standing_extra
@@ -135,7 +135,7 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
     )
 
 
-def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principal):
+def _payoff_target_date_result(params, ctx, data):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -149,32 +149,29 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
       monthly_payment + required_extra`` is internally consistent (D-2
       closure, now structural).  For a user with no recurring payment
       plan this is the only number.
-    * The PLAN-AWARE outlook -- when the loan has payments,
-      :func:`loan_resolver.target_date_outlook` answers from the same
-      replay-derived state the payoff calculator's committed scenario
-      uses: when the current plan pays off, and what extra is needed
-      ON TOP of that plan to hit the target.  Without it, a user
+    * The PLAN-AWARE answer -- when the loan has payments,
+      :func:`app.services.balance_at.loan_required_extra` folds the loan's
+      forward PLAN (plan step C8f): what extra is needed ON TOP of the
+      payments the user is already making.  Without it, a user
       already paying $500/mo over contractual was told they need the
       full extra again (the F-27 overstatement).
+
+      It no longer reports "when the current plan pays off" beside that
+      figure.  That is the payoff CHIP's question, answered on the same
+      page by the same fold; rendering it twice from two producers is how
+      the panel came to contradict the chip for a delinquent loan (the
+      schedule walk retires debt nobody paid -- finding B-9).  One
+      question, one producer, one place on the page.
 
     ``calculate_remaining_months`` supplies the raw origination-to-today
     month count the raw search needs and that the resolver does not
     expose on :class:`LoanState`.
 
     Args:
-        params: ORM :class:`LoanParams` instance (also the anchor-fact
-            synthesis source for the plan-aware outlook).
+        params: ORM :class:`LoanParams` instance (the RAW search's
+            origination / term source).
         ctx: The route context from :func:`_load_route_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
-        confirmed_view: The genesis-ledger confirmed view, read once by the
-            caller; threaded into the plan-aware outlook so its
-            required-extra search runs against the real owed balance.  The
-            RAW search already uses ``ctx.current_balance``, which is the same
-            ledger balance (the seam's fold, plan C4).  ``None`` falls back to
-            the anchor replay.
-        extra_principal: The loan's standing monthly overpayment (``0.00`` when
-            none); part of the plan-aware committed baseline, netted out of the
-            outlook's required extra (the RAW contractual search ignores it).
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -204,14 +201,13 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
     )
 
     has_payments = len(ctx.loan.payments) > 0
-    outlook = None
+    plan_extra = None
     if has_payments:
-        outlook = loan_resolver.target_date_outlook(
-            loan_inputs=_loan_inputs(params, ctx.loan),
-            target_date=target_date,
-            as_of=date.today(),
-            confirmed_view=confirmed_view,
-            extra_principal=extra_principal,
+        # The plan-aware answer folds the loan's forward PLAN through the seam,
+        # off the SAME BalanceContext the page's payoff chip reads (step C8f), so
+        # the two cannot rest on different forward models.
+        plan_extra = balance_at.loan_required_extra(
+            ctx.account, ctx.balance_ctx, target_date,
         )
 
     total_monthly = (
@@ -226,7 +222,7 @@ def _payoff_target_date_result(params, ctx, data, confirmed_view, extra_principa
         monthly_payment=monthly_payment,
         total_monthly=total_monthly,
         has_payments=has_payments,
-        outlook=outlook,
+        plan_extra=plan_extra,
     )
 
 
@@ -255,27 +251,30 @@ def payoff_calculate(account_id):
     # rendered on the loan card (the seam's fold, plan C4).
     ctx = _load_route_context(account, params)
 
-    # Read switch: read the genesis-ledger confirmed view ONCE and thread it
-    # into whichever mode's forward projection runs, so the payoff /
-    # target-date results project from the same real owed balance -- and
-    # chart the same ledger-derived confirmed history -- the loan card shows.
-    # ``require_owner`` already gated ownership above; the scenario comes off the
-    # read pass's context (no second baseline lookup).
-    view = confirmed_loan_view(
-        params, ctx.balance_ctx.scenario_id, date.today(),
-    )
-    # The loan's standing overpayment: the committed baseline BOTH modes preview
-    # additional extra on top of (step 5).
-    standing_extra = loan_standing_extra(account_id, current_user.id)
-
     if mode == "extra_payment":
+        # Resolved INSIDE the branch that uses them (step C8f): the target-date
+        # mode takes neither, since its plan-aware answer folds the seam's own
+        # memoized walk and plan and the standing extra is already inside the
+        # plan's payment cash.  Hoisting them would make every target-date
+        # request pay for a genesis-ledger walk and a template query it discards.
+        #
+        # Read switch: read the genesis-ledger confirmed view ONCE and thread it
+        # into the forward projection, so the payoff results project from the
+        # same real owed balance -- and chart the same ledger-derived confirmed
+        # history -- the loan card shows.  ``require_owner`` already gated
+        # ownership above; the scenario comes off the read pass's context (no
+        # second baseline lookup).
+        view = confirmed_loan_view(
+            params, ctx.balance_ctx.scenario_id, date.today(),
+        )
+        # The loan's standing overpayment: the committed baseline this mode
+        # previews additional extra on top of (step 5).
+        standing_extra = loan_standing_extra(account_id, current_user.id)
         return _payoff_extra_payment_result(
             params, ctx, data, view, standing_extra,
         )
     if mode == "target_date":
-        return _payoff_target_date_result(
-            params, ctx, data, view, standing_extra,
-        )
+        return _payoff_target_date_result(params, ctx, data)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",

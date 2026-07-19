@@ -2764,12 +2764,15 @@ class TestLoanDashboardRegression:
 
         F-27 ("fix + reframe, show both"): with a projected transfer
         paying the loan, the headline is the extra needed ON TOP of the
-        plan (plan months suppress the searched extra, the committed-
-        scenario convention) alongside the plan's own payoff date; the
-        raw no-plan figure stays as the secondary line.  Without the
-        fix, the route discarded ``ctx.loan.payments`` and showed only
-        the overstated raw number.
+        plan; the raw no-plan figure stays as the secondary line.
+        Without the fix, the route discarded ``ctx.loan.payments`` and
+        showed only the overstated raw number.
 
+        Since plan step C8f the headline folds the loan's forward PLAN
+        (``balance_at.loan_required_extra``) and the panel no longer
+        prints "Current Plan Pays Off" -- that is the payoff CHIP's
+        question, and answering it here from a second producer is how
+        the panel came to contradict the chip.
         """
         acct = _create_mortgage(seed_user, db.session)
         # Projected (future) transfer well above the ~$1,580 contractual
@@ -2786,11 +2789,13 @@ class TestLoanDashboardRegression:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The plan-aware headline and the plan payoff date render...
+        # The plan-aware headline renders...
         assert "Add on Top of Your Current Plan" in html
-        assert "Current Plan Pays Off" in html
-        # ...and the raw figure stays as the secondary line.
+        # ...the raw figure stays as the secondary line...
         assert "Without your recurring plan" in html
+        # ...and the payoff date is NOT restated here (C8f): one question,
+        # one producer, one place on the page.
+        assert "Current Plan Pays Off" not in html
 
     def test_payoff_zero_extra_payment_shows_standard_metrics(
         self, auth_client, seed_user, db, seed_periods,
@@ -6385,6 +6390,70 @@ class TestRefinanceForwardOnlyBaseline:
         # provably reading original_forward, not state.schedule.
         assert comparison["current_remaining_months"] != len(committed_forward)
         assert comparison["current_total_interest"] != state.total_interest
+
+
+class TestTargetDatePanelAgreesWithTheChip:
+    """Plan C8f: the target-date panel and the payoff chip fold ONE model.
+
+    The panel used to binary-search the resolver's contractual schedule walk while
+    the chip folded the loan's plan.  For a loan behind that schedule the two
+    disagree, and the disagreement was user-visible and unlabelled: the panel
+    would announce "your current payment plan already pays this loan off by the
+    target date" for a target the chip's own payoff date was months PAST.
+    """
+
+    def test_a_target_the_loan_misses_is_not_called_already_paid_off(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A target between the CONTRACTUAL and the FOLD payoff needs a top-up.
+
+        That window is exactly where the two models disagreed.  The loan is trued
+        up $5,000 above its contractual schedule, so the fold retires it well
+        after the contract does; a target inside the gap is one the schedule walk
+        called "already met" and the fold does not.
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Behind Schedule",
+            principal=Decimal("240000.00"), term=360,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, acct.id), Decimal("245000.00"),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1500.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        with app.app_context():
+            ctx = BalanceContext.build(seed_user["user"].id)
+            account = db.session.get(Account, acct.id)
+            fold_payoff = balance_at.loan_payoff_date(account, ctx)
+            contractual = contractual_schedule_from_origination(
+                load_loan_params(acct.id), load_rate_changes(acct.id),
+            )[-1].payment_date
+        assert fold_payoff is not None
+        assert contractual < fold_payoff, (
+            "precondition: the fold must retire this loan AFTER the contractual "
+            "schedule, or the target window this test needs does not exist"
+        )
+        # Inside the gap: after the contractual payoff, before the fold's.
+        target = add_months(fold_payoff, -6)
+        assert contractual < target < fold_payoff
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": target.isoformat()},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "already pays this loan off" not in html, (
+            f"the panel claims the plan already clears the loan by {target}, but "
+            f"the chip on the same page shows it paying off {fold_payoff} -- the "
+            "panel is searching a different forward model than the chip folds"
+        )
+        assert "Add on Top of Your Current Plan" in html
 
 
 class TestPayoffChipDisplayStates:

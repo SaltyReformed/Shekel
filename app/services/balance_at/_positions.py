@@ -65,7 +65,7 @@ from app.services import net_worth_kernel
 from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
 
-from ._plan import fold_forward, plan_payoff_date
+from ._plan import fold_forward, plan_payoff_date, plan_required_extra
 
 
 def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
@@ -94,6 +94,42 @@ def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
         return min(end_date, as_of)
     return end_date
 
+
+def _forward_seed(account: Account, ctx: BalanceContext, caller: str) -> Decimal:
+    """Return the loan's projection SEED, or fail loud if it is not a loan.
+
+    The one entry-guard-plus-seed both forward derivations share
+    (:func:`loan_payoff_date` and :func:`loan_required_extra`).  It was copied
+    into each, and the copy is exactly the hazard this arc exists to remove: the
+    seed is the load-bearing input, so two copies are two places for the payoff
+    and the target-date answer to start from different balances and disagree
+    without anything failing.  ``duplicate-code`` is cross-FILE only, so nothing
+    would have caught the drift.
+
+    Args:
+        account: The amortizing loan account.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        caller: The public function's name, for the fail-loud message.
+
+    Returns:
+        The loan's :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`.
+
+    Raises:
+        ValueError: When ``scenario`` is None, or when *account* is not a
+            configured loan.
+    """
+    require_scenario(ctx)
+    debt_schedule = net_worth_kernel.generate_debt_schedules(
+        [account], ctx,
+    ).get(account.id)
+    if debt_schedule is None:
+        raise ValueError(
+            f"{caller}() requires a configured loan; account {account.id} "
+            f"({account.name!r}) has no LoanParams. The seam's AMORTIZING "
+            f"dispatch degrades a non-loan account to the cash producer "
+            f"before reaching here."
+        )
+    return debt_schedule.projection_seed
 
 
 def positions(
@@ -343,17 +379,49 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
-    require_scenario(ctx)
-    debt_schedule = net_worth_kernel.generate_debt_schedules(
-        [account], ctx,
-    ).get(account.id)
-    if debt_schedule is None:
-        raise ValueError(
-            f"loan_payoff_date() requires a configured loan; account "
-            f"{account.id} ({account.name!r}) has no LoanParams. The seam's "
-            f"AMORTIZING dispatch degrades a non-loan account to the cash "
-            f"producer before reaching here."
-        )
     return plan_payoff_date(
-        debt_schedule.projection_seed, ctx.loan_plan(account),
+        _forward_seed(account, ctx, "loan_payoff_date"),
+        ctx.loan_plan(account),
+    )
+
+
+def loan_required_extra(
+    account: Account, ctx: BalanceContext, target_date: date,
+) -> Decimal | None:
+    """Return the extra per payment *account* needs to be clear by *target_date*.
+
+    The target-date calculator's answer (plan step C8f), composed from the SAME
+    confirmed-present seed and the SAME memoized forward plan
+    :func:`loan_payoff_date` folds -- so "when does my plan pay this off" and
+    "what would it take to finish by X" are two questions asked of ONE model.
+
+    It replaced ``loan_resolver.target_date_outlook``, which binary-searched the
+    resolver's contractual schedule walk.  That walk amortizes an installment per
+    month whether or not a payment stands behind it (finding B-9), so for a
+    delinquent or drifted loan it retired the debt earlier than the fold and could
+    answer "no extra needed" for a target the loan does not reach -- on the same
+    page as a payoff chip that folds and says otherwise.
+
+    Args:
+        account: The amortizing loan account (the caller owns the ownership
+            check).
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        target_date: The date the user wants the loan retired by.
+
+    Returns:
+        ``Decimal("0.00")`` when the current plan already clears the loan by
+        *target_date*, the searched per-payment extra when one exists, or ``None``
+        when the target is unreachable -- no planned payment lands by then (a past
+        target, or one before the next installment), or the search exhausted its
+        bound (see :func:`~app.services.balance_at._plan.plan_required_extra`).
+
+    Raises:
+        ValueError: When ``scenario`` is None, or when *account* is not a
+            configured loan (the seam degrades a non-loan to the cash producer
+            before reaching here).
+    """
+    return plan_required_extra(
+        _forward_seed(account, ctx, "loan_required_extra"),
+        ctx.loan_plan(account),
+        target_date,
     )

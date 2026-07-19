@@ -2142,150 +2142,21 @@ class TestComputePayoffScenarios:
 # -- F-27 -- target-date outlook honors the committed plan ------------------
 
 
-class TestTargetDateOutlook:
-    """``target_date_outlook`` (F-27, "fix + reframe").
-
-    The target-date calculator's committed-plan producer: one
-    ``_build_forward_inputs`` setup drives the plan's payoff date AND
-    the additional-extra search, both honoring the same planned-outlay
-    override map ``compute_payoff_scenarios`` uses -- so a user already
-    paying extra through a recurring template is no longer told they
-    need the full raw extra again.
-    """
-
-    AS_OF = date(2026, 6, 15)
-
-    def _fixed_300k(self):
-        """$300k / 6% / 360 months from 2026-01-01, origination anchor."""
-        params = FakeLoanParams(
-            origination_date=date(2026, 1, 1),
-            term_months=360,
-            original_principal=Decimal("300000.00"),
-            interest_rate=Decimal("0.06"),
-            payment_day=1,
-        )
-        return params, _origination_anchor(params)
-
-    def _projected_plan(self, monthly_amount, months, start):
-        """``months`` projected monthly payments of ``monthly_amount``."""
-        return [
-            PaymentRecord(
-                payment_date=add_months(start, offset),
-                due_date=monthly_due_date(add_months(start, offset), 1),
-                amount=monthly_amount,
-                is_confirmed=False,
-            )
-            for offset in range(months)
-        ]
-
-    def test_committed_payoff_date_matches_composer(self):
-        """The outlook's plan payoff date equals the composer's.
-
-        Both produce the committed scenario from the same prep, so the
-        target-date tab's "Current Plan Pays Off" figure and the
-        extra-payment tab's committed series can never disagree.
-        """
-        params, anchor = self._fixed_300k()
-        # Contractual P&I for $300k/6%/360 is $1,798.65; the plan pays
-        # $2,298.65 (+$500) for 24 projected months.
-        plan = self._projected_plan(
-            Decimal("2298.65"), 24, date(2026, 7, 1),
-        )
-        loan_inputs = LoanInputs(params, [anchor], plan, _rate_feed(params))
-
-        outlook = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs,
-            target_date=date(2046, 1, 1),
-            as_of=self.AS_OF,
-        )
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=loan_inputs,
-            extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF,
-        )
-        assert outlook.committed_payoff_date == (
-            scenarios.payoff_date_committed
-        )
-
-    def test_plan_lowers_required_extra_vs_raw(self):
-        """F-27 acceptance: a rich plan lowers the per-month top-up.
-
-        The raw answer (no plan) and the plan-aware answer target the
-        same date from the same replay state.  Override months suppress
-        the searched extra (the composer convention), so the plan-aware
-        figure drops below the raw one exactly when the plan's window
-        contribution exceeds what the raw extra would have added over
-        those months: here $800/mo x 24 = $19,200 against a raw extra
-        of ~$733/mo x 24 = ~$17,590.  (A LEANER plan can legitimately
-        yield a HIGHER per-month top-up -- the extra is then squeezed
-        into fewer, later months; the correctness/minimality pins below
-        hold either way.)
-        """
-        params, anchor = self._fixed_300k()
-        # Contractual $1,798.65 + $800 for 24 projected months.
-        plan = self._projected_plan(
-            Decimal("2598.65"), 24, date(2026, 7, 1),
-        )
-        target = date(2041, 1, 1)
-        loan_inputs_plan = LoanInputs(
-            params, [anchor], plan, _rate_feed(params),
-        )
-        loan_inputs_raw = LoanInputs(params, [anchor], None, _rate_feed(params))
-
-        with_plan = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs_plan, target_date=target, as_of=self.AS_OF,
-        )
-        without_plan = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs_raw, target_date=target, as_of=self.AS_OF,
-        )
-        assert with_plan.required_extra is not None
-        assert without_plan.required_extra is not None
-        assert with_plan.required_extra < without_plan.required_extra
-
-        # Correctness: the committed plan plus the found extra pays off
-        # by the target date (the composer's accelerated scenario applies
-        # extra to non-override months exactly as the search did).
-        accelerated = compute_payoff_scenarios(
-            loan_inputs=loan_inputs_plan,
-            extra_monthly=with_plan.required_extra,
-            as_of=self.AS_OF,
-        )
-        assert accelerated.payoff_date_accelerated <= target
-
-        # Minimality within the search's one-cent convergence: two
-        # cents less must miss the target.
-        under = compute_payoff_scenarios(
-            loan_inputs=loan_inputs_plan,
-            extra_monthly=with_plan.required_extra - Decimal("0.02"),
-            as_of=self.AS_OF,
-        )
-        assert under.payoff_date_accelerated > target
-
-    def test_no_payments_outlook_equals_raw_semantics(self):
-        """With no plan, the outlook degrades to the raw answer shape.
-
-        The committed slice IS the original slice when no override
-        months exist, so the payoff date is the contractual payoff and
-        the required extra matches the no-plan search.
-        """
-        params, anchor = self._fixed_300k()
-        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
-
-        outlook = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs,
-            target_date=date(2041, 1, 1),
-            as_of=self.AS_OF,
-        )
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=loan_inputs,
-            extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF,
-        )
-        assert outlook.committed_payoff_date == (
-            scenarios.payoff_date_committed
-        )
-        assert outlook.required_extra is not None
-        assert outlook.required_extra > Decimal("0.00")
+# ``TestTargetDateOutlook`` was DELETED at plan step C8f with the producer it
+# graded.  ``target_date_outlook`` binary-searched the resolver's contractual
+# schedule walk, which amortizes installments nobody paid (finding B-9), so for a
+# loan behind on its payments it could report "no extra needed" for a target the
+# loan does not reach -- contradicting the payoff chip on the same page, which
+# folds.  The search now folds the loan's forward PLAN through the seam
+# (``balance_at.loan_required_extra``).
+#
+# Its surviving invariants moved WITH it, to
+# ``tests/test_services/test_loan_payoff_date_oracle.py``: the searched extra
+# really reaches the target and a cent less misses it (``TestPlanRequiredExtra``),
+# and a standing overpayment lowers the required top-up -- F-27's acceptance
+# (``TestLoanRequiredExtraSeam``).  The one assertion that did NOT survive is
+# ``test_committed_payoff_date_matches_composer``: the panel no longer reports a
+# payoff date at all, because the chip already does, from the one producer.
 
 
 class TestConfirmedLedgerView:
@@ -2392,26 +2263,12 @@ class TestConfirmedLedgerView:
             seeded.total_interest_committed < unseeded.total_interest_committed
         )
 
-    def test_target_date_outlook_uses_the_seed(self):
-        """A lower seed retires the plan sooner in the target-date outlook.
+    # ``test_target_date_outlook_uses_the_seed`` was deleted with
+    # ``target_date_outlook`` at plan step C8f (see the note above
+    # ``TestConfirmedLedgerView``).  What it pinned -- that the confirmed-present
+    # seed, not the anchor replay, drives the target-date answer -- is now
+    # structural rather than testable here: the seam's ``loan_required_extra``
+    # folds ``DebtSchedule.projection_seed``, the SAME seed ``positions()`` and
+    # ``loan_payoff_date`` fold, so there is no second seeding path left to
+    # diverge.  ``TestLoanRequiredExtraSeam`` grades the producer.
 
-        With no projected plan the committed outlook is pure contractual from the
-        starting balance, so the $290,000 seed retires the loan strictly BEFORE
-        the un-seeded $300,000 -- proving the seed reaches
-        ``target_date_outlook``'s projection (the target-date calculator's
-        plan-aware path).
-        """
-        params, anchor = self._fixed_300k()
-        loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
-        target = date(2060, 1, 1)
-
-        seeded = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs, target_date=target,
-            as_of=self.AS_OF, confirmed_view=self._view(),
-        )
-        unseeded = loan_resolver.target_date_outlook(
-            loan_inputs=loan_inputs, target_date=target, as_of=self.AS_OF,
-        )
-        assert (
-            seeded.committed_payoff_date < unseeded.committed_payoff_date
-        )
