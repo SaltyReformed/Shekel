@@ -55,8 +55,11 @@ write-side payoff sync), and the ESTIMATED synthesis-to-payoff tier is MANDATORY
 would flatline the equity chart beyond the ~2-year record horizon). **C6a** (the additive `plan()`
 producer + hand-computed oracle) shipped `31e00413` (full suite 7371, pylint 10.00); its adversarial
 review corrected one HIGH (the ESTIMATED tier must exclude early-settled seed slots) and the C6c
-de-dup claim. Next: **C6b** (the cutover: `positions()` forward folds `plan()`, the schedule-forward
-primitives delete, the baseline consciously moves).
+de-dup claim. **C6b** (`f445aa77`, the cutover: `positions()` forward folds `plan()`; the
+schedule-forward primitives + W9905 delete; `ctx.loan_plan` memo added) shipped -- **B-9 killed.**
+On real data the baseline stayed UNMOVED to the cent (both loans current, 0 overdue); the "baseline
+moves" only for delinquent loans / genuine live-vs-stored cash, which the delinquent test fixtures
+carry. Next: **C6c** (the interest chip reads the fold's settled interest).
 
 ---
 
@@ -591,12 +594,34 @@ what is written here is decided in the commit itself, not in a new document.
     ESTIMATED tier double-counted an early- / on-day-settled installment (in the seed by settled date,
     due at or after `as_of`, not a projected record) -- `_estimated_from_contract` now also excludes
     the `confirmed_shadows_through` seed slots (see the C6c correction).
-  - [ ] **C6b** `refactor(balance): positions() forward folds plan(); delete the schedule-forward
-    primitives` -- the cutover. `positions()`'s forward branch reads `plan()`;
-    `forward_balance_at_date` / `_forward_rows` / `balance_from_schedule_at_date` delete. **The
-    baseline consciously moves for TWO signed-off reasons** -- B-9's overdue-gate and the PLANNED
-    tier's stored->live cash correction -- each moved number explained against the C6a oracle plus a
-    dev-clone live render. Kills B-9.
+  - [x] **C6b** `refactor(balance): positions() forward folds plan(); retire the schedule-forward
+    primitives` -- **SHIPPED `f445aa77`.** `positions()`'s forward branch folds the loan's payment PLAN
+    (`fold_forward(seed, owed_from, ctx.loan_plan(account), forward_dates)`); `forward_balance_at_date` /
+    `_forward_rows` / `_projected_owed_at` / `balance_from_schedule_at_date` + the `ZERO_MONEY` constant
+    deleted. **B-9 killed.** Three things beyond the one-liner:
+    (1) **the memo** (developer ruling: memoize now) -- `BalanceContext.loan_plan(account)`, a per-pass memo
+    mirroring `loan_walk` so the scalar, map, liability band, and equity chart share ONE plan build per loan;
+    a documented lazy import breaks the seam<->context cycle (the plan is a SEAM composition, unlike the leaf
+    `loan_walk`); classified a W9906 NON-producer (records, not a balance). The 2x-per-pass
+    `contractual_schedule_from_origination` redundancy between the memo and the equity back-projection is
+    DEFERRED (**N-14**, developer ruling: pure-CPU, property-page only, needs a rate_changes-equivalence check).
+    (2) **W9905 RETIRED WHOLE** (developer ruling: it guarded ONLY the two deleted functions) -- checker + its
+    tests deleted, unregistered, stripped from all six `--fail-on` locations; `_BALANCE_PRODUCERS` drops the
+    two names. This PULLS D3's W9905 retirement AHEAD; D3 is now "shrink W9906" only. (3) **the "baseline
+    consciously moves" framing is CORRECTED by the dev-clone render:** on REAL data the baseline is UNMOVED to
+    the cent (Mortgage $177,277.97, Van Loan $15,663.59 at today; both loans current, 0 overdue-clamped),
+    because today reads the fold of the past (untouched) and a healthy loan's forward plan fold reproduces the
+    contractual paydown to the cent. B-9's overdue-gate and the live-cash correction move numbers ONLY on a
+    delinquent loan (unpaid overdue installments) or a genuine live-vs-stored-cash case -- neither present on
+    the real loans; the "move" manifests on the delinquent test fixtures instead. Seam tests reworked off
+    "seam == schedule walk" tautologies + B-9-encoding onto the fixed behavior
+    (`TestForwardWalkExcludesLedgerBookedRows` -> `TestForwardFoldSeedsFromTheConfirmedPresent`; the Horizon
+    amortize-to-zero fixture now originates today, since a no-payment past-origination loan is correctly
+    delinquent under the fold and never reaches zero). Full suite 7371, pylint 10.00, `tools/pylint/tests`
+    149; adversarial `code-reviewer` caught a CI-blocking gate-consistency miss (the canonical `--fail-on`
+    list still named the retired checker) + 2 doc/docstring cleanups + 1 Low, all fixed pre-commit. L1
+    deferred: `fold_forward` is protected by the private `_plan` module but NOT name-fenced like the walk
+    path's `fold_from_walk` (a D3 fence-pass candidate; developer ruling: keep it off the frozen fence).
   - [ ] **C6c** `refactor(analytics): the interest chip follows the records` -- the loan-detail
     `interest_paid_ytd` chip reads the fold's settled interest (no longer
     `confirmed_loan_interest_in_year` at `routes/loan/dashboard.py:435`). **CORRECTION (C6a
@@ -625,8 +650,10 @@ what is written here is decided in the commit itself, not in a new document.
 
 - [ ] **D1** engine cluster private inside the seam package (~60 fence entries delete).
 - [ ] **D2** distinct types: cash-flow balance vs net-worth balance.
-- [ ] **D3** retire W9905; shrink W9906 to a smoke alarm. Until then the fence is FROZEN: no new
-  entries, no new lists.
+- [ ] **D3** ~~retire W9905;~~ shrink W9906 to a smoke alarm. **W9905 already RETIRED at C6b**
+  (`f445aa77`) -- C6b deleted the only two functions it guarded, so it moved earlier. Name-fence
+  `fold_forward` here (the C6b L1 gap: the plan-fold path lacks the walk path's double fence). Until
+  then the fence is FROZEN: no new entries, no new lists.
 
 ### Phase E -- the ledger becomes a checked projection
 
@@ -684,7 +711,7 @@ archive names so old references resolve here.
 | B-6 | Taxes tab prints interest for a loan the seam refuses to value | $4,156.61 | **closed (`99cc2816`)** -- the Taxes tab reads the fold-based `balance_at.loan_interest_in_year`, which answers from source events for the settled past (no schedule fallback for a loan the posting cache cannot value), so the interest figure and the balance come from the ONE total producer; the no-opening fallback is gone, demonstrated by `test_cleared_ledger_still_answers_from_the_fold` | C3c |
 | B-7, B-10 | Year-end omits a true-up payoff; spends a fabricated `jan1=0` | $255,300.26 | dead code; deletion ruled (R-D) | F2 |
 | B-8 | Fail-loud misses future valuations (returns before the ledger read) | unbounded | **closed (`f410afa9` scalar; `84e386c6` map)** -- both producers now fold a broken loan from SOURCE facts for past AND future, so no fail-loud path remains at either to be inconsistent about | C3b1 (scalar); C3b3 (map) |
-| B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | open, reachable | D1 -> C6 |
+| B-9 / FU-7 | Projection pays down overdue installments nobody paid | -$15,755.38/period | **closed (`f445aa77`)** -- the forward branch folds `loan_plan` (payment RECORDS + future contractual synthesis), which never synthesizes a strictly-past installment, so an overdue installment with no settled record holds the balance flat; verified on the dev clone (both real loans current, 0 overdue-clamped) and in the reworked seam tests + the C6a fold oracle | C6b |
 | B-11 / FU-4 | Period before the ledger's opening renders the loan debt-free | $17,134.85 | **closed (`18fd3a04`)** -- origination is the opening now, so a pre-tracking date reads the origination principal held flat (the plateau), never debt-free; verified $0 -> $202,000/$32,402.45 on the real loans; aged-out of the /savings trend window meanwhile, closed at the producer; B2's tracking-start shape pins the plateau | C1 |
 | B-12 | Unfenced producer tier below the fence; `loan_resolver` package wholly unfenced | -- | guard gap | Phase D |
 | B-13 | Loan detail route answers a broken loan from the money-blind replay | $199,600.80 | **closed (`c98ea07b`)** -- the route reads `balance_at.balance_at` (the fold) now, not `LoanState.current_balance`; the route test renders a broken loan's page at the fold `$231,200.00`, never the replay `$239,761.08` (control fires) | C4 |
@@ -718,6 +745,7 @@ archive names so old references resolve here.
 | N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Ruled R-E (forbid at the source). **Reachability proved BROADER than first recorded:** beyond the create routes (`create.py:78` accepted any owned `account_id`), a recurrence TEMPLATE targeting a loan (the engine copies `template.account_id`) and the SALARY-PROFILE auto-picker (found in adversarial review) each generate raw transactions onto the loan -- all three now refuse an amortizing account. B2 demonstrates the divergence is real ($300 forced) and asserts the sources refuse it. | **$300.00** measured on a probe; unbounded (any typed amount) | **closed (`dba91dc0`)** -- all three sources gated; control shown to fire | BG |
 | N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | **leak closed (`eb5de4ac`)** -- the reader bounds the opening by its `entry_date` (the origination), so a future origination is not yet visible and reads the honest `0.00`; the pin flipped. The four guards become redundant: #1 `amortizing_balance_at` deleted at C3b1, #2 `_build_amortizing_balance_map` deleted at C3b3, `confirmed_loan_view`'s STAYS (B-1, clock-independent), `loan_ledger_domain`'s guard SITE deleted at C3b4 (the reader is gone); the shared `_is_originated` fn STAYS (`loan_figures`/`is_retired`/`is_paid_off`) | C2 (leak); C3b1/C3b3 (guards #1/#2); C3b4 (guard #4 site) |
 | N-13 (C2) | **Editing a settled payment's `paid_at` does not re-date its postings**, so since C2's settled-date clock the balance's visibility date does not follow an edited settle date. `paid_at` is not in `transfer_service._POSTING_RELEVANT_FIELDS` (it changes no leg), and the loan reconcile is leg-delta based, so a `paid_at`-only edit resyncs the account anchors but leaves the loan correction at its original `entry_date`. Harmless pre-C2 (visibility was period-based); now latent. Not a live defect on current data (paid_at edits are rare and the app has no such edit flow surfaced) | -- | recorded, out of scope | write-side (E1 / C9) |
+| N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
 
