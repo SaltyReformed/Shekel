@@ -63,8 +63,11 @@ carry. **C6c is DECOMPOSED** (developer ruling 2026-07-19, mirroring C6a->C6b) t
 tax-figure move: **C6c-i** (`2ba0adcf`, the loan-detail paid-YTD chips fold the settled past --
 `balance_at.loan_interest_paid_in_year` / `loan_principal_paid_in_year`, TOTAL producers over the
 memoized walk; both posting readers `confirmed_loan_interest_in_year` /
-`confirmed_loan_principal_in_year` deleted; no figure moves) shipped. Next: **C6c-ii** (rewire
-`loan_interest_in_year`'s projection onto `plan()`; may move the Schedule A figure -- measure).
+`confirmed_loan_principal_in_year` deleted; no figure moves) and **C6c-ii** (`6014389a`,
+`loan_interest_in_year`'s projection folds `plan()`; real Mortgage +$0.02 from the live-cash forward
+model; the settled-slot merge STAYS re-keyed onto the WALK -- the plan's "airtight because as_of=today"
+de-dup claim was false across the display/UTC clock split, an adversarial-review HIGH) shipped --
+**C6c CLOSED**. Next: **C7** (D3's drift warning + one-click transfer sync).
 
 ---
 
@@ -650,21 +653,34 @@ what is written here is decided in the commit itself, not in a new document.
       readers reworked (settled cross-check re-pinned hand-computed, N-7). Full suite 7367, pylint
       10.00, 149 checker tests, code-reviewer clean (one Low doc fix -- a stale
       `_principal_net_by_shadow` docstring -- applied).
-    - [ ] **C6c-ii** `refactor(analytics): interest-in-year's projection folds the plan` -- rewire
-      `loan_interest_in_year`'s PROJECTED half from the resolver's schedule rows onto `plan()`'s
-      records (a new `plan_interest_in_year` + a `_split_plan` extraction shared with `fold_forward`),
-      so the tax interest's FUTURE and the balance's future come from ONE forward model (B-6 unified
-      the PAST; this unifies the future). The settled-slot de-dup relocates onto the plan (C6a's
-      `_estimated_from_contract` already carries `confirmed_shadows_through` seed-slot exclusion --
-      airtight because `as_of = date.today()` UTC bounds every settled payment into
-      `confirmed_shadows_through`, so the settled half is always a subset). **CORRECTION (C6a
-      adversarial review, 2026-07-18): C3c's settled-slot de-dup does NOT delete structurally.** The
-      "one record per installment" premise holds only for the PLANNED tier (status-disjoint from
-      settled); the ESTIMATED tier is contractual SYNTHESIS, so it collides with a seed-settled
-      early- / on-day-settled installment exactly as C3c's schedule rows do. The exclusion is
-      relocated, not deleted. **May move the Schedule A figure** on delinquent / drifted loans;
-      measure the real Mortgage (recurring transfer, live escrow drift) before / after and sign off.
-      Grade on A2's hand-computed live Taxes oracle, never the producer as its own oracle (N-7).
+    - [x] **C6c-ii** `refactor(analytics): interest-in-year's projection folds the plan` -- **SHIPPED
+      `6014389a`.** `loan_interest_in_year`'s PROJECTED half now folds the loan's forward `plan()` (a new
+      `balance_at._plan.plan_interest_in_year` + a `_split_plan` extraction shared with `fold_forward`,
+      seeded from the SAME `projection_seed` `positions()` folds), so the tax figure's FUTURE and the
+      balance's future come from ONE forward model (B-6 unified the past; this the future).
+      **Year-attribution basis = the EFFECTIVE (expected-paid) date** (developer ruling 2026-07-19): an
+      overdue-but-still-projected payment's interest deducts in the year it is expected to clear, not the
+      closed year it was contractually due. On the real Mortgage the 2026 Schedule A figure moves
+      **+$0.02** ($9,140.62 -> $9,140.64), entirely the plan's live-cash forward model (the $0.34/mo
+      escrow drift the C6b balance already adopted); a DELINQUENT loan's figure now DROPS (B-9 for the
+      deduction -- unpaid overdue installments no longer project phantom interest).
+      **The plan's "de-dup relocates onto the plan, airtight because `as_of = date.today()` UTC bounds
+      every settled payment into `confirmed_shadows_through`" was WRONG, and correcting it was the step
+      (adversarial-review HIGH):** the tax `as_of` is a DISPLAY date (`analytics` passes
+      `to_display_date(now)`) while `confirmed_shadows_through` keys on the UTC `payment_visible_on`, so a
+      payment settled evening-Eastern (its `paid_at` rolls into the next UTC day) is in the settled half
+      (display paid year) yet OUTSIDE `confirmed_shadows_through(as_of)` -- the plan re-synthesizes its
+      installment and DOUBLE-COUNTS the deduction (measured $495.01 on the regression fixture). So the
+      settled-slot merge STAYS, re-keyed onto the WALK (the SAME set the settled half sums, clock-blind)
+      via a restored `_due_slot` + `plan_interest_in_year(exclude_slots=...)`; the plan's own
+      `confirmed_shadows_through` de-dup stays for the BALANCE (its seed excludes the same payments it
+      re-adds, so it nets -- the interest half diverges only because its settled sum is on the DISPLAY
+      clock). New `plan_interest_in_year` hand-computed oracles (effective-year, the overdue clamp, empty
+      plan) + the reworked `test_loan_interest_in_year` (schedule oracle -> plan-based, both merge tests
+      reworked) + a new evening-rollover regression test (verified to FAIL without the walk-merge:
+      $5,721.16 vs correct $5,226.15) + reworked C17-2 (the plan reproduces the contractual schedule for
+      a CURRENT loan). Full suite 7372, pylint 10.00, adversarial code-review clean (the HIGH fixed
+      pre-commit, re-reviewed clean). **C6c CLOSED.**
 - [ ] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- the drift
   warning + one-click sync (live today: transfer $1,910.95 vs contract $1,911.29 since the
   2026-07-06 escrow change). **NARROWED (developer ruling 2026-07-18):** C6b's PLANNED tier already
@@ -809,6 +825,13 @@ archive names so old references resolve here.
   measured). Load it, do not take it.
 * A DRY refactor of a PREDICATE can move money -- prove two rules answer the same question
   before merging them; otherwise make one BUILD ON the other.
+* **When two figures PARTITION a set -- a settled half that INCLUDES and a projected half that
+  EXCLUDES -- both must draw the split from ONE set on ONE clock.** C6c-ii's settled sum keyed on
+  the DISPLAY paid year (`walk.payment_splits`) while its de-dup keyed on the UTC
+  `confirmed_shadows_through`; an evening-Eastern settle fell in the gap and double-counted a tax
+  deduction ($495.01). The exclusion set must be the SAME set the inclusion sum draws from -- and the
+  plan's own "airtight because as_of=today" reasoning was the trap, because `as_of` is a display date,
+  not a UTC one.
 * A safety that is a predicate is not a safety.
 * Boundary predicates standing in for instants or records are this codebase's signature defect
   (the walk clock, the period-start payment date, the archived X0 rule). When a rule says
