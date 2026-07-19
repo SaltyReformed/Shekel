@@ -67,7 +67,10 @@ memoized walk; both posting readers `confirmed_loan_interest_in_year` /
 `loan_interest_in_year`'s projection folds `plan()`; real Mortgage +$0.02 from the live-cash forward
 model; the settled-slot merge STAYS re-keyed onto the WALK -- the plan's "airtight because as_of=today"
 de-dup claim was false across the display/UTC clock split, an adversarial-review HIGH) shipped --
-**C6c CLOSED**. Next: **C7** (D3's drift warning + one-click transfer sync).
+**C6c CLOSED**. **C7** (`a3f15aed`, the payment-drift warning + one-click "switch to automatic":
+the loan detail page warns when a MANUAL recurring payment has fallen short of the contractual
+monthly payment, and one click flips it to `derive_from_loan` so its cash tracks the contract
+forever; surfaces N-2) shipped. Next: **C8** (payoff date derived, never persisted).
 
 ---
 
@@ -681,12 +684,29 @@ what is written here is decided in the commit itself, not in a new document.
       $5,721.16 vs correct $5,226.15) + reworked C17-2 (the plan reproduces the contractual schedule for
       a CURRENT loan). Full suite 7372, pylint 10.00, adversarial code-review clean (the HIGH fixed
       pre-commit, re-reviewed clean). **C6c CLOSED.**
-- [ ] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- the drift
-  warning + one-click sync (live today: transfer $1,910.95 vs contract $1,911.29 since the
-  2026-07-06 escrow change). **NARROWED (developer ruling 2026-07-18):** C6b's PLANNED tier already
-  folds the LIVE transfer cash, so the loan balance already reflects the planned payment; C7 is the
-  WARNING (transfer vs contractual PITI + `extra_principal`) and the one-click "update the transfer"
-  action only, not the cash adoption.
+- [x] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- **SHIPPED
+  `a3f15aed`.** The payment-drift warning + one-click switch (live: the real Mortgage transfer
+  $1,910.95 vs contract $1,911.29 since the 2026-07-06 escrow change; the Van Loan silent, its
+  $531.94 == contract). **NARROWED (developer ruling 2026-07-18):** C6b's PLANNED tier already folds
+  the transfer's cash (the STORED `effective_amount` for a manual payment, the LIVE derive cash for a
+  derive one), so the loan balance already reflects the planned payment; C7 is the WARNING and the
+  one-click action only, not the cash adoption. **Two developer rulings (2026-07-19) resolved
+  "update the transfer":** (1) the one click **SWITCHES TO AUTO-TRACK** (flips `derive_from_loan`,
+  resets `default_amount` to the contract) -- the root-cause fix that never re-drifts (no shadow
+  regeneration; the read-time live override applies, exactly as a fresh derive transfer relies on),
+  NOT a one-time amount bump that would re-drift on the next escrow change; (2) the warning is
+  **UNDERPAYMENT-ONLY** (a deliberate overpayment never trips it). The drift is inherently
+  manual-mode-only: a DERIVE payment recomputes its cash to the contract every read and cannot drift,
+  so it is excluded; `extra_principal` is added live on top of BOTH the stored base and the contract
+  so it cancels, making the comparison base-vs-P&I+escrow (the D3 "vs contractual PITI +
+  `extra_principal`" reading -- a short BASE warns even when a standing extra pushes total cash over
+  contract, the C6a/M1 firing-control shape). One shared `_total_payment_from_seam` is the single
+  P&I+escrow assembly for the loan card / create default / track switch, so the drift SHOWN and the
+  amount WRITTEN cannot diverge (adversarial-review M2). Surfaces **N-2** (the settle-time freeze's
+  clock read is what the drift warning makes visible). Full suite 7383, pylint 10.00, adversarial
+  `code-reviewer` clean (no Critical/High; its 2 Medium + 2 Low all fixed pre-commit: the
+  extra-cancellation firing control, the shared-leaf DRY, the sync-comment accuracy, the
+  base-vs-total wording).
 - [ ] **C8** `fix(loan): the payoff date is derived, never persisted from a schedule` -- kills
   B-14 (recurrence sync persisting a blind-walk payoff) and B-20.
 - [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
@@ -780,7 +800,7 @@ archive names so old references resolve here.
 | cash D3 | Pre-anchor: scalar fabricates, map omits; every re-anchor rewrites the whole past | -- | live | X3 |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X4 |
 | N-1 (07-16) | Archived X0 rule would double-count early-settled transactions | 15 real pairs | plan defect, corrected | R-B / X1 |
-| N-2 (07-16) | Settle-time freeze reads the clock (`loan_payment_service.py:762`) | -- | recorded risk | D3/C7 surfaces it |
+| N-2 (07-16) | Settle-time freeze reads the clock (`loan_payment_service.py:762`) | -- | **surfaced (`a3f15aed`)** -- C7's drift warning now makes a stale settle-time-frozen amount visible on the loan page (transfer vs contractual PITI), so a drifted payment is flagged rather than silently frozen; the write-side clock read itself remains for E1 | C7 (surfacing); E1 (write-side) |
 | N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | latent hazard | E1 |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | B-15 residue | C-phase |
