@@ -73,7 +73,9 @@ monthly payment, and one click flips it to `derive_from_loan` so its cash tracks
 forever; surfaces N-2) shipped. **C8 DECOMPOSED** (2026-07-19) into C8a (fix the forward fold's
 standing-extra tail -- N-15) -> C8b (additive `loan_payoff_date` fold-to-zero) -> C8c (cutover:
 payoff derived not persisted, B-14 + B-20). **C8a** (`2e5d3a75`, the ESTIMATED tail folds the
-standing extra; N-15 closed) shipped. Next: **C8b**.
+standing extra; N-15 closed) and **C8b** (`511ab220`, `loan_payoff_date` fold-to-zero, additive)
+shipped. Next: **C8c** (the cutover: B-14 + B-20; the underpayment `None` recurrence implication
+is decided here).
 
 ---
 
@@ -747,12 +749,22 @@ what is written here is decided in the commit itself, not in a new document.
     (neither loan carries a standing extra). Full suite 7384, pylint 10.00, adversarial `code-reviewer`
     clean (no Critical/High/Medium; all five hazards -- double-count, split, DRY, oracle, back-projection
     leak -- verified; its 2 Low docstring-staleness nits fixed).
-  - [ ] **C8b** `feat(balance): the payoff date is a fold to zero` -- additive
+  - [x] **C8b** `feat(balance): the payoff date is a fold to zero` -- **SHIPPED `511ab220`.** Additive
     `balance_at.loan_payoff_date(account, ctx) -> date | None`: folds the plan forward from the
-    confirmed-present seed and returns the effective date the balance first reaches `<= 0`, or `None`
-    for an already-retired loan (seed `<= 0`, no forward crossing) or negative amortization (never
-    crosses). Unwired, hand-computed oracle; reproduces the resolver payoff for a healthy loan (baseline
-    unmoved) and the C8a extra-payer, so C8c moves no healthy loan's date.
+    confirmed-present seed (the SAME seed + memoized plan `positions()` uses) and returns the **DUE**
+    date the balance first reaches `<= 0` (**corrected from the plan's "effective date"** -- DUE matches
+    the resolver's `committed_forward[-1].payment_date`, the value shown today; they differ only for an
+    overdue-but-projected clearing installment). `None` for an already-retired seed (`<= 0`), negative
+    amortization, or an underpayment that pays DOWN but leaves a residue within the contractual horizon
+    (the caller disambiguates the paid-off state via `is_retired`). **Baseline UNMOVED for a healthy or
+    overpaying loan** (== the resolver committed payoff, proven by the seam oracle); it DELIBERATELY
+    moves for an UNDERPAYMENT -- `None` here vs the resolver's `is_last_month`-forced contractual date
+    (a phantom final payment), an adversarial-review Medium: the plan's blanket "baseline unmoved" was
+    scoped to healthy/overpaying and the residue case pinned. Unwired (only the oracle reads it);
+    `_PlanSplit` gains an inert `balance_after`; the fold-to-zero reuses the ONE `_split_plan`. Oracle
+    `test_loan_payoff_date_oracle.py` (11: hand-computed pure fold + seam vs the resolver). Full suite
+    7395, pylint 10.00, code-reviewer clean (no Critical/High; its Medium + 2 Low all fixed). **The
+    underpayment `None` -> indefinite-recurrence implication is C8c's to wire.**
   - [ ] **C8c** `fix(loan): the payoff date is derived, never persisted from a schedule` -- the cutover:
     the detail chip + `is_retired` "Paid off" badge (B-20), `LoanFigures.payoff_date`, the equity-chart
     axis (`_secured_debt.py:250`), the savings cockpit, and the refinance fallback read
