@@ -257,6 +257,45 @@ def _advance_one_month(reference: date, payment_day: int) -> date:
     return date(target_year, target_month, min(payment_day, last_day))
 
 
+def first_installment_date(origination_date: date, payment_day: int) -> date:
+    """Return the date of a loan's FIRST contractual installment.
+
+    The project's single derivation of "when does this loan's first payment come
+    due?", and the loan's own convention rather than a calendar guess: the
+    engine seeds a from-origination projection at ``_advance_one_month`` of the
+    ORIGINATION anchor (:func:`replay_schedule`, the no-rows branch), i.e. the
+    ``payment_day`` of the month AFTER origination -- never a ``payment_day``
+    falling later in the origination month itself.  Concretely, a loan
+    originating 2026-04-15 with ``payment_day`` 20 first bills 2026-05-20, NOT
+    2026-04-20.
+
+    Deliberately NOT :func:`monthly_due_date`, which answers a different
+    question (the first ``payment_day`` ON OR AFTER a date -- the installment a
+    pay period contains) and would return that wrong 2026-04-20.
+
+    Exposed because the recurrence bound needs it
+    (:func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+    writes it to ``RecurrenceRule.start_date`` so no payment generates before the
+    loan exists, plan step C9a).  The alternative -- reading
+    ``contractual_schedule_from_origination(...)[0].payment_date`` -- yields the
+    identical date (pinned by test) but builds the loan's entire 360-row schedule
+    and needs its rate feed to answer a question no rate can influence.
+
+    Pure: no I/O, no clock.
+
+    Args:
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`.
+        payment_day: The loan's contractual day-of-month due day, 1-31.
+            Day-clamped to the target month's length (a ``payment_day`` of 31
+            resolves to Feb 28/29).
+
+    Returns:
+        The first contractual installment's due date.
+    """
+    return _advance_one_month(origination_date, payment_day)
+
+
 def monthly_due_date(period_start: date, payment_day: int) -> date:
     """Return a loan payment's true monthly due date from its pay-period start.
 

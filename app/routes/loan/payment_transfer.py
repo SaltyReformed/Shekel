@@ -198,10 +198,14 @@ def create_payment_transfer(account_id):
     if namedup_redirect is not None:
         return namedup_redirect
 
-    # R-4: bound the new recurrence to the loan's projected payoff BEFORE
-    # generating, so no shadow transaction is ever generated past payoff (the
-    # template is flushed above, so the sync finds it).
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    # Bound the new recurrence at BOTH ends BEFORE generating, so no shadow
+    # transaction is ever generated outside the loan's life (the template is
+    # flushed above, so the sync finds it): past the projected payoff (R-4), or
+    # -- the reason this call is load-bearing rather than merely tidy -- BEFORE
+    # the loan's first contractual installment (C9a).  Without the start bound
+    # this route generated a payment into every materialized pay period,
+    # including those preceding origination.
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
 
     # Generate transfers for existing pay periods.
     generate_transfers_for_all_periods(template)
@@ -217,7 +221,7 @@ def create_payment_transfer(account_id):
     # payoff the generated plan actually implies.  Idempotent, so it is a no-op
     # write whenever the two agree (a healthy loan: the generated payments match
     # the contractual synthesis the first call folded).
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
 
 
     db.session.commit()
@@ -284,7 +288,7 @@ def update_payment_settings(account_id):
 
     # A changed extra moves the projected payoff, so re-bound the recurrence
     # (the template already exists, so the sync finds it).
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
 
     logger.info(
@@ -349,7 +353,7 @@ def track_payment(account_id):
     # its typed ``effective_amount``, a derive one the live contractual cash --
     # so this switch MOVES the projected payoff whenever the two differ, which is
     # the drift C7 flagged to get the user here in the first place.
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
 
     logger.info(

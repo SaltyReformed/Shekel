@@ -125,8 +125,8 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
             xfer.to_account_id, xfer.scenario_id,
         )
         # R-4: an extra-principal payment shifts payoff earliest, so re-bound the
-        # recurring payment's end_date to the new projected payoff (baseline).
-        loan_recurrence_sync.sync_recurring_payment_end_date(
+        # recurring payment's window to the new projected payoff (baseline).
+        loan_recurrence_sync.sync_recurring_payment_bounds(
             xfer.to_account_id,
         )
 
@@ -183,5 +183,5 @@ def _resync_loan_postings_after_delete(
     """
     loan_posting_service.sync_loan_postings(loan_account_id, scenario_id)
     # R-4: deleting a payment moves the projected payoff, so re-bound the
-    # recurring payment's end_date to it (baseline scenario).
-    loan_recurrence_sync.sync_recurring_payment_end_date(loan_account_id)
+    # recurring payment's window to it (baseline scenario).
+    loan_recurrence_sync.sync_recurring_payment_bounds(loan_account_id)

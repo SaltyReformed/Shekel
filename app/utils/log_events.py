@@ -260,6 +260,11 @@ EVT_LOAN_RECURRENCE_END_DATE_UPDATED = _register(
     "loan_recurrence_end_date_updated", BUSINESS,
     "Loan recurrence rule end date snapped to the projected payoff date.",
 )
+EVT_LOAN_RECURRENCE_START_DATE_UPDATED = _register(
+    "loan_recurrence_start_date_updated", BUSINESS,
+    "Loan recurrence rule start date snapped to the first contractual "
+    "installment, so no payment generates before the loan originates.",
+)
 
 
 # ── Business events: transfer service ──────────────────────────────

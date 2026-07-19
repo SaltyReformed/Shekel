@@ -10,7 +10,7 @@ Since plan step C8d the bound is DERIVED from the balance
 (``balance_at.loan_payoff_date`` -- the date the fold reaches zero) instead of
 being read off the last row of the resolver's committed schedule walk.  These
 tests pin the pure mapping (``recurrence_end_date``) and the service
-(``sync_recurring_payment_end_date``) against real loans.
+(``sync_recurring_payment_bounds``) against real loans.
 
 All money is ``Decimal`` from strings.
 """
@@ -70,7 +70,7 @@ class TestRecurrenceEndDate:
         assert recurrence_end_date(None, False, date(2026, 7, 1)) is None
 
 
-class TestSyncRecurringPaymentEndDate:
+class TestSyncRecurringPaymentBounds:
     """The relocated end_date write, driven directly against a resolvable loan."""
 
     @pytest.fixture(autouse=True)
@@ -113,7 +113,7 @@ class TestSyncRecurringPaymentEndDate:
             rule = tpl.recurrence_rule
             assert rule.end_date is None
 
-            loan_recurrence_sync.sync_recurring_payment_end_date(loan.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
             db.session.refresh(rule)
 
@@ -148,7 +148,7 @@ class TestSyncRecurringPaymentEndDate:
             db.session.commit()
             rule = tpl.recurrence_rule
 
-            loan_recurrence_sync.sync_recurring_payment_end_date(loan.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
             db.session.refresh(rule)
 
@@ -173,12 +173,12 @@ class TestSyncRecurringPaymentEndDate:
             tpl = make_transfer_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
-            loan_recurrence_sync.sync_recurring_payment_end_date(loan.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
             first = rule.end_date
             assert first is not None
 
-            loan_recurrence_sync.sync_recurring_payment_end_date(loan.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
             db.session.refresh(rule)
             assert rule.end_date == first
@@ -188,7 +188,7 @@ class TestSyncRecurringPaymentEndDate:
         with app.app_context():
             loan = self._loan(seed_user, db.session)
             # No template created; the sync must return cleanly.
-            loan_recurrence_sync.sync_recurring_payment_end_date(loan.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
 
     def test_unconfigured_account_is_a_noop(self, app, db, seed_user):
@@ -197,7 +197,7 @@ class TestSyncRecurringPaymentEndDate:
         Returns at the template check, before the seam is consulted at all.
         """
         with app.app_context():
-            loan_recurrence_sync.sync_recurring_payment_end_date(
+            loan_recurrence_sync.sync_recurring_payment_bounds(
                 seed_user["account"].id,
             )
             db.session.commit()
@@ -226,5 +226,5 @@ class TestSyncRecurringPaymentEndDate:
             make_transfer_template(db.session, seed_user, acct)
             db.session.commit()
 
-            loan_recurrence_sync.sync_recurring_payment_end_date(acct.id)
+            loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
             db.session.commit()

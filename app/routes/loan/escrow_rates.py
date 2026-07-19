@@ -166,8 +166,8 @@ def add_rate_change(account_id):
         return _render_rate_history(account, params)
 
     # R-4: a rate change re-amortizes the loan, moving the projected payoff, so
-    # re-bound the recurring payment's end_date before committing.
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    # re-bound the recurring payment's window before committing.
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
     # The re-amortization moves the whole balance trajectory, but this HTMX swap
