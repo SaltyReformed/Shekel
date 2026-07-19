@@ -31,7 +31,6 @@ from shekel_checkers import (
     ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
     ShekelLedgerModelFenceChecker,
-    ShekelLoanBalanceSourceChecker,
     ShekelMoneyChecker,
     ShekelRefNameChecker,
     ShekelTransactionStatusBypassChecker,
@@ -505,108 +504,6 @@ class TestShekelDisableRationaleChecker(CheckerTestCase):
             self.checker.process_module(module)
 
 
-class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
-    """The loan balance-map fallback must be the resolver balance, not a stored column.
-
-    ``forward_balance_at_date`` / ``balance_from_schedule_at_date`` take
-    the loan's resolver-derived ``current_balance`` as the pre-first-payment /
-    empty-schedule fallback; passing a stored column (``original_principal`` /
-    ``current_principal``) is the recurring net-worth bug (F-21 / PR #44). Every
-    flagged form is paired with the conforming call that must NOT fire.
-    """
-
-    CHECKER_CLASS = ShekelLoanBalanceSourceChecker
-
-    def test_flags_original_principal_attribute(self) -> None:
-        """forward_balance_at_date(..., params.original_principal): the PR #44 bug."""
-        node = astroid.extract_node(
-            "forward_balance_at_date(schedule, target, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_original_principal_on_other_producer(self) -> None:
-        """balance_from_schedule_at_date(..., params.original_principal) is flagged too."""
-        node = astroid.extract_node(
-            "balance_from_schedule_at_date(sorted_schedule, target, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_bare_name_original_principal(self) -> None:
-        """The bare-name parameter form (the live /savings bug pre-fix) is flagged."""
-        node = astroid.extract_node(
-            "forward_balance_at_date(schedule, target, original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_current_principal_keyword(self) -> None:
-        """The demoted current_principal column passed by the current_balance keyword is flagged."""
-        node = astroid.extract_node(
-            "forward_balance_at_date(schedule, target, "
-            "current_balance=acct.current_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_qualified_producer_call(self) -> None:
-        """The attribute-call form (module.forward_balance_at_date) is flagged."""
-        node = astroid.extract_node(
-            "account_projection.forward_balance_at_date("
-            "schedule, target, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_allows_current_balance_attribute(self) -> None:
-        """The resolver-derived state.current_balance is the correct fallback; not flagged."""
-        node = astroid.extract_node(
-            "forward_balance_at_date(schedule, target, state.current_balance)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_bare_current_balance_name(self) -> None:
-        """A bare current_balance local (the year-end form) is the correct fallback; not flagged."""
-        node = astroid.extract_node(
-            "balance_from_schedule_at_date(sorted_schedule, target, current_balance)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_ignores_original_principal_to_other_function(self) -> None:
-        """original_principal passed to an unrelated function is not this checker's concern."""
-        node = astroid.extract_node(
-            "build_rate_periods(terms, params.original_principal)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_ignores_call_without_balance_argument(self) -> None:
-        """A producer call missing the balance argument is not flagged and does not crash."""
-        node = astroid.extract_node(
-            "forward_balance_at_date(schedule, target)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-
 class TestShekelBalanceSeamChecker(CheckerTestCase):
     """``shekel-balance-producer-bypass``: balances come through the seam only.
 
@@ -659,18 +556,18 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_flags_bare_name_producer_from_consumer(self) -> None:
         """A bare-imported producer call from a consumer is flagged.
 
-        Uses forward_balance_at_date -- imported and called by its bare name, the
-        form the balance_at seam itself uses internally.
+        Uses build_account_balance_map -- called by its bare name, the form a
+        module that imported the producer directly (aliased or not) would use.
         """
         node = self._producer_call(
-            "forward_balance_at_date(schedule, target, current_balance)",
+            "build_account_balance_map(account, ctx, periods, inputs)",
             "app.services.savings_dashboard_service._projections",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("forward_balance_at_date",),
+                args=("build_account_balance_map",),
             ),
             ignore_position=True,
         ):
@@ -739,7 +636,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         for module_name in sorted(_BALANCE_SEAM_MODULES):
             node = self._producer_call(
-                "forward_balance_at_date(schedule, target, current_balance)",
+                "build_account_balance_map(account, ctx, periods, inputs)",
                 module_name,
             )
             with self.assertNoMessages():
@@ -953,8 +850,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """Each engine-cluster module may import a producer (they compose each other)."""
         for module_name in sorted(_BALANCE_SEAM_MODULES):
             node = self._import_node(
-                "from app.services.account_projection import "
-                "forward_balance_at_date",
+                "from app.services.net_worth_kernel import "
+                "build_account_balance_map",
                 module_name,
             )
             with self.assertNoMessages():

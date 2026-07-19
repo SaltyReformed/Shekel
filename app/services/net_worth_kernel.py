@@ -149,8 +149,9 @@ class DebtSchedule:
             and why the old name was a lie.  Read a balance-at-T from the
             ``balance_at`` seam.
         owed_from: The loan's ``origination_date``.  A loan owes nothing before
-            it exists, and both forward producers enforce that from here
-            (:func:`app.services.account_projection._projected_owed_at`).
+            it exists, and the forward plan fold enforces that
+            (:func:`app.services.balance_at._plan.fold_forward` returns ``0.00``
+            for a date before ``owed_from``).
     """
 
     schedule: list
@@ -225,10 +226,11 @@ def _projection_seed(resolved: ResolvedLoan, as_of: date) -> Decimal:
     ``params.original_principal`` column, deliberately.  The two are equal for a
     loan that has not originated (nothing can supersede an origination that has
     not happened), but keeping ONE definition of "the balance this loan opens at"
-    is what stops the W9905 ``shekel-original-principal-as-balance`` rule from
-    being quietly re-litigated at a call site: that checker exists because an
-    EXISTING loan's balance was reported as its origination amount, which is a
-    different statement from this one and must stay obviously different.
+    keeps a not-yet-originated loan's OPENING from being confused with an EXISTING
+    loan's balance: reporting an existing loan's balance AS its origination amount
+    is a different, wrong statement (the F-21 / PR #44 defect), and this is the one
+    controlled path the seed reaches the forward fold through, so that confusion
+    has no call site to recur at.
 
     Args:
         resolved: The pass's :class:`~app.services.loan_resolution.ResolvedLoan`.

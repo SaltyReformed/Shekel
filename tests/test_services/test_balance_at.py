@@ -13,12 +13,16 @@ branch ran.
 
 **Parity is not the whole file, and must not be.**  A structural-equality test
 proves two producers AGREE; it says nothing about whether either is right, and
-where the two share code it degenerates to ``f(x) == f(x)``.  So the classes
-that pin VALUES against hand-computed arithmetic --
-:class:`TestForwardWalkExcludesLedgerBookedRows` above all -- are load-bearing
-in a way the parity classes are not: they are what stands between a shared-code
-defect and production.  Read the plan's Section 7.2 before adding a test here
-that proves a producer with a producer.
+where the two share code it degenerates to ``f(x) == f(x)``.  So the classes that
+pin the seam's BEHAVIOR against an independent oracle -- the B-9 fix (an unpaid
+overdue installment pays nothing down), the confirmed-present seeding
+(:class:`TestForwardFoldSeedsFromTheConfirmedPresent`) -- are load-bearing in a
+way the parity classes are not: they are what stands between a shared-code defect
+and production.  The forward fold's exact ARITHMETIC is pinned by hand-computed
+oracle in ``test_loan_plan_forward_oracle.py`` (fold values) and
+``test_loan_plan_assembly.py`` (plan assembly); do not re-prove it here with a
+producer.  Read the plan's Section 7.2 before adding a test that proves a producer
+with a producer.
 
 The five account kinds are seeded with the suite's established factory
 patterns: a Checking (PLAIN), an HYSA + InterestParams (INTEREST), a
@@ -56,7 +60,6 @@ from app.services import (
     net_worth_kernel,
     pay_period_service,
 )
-from app.services.account_projection import balance_from_schedule_at_date
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -150,8 +153,8 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
     from the same ledger and every assertion over them is vacuous.
 
     Shared by :class:`TestScalarAndMapAgree` (which needs the shape present) and
-    :class:`TestForwardWalkExcludesLedgerBookedRows` (which pins its value), so
-    the two cannot drift on what "a paid loan" means.
+    :class:`TestForwardFoldSeedsFromTheConfirmedPresent` (which pins its seeding),
+    so the two cannot drift on what "a paid loan" means.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -308,13 +311,15 @@ class TestBalanceMapLoan:
         past periods likewise step down at each recorded event rather than
         carrying today's balance backward.
 
-        This does NOT fence PR #44 / aba0242 (a schedule map seeded with
+        This does NOT fence PR #44 / aba0242 (a forward projection seeded with
         ``original_principal``): both periods above have BEGUN, so the fold answers
-        them from source events and no schedule map is consulted at all.  That
-        fence is STRUCTURAL -- C2b deleted the schedule-only map and C3b3 retired
-        the per-period forward map -- backed by the W9905
-        ``shekel-original-principal-as-balance`` checker on the surviving forward
-        producers.
+        them from source events and no forward projection is consulted at all.  That
+        fence is STRUCTURAL -- C2b deleted the schedule-only map, C3b3 retired the
+        per-period forward map, and C6b deleted the schedule-forward primitives
+        entirely; the forward seed is now single-sourced from the opening anchor
+        (never ``original_principal``) in ``net_worth_kernel._projection_seed``, so
+        there is no seed-argument call site left to police (the W9905 checker that
+        once did retired with those primitives at C6b).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -937,13 +942,23 @@ class TestBalanceAt:
             assert cash == Decimal("5000.00")
             assert seam > cash
 
-    def test_loan_equals_schedule_lookup(
+    def test_loan_scalar_folds_the_forward_plan_not_the_contractual_schedule(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For a loan, balance_at == balance_from_schedule_at_date."""
+        """The loan scalar's FUTURE value folds the PLAN, crediting no unpaid installment.
+
+        A mortgage originated in the past with NO payment records carries a
+        schedule of overdue unconfirmed installments.  The retired forward walk
+        (``balance_from_schedule_at_date`` over the resolver's schedule) credited
+        every one of them, paying the loan down for installments nobody paid
+        (finding B-9).  The seam now folds the loan's forward PLAN, which
+        synthesizes only FUTURE contractual installments, so an unpaid overdue one
+        no longer reduces a future balance.  Pinned by the divergence -- the seam
+        owes STRICTLY MORE than the contractual walk that over-credited -- so a
+        regression back to the schedule walk would fire here.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage, _params = _make_mortgage(
@@ -953,13 +968,28 @@ class TestBalanceAt:
             schedule = net_worth_kernel.generate_debt_schedules(
                 [mortgage], bctx,
             )[mortgage.id]
-            as_of = periods[7].end_date
+            as_of = periods[7].end_date  # future under seed_periods_today
 
             seam = balance_at.balance_at(mortgage, bctx, as_of)
-            expected = balance_from_schedule_at_date(
-                schedule.schedule, as_of, schedule.projection_seed,
+
+            # Independent oracle: the retired forward walk credited EVERY
+            # unconfirmed installment due by as_of, overdue ones included.
+            forward_rows = sorted(
+                (r for r in schedule.schedule if not r.is_confirmed),
+                key=lambda r: r.payment_date,
             )
-            assert seam == expected
+            due_by = [r for r in forward_rows if r.payment_date <= as_of]
+            contractual_walk = (
+                due_by[-1].remaining_balance if due_by
+                else schedule.projection_seed
+            )
+            overdue = [r for r in forward_rows if r.payment_date <= bctx.as_of]
+            assert overdue, "fixture must carry overdue unconfirmed installments"
+
+            # The seam credits none of the overdue installments, so it owes MORE
+            # than the contractual walk, and still amortizes below its seed.
+            assert seam > contractual_walk
+            assert seam <= schedule.projection_seed
 
     def test_investment_equals_period_map(
         self, app, db, seed_user, seed_periods_today,
@@ -2332,31 +2362,27 @@ class TestLiabilityOwedAtDates:
             assert owed[acct.id][1] < owed[acct.id][0]
             assert owed[card.id] == [Decimal("500.00"), Decimal("500.00")]
 
-    def test_forward_balance_equals_the_scheduled_principal_arithmetic(
+    def test_forward_owed_credits_only_future_installments_not_overdue_ones(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The projected owed balance equals the schedule's own principal arithmetic.
+        """The band's forward point folds the PLAN: overdue unpaid installments pay nothing (B-9).
 
-        An inequality (``series[1] < series[0]``) would pass even if the
-        projection applied ONE month of principal instead of every month due, or
-        projected the wrong loan.  This pins the actual dollars with the identity
-        the amortization schedule itself satisfies:
-
-            owed(T) == current_balance - sum(principal of every payment due by T)
-
-        which is date-independent (it holds however many payments fall due by T),
-        so the assertion cannot rot as the suite's clock advances.  It is also the
-        SAME figure the debt card and the ``2 years`` band read, since all three
-        walk one resolver schedule.
+        A mortgage originated a year ago with NO payment records carries a year of
+        overdue unconfirmed installments.  The retired forward walk credited every
+        one of them, reporting the loan paid down for installments nobody made
+        (finding B-9); the band now folds the forward PLAN, which synthesizes only
+        installments due AFTER today, so an overdue-unpaid one no longer shrinks a
+        future point.  Pinned by the divergence from the contractual walk (the band
+        owes STRICTLY MORE, by the overdue principal the walk over-credited) and by
+        the amortization the FUTURE installments still produce.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
-                db, seed_user, periods[0], Decimal("200000.00"),
-                date.today() - timedelta(days=365),
+                db, seed_user,
+                pay_period_service.get_all_periods(user_id)[0],
+                Decimal("200000.00"), date.today() - timedelta(days=365),
             )
             today = date.today()
             far_out = date(today.year + 1, 12, 31)
@@ -2373,24 +2399,21 @@ class TestLiabilityOwedAtDates:
                 (row for row in debt.schedule if not row.is_confirmed),
                 key=lambda row: row.payment_date,
             )
-            due_by_target = [
-                row for row in forward_rows if row.payment_date <= far_out
-            ]
-            principal_retired = sum(
-                (row.principal for row in due_by_target), Decimal("0.00"),
+            # The fixture really is in the hazardous state: a year of overdue
+            # unconfirmed installments the retired walk would have credited.
+            overdue = [r for r in forward_rows if r.payment_date <= today]
+            assert len(overdue) > 6, "expected a run of overdue unconfirmed rows"
+            due_by = [r for r in forward_rows if r.payment_date <= far_out]
+            contractual_walk = (
+                due_by[-1].remaining_balance if due_by
+                else debt.projection_seed
             )
 
-            # The seam's answer IS the schedule's arithmetic, to the cent.
-            assert owed[acct.id][1] == (
-                debt.projection_seed - principal_retired
-            )
-            # And it agrees with the shared primitive every loan surface reads.
-            assert owed[acct.id][1] == balance_from_schedule_at_date(
-                forward_rows, far_out, debt.projection_seed,
-            )
-            # Sanity on the oracle: many payments fell due, not zero and not one.
-            assert len(due_by_target) > 12
-            assert principal_retired > Decimal("2000.00")
+            # The band credits NONE of the overdue installments, so its forward
+            # point owes strictly more than the contractual walk that credited them.
+            assert owed[acct.id][1] > contractual_walk
+            # It still amortizes the FUTURE installments below today's balance.
+            assert owed[acct.id][1] < owed[acct.id][0]
 
     def test_today_point_ignores_overdue_rows_that_would_understate_the_debt(
         self, app, db, seed_user, seed_periods_today,
@@ -2399,19 +2422,19 @@ class TestLiabilityOwedAtDates:
 
         This fixture is the real hazard, not a contrived one: the mortgage was
         originated a year ago with NO payments recorded, so its schedule carries
-        a dozen UNCONFIRMED rows already past due.  ``forward_balance_at_date``
-        deliberately keeps overdue rows in its walk (the project's due-basis
+        a dozen UNCONFIRMED rows already past due.  The retired forward walk
+        deliberately kept overdue rows in its walk (the project's due-basis
         treatment), so a schedule walk AT TODAY reports the balance net of
         payments that were never made -- thousands of dollars less than the loan
         actually owes.
 
         The seam must not do that.  Its today point is the caller's
         ledger-confirmed balance, full stop.  Pinned by asserting the two
-        differ: the schedule walk understates, and the seam does not follow it.
+        differ: the contractual schedule walk (recomputed inline as an independent
+        oracle) understates, and the seam does not follow it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             acct, _params = _make_mortgage(
@@ -2431,9 +2454,9 @@ class TestLiabilityOwedAtDates:
             overdue = [row for row in forward_rows if row.payment_date <= today]
             # The fixture really is in the hazardous state.
             assert overdue, "expected overdue unconfirmed rows in this fixture"
-            walk_at_today = balance_from_schedule_at_date(
-                forward_rows, today, debt.projection_seed,
-            )
+            # The contractual walk (last unconfirmed row on-or-before today),
+            # recomputed inline -- the understating value the seam must NOT follow.
+            walk_at_today = overdue[-1].remaining_balance
             assert walk_at_today < confirmed, (
                 "a schedule walk at today should understate the debt here"
             )
@@ -2734,9 +2757,15 @@ class TestLoanNotYetOriginated:
         ``loan_ledger.merge_anchor_and_payment_events`` and both asserts below
         raise.
 
-        $200,000.00 owed, not $199,759.69: the 2026-05-01 installment has NO
-        payment record behind it, and an installment nobody paid pays nothing down
-        (plan D1).  The map's last period is future, so the projection amortizes it.
+        $200,000.00 owed, not $199,759.69: with the clock at 2026-05-07 the loan
+        has originated, so the 2026-05-01 installment is now a PAST due date -- and
+        with NO payment record behind it, an installment nobody paid pays nothing
+        down (finding B-9 / plan D1).  The map's last period is future, but its
+        window holds no future installment WITH a record, so the balance holds at
+        the opening rather than amortizing a payment that never happened.  (In the
+        sibling tests the clock stays at 2026-03-20, where the whole schedule is
+        still ahead, so every installment is a projected ESTIMATED slot and the
+        05-01 one DOES pay down -- hence ``AFTER_FIRST_PAYMENT`` there.)
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import freeze_today
@@ -2752,7 +2781,7 @@ class TestLoanNotYetOriginated:
             assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.OPENING
             assert balance_at.balance_map(acct, bctx, periods)[
                 periods[-1].id
-            ] == self.AFTER_FIRST_PAYMENT
+            ] == self.OPENING
 
 
 class TestUpcomingLoanDoesNotCorruptTheSurfaces:
@@ -3067,8 +3096,9 @@ class TestScalarAndMapAgree:
     period to the forward projection -- would surface here across all seven shapes,
     including the origination-inside-the-current-period keying trap (shape 6).  The
     balance VALUES themselves are pinned elsewhere: B2's fold-vs-reader oracle and
-    :class:`TestForwardWalkExcludesLedgerBookedRows` (plan Section 7.2: never two
-    producers that share code proving each other).
+    the C6a hand-computed fold oracles (``test_loan_plan_forward_oracle.py`` and
+    ``test_loan_plan_assembly.py``) -- plan Section 7.2: never two producers that
+    share code proving each other.
 
     "Every loan shape the app can produce" is what this docstring used to claim.
     It is a fixture matrix, not a proof of exhaustiveness, and the shapes are
@@ -3200,47 +3230,39 @@ class TestScalarAndMapAgree:
                 self._assert_agrees(acct, bctx, periods, shape)
 
 
-class TestForwardWalkExcludesLedgerBookedRows:
-    """A payment the ledger already booked is not a future event.
+class TestForwardFoldSeedsFromTheConfirmedPresent:
+    """The forward fold starts from the confirmed present, not a stale schedule row.
 
-    :func:`~app.services.account_projection._forward_rows` drops the schedule's
-    CONFIRMED rows before either forward producer walks it, and that filter is
-    load-bearing: a confirmed row's ``remaining_balance`` is what the loan owed
-    back THEN, so admitting it to a FORWARD walk reports a historical balance for
-    a future date.  A true-up recorded after the last payment makes that stale
-    number arbitrarily wrong -- here by $48,496.25.
+    Since step C6b the seam's forward projection is a FOLD from the loan's
+    confirmed-present seed over its :func:`~app.services.balance_at._plan.loan_plan`
+    (payment records + contractual synthesis), not a walk of the resolver's
+    schedule rows.  A trued-up loan's confirmed present is the TRUE-UP balance, and
+    the fold seeds from exactly that -- never from a CONFIRMED schedule row's
+    ``remaining_balance``, which is what the loan owed BEFORE the true-up and is
+    arbitrarily stale (here by $48,496.25).
 
-    **Nothing guarded it.**  Deleting the filter left the ENTIRE suite green
-    (7,401 tests, measured 2026-07-16), for two independent reasons this class
-    exists to fix:
-
-    * :class:`TestScalarAndMapAgree` compares the scalar against the map, but on
-      the forward tail BOTH sides are ``_projected_owed_at(_forward_rows(...))``
-      -- literally the same call with the same arguments
-      (``net_worth_kernel.py:510`` and ``:995``).  A consistency check cannot see
-      a change to the code its two sides SHARE (plan Section 7.2), so no shape
-      added to that matrix can catch this.
-    * :func:`~app.services.account_projection.balance_from_schedule_at_date`
-      returns the LAST qualifying row's ``remaining_balance`` rather than
-      subtracting principal, so the filter changes the answer ONLY on dates
-      between ``ctx.as_of`` and the first UNCONFIRMED row's due date.  Every
-      future period end-date the suite probes (04-09, 04-23, 05-07, 05-21) lands
-      PAST that window, where the filter is a measured no-op.
-
-    So the guard needs a VALUE pinned INSIDE the window -- which is what this is.
-    Recorded as B-4 in the plan's findings ledger.
+    This is the seam-level guard for that seeding.  The retired schedule walk had a
+    ``_forward_rows`` ``is_confirmed`` filter to drop confirmed rows before walking
+    (finding B-4); the fold has no such filter to get wrong -- it seeds from the
+    ledger-confirmed balance and folds only PLANNED/ESTIMATED records forward, so a
+    confirmed row's stale balance has no path into a future answer by construction.
+    The unit-level proof that a settled payment is not re-folded as a future record
+    is C6a's ``test_an_early_settled_payment_is_not_re_synthesized_as_estimated``;
+    this pins the property at the seam, on a trued-up loan whose stale confirmed row
+    would be the wrong answer.
     """
 
     def test_a_confirmed_rows_stale_balance_never_answers_a_future_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """Inside the window, the forward walk answers the LEDGER, not a paid row.
+        """Inside the window, the forward fold answers the TRUE-UP, not a paid row.
 
         On 2026-03-25 the loan owes exactly what the operator asserted on 03-15
-        ($200,000.00): nothing is due until 04-01, so nothing has paid it down.
-        The unfiltered walk instead reaches back to the 03-01 payment row and
-        reports $248,496.25 -- the balance the loan owed three weeks BEFORE the
-        true-up, and $48,496.25 too much.
+        ($200,000.00): nothing is due until 04-01, so the fold has no record to
+        apply and holds at its confirmed-present seed.  A walk that reached back to
+        the 03-01 payment row would report $248,496.25 -- the balance the loan owed
+        three weeks BEFORE the true-up, and $48,496.25 too much -- which is exactly
+        the stale-row answer the fold's seeding avoids.
         """
         with app.app_context():
             periods = seed_periods
@@ -3268,20 +3290,19 @@ class TestForwardWalkExcludesLedgerBookedRows:
                 loan, bctx, bctx.as_of,
             ) == PAID_LOAN_TRUED_UP_TO
 
-            # The probe sits INSIDE the only window where the filter decides
-            # anything: after the resolver's now, before the next payment falls
-            # due.  Outside it the walk lands on an unconfirmed row either way
-            # and the filter is a measured no-op.
+            # The probe sits just AFTER the resolver's now and BEFORE the next
+            # installment falls due, so the fold has no record to apply in the
+            # window and must hold at the confirmed-present seed.
             probe = date(2026, 3, 25)
             assert bctx.as_of < probe < unconfirmed[0].payment_date
 
             owed = balance_at.balance_at(loan, bctx, probe)
 
             # THE CONTROL, and the only line here that can fail: nothing is due
-            # between 03-20 and 03-25, so the loan still owes exactly what was
-            # asserted on 03-15.  Delete the ``is_confirmed`` filter and this
-            # reads $248,496.25 -- the 03-01 row's stale balance -- which is how
-            # it was measured to fire (2026-07-16).
+            # between 03-20 and 03-25, so the fold holds at the trued-up balance.
+            # A forward path that seeded from the 03-01 confirmed row instead would
+            # read $248,496.25 -- the stale pre-true-up balance -- which is the
+            # answer the fold's confirmed-present seeding structurally avoids.
             assert owed == PAID_LOAN_TRUED_UP_TO
             # Documentation, not a control: with both operands pinned to
             # literals above, the arithmetic below holds however wrong the

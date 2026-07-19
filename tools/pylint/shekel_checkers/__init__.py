@@ -31,13 +31,6 @@ Rules implemented:
   rounding go through ``round_money`` (``ROUND_HALF_UP``); this locks the rule
   that the financial_calculations audit's E-26 / HIGH-04 remediation
   established.
-* ``shekel-original-principal-as-balance`` (W9905, :mod:`.loan_balance`): flags
-  passing a stored loan column (``original_principal`` / ``current_principal``)
-  as the pre-first-payment / empty-schedule seed to
-  ``balance_from_schedule_at_date`` or ``forward_balance_at_date``. That seed
-  must be the resolver-derived ``current_balance``; a stored column
-  makes a loan's projected balance leap to its real value when the first payment
-  lands -- the recurring net-worth defect fixed in F-21 / Commit 19 and PR #44.
 * ``shekel-balance-producer-bypass`` (W9906, :mod:`.balance_seam`): flags any
   module OUTSIDE the ``app.services.balance_at`` seam and the engine cluster it
   composes from calling a balance producer directly -- or IMPORTING one by name
@@ -129,7 +122,6 @@ from .ledger_model_fence import (
     _LEDGER_MODEL_NAMES,
     ShekelLedgerModelFenceChecker,
 )
-from .loan_balance import ShekelLoanBalanceSourceChecker
 from .money import ShekelMoneyChecker
 from .refname import ShekelRefNameChecker
 from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassChecker
@@ -158,7 +150,6 @@ __all__ = [
     "ShekelBalanceSeamChecker",
     "ShekelDisableRationaleChecker",
     "ShekelLedgerModelFenceChecker",
-    "ShekelLoanBalanceSourceChecker",
     "ShekelMoneyChecker",
     "ShekelRefNameChecker",
     "ShekelTransactionStatusBypassChecker",
@@ -175,7 +166,6 @@ def register(linter) -> None:
     linter.register_checker(ShekelMoneyChecker(linter))
     linter.register_checker(ShekelRefNameChecker(linter))
     linter.register_checker(ShekelDisableRationaleChecker(linter))
-    linter.register_checker(ShekelLoanBalanceSourceChecker(linter))
     linter.register_checker(ShekelBalanceSeamChecker(linter))
     linter.register_checker(ShekelTransactionStatusBypassChecker(linter))
     linter.register_checker(ShekelLedgerModelFenceChecker(linter))

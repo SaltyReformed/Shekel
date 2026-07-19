@@ -951,9 +951,12 @@ class TestLoanCrossPageEquality:
     ledger owns every BEGUN period, and the seed is read only for a target
     preceding the first scheduled payment, so the seed is invisible to all three
     assertions above.  Confirmed by reintroducing the defect: seeding the forward
-    map with ``original_principal`` changes no value this test sees.  The fence on
-    that argument is now the W9905 ``shekel-original-principal-as-balance``
-    checker -- a build failure -- not this test.
+    projection with ``original_principal`` changes no value this test sees.  The
+    fence on that argument is now STRUCTURAL, not this test: the forward seed is
+    single-sourced from the opening anchor (never ``original_principal``) in
+    ``net_worth_kernel._projection_seed``, so no call site passes the seed at all
+    (C6b deleted the schedule-forward primitives that once took it, and the W9905
+    checker that policed them retired with them).
     """
 
     def test_all_surfaces_equal(self, app, cross_page_loan_ctx, auth_client):
@@ -1010,22 +1013,19 @@ class TestLoanCrossPageEquality:
 
             # The future belongs to the projection, and it amortizes DOWN from C:
             # the first future period must sit strictly below C.  This catches a
-            # forward map that reports the original principal -- e.g. one that fell
-            # back to the whole-schedule walk, which would land it near P, far
-            # ABOVE C.
+            # forward projection that reports the original principal -- e.g. one
+            # that carried today's balance backward -- which would land it near P,
+            # far ABOVE C.
             #
-            # It does NOT catch a wrong ``current_balance`` ARGUMENT, and no
-            # assertion on this fixture can: that argument is read only for a
-            # target PRECEDING the first scheduled payment
-            # (``account_projection.balance_from_schedule_at_date``), every such
-            # period here has BEGUN (so it reads the ledger), and the true-up dated
-            # today puts the first payment inside the very next period -- leaving
-            # no future period before it.  Verified by reintroducing the defect:
-            # seeding this map with ``original_principal`` changes nothing, because
-            # the schedule ROWS carry the balances.  The argument's fence is the
-            # W9905 ``shekel-original-principal-as-balance`` checker (a build
-            # failure), which C2b extended to the FORWARD producers that inherited
-            # the seed when the schedule-only map was deleted.
+            # It does NOT catch a wrong forward SEED in isolation, and no assertion
+            # on this fixture can: since step C6b the forward branch folds the
+            # loan's PLAN from its ledger-confirmed seed (positions() -> loan_plan
+            # -> fold_forward), every period here has BEGUN (so it reads the fold of
+            # the past) except the future ones, and the true-up dated today puts the
+            # first installment inside the very next period -- so there is no future
+            # period before the first paydown to expose the seed on its own.  The
+            # seed is single-sourced from the opening anchor (never
+            # original_principal) in net_worth_kernel's _projection_seed.
             future = [
                 p for p in ctx["all_periods"] if p.start_date > date.today()
             ]

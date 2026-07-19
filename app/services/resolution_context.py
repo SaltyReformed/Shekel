@@ -56,12 +56,20 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.
 
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TYPE_CHECKING
 
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.loan_resolution import ResolvedLoan, resolve_loan_bundle
 from app.services.scenario_resolver import get_baseline_scenario
+
+if TYPE_CHECKING:
+    # Type-only: the memoized forward plan lives in the balance_at seam
+    # (:mod:`app.services.balance_at._plan`), which imports THIS module, so a
+    # runtime import would cycle.  :meth:`BalanceContext.loan_plan` imports the
+    # builder lazily (see there); the annotation resolves through here.
+    from app.services.balance_at._plan import PlannedPayment
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,9 @@ class BalanceContext:
         default_factory=dict, repr=False, compare=False,
     )
     _walks: dict[int, LoanLedgerWalk] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _plans: "dict[int, list[PlannedPayment]]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -228,6 +239,64 @@ class BalanceContext:
                 account.id, self.scenario_id,
             )
         return self._walks[account.id]
+
+    def loan_plan(self, account: Account) -> "list[PlannedPayment]":
+        """Return *account*'s forward payment plan for this pass, building it once.
+
+        The memo that collapses a read pass's N builds of one loan's forward plan
+        to one.  The seam's total loan producer
+        (:func:`app.services.balance_at.positions`) folds the loan's confirmed
+        present forward over this plan for every date AFTER the resolver's NOW, and
+        the scalar, the per-period map, the liability band, and the property-equity
+        chart each read ``positions`` in a single ``/savings`` or property render.
+        Building the plan (:func:`app.services.balance_at._plan.loan_plan`) is the
+        expensive part -- it loads the loan's escrow lines and projected shadows,
+        derives their live cash, and walks the contractual schedule from
+        origination -- so re-building it per producer is the same redundant
+        derivation :meth:`resolved_loan` and :meth:`loan_walk` already remove.
+
+        The plan is a function of the loan and the pass's pinned ``as_of`` (which
+        clamps a still-projected overdue record to ``as_of + 1d`` and is the
+        past/future boundary), so memoizing it per account for the pass is exactly
+        as safe as the resolver and walk memos above -- one pinned ``as_of``, one
+        plan.  ``positions`` samples that one plan at every forward date, so a plan
+        built once serves the whole future axis.
+
+        **NOT fenced (a non-producer).**  The plan is a list of
+        :class:`~app.services.balance_at._plan.PlannedPayment` RECORDS carrying
+        cash, not a balance-at-T -- the same ruling
+        :func:`~app.services.loan_ledger.merge_anchor_and_payment_events` (an event
+        stream) carries.  Folding it into a balance takes the seam-internal
+        :func:`~app.services.balance_at._plan.fold_forward`, which lives behind the
+        private ``_plan`` module -- the package boundary the seam's internals rely
+        on.  This is a WEAKER guard than :meth:`loan_walk`'s, and deliberately so
+        for now: a walk is one name-fenced
+        :func:`~app.services.loan_ledger.fold_from_walk` from a balance and BOTH
+        ends are fenced, whereas ``fold_forward`` is protected only by that private
+        module, not additionally name-fenced (name-fencing it is a candidate for
+        the Phase-D fence pass, kept off the frozen fence here).
+
+        Args:
+            account: The loan account to plan.  Must belong to ``user_id`` (the
+                caller owns the ownership check).  A non-loan / unconfigured
+                account plans to an empty list (the builder's own no-params
+                contract), which the seam never reaches for -- it resolves the
+                schedule first.
+
+        Returns:
+            The memoized :class:`~app.services.balance_at._plan.PlannedPayment`
+            list for this loan under the pass's scenario and ``as_of``.
+        """
+        if account.id not in self._plans:
+            # Pylint: ``import-outside-toplevel`` -- the plan builder lives in the
+            # balance_at seam, which imports this module for BalanceContext, so a
+            # top-level import would cycle.  Deferred to first use, after both
+            # modules have loaded (the same cycle-break app/__init__.py uses).
+            from app.services.balance_at._plan import (  # pylint: disable=import-outside-toplevel
+                loan_plan as build_loan_plan,
+            )
+            self._plans[account.id] = build_loan_plan(account, self)
+        return self._plans[account.id]
 
 
 def require_scenario(ctx: BalanceContext) -> None:

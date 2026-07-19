@@ -20,10 +20,10 @@ def _called_name_in(node: nodes.Call, names: frozenset[str]) -> str | None:
     """Return the called name if it is in ``names``, else ``None``.
 
     Matches the bare-name import form (``balances_for(...)``) and the attribute
-    form (``balance_resolver.balances_for(...)``) alike, mirroring
-    :func:`_is_loan_balance_map_call`; name matching keeps the checker fast, and
-    the guarded producer names are distinctive enough to carry no realistic
-    collision risk.  ``node`` is the call expression under inspection.
+    form (``balance_resolver.balances_for(...)``) alike; name matching keeps the
+    checker fast, and the guarded producer names are distinctive enough to carry
+    no realistic collision risk.  ``node`` is the call expression under
+    inspection.
     """
     func = node.func
     if isinstance(func, nodes.Name) and func.name in names:

@@ -49,7 +49,6 @@ _CANONICAL_FAIL_ON = (
     "shekel-refname-compare,"
     "shekel-bare-money-quantize,"
     "shekel-disable-rationale,"
-    "shekel-original-principal-as-balance,"
     "shekel-balance-producer-bypass,"
     "shekel-transaction-status-bypass,"
     "shekel-ledger-model-bypass,"

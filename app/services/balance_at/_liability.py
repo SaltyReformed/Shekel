@@ -89,12 +89,13 @@ def liability_owed_at_dates(
     * **AMORTIZING with a resolvable schedule** -- the seam's total loan producer
       :func:`~app.services.balance_at.positions` over the whole future sample axis:
       every date is strictly future here (filtered below), so positions answers
-      each from the forward schedule projection, seeded from the loan's confirmed
-      balance and reduced by the payments scheduled by that date.  The same
-      amortization the debt card and the ``2 years`` liability series consume, so a
-      band built on this cannot drift from them.  The pass's memoized resolution
-      means resolving each loan once serves every sample date, not one walk per
-      date.
+      each from the forward PLAN fold (step C6b), seeded from the loan's confirmed
+      balance and reduced by the payments it is PROJECTED to make -- its projected
+      transfer records at their live cash, then contractual synthesis beyond the
+      record horizon.  The same forward balance the debt card and the ``2 years``
+      liability series read through the seam, so a band built on this cannot drift
+      from them.  The pass's memoized resolution and plan mean resolving each loan
+      once serves every sample date, not one walk per date.
     * **Every other liability** -- a revolving Credit Card, a loan with no
       ``LoanParams``, or ANY liability when there is no baseline scenario -- has
       NO forward model, so it holds FLAT at its current owed magnitude.  This is
@@ -194,9 +195,10 @@ def liability_owed_at_dates(
                 # no-forward-model rule the batch producer skipped it under.
                 continue
             # Every date is strictly future (filtered above), so positions()
-            # answers each from the forward projection -- the SAME
-            # ``forward_balance_at_date`` walk the retired batch producer ran,
-            # over the resolver's schedule and seed, so the band does not move.
+            # answers each from the forward PLAN fold (step C6b) -- the loan's
+            # projected payment records and contractual synthesis, folded from its
+            # confirmed present.  Every band consumer reads this one producer, so
+            # the band cannot drift from the balance the rest of the app reports.
             # It returns the date-keyed dict the splice consumes directly.
             owed_by_loan[account.id] = positions(account, ctx, future_dates)
 

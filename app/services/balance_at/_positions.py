@@ -23,23 +23,27 @@ I owe".  A loan whose POSTING ledger is missing (a cache miss) still folds
 correctly from its source facts, so the read is no longer an outage when the cache
 is cold -- it is a repairable inconsistency (B-8).
 
-**The future reproduces today's behaviour on purpose (plan C3 is a REFACTOR).**
-It walks the resolver's UNCONFIRMED schedule rows through the existing
-:func:`app.services.account_projection.forward_balance_at_date`, seeded from the
-same :func:`app.services.net_worth_kernel.generate_debt_schedules` bundle the
-scalar uses -- so no money moves.  The schedule projection's known
-overdue-installment paydown (finding B-9) is preserved deliberately; ruling D1's
-payment-RECORDS plan replaces it at step C6, which is where the baseline
-consciously moves and the schedule-row primitives finally delete.
+**The future is a FOLD over the forward PLAN (step C6b).**  It folds the
+confirmed-present seed forward over the loan's
+:func:`~app.services.balance_at._plan.loan_plan` -- its projected payment RECORDS
+at their LIVE cash, then contractual synthesis beyond the record horizon -- rather
+than walking the resolver's contractual schedule rows.  An overdue installment
+with NO settled record no longer pays the loan down (finding B-9, killed here),
+and a projected payment folds its LIVE cash, so the loan balance and the checking
+side move together.  The seed and the origination boundary still come from the
+resolver bundle (:func:`app.services.net_worth_kernel.generate_debt_schedules`),
+and the plan is memoized on the read pass's context
+(:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) so one build
+serves every forward date and every producer that reads it.
 
 **Why here, and not in the ``loan_ledger`` leaf.**  Section 3's end-state has the
-loan ledger answering a date on its own, but the PRESERVE-behaviour forward half
-needs the RESOLVER's schedule and seed
-(:meth:`~app.services.resolution_context.BalanceContext.resolved_loan`,
-:func:`~app.services.account_projection.forward_balance_at_date`), both W9906-fenced
-to the seam + engine cluster.  Composing the fold with the resolver is a SEAM
-responsibility, not a leaf one; the leaf stays pure.  Step C6 makes this fold-native
-(no resolver, no schedule rows), at which point it can move to ``loan_ledger``.
+loan ledger answering a date on its own, but the forward half composes the
+resolver's seed (:func:`app.services.net_worth_kernel.generate_debt_schedules`)
+with the seam-level plan (:func:`~app.services.balance_at._plan.loan_plan`, which
+reads the resolver, the escrow lines, the projected shadows, and their live cash)
+-- all above the pure leaf.  Composing them is a SEAM responsibility, not a leaf
+one; the leaf stays pure.  A later step makes the seed fold-native (retiring
+``LoanState.current_balance``), at which point this can move to ``loan_ledger``.
 
 **Proven equal before it was wired.**  C3a shipped this ADDITIVE, with an oracle
 that parallel-ran it against the scalar it replaced on EVERY day past and future,
@@ -58,9 +62,10 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services import net_worth_kernel
-from app.services.account_projection import forward_balance_at_date
 from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
+
+from ._plan import fold_forward
 
 
 def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
@@ -104,12 +109,15 @@ def positions(
       walk) over the loan's source events -- the past that step B2 proves equal to
       the sum-of-postings reader the seam read before the cutover.
     * **A date after the NOW, OR any date for a loan not yet originated by it: the
-      forward projection** (:func:`~app.services.account_projection.forward_balance_at_date`)
-      over the resolver's unconfirmed schedule rows, seeded from
-      :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed` and gated
-      at ``owed_from`` (the loan owes ``0.00`` before it originates).  A not-yet-originated
-      loan has no confirmed past for the fold to own, so the projection owns its
-      whole timeline -- exactly the scalar's rule (its docstring's third case).
+      forward PLAN fold** (:func:`~app.services.balance_at._plan.fold_forward` over
+      the memoized :meth:`~app.services.resolution_context.BalanceContext.loan_plan`)
+      -- the confirmed-present seed
+      (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`) folded
+      forward over the loan's projected payment records and contractual synthesis,
+      gated at ``owed_from`` (the loan owes ``0.00`` before it originates).  A
+      not-yet-originated loan has no confirmed past for the fold to own, so the plan
+      fold owns its whole timeline -- exactly the scalar's rule (its docstring's
+      third case).
 
     **Loan-only, and fails loud otherwise.**  A non-configured account (no
     :class:`~app.models.loan_params.LoanParams`) is the seam dispatch's
@@ -170,14 +178,20 @@ def positions(
         result.update(
             fold_from_walk(ctx.loan_walk(account), past_dates),
         )
-    for on_date in forward_dates:
-        # Returned verbatim: the schedule rows and the seed are already
-        # cent-quantized by the resolver (matching forward_balance_at_date's own
-        # contract), so this stays penny-exact with the scalar.
-        result[on_date] = forward_balance_at_date(
-            debt_schedule.schedule, on_date,
+    if forward_dates:
+        # The future is a FOLD over the loan's forward PLAN (step C6b): its
+        # projected payment RECORDS at their live cash, then contractual synthesis
+        # beyond the record horizon (``ctx.loan_plan``, memoized so one plan serves
+        # every forward date), folded from the confirmed-present seed
+        # (``fold_forward``).  The plan carries the origination gate too -- a date
+        # before ``owed_from`` owes ``0.00``.  This replaces the resolver's
+        # schedule walk: an overdue installment with NO settled record no longer
+        # pays the loan down (finding B-9), and a projected payment folds its LIVE
+        # cash, not the stored amount the walk amortized.
+        result.update(fold_forward(
             debt_schedule.projection_seed, debt_schedule.owed_from,
-        )
+            ctx.loan_plan(account), forward_dates,
+        ))
     return result
 
 
@@ -215,10 +229,10 @@ def positions_period_map(
       ``ctx.as_of`` is always today -- the confirmed map's period-END value for the
       current period IS its balance-at-today; the clamp reproduces it exactly.)
     * **A FUTURE period (``period.start_date > ctx.as_of``): valued at**
-      ``period.end_date``.  :func:`positions` answers it from the forward projection
-      -- the same ``forward_balance_at_date`` walk over the same resolver schedule
-      and seed the retired kernel forward map ran period-END-keyed, so the future
-      side matches by construction.
+      ``period.end_date``.  :func:`positions` answers it from the forward PLAN fold
+      (step C6b) at that date, so a future period reflects the loan's projected
+      payment records and contractual synthesis rather than the resolver's
+      contractual schedule walk the retired kernel forward map ran period-END-keyed.
 
     A not-yet-originated loan folds nothing: :func:`positions` routes every date
     (begun periods clamp to a date before ``owed_from``) to the projection's

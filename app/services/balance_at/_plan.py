@@ -17,10 +17,10 @@ future balance is a fold over the payments it is going to make, in two tiers:
   producer already shared with the property-equity back-projection) -- its
   installment DATE and P&I, never its ``remaining_balance``, which this re-folds.
 
-**Why this replaces the schedule walk (finding B-9).**  The retired
-:func:`app.services.account_projection.forward_balance_at_date` amortized one
-contractual installment per month whether or not any payment was recorded, so an
-overdue installment nobody paid still paid the loan down.  Here an installment
+**Why this replaces the schedule walk (finding B-9).**  The retired forward walk
+(``account_projection.forward_balance_at_date``, deleted at step C6b) amortized
+one contractual installment per month whether or not any payment was recorded, so
+an overdue installment nobody paid still paid the loan down.  Here an installment
 pays the loan down only where a payment RECORD stands behind it (PLANNED) or where
 the loan is genuinely predicted to keep paying (a FUTURE ESTIMATED slot); an
 overdue slot with no record is neither, so it holds flat -- honest delinquency.

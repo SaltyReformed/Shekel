@@ -62,8 +62,6 @@ _BALANCE_PRODUCERS = frozenset({
     "build_daily_series",
     "calculate_balances",
     "calculate_balances_with_interest",
-    "balance_from_schedule_at_date",
-    "forward_balance_at_date",
     "build_account_balance_map",
     "base_account_balance_map",
     "account_balance_map_from_inputs",
@@ -463,6 +461,16 @@ _FENCED_MODULE_RULINGS = {
             # The fail-loud no-baseline guard.  It raises or returns None; it
             # answers nothing about an account.
             "require_scenario",
+            # The memoized forward PLAN -- a list of PlannedPayment RECORDS
+            # carrying cash, NOT a balance-at-T (the same ruling
+            # ``merge_anchor_and_payment_events`` carries).  Folding it into a
+            # balance takes the seam-internal ``fold_forward``, which is protected
+            # by the private ``balance_at._plan`` module boundary rather than a
+            # name-fence.  That is a WEAKER guard than ``loan_walk``'s (a balance
+            # one NAME-FENCED ``fold_from_walk`` away, both ends fenced);
+            # name-fencing ``fold_forward`` to close the gap is a Phase-D candidate,
+            # kept off the frozen fence here.
+            "loan_plan",
         }),
     ),
 }

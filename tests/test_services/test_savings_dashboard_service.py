@@ -2680,12 +2680,20 @@ def _add_savings_account(seed_user, anchor_period_id, balance):
     return acct
 
 
-def _add_mortgage_account(seed_user, anchor_period_id, balance):
+def _add_mortgage_account(
+    seed_user, anchor_period_id, balance, origination_date=None,
+):
     """Create a Mortgage (liability) account with a loan schedule.
 
-    Mortgage originated 2025-01-01 at 6.5%, 30-year, so the resolver's
-    as-of-today current balance equals the origination principal and the
-    amortization schedule drives the forward liability series.
+    Mortgage at 6.5%, 30-year, defaulting to a 2025-01-01 origination so the
+    resolver's as-of-today current balance equals the origination principal.
+    *origination_date* is overridable: since step C6b the forward liability is a
+    FOLD of the loan's payment PLAN (not a schedule walk), so a loan originated in
+    the past with NO payment records is delinquent -- its unpaid overdue
+    installments never pay it down (finding B-9), and only the FUTURE contractual
+    installments are synthesized, which cannot make up the gap.  A test that needs
+    a loan to amortize cleanly to ZERO must originate it with no overdue gap (pass
+    ``date.today()``), the realistic on-schedule case.
 
     Routed through the shared ``create_loan_account`` factory rather than
     re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
@@ -2704,7 +2712,7 @@ def _add_mortgage_account(seed_user, anchor_period_id, balance):
     return create_loan_account(
         seed_user, db.session, name="Home Mortgage",
         principal=balance, rate=Decimal("0.06500"), term=360,
-        origination_date=_date(2025, 1, 1), payment_day=1,
+        origination_date=origination_date or _date(2025, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
         anchor_period=db.session.get(PayPeriod, anchor_period_id),
     )
@@ -3754,10 +3762,18 @@ class TestNetWorthHorizon:
         The liability band starts at the loan's current balance ($240,000) and
         the final sample -- past the payoff -- is zero owed; the domain end
         year is the payoff year plus one.
+
+        Originated TODAY (no overdue gap), so the forward fold synthesizes its
+        WHOLE contractual schedule from the full balance and amortizes cleanly to
+        zero -- the on-schedule case.  A past origination with no payment records
+        would be delinquent under the C6b plan fold and never reach zero (B-9).
         """
         with app.app_context():
             periods = seed_periods_today
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(
+                seed_user, periods[0].id, Decimal("240000.00"),
+                origination_date=date.today(),
+            )
             uid = seed_user["user"].id
 
             payoff = savings_dashboard_service.compute_dashboard_data(
