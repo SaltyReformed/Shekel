@@ -3470,6 +3470,342 @@ class TestTransferPrompt:
         )
 
 
+# ── Payment Drift Warning + Auto-Track Switch Tests (C7 / ruling D3) ──
+
+
+class TestPaymentDrift:
+    """The loan detail underpayment-drift warning and its one-click auto-track switch.
+
+    A MANUAL recurring payment whose stored base has fallen short of the
+    contractual monthly payment (P&I + today's escrow) -- after an escrow or rate
+    change the stored amount never absorbed -- warns on the loan detail page and
+    offers to switch the payment to ``derive_from_loan`` so it tracks the contract
+    automatically (step C7, ruling D3).  A derive payment already tracks and never
+    warns; an at- or above-contract payment never warns (a deliberate overpayment
+    does not trip it).
+    """
+
+    @staticmethod
+    def _contract(acct, user_id):
+        """The loan's contractual monthly payment today (P&I + escrow) via the seam.
+
+        The same figure the route's ``_contractual_monthly_payment`` writes and the
+        loan card displays as "Total Monthly": the seam ``loan_figures`` P&I plus
+        today's ``resolve_active_lines`` escrow.  Used to size a drift precisely
+        without hard-coding the resolver-derived P&I.
+        """
+        figures = balance_at.loan_figures(acct, BalanceContext.build(user_id))
+        components = escrow_calculator.resolve_active_lines(
+            loan_loaders.load_escrow_lines(acct.id), date.today(),
+        )
+        return escrow_calculator.calculate_total_payment(
+            figures.monthly_payment, components,
+        )
+
+    @staticmethod
+    def _legacy_manual_transfer(seed_user, db_session, acct, amount):
+        """Create a legacy manual recurring payment with NO settings row.
+
+        Mirrors the two real production loans (a payment created before the
+        loan_payment_settings feature): an active monthly TransferTemplate with a
+        recurrence rule and a stored ``default_amount``, and no 1:1 settings row --
+        which every reader treats as manual mode (derive_from_loan False, no extra).
+        """
+        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        monthly_id = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.MONTHLY,
+        )
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id, pattern_id=monthly_id, day_of_month=1,
+        )
+        db_session.add(rule)
+        db_session.flush()
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            recurrence_rule_id=rule.id,
+            name="Legacy Mortgage Payment",
+            default_amount=amount,
+            is_active=True,
+        )
+        db_session.add(tpl)
+        db_session.commit()
+        return tpl
+
+    def test_dashboard_warns_when_manual_payment_short(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A manual payment $50 below contract warns with the exact shortfall.
+
+        The transfer is created via the amount override (manual mode,
+        derive_from_loan False) at ``contract - $50.00``, so the shortfall is
+        exactly $50.00.  The warning names the stored amount, the shortfall, and
+        the contract, and offers the auto-track action.  The stored amount is
+        warning-only on this page (the projection uses the contractual schedule),
+        so matching it proves the warning renders it.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        stored = contract - Decimal("50.00")
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id), "amount": str(stored)},
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert f"${stored:,.2f}" in html          # stored transfer amount
+        assert "$50.00" in html                    # the exact shortfall
+        assert f"${contract:,.2f}" in html         # the contractual payment
+        assert f"/accounts/{acct.id}/loan/track-payment" in html
+        assert "Switch to automatic payment" in html
+
+    def test_dashboard_warns_when_legacy_manual_payment_short(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The real-loan shape -- a manual payment with NO settings row -- warns too.
+
+        Both production loans predate loan_payment_settings, so their recurring
+        payment has no settings row.  A missing row is manual mode, so a stored
+        amount below contract must warn exactly as an amount-override manual
+        payment does.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert "$50.00" in html
+
+    def test_dashboard_warns_when_base_short_despite_standing_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A short BASE warns even when a standing extra pushes total cash over contract.
+
+        The firing control for ruling D3's ``extra_principal``-cancellation
+        property: the warning compares the extra-free BASE (``default_amount``) to
+        the contractual P&I + escrow, so a manual payment with base = contract-$50
+        and a $75 standing extra -- total live cash contract+$25, ABOVE contract --
+        must STILL warn, because the base under-covers P&I + escrow.  A regression
+        that added the extra to the compared (stored) side (``stored =
+        default_amount + extra``) would suppress this warning and still pass every
+        other test in the class; this asserts the $50.00 base shortfall renders.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+                "extra_principal": "75.00",
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert "$50.00" in html          # the BASE shortfall, extra excluded
+
+    @pytest.mark.parametrize("delta", [Decimal("0.00"), Decimal("100.00")])
+    def test_dashboard_no_warning_when_manual_at_or_above_contract(
+        self, auth_client, seed_user, db, seed_periods, delta,
+    ):
+        """A payment exactly at or above contract never warns.
+
+        Ruling D3: a deliberate overpayment does not trip the drift warning; the
+        warning is underpayment-only.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract + delta),
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert "short of the contractual monthly payment" not in resp.data.decode()
+
+    def test_dashboard_no_warning_when_derive_even_after_escrow_rise(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A DERIVE payment never warns, even when its stored base is now stale.
+
+        The control that proves derive mode is EXCLUDED, not merely free of drift:
+        a derive transfer is created (default_amount = contract at creation), then a
+        $200/mo escrow line is added so the contract rises ABOVE the stored base.
+        The underpayment predicate (stored < contract) is now TRUE -- asserted
+        directly -- yet no warning shows, because a derive payment recomputes its
+        cash to the contract on every read and cannot drift.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},   # derive default
+        )
+        # Raise the contract above the stored base by adding escrow AFTER creation.
+        add_escrow_line(db.session, acct.id, "Taxes", Decimal("2400.00"))
+        db.session.commit()
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        new_contract = self._contract(acct, seed_user["user"].id)
+        # The control: the stored base is now below contract (would warn if manual).
+        assert tpl.default_amount < new_contract
+        assert tpl.settings.derive_from_loan is True
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert "short of the contractual monthly payment" not in resp.data.decode()
+
+    def test_track_payment_flips_to_derive_and_clears_warning(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The one-click switch flips a short manual payment to auto-track.
+
+        A manual payment $50 below contract warns; POSTing track-payment sets
+        derive_from_loan True and resets the stored base to the contract, so a
+        re-render shows no warning and the loan now tracks the contract.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+            },
+        )
+        # Precondition: the warning is showing.
+        pre = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert "short of the contractual monthly payment" in pre.data.decode()
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        db.session.expire(tpl)
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.default_amount == contract
+
+        post = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert "short of the contractual monthly payment" not in post.data.decode()
+
+    def test_track_payment_creates_settings_row_for_legacy_manual(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching a legacy no-settings payment creates the settings row (derive).
+
+        The real-loan shape has no loan_payment_settings row; the switch must
+        create one with derive_from_loan True (a missing row is manual mode), keep
+        the extra at zero, and reset the stored base to the contract.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        tpl = self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+        assert tpl.settings is None   # legacy shape: no settings row
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+
+        db.session.expire(tpl)
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("0.00")
+        assert tpl.default_amount == contract
+
+    def test_track_payment_preserves_standing_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching to auto-track preserves the standing extra principal.
+
+        A manual payment with a $75 standing extra, $50 below contract on its base:
+        the switch flips derive True and keeps extra at $75 (the extra rides on top
+        of the tracked base, unchanged), resetting the base to the contract.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+                "extra_principal": "75.00",
+            },
+        )
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        db.session.expire(tpl)
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("75.00")
+        assert tpl.default_amount == contract
+
+    def test_track_payment_no_recurring_payment_warns(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching a loan with no recurring payment warns, no 500."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/track-payment",
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"no recurring payment" in resp.data.lower()
+
+    def test_track_payment_idor(
+        self, second_auth_client, seed_user, db, seed_periods,
+    ):
+        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found)."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = second_auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 404
+
+
 # ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
 
 

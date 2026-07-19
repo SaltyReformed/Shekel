@@ -65,6 +65,37 @@
 </div>
 {% endif %}
 
+{# Underpayment-drift warning (C7 / ruling D3): a manual recurring payment that
+   has fallen short of the contractual monthly payment after an escrow or rate
+   change.  Mutually exclusive with the transfer prompt above (that shows only
+   when no payment exists).  The one click switches the payment to auto-track. #}
+{% if payment_drift %}
+<div class="alert alert-warning d-flex align-items-start mb-4" role="alert">
+  <i class="bi bi-exclamation-triangle me-3 fs-4"></i>
+  <div class="flex-grow-1">
+    <h6 class="alert-heading mb-1">Your recurring payment is short of the amount due</h6>
+    <p class="mb-2 small">
+      This loan's recurring payment of
+      <strong class="font-mono">{{ money(payment_drift.stored) }}</strong>
+      is <strong class="font-mono">{{ money(payment_drift.shortfall) }}</strong>
+      short of the contractual monthly payment of
+      <strong class="font-mono">{{ money(payment_drift.contract) }}</strong>{% if monthly_escrow > 0 %}
+      (<span class="font-mono">{{ money(summary.monthly_payment) }}</span> P&amp;I
+      + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow){% endif %},
+      likely after an escrow or rate change. Any standing extra principal is
+      separate and unaffected. Switch it to track the loan automatically so it
+      always matches.
+    </p>
+    <form method="POST" action="{{ url_for('loan.track_payment', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-warning btn-sm">
+        <i class="bi bi-arrow-repeat"></i> Switch to automatic payment
+      </button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 {# ── Balance band: owed hero + measured chips + balance-over-time chart ── #}
 <div class="pulse-canvas mb-4">
   <div class="nw-sky">

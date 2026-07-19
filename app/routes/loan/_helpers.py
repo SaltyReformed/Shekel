@@ -293,12 +293,46 @@ def _load_route_context(account, params) -> _RouteLoanContext:
     )
 
 
+def _total_payment_from_seam(account, escrow_components) -> Decimal:
+    """Return P&I (the seam figure) + *escrow_components* -- the one total-payment sum.
+
+    The single "total monthly payment" assembly: the loan's resolved P&I
+    (:func:`_loan_figures_now`, which owns the payment for both ARM -- re-amortized
+    from the latest anchor over the remaining term -- and fixed-rate loans) plus
+    the supplied escrow set, quantized by
+    :func:`~app.services.escrow_calculator.calculate_total_payment`.  Every
+    "P&I + escrow" figure funnels through here -- the escrow / rate OOB partials
+    (:func:`_compute_total_payment`) and the loan-payment default / auto-track
+    switch (:func:`app.routes.loan.payment_transfer._contractual_monthly_payment`)
+    -- so the number the loan card shows, the recurring-payment default, and the
+    drift / track-payment comparison are ONE computation and cannot silently
+    diverge.
+
+    The caller supplies the escrow set (today's active lines for the loan card and
+    the payment default; the drawer's set for an escrow OOB swap), so this stays a
+    pure sum with no load.
+
+    Args:
+        account: The configured loan account (ownership verified by the caller;
+            the seam resolves the P&I).
+        escrow_components: The resolved escrow lines to add to P&I
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
+
+    Returns:
+        The total monthly payment (P&I + escrow) as a ``Decimal``.
+    """
+    return escrow_calculator.calculate_total_payment(
+        _loan_figures_now(account).monthly_payment, escrow_components,
+    )
+
+
 def _compute_total_payment(account, params, escrow_components):
     """Compute total monthly payment (P&I + escrow) for OOB updates.
 
-    Reads the seam figure's ``monthly_payment`` so the escrow / delete-
-    escrow HTMX partials display the same P&I as the loan card.
-    Returns None when params are absent (no loan configured yet).
+    Reads the seam figure's ``monthly_payment`` (via the shared
+    :func:`_total_payment_from_seam`) so the escrow / delete-escrow HTMX partials
+    display the same P&I as the loan card.  Returns None when params are absent
+    (no loan configured yet).
 
     Args:
         account: ORM :class:`Account` instance for the loan account.
@@ -309,9 +343,7 @@ def _compute_total_payment(account, params, escrow_components):
     """
     if params is None:
         return None
-    return escrow_calculator.calculate_total_payment(
-        _loan_figures_now(account).monthly_payment, escrow_components,
-    )
+    return _total_payment_from_seam(account, escrow_components)
 
 
 def _forward_boundary(account_id, scenario_id):

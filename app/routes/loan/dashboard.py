@@ -301,7 +301,7 @@ def _build_band_context(scenarios, has_payments):
     }
 
 
-def _resolve_transfer_prompt(account):
+def _resolve_transfer_prompt(account, template):
     """Resolve the recurring-transfer prompt state for the dashboard.
 
     The prompt shows when LoanParams exist but no active recurring
@@ -313,16 +313,19 @@ def _resolve_transfer_prompt(account):
     from the payment's ``loan_payment_settings`` (0.00 when it has no settings
     row -- a legacy manual payment).
 
+    Args:
+        account: The loan account (scopes the source-account picker).
+        template: The loan's active recurring transfer template, or ``None`` --
+            loaded ONCE by the caller and shared with :func:`_payment_drift`, so
+            the page resolves the recurring payment a single time.
+
     Returns:
         ``prompt_context`` -- a dict of template vars: show_transfer_prompt,
         source_accounts, default_source_id, has_recurring_payment,
         recurring_payment_extra.
     """
-    existing_template = active_recurring_transfer_template(
-        account.id, current_user.id,
-    )
-    if existing_template is not None:
-        settings = existing_template.settings
+    if template is not None:
+        settings = template.settings
         extra = (
             Decimal(str(settings.extra_principal))
             if settings is not None else Decimal("0.00")
@@ -360,6 +363,53 @@ def _resolve_transfer_prompt(account):
         "default_source_id": default_source_id,
         "has_recurring_payment": False,
         "recurring_payment_extra": Decimal("0.00"),
+    }
+
+
+def _payment_drift(template, total_payment):
+    """Return the recurring-payment underpayment-drift warning context, or None.
+
+    Warns (ruling D3, step C7) when the loan has a MANUAL recurring payment whose
+    stored base (``default_amount`` -- the P&I + escrow captured at its last write)
+    is now LESS than today's contractual monthly payment (``total_payment`` =
+    resolved P&I + active escrow), i.e. the transfer underfunds the loan after an
+    escrow or rate change.  Both figures are extra-free (the standing
+    ``extra_principal`` is added live on top of each and so cancels in the
+    comparison), so this measures the base drift regardless of any overpayment.
+
+    Returns ``None`` -- no warning -- for exactly the cases the ruling excludes:
+
+    * no recurring payment (``template is None``);
+    * a DERIVE-mode payment, whose projected cash is recomputed to the contract on
+      every read (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`),
+      so it can never drift;
+    * a payment at or ABOVE contract -- underpayment-only, so a deliberate
+      overpayment never trips it.
+
+    Args:
+        template: The loan's active recurring transfer template, or ``None``
+            (loaded once by the caller, shared with :func:`_resolve_transfer_prompt`).
+        total_payment: The loan's contractual monthly payment today (P&I +
+            escrow) -- the same figure the loan card displays and
+            :func:`app.routes.loan.payment_transfer.track_payment` writes, so
+            clicking the warning's action drives the drift to exactly zero.
+
+    Returns:
+        ``{"stored": Decimal, "contract": Decimal, "shortfall": Decimal}`` when the
+        manual payment is short, else ``None``.
+    """
+    if template is None:
+        return None
+    settings = template.settings
+    if settings is not None and settings.derive_from_loan:
+        return None
+    stored = Decimal(str(template.default_amount))
+    if stored >= total_payment:
+        return None
+    return {
+        "stored": stored,
+        "contract": total_payment,
+        "shortfall": total_payment - stored,
     }
 
 
@@ -561,7 +611,12 @@ def dashboard(account_id):
     # band chart / payoff summary accelerate exactly as the cash debit does.
     # R-4: the recurring transfer's end_date is NOT written here (that would be a
     # write on a GET); it is synced at every payoff-affecting mutation instead.
-    prompt_context = _resolve_transfer_prompt(account)
+    # Loaded ONCE and shared with the drift warning below, so the page resolves
+    # the recurring payment a single time.
+    payment_template = active_recurring_transfer_template(
+        account.id, current_user.id,
+    )
+    prompt_context = _resolve_transfer_prompt(account, payment_template)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx.loan), scenario_id, today,
         prompt_context["recurring_payment_extra"],
@@ -609,6 +664,13 @@ def dashboard(account_id):
         ctx.current_balance, summary, planned_schedule,
         ctx.loan.escrow_components,
     ))
+    # C7 (D3): the underpayment-drift warning -- a manual recurring payment that
+    # has fallen short of today's contractual payment after an escrow / rate
+    # change.  Reuses the loan card's already-computed total_payment (no re-fold)
+    # and the once-loaded template, so the page adds no extra resolution.
+    context["payment_drift"] = _payment_drift(
+        payment_template, context["total_payment"],
+    )
     # Escrow card: the version-drawer model, built off the raw lines
     # (``ctx.loan.escrow_lines``, loaded with the same context) and keyed by the
     # forward-only boundary so each drawer row's edit / delete controls match the

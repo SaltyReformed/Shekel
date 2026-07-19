@@ -9,6 +9,7 @@ the debt account.  The amount defaults to the resolver-derived monthly payment
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from flask import Response, flash, redirect, request, url_for
 from flask_login import current_user, login_required
@@ -27,9 +28,9 @@ from app.routes._transfer_creation_helpers import (
 )
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
-    _loan_figures_now,
     _payment_extra_schema,
     _require_configured_loan,
+    _total_payment_from_seam,
     _transfer_schema,
 )
 from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
@@ -41,19 +42,43 @@ from app.utils.auth_helpers import require_owner
 logger = logging.getLogger(__name__)
 
 
+def _contractual_monthly_payment(account) -> Decimal:
+    """Return the loan's full contractual monthly payment today: P&I + active escrow.
+
+    The "what the loan needs this month" figure for the create default
+    (:func:`_resolve_transfer_amount`) and the auto-track switch
+    (:func:`track_payment`): today's active escrow
+    (:func:`~app.services.escrow_calculator.resolve_active_lines`) plus the seam
+    P&I, summed by the shared
+    :func:`app.routes.loan._helpers._total_payment_from_seam`.  It equals the loan
+    card's displayed "Total Monthly" and the dashboard's drift comparison by
+    construction -- they read the same seam ``monthly_payment`` and the same
+    ``resolve_active_lines(load_escrow_lines(id), today)`` set
+    (:func:`app.services.loan_payment_service.load_loan_context`) through the same
+    leaf -- so the drift the dashboard shows and the amount this writes cannot
+    disagree.
+
+    Args:
+        account: ORM :class:`Account` instance for the loan account (ownership
+            already verified by the caller).
+
+    Returns:
+        The contractual monthly payment (P&I + escrow) as a ``Decimal``.
+    """
+    escrow_components = escrow_calculator.resolve_active_lines(
+        loan_loaders.load_escrow_lines(account.id), date.today(),
+    )
+    return _total_payment_from_seam(account, escrow_components)
+
+
 def _resolve_transfer_amount(account, data):
     """Resolve the loan-payment transfer amount and live-derivation flag.
 
     A user-supplied amount is respected verbatim (no live derivation);
     otherwise the amount defaults to the full monthly payment (P&I +
-    escrow) and opts into live derivation so the projected cash debit
-    tracks the loan's monthly payment after an escrow or rate change
-    instead of staying frozen at the default.
-
-    The seam figure owns the P&I for both ARM (re-amortized from the latest
-    anchor's balance over the remaining term) and fixed-rate (contractual payment
-    from origination), so the computed default matches the dashboard's displayed
-    "Total Monthly (with escrow)" exactly (the loan card reads the same figure).
+    escrow, :func:`_contractual_monthly_payment`) and opts into live derivation so
+    the projected cash debit tracks the loan's monthly payment after an escrow or
+    rate change instead of staying frozen at the default.
 
     Args:
         account: ORM :class:`Account` instance for the loan account.
@@ -64,15 +89,7 @@ def _resolve_transfer_amount(account, data):
     """
     if "amount" in data and data["amount"] is not None:
         return data["amount"], False
-
-    escrow_lines = loan_loaders.load_escrow_lines(account.id)
-    escrow_components = escrow_calculator.resolve_active_lines(
-        escrow_lines, date.today(),
-    )
-    transfer_amount = escrow_calculator.calculate_total_payment(
-        _loan_figures_now(account).monthly_payment, escrow_components,
-    )
-    return transfer_amount, True
+    return _contractual_monthly_payment(account), True
 
 
 def _created_transfer_flash(source_name, dest_name, base_amount, extra_principal):
@@ -262,6 +279,70 @@ def update_payment_settings(account_id):
     )
     flash(
         f"Extra principal set to ${extra_principal:,.2f} per payment.",
+        "success",
+    )
+    return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+@loan_bp.route(
+    "/accounts/<int:account_id>/loan/track-payment", methods=["POST"],
+)
+@login_required
+@require_owner
+def track_payment(account_id):
+    """Switch a loan's recurring payment to auto-track the contractual amount (D3 / C7).
+
+    The one-click resolution for the loan detail page's payment-drift warning:
+    when a MANUAL recurring payment has fallen short of the contractual monthly
+    payment (P&I + today's escrow) after an escrow or rate change, this flips it to
+    ``derive_from_loan`` so its projected cash always equals the contract, and
+    resets the stored base (``default_amount``) to today's contract so every
+    surface that reads it shows the current figure.  No shadow regeneration is
+    needed -- a derive payment's projected cash is recomputed LIVE at read time
+    (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`), the
+    same mechanism a freshly-created derive transfer relies on -- and the
+    recurrence end date is re-synced since a higher tracked payment can move the
+    projected payoff.
+
+    404s a cross-owner / non-loan account (``_require_configured_loan``); redirects
+    with a warning when the loan has no recurring payment to switch.
+    """
+    account, _params, _ = _require_configured_loan(account_id)
+    dashboard = RedirectTarget("loan.dashboard", {"account_id": account_id})
+
+    template = active_recurring_transfer_template(account.id, current_user.id)
+    if template is None:
+        flash("This loan has no recurring payment to update.", "warning")
+        return dashboard.to_response()
+
+    contract = _contractual_monthly_payment(account)
+    template.default_amount = contract
+    # Flip to derive, creating the settings row for a legacy manual payment that
+    # never had one (a missing settings row IS manual mode); the standing extra is
+    # preserved, added live on top of the tracked base exactly as before.
+    if template.settings is None:
+        template.settings = LoanPaymentSettings(
+            derive_from_loan=True, extra_principal=Decimal("0.00"),
+        )
+    else:
+        template.settings.derive_from_loan = True
+
+    # Re-sync the recurrence end date for parity with every sibling payment
+    # mutation.  Defensive: the projected payoff is derived from the contractual
+    # P&I plus the standing extra (both unchanged by the manual->derive flip), not
+    # from the transfer's stored cash, so this is a no-op today; it is kept
+    # idempotent so the end-date-tracks-payoff invariant cannot silently break if
+    # the payoff derivation ever comes to depend on the payment amount.
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    db.session.commit()
+
+    logger.info(
+        "Switched loan %d recurring payment to auto-track ($%s)",
+        account.id, contract,
+    )
+    flash(
+        f"Recurring payment now tracks the loan automatically "
+        f"(${contract:,.2f} this month).",
         "success",
     )
     return redirect(url_for("loan.dashboard", account_id=account_id))
