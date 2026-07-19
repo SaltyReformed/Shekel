@@ -42,6 +42,7 @@ from app.services.amortization_engine import RateChangeRecord
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import (
     balance_excluded_status_ids,
+    is_projected_clause,
     settled_status_ids,
 )
 
@@ -491,6 +492,48 @@ def settled_income_shadows(
     )
     settled.sort(key=lambda shadow: (shadow.pay_period.start_date, shadow.id))
     return settled
+
+
+def projected_income_shadows(
+    account_id: int, scenario_id: int,
+) -> list[Transaction]:
+    """Return a loan's PROJECTED income shadows, in payment order, NO period bound.
+
+    The forward analogue of :func:`settled_income_shadows`: the shared
+    :func:`query_shadow_income` predicate (transfer-linked, Income type,
+    non-deleted, non-excluded) narrowed to the PROJECTED status -- the payment
+    RECORDS a loan's forward projection folds (plan step C6, the PLANNED tier).
+
+    **Complementary with the settled set, so no payment is counted twice.**
+    :func:`query_shadow_income` already drops Credit / Cancelled, and every
+    remaining status other than PROJECTED is settled (``Paid`` / ``Received`` /
+    ``Settled`` -- :func:`~app.utils.balance_predicates.settled_status_ids`), so a
+    shadow is in EXACTLY ONE of :func:`settled_income_shadows` (ACTUAL, the fold's
+    past) and this (PLANNED, the fold's projected future).  That is what lets the
+    C6c settled-slot de-dup delete: a settled payment and a projected one can never
+    be the same row.
+
+    Carries no period bound and NO cash: the plan builder resolves each shadow's
+    live D3 cash
+    (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`), its due
+    date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
+    ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
+
+    Args:
+        account_id: The loan account whose projected payments to load.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        Every projected income shadow, ascending by ``(pay_period.start_date,
+        id)``; ``[]`` when the loan has no projected payment.
+    """
+    projected = (
+        query_shadow_income(account_id, scenario_id)
+        .filter(is_projected_clause(Transaction))
+        .all()
+    )
+    projected.sort(key=lambda shadow: (shadow.pay_period.start_date, shadow.id))
+    return projected
 
 
 def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:

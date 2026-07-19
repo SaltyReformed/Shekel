@@ -374,11 +374,17 @@ _FENCED_MODULE_RULINGS = {
     # everything else it exports must say why it is not.
     "app.services.loan_ledger": (
         _LOAN_LEDGER_READER_PRODUCERS, frozenset({
-            # The real principal/interest/escrow split of an actual payment --
-            # a decomposition of CASH, not an account balance.  The whole-loan
-            # list and its per-payment step carry the same ruling.
+            # The real principal/interest/escrow split of a payment -- a
+            # decomposition of CASH, not an account balance.  The whole-loan list,
+            # its per-payment step, and the pure arithmetic core the step shares
+            # with the planned/estimated payment kinds carry the same ruling.
             "compute_loan_payment_splits",
             "split_one_payment",
+            "split_payment_cash",
+            # A generic prefix-sum sampler over (date, delta) steps: it reads a
+            # running total at dates, but knows nothing of loans or accounts --
+            # the shared date-sampling core the past and forward folds both use.
+            "sample_cumulative",
             # Chronology, not balance: each answers WHEN a fact happened or
             # becomes countable, and the walk answers what it COST.
             #   * the event stream's ORDER (which fact the walk applies next).  It

@@ -61,9 +61,15 @@ from ._fold import (
     compute_loan_payment_splits,
     fold_from_walk,
     fold_loan_balances,
+    sample_cumulative,
     walk_loan_ledger,
 )
-from ._split import LoanPaymentSplit, split_one_payment
+from ._split import (
+    LoanPaymentSplit,
+    PaymentCashSplit,
+    split_one_payment,
+    split_payment_cash,
+)
 from ._visible import (
     anchor_visible_on,
     owner_pay_periods,
@@ -75,6 +81,7 @@ __all__ = [
     "LoanAnchorCorrection",
     "LoanLedgerWalk",
     "LoanPaymentSplit",
+    "PaymentCashSplit",
     "anchor_visible_on",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
@@ -84,6 +91,8 @@ __all__ = [
     "owner_pay_periods",
     "payment_visible_on",
     "resolve_anchor_pay_period",
+    "sample_cumulative",
     "split_one_payment",
+    "split_payment_cash",
     "walk_loan_ledger",
 ]

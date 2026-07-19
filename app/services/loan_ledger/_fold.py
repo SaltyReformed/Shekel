@@ -344,29 +344,60 @@ def fold_from_walk(
         ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
         date.  ``{}`` for an empty *dates*.
     """
-    steps = _dated_deltas(walk)
-    # The prefix cumulative at each distinct visible date, ascending, so each
-    # requested date is one bisect rather than a re-sum.
+    # The fold's balance seeds at ZERO and the empty prefix (before any event)
+    # is 0.00 -- the honest fold of no facts.
+    return sample_cumulative(_ZERO_MONEY, _dated_deltas(walk), dates)
+
+
+def sample_cumulative(
+    start: Decimal,
+    steps: list[tuple[date, Decimal]],
+    dates: list[date],
+) -> dict[date, Decimal]:
+    """Prefix-sum date-keyed *steps* from *start* and read each of *dates* off it.
+
+    The shared date-sampling core of every running-balance fold: given a base
+    value and a list of ``(date, delta)`` steps ALREADY ascending by date, it
+    accumulates the running total (collapsing steps that share a date to their
+    combined prefix) and answers each requested date with the cumulative at the
+    latest step on or before it -- one bisect per date, not a re-sum.  A date
+    before every step reads *start* (the empty prefix).
+
+    Both the ACTUAL past fold (:func:`fold_from_walk`, seeded at ``0.00`` over the
+    walk's dated principal deltas) and the forward projection fold
+    (:func:`app.services.balance_at._plan.fold_forward`, seeded at the confirmed
+    present over the plan's paydowns) sample through here, so the past and the
+    future cannot drift on how a running balance is read at a date.
+
+    Args:
+        start: The balance before any step -- ``0.00`` for the from-zero event
+            fold, the seed balance for the forward projection.
+        steps: ``(date, delta)`` pairs, ASCENDING by date (the caller sorts).
+        dates: The dates to value, in any order.  Duplicates collapse.
+
+    Returns:
+        ``{date: cent-quantized cumulative}`` -- one per distinct requested date.
+    """
     boundaries: list[date] = []
     cumulative_at_boundary: list[Decimal] = []
-    running = _ZERO_MONEY
-    for visible_on, delta in steps:
+    running = start
+    for on_date, delta in steps:
         running += delta
-        if boundaries and boundaries[-1] == visible_on:
+        if boundaries and boundaries[-1] == on_date:
             cumulative_at_boundary[-1] = running
             continue
-        boundaries.append(visible_on)
+        boundaries.append(on_date)
         cumulative_at_boundary.append(running)
 
-    folded: dict[date, Decimal] = {}
+    sampled: dict[date, Decimal] = {}
     for on_date in dates:
         # The count of boundaries at or before this date; the last one's prefix is
-        # the answer (0.00 when none precede -- the empty prefix's honest fold).
+        # the answer (start when none precede -- the empty prefix).
         count = bisect_right(boundaries, on_date)
-        folded[on_date] = round_money(
-            cumulative_at_boundary[count - 1] if count > 0 else _ZERO_MONEY
+        sampled[on_date] = round_money(
+            cumulative_at_boundary[count - 1] if count > 0 else start
         )
-    return folded
+    return sampled
 
 
 def fold_loan_balances(
