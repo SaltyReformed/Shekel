@@ -45,7 +45,18 @@ the equity chart's debt line is the fold: the CONFIRMED and PROJECTED tiers read
 `balance_at.positions()`, the pre-tracking ESTIMATED back-projection KEPT per D2, the axis spans
 `min(origination, today)..max(payoff, today)` so the today-clamp is retired and the empty-schedule
 clip is gone; the chart reconciles with the equity hero AT today via a shared `window_sample_date`;
-B-2 and FU-8 closed) shipped. Next commit: **C6**.
+B-2 and FU-8 closed) shipped. **C6 is DECOMPOSED** (developer ruling 2026-07-18, mirroring C3/C3b)
+into **C6a** (the additive `plan()` producer + hand-computed forward oracle), **C6b** (the cutover:
+`positions()`'s forward branch folds `plan()`, the schedule-forward primitives delete, the baseline
+consciously moves), and **C6c** (the interest chip + de-dup follow the records). Two scope
+corrections vs the plan's one-liner: `AmortizationRow.remaining_balance` deletion is DEFERRED out of
+C6 (still read by the payoff-scenario chart, the schedule table, the D2 back-projection, and the
+write-side payoff sync), and the ESTIMATED synthesis-to-payoff tier is MANDATORY (a records-only fold
+would flatline the equity chart beyond the ~2-year record horizon). **C6a** (the additive `plan()`
+producer + hand-computed oracle) shipped `31e00413` (full suite 7371, pylint 10.00); its adversarial
+review corrected one HIGH (the ESTIMATED tier must exclude early-settled seed slots) and the C6c
+de-dup claim. Next: **C6b** (the cutover: `positions()` forward folds `plan()`, the schedule-forward
+primitives delete, the baseline consciously moves).
 
 ---
 
@@ -527,17 +538,84 @@ what is written here is decided in the commit itself, not in a new document.
   contiguous, no gaps. Full suite 7359, pylint 10.00, adversarial review clean (no
   Critical/High/Medium; two Low fixed pre-commit -- the shared-helper DRY extraction and the pinned
   origination-month tier).
-- [ ] **C6** `feat(loan): a plan is payment RECORDS, not schedule rows` (D1) -- deletes
-  `_forward_rows`, `balance_from_schedule_at_date`, `AmortizationRow.remaining_balance`. Kills
-  B-9 (overdue installments paying down debt). Also STRUCTURALLY deletes C3c's settled-slot de-dup:
-  with the future as payment records there is one record per installment, so no fold/schedule slot
-  overlap to exclude. Fold in the second in-year interest producer here too: the loan detail page's
-  `interest_paid_ytd` chip still reads `confirmed_loan_interest_in_year` directly
-  (`routes/loan/dashboard.py:425`) -- settled-only YTD, so no user-visible disagreement with the
-  Taxes tab today, but it should read the one fold-based producer.
+- **C6 (DECOMPOSED, 2026-07-18)** `feat(loan): a plan is payment RECORDS, not schedule rows` (D1) --
+  the forward projection stops walking the resolver's contractual `AmortizationRow` list (which
+  amortizes one installment per month whether or not a payment was ever recorded -- B-9 / FU-7) and
+  folds over payment RECORDS instead. **Three developer rulings (2026-07-18, recommendations
+  ratified):** (1) the forward model is a UNIFIED `plan()` fold -- `plan(account, ctx)` returns ONE
+  effective-date-ordered record list, PLANNED (the projected transfer shadows, at their LIVE D3 cash)
+  then ESTIMATED (contractual synthesis for every future installment slot no record covers, to
+  payoff), and `positions()`'s forward branch folds the confirmed-present seed forward over it
+  (`balance_at(loan, T) = fold(events <= T)`, Section 3); NOT a past/future splice, NOT a
+  keep-the-schedule record-gate. (2) the loan-detail `interest_paid_ytd` chip stays "paid YTD" but is
+  sourced from the FOLD's settled splits (fold and posting reader agree by construction), not
+  repointed to the full-year `loan_interest_in_year`. (3) ship DECOMPOSED, additive-first (mirrors
+  C3a -> C3b). **Two scope corrections found tracing the code** (the recurring "the deletion list was
+  the end-state" pattern): (a) **`AmortizationRow.remaining_balance` does NOT die at C6** -- beyond the
+  forward balance it is read by the loan-detail payoff-scenario chart (`_helpers.py:360`), the
+  schedule display TABLE (`_schedule.html:71`), the D2 back-projection (`_secured_debt.py:178`, KEPT),
+  and the write-side payoff sync that bounds shadow generation (`loan_recurrence_sync.py:67`); its
+  deletion belongs with C8's payoff derivation plus a later schedule-table migration. Only
+  `_forward_rows` and `balance_from_schedule_at_date` (positions()-only) die at C6. (b) the ESTIMATED
+  tier is MANDATORY: projected shadows exist only within the materialized pay-period window (~2y,
+  capped at payoff), but the equity chart samples `positions()` monthly to PAYOFF (30y) -- a
+  records-only fold would FLATLINE the debt line beyond ~2y, regressing C5. Constraint (not a fork):
+  PLANNED events depend on `as_of` (the `max(due, as_of + 1d)` clamp), so they live in the READER
+  (`positions()`), never in the clock-free `walk_loan_ledger` fact-walk. B-9's baseline move is narrow
+  -- an installment due at or before `as_of` that has not settled stops reducing today's balance
+  (the past is ACTUAL-only); a still-planned overdue one clamps its record forward to `as_of + 1d`;
+  normal future amortization and beyond-horizon synthesis are unchanged. **Two sourcing rulings
+  (2026-07-18, recommendations ratified):** (i) the PLANNED tier folds each projected shadow's LIVE
+  D3 cash (`live_loan_transfer_amounts` = P&I + current escrow + `extra_principal`), NOT its stored
+  `effective_amount` that the current forward amortizes -- so the loan balance and the checking side
+  move together. This makes C6b a TWO-reason baseline move (B-9's overdue-gate AND the stored->live
+  cash correction, each reconciled and signed off separately), and NARROWS C7 to the drift WARNING +
+  one-click sync (the loan already gets the planned payment). (ii) the ESTIMATED tier sources each
+  future no-record installment's (date, contractual P&I, rate) from the existing
+  `loan_resolution.contractual_schedule_from_origination` (already shared with the D2 back-projection)
+  and re-folds the balance -- never reading its `remaining_balance` -- so it inherits the engine's
+  exact first-payment-date / term convention (no divergence) rather than re-implementing installment
+  stepping.
+  - [x] **C6a** `feat(loan): plan() -- the unified PLANNED + ESTIMATED payment record stream` --
+    **SHIPPED `31e00413`.** Additive and unwired (baseline unmoved), graded on a HAND-COMPUTED
+    forward oracle, NOT an equivalence-to-current oracle (that would prove B-9). (2026-07-18; full
+    suite 7371, pylint 10.00, code-reviewer clean after one HIGH fix.) As built: the ONE split
+    arithmetic extracted (`split_payment_cash` / `PaymentCashSplit`, `_split.py`) and the fold's
+    date-sampling core extracted (`sample_cumulative`, `_fold.py`) so ACTUAL / PLANNED / ESTIMATED and
+    the past + forward folds all share one implementation (both behaviour-preserving for the B2-proven
+    path); `projected_income_shadows` loader (`loan_loaders.py`, the settled set's complement);
+    `balance_at/_plan.py` = `loan_plan` (live-cash PLANNED shadows + contractual-from-origination
+    ESTIMATED) + `fold_forward` (seed-then-plan fold). Oracles: `test_loan_plan_forward_oracle.py` (8
+    hand-computed fold cases) + `test_loan_plan_assembly.py` (4 cases: all-ESTIMATED future-only + B-9,
+    PLANNED de-dup, early-settled no-double-count). **Adversarial-review HIGH fixed pre-commit:** the
+    ESTIMATED tier double-counted an early- / on-day-settled installment (in the seed by settled date,
+    due at or after `as_of`, not a projected record) -- `_estimated_from_contract` now also excludes
+    the `confirmed_shadows_through` seed slots (see the C6c correction).
+  - [ ] **C6b** `refactor(balance): positions() forward folds plan(); delete the schedule-forward
+    primitives` -- the cutover. `positions()`'s forward branch reads `plan()`;
+    `forward_balance_at_date` / `_forward_rows` / `balance_from_schedule_at_date` delete. **The
+    baseline consciously moves for TWO signed-off reasons** -- B-9's overdue-gate and the PLANNED
+    tier's stored->live cash correction -- each moved number explained against the C6a oracle plus a
+    dev-clone live render. Kills B-9.
+  - [ ] **C6c** `refactor(analytics): the interest chip follows the records` -- the loan-detail
+    `interest_paid_ytd` chip reads the fold's settled interest (no longer
+    `confirmed_loan_interest_in_year` at `routes/loan/dashboard.py:435`). **CORRECTION (C6a
+    adversarial review, 2026-07-18): C3c's settled-slot de-dup does NOT delete structurally.** The
+    plan's premise ("the future is payment RECORDS, so one record per installment, no slot overlap")
+    holds ONLY for the PLANNED tier -- a settled payment and a projected one are status-disjoint
+    (`settled_status_ids` vs `is_projected_clause` under one `query_shadow_income`), so they never
+    both cover a slot. But the ESTIMATED tier is contractual SYNTHESIS, not a record, so it collides
+    with a settled payment already in the seed exactly as C3c's schedule rows do (an early- or
+    on-day-settled installment due at or after `as_of`). C6a's `_estimated_from_contract` therefore
+    KEEPS a settled-slot exclusion (the `confirmed_shadows_through` seed slots), and the interest
+    producer must keep the analogous one. C6c relocates the exclusion onto the plan; it does not
+    delete it.
 - [ ] **C7** `feat(loan): the payment you plan is the payment the loan gets` (D3) -- the drift
   warning + one-click sync (live today: transfer $1,910.95 vs contract $1,911.29 since the
-  2026-07-06 escrow change).
+  2026-07-06 escrow change). **NARROWED (developer ruling 2026-07-18):** C6b's PLANNED tier already
+  folds the LIVE transfer cash, so the loan balance already reflects the planned payment; C7 is the
+  WARNING (transfer vs contractual PITI + `extra_principal`) and the one-click "update the transfer"
+  action only, not the cash adoption.
 - [ ] **C8** `fix(loan): the payoff date is derived, never persisted from a schedule` -- kills
   B-14 (recurrence sync persisting a blind-walk payoff) and B-20.
 - [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
