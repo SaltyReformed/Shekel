@@ -133,13 +133,13 @@ def _load_debt_accounts(user_id):
     has_arm = False
 
     for account in accounts:
-        figures = balance_at.loan_figures(account, ctx)
-        if figures is None:
+        terms = balance_at.loan_terms(account, ctx)
+        if terms is None:
             # Account exists but loan details not yet configured.
             continue
         current_balance = balance_at.balance_at(account, ctx, ctx.as_of)
 
-        if figures.is_arm:
+        if terms.is_arm:
             has_arm = True
 
         # Skip debts with zero principal or zero payment (fully paid
@@ -149,7 +149,7 @@ def _load_debt_accounts(user_id):
         # carries a non-zero seed.
         if (
             current_balance <= Decimal("0")
-            or figures.monthly_payment <= Decimal("0")
+            or terms.monthly_payment <= Decimal("0")
         ):
             continue
 
@@ -166,8 +166,8 @@ def _load_debt_accounts(user_id):
             account_id=account.id,
             name=account.name,
             current_principal=current_balance,
-            interest_rate=figures.current_rate,
-            minimum_payment=figures.monthly_payment,
+            interest_rate=terms.current_rate,
+            minimum_payment=terms.monthly_payment,
         ))
 
     return debt_accounts, has_arm

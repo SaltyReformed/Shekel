@@ -238,7 +238,7 @@ def _project_one_account(acct, ctx, balance_maps):
         # the opposite of the truth (the debt track counted an unclosed
         # mortgage as 100% paid).  See ``LoanFigures.is_originated``.
         "is_originated": (
-            loan_result.figures.is_originated if loan_result else True
+            loan_result.figures.terms.is_originated if loan_result else True
         ),
         # Category-keyed liability flag (the id-based canonical classifier),
         # so the cockpit cell balance can take the danger token the group
@@ -252,11 +252,11 @@ def _project_one_account(acct, ctx, balance_maps):
         ad["investment_params"] = acct_investment_params
     if acct_loan_params:
         ad["loan_params"] = acct_loan_params
-        ad["monthly_payment"] = loan_result.figures.monthly_payment
+        ad["monthly_payment"] = loan_result.figures.terms.monthly_payment
         # DH-#56: the loan's current rate (resolver-derived) replaces the
         # retired ``LoanParams.interest_rate`` column read on the /savings
         # debt card and in the weighted-average-rate metric.
-        ad["current_rate"] = loan_result.figures.current_rate
+        ad["current_rate"] = loan_result.figures.terms.current_rate
         ad["payoff_date"] = loan_result.figures.payoff_date
     return ad
 

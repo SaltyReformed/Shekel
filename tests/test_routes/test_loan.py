@@ -3495,16 +3495,16 @@ class TestPaymentDrift:
         """The loan's contractual monthly payment today (P&I + escrow) via the seam.
 
         The same figure the route's ``_contractual_monthly_payment`` writes and the
-        loan card displays as "Total Monthly": the seam ``loan_figures`` P&I plus
+        loan card displays as "Total Monthly": the seam ``loan_terms`` P&I plus
         today's ``resolve_active_lines`` escrow.  Used to size a drift precisely
         without hard-coding the resolver-derived P&I.
         """
-        figures = balance_at.loan_figures(acct, BalanceContext.build(user_id))
+        terms = balance_at.loan_terms(acct, BalanceContext.build(user_id))
         components = escrow_calculator.resolve_active_lines(
             loan_loaders.load_escrow_lines(acct.id), date.today(),
         )
         return escrow_calculator.calculate_total_payment(
-            figures.monthly_payment, components,
+            terms.monthly_payment, components,
         )
 
     @staticmethod

@@ -130,7 +130,12 @@ from ._kind_correct import (
     investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
-from ._loan_figures import LoanFigures, loan_figures
+from ._loan_figures import (
+    LoanFigures,
+    LoanTerms,
+    loan_figures,
+    loan_terms,
+)
 from ._loan_interest import (
     loan_interest_in_year,
     loan_interest_paid_in_year,
@@ -157,6 +162,7 @@ __all__ = [
     "ZERO",
     "GridBalanceView",
     "LoanFigures",
+    "LoanTerms",
     "SecuredLoanSeries",
     "TIER_CONFIRMED",
     "TIER_ESTIMATED",
@@ -177,6 +183,7 @@ __all__ = [
     "investment_seed_map",
     "liability_owed_at_dates",
     "loan_figures",
+    "loan_terms",
     "loan_interest_in_year",
     "loan_interest_paid_in_year",
     "loan_payoff_date",

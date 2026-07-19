@@ -2857,7 +2857,7 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
                     "current_balance": balance_at.balance_at(
                         acct, bctx, bctx.as_of),
                     "is_paid_off": figures.is_paid_off,
-                    "is_originated": figures.is_originated,
+                    "is_originated": figures.terms.is_originated,
                 }
 
             # The fixture really is in the hazardous state.
@@ -3310,3 +3310,110 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
             # unbounded in the size of the true-up -- next to the code that
             # bounds it.
             assert stale - owed == Decimal("48496.25")
+
+
+class TestLoanTermsAreScenarioIndependent:
+    """Plan C8e: a loan's CONTRACT terms need no baseline scenario.
+
+    ``LoanFigures`` used to carry the payment and the rate alongside the
+    scenario-scoped predicates, and nothing exposed the mixture while every field
+    happened to be scenario-independent.  Step C8d added the DERIVED payoff -- the
+    first field that folds the loan's projected payments -- and the loan's
+    non-balance WRITE surfaces (escrow editing, the rate-history swap, the
+    recurring-payment amount) began raising the seam's ``require_scenario`` for a
+    user whose baseline is missing.  Splitting the value along the dependency it
+    actually has is the fix; these pin both halves of it.
+    """
+
+    def _loan(self, db, seed_user, periods):
+        """A resolvable 24-month $12,000 loan at 5%, originated 2026-01-01."""
+        return create_loan_account(
+            seed_user, db.session, name="Terms Loan",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1),
+            anchor_period=periods[0],
+        )
+
+    def _drop_baseline(self, db, seed_user):
+        """Remove the user's baseline scenario -- the state baseline_service repairs."""
+        # Pylint: ``import-outside-toplevel`` -- model import local to the one
+        # helper that needs it, matching this suite's convention.
+        from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
+        db.session.query(Scenario).filter_by(
+            user_id=seed_user["user"].id, is_baseline=True,
+        ).delete()
+        db.session.commit()
+
+    def test_terms_answer_without_a_baseline_scenario(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The payment and rate resolve with no scenario at all.
+
+        Hand-checked: $12,000 over 24 months at 5%/12 amortizes to a level
+        payment of $526.46, and the rate in effect is the origination rate.
+        """
+        with app.app_context():
+            account = self._loan(db, seed_user, seed_periods)
+            db.session.commit()
+            self._drop_baseline(db, seed_user)
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert ctx.scenario is None
+            terms = balance_at.loan_terms(account, ctx)
+            assert terms is not None
+            assert terms.monthly_payment == Decimal("526.46")
+            assert terms.current_rate == Decimal("0.05000")
+            assert terms.is_originated is True
+            assert terms.is_arm is False
+
+    def test_figures_still_fail_loud_without_a_baseline_scenario(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The scenario-scoped bundle still refuses to answer -- deliberately.
+
+        The split narrows the dependency; it does not soften the guard.  A payoff
+        folded without the loan's projected payments would be a different loan's
+        answer, so this raises rather than inventing one.
+        """
+        with app.app_context():
+            account = self._loan(db, seed_user, seed_periods)
+            db.session.commit()
+            self._drop_baseline(db, seed_user)
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            with pytest.raises(ValueError, match="baseline scenario"):
+                balance_at.loan_figures(account, ctx)
+
+    def test_a_non_loan_answers_none_before_any_guard(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Both entries keep the not-a-loan test AHEAD of the scenario guard.
+
+        ``home_equity_service`` uses the ``None`` return as its configured-loan
+        test for a user with no baseline, so an account with no ``LoanParams``
+        must answer rather than raise.
+        """
+        with app.app_context():
+            self._drop_baseline(db, seed_user)
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.loan_terms(seed_user["account"], ctx) is None
+            assert balance_at.loan_figures(seed_user["account"], ctx) is None
+
+    def test_figures_compose_the_same_terms(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The wider bundle carries the SAME terms value, not a copy of its fields.
+
+        Composition is what keeps the two from drifting: a consumer reading the
+        payment off ``figures.terms`` and one reading it off ``loan_terms`` are
+        reading one derivation.
+        """
+        with app.app_context():
+            account = self._loan(db, seed_user, seed_periods)
+            db.session.commit()
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(account, ctx)
+            terms = balance_at.loan_terms(account, ctx)
+            assert figures is not None
+            assert figures.terms == terms

@@ -27,7 +27,7 @@ from app.routes.loan._helpers import (
     _escrow_version_schema,
     _forward_boundary,
     _load_loan_account,
-    _loan_figures_now,
+    _loan_terms_now,
     _rate_schema,
     build_loan_band_chart,
 )
@@ -81,7 +81,7 @@ def _render_rate_history(account, params, band_chart=None):
         account=account,
         params=params,
         rate_history=rate_history,
-        current_rate=_loan_figures_now(account).current_rate,
+        current_rate=_loan_terms_now(account).current_rate,
         band_chart=band_chart,
         oob_swaps=True,
     )

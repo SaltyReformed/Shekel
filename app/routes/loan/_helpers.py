@@ -34,7 +34,7 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import balance_at, escrow_calculator, loan_resolver
-from app.services.balance_at import LoanFigures
+from app.services.balance_at import LoanFigures, LoanTerms
 from app.services.loan_loaders import (
     latest_settled_payment_period_start,
     load_loan_anchor_facts,
@@ -192,12 +192,12 @@ class _RouteLoanContext:
     @property
     def monthly_payment(self) -> Decimal:
         """The loan's P&I payment as of today (the seam's resolved figure)."""
-        return self.figures.monthly_payment
+        return self.figures.terms.monthly_payment
 
     @property
     def current_rate(self) -> Decimal:
         """The annual interest rate in effect today (the seam's resolved figure)."""
-        return self.figures.current_rate
+        return self.figures.terms.current_rate
 
     @property
     def payoff_date(self) -> date | None:
@@ -250,11 +250,11 @@ def _require_figures(account, balance_ctx: BalanceContext) -> LoanFigures:
     return figures
 
 
-def _loan_figures_now(account) -> LoanFigures:
-    """Return a configured loan's seam figures as of today, resolving it once.
+def _loan_terms_now(account) -> LoanTerms:
+    """Return a configured loan's CONTRACT terms as of today, resolving it once.
 
-    The figure accessor the loan route's non-balance WRITE surfaces read the
-    monthly payment / current rate off -- the escrow total-payment recompute
+    The accessor the loan route's non-balance WRITE surfaces read the monthly
+    payment / current rate off -- the escrow total-payment recompute
     (:func:`_compute_total_payment`), the rate-history OOB swap
     (:func:`app.routes.loan.escrow_rates._render_rate_history`), and the
     payment-transfer default (:func:`app.routes.loan.payment_transfer._resolve_transfer_amount`).
@@ -263,14 +263,35 @@ def _loan_figures_now(account) -> LoanFigures:
     same the loan card shows, produced by the one seam resolution rather than a
     private resolve.
 
+    **It takes :class:`~app.services.balance_at.LoanTerms`, not the wider
+    ``LoanFigures``** (plan step C8e).  These surfaces read only the payment and
+    the rate -- both derived from the loan's params and rate history alone -- so
+    binding them to the scenario-scoped bundle bound them to a baseline scenario
+    they never needed.  Step C8d made that visible by giving the bundle its first
+    scenario-scoped field: escrow editing began raising the seam's
+    ``require_scenario`` for a user whose baseline is missing, which is a state a
+    configured loan can outlive (see ``baseline_service``).  The narrow value
+    needs no scenario, so these surfaces keep working while the fail-loud stays on
+    the reads that genuinely need one.
+
     Args:
         account: The configured loan account (ownership already verified by the
             caller).
 
     Returns:
-        The loan's :class:`LoanFigures` as of today.
+        The loan's :class:`LoanTerms` as of today.
+
+    Raises:
+        ValueError: When *account* has no ``LoanParams`` (a caller error -- these
+            surfaces load a configured loan first).
     """
-    return _require_figures(account, BalanceContext.build(current_user.id))
+    terms = balance_at.loan_terms(account, BalanceContext.build(current_user.id))
+    if terms is None:
+        raise ValueError(
+            f"loan terms unavailable for account {account.id}: it has no "
+            f"LoanParams. Load a configured loan before reaching the seam."
+        )
+    return terms
 
 
 def _load_route_context(account, params) -> _RouteLoanContext:
@@ -312,7 +333,7 @@ def _total_payment_from_seam(account, escrow_components) -> Decimal:
     """Return P&I (the seam figure) + *escrow_components* -- the one total-payment sum.
 
     The single "total monthly payment" assembly: the loan's resolved P&I
-    (:func:`_loan_figures_now`, which owns the payment for both ARM -- re-amortized
+    (:func:`_loan_terms_now`, which owns the payment for both ARM -- re-amortized
     from the latest anchor over the remaining term -- and fixed-rate loans) plus
     the supplied escrow set, quantized by
     :func:`~app.services.escrow_calculator.calculate_total_payment`.  Every
@@ -337,7 +358,7 @@ def _total_payment_from_seam(account, escrow_components) -> Decimal:
         The total monthly payment (P&I + escrow) as a ``Decimal``.
     """
     return escrow_calculator.calculate_total_payment(
-        _loan_figures_now(account).monthly_payment, escrow_components,
+        _loan_terms_now(account).monthly_payment, escrow_components,
     )
 
 
