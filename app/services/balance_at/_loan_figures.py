@@ -39,6 +39,11 @@ from app.models.account import Account
 from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 
+# The payoff derivation this module INJECTS into the read pass's memo (see
+# :func:`loan_figures`).  ``_positions`` does not import this module, so the
+# seam's internal graph stays a DAG.
+from ._positions import loan_payoff_date
+
 ZERO_MONEY = Decimal("0.00")
 
 
@@ -56,8 +61,27 @@ class LoanFigures:
         current_rate: The annual interest rate in effect on ``as_of``, as a
             decimal fraction -- the resolver-derived source of truth that
             replaced the retired ``LoanParams.interest_rate`` column.
-        payoff_date: The last payment date in the committed (plan-aware)
-            schedule -- the month the loan reaches zero.
+        payoff_date: The DERIVED payoff -- the date the loan's balance folds to
+            zero (:func:`~app.services.balance_at.loan_payoff_date`, plan step
+            C8), read off the pass's memo so every surface that shows a payoff
+            shows the one the BALANCE reaches zero on.
+
+            It used to be ``LoanState.payoff_date``: the last row of the
+            resolver's committed schedule walk, which amortizes one contractual
+            installment per month whether or not a payment stands behind it, and
+            which forces a final row at the contractual date for a loan paying
+            short (``is_last_month``) -- a phantom payment.  So the chip could
+            disagree with the equity chart and the balance beside it about when
+            the debt ends.  Now the payoff IS the balance reaching zero, from the
+            same seed and the same plan :func:`~app.services.balance_at.positions`
+            folds, and they cannot disagree.
+
+            ``None`` in two cases the consumer must tell apart, and
+            :attr:`is_retired` is what tells them apart: the loan is already
+            RETIRED (no forward crossing left to date -- badge it), or it never
+            pays off within its plan (negative amortization, or an underpayment
+            too severe to clear the post-contractual extension -- say so; do not
+            hide the chip).
         is_retired: Whether the loan is DONE -- it has ORIGINATED and its
             LEDGER-confirmed balance is ``<= 0``.  It has no debt line left: no
             balance now, and nothing scheduled ahead.
@@ -119,13 +143,31 @@ class LoanFigures:
 def loan_figures(
     account: Account, ctx: BalanceContext,
 ) -> LoanFigures | None:
-    """Return *account*'s rich loan figures, or ``None`` if it is not a loan.
+    """Return *account*'s scenario-scoped loan figures, or ``None`` if not a loan.
 
     Reads the read pass's ONE memoized resolution
     (:meth:`~app.services.resolution_context.BalanceContext.resolved_loan`), so
     these figures and the balance the same consumer reads from
     :func:`~app.services.balance_at.balance_at` come from the SAME resolution --
-    identical by construction, not by two producers agreeing.
+    identical by construction, not by two producers agreeing.  The payoff is the
+    pass's ONE memoized derivation for the same reason: this is the single funnel
+    every payoff consumer reads through (the loan card, the /savings cockpit and
+    Horizon, the equity chart's axis), so it is where the derivation is INJECTED
+    into the pass's memo
+    (:meth:`~app.services.resolution_context.BalanceContext.loan_payoff` --
+    injected rather than imported there, so the context never reaches up into the
+    seam that imports it).
+
+    **A CONFIGURED loan now needs a baseline scenario here.**  The payoff folds
+    the loan's forward plan, which is scenario-scoped, so this runs the seam's
+    ``require_scenario`` guard for a configured loan where it previously did not.
+    The not-a-loan test above still does NOT: it returns ``None`` before the
+    payoff is touched, so a caller using this purely as "is this a configured
+    loan?" for a user with no baseline
+    (:func:`app.services.home_equity_service.resolve_home_equity`) keeps
+    answering.  For a CONFIGURED loan every such caller already went on to
+    :func:`~app.services.balance_at.balance_at`, which raises the same guard on
+    the next line, so no path gains a failure -- only the line it fails on moves.
 
     Args:
         account: The account to read.  A non-loan (no ``LoanParams``) returns
@@ -135,6 +177,10 @@ def loan_figures(
     Returns:
         The :class:`LoanFigures`, or ``None`` when *account* is not a configured
         loan.
+
+    Raises:
+        ValueError: When *account* IS a configured loan and ``ctx`` has no
+            baseline scenario (the payoff derivation's ``require_scenario``).
     """
     resolved = ctx.resolved_loan(account)
     if resolved is None:
@@ -143,7 +189,7 @@ def loan_figures(
     return LoanFigures(
         monthly_payment=state.monthly_payment,
         current_rate=state.current_rate,
-        payoff_date=state.payoff_date,
+        payoff_date=ctx.loan_payoff(account, loan_payoff_date),
         is_retired=_is_retired(resolved, ctx.as_of),
         is_paid_off=_is_paid_off(resolved, ctx.as_of),
         is_originated=_is_originated(resolved, ctx.as_of),

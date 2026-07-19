@@ -696,6 +696,174 @@ class TestPropertyEquityChartProducer:
             assert chart.debt[chart.today_index] == state.current_balance
             assert chart.equity[chart.today_index] == equity.equity
 
+    def test_debt_span_ends_at_the_derived_payoff(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The axis runs to the DERIVED payoff, not the schedule's endpoint (C8d).
+
+        The chart's span used to end at ``LoanState.payoff_date`` -- the last row
+        of the contractual schedule walk.  It now ends at the same derived payoff
+        the loan card's chip and the /savings cockpit show, so the axis cannot
+        outlive or fall short of the payoff rendered beside it.
+
+        The loan here is trued up $500 ABOVE its contractual schedule, so the
+        fold clears it two installments LATE (the C8c extension): the two
+        producers disagree, and the last charted month must be the fold's.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        today = date(2026, 4, 20)
+        with app.app_context():
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Underpaid Mortgage",
+                principal=Decimal("240000.00"), term=360,
+                origination_date=date(2026, 4, 1), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            insert_trueup_event(
+                load_loan_params(loan.id), Decimal("240500.00"),
+            )
+            db.session.commit()
+
+            ctx = BalanceContext.build(prop.user_id, as_of=today)
+            derived = balance_at.loan_payoff_date(loan, ctx)
+            contractual = contractual_schedule_from_origination(
+                load_loan_params(loan.id), load_rate_changes(loan.id),
+            )[-1].payment_date
+            assert derived is not None
+            assert derived > contractual, (
+                "precondition: the underpayment must push the fold past the "
+                "contractual date, or this test cannot tell the two apart"
+            )
+
+            series = _series_for(prop, loan, today)
+            last_month = max(series.month_balances)
+            assert last_month == (derived.year, derived.month), (
+                f"axis ends {last_month}, expected the DERIVED payoff month "
+                f"{(derived.year, derived.month)} (contractual is "
+                f"{(contractual.year, contractual.month)})"
+            )
+
+    def test_a_retired_loan_spans_only_its_history(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """A retired loan (derived payoff ``None``) charts to today, not beyond.
+
+        ``None`` is two states, and this is the one where there IS no future
+        debt: the loan owes nothing, so its line is history.  Collapsing both
+        ``None`` states onto the plan's horizon would fold thirty years of
+        ``$0.00`` months for a loan the chart drops anyway.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        today = date(2026, 4, 20)
+        with app.app_context():
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Retired Mortgage",
+                principal=Decimal("240000.00"), term=360,
+                origination_date=date(2026, 1, 1), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            insert_trueup_event(load_loan_params(loan.id), Decimal("0.00"))
+            db.session.commit()
+
+            ctx = BalanceContext.build(prop.user_id, as_of=today)
+            assert balance_at.loan_payoff_date(loan, ctx) is None
+            series = _series_for(prop, loan, today)
+            assert series.is_retired is True
+            assert max(series.month_balances) == (today.year, today.month)
+
+    def test_a_loan_that_never_clears_still_charts_its_future(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The OTHER ``None``: a loan that never pays off keeps a forward line.
+
+        Trued up so far above the schedule that the level payment cannot cover
+        the monthly interest, the balance grows and the fold never reaches zero.
+        The loan still owes money every month ahead, so the span must run out to
+        the last installment the PLAN models.  Ending it at today instead would
+        draw no forward debt beside a market value that keeps appreciating --
+        future equity overstated by the entire balance, the finding-B-2 shape.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        today = date(2026, 4, 20)
+        with app.app_context():
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session, name="Negam Mortgage",
+                principal=Decimal("240000.00"), term=360,
+                origination_date=date(2026, 4, 1), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            insert_trueup_event(
+                load_loan_params(loan.id), Decimal("900000.00"),
+            )
+            db.session.commit()
+
+            ctx = BalanceContext.build(prop.user_id, as_of=today)
+            assert balance_at.loan_payoff_date(loan, ctx) is None
+            series = _series_for(prop, loan, today)
+            assert series.is_retired is False
+            last_month = max(series.month_balances)
+            assert last_month > (today.year, today.month), (
+                "a loan that never pays off must still chart its future debt; "
+                "ending the span at today draws phantom debt-free equity"
+            )
+            # It runs to the plan's last modelled installment, and the debt is
+            # still real there (growing, not zero).
+            plan_end = max(payment.due_date for payment in ctx.loan_plan(loan))
+            assert last_month == (plan_end.year, plan_end.month)
+            assert series.month_balances[last_month][0] > Decimal("240000.00")
+
+    def test_a_matured_loan_still_owing_spans_only_its_history(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """A loan whose TERM has run out while it still owes charts no future.
+
+        The empty-plan case, and it is not a degenerate: every contractual
+        installment AND the ESTIMATED tail's post-contractual extension are in
+        the past, so the plan synthesizes nothing.  The loan is not retired (it
+        owes $50,000) and has no derived payoff, so it takes the never-clears
+        branch -- which must fall back to today rather than index an empty plan.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 20))
+        today = date(2026, 4, 20)
+        with app.app_context():
+            prop = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            # 10-year term from 2005: matured 2015, and even the 60-month
+            # extension past that ran out in 2020.
+            loan = create_loan_account(
+                seed_user, db.session, name="Matured Balloon",
+                principal=Decimal("240000.00"), term=120,
+                origination_date=date(2005, 1, 1), payment_day=1,
+            )
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            insert_trueup_event(load_loan_params(loan.id), Decimal("50000.00"))
+            db.session.commit()
+
+            ctx = BalanceContext.build(prop.user_id, as_of=today)
+            assert ctx.loan_plan(loan) == [], (
+                "precondition: the whole term and its extension must be past, "
+                "or this does not exercise the empty-plan fallback"
+            )
+            figures = balance_at.loan_figures(loan, ctx)
+            assert figures.payoff_date is None
+            assert figures.is_retired is False
+            series = _series_for(prop, loan, today)
+            assert max(series.month_balances) == (today.year, today.month)
+
     def test_back_projection_estimated_tier_and_tracking_start_seam(
         self, app, db, seed_user, seed_periods_today,
     ):

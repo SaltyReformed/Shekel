@@ -388,8 +388,10 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
             ONCE by the caller and threaded in so this and the paid-off gate do
             not each re-sample the seam.
         ctx: The :class:`~app.routes.loan._helpers._RouteLoanContext` for the
-            current loan (its ``monthly_payment`` and ``payoff_date``; the
-            plan-aware schedule is NOT read).
+            current loan (its ``monthly_payment``, and its DERIVED
+            ``payoff_date`` as the empty-slice fallback -- which may be ``None``
+            for a retired loan or one that never clears, so the template renders
+            the absence; the plan-aware schedule is NOT read).
         scenarios: The loan's :class:`loan_resolver.PayoffScenarios`; its
             ``original_forward`` slice is the contractual current-side baseline.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``

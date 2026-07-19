@@ -206,6 +206,20 @@ def create_payment_transfer(account_id):
     # Generate transfers for existing pay periods.
     generate_transfers_for_all_periods(template)
 
+    # ...and re-derive it AFTER, because since plan C8d the payoff is a fold over
+    # the loan's forward PLAN -- and the payments just generated are part of that
+    # plan.  The first call cannot see them (they do not exist yet), so on a loan
+    # with overdue installments it bounds against a plan with no records at all
+    # and lands months late; the next payoff-affecting mutation would then
+    # silently correct it, which is a stored value that disagrees with every
+    # screen until something unrelated happens to fix it.  Both calls are needed
+    # and neither is redundant: the first BOUNDS generation, this one RECORDS the
+    # payoff the generated plan actually implies.  Idempotent, so it is a no-op
+    # write whenever the two agree (a healthy loan: the generated payments match
+    # the contractual synthesis the first call folded).
+    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+
+
     db.session.commit()
 
     logger.info(
@@ -327,12 +341,14 @@ def track_payment(account_id):
     else:
         template.settings.derive_from_loan = True
 
-    # Re-sync the recurrence end date for parity with every sibling payment
-    # mutation.  Defensive: the projected payoff is derived from the contractual
-    # P&I plus the standing extra (both unchanged by the manual->derive flip), not
-    # from the transfer's stored cash, so this is a no-op today; it is kept
-    # idempotent so the end-date-tracks-payoff invariant cannot silently break if
-    # the payoff derivation ever comes to depend on the payment amount.
+    # Re-sync the recurrence end date.  **Load-bearing since plan C8d, where it
+    # used to be defensive:** the payoff is now a fold over the forward PLAN, and
+    # the PLANNED tier folds each projected shadow's cash as
+    # ``live_cash.get(shadow.id, shadow.effective_amount)``.  Flipping
+    # manual->derive is exactly what moves that value -- a manual payment folds
+    # its typed ``effective_amount``, a derive one the live contractual cash --
+    # so this switch MOVES the projected payoff whenever the two differ, which is
+    # the drift C7 flagged to get the user here in the first place.
     loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
     db.session.commit()
 

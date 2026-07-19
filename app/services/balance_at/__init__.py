@@ -93,8 +93,10 @@ and the models -- never a consumer package.  ``property_equity_chart`` and
 ``home_equity_service`` import FROM here, not the other way round.  Inside the
 package the direction is
 ``_grid -> {_cash_flow, _kind_correct} -> _inputs``, ``_liability -> _inputs``,
-and ``_secured_debt -> {_loan_figures, _inputs}`` -- a DAG with ``_inputs`` as
-the single leaf, so no view module imports a sibling that imports it back.
+``_secured_debt -> {_loan_figures, _positions, _inputs}``, and
+``_loan_figures -> _positions -> _plan`` (the figures' payoff is the fold to
+zero, plan step C8d) -- a DAG with ``_inputs`` and ``_plan`` as leaves, so no
+view module imports a sibling that imports it back.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.

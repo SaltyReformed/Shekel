@@ -4408,3 +4408,115 @@ class TestTypeDriftedLoanParamsRow:
                 m for m in horizon["milestones"]
                 if m["kind"] == "payoff" and "Drifted" in m["label"]
             ]
+
+
+class TestUnclearingDebtHasNoDebtFreeDate:
+    """A loan that never pays off must not be dropped from the debt-free date.
+
+    Plan C8d made ``payoff_date`` legitimately ``None`` for a loan whose payment
+    never clears it.  Both debt-free producers filtered those out and took
+    ``max()`` over what remained, so a borrower owing $900,000 on a loan the loan
+    page labels "No payoff at current payment" was told they go debt-free when
+    their small loan ends -- and with every loan in that state, the Horizon fell
+    through to its LOAN-FREE fallback window entirely.  Before C8d this could not
+    happen: ``LoanState.payoff_date`` was non-nullable.
+    """
+
+    def _never_clearing_loan(self, seed_user, db_session, periods):
+        """A loan whose level payment cannot cover its own monthly interest.
+
+        Trued up to $900,000 against a $240,000/30yr contract (a ~$1,439 payment
+        versus $4,500 of monthly interest at 6%), so the balance grows and the
+        fold never reaches zero.
+        """
+        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
+        # this module's convention of importing them where used.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_loan_account, insert_trueup_event, loan_params_for,
+        )
+        acct = create_loan_account(
+            seed_user, db_session, name="Never Clears",
+            principal=Decimal("240000.00"), rate=Decimal("0.06000"), term=360,
+            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+        )
+        insert_trueup_event(
+            loan_params_for(db_session, acct.id), Decimal("900000.00"),
+        )
+        db_session.commit()
+        return acct
+
+    def test_the_debt_summary_reports_no_debt_free_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The date is ``None`` and the reason is flagged, not silently dropped."""
+        with app.app_context():
+            from app.services import balance_at  # pylint: disable=import-outside-toplevel
+            acct = self._never_clearing_loan(seed_user, db.session, seed_periods)
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(acct, ctx)
+            assert figures.payoff_date is None, "precondition: it never clears"
+            assert figures.is_retired is False
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            summary = data["debt_summary"]
+            assert summary is not None
+            assert summary["total_debt"] > Decimal("0.00")
+            assert summary["projected_debt_free_date"] is None, (
+                "the cockpit reports a debt-free date while a loan on the same "
+                "page never pays off"
+            )
+            assert summary["has_unclearing_debt"] is True
+
+    def test_a_clearing_loan_beside_it_does_not_supply_the_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The healthy loan's payoff must NOT stand in as the debt-free date.
+
+        The measured shape: a $12,000 loan that clears in 2028 alongside a
+        $900,000 loan that never does.  Taking ``max()`` over the loans that DO
+        clear yields 2028 -- a date at which the borrower still owes $900,000.
+        """
+        with app.app_context():
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_loan_account,
+            )
+            self._never_clearing_loan(seed_user, db.session, seed_periods)
+            create_loan_account(
+                seed_user, db.session, name="Healthy Small",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            assert data["debt_summary"]["projected_debt_free_date"] is None
+
+    def test_the_horizon_is_not_loan_free(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The Horizon plants no "Debt-free" flag and does not go loan-free."""
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            self._never_clearing_loan(seed_user, db.session, seed_periods)
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            _end, debt_free, is_loan_free = _resolve_horizon_domain(
+                data["account_data"], date(2026, 3, 20),
+            )
+            assert debt_free is None
+            assert is_loan_free is False, (
+                "a borrower carrying a loan that never pays off was handed the "
+                "loan-free horizon window"
+            )

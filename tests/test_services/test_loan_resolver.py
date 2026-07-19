@@ -835,7 +835,11 @@ def test_payoff_date_and_total_interest():
         date(2026, 2, 1),
     )
 
-    assert state.payoff_date == date(2027, 1, 1)
+    # The schedule's last row IS the contractual payoff (the resolver no longer
+    # publishes a payoff_date field -- plan C8d moved the payoff to the balance
+    # seam's fold-to-zero; this pins the SCHEDULE, which is what this test is
+    # about).
+    assert state.schedule[-1].payment_date == date(2027, 1, 1)
     assert state.total_interest == Decimal("327.96")
     # Twelve rows: the final row absorbs residue into the
     # contractual term rather than emitting a phantom 13th row.
@@ -2354,7 +2358,10 @@ class TestConfirmedLedgerView:
         assert seeded.monthly_payment == unseeded.monthly_payment
         assert seeded.current_rate == unseeded.current_rate
         assert seeded.total_interest < unseeded.total_interest
-        assert seeded.payoff_date < unseeded.payoff_date
+        assert (
+            seeded.schedule[-1].payment_date
+            < unseeded.schedule[-1].payment_date
+        )
 
     def test_compute_payoff_scenarios_seeds_the_forward_slices(self):
         """The composer's forward slices start from the seed, not the replay.

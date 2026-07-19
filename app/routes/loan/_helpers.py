@@ -201,8 +201,23 @@ class _RouteLoanContext:
 
     @property
     def payoff_date(self) -> date | None:
-        """The committed schedule's last payment date (the seam's resolved figure)."""
+        """The DERIVED payoff -- the date the balance folds to zero (plan C8d).
+
+        ``None`` for a loan already RETIRED and for one that never pays off at
+        its current payment; :attr:`is_retired` separates the two.  It used to be
+        the committed schedule's last row, which reports a contractual date even
+        for a loan paying short.
+        """
         return self.figures.payoff_date
+
+    @property
+    def is_retired(self) -> bool:
+        """Whether the loan has originated and now owes nothing (the seam figure).
+
+        The disambiguator for a ``None`` :attr:`payoff_date`: retired (badge it
+        "Paid off") versus never-pays-off (say so).
+        """
+        return self.figures.is_retired
 
 
 def _require_figures(account, balance_ctx: BalanceContext) -> LoanFigures:

@@ -1009,9 +1009,32 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         node = self._producer_call(
             "resolve_account_loan(account_id, scenario_id, today)",
-            "app.services.loan_recurrence_sync",
+            "app.services._transfer_loan_posting",
         )
         with self.assertNoMessages():
+            self.checker.visit_call(node)
+
+    def test_flags_resolve_account_loan_from_the_recurrence_sync(self) -> None:
+        """The recurrence sync came OFF the resolver allowlist at plan C8d.
+
+        It used to resolve a loan to walk its committed schedule for the payoff;
+        it now reads the seam's DERIVED payoff (``balance_at.loan_figures``), so
+        the exemption guarded nothing.  Pins the removal: re-introducing a direct
+        resolve there is flagged rather than silently allowed.
+        """
+        node = self._producer_call(
+            "resolve_account_loan(account_id, scenario_id, today)",
+            "app.services.loan_recurrence_sync",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-balance-producer-bypass",
+                node=node,
+                args=("resolve_account_loan",),
+                line=1, col_offset=9,
+                end_line=1, end_col_offset=61,
+            ),
+        ):
             self.checker.visit_call(node)
 
     def test_allows_loan_figures_seam_entry_from_a_consumer(self) -> None:

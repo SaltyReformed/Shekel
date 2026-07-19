@@ -195,17 +195,23 @@ _LOAN_RESOLVER_PRODUCERS = frozenset({
 #   * ``loan_payment_service`` -- the live grid/transfer amount producer, inside
 #     the loan cluster (it composes the resolver for a payment's P&I, not for a
 #     displayed account balance).
-#   * ``loan_recurrence_sync`` / ``_transfer_loan_posting`` -- WRITE paths.  They
-#     resolve mid-mutation, which is exactly why the read-pass context is not a
-#     request-scoped cache; a writer is not a balance reader.
+#   * ``_transfer_loan_posting`` -- a WRITE path.  It resolves mid-mutation,
+#     which is exactly why the read-pass context is not a request-scoped cache;
+#     a writer is not a balance reader.
 #   * ``app.routes.loan`` -- the loan DETAIL page, a genuine rich-primitive
 #     consumer (the amortization table, the payoff and refinance calculators).
 #     It reads the resolver through its own ``_resolve`` seam.
+#
+# ``loan_recurrence_sync`` came OFF this list at plan step C8d: it stopped
+# resolving a loan to walk a schedule for the payoff and now reads the seam's
+# DERIVED payoff (``balance_at.loan_figures``), so its exemption guarded nothing
+# and its entry claimed a call that no longer exists.  Three entries above are
+# now in the same state -- see finding N-17; retiring them is the Phase-D fence
+# pass's job, not this step's.
 _LOAN_RESOLVER_MODULES = frozenset({
     "app.services.loan_resolution",
     "app.services.resolution_context",
     "app.services.loan_payment_service",
-    "app.services.loan_recurrence_sync",
     "app.services._transfer_loan_posting",
     "app.routes.loan",
 })
@@ -471,6 +477,12 @@ _FENCED_MODULE_RULINGS = {
             # name-fencing ``fold_forward`` to close the gap is a Phase-D candidate,
             # kept off the frozen fence here.
             "loan_plan",
+            # The memoized DERIVED payoff date (plan step C8): a ``date``, not a
+            # balance-at-T.  There is nothing a consumer can render as money, and
+            # the producer it memoizes (``balance_at.loan_payoff_date``) composes
+            # the fenced surfaces -- ``generate_debt_schedules`` and ``loan_plan``
+            # -- INSIDE the seam, which is where the fence binds.
+            "loan_payoff",
         }),
     ),
 }

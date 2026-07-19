@@ -54,6 +54,7 @@ loan silently resolving at a different one.
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
@@ -70,6 +71,12 @@ if TYPE_CHECKING:
     # runtime import would cycle.  :meth:`BalanceContext.loan_plan` imports the
     # builder lazily (see there); the annotation resolves through here.
     from app.services.balance_at._plan import PlannedPayment
+
+# The shape :meth:`BalanceContext.loan_payoff` takes: the seam's payoff
+# derivation, injected rather than imported so this module never reaches up into
+# the seam that imports it (see that method's docstring).  Named here so the
+# signature reads as a contract instead of a bare callable.
+PayoffDeriver = Callable[[Account, "BalanceContext"], date | None]
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,9 @@ class BalanceContext:
         default_factory=dict, repr=False, compare=False,
     )
     _plans: "dict[int, list[PlannedPayment]]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _payoffs: "dict[tuple[int, PayoffDeriver], date | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -297,6 +307,73 @@ class BalanceContext:
             )
             self._plans[account.id] = build_loan_plan(account, self)
         return self._plans[account.id]
+
+    def loan_payoff(
+        self, account: Account, derive: "PayoffDeriver",
+    ) -> date | None:
+        """Return *account*'s DERIVED payoff for this pass, deriving it once.
+
+        The memo that collapses a read pass's N derivations of one loan's payoff
+        to one.  The payoff is a FOLD TO ZERO over the loan's forward plan
+        (:func:`app.services.balance_at.loan_payoff_date`, plan step C8d), so
+        deriving it splits every planned installment -- a 30-year mortgage's plan
+        is ~420 records.  A single ``/savings`` render asks for it twice on one
+        loan (the debt tile's :func:`~app.services.balance_at.loan_figures`, and
+        the home-equity card's configured-loan test, which builds the same figures
+        and discards them), and the property page asks again per secured loan, so
+        re-deriving it per reader is the same redundant derivation
+        :meth:`resolved_loan`, :meth:`loan_walk`, and :meth:`loan_plan` already
+        remove.
+
+        It is a pure function of this pass's pinned ``scenario`` and ``as_of``
+        (the plan it folds is memoized on those same two pins), so memoizing it
+        per account for the pass is exactly as safe as the three memos above.
+
+        **The derivation is INJECTED, not imported, and that is the point.**  The
+        payoff producer lives in the ``balance_at`` seam, which sits ABOVE this
+        module and imports it -- so reaching up for the producer here inverts the
+        cluster's dependency direction.  :meth:`loan_plan` above does reach up,
+        through a deferred import that exists only to break the cycle it creates;
+        pylint reports that shape as ``cyclic-import`` the moment a second such
+        edge lands on it.  Taking the deriver as an argument keeps the arrow
+        pointing one way: this layer owns the pass's memo SLOTS, the seam owns
+        what fills them.  (Migrating :meth:`loan_plan` to the same shape is a
+        Phase-D candidate.)
+
+        **The key includes the DERIVER, so the constraint is structural.**  A memo
+        keyed by account alone would hand a second, different *derive* the FIRST
+        one's answer -- silently, with no error and nothing for a checker to see.
+        That is precisely the "discipline nobody could enforce" this module exists
+        to replace (see its opening paragraph), so the deriver is part of the key
+        rather than a rule in prose: a different function gets its own slot and
+        its own answer. In practice there is exactly one
+        (:func:`app.services.balance_at.loan_figures` is the single funnel every
+        payoff consumer reads through), so the key never grows.
+
+        **NOT fenced (a non-producer).**  It answers a ``date``; there is nothing
+        here a consumer can render as money.  The producer it memoizes composes
+        the fenced surfaces (``generate_debt_schedules``, :meth:`loan_plan`)
+        inside the seam, which is where the fence binds.
+
+        Args:
+            account: The loan account to derive the payoff for.  Must belong to
+                ``user_id`` (the caller owns the ownership check), and must be a
+                CONFIGURED loan -- the seam's producer fails loud otherwise, and
+                that contract passes through here rather than being softened into
+                a ``None`` a caller would read as "never pays off".
+            derive: The seam's payoff derivation, called at most once per account
+                per pass.  See the one-slot-one-derivation note above.
+
+        Returns:
+            The memoized payoff date, or ``None`` when the loan is already
+            retired or never pays off within its plan (the caller reads
+            :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the
+            two apart).
+        """
+        key = (account.id, derive)
+        if key not in self._payoffs:
+            self._payoffs[key] = derive(account, self)
+        return self._payoffs[key]
 
 
 def require_scenario(ctx: BalanceContext) -> None:

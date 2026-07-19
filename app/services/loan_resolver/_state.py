@@ -68,20 +68,27 @@ class LoanState:
             schedule-derived -- the same figures this card displays).
             Generated once via the amortization engine; consumers
             read it without recomputing.
-        payoff_date: Last ``payment_date`` in ``schedule`` (the
-            month the loan reaches zero).  ``origination_date`` when
-            the schedule is empty (zero balance / zero remaining
-            months).
         total_interest: Sum of ``row.interest`` across the schedule
             (life-of-loan total).  ``Decimal("0.00")`` when the
             schedule is empty.
+
+    There is deliberately no ``payoff_date`` here (plan step C8d).  It
+    was the schedule walk's last row -- and that walk amortizes one
+    contractual installment per month whether or not a payment stands
+    behind it, and forces a final row at the contractual date for a
+    loan paying short, so the "payoff" it reported was a property of
+    the schedule rather than of the balance.  The payoff is now
+    DERIVED from the fold that produces the balance itself
+    (:func:`app.services.balance_at.loan_payoff_date` -- the date the
+    balance reaches zero), so the payoff and the balance cannot
+    disagree.  A consumer takes it from
+    :attr:`~app.services.balance_at.LoanFigures.payoff_date`.
     """
 
     current_balance: Decimal
     monthly_payment: Decimal
     current_rate: Decimal
     schedule: list[AmortizationRow]
-    payoff_date: date
     total_interest: Decimal
 
 
@@ -345,22 +352,18 @@ def resolve_loan(
     monthly_payment = current_period.period_pi
     current_rate = current_period.annual_rate
 
-    # Derive payoff_date and total_interest from the single
-    # schedule generation (DRY -- no second engine call).
-    if schedule:
-        payoff_date = schedule[-1].payment_date
-        total_interest_full = sum(
-            (row.interest for row in schedule), ZERO_MONEY,
-        )
-    else:
-        payoff_date = loan_inputs.loan_params.origination_date
-        total_interest_full = ZERO_MONEY
+    # Life-of-loan interest from the single schedule generation (DRY --
+    # no second engine call).  The payoff date is NOT derived here: it
+    # is a fold-to-zero over the loan's forward plan, produced by the
+    # balance seam (see the :class:`LoanState` docstring, plan C8d).
+    total_interest_full = sum(
+        (row.interest for row in schedule), ZERO_MONEY,
+    )
 
     return LoanState(
         current_balance=round_money(current_balance_full),
         monthly_payment=monthly_payment,
         current_rate=current_rate,
         schedule=schedule,
-        payoff_date=payoff_date,
         total_interest=round_money(total_interest_full),
     )

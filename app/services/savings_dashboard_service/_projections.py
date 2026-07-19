@@ -206,9 +206,10 @@ def _project_one_account(acct, ctx, balance_maps):
     )
 
     if loan_result is not None:
-        # Loan tile: a loan-resolver (rich-primitive) consumer.  The seam is
-        # not consulted -- current_balance is the as-of-today LoanState
-        # balance, and the tile renders payment + payoff, not horizons.
+        # Loan tile: both figures come from the seam (see
+        # :func:`_compute_loan_account`) -- the balance from ``balance_at``, the
+        # payment / rate / payoff from ``loan_figures``.  It renders no horizons,
+        # so it takes no balance map.
         current_bal = loan_result.current_balance
         projected = {}
     else:

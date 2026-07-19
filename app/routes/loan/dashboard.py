@@ -4,9 +4,13 @@ Shekel Budget App -- Loan route package: detail dashboard.
 The loan detail page (GET): summary card, payment breakdown, multi-scenario
 balance chart, escrow / rate-history panels, amortization-schedule tab, and the
 recurring-transfer prompt.  The route assembles its template context by merging
-the per-section dicts the private helpers below return; the recurrence
-end_date sync (a deliberate write on a GET, R-4) also lives here because the
-dashboard is where the payoff date is computed with full payment context.
+the per-section dicts the private helpers below return.
+
+It writes nothing: the recurrence ``end_date`` sync that once ran here as a
+deliberate write on a GET (Risk R-4) moved to
+:mod:`app.services.loan_recurrence_sync`, called from each payoff-affecting
+MUTATION instead, and the payoff itself is no longer computed here at all -- it
+is derived by the balance seam (plan step C8d) and read off the route context.
 """
 
 from datetime import date
@@ -33,7 +37,6 @@ from app.routes.loan._helpers import (
     build_baseline_scenarios,
 )
 from app.services import balance_at, escrow_calculator
-from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_posting_service import (
     confirmed_loan_payment_history,
     loan_balance_anchor_history,
@@ -195,63 +198,22 @@ def _compute_payment_breakdown(schedule, escrow_components):
     }
 
 
-def _build_planned_summary(monthly_payment, planned_schedule, params):
-    """Build the life-of-loan AmortizationSummary from the planned schedule.
-
-    monthly_payment comes from the seam figures (single source of truth);
-    total_interest / payoff_date are summed/read over ``planned_schedule``
-    (history + forward) so the "Total Interest (life of loan)" and
-    "Projected Payoff" cards reflect the user's full trajectory.  The
-    composer's ``total_interest_committed`` covers the forward slice
-    only; summing over ``planned_schedule`` adds back the history-row
-    interest the dashboard has always displayed.
-
-    Args:
-        monthly_payment: The loan's P&I payment (``ctx.monthly_payment`` --
-            the seam figure).
-        planned_schedule: history + committed-forward AmortizationRows.
-        params: ORM :class:`LoanParams` (origination fallback date).
-
-    Returns:
-        :class:`AmortizationSummary` (no acceleration: with-extra fields
-        mirror the base fields, months/interest saved zero).
-    """
-    planned_total_interest = sum(
-        (row.interest for row in planned_schedule), Decimal("0.00"),
-    )
-    planned_payoff_date = (
-        planned_schedule[-1].payment_date if planned_schedule
-        else params.origination_date
-    )
-    return AmortizationSummary(
-        monthly_payment=monthly_payment,
-        total_interest=planned_total_interest,
-        payoff_date=planned_payoff_date,
-        total_interest_with_extra=planned_total_interest,
-        payoff_date_with_extra=planned_payoff_date,
-        months_saved=0,
-        interest_saved=Decimal("0.00"),
-    )
-
-
 def _build_payment_summary(
-    current_balance, summary, planned_schedule, escrow_components,
+    current_balance, monthly_payment, planned_schedule, escrow_components,
 ):
     """Build the loan-card payment-summary template context.
 
     Bundles the seam's current balance, the total monthly
     payment (P&I + escrow), the current-period payment breakdown, and
-    the escrow display list.  The life-of-loan ``summary`` is built by
-    the caller (it is also needed for the recurrence end_date sync) and
-    passed in for its ``monthly_payment``.  The payment breakdown uses
+    the escrow display list.  The payment breakdown uses
     the planned schedule so it reflects the next planned payment, not
     the contractual one when the user is under-/over-paying.
 
     Args:
         current_balance: The loan's balance-at-today (``ctx.current_balance`` --
             the seam's fold, plan C4).
-        summary: The life-of-loan :class:`AmortizationSummary` (monthly_payment
-            source for the total payment).
+        monthly_payment: The loan's P&I payment (``ctx.monthly_payment`` -- the
+            seam figure), the base the total payment adds escrow to.
         planned_schedule: history + committed-forward AmortizationRows.
         escrow_components: Today's active escrow lines.
 
@@ -267,7 +229,7 @@ def _build_payment_summary(
         # and the net-worth liability (same seam, same resolution).
         "current_principal_display": current_balance,
         "total_payment": escrow_calculator.calculate_total_payment(
-            summary.monthly_payment, escrow_components,
+            monthly_payment, escrow_components,
         ),
         "payment_breakdown": _compute_payment_breakdown(
             planned_schedule, escrow_components,
@@ -627,15 +589,22 @@ def dashboard(account_id):
     # balance (plan Section 8), so the card / debt card / net-worth
     # liability and the chart cannot diverge (the E-18 invariant).
     planned_schedule = scenarios.history_rows + scenarios.committed_forward
-    summary = _build_planned_summary(
-        ctx.monthly_payment, planned_schedule, params,
-    )
 
     context = {
         "account": account,
         "account_type": account_type,
         "params": params,
-        "summary": summary,
+        "monthly_payment": ctx.monthly_payment,
+        # C8d: the "Projected payoff" chip's THREE states, from the seam's
+        # DERIVED payoff -- the date the BALANCE folds to zero, not the last row
+        # of the committed schedule walk this page used to read.  A date renders
+        # the month; a RETIRED loan is badged "Paid off" (finding B-20, which
+        # showed such a loan its ORIGINATION date as a payoff); and a loan whose
+        # payment never clears it says so rather than hiding the chip, which is
+        # the same underpayment C7's drift warning flags above.  ``is_retired``
+        # is what separates the two ``None`` states.
+        "payoff_date": ctx.payoff_date,
+        "loan_is_retired": ctx.is_retired,
         "rate_history": ctx.loan.rate_history,
         # DH-#56: the rate columns the dashboard displays/edits, derived
         # from the resolver / RateHistory (the retired
@@ -661,7 +630,7 @@ def dashboard(account_id):
         "collateral_candidates": _load_collateral_candidates(current_user.id),
     }
     context.update(_build_payment_summary(
-        ctx.current_balance, summary, planned_schedule,
+        ctx.current_balance, ctx.monthly_payment, planned_schedule,
         ctx.loan.escrow_components,
     ))
     # C7 (D3): the underpayment-drift warning -- a manual recurring payment that

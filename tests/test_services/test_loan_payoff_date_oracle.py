@@ -46,6 +46,7 @@ from app.services import (
     loan_payment_service,
     loan_resolver,
 )
+from app.services.balance_at._positions import loan_payoff_date
 from app.services.balance_at._plan import PlannedPayment, plan_payoff_date
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.resolution_context import BalanceContext
@@ -71,6 +72,7 @@ def _payment(due, cash, *, rate="0.00", escrow="0.00", effective=None):
         annual_rate=Decimal(rate),
         is_estimated=False,
     )
+
 
 
 class TestPlanPayoffDate:
@@ -438,4 +440,187 @@ class TestPayoffTailExtension:
             past_payoff = add_months(contractual_payoff, 12)
             assert balance_at.balance_at(account, ctx, past_payoff) == (
                 Decimal("0.00")
+            )
+
+
+class TestPayoffCutover:
+    """Plan C8d: the seam's figures carry the DERIVED payoff, derived ONCE.
+
+    The oracle above grades the producer.  These grade the CUTOVER -- that the
+    figure every consumer reads (:attr:`~app.services.balance_at.LoanFigures.payoff_date`,
+    the single funnel behind the loan card's chip, the /savings cockpit and
+    Horizon, and the equity chart's axis) IS that producer's answer and not the
+    resolver's schedule endpoint it used to be.
+    """
+
+    def test_figures_payoff_is_the_derived_payoff(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """``LoanFigures.payoff_date`` equals ``loan_payoff_date`` on a healthy loan."""
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, _ = _create_loan(
+                seed_user, current, current.start_date, name="Cutover Healthy",
+            )
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(account, ctx)
+            assert figures is not None
+            assert figures.payoff_date == balance_at.loan_payoff_date(
+                account, ctx,
+            )
+
+    def test_figures_payoff_leaves_the_schedule_endpoint_behind(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """On an UNDERPAYING loan the figure is the fold's date, not the schedule's.
+
+        The control that makes the test above non-vacuous: for a healthy loan the
+        two producers agree, so equality alone cannot show which one is wired.
+        A loan trued up $500 above the contractual schedule clears two
+        installments LATER than the resolver's ``is_last_month``-forced
+        contractual payoff (the C8c extension), so the two answers differ and the
+        figure must carry the fold's.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, loan_params = _create_loan(
+                seed_user, current, current.start_date, name="Cutover Underpaid",
+            )
+            insert_trueup_event(loan_params, _PRINCIPAL + Decimal("500.00"))
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+            committed_payoff, _ = _committed_payoff(
+                loan_params, scenario_id, today, Decimal("0.00"),
+            )
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(account, ctx)
+            assert figures is not None
+            assert figures.payoff_date == add_months(committed_payoff, 2)
+            assert figures.payoff_date != committed_payoff, (
+                "the figure still reports the resolver's committed schedule "
+                "endpoint, so the cutover is not wired"
+            )
+
+    def test_a_retired_loan_reports_no_payoff_but_is_retired(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A retired loan's figure is ``None`` + ``is_retired`` -- the badge state.
+
+        Finding B-20: it used to report the loan's ORIGINATION date as a
+        "payoff" (the resolver's empty-schedule fallback), which is a past date
+        presented as a future event.  The two fields together are what let the
+        chip badge "Paid off" instead of inventing a date.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, loan_params = _create_loan(
+                seed_user, current, current.start_date, name="Cutover Retired",
+            )
+            insert_trueup_event(loan_params, Decimal("0.00"))
+            db.session.commit()
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(account, ctx)
+            assert figures is not None
+            assert figures.payoff_date is None
+            assert figures.is_retired is True
+            assert figures.payoff_date != loan_params.origination_date
+
+    def test_the_payoff_is_derived_once_per_read_pass(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Reading the figures twice folds the plan to zero ONCE.
+
+        The memo (:meth:`~app.services.resolution_context.BalanceContext.loan_payoff`)
+        exists because a single ``/savings`` render asks two callers for the same
+        loan's figures.  Proven by inspecting the pass's memo directly: after
+        ``loan_figures`` runs, the slot keyed by the REAL deriver is populated, so
+        the second read is served from it rather than re-folding.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, _ = _create_loan(
+                seed_user, current, current.start_date, name="Cutover Memo",
+            )
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert not ctx._payoffs, "the memo starts empty"  # pylint: disable=protected-access
+            first = balance_at.loan_figures(account, ctx)
+            assert first is not None
+
+            # The slot the seam's own deriver filled -- the wiring claim.
+            key = (account.id, loan_payoff_date)
+            assert key in ctx._payoffs  # pylint: disable=protected-access
+            assert ctx._payoffs[key] == first.payoff_date  # pylint: disable=protected-access
+
+            second = balance_at.loan_figures(account, ctx)
+            assert second is not None
+            assert second.payoff_date == first.payoff_date
+
+    def test_a_second_deriver_gets_its_own_slot(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A DIFFERENT deriver never reads the first one's answer.
+
+        The memo keys on ``(account, derive)``, so the "every caller must pass the
+        same function" rule is structural rather than a note in a docstring.  Keyed
+        by account alone, this sentinel would silently receive the real payoff --
+        the exact silent-wrong-answer shape ``resolution_context`` exists to
+        replace.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, _ = _create_loan(
+                seed_user, current, current.start_date, name="Memo Slots",
+            )
+            sentinel = date(1999, 12, 31)
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            real = balance_at.loan_figures(account, ctx)
+            assert real is not None
+            assert real.payoff_date != sentinel
+
+            assert ctx.loan_payoff(
+                account, lambda _account, _ctx: sentinel,
+            ) == sentinel
+
+    def test_a_fresh_pass_derives_again(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """The memo is scoped to ONE read pass, never cached across passes.
+
+        The counterpart to the test above, and the property that lets a WRITE
+        path (``loan_recurrence_sync``) build a context mid-mutation and see the
+        post-write loan: a new context derives from scratch.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, _ = _create_loan(
+                seed_user, current, current.start_date, name="Cutover Fresh",
+            )
+
+            derived = []
+
+            def _counting(account_arg, ctx_arg):
+                derived.append(account_arg.id)
+                return balance_at.loan_payoff_date(account_arg, ctx_arg)
+
+            first_ctx = BalanceContext.build(seed_user["user"].id)
+            first_ctx.loan_payoff(account, _counting)
+            first_ctx.loan_payoff(account, _counting)
+            assert derived == [account.id], "one pass must derive once"
+
+            second_ctx = BalanceContext.build(seed_user["user"].id)
+            second_ctx.loan_payoff(account, _counting)
+            assert derived == [account.id, account.id], (
+                "a NEW pass must derive again -- the memo is per-pass, and a "
+                "write path depends on that to see its own writes"
             )

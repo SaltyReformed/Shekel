@@ -95,6 +95,7 @@ def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
     return end_date
 
 
+
 def positions(
     account: Account, ctx: BalanceContext, dates: list[date],
 ) -> dict[date, Decimal]:

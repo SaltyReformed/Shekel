@@ -31,7 +31,7 @@
       Create a recurring monthly transfer of
       <strong class="font-mono">{{ money(total_payment) }}</strong>
       {% if monthly_escrow > 0 %}
-        (<span class="font-mono">{{ money(summary.monthly_payment) }}</span> P&I
+        (<span class="font-mono">{{ money(monthly_payment) }}</span> P&I
         + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow)
       {% endif %}
       to keep your loan on track.
@@ -80,7 +80,7 @@
       is <strong class="font-mono">{{ money(payment_drift.shortfall) }}</strong>
       short of the contractual monthly payment of
       <strong class="font-mono">{{ money(payment_drift.contract) }}</strong>{% if monthly_escrow > 0 %}
-      (<span class="font-mono">{{ money(summary.monthly_payment) }}</span> P&amp;I
+      (<span class="font-mono">{{ money(monthly_payment) }}</span> P&amp;I
       + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow){% endif %},
       likely after an escrow or rate change. Any standing extra principal is
       separate and unaffected. Switch it to track the loan automatically so it
@@ -119,13 +119,32 @@
       {{ rate_chip(current_rate, params.is_arm) }}
       <div class="pulse-chip">
         <div class="pulse-chip__label">Monthly P&I</div>
-        <div class="pulse-chip__value font-mono">{{ money(summary.monthly_payment) }}</div>
+        <div class="pulse-chip__value font-mono">{{ money(monthly_payment) }}</div>
       </div>
       {{ total_payment_chip(total_payment, monthly_escrow) }}
+      {# C8d: the payoff is DERIVED (the date the balance folds to zero), so it
+         has three states rather than always being a date.  A retired loan is
+         badged instead of being shown its origination date as a "payoff"
+         (finding B-20); a loan whose payment never clears it says so, in
+         legible text, rather than hiding the chip -- that is the same
+         underpayment the drift warning above flags.  Colour is never the only
+         signal: each state carries its own words. #}
+      {% if loan_is_retired %}
+      <div class="pulse-chip pulse-chip--done">
+        <div class="pulse-chip__label">Payoff</div>
+        <div class="pulse-chip__value">Paid off</div>
+      </div>
+      {% elif payoff_date is not none %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">Projected payoff</div>
-        <div class="pulse-chip__value">{{ summary.payoff_date.strftime('%b %Y') }}</div>
+        <div class="pulse-chip__value">{{ payoff_date.strftime('%b %Y') }}</div>
       </div>
+      {% else %}
+      <div class="pulse-chip pulse-chip--warning">
+        <div class="pulse-chip__label">Projected payoff</div>
+        <div class="pulse-chip__value loan-chip-text">No payoff at current payment</div>
+      </div>
+      {% endif %}
       {% if interest_paid_ytd is not none %}
       <div class="pulse-chip">
         <div class="pulse-chip__label">Interest paid, YTD</div>

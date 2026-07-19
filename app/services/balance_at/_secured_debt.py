@@ -75,7 +75,7 @@ from app.services.loan_resolution import (
 from app.services.resolution_context import BalanceContext
 from app.utils.dates import add_months, months_between
 
-from ._loan_figures import loan_figures
+from ._loan_figures import LoanFigures, loan_figures
 from ._positions import positions, window_sample_date
 
 # ``debt_tier`` values: the per-month confidence of the summed debt line, so the
@@ -106,7 +106,9 @@ class SecuredLoanSeries:
             property's ``secured_loans`` by position).
         month_balances: The loan's owed balance per calendar month, keyed by
             ``(year, month)`` and tagged with its confidence tier, spanning the
-            loan's origination month through the later of its payoff and today.
+            loan's origination month through the end of its debt line
+            (:func:`_debt_span_upper` -- its DERIVED payoff, today for a retired
+            loan, the plan's last installment for one that never clears).
             Each entry is ``(balance, tier)``: months before the tracking-start
             assertion carry the contractual back-projection (:data:`TIER_ESTIMATED`);
             months at or before today carry the fold of the loan's actual payments
@@ -187,15 +189,71 @@ def _debt_span_months(origination: date, upper: date) -> list[date]:
     """First-of-month dates from *origination*'s month through *upper*'s month.
 
     The contiguous calendar span the loan can owe over: its origination month
-    through the later of its payoff and today (:func:`_loan_month_balances` passes
-    ``max(payoff, as_of)`` as *upper*).  At least one month, since *upper* is never
-    before *origination*.
+    through the later of its debt-line end and today (:func:`_debt_span_upper`
+    decides the former).  At least one month, since *upper* is never before
+    *origination*.
     """
     first = date(origination.year, origination.month, 1)
     return [
         add_months(first, offset)
         for offset in range(months_between(origination, upper) + 1)
     ]
+
+
+def _debt_span_upper(
+    loan: Account, figures: LoanFigures, ctx: BalanceContext,
+) -> date:
+    """Return the last date the loan's debt line runs to -- never before *as_of*.
+
+    The chart's axis ends where the debt ends, and since plan step C8 the payoff
+    is DERIVED (:attr:`~app.services.balance_at.LoanFigures.payoff_date`, the date
+    the balance folds to zero) rather than read off the resolver's schedule walk.
+    A derived payoff can be ``None``, which is TWO different states, so this
+    splits them rather than collapsing both onto one fallback:
+
+    * **RETIRED** (``payoff is None`` and the loan owes nothing): the debt line is
+      history -- there is no future debt to draw -- so the span ends at *as_of*.
+      That is what the retired loan produced before C8 too (its schedule's last
+      row is a past date, which ``max(payoff, as_of)`` resolved to *as_of*), and
+      the chart drops the loan on :attr:`SecuredLoanSeries.is_retired` regardless;
+      ending here keeps a retired 30-year mortgage from folding 360 dead months.
+    * **A real payoff**: ``max(payoff, as_of)`` -- the loan's own end, or today for
+      one that pays off imminently.
+    * **``None`` and NOT retired**: the loan does not clear within its plan
+      (negative amortization, or an underpayment too severe for the
+      post-contractual extension).  It still owes money for every month ahead, so
+      the span runs to the last installment the PLAN models
+      (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`, already
+      memoized -- no extra derivation).  Falling back to *as_of* here would draw
+      NO forward debt for a loan that never stops owing, and the property's
+      appreciation line would carry on beside it -- future equity overstated by
+      the whole balance, the finding-B-2 shape this producer exists to close.
+
+    Args:
+        loan: The secured loan account.
+        figures: Its seam :class:`~app.services.balance_at.LoanFigures` (the
+            derived payoff and the retired predicate), resolved once by the
+            caller.
+        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+
+    Returns:
+        The span's last date, never earlier than ``ctx.as_of``.
+    """
+    if figures.payoff_date is not None:
+        return max(figures.payoff_date, ctx.as_of)
+    if figures.is_retired:
+        return ctx.as_of
+    plan = ctx.loan_plan(loan)
+    if not plan:
+        # Reachable, and not a degenerate: a loan whose whole TERM has already
+        # matured while it still owes (a balloon, or a long-delinquent loan).
+        # Every contractual installment is in the past, and so is the ESTIMATED
+        # tail's extension, so the plan synthesizes nothing -- the model has no
+        # future payment to draw.  (``original_principal > 0`` and
+        # ``term_months > 0`` are DB check constraints, so an EMPTY contractual
+        # schedule is not the case being handled here.)
+        return ctx.as_of
+    return max(max(payment.due_date for payment in plan), ctx.as_of)
 
 
 def _sample_date_for(month_first: date, as_of: date) -> date:
@@ -213,7 +271,10 @@ def _sample_date_for(month_first: date, as_of: date) -> date:
 
 
 def _loan_month_balances(
-    loan: Account, resolved: ResolvedLoan, ctx: BalanceContext,
+    loan: Account,
+    resolved: ResolvedLoan,
+    figures: LoanFigures,
+    ctx: BalanceContext,
 ) -> dict[tuple[int, int], tuple[Decimal, str]]:
     """Fold one loan into its tiered per-calendar-month debt line.
 
@@ -237,17 +298,22 @@ def _loan_month_balances(
         loan: The secured loan :class:`~app.models.account.Account`.
         resolved: Its :class:`~app.services.loan_resolution.ResolvedLoan` from the
             read pass's one memoized resolution.
+        figures: Its seam :class:`~app.services.balance_at.LoanFigures`, resolved
+            once by the caller and threaded in so the span's end
+            (:func:`_debt_span_upper`) reads the SAME derived payoff the loan card
+            and the /savings chip show -- the chart's axis cannot end at a
+            different month from the payoff rendered beside it.
         ctx: The read pass's
             :class:`~app.services.resolution_context.BalanceContext`; its ``as_of``
             is the fold/projection boundary that :func:`positions` also splits on.
 
     Returns:
         ``{(year, month): (balance, tier)}`` across the loan's whole debt span --
-        origination month through the later of payoff and today.
+        origination month through :func:`_debt_span_upper`.
     """
     as_of = ctx.as_of
     month_firsts = _debt_span_months(
-        resolved.params.origination_date, max(resolved.state.payoff_date, as_of),
+        resolved.params.origination_date, _debt_span_upper(loan, figures, ctx),
     )
     sample_on = {
         (month_first.year, month_first.month): _sample_date_for(month_first, as_of)
@@ -312,7 +378,7 @@ def secured_loan_series(
         resolved = ctx.resolved_loan(loan)
         series.append(SecuredLoanSeries(
             account_id=loan.id,
-            month_balances=_loan_month_balances(loan, resolved, ctx),
+            month_balances=_loan_month_balances(loan, resolved, figures, ctx),
             is_retired=figures.is_retired,
         ))
     return series

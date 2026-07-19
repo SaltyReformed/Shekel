@@ -42,6 +42,7 @@ from app.services import (
     loan_resolver,
     net_worth_kernel,
 )
+from app.utils.dates import add_months
 from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
@@ -493,8 +494,8 @@ def test_months_saved_single_quantity(
 def test_arm_payoff_date_consistent_across_surfaces(
     app, auth_client, seed_user, seed_periods,
 ):
-    """C17-5 / HIGH-08 / F-023: an ARM loan's payoff_date is identical
-    across resolver / dashboard / year-end-summary surfaces.
+    """C17-5 / HIGH-08 / F-023: an ARM loan's payoff is identical across
+    surfaces -- each surface compared against the producer it now reads.
 
     Pre-Commit-15 the dashboard derived its "Projected Payoff" card
     from ``amortization_engine.calculate_summary`` while the year-end
@@ -503,8 +504,19 @@ def test_arm_payoff_date_consistent_across_surfaces(
     ``calculate_remaining_months`` count made the symptom-#4 payment
     creep visible -- and the resulting schedules ended on different
     payment_dates.  Commit 13 fixed the payment number; Commit 17
-    pins that the payoff_date now matches across every surface that
-    reads the resolver's schedule.
+    pinned that the payoff matched across every surface.
+
+    **Plan step C8d re-partitioned those surfaces, and this test follows.**
+    The chip no longer reads a schedule at all: it reads the seam's DERIVED
+    payoff, the date the BALANCE folds to zero.  So there are two invariants,
+    not one -- the two SCHEDULE consumers still agree with each other, and the
+    chip agrees with the seam -- and for this fixture the two answers
+    deliberately DIFFER, which the control below pins.  This ARM originated
+    2026-01-01 and has never been paid, so its balance is still the full
+    $400,000.00: the contractual schedule says Jan 2056 (it amortizes six
+    installments nobody paid), while the fold says the borrower is still a
+    whole 360-month term away from its NEXT installment.  That gap IS finding
+    B-9, and the chip showing the honest side of it is the point of C8d.
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
@@ -512,13 +524,17 @@ def test_arm_payoff_date_consistent_across_surfaces(
         )
 
         state = _resolver_state(account, loan_params, date.today())
-        resolver_payoff = state.payoff_date
+        # The resolver publishes no payoff_date since plan C8d; its schedule's
+        # last row is the CONTRACTUAL endpoint, and that is what the other
+        # schedule consumer below must agree with.
+        resolver_payoff = (
+            state.schedule[-1].payment_date if state.schedule else None
+        )
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = net_worth_kernel.debt_schedule_rows(
-            [account], BalanceContext.build(seed_user["user"].id),
-        )
+        ctx = BalanceContext.build(seed_user["user"].id)
+        debt_schedules = net_worth_kernel.debt_schedule_rows([account], ctx)
         ye_schedule = debt_schedules[account.id]
         ye_payoff = (
             ye_schedule[-1].payment_date if ye_schedule else None
@@ -529,21 +545,41 @@ def test_arm_payoff_date_consistent_across_surfaces(
             f"year-end={ye_payoff} -- two surfaces, two payoff dates."
         )
 
-        # Dashboard "Projected Payoff" card: the route assembles its
-        # own ``AmortizationSummary`` from the resolver-anchored
-        # planned schedule (loan.py:557-565).  Verify the displayed
-        # date matches the resolver's ``payoff_date`` by reading the
-        # rendered loan card.
+        # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
+        # loan has paid nothing, so its balance is still $400,000.00 and the
+        # contractual payment amortizes exactly that over exactly 360
+        # installments; the first one the plan synthesizes is the next one after
+        # today (a strictly-past installment with no record pays nothing, D1), so
+        # the loan clears 360 months after it.
+        seam_payoff = balance_at.loan_payoff_date(account, ctx)
+        assert seam_payoff is not None
+        first_forward = add_months(
+            date(date.today().year, date.today().month, 1), 1,
+        )
+        assert seam_payoff == add_months(first_forward, 359), (
+            f"Derived payoff {seam_payoff} is not 360 installments from the "
+            f"next one ({first_forward}); the fold is not starting from the "
+            "unpaid full principal."
+        )
+        # Control: the two answers genuinely differ here, so the chip assertion
+        # below cannot pass by both producers happening to agree.  Without it a
+        # chip still wired to the schedule would look correct.
+        assert seam_payoff != resolver_payoff, (
+            "The fixture no longer separates the fold from the contractual "
+            "schedule, so this test cannot show which one the chip reads."
+        )
+
+        # Dashboard "Projected Payoff" chip: it renders the seam's derived
+        # payoff (plan C8d), so verify the displayed date against THAT, not
+        # against the resolver's contractual schedule endpoint.
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         assert resp.status_code == 200, (
             f"Loan dashboard GET failed: {resp.status_code}"
         )
         # The dashboard renders the abbreviated month / year of the
         # payoff date in the band's "Projected payoff" chip (template
-        # ``loan/dashboard.html``: ``%b %Y``).  For our ARM fixture (no
-        # payments, no extra) it must equal the resolver's life-of-loan
-        # endpoint.
-        expected_month_year = resolver_payoff.strftime("%b %Y")
+        # ``loan/dashboard.html``: ``%b %Y``).
+        expected_month_year = seam_payoff.strftime("%b %Y")
         html = resp.data.decode()
         # Anchor the assertion to the "Projected payoff" chip so a
         # different ``%b %Y`` token elsewhere on the page cannot mask a
@@ -558,8 +594,10 @@ def test_arm_payoff_date_consistent_across_surfaces(
         )
         card_text = card_match.group(1)
         assert card_text == expected_month_year, (
-            f"Projected Payoff card displayed {card_text!r}, "
-            f"expected resolver's payoff_date {expected_month_year!r}."
+            f"Projected Payoff chip displayed {card_text!r}, expected the "
+            f"seam's derived payoff {expected_month_year!r} (the contractual "
+            f"schedule says {resolver_payoff.strftime('%b %Y')} -- if the chip "
+            "shows THAT, it is still reading the schedule walk)."
         )
 
 
@@ -678,8 +716,11 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         )
         assert resolved is not None
         _params, state = resolved
-        assert state.payoff_date == ref_payoff, (
-            f"Summary-surface payoff {state.payoff_date} != committed detail "
+        summary_payoff = (
+            state.schedule[-1].payment_date if state.schedule else None
+        )
+        assert summary_payoff == ref_payoff, (
+            f"Summary-surface payoff {summary_payoff} != committed detail "
             f"payoff {ref_payoff}: the resolver seam still ignores the standing "
             "extra (contractual)."
         )

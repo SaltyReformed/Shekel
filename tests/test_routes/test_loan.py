@@ -15,13 +15,17 @@ import sqlalchemy as sa
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum
+from app.models.account import Account
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
 from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.resolution_context import BalanceContext
+from app.services.loan_loaders import load_loan_params, load_rate_changes
+from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.transfer_service import TransferSpec, create_transfer
+from app.utils.dates import add_months
 from app.services import (
     account_service,
     balance_at,
@@ -2765,6 +2769,7 @@ class TestLoanDashboardRegression:
         raw no-plan figure stays as the secondary line.  Without the
         fix, the route discarded ``ctx.loan.payments`` and showed only
         the overstated raw number.
+
         """
         acct = _create_mortgage(seed_user, db.session)
         # Projected (future) transfer well above the ~$1,580 contractual
@@ -6339,8 +6344,17 @@ class TestRefinanceForwardOnlyBaseline:
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
             schedule=confirmed + committed_forward,
-            payoff_date=date(2026, 3, 1),
             total_interest=Decimal("1247.50"),
+        )
+        # The route context stand-in.  ``_build_refinance_comparison`` reads only
+        # ``monthly_payment`` and ``payoff_date`` off it, and since plan C8d the
+        # payoff is the seam's DERIVED figure carried on the route context, not a
+        # ``LoanState`` field -- so the stand-in is the context's shape, not the
+        # resolver's.  The value here is the empty-slice fallback only; this
+        # fixture's ``original_forward`` is non-empty, so it must NOT be read.
+        route_ctx = SimpleNamespace(
+            monthly_payment=state.monthly_payment,
+            payoff_date=date(2026, 3, 1),
         )
         params = SimpleNamespace(payment_day=1)
         data = {
@@ -6351,9 +6365,10 @@ class TestRefinanceForwardOnlyBaseline:
         }
 
         # C4: the balance is threaded in explicitly (read once by the route);
-        # ``state`` stands in for the route context's monthly_payment / payoff_date.
+        # ``route_ctx`` stands in for the route context's monthly_payment /
+        # payoff_date.
         comparison = _build_refinance_comparison(
-            state.current_balance, state, scenarios, data, params,
+            state.current_balance, route_ctx, scenarios, data, params,
         )
 
         # Current side reads the CONTRACTUAL original_forward: 2 months,
@@ -6370,6 +6385,87 @@ class TestRefinanceForwardOnlyBaseline:
         # provably reading original_forward, not state.schedule.
         assert comparison["current_remaining_months"] != len(committed_forward)
         assert comparison["current_total_interest"] != state.total_interest
+
+
+class TestPayoffChipDisplayStates:
+    """Plan C8d: the "Projected payoff" chip has THREE states, one per answer.
+
+    The chip renders the DERIVED payoff, which is ``None`` for two very
+    different loans.  Rendering both the same way is what finding B-20 was: a
+    loan paid off by a lump-sum true-up showed its ORIGINATION date as a
+    "projected payoff" -- a past date presented as a future event.
+    """
+
+    def test_a_paying_loan_shows_its_payoff_month(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The ordinary state: a month, from the fold to zero."""
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Projected payoff" in html
+        assert "Paid off" not in html
+        assert "No payoff at current payment" not in html
+        with auth_client.application.app_context():
+            ctx = BalanceContext.build(seed_user["user"].id)
+            account = db.session.get(Account, acct.id)
+            payoff = balance_at.loan_payoff_date(account, ctx)
+        assert payoff is not None
+        assert payoff.strftime("%b %Y") in html
+
+    def test_a_retired_loan_is_badged_paid_off(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """B-20: a loan trued up to zero is BADGED, never dated.
+
+        The chip must not fall back to a date at all -- and specifically not to
+        the origination date the retired resolver fallback used to supply, which
+        is what this asserts is absent.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        insert_trueup_event(loan_params_for(db.session, acct.id), Decimal("0.00"))
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Paid off" in html
+        assert "Projected payoff" not in html
+        # The pre-C8d fallback rendered the ORIGINATION month here.
+        assert "Jan 2026" not in html
+
+    def test_a_loan_that_never_clears_says_so(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The third state: legible text, not a hidden chip.
+
+        Trued up so high the level payment cannot cover the monthly interest
+        ($900,000 at 6.5% accrues ~$4,875/mo against a ~$1,580 payment), the
+        balance grows and the fold never reaches zero.  The user is told, which
+        reinforces C7's drift warning rather than leaving a gap where a payoff
+        date used to be.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        insert_trueup_event(
+            loan_params_for(db.session, acct.id), Decimal("900000.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No payoff at current payment" in html
+        assert "Paid off" not in html
 
 
 class TestRefinanceAndPayoffByDateProjectForwardMigration:

@@ -186,7 +186,7 @@
         {% if ad.loan_params is defined and ad.loan_params %}
         <span>
           Monthly Payment <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
-          {%- if ad.payoff_date %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
+          {%- if ad.payoff_date is not none %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
         </span>
         {% elif ad.projected %}
         {% set last_proj = ad.projected.items() | list | last %}
@@ -258,6 +258,11 @@
     <span>Avg rate <span class="font-mono">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span></span>
     {% if debt_summary.projected_debt_free_date %}
     <span>Debt-free <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
+    {% elif debt_summary.has_unclearing_debt %}
+    {# C8d/C8f: a loan that never clears at its current payment has no debt-free
+       date, and saying so beats omitting the line -- the same treatment its own
+       detail page gives the condition. #}
+    <span class="text-warning">No debt-free date at current payments</span>
     {% endif %}
     {% if debt_summary.dti_ratio is not none %}
     <span>DTI <span class="font-mono">{{ debt_summary.dti_ratio }}%</span> {{ dti_badge(debt_summary.dti_label) }}</span>

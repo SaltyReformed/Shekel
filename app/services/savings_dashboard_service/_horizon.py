@@ -133,16 +133,26 @@ def _resolve_horizon_domain(
 
     Returns:
         ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
-        domain end, the last future payoff date (``None`` when loan-free),
-        and whether the fixed fallback window was used.
+        domain end, the last future payoff date (``None`` when loan-free OR
+        when an active loan never clears), and whether the user has no debt
+        line at all.  Those two ``None`` cases differ in ``is_loan_free``:
+        a borrower whose loan never pays off is NOT loan-free, and the
+        caller must not caption them as debt-free.
     """
+    active = [
+        ad for ad in account_data
+        if ad.get("loan_params") and not ad.get("is_paid_off")
+    ]
+    # An ACTIVE loan with no payoff never clears at its current payment (plan
+    # C8d), so there is no debt-free date at all -- and the user is emphatically
+    # not loan-free.  Skipping it would take ``max()`` over the loans that DO
+    # clear and plant a "Debt-free" milestone on a borrower who still owes; with
+    # every loan in that state it would fall through to the loan-free fallback
+    # window entirely.
+    if any(ad.get("payoff_date") is None for ad in active):
+        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, False
     payoff_dates = [
-        ad["payoff_date"]
-        for ad in account_data
-        if ad.get("loan_params")
-        and ad.get("payoff_date") is not None
-        and not ad.get("is_paid_off")
-        and ad["payoff_date"] > today
+        ad["payoff_date"] for ad in active if ad["payoff_date"] > today
     ]
     debt_free_date = max(payoff_dates) if payoff_dates else None
     if debt_free_date is not None:
