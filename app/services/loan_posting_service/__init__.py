@@ -46,13 +46,12 @@ keep working unchanged:
   and the historical backfill.
 * :mod:`._reader` -- the genesis READ side: a loan's balance as ``-(sum of its
   linked postings)`` (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``,
-  no anchor read, no boundary filter), the ACTUAL interest its confirmed
-  payments paid in a year (``confirmed_loan_interest_in_year``, for Schedule A,
-  attributed by the payment's display-timezone civil paid date -- the L9
-  rule), and the ledger-derived
-  amortization HISTORY rows (``confirmed_loan_history_rows``, each confirmed
-  payment's actual principal / interest and running balance read from the
-  posted legs).  Wired by the read switch.
+  no anchor read, no boundary filter), and the ledger-derived amortization HISTORY
+  rows (``confirmed_loan_history_rows``, each confirmed payment's actual principal /
+  interest and running balance read from the posted legs).  Wired by the read
+  switch.  The paid-in-year tax / chip figures folded off the postings onto the
+  loan ledger at steps C3c / C6c (:mod:`app.services.balance_at`), so this package
+  no longer reads them.
 
 ## Shared infrastructure and isolation
 
@@ -86,7 +85,6 @@ from ._display import (
     LoanAnchorDrift,
     LoanPaymentHistoryRow,
     confirmed_loan_payment_history,
-    confirmed_loan_principal_in_year,
     loan_balance_anchor_history,
 )
 from ._payments import (
@@ -97,7 +95,6 @@ from ._reader import (
     confirmed_loan_balance_at,
     confirmed_loan_balance_map,
     confirmed_loan_history_rows,
-    confirmed_loan_interest_in_year,
 )
 from ._sync import (
     backfill_all_loan_postings,
@@ -114,9 +111,7 @@ __all__ = [
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
     "confirmed_loan_history_rows",
-    "confirmed_loan_interest_in_year",
     "confirmed_loan_payment_history",
-    "confirmed_loan_principal_in_year",
     "loan_balance_anchor_history",
     "resync_user_loan_postings",
     "reverse_loan_payment_postings_for_shadow",

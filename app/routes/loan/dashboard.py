@@ -32,14 +32,13 @@ from app.routes.loan._helpers import (
     build_band_chart,
     build_baseline_scenarios,
 )
-from app.services import escrow_calculator
+from app.services import balance_at, escrow_calculator
 from app.services.amortization_engine import AmortizationSummary
 from app.services.loan_posting_service import (
-    confirmed_loan_interest_in_year,
     confirmed_loan_payment_history,
-    confirmed_loan_principal_in_year,
     loan_balance_anchor_history,
 )
+from app.services.resolution_context import BalanceContext
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 
@@ -392,57 +391,64 @@ def _load_collateral_candidates(user_id):
     )
 
 
-def _build_measured_context(account_id, scenario_id, as_of, current_year):
+def _build_measured_context(account, balance_ctx: BalanceContext, current_year):
     """Build the loan detail page's ledger-MEASURED template context.
 
     The Loop B rebuild surfaces the genesis ledger's real, paid facts the page
     previously computed but never showed (docs/design/loan_audit.md): the
-    interest and principal actually PAID this calendar year (the two band chips
-    -- the interest figure is the same Schedule-A number the Taxes tab reports),
+    interest and principal actually PAID this calendar year (the two band chips),
     the confirmed payment-history rows (each real cash / principal / interest /
     escrow split), and the balance-anchor drift scorecard (each opening /
     true-up recorded balance vs the ledger's computed balance just before it).
-    Every producer returns ``None`` for an un-backfilled / unconfigured loan, and
-    the template hides the corresponding chip or section on ``None`` rather than
-    showing a misleading zero.
 
-    A loan that has not ORIGINATED yet is NOT one of those, and only the CHIPS
-    change: its ledger is open (the genesis walk records every anchor whatever its
-    date), so the two YTD figures come back a true ``$0.00`` -- it has genuinely
-    paid nothing -- and the template gates those two on ``is not none``, so the
-    page now SHOWS "$0.00 paid YTD" where it used to hide the chips.  The payment
-    history and the anchor scorecard both come back a true EMPTY, and the template
-    gates those two on truthiness, so ``[]`` hides them exactly as ``None`` did.
+    **The two YTD chips fold the loan's SOURCE events (step C6c).**  They read the
+    balance seam's paid-in-year producers
+    (:func:`app.services.balance_at.loan_interest_paid_in_year` /
+    :func:`~app.services.balance_at.loan_principal_paid_in_year`), which sample the
+    read pass's memoized walk (:meth:`BalanceContext.loan_walk`) the balance hero
+    already folded -- so the loan is walked ONCE for the whole page.  Both are
+    TOTAL (a configured loan always folds a real ``Decimal``, ``0.00`` when it has
+    paid nothing this year), where the posting readers they replaced returned
+    ``None`` for a cold posting cache and hid the chip; the loan-detail page
+    renders only for a configured loan, so the chips always show the real figure.
+
+    The payment history and the anchor scorecard still read the posting ledger and
+    still return ``None`` for an un-backfilled loan; the template gates those two
+    on truthiness, so ``[]`` (an originated loan with no confirmed payment yet)
+    hides them exactly as ``None`` does.
 
     Args:
-        account_id: The loan account id.
-        scenario_id: The baseline scenario id (or ``None``).
-        as_of: The display boundary (``date.today()``); the history and anchor
-            producers exclude anything not confirmed by it.
+        account: The loan account (its ``id`` scopes the history / anchor readers;
+            the object itself keys the seam's memoized walk for the chips).
+        balance_ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext` -- its
+            ``scenario_id`` scopes every producer and its ``as_of``
+            (``date.today()``) is the history / anchor display boundary.  Shared
+            with the balance hero so the chips fold the memoized walk.
         current_year: The DISPLAY-timezone civil year (``display_today().year``)
             the two YTD chips sum interest / principal within.  The producers
             attribute each payment by its display-tz civil paid date (the L9
             rule), so the summing year must be the display-tz year -- NOT
-            ``as_of.year`` (backend UTC) -- to keep the chips in the same civil
-            year as the analytics Taxes tab (the same Schedule-A figure) in the
-            New Year window where UTC and Eastern differ.
+            ``balance_ctx.as_of.year`` (backend UTC) -- to keep the chips in the
+            same civil year as the analytics Taxes tab in the New Year window where
+            UTC and Eastern differ.
 
     Returns:
         dict of template vars: interest_paid_ytd, principal_paid_ytd,
         payment_history, balance_anchors.
     """
     return {
-        "interest_paid_ytd": confirmed_loan_interest_in_year(
-            account_id, scenario_id, current_year,
+        "interest_paid_ytd": balance_at.loan_interest_paid_in_year(
+            account, balance_ctx, current_year,
         ),
-        "principal_paid_ytd": confirmed_loan_principal_in_year(
-            account_id, scenario_id, current_year,
+        "principal_paid_ytd": balance_at.loan_principal_paid_in_year(
+            account, balance_ctx, current_year,
         ),
         "payment_history": confirmed_loan_payment_history(
-            account_id, scenario_id, as_of,
+            account.id, balance_ctx.scenario_id, balance_ctx.as_of,
         ),
         "balance_anchors": loan_balance_anchor_history(
-            account_id, scenario_id, as_of,
+            account.id, balance_ctx.scenario_id, balance_ctx.as_of,
         ),
     }
 
@@ -617,9 +623,11 @@ def dashboard(account_id):
     )
     context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
-    # + the L9 attribution rule), not the backend-UTC ``today.year``.
+    # + the L9 attribution rule), not the backend-UTC ``today.year``.  The chips
+    # fold the read pass's memoized walk (ctx.balance_ctx), so the page walks the
+    # loan once for the balance hero and both chips.
     context.update(_build_measured_context(
-        account.id, scenario_id, today, display_today().year,
+        account, ctx.balance_ctx, display_today().year,
     ))
     context.update(prompt_context)
     return render_template("loan/dashboard.html", **context)

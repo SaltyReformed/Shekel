@@ -29,8 +29,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
-from app.services import balance_at, net_worth_kernel
-from app.services.loan_posting_service import confirmed_loan_interest_in_year
+from app.services import balance_at, loan_posting_service, net_worth_kernel
 from app.services.resolution_context import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
@@ -95,13 +94,10 @@ class TestLoanInterestInYearValue:
 
         Fold-actual 2026 interest = 992.50, which the schedule replay does not
         reproduce.  The producer is that fold-actual PLUS the year's still-projected
-        rows, both halves non-zero.  The fold-actual equals the posting reader (the
-        postings are a projection of the same fold), so the settled half is pinned
-        two independent ways.
+        rows, both halves non-zero.
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 4, 1))
-            scenario_id = seed_user["scenario"].id
             _, _, _, _, _, p1, p2, _ = SPLIT_LOAN
             loan = _split_loan(seed_user)
             create_settled_transfer(
@@ -117,9 +113,8 @@ class TestLoanInterestInYearValue:
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
 
-            # The settled half, hand-computed AND equal to the posting reader.
-            fold_actual = confirmed_loan_interest_in_year(loan.id, scenario_id, 2026)
-            assert fold_actual == Decimal("992.50")
+            # The settled half, hand-computed (P1 500.00 + P2 492.50).
+            fold_actual = Decimal("992.50")
 
             # P1/P2 have begun by 2026-04-01, so their rows are confirmed and out
             # of the projection; no early-settled slot to exclude here.
@@ -211,7 +206,6 @@ class TestLoanInterestInYearMerge:
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 2, 10))
-            scenario_id = seed_user["scenario"].id
             _, _, _, _, _, p1, _p2, p3 = SPLIT_LOAN
             loan = _split_loan(seed_user)
             create_settled_transfer(
@@ -229,8 +223,8 @@ class TestLoanInterestInYearMerge:
             assert seed_periods[p3].start_date > date(2026, 2, 10)
             ctx = BalanceContext.build(seed_user["user"].id)
 
-            fold_actual = confirmed_loan_interest_in_year(loan.id, scenario_id, 2026)
-            assert fold_actual == Decimal("997.50")
+            # Fold-actual, hand-computed: P1 500.00 + P3 497.50.
+            fold_actual = Decimal("997.50")
 
             # The April (P3 due) slot still projects an unconfirmed row ...
             debt = net_worth_kernel.debt_schedule_rows([loan], ctx)[loan.id]
@@ -280,11 +274,13 @@ class TestLoanInterestAnswersFromTheFold:
             before = balance_at.loan_interest_in_year(loan, ctx, 2025)
             assert before == Decimal("500.00")
 
-            # Break the posting cache: no opening posting -> the reader declines.
+            # Break the posting cache: with no opening posting the sum-of-postings
+            # balance reader declines (None), which is what makes this test's teeth
+            # real -- the postings genuinely no longer answer for this loan.
             clear_loan_ledger(loan.id)
             db.session.commit()
-            assert confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
+            assert loan_posting_service.confirmed_loan_balance_at(
+                loan.id, scenario_id, date(2025, 12, 31),
             ) is None
 
             # The fold-based producer is unchanged: it never read the postings.

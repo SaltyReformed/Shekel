@@ -129,7 +129,11 @@ from ._kind_correct import (
 )
 from ._liability import liability_owed_at_dates
 from ._loan_figures import LoanFigures, loan_figures
-from ._loan_interest import loan_interest_in_year
+from ._loan_interest import (
+    loan_interest_in_year,
+    loan_interest_paid_in_year,
+    loan_principal_paid_in_year,
+)
 from ._positions import positions, positions_period_map
 from ._secured_debt import (
     TIER_CONFIRMED,
@@ -172,6 +176,8 @@ __all__ = [
     "liability_owed_at_dates",
     "loan_figures",
     "loan_interest_in_year",
+    "loan_interest_paid_in_year",
+    "loan_principal_paid_in_year",
     "positions",
     "positions_period_map",
     "secured_loan_series",

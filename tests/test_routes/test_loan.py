@@ -20,9 +20,14 @@ from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
 from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
-from app.services.loan_posting_service import confirmed_loan_interest_in_year
+from app.services.resolution_context import BalanceContext
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service, escrow_calculator, loan_loaders
+from app.services import (
+    account_service,
+    balance_at,
+    escrow_calculator,
+    loan_loaders,
+)
 
 from tests._test_helpers import (
     add_escrow_line,
@@ -6798,17 +6803,13 @@ class TestLoanDetailMeasuredSurfaces:
         )
         db.session.commit()
 
-        scenario_id = seed_user["scenario"].id
         # The measured facts: the 2026 (Eastern) year holds the payment's
-        # interest; the 2027 (UTC) year holds nothing.  The loan is backfilled,
-        # so the producer returns $0.00 (not None) for 2027 -- exactly the value
-        # the pre-fix UTC code would have rendered into the chip.
-        interest_2026 = confirmed_loan_interest_in_year(
-            loan.id, scenario_id, 2026,
-        )
-        interest_2027 = confirmed_loan_interest_in_year(
-            loan.id, scenario_id, 2027,
-        )
+        # interest; the 2027 (UTC) year holds nothing.  The fold-based chip
+        # producer is TOTAL, so it returns $0.00 (not None) for 2027 -- exactly
+        # the value the pre-fix UTC code would have rendered into the chip.
+        ctx = BalanceContext.build(seed_user["user"].id)
+        interest_2026 = balance_at.loan_interest_paid_in_year(loan, ctx, 2026)
+        interest_2027 = balance_at.loan_interest_paid_in_year(loan, ctx, 2027)
         assert interest_2026 > Decimal("0.00")
         assert interest_2027 == Decimal("0.00")
 

@@ -46,16 +46,18 @@ read outage.  They read the POSTING ledger as the general ledger now -- the
 reconciliation oracle's independent window onto the postings
 (``tests/test_integration/test_posting_ledger_loan_reconciliation.py``), and the
 checked projection the fold validates at write time (plan E1).  The history rows
-and the tax-interest reader keep their own consumers.  Reads only -- no writes,
-no commit.
+keep their own consumers.  The paid-in-year tax / chip figures moved OFF the
+postings onto the fold (steps C3c / C6c:
+:func:`app.services.balance_at.loan_interest_in_year`,
+:func:`~app.services.balance_at.loan_interest_paid_in_year`,
+:func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module no
+longer answers them.  Reads only -- no writes, no commit.
 """
 
 from bisect import bisect_right
 from collections import OrderedDict
 from datetime import date
 from decimal import Decimal
-
-from sqlalchemy.orm import joinedload
 
 from app import ref_cache
 from app.enums import (
@@ -78,7 +80,6 @@ from app.services.rate_period_engine import (
     payment_number,
     period_for_date,
 )
-from app.utils.dates import to_display_civil_date
 from app.utils.money import round_money
 
 from ._linked_ledger import _has_opening_posting, _visible_nets
@@ -286,75 +287,6 @@ def confirmed_loan_balance_map(
     return balances
 
 
-def confirmed_loan_interest_in_year(
-    loan_account_id: int, scenario_id: int, year: int,
-) -> Decimal | None:
-    """Return a loan's ACTUAL interest PAID in a calendar year (genesis ledger).
-
-    The tax-reporting read side of the genesis loan sub-ledger: the real
-    interest a loan's confirmed payments actually paid during *year*, for
-    Schedule A.  Each confirmed payment posts its accrued interest onto the
-    loan's per-loan ``loan_interest`` Expense ledger (:mod:`._payments`); this
-    sums that ACTUAL interest -- not the amortization schedule's replayed figure,
-    which is wrong for an off-schedule (extra / short) payment -- so the
-    deduction reflects the interest truly paid.
-
-    **Attributed by each payment's CURRENT paid date in the DISPLAY timezone,
-    not by the posting's entry date.**  Mortgage interest is deductible in the
-    year it was PAID, so a payment's NET interest (its original split PLUS any
-    later true-up / rate re-split delta) is attributed to
-    :func:`app.utils.dates.to_display_civil_date` of its shadow's current
-    ``paid_at`` -- the user's wall-clock day, per the L9 decision (2026-07-03):
-    a settle clicked 8:05pm Eastern on Dec 31 deducts in the Dec 31 tax year,
-    even though the stored ``entry_date`` books the Jan 1 it becomes in UTC
-    (storage stays on the UTC rule; only this reading boundary converts).
-    Grouping the legs by their payment shadow and attributing the NET (rather
-    than summing each leg by its own entry date) is what makes this robust to a
-    reversal: reverting a payment clears its ``paid_at``, so its reversal leg is
-    dated at the pay-period start (the entry dating's NULL fallback), which can
-    fall in a DIFFERENT year than the original leg -- but the payment's NET
-    interest is then zero, so it drops out of every year cleanly rather than
-    stranding a spurious +/- interest across the year boundary.  A re-settled or
-    edited-paid-date payment likewise reports its net at its CURRENT paid date.
-
-    Only ``loan_interest``-kind legs are summed, so escrow and payoff-refund legs
-    (neither a Schedule A mortgage-interest deduction) never leak in.
-
-    Returns ``None`` when the loan has no OPENING posting in the scenario (an
-    unconfigured / un-backfilled loan, or a what-if the opening was never posted
-    into -- :func:`_has_opening_posting`), so the caller falls back to the
-    schedule rather than reporting a misleading ``$0``.  A configured loan with
-    no confirmed interest in *year* returns ``Decimal("0.00")``.
-
-    Reads only -- no writes, no commit.
-
-    Args:
-        loan_account_id: The loan account whose paid interest to sum.
-        scenario_id: The budget scenario to scope to (postings are
-            scenario-scoped via ``journal_entries.scenario_id``).
-        year: The calendar year to sum interest paid within.
-
-    Returns:
-        The actual interest paid during *year* as a cent-quantized ``Decimal``,
-        or ``None`` when the loan has no opening posting in the scenario.
-
-    Raises:
-        PostingError: If the loan account has no linked ledger account (from
-            :func:`._ledger_account_for`).
-    """
-    linked = _ledger_account_for(loan_account_id)
-    if not _has_opening_posting(linked.id, scenario_id):
-        return None
-    # Attribute each payment's net interest to its CURRENT paid date's year in
-    # the DISPLAY timezone (the tax-correct basis per L9; see the docstring); the
-    # shared attribution reads ``paid_at`` / period start back per shadow so a
-    # since-cleared ``paid_at`` falls back to the period start the entry dating
-    # used, and a reverted payment (net zero) drops out cleanly.
-    return _attribute_net_by_shadow_to_year(
-        _interest_net_by_shadow(loan_account_id, scenario_id), year,
-    )
-
-
 def _net_by_shadow_for_kind(
     loan_account_id: int,
     scenario_id: int,
@@ -412,13 +344,11 @@ def _interest_net_by_shadow(
     """Return each payment shadow's NET posted interest, keyed by shadow id.
 
     The ``loan_interest`` specialisation of :func:`_net_by_shadow_for_kind` (see
-    it for the net / reversal / hard-delete semantics).  Shared by the tax
-    reader (:func:`confirmed_loan_interest_in_year`, which attributes each net to
-    its civil paid YEAR) and the history readers
-    (:func:`confirmed_loan_history_rows` and
-    :func:`confirmed_loan_payment_history`, which place each net on its
-    payment's row), so the surfaces cannot drift on what counts as a payment's
-    actual interest.
+    it for the net / reversal / hard-delete semantics).  Shared by the history
+    readers (:func:`confirmed_loan_history_rows` and
+    :func:`confirmed_loan_payment_history`, which place each net on its payment's
+    row), so the surfaces cannot drift on what counts as a payment's actual
+    interest.
 
     Args:
         loan_account_id: The loan whose per-payment interest to sum.
@@ -450,8 +380,10 @@ def _principal_net_by_shadow(
     so this is payment principal only.
 
     Covers EVERY settled payment (no period bound), matching the all-settled
-    basis of :func:`_interest_net_by_shadow`, so the paid-year principal and
-    interest chips sum over the identical payment set.
+    basis of :func:`_interest_net_by_shadow`, so
+    :func:`confirmed_loan_payment_history` can index the map by its
+    confirmed-through-``as_of`` shadows and a payment's principal / interest split
+    stay on one payment set.
 
     Args:
         loan_account_id: The loan whose per-payment principal to sum.
@@ -481,47 +413,6 @@ def _principal_net_by_shadow(
             principal_by_shadow.get(key, _ZERO_MONEY) + net
         )
     return principal_by_shadow
-
-
-def _attribute_net_by_shadow_to_year(
-    net_by_shadow: dict[int, Decimal], year: int,
-) -> Decimal:
-    """Sum the per-shadow nets whose payment was PAID in *year* (display civil date).
-
-    The paid-date attribution shared by the interest and principal in-year
-    readers: each shadow's net is attributed to the civil year of its payment's
-    display-timezone paid date (:func:`app.utils.dates.to_display_civil_date` of
-    the shadow's current ``paid_at``, falling back to its pay-period start when
-    ``paid_at`` is cleared) -- the L9 tax-correct basis (see
-    :func:`confirmed_loan_interest_in_year`).  Reading ``paid_at`` and the period
-    start back per shadow makes both readers robust to a reversal the same way: a
-    reverted payment's net is zero, so it drops from every year cleanly.
-
-    Args:
-        net_by_shadow: ``{shadow transaction id: net Decimal}`` (interest or
-            principal), from :func:`_interest_net_by_shadow` /
-            :func:`_principal_net_by_shadow`.
-        year: The calendar year to sum within.
-
-    Returns:
-        The cent-quantized sum of the nets paid in *year* (``0.00`` when none).
-    """
-    if not net_by_shadow:
-        return _ZERO_MONEY
-    shadows = (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.pay_period))
-        .filter(Transaction.id.in_(net_by_shadow.keys()))
-        .all()
-    )
-    total = _ZERO_MONEY
-    for shadow in shadows:
-        paid_date = to_display_civil_date(
-            shadow.paid_at, shadow.pay_period.start_date,
-        )
-        if paid_date.year == year:
-            total += net_by_shadow[shadow.id]
-    return round_money(total)
 
 
 def _linked_entry_nets(

@@ -125,8 +125,9 @@ _BALANCE_SEAM_MODULES = frozenset({
 # resolver-bound consumers read the ledger through).  Any other caller is
 # re-inventing the read switch's seam.  NOT listed, by the same SRP line the
 # header comment draws: ``confirmed_loan_history_rows`` (rich schedule-row
-# detail the view seam composes, the ledger analog of ``resolve_loan``) and
-# ``confirmed_loan_interest_in_year`` (a tax figure, not a balance-at-T).
+# detail the view seam composes, the ledger analog of ``resolve_loan``).  The
+# paid-in-year tax / chip figures are no longer here at all -- they fold from the
+# loan ledger in the balance seam (steps C3c / C6c).
 _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
@@ -408,11 +409,10 @@ _FENCED_MODULE_RULINGS = {
     "app.services.loan_posting_service": (
         _LOAN_LEDGER_READER_PRODUCERS, frozenset({
             # Rich row detail the view seam composes (the ledger analog of
-            # ``resolve_loan``), and the yearly tax figures.  Rows and totals,
-            # not a balance-at-T.
+            # ``resolve_loan``).  Rows, not a balance-at-T.  (The yearly tax /
+            # paid-YTD figures folded off the postings onto the loan ledger at
+            # steps C3c / C6c, so this package no longer exposes them.)
             "confirmed_loan_history_rows",
-            "confirmed_loan_interest_in_year",
-            "confirmed_loan_principal_in_year",
             "confirmed_loan_payment_history",
             # The anchor EVENT rows (the source documents behind a balance), not
             # the balance itself.

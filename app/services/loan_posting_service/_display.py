@@ -3,20 +3,20 @@
 The display read side of the genesis loan sub-ledger, split from the core
 readers (:mod:`._reader`) as the loan-detail rebuild's producers landed and the
 reader approached the module-size limit.  Where :mod:`._reader` answers the
-balance scalar / map, the Schedule-A interest, and the amortization history
-rows, this module answers the loan DETAIL page's three measured surfaces:
+balance scalar / map and the amortization history rows, this module answers the
+loan DETAIL page's two remaining measured surfaces:
 
-* the principal-paid-YTD chip (:func:`confirmed_loan_principal_in_year`, the
-  paid-date sibling of the reader's interest chip so the two describe ONE set of
-  payments);
 * the confirmed payment-history table (:func:`confirmed_loan_payment_history`,
   each payment's real cash / principal / interest / escrow split); and
 * the balance-anchors drift scorecard (:func:`loan_balance_anchor_history`, each
   opening / true-up paired with what the ledger had computed just before it).
 
-Every producer reuses the reader's shared per-shadow / linked helpers and the
-walk the postings derive from, so no display surface can drift from the balance
-the readers report.  Reads only -- no writes, no commit.
+The paid-in-year chips moved OFF the postings onto the fold at step C6c
+(:func:`app.services.balance_at.loan_interest_paid_in_year` /
+:func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module no
+longer answers them.  Every producer here reuses the reader's shared per-shadow /
+linked helpers and the walk the postings derive from, so no display surface can
+drift from the balance the readers report.  Reads only -- no writes, no commit.
 """
 
 from dataclasses import dataclass
@@ -26,13 +26,10 @@ from decimal import Decimal
 from app.enums import LedgerAccountKindEnum
 from app.services.loan_ledger import walk_loan_ledger
 from app.services.loan_loaders import load_loan_params, loan_payment_due_date
-from app.services.posting_service import _ledger_account_for
 from app.utils.money import round_money
 
 from ._reader import (
-    _attribute_net_by_shadow_to_year,
     _confirmed_history_inputs,
-    _has_opening_posting,
     _interest_net_by_shadow,
     _net_by_shadow_for_kind,
     _principal_net_by_shadow,
@@ -119,49 +116,6 @@ class LoanAnchorDrift:
     drift: Decimal
     is_opening: bool
     is_tracking_start: bool
-
-
-def confirmed_loan_principal_in_year(
-    loan_account_id: int, scenario_id: int, year: int,
-) -> Decimal | None:
-    """Return a loan's actual PRINCIPAL paid in a calendar year (genesis ledger).
-
-    The principal-paid sibling of
-    :func:`app.services.loan_posting_service.confirmed_loan_interest_in_year`,
-    attributed on the SAME basis -- each confirmed payment's real principal (its
-    net on the loan's linked ledger) placed in the civil year of its
-    display-timezone paid date -- so the loan-detail page's "interest paid" and
-    "principal paid" chips describe one set of payments and never disagree.
-    Principal is the real debt paid down (extra principal included, a
-    payoff-overpayment's refund excluded), read from the posted legs, so an extra
-    or short payment counts honestly rather than at the contractual split.
-
-    Returns ``None`` when the loan has no OPENING posting in the scenario (an
-    unconfigured / un-backfilled loan), matching the interest reader's fallback
-    contract; a configured loan with no principal paid in *year* returns
-    ``Decimal("0.00")``.
-
-    Reads only -- no writes, no commit.
-
-    Args:
-        loan_account_id: The loan account whose paid principal to sum.
-        scenario_id: The budget scenario to scope to.
-        year: The calendar year to sum principal paid within.
-
-    Returns:
-        The actual principal paid during *year* as a cent-quantized ``Decimal``,
-        or ``None`` when the loan has no opening posting in the scenario.
-
-    Raises:
-        PostingError: If the loan account has no linked ledger account (from
-            :func:`._ledger_account_for`).
-    """
-    linked = _ledger_account_for(loan_account_id)
-    if not _has_opening_posting(linked.id, scenario_id):
-        return None
-    return _attribute_net_by_shadow_to_year(
-        _principal_net_by_shadow(loan_account_id, scenario_id), year,
-    )
 
 
 def confirmed_loan_payment_history(
