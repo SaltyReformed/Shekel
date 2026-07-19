@@ -74,8 +74,8 @@ forever; surfaces N-2) shipped. **C8 DECOMPOSED** (2026-07-19) into C8a (fix the
 standing-extra tail -- N-15) -> C8b (additive `loan_payoff_date` fold-to-zero) -> C8c (cutover:
 payoff derived not persisted, B-14 + B-20). **C8a** (`2e5d3a75`, the ESTIMATED tail folds the
 standing extra; N-15 closed) and **C8b** (`511ab220`, `loan_payoff_date` fold-to-zero, additive)
-shipped. Next: **C8c** (the cutover: B-14 + B-20; the underpayment `None` recurrence implication
-is decided here).
+and **C8c** (`8ff9a11e`, the fold's forward tail extends past contractual so an underpayment gets a
+real payoff, not `None`; N-16 closed) shipped. Next: **C8d** (the cutover: B-14 + B-20).
 
 ---
 
@@ -728,8 +728,15 @@ what is written here is decided in the commit itself, not in a new document.
   forward model FIRST, then derive** (N-15 below) rather than derive a payoff known-wrong for
   extra-payers; (2) B-20's paid-off state shows a **"Paid off" badge on `is_retired`** (the
   true-up-payoff predicate; a degenerate `$0`-principal loan reading "Paid off" on its own detail
-  page is harmless, unlike the equity chart), no historical date. Ships C8a -> C8b -> C8c,
-  additive-first (mirrors C3a/C6a).
+  page is harmless, unlike the equity chart), no historical date. **A THIRD ruling (2026-07-19),
+  forced by C8b's review (finding N-16):** for an UNDERPAYING loan the fold left a residue at the
+  contractual payoff and `loan_payoff_date` returned `None` -- likely the real Mortgage, whose
+  `$0.34/mo` drift compounds to ~$43 at Dec 2048, flipping a 34-cent drift to "no payoff." The fix
+  chosen (over accept-`None` or a tolerance-snap band-aid) is to **EXTEND the forward model past the
+  contractual date until the balance clears (capped)**, so a drifted loan gets a correct slightly-later
+  date and `None` means genuine non-payoff. Ships **C8a -> C8b -> C8c (extend the tail) -> C8d (the
+  cutover)**, additive-/fix-first (mirrors C3a/C6a); the cutover was renumbered C8d to seat the
+  extend-tail fix ahead of it.
   - [x] **C8a** `fix(loan): the forward fold keeps the standing extra past the record horizon` --
     **SHIPPED `2e5d3a75`.** N-15: `loan_plan`'s ESTIMATED tail (`_estimated_from_contract`) applies the
     loan's standing `extra_principal` (threaded off the memoized `ResolvedLoan`, not re-read), so the
@@ -765,12 +772,34 @@ what is written here is decided in the commit itself, not in a new document.
     `test_loan_payoff_date_oracle.py` (11: hand-computed pure fold + seam vs the resolver). Full suite
     7395, pylint 10.00, code-reviewer clean (no Critical/High; its Medium + 2 Low all fixed). **The
     underpayment `None` -> indefinite-recurrence implication is C8c's to wire.**
-  - [ ] **C8c** `fix(loan): the payoff date is derived, never persisted from a schedule` -- the cutover:
+  - [x] **C8c** `fix(balance): the forward fold pays past the contractual date until the loan clears` --
+    **SHIPPED `8ff9a11e`.** N-16: `_estimated_from_contract` stopped synthesizing at the contractual
+    payoff, so an underpaying loan (even a cent-scale drift) left a residue and `loan_payoff_date`
+    returned `None` where the real loan pays off a month or so later. It now extends past the contractual
+    last row with up to `_PAYOFF_EXTENSION_MONTHS` (60) more monthly installments at the level P&I (+
+    standing extra), via a shared `_synthesize` helper that covers both the contractual rows and the
+    extension, so the fold-to-zero clears a drifted loan at its true slightly-later date; `None` now
+    means genuine non-payoff (negative amortization or a drift past the cap). **HEALTHY / overpaying
+    loans are UNMOVED by construction:** `plan_payoff_date` returns the FIRST zero-crossing (the
+    contractual date), so the later installments never move the payoff, and `positions()` past the payoff
+    folds to no-ops on the zero balance. **Adversarial-review Medium corrected the balance-safe scope:**
+    the one WIRED surface that samples past the contractual payoff is the savings net-worth HORIZON band
+    (`_horizon.py:139`, one year past the longest contractual payoff), where a drifted loan's far-future
+    point moves CORRECTIVELY (the Mortgage's Dec 2049 point ~$43 -> `$0.00`, phantom debt removed) -- the
+    scalar / per-period map / equity-chart axis all sample at or before the contractual payoff and are
+    untouched. **OUTSTANDING: live-verify that Mortgage horizon-tail move on the dev clone before F3**
+    (with the C2 history-window render). Oracle `TestPayoffTailExtension` (underpayment clears exactly
+    two extension installments past contractual -- teeth verified `None` with the extension disabled;
+    severe drift -> `None`; healthy not resurrected past payoff) + the C6a assembly test asserts the
+    contractual prefix + the 60-installment extension + its level-payment cash. Full suite 7398, pylint
+    10.00, code-reviewer clean (no Critical/High; the Medium scope-correction folded in, its 2 Low
+    test-rigor gaps closed).
+  - [ ] **C8d** `fix(loan): the payoff date is derived, never persisted from a schedule` -- the cutover:
     the detail chip + `is_retired` "Paid off" badge (B-20), `LoanFigures.payoff_date`, the equity-chart
     axis (`_secured_debt.py:250`), the savings cockpit, and the refinance fallback read
     `loan_payoff_date`; `loan_recurrence_sync` derives its bound from it, disambiguating retired
-    (halt at a past date) / negamort (`None` = indefinite) via `is_retired` (B-14); `LoanState.payoff_date`
-    and the three inconsistent fallbacks retire.
+    (halt at a past date) / never-pays-off (`None` = indefinite) via `is_retired` (B-14);
+    `LoanState.payoff_date` and the three inconsistent fallbacks retire.
 - [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
   ruled 2026-07-16: reject at the transfer write boundary.
 
@@ -873,6 +902,7 @@ archive names so old references resolve here.
 | N-11 (B1) | **A raw settled transaction typed onto a loan account moves the POSTED balance but not the fold.** Its cash leg books onto the loan's linked ledger and `confirmed_loan_balance_at` sums every linked posting with no kind filter (`_reader.py:167-176`); the reader's own classifier names the case ("a raw settled transaction typed onto the loan account", `_reader.py:623-633`). The fold cannot see it: its payment set is transfer-linked shadows only (`settled_income_shadows`). **This is the one shape where the ledger is RIGHT and the fold is incomplete**, which inverts the "postings are a stale cache" framing: someone acting on it would "repair" a genuine event away. Ruled R-E (forbid at the source). **Reachability proved BROADER than first recorded:** beyond the create routes (`create.py:78` accepted any owned `account_id`), a recurrence TEMPLATE targeting a loan (the engine copies `template.account_id`) and the SALARY-PROFILE auto-picker (found in adversarial review) each generate raw transactions onto the loan -- all three now refuse an amortizing account. B2 demonstrates the divergence is real ($300 forced) and asserts the sources refuse it. | **$300.00** measured on a probe; unbounded (any typed amount) | **closed (`dba91dc0`)** -- all three sources gated; control shown to fire | BG |
 | N-10 (A3) | An anchor's read bound is `LEAST(entry_date, pay_period.start)` (`_asof.effective_date`), a period-START rule, so a FUTURE-dated origination is visible from its containing period's START. Measured: origination 2026-03-25 read on 2026-03-20 -> **$200,000.00** from `confirmed_loan_balance_at`, and the same from `confirmed_loan_balance_map` for the current period. No surface renders it: **FOUR** consumers each ask `origination_date` first -- `amortizing_balance_at`, `_build_amortizing_balance_map`, `confirmed_loan_view`, and `balance_at.loan_ledger_domain` (the 4th found by A3's adversarial review; before its guard, `confirmed_loan_ledger_domain` flipped `None` -> a real `opening_balance=$200,000.00` for an unclosed mortgage, and the year-end clamp's not-borrowed guard was left load-bearing on statement ORDER). Four predicates standing where one honest rule belongs ("a safety that is a predicate is not a safety", Section 8). Pinned in the suite (`test_seed_is_none_before_the_loan_originates` asserts the $200,000.00 leak, so C2 has a test to flip). The honest bound is the anchor's own civil date (D5/R-A), which moves history and is therefore gated on C1 (probe-proven: one-clock without the origination event reads $0 for 6 days x $178k at the Mortgage's tracking boundary) | $200,000.00 contained | **leak closed (`eb5de4ac`)** -- the reader bounds the opening by its `entry_date` (the origination), so a future origination is not yet visible and reads the honest `0.00`; the pin flipped. The four guards become redundant: #1 `amortizing_balance_at` deleted at C3b1, #2 `_build_amortizing_balance_map` deleted at C3b3, `confirmed_loan_view`'s STAYS (B-1, clock-independent), `loan_ledger_domain`'s guard SITE deleted at C3b4 (the reader is gone); the shared `_is_originated` fn STAYS (`loan_figures`/`is_retired`/`is_paid_off`) | C2 (leak); C3b1/C3b3 (guards #1/#2); C3b4 (guard #4 site) |
 | N-13 (C2) | **Editing a settled payment's `paid_at` does not re-date its postings**, so since C2's settled-date clock the balance's visibility date does not follow an edited settle date. `paid_at` is not in `transfer_service._POSTING_RELEVANT_FIELDS` (it changes no leg), and the loan reconcile is leg-delta based, so a `paid_at`-only edit resyncs the account anchors but leaves the loan correction at its original `entry_date`. Harmless pre-C2 (visibility was period-based); now latent. Not a live defect on current data (paid_at edits are rare and the app has no such edit flow surfaced) | -- | recorded, out of scope | write-side (E1 / C9) |
+| N-16 (C8b) | **The forward fold's ESTIMATED tail stops at the CONTRACTUAL payoff, so an underpaying loan reports no payoff.** `_estimated_from_contract` synthesizes installments only to the contractual last row, so a loan paying below contract leaves a residue there and `plan_payoff_date` / `loan_payoff_date` return `None` -- even a cent-scale drift. Likely the real Mortgage: its `$0.34/mo` drift (C7) compounds to ~$43 at the Dec 2048 payoff, so a naive cutover would flip its loan card from a date to "no payoff within term." The resolver's forced-contractual date (via `is_last_month`) is also wrong (a phantom final payment). Developer ruled (2026-07-19) EXTEND the tail past contractual until the balance clears (capped), over accept-`None` or a tolerance-snap band-aid | ~$43 residue -> `None` (real Mortgage, illustrative; to verify on the dev clone) | **closed (`8ff9a11e`)** -- `_estimated_from_contract` extends 60 months past the contractual payoff at the level P&I, so a drifted loan clears at its true slightly-later date (the Mortgage's residue clears early 2049); `None` now means genuine non-payoff. Healthy loans unmoved (first-crossing wins); the savings horizon band's far-future point moves correctively (live-verify on dev before F3) | C8c |
 | N-15 (C8) | **The forward fold drops a standing `extra_principal` past the ~24-month record horizon.** `loan_plan`'s PLANNED tier folds the extra (live D3 cash) only for the materialized pay-period window (52 biweekly periods, `config.py:199`); its ESTIMATED tail (`_plan.py:240`, seeded extra-free at `loan_resolution.py:295`) reverts to contractual P&I with no extra, while the resolver's `committed_forward` applies it to EVERY forward month for the full term (`_payoff.py:459`, `_projection.py:675`) -- two contradictory forward models, uncovered (the sole standing-extra test asserts resolver surfaces only, never the fold). Illustrative: a $300k/30yr/6% loan with a $400/mo extra pays off ~20.5yr (resolver + loan card today) but the fold/`positions()` would show ~29.5yr, and the equity debt line would sit years high | ~9yr payoff (illustrative); real data $0 (no standing extra) | **closed (`2e5d3a75`)** -- the ESTIMATED tail folds the standing extra now, matching the resolver's full-term committed schedule on every month (proven by `test_standing_extra_folds_past_the_shadow_horizon`, an independent-producer parallel run with a post-horizon teeth) | C8a |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
