@@ -113,14 +113,23 @@ class _ForwardInputs:
 
     Bundles the loan facts both tiers of :func:`loan_plan` read -- its rate
     periods (each installment's rate and P&I), its escrow lines, its contractual
-    due day, and the read pass's as-of clamp -- so the two builders take one
-    cohesive value instead of four loose arguments, and the loan is resolved once.
+    due day, its standing extra, and the read pass's as-of clamp -- so the two
+    builders take one cohesive value instead of loose arguments, and the loan is
+    resolved once.
 
     Attributes:
         periods: The loan's rate periods
             (:func:`app.services.loan_resolver.resolve_periods`).
         escrow_lines: The loan's escrow lines with their full version history.
         payment_day: The loan's contractual due day (the due-date fallback).
+        extra_principal: The loan's standing monthly overpayment
+            (:attr:`~app.services.loan_resolution.ResolvedLoan.extra_principal`),
+            added to each ESTIMATED installment's cash so the fold folds the SAME
+            extra past the materialized-shadow horizon that the resolver's
+            committed schedule applies for the whole term (finding N-15).  The
+            PLANNED tier does NOT read it -- its live D3 cash already carries the
+            extra -- so it lands exactly once.  ``0.00`` when the loan has no
+            standing extra.
         as_of: The read pass's as-of; the clamp floor is ``as_of + 1d`` and the
             past/future boundary is ``as_of`` itself.
     """
@@ -128,6 +137,7 @@ class _ForwardInputs:
     periods: list
     escrow_lines: list
     payment_day: int
+    extra_principal: Decimal
     as_of: date
 
 
@@ -206,11 +216,18 @@ def _estimated_from_contract(
       an installment the seed already paid, and :func:`fold_forward` would subtract
       its principal a SECOND time (understating the debt by one installment).
 
-    The contractual row supplies only the installment DATE and its P&I
-    (``row.payment``, escrow-free by construction -- the schedule is fed no
-    payments); the balance is re-folded by :func:`fold_forward`, never read off
+    The contractual row supplies the installment DATE and its P&I (``row.payment``,
+    escrow-free by construction -- the schedule is fed no payments), on top of
+    which the loan's standing ``extra_principal`` (``fwd.extra_principal``) is
+    added: the SAME overpayment the resolver's committed schedule applies to every
+    forward month and the PLANNED tier folds into its live cash, so a loan paying
+    extra keeps paying it PAST the materialized-shadow horizon rather than
+    reverting to bare contractual here (finding N-15).  The extra lands exactly
+    once -- the PLANNED tier owns the covered slots, this tier the rest.  The
+    balance is re-folded by :func:`fold_forward`, never read off
     ``row.remaining_balance``.  Escrow is ``0.00`` because the contractual P&I
-    carries none (and escrow is a wash for the balance either way).
+    carries none and the standing extra is pure principal (and escrow is a wash for
+    the balance either way).
 
     Args:
         contractual: The pure contractual schedule from origination to payoff.
@@ -218,7 +235,8 @@ def _estimated_from_contract(
             seed-included settled payment already covers -- excluded here so a slot
             is folded exactly once.
         fwd: The resolved :class:`_ForwardInputs` (its rate periods govern each
-            installment's rate; its ``as_of`` is the past/future boundary).
+            installment's rate; its ``extra_principal`` is added to every
+            synthesized installment; its ``as_of`` is the past/future boundary).
 
     Returns:
         One :class:`PlannedPayment` per uncovered future contractual installment
@@ -240,7 +258,7 @@ def _estimated_from_contract(
         estimated.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
-            cash=row.payment,
+            cash=row.payment + fwd.extra_principal,
             escrow=_ZERO_MONEY,
             annual_rate=period_for_date(fwd.periods, due).annual_rate,
             is_estimated=True,
@@ -283,6 +301,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
         periods=loan_resolver.resolve_periods(params, rate_changes),
         escrow_lines=loan_loaders.load_escrow_lines(account.id),
         payment_day=params.payment_day,
+        extra_principal=resolved.extra_principal,
         as_of=ctx.as_of,
     )
 

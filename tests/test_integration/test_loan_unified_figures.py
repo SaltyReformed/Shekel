@@ -702,6 +702,114 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         )
 
 
+def test_standing_extra_folds_past_the_shadow_horizon(
+    app, seed_user, seed_periods_today,
+):
+    """C8a (N-15): the forward FOLD keeps a standing extra past the record horizon.
+
+    The sibling above proves the RESOLVER surfaces honor the standing extra; this
+    proves the FOLD (:func:`balance_at.balance_at` -> ``positions()``) does too.
+    Before C8a they disagreed: ``loan_plan``'s PLANNED tier folds the extra only
+    for the materialized ~24-month pay-period window (its live D3 cash), and its
+    ESTIMATED tail reverted to bare contractual P&I -- so the fold-derived balance
+    and payoff dropped the extra past the horizon while the resolver's committed
+    schedule applied it for the whole term (finding N-15).
+
+    The loan ORIGINATES at the current period (clean past: no overdue installment,
+    so the fold and the committed schedule agree on the whole timeline rather than
+    diverging on unpaid history via B-9), and has a recurring template but NO
+    generated projected shadows, so its ENTIRE forward is the ESTIMATED tier -- the
+    pure N-15 path.  The fold is parallel-run against the committed forward (the
+    same reference the sibling trusts, built from an INDEPENDENT producer,
+    ``project_forward``) on EVERY month: equal on all of them means the ESTIMATED
+    tier now applies the extra across the whole horizon.  The teeth: at a
+    post-horizon date the fold must sit STRICTLY BELOW the pure-contractual
+    (extra-free) balance -- a THIRD independent reference that fails the day the
+    extra stops being applied to the tail (the pre-C8a state, where fold ==
+    contractual there).
+    """
+    with app.app_context():
+        today = date.today()
+        current_period = next(
+            period for period in seed_periods_today
+            if period.start_date <= today <= period.end_date
+        )
+        account = create_loan_account(
+            seed_user, db.session, name="C8a Mortgage",
+            principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+            origination_date=current_period.start_date, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=current_period,
+        )
+        loan_params = loan_params_for(db.session, account.id)
+        extra = Decimal("500.00")
+        _add_recurring_payment_with_extra(seed_user, account, extra)
+        scenario_id = seed_user["scenario"].id
+
+        ctx_loan = loan_payment_service.load_loan_context(
+            account.id, scenario_id, loan_params,
+        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
+        # One composer call yields BOTH references: the committed forward (extra
+        # applied every month, the fold's target) and the pure-contractual
+        # original (extra-free, the teeth's third reference).
+        scenarios = loan_resolver.compute_payoff_scenarios(
+            loan_inputs=loan_resolver.LoanInputs(
+                loan_params, anchor_events, ctx_loan.payments,
+                ctx_loan.rate_changes,
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=today,
+            confirmed_view=loan_payment_service.confirmed_loan_view(
+                loan_params, scenario_id, today,
+            ),
+            extra_principal=extra,
+        )
+        committed_forward = list(scenarios.committed_forward)
+        contractual_by_date = {
+            row.payment_date: row.remaining_balance
+            for row in scenarios.original_forward
+        }
+
+        # Not vacuous: the schedule runs years out (so the tail is genuinely past
+        # the ~24-month horizon), and the extra genuinely accelerates payoff.
+        assert committed_forward, "no committed forward to parallel-run against"
+        assert committed_forward[-1].payment_date < (
+            scenarios.original_forward[-1].payment_date
+        ), "standing extra did not accelerate payoff; test would be vacuous"
+
+        ctx = BalanceContext.build(seed_user["user"].id)
+
+        # The fold reproduces the committed forward on EVERY month, including the
+        # ESTIMATED tail -- an independent producer (project_forward) agreeing with
+        # the fold that the extra is applied for the whole term.
+        for row in committed_forward:
+            folded = balance_at.balance_at(account, ctx, row.payment_date)
+            assert folded == row.remaining_balance, (
+                f"Fold {folded} != committed {row.remaining_balance} at "
+                f"{row.payment_date}: the ESTIMATED tail dropped the standing "
+                "extra (N-15)."
+            )
+
+        # Teeth: a post-horizon date (~3 years out, well past the 24-month
+        # window) must fold BELOW the extra-free contractual balance -- proof the
+        # extra reaches the tail.  Pre-C8a the ESTIMATED tail carried no extra, so
+        # the fold equalled the contractual balance here and this failed.
+        probe_date = date(today.year + 3, 8, 1)
+        assert probe_date in contractual_by_date, (
+            "probe date not on the contractual grid; adjust the fixture"
+        )
+        months_out = (probe_date.year - today.year) * 12 + (
+            probe_date.month - today.month
+        )
+        assert months_out > 24, "probe date is inside the materialized horizon"
+        folded_probe = balance_at.balance_at(account, ctx, probe_date)
+        assert folded_probe < contractual_by_date[probe_date], (
+            f"Fold at {probe_date} ({folded_probe}) is not below the "
+            f"contractual {contractual_by_date[probe_date]}; the standing extra "
+            "is not applied to the ESTIMATED tail (N-15 regressed)."
+        )
+
+
 # ── C17-6: no bare .quantize in loan single-source paths ──────────
 
 

@@ -81,57 +81,69 @@ class ResolvedLoan:
         state: The resolved :class:`~app.services.loan_resolver.LoanState` as of
             the context's ``as_of``: the genesis-ledger confirmed balance, the
             committed (plan-aware) schedule, the payment, rate, and payoff.
+        extra_principal: The loan's standing monthly overpayment
+            (:func:`~app.services.recurring_transfer_query.loan_standing_extra_for_account`),
+            loaded ONCE here and threaded into :func:`resolve_loan_seeded` so
+            ``state``'s schedule / payoff already fold it.  Surfaced on the bundle
+            so the seam's forward PLAN
+            (:func:`app.services.balance_at._plan.loan_plan`) folds the SAME extra
+            past the materialized-shadow horizon without re-reading it (finding
+            N-15).  ``Decimal("0.00")`` when the loan has no recurring payment.
     """
 
     params: LoanParams
     anchor_facts: list
     context: LoanContext
     state: loan_resolver.LoanState
+    extra_principal: Decimal
 
 
 def resolve_loan_seeded(
     loan_inputs: loan_resolver.LoanInputs,
-    account_id: int,
     scenario_id: int | None,
     as_of: date,
+    extra_principal: Decimal,
 ) -> loan_resolver.LoanState:
     """Resolve a loan with its ledger view AND standing extra threaded in.
 
-    The single injection helper the three db-facing loaders route through --
-    :func:`resolve_account_loan`, the loan route's ``_resolve``, and the savings
-    dashboard's ``_compute_loan_account`` -- so they cannot drift on HOW a loan
-    is resolved.  It reads two dated inputs ONCE and threads both into the pure
-    resolver:
+    The injection helper :func:`resolve_loan_bundle` routes every summary-surface
+    resolution through (the bundle is what
+    :class:`~app.services.resolution_context.BalanceContext` memoizes), so no
+    surface can drift on HOW a loan is resolved.  It threads two seeded inputs
+    into the pure resolver:
 
-    * The genesis-ledger confirmed view (:func:`confirmed_loan_view`): its
-      balance overrides BOTH the headline balance and the forward projection's
-      seed, and its ledger-derived rows become the schedule's confirmed slice,
-      so the balance, the history, and the projection cannot desync
-      off-schedule.  When the ledger cannot answer (``None`` -- a loan it has not
-      opened, or one that has not originated by *as_of*) the resolver falls back
-      to its anchor replay, the pre-switch behaviour.
-    * The loan's standing overpayment
-      (:func:`recurring_transfer_query.loan_standing_extra_for_account`): applied
-      to every forward month so ``LoanState``'s schedule, payoff, and interest
-      are the COMMITTED (plan-aware) trajectory every summary surface shows,
-      matching the loan detail page (step 8,
+    * The genesis-ledger confirmed view (:func:`confirmed_loan_view`, loaded
+      here): its balance overrides BOTH the headline balance and the forward
+      projection's seed, and its ledger-derived rows become the schedule's
+      confirmed slice, so the balance, the history, and the projection cannot
+      desync off-schedule.  When the ledger cannot answer (``None`` -- a loan it
+      has not opened, or one that has not originated by *as_of*) the resolver
+      falls back to its anchor replay, the pre-switch behaviour.
+    * The loan's standing overpayment (``extra_principal``, loaded by the
+      caller): applied to every forward month so ``LoanState``'s schedule,
+      payoff, and interest are the COMMITTED (plan-aware) trajectory every
+      summary surface shows, matching the loan detail page (step 8,
       ``docs/design/escrow_line_identity_refactor.md`` Sec. 16).  ``0.00`` for a
       loan with no recurring payment, so the injection is a safe no-op there.
+      :func:`resolve_loan_bundle` loads it (not this helper) so it can ALSO
+      surface the SAME figure on :attr:`ResolvedLoan.extra_principal` for the
+      seam's forward plan to fold past the shadow horizon (finding N-15).
 
-    Centralizing BOTH loads here is what makes it structurally impossible for a
-    summary surface to resolve a loan without its plan: a new caller cannot
-    silently regress to the contractual trajectory, because this chokepoint owns
-    the loads.
+    Routing every resolution through here is what makes it structurally
+    impossible for a summary surface to resolve a loan without its plan: a new
+    caller cannot silently regress to the contractual trajectory, because the
+    bundle chokepoint owns the loads.
 
     Args:
-        loan_inputs: The loan's loaded :class:`LoanInputs` bundle.  The caller
-            builds it, since the three loaders each load slightly different
-            surrounding data (the route also needs the context, the savings
-            tile the paid-off probe).  Its ``loan_params`` identifies the loan to
-            both loads below, so neither can be asked about a different one.
-        account_id: The loan account, already owner-checked by the caller.
+        loan_inputs: The loan's loaded :class:`LoanInputs` bundle.  Its
+            ``loan_params`` identifies the loan to the confirmed-view load below,
+            so it cannot be asked about a different one.
         scenario_id: The baseline scenario id, or ``None``.
         as_of: The evaluation date; typically ``date.today()``.
+        extra_principal: The loan's standing overpayment, loaded ONCE by the
+            caller (:func:`resolve_loan_bundle`) and threaded in, so the same
+            figure the bundle surfaces on :attr:`ResolvedLoan.extra_principal`
+            shapes ``state``'s schedule / payoff (no second read).
 
     Returns:
         The resolved :class:`~app.services.loan_resolver.LoanState`.
@@ -139,7 +151,7 @@ def resolve_loan_seeded(
     view = confirmed_loan_view(loan_inputs.loan_params, scenario_id, as_of)
     return loan_resolver.resolve_loan(
         loan_inputs, as_of, confirmed_view=view,
-        extra_principal=loan_standing_extra_for_account(account_id),
+        extra_principal=extra_principal,
     )
 
 
@@ -186,17 +198,23 @@ def resolve_loan_bundle(
         return None
     anchor_facts = load_loan_anchor_facts(params)
     context = load_loan_context(account_id, scenario_id, params)
+    # Load the standing extra ONCE here and thread it BOTH into the resolve (so
+    # state's schedule / payoff fold it) and onto the bundle (so the seam's
+    # forward plan folds the SAME figure past the shadow horizon -- N-15 -- with
+    # no second read).
+    extra_principal = loan_standing_extra_for_account(account_id)
     state = resolve_loan_seeded(
         loan_resolver.LoanInputs(
             params, anchor_facts, context.payments, context.rate_changes,
         ),
-        account_id, scenario_id, as_of,
+        scenario_id, as_of, extra_principal,
     )
     return ResolvedLoan(
         params=params,
         anchor_facts=anchor_facts,
         context=context,
         state=state,
+        extra_principal=extra_principal,
     )
 
 

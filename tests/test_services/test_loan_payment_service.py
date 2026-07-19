@@ -1033,7 +1033,7 @@ class TestReadSwitchSeedHelpers:
             )
 
             seeded = resolve_loan_seeded(
-                loan_inputs, loan.id, scenario_id, date.today(),
+                loan_inputs, scenario_id, date.today(), Decimal("0.00"),
             )
             unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
 
