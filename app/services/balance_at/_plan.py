@@ -63,8 +63,8 @@ def _month_slot(due: date) -> tuple[int, int]:
 
     The de-dup key that keeps one calendar installment folded once: a contractual
     ESTIMATED synthesis is skipped when a PLANNED record or a settled payment
-    already occupies its month (the same month-keyed slot the C3c interest merge
-    uses, ``_loan_interest._due_slot``).
+    already occupies its month (the same month-keyed slot the C6c interest merge
+    uses, :func:`app.services.balance_at._loan_interest._due_slot`).
     """
     return (due.year, due.month)
 
@@ -316,15 +316,86 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
     )
 
 
+@dataclass(frozen=True)
+class _PlanSplit:
+    """One planned payment's fold result: its visible date and the split parts.
+
+    The per-payment output of :func:`_split_plan`, carrying what the two forward
+    readers need -- the ``principal`` paydown for :func:`fold_forward` (the balance)
+    and the ``interest`` for :func:`plan_interest_in_year` (the tax figure) -- keyed
+    by the EFFECTIVE date the payment becomes visible on, plus the ``due_date`` that
+    identifies its installment (so the tax reader can drop a slot a settled payment
+    already covers).  Sharing ONE split is what keeps a loan's projected balance and
+    its projected interest from disagreeing about what a future payment pays.
+
+    Attributes:
+        due_date: The contractual installment this payment satisfies -- its
+            ``(year, month)`` slot identity, so :func:`plan_interest_in_year` can
+            exclude an installment a settled payment already occupies.
+        effective_date: When this payment's paydown becomes VISIBLE to a read
+            (``max(due, as_of + 1d)``, ruling D1); both readers key their year /
+            prefix-sum on it.
+        interest: The interest this payment's cash paid, accrued on the running
+            balance before it (an Expense leg, ``>= 0``).
+        principal: The debt this payment paid down (``cash - interest - escrow``,
+            capped at the balance; may be NEGATIVE for an underpayment).
+    """
+
+    due_date: date
+    effective_date: date
+    interest: Decimal
+    principal: Decimal
+
+
+def _split_plan(
+    seed: Decimal, plan: list[PlannedPayment],
+) -> list[_PlanSplit]:
+    """Fold *plan* from *seed* in DUE order, returning each payment's split.
+
+    The shared per-payment fold both forward readers run.  It walks *plan* in DUE
+    (contract) order from *seed* -- so interest accrues on the right running
+    balance and a late-clamped payment never re-splits an installment (ruling R-A)
+    -- splitting each payment's cash (:func:`split_payment_cash`, the ONE split),
+    and returns each result keyed by its EFFECTIVE (visible) date.
+    :func:`fold_forward` prefix-sums the ``principal`` side for the balance;
+    :func:`plan_interest_in_year` sums the ``interest`` side for the tax figure, so
+    the loan's projected balance and its projected interest come from ONE fold and
+    cannot disagree.
+
+    Args:
+        seed: The balance the projection starts from.
+        plan: The loan's :func:`loan_plan` payment records (any order).
+
+    Returns:
+        One :class:`_PlanSplit` per payment, in DUE order.
+    """
+    ordered = sorted(
+        plan, key=lambda payment: (payment.due_date, payment.effective_date),
+    )
+    splits: list[_PlanSplit] = []
+    balance = seed
+    for payment in ordered:
+        parts = split_payment_cash(
+            payment.cash, balance, payment.annual_rate, payment.escrow,
+        )
+        balance = parts.balance_after
+        splits.append(_PlanSplit(
+            due_date=payment.due_date,
+            effective_date=payment.effective_date,
+            interest=parts.interest,
+            principal=parts.principal,
+        ))
+    return splits
+
+
 def _paydown_steps(
     seed: Decimal, plan: list[PlannedPayment],
 ) -> list[tuple[date, Decimal]]:
-    """Split each planned payment on the running balance, tagged by visible date.
+    """Return each planned payment's paydown as a NEGATIVE change on its visible date.
 
-    Walks *plan* in DUE (contract) order from *seed*, so interest accrues on the
-    right balance and a late-clamped payment never re-splits an installment, and
-    returns each payment's paydown as a NEGATIVE balance change keyed by its
-    EFFECTIVE (visible) date -- the steps :func:`_sample_from_steps` prefix-sums.
+    The balance reader's view of :func:`_split_plan`: each split's ``principal``
+    paydown, negated and keyed by its EFFECTIVE (visible) date -- the steps
+    :func:`_sample_from_steps` prefix-sums.
 
     Args:
         seed: The balance the projection starts from.
@@ -334,18 +405,10 @@ def _paydown_steps(
         ``[(effective_date, balance_change), ...]`` in due order (balance_change is
         ``-principal``).
     """
-    ordered = sorted(
-        plan, key=lambda payment: (payment.due_date, payment.effective_date),
-    )
-    steps: list[tuple[date, Decimal]] = []
-    balance = seed
-    for payment in ordered:
-        parts = split_payment_cash(
-            payment.cash, balance, payment.annual_rate, payment.escrow,
-        )
-        balance = parts.balance_after
-        steps.append((payment.effective_date, -parts.principal))
-    return steps
+    return [
+        (split.effective_date, -split.principal)
+        for split in _split_plan(seed, plan)
+    ]
 
 
 def _sample_from_steps(
@@ -416,4 +479,64 @@ def fold_forward(
     """
     return _sample_from_steps(
         seed, owed_from, _paydown_steps(seed, plan), dates,
+    )
+
+
+def plan_interest_in_year(
+    seed: Decimal,
+    plan: list[PlannedPayment],
+    year: int,
+    exclude_slots: frozenset[tuple[int, int]] = frozenset(),
+) -> Decimal:
+    """Return the interest *plan*'s payments are projected to pay in *year*.
+
+    The projected (future) half of the Schedule-A mortgage-interest figure
+    (:func:`app.services.balance_at.loan_interest_in_year`), folded from the SAME
+    forward payment records the loan's projected BALANCE folds
+    (:func:`fold_forward` over :func:`_split_plan`) -- so the tax figure's future
+    and the balance's future come from ONE model (step C6c; B-6 unified the settled
+    PAST, this the future).  It sums each payment's accrued interest attributed to
+    the year the payment is projected to be PAID: its EFFECTIVE date
+    (``max(due, as_of + 1d)``, ruling D1), the visible / expected-paid date, so an
+    overdue-but-still-projected payment's interest deducts in the year it is
+    expected to clear rather than the closed year it was contractually due.
+
+    An overdue installment with NO payment record contributes nothing: it is absent
+    from *plan* entirely (:func:`loan_plan`'s ESTIMATED tier never synthesizes a
+    strictly-past installment -- finding B-9), so a delinquent loan's unpaid past
+    does not inflate its deduction.
+
+    *exclude_slots* is the settled-slot MERGE: the caller passes the ``(year,
+    month)`` installments its SETTLED half already counts, and this drops any plan
+    record on one of them, so an installment counted as settled is not ALSO counted
+    here.  The plan's own ESTIMATED tier de-dups the settled payments VISIBLE by
+    ``as_of`` (``confirmed_shadows_through``, a UTC-visibility cut), but the caller's
+    settled half sums the fold's WALK on a DISPLAY clock; the two cuts differ for a
+    payment settled in the evening of a UTC-behind zone, so the caller closes the
+    gap by handing this the WALK's slots.  See
+    :func:`app.services.balance_at._loan_interest.loan_interest_in_year`.
+
+    Args:
+        seed: The balance the projection starts from -- the loan's confirmed
+            present (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`),
+            the SAME seed :func:`positions` folds, so the interest accrues on the
+            balance the loan actually projects.
+        plan: The loan's :func:`loan_plan` payment records.
+        year: The calendar / tax year to sum projected interest within.
+        exclude_slots: The ``(year, month)`` installment slots a settled payment
+            already covers, dropped from the sum (default: none).  A record is still
+            FOLDED (its paydown feeds later balances), only its interest is skipped.
+
+    Returns:
+        The interest projected to be paid in *year* as a cent-quantized
+        ``Decimal`` (``0.00`` when no planned payment is visible in the year).
+    """
+    return sum(
+        (
+            split.interest
+            for split in _split_plan(seed, plan)
+            if split.effective_date.year == year
+            and (split.due_date.year, split.due_date.month) not in exclude_slots
+        ),
+        _ZERO_MONEY,
     )

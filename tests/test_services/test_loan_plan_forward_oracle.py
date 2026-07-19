@@ -23,7 +23,11 @@ slot folded once) -- is pinned in ``test_loan_plan_assembly.py``.
 from datetime import date
 from decimal import Decimal
 
-from app.services.balance_at._plan import PlannedPayment, fold_forward
+from app.services.balance_at._plan import (
+    PlannedPayment,
+    fold_forward,
+    plan_interest_in_year,
+)
 
 _RATE = Decimal("0.06")           # 6% annual -> 0.5% monthly
 _ORIGINATION = date(2025, 1, 1)
@@ -179,3 +183,67 @@ def test_dates_are_valued_independently_and_duplicates_collapse():
         date(2026, 1, 1): Decimal("100000.00"),
         date(2026, 3, 1): Decimal("99500.00"),
     }
+
+
+# ── plan_interest_in_year: the projected half of the Schedule-A figure ──────
+#
+# The interest sibling of ``fold_forward``: it folds the SAME plan over the SAME
+# running balance (``_split_plan``), summing each payment's accrued interest by the
+# year the payment is projected to be PAID -- its EFFECTIVE date (step C6c).  These
+# pin that arithmetic BY HAND, so the tax figure's projected term is graded against
+# hand math, never the producer as its own oracle (plan N-7).
+
+
+def test_plan_interest_sums_each_payments_accrued_interest():
+    """Two 2026 payments on a $100,000 balance: 500.00 + 497.50 = 997.50."""
+    seed = Decimal("100000.00")
+    plan = [
+        _payment(date(2026, 2, 1), "1000.00"),
+        _payment(date(2026, 3, 1), "1000.00"),
+    ]
+
+    # P1 interest round(100000 * 0.005) = 500.00 (balance -> 99,500.00);
+    # P2 interest round(99500 * 0.005) = 497.50 (on the paid-down balance).
+    assert plan_interest_in_year(seed, plan, 2026) == Decimal("997.50")
+
+
+def test_plan_interest_is_keyed_by_the_effective_year():
+    """A payment's interest lands in its EFFECTIVE year, split across a boundary."""
+    seed = Decimal("100000.00")
+    plan = [
+        _payment(date(2026, 12, 1), "1000.00"),
+        _payment(date(2027, 1, 1), "1000.00"),
+    ]
+
+    # Folded in due order: P1 (Dec 2026) interest 500.00 -> 99,500.00; P2 (Jan
+    # 2027) interest round(99500 * 0.005) = 497.50 on the paid-down balance.
+    assert plan_interest_in_year(seed, plan, 2026) == Decimal("500.00")
+    assert plan_interest_in_year(seed, plan, 2027) == Decimal("497.50")
+
+
+def test_plan_interest_of_an_overdue_clamp_lands_in_the_effective_year():
+    """An overdue record's interest deducts in the year it is projected to CLEAR.
+
+    A payment due 2025-12-15 that has not settled is clamped forward to
+    ``as_of + 1d`` (here 2026-01-05, ruling D1), so its interest -- the interest a
+    borrower is projected to pay when they finally make the payment -- belongs to
+    the year of that EFFECTIVE date (2026), NOT the closed year it was contractually
+    due (2025).  This is the fork settled for C6c: attribute by expected-paid date,
+    so an unpaid installment never books a deduction into an already-filed year.
+    """
+    seed = Decimal("100000.00")
+    plan = [_payment(
+        date(2025, 12, 15), "1000.00", effective=date(2026, 1, 5),
+    )]
+
+    # Interest round(100000 * 0.005) = 500.00, attributed to the effective year.
+    assert plan_interest_in_year(seed, plan, 2025) == Decimal("0.00")
+    assert plan_interest_in_year(seed, plan, 2026) == Decimal("500.00")
+
+
+def test_an_empty_plan_has_no_projected_interest():
+    """No payment records -> no projected interest in any year (the B-9 fix)."""
+    seed = Decimal("177277.97")
+
+    assert plan_interest_in_year(seed, [], 2026) == Decimal("0.00")
+    assert plan_interest_in_year(seed, [], 2030) == Decimal("0.00")

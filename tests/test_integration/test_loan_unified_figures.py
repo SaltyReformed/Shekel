@@ -44,7 +44,11 @@ from app.services import (
 )
 from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext
-from tests._test_helpers import create_loan_account, loan_params_for
+from tests._test_helpers import (
+    create_loan_account,
+    freeze_today,
+    loan_params_for,
+)
 
 
 # ── Hand-computed reference values ────────────────────────────────
@@ -215,26 +219,34 @@ def test_per_period_principal_interest_single_source(
 
 
 def test_total_interest_one_definition(
-    app, seed_user, seed_periods,
+    app, seed_user, seed_periods, monkeypatch,
 ):
-    """C17-2 / HIGH-08 / F-019: the calendar-year mortgage interest
-    figure is an explicit, labeled subset of the resolver's life-of-
-    loan total -- not a separate computation.
+    """C17-2 / HIGH-08 / F-019: the calendar-year mortgage-interest figure
+    is a labeled slice of the loan's ONE life-of-loan interest source --
+    not a separate computation.
 
-    Hand-computed life-of-loan total for our fixture
-    (``$300,000`` / ``6%`` / ``360 months``, origination 2026-01-01)
-    is the sum of the per-month interest rows the engine produces.
-    The 2026 mortgage-interest subset is the sum of those same rows
-    whose ``payment_date.year == 2026``.  Computing both from
-    ``state.schedule`` proves the contract: there is one schedule;
-    the calendar-year view is a filter on it.
+    Step **C6c** moved that source off the resolver's contractual schedule
+    onto the loan's forward PLAN (the same model the balance folds).  For a
+    CURRENT loan -- no overdue installment the plan would honestly omit
+    (that B-9 behaviour is pinned in ``test_loan_interest_in_year``), no
+    live-vs-contractual drift -- the plan reproduces the contractual
+    paydown to the cent, so the seam's calendar-year figure still equals the
+    resolver schedule's 2026 subset.  This pins that reproduction (a
+    healthy-loan cross-check that the plan cutover moved no money) AND the
+    slice contract: 2026 is a strict, positive part of the life-of-loan
+    total.
+
+    Frozen 2026-01-15 -- just after the 2026-01-01 origination, before the
+    first installment -- so the loan is current and the figures are
+    deterministic rather than dependent on the wall clock.
     """
     with app.app_context():
+        freeze_today(monkeypatch, date(2026, 1, 15))
         account, loan_params = _create_fixed_loan(
             seed_user, seed_periods[0],
         )
 
-        state = _resolver_state(account, loan_params, date.today())
+        state = _resolver_state(account, loan_params, date(2026, 1, 15))
 
         # Life-of-loan total interest, derived directly from the
         # resolver's single schedule.
@@ -243,24 +255,26 @@ def test_total_interest_one_definition(
         )
         # Resolver applies round_money at the LoanState boundary
         # (loan_resolver.py:647), so state.total_interest matches the
-        # rounded sum of row interests.
+        # rounded sum of row interests -- an invariant of the resolver's own
+        # two derivation paths, independent of where the tax figure reads from.
         assert state.total_interest == round_money(life_of_loan), (
             f"Resolver total_interest={state.total_interest} differs "
             f"from sum-of-rows round_money={round_money(life_of_loan)}"
             " -- the resolver's two derivation paths must agree."
         )
 
-        # The calendar-year subset, from the balance seam's one loan-interest
+        # The calendar-year figure, from the balance seam's one loan-interest
         # producer.  The loan has no confirmed payments, so the fold's settled
-        # term is $0.00 and every 2026 row is a genuinely projected one -- the
-        # schedule-projected term carries the whole figure, byte-identical to the
-        # labeled resolver subset below.
+        # term is $0.00 and every 2026 payment is projected -- the plan-folded
+        # projection carries the whole figure.
         calendar_year_interest = balance_at.loan_interest_in_year(
             account, BalanceContext.build(seed_user["user"].id), 2026,
         )
 
-        # Hand-derive the same subset directly from the resolver
-        # schedule.  The aggregation MUST equal this.
+        # Cross-check: for this CURRENT loan the plan reproduces the
+        # contractual schedule, so the seam figure equals the resolver
+        # schedule's 2026 subset to the cent -- proof the plan cutover moved
+        # no money on a healthy loan.
         expected_subset = sum(
             (
                 row.interest for row in state.schedule
@@ -270,15 +284,15 @@ def test_total_interest_one_definition(
         )
         assert calendar_year_interest == expected_subset, (
             f"Year-end 2026 mortgage interest "
-            f"{calendar_year_interest} != labeled subset of resolver "
-            f"schedule {expected_subset} -- the calendar-year view "
-            "diverged from the life-of-loan source."
+            f"{calendar_year_interest} != contractual schedule 2026 subset "
+            f"{expected_subset} -- the plan-based figure diverged from the "
+            "contractual paydown for a CURRENT loan."
         )
 
-        # And the labeled subset is strictly less than the total.
-        assert expected_subset < life_of_loan, (
-            "Sanity: 2026's mortgage interest cannot equal the full "
-            "life-of-loan total (the loan runs into 2056)."
+        # And the calendar slice is strictly positive and less than the total.
+        assert Decimal("0.00") < expected_subset < life_of_loan, (
+            "Sanity: 2026's mortgage interest is a strict, positive slice of "
+            "the life-of-loan total (the loan runs into 2056)."
         )
 
 
