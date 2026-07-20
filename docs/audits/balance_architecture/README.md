@@ -108,8 +108,8 @@ step removing the REASON a fence surface exists rather than shrinking it: **D1**
 **D-ctx** (context in; retires D0a's injection) -> **D-fold** (folds in; the walk stops being a
 "producer") -> **D-gate** -> **D3** (delete, not shrink). Then **X1** (the cash side).
 **D-docs** (`8e9a0517`) and **D-dead** (`cef81202`, the dead net-worth reducer -- and the two
-unpinned `abs` sites its deletion exposed, **N-27**) shipped as D1 prerequisites. **D1 is now
-DECOMPOSED into D1a/D1b/D1c** (developer ruling 2026-07-20): re-measuring its scope with an AST
+unpinned `abs` sites its deletion exposed, **N-27**) shipped as D1 prerequisites. **D1a** (`a2149145`, the split; its review found the fence hole **N-28**)
+shipped; **D1 is DECOMPOSED into D1a/D1b/D1c** (developer ruling 2026-07-20): re-measuring its scope with an AST
 scan found the plan's own correction (a) undercounted the out-of-cluster surface 2 -> 4 consumers
 and 2 -> 7 names, and that all 7 are ruled NON-producers -- so the step splits the cluster along
 that line (producers IN, non-producers OUT) instead of moving it wholesale.
@@ -1137,12 +1137,32 @@ standing exceptions rather than training the exemption habit it exists to preven
   Phase X is the reason the grouping matters: **X2 is "a cash account is an event stream"**, and the
   anchor fact + transaction loader + live amounts ARE that stream -- so D1a builds the layer X2
   needs instead of a leftover module X2 must re-split.
-  - [ ] **D1a** split `balance_resolver` three ways, all still OUTSIDE the seam: a cash-EVENTS
-    module (`AnchorPoint`, `resolve_anchor`, `load_balance_transactions`, `live_amount_overrides`),
-    a period-FLOWS module (`PeriodSubtotal`, `_subtotal_from_transactions`, `period_subtotal(s)`),
-    and the producer half (`balances_for`, `balance_as_of_date`, `BalanceResult` + 3 privates).
-    Pure moves, no logic change, baseline unmoved by construction. The two non-producer modules come
-    OFF the fence entirely (like `account_projection`), deleting their W9909 rulings.
+  - [x] **D1a** `refactor(balance): split balance_resolver into events, flows, producers` --
+    **SHIPPED `a2149145`.** `cash_events` (the FACTS), `period_flows` (what MOVED, not what is
+    HELD), and `balance_resolver` (the PRODUCERS: `balances_for` / `balance_as_of_date` /
+    `BalanceResult`), all still OUTSIDE the seam. **Pure move, proven not asserted:** an AST
+    comparison vs the pre-split file reports 14/14 definitions identical, none dropped or added, so
+    the baseline cannot move. The one-way arrow is verified at RUNTIME in a fresh interpreter, not
+    by grep -- including that `live_amount_overrides`' function-level `income_service` /
+    `loan_payment_service` import closes no cycle from its new home. 5 app/ consumers + ~10 test
+    files rewired via AST scan; `test_balance_resolver_anchor.py` renamed to `test_cash_events.py`.
+    **The plan's "come OFF the fence entirely (like `account_projection`)" was WRONG, and the
+    adversarial review proving it is the step's most important part.** Moving these names out of a
+    W9909-scoped module took the fail-CLOSED completeness check with them: a new public
+    balance-at-T in `period_flows`, folded from `resolve_anchor` + `period_subtotals` +
+    `round_money` -- not one fenced NAME among them -- rated 10.00/10, **and so did a route
+    rendering it.** A real balance on a screen outside the seam with every gate silent: the third
+    instance of the miss the checker's own header calls "a design defect in the FENCE, not a lapse
+    in diligence". The correction is that the two lists answer DIFFERENT questions -- W9906's
+    allowlist asks "may this module CALL a producer?" (no, and it correctly fires if they try),
+    W9909's scope asks "must a new public function here be CLASSIFIED?" (yes). Both modules are now
+    W9909-scoped via a new `_CASH_EVENT_SOURCE_MODULES` and stay OFF the W9906 allowlist; probe
+    re-run, W9909 fires. Three docstrings had asserted the removal was precedented by
+    `account_projection`, which is on BOTH lists -- corrected, along with 7 stale cross-references
+    including `log_events.py`'s `EVT_ANCHOR_CACHE_RECONCILED` description, which named an emitter
+    that no longer exists. Full suite 7467, pylint 10.00, 150 checker tests. Deferred: the
+    `period_subtotal` tests stay in `test_balance_resolver.py` (they share its fixtures; relocating
+    means promoting two helpers into the conftest-imported `tests/_test_helpers`, its own commit).
   - [ ] **D1b** `account_projection` off the fence, staying where it is. **Correction (b) VERIFIED
     2026-07-20**: it imports only `app.enums`, defines no producer and calls none. It is a
     classifier with 18 real importers; moving it inside would make 18 modules import a private name.
@@ -1293,6 +1313,7 @@ archive names so old references resolve here.
 | N-24 (C9b) | **Three generation call sites have no `ValidationError` handler, so a refused write 500s.** `create_transfer` can now raise R-C (as it already could raise `_reject_transfer_out_of_loan`), and the recurrence engine fans out through it. `transfers/templates.py:690` wraps generation correctly and C9b added the same wrap to `create_payment_transfer`; `period_population.py:86` (pay-period EXTEND / regenerate -- one bad loan template breaks the whole extension) and `transfers/templates.py:457` (unarchive) do not. Largely closed in practice by C9a: every loan-payment rule now carries a `start_date` (migration-backfilled + synced + bound at creation), and `first_installment_date` is strictly `>` origination for every input, so a bounded rule cannot generate a refused installment. This is the residual exposure for an unbounded rule, and it is partly PRE-EXISTING (the out-of-loan guard has the same reach) -- C9b widens an existing hole rather than inventing one | 500 on extend / unarchive | recorded, deferred | own commit |
 | N-25 (D0a) | **A real runtime import cycle in the balance cluster was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge.** pylint's `_add_imported_module` drops an edge into `_excluded_edges` when `in_type_checking_block(node)`, keyed by the `(importer, imported)` MODULE pair -- so one type-checking import silences the check for EVERY import of that module, including a runtime one elsewhere in the file. `resolution_context.py` had exactly that: a `TYPE_CHECKING` `PlannedPayment` import (line 73) masking the lazy runtime `loan_plan` import inside the method (line 305), which closed a genuine cycle with `balance_at._plan`. Measured both directions on this repo: neutralise the type-only edge on the PRE-D0a code and pylint reports `R0401 (app.services.balance_at._plan -> app.services.resolution_context)`; neutralise it on the D0a code and it reports nothing. Reproduced from scratch on a 3-file probe (8.75/10 -> 10.00/10 by adding a type-only import and nothing else). **The instance is fixed; the CLASS is not** -- the masking still applies anywhere a module imports another both for types and at runtime. Residual risk is bounded by two accidents rather than a gate: a top-level re-import would `ImportError` at load (`_plan` imports `BalanceContext` at module scope), and a function-level one now trips stock `import-outside-toplevel` since D0a deleted the scoped disable. The remaining path is re-adding the lazy import WITH a rationale comment -- which is what the pre-D0a code was, and it passed every gate | a cycle + an inverted dependency, gate-green | **instance closed (`8285fcad`)**; class recorded | D0a (instance); own commit (class, if ever) |
 | N-26 (D0a) | **pylint's stock `import-private-name` (C2701) does not flag `from pkg._module import public_name`** -- only `from pkg import _module`. Measured on a 2-file probe: the first form rates 10.00/10, the second is flagged. The unflagged form is the natural one and the one D1 depends on being caught, so the "engine cluster private inside the seam package" step CANNOT rest on the stock extension; it needs the custom package-privacy checker (D-gate). Recorded because the alternative -- assuming the stock gate covers it -- would have shipped D1's ~60 fence-entry deletion against a fence with a hole in it | a fence that permits the bypass it exists to stop | recorded, closing at D-gate | D-gate |
+| N-28 (D1a) | **Relocating a name out of a W9909-scoped module silently un-scopes it, and the two fence lists were being treated as one.** D1a moved `resolve_anchor` / `load_balance_transactions` / `live_amount_overrides` / `period_subtotal(s)` out of `balance_resolver` into two new modules, and left both new modules off BOTH fence lists on the reasoning that they call no producer. The first half is right (W9906's allowlist), the second is not (W9909's completeness scope), and conflating them removed the fail-closed default from the two files likeliest to grow the next cash producer -- they hold every ingredient of a balance-at-T, and X2 builds the cash fold on top of them. Measured in the step's own adversarial review: a public `running_balance_map` in `period_flows` folded from `resolve_anchor` + `period_subtotals` + `round_money` touches no fenced NAME, so it rated **10.00/10**, and a route consuming it rated 10.00/10 too. The generalisation is the finding: **W9909's scope must follow a relocated public name, or the move itself is the hole** -- a deny list keyed on module identity fails open the moment a module is created | a balance-at-T on a screen outside the seam, every gate green | **closed (`a2149145`)** -- `_CASH_EVENT_SOURCE_MODULES` scopes both new modules for W9909 while keeping them off the W9906 allowlist; probe re-run fires | D1a |
 | N-27 (D1) | **The net-worth reducer with no callers, and the `abs` nothing pinned.** `net_worth_kernel.sum_net_worth_at_period` had ZERO production callers (app/, scripts/, templates, no dynamic reach) while four docstrings named it as the home of the asset-plus / liability-minus rule -- including the balance seam's own front door. The live reduction had silently moved to `_net_worth._sum_composition_at_period` (banded) with `compute_net_worth_series` deriving from it, and to `compute_net_worth_today` for the hero; the dead copy's only tests graded it against hand-built dicts (the B-17 anti-pattern), so it read as covered. **The deletion exposed the real defect:** those tests were the repo's ONLY negative-sign liability assertions, and the surviving rule has TWO `abs(bal)` sites. Every live liability fixture stores a POSITIVE balance, where `abs` is a no-op -- measured: the per-period band's `abs` could be deleted and all **7466** tests passed. A Credit Card's balance is stored NEGATIVE, so a regression would add a debt to the ASSET side and put the hero and the trend in contradiction on one page | `abs` deletable with a green suite; a $1,000 swing on a $500 card, hero vs trend disagreeing | **closed (`cef81202`)** -- reducer + its 5 tests deleted, W9909 ruling with them (the reverse-staleness guard fired); one new real-path test per `abs` site, each control shown to fire | D-dead |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
@@ -1342,6 +1363,14 @@ archive names so old references resolve here.
   names it could not see were the ones that decide where the boundary goes. The same grep was run
   again at D1's rebuild and reproduced the same wrong answer before an AST scan caught it. A
   measurement that silently under-reports is worse than none: it reads as evidence.
+* **A fail-CLOSED gate is scoped by module identity, so creating a module is how you escape it.**
+  W9909 exists because a name-keyed deny list fails open; its own scope is a module list, which
+  fails open the same way one level up. D1a moved four names into two NEW modules and they left the
+  scope silently -- a balance-at-T folded from them, and a route rendering it, both rated 10.00/10.
+  When a refactor RELOCATES a public name, ask what gate was scoping its old home and carry the
+  scope with it. Related: two fence lists that look alike can answer different questions ("may this
+  module CALL a producer?" vs "must a new public function here be CLASSIFIED?"); treating them as
+  one is what opened the hole.
 * A safety that is a predicate is not a safety.
 * Boundary predicates standing in for instants or records are this codebase's signature defect
   (the walk clock, the period-start payment date, the archived X0 rule). When a rule says
