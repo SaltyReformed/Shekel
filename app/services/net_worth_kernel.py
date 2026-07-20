@@ -74,7 +74,7 @@ def load_account_period_transactions(
     interest-layered walk (:func:`_account_interest_projection`, its only
     caller today).  It selects EVERY non-deleted row for the account in the
     period span -- unlike
-    :func:`~app.services.cash_events.load_balance_transactions`, which
+    :func:`~app.services.cash_ledger.load_balance_transactions`, which
     additionally drops Credit / Cancelled rows -- because the interest
     accrual downstream applies its own status logic and needs the full row
     set.  ``Transaction.status`` is ``lazy="joined"`` on the model, so a
@@ -370,7 +370,7 @@ def base_account_balance_map(
 
     # Interest-bearing accounts (HYSA, Money Market, CD, HSA).  The
     # math-layer silent-degrade seam in
-    # ``balance_calculator._entry_aware_amount`` was closed in Commit 5
+    # ``cash_ledger._amounts._entry_aware_amount`` was closed in Commit 5
     # (entries lazy-load via the SQLAlchemy descriptor instead of
     # short-circuiting to ``effective_amount``), so the entries-aware
     # reduction applies here even without ``selectinload``.

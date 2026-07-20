@@ -1,45 +1,42 @@
 """
-Shekel Budget App -- Per-period cash FLOWS (what moved, not what is held).
+Shekel Budget App -- Cash ledger: what a SET of rows SUMS TO (flows, not stocks).
 
-A flow, not a stock: :func:`period_subtotals` answers "how much moved through
-this account during period P", where a balance answers "what is held at time
-T".  The distinction is the reason this is its own module and not part of the
-balance seam -- a subtotal is a peer reduction over the same transaction rows
-the balance folds, not a step on the way to a balance.
+A flow, not a stock: these answer "how much moved through this account during
+period P", where a balance answers "what is held at time T".  That distinction
+is why this layer is not part of the :mod:`app.services.balance_at` seam -- a
+subtotal is a peer reduction over the same transaction rows the balance folds,
+not a step on the way to a balance.
 
-The two questions are nonetheless bound by one invariant, and keeping it is
-this module's whole point:
+Two levels, one rule:
+
+  * :func:`sum_projected` -- the Projected-only (income, expense) reduction over
+    an already-loaded set of rows, valuing each through :mod:`._amounts`.  This
+    is the shared engine.
+  * :func:`period_subtotal` / :func:`period_subtotals` -- the same reduction per
+    pay period, loading the rows itself and rounding ``net`` once at the
+    boundary.
+
+The two questions -- flow and stock -- are bound by one invariant, and keeping
+it is this module's whole point:
 
     balances[p] - balances[p-1] == period_subtotals(...)[p].net
 
 It holds by construction because both sides reduce the SAME rows through the
-SAME engine (:func:`app.services.balance_calculator.sum_projected`) with the
+SAME engine (:func:`sum_projected` below, which
+:func:`app.services.balance_calculator.calculate_balances` also calls) with the
 same entries-aware expense reduction and the same live override map, and
 because ``net`` is rounded ONCE at the boundary
 (``round_money(income - expense)``) rather than as the difference of two
 separately-rounded legs.  Two producers that agreed only by coincidence is
 what F-002 Pair C / F-004 were, and E-25 restored.
 
-Why its own module (plan step D1a).  These were three of the ten public names
-in ``balance_resolver``, which sat at exactly 1000 lines -- pylint's default
-module ceiling -- because it held three separable concerns: the event SOURCES
-(now :mod:`app.services.cash_events`), these FLOW sums, and the balance
-PRODUCERS.  Only the producers belong inside the balance seam; a flow sum
-answers no balance-at-T question, so re-exporting it through the seam's public
-surface to keep the grid working would have put a name on that surface that is
-not the seam's job (``docs/audits/balance_architecture/README.md``, step D1).
-
-Fence status, stated precisely because the two halves differ.  This module is
-NOT on the W9906 call allowlist: it composes ``sum_projected`` (an explicit
-non-producer) over rows loaded by :mod:`app.services.cash_events` and calls no
-balance producer, so W9906 correctly flags it if it ever tries.  It IS scoped
-for the W9909 completeness check, so a new public function here must be
-classified as a producer or a non-producer rather than defaulting to unguarded.
-D1a's adversarial review proved that second half load-bearing: a balance-at-T
-map folded from ``resolve_anchor`` + ``period_subtotals`` + ``round_money``
-touches no fenced NAME, so without the W9909 scope it -- and a route rendering
-it -- both rated 10.00/10.  The dependency arrow runs one way: this module
-imports ``cash_events``, and neither imports a producer.
+**Why the engine lives HERE (plan step D1c).**  ``sum_projected`` sat inside
+``balance_calculator`` -- a PRODUCER module -- and was called from outside the
+balance cluster, which is what made that module unmovable (finding N-30).  It
+is an explicitly-ruled NON-producer and it is a reduction over rows, so it
+belongs with the reduction it powers rather than with the balance walk that
+consumes it.  The arrow now runs one way: the producers import this, and this
+imports none of them.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclass out; no Flask import.
@@ -53,12 +50,90 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import balance_calculator
-from app.services.cash_events import (
-    live_amount_overrides,
-    load_balance_transactions,
-)
+from app.utils.balance_predicates import is_projected
 from app.utils.money import round_money
+
+from ._amounts import _expense_amount, income_amount, live_amount_overrides
+from ._facts import load_balance_transactions
+
+
+def sum_projected(transactions, amount_overrides=None, *, as_of=None):
+    """Sum projected (unsettled) income and expenses for one pay period.
+
+    Part of this module's public surface (no leading underscore): the
+    canonical cash producer ``balance_calculator.calculate_balances`` and the
+    per-period reduction below both call it, so the projected-sum rule lives in
+    exactly one place rather than being re-implemented per surface.
+
+    Only Projected items contribute to the projected balance: settled
+    (done / received), credit, and cancelled transactions are excluded
+    via the centralized ``is_projected`` predicate (D6-09 / MED-02), so
+    this filter shares one definition with
+    :func:`~app.services.cash_ledger._amounts._entry_aware_amount` and
+    the balance resolver's date-cut path.
+
+    The same Projected-only sum applies to every period the balance walk
+    visits, anchor and post-anchor alike (D6-06): in the anchor period
+    the excluded settled items are the ones already reflected in the
+    anchor balance the user entered; in post-anchor periods nothing is
+    settled yet.  Either way only the projected remainder is summed.  The
+    anchor-vs-roll-forward distinction -- which starting balance this sum
+    is added to -- lives solely in
+    :func:`~app.services.balance_calculator.calculate_balances`, not here,
+    which is why a single helper serves both branches (collapsed from the
+    historically-separate ``_sum_remaining`` / ``_sum_all`` once both
+    became Projected-only).
+
+    Income uses :func:`~app.services.cash_ledger._amounts.income_amount`
+    (effective_amount, or a live override when present).  Expenses use
+    :func:`~app.services.cash_ledger._amounts._expense_amount`, which
+    applies the entry-checking formula for projected expenses with loaded
+    entries and honors a live override, falling back to effective_amount
+    otherwise.
+
+    **The as-of window is a parameter here too (plan step D1c).**
+    ``balance_resolver`` carried a private ``_sum_period_as_of`` whose own
+    docstring said it "mirrors ``sum_projected``" and differed in exactly one
+    expression -- the expense valuation.  Two loops applying the same
+    Projected gate to the same rows, kept in step by hand, is the
+    agreeing-by-coincidence shape the balance arc exists to end; the date cut
+    is DATA, so it belongs in a parameter rather than in a second copy.  It is
+    a date rather than an injected valuation function deliberately: an
+    argument a caller can get wrong is a defect, not a contract, and a wrong
+    function here would silently ship a wrong balance.
+
+    Args:
+        transactions: Transaction objects for a single pay period.
+        amount_overrides: Optional ``{transaction_id: Decimal}`` live
+            projected-net map (Workstream B); None preserves the
+            stored-amount behavior byte-identical.
+        as_of: Optional calendar date bounding ENTRY inclusion inside the
+            expense reduction (E-27 / HIGH-02), forwarded verbatim to
+            :func:`~app.services.cash_ledger._amounts._expense_amount`.
+            ``None`` (the default) counts every loaded entry, which is what
+            the period-boundary balance walk wants; a date is what the
+            calendar surfaces pass so a purchase dated after it does not
+            reduce the reservation early.  Transactions themselves are NEVER
+            filtered by it -- the date-sensitivity lives in the per-entry
+            reduction, not in row inclusion.  Income carries no entries, so
+            the bound is a no-op on that leg either way.
+
+    Returns:
+        (total_income, total_expenses) as a Decimal tuple.
+    """
+    income = Decimal("0.00")
+    expenses = Decimal("0.00")
+
+    for txn in transactions:
+        if not is_projected(txn):
+            continue
+
+        if txn.is_income:
+            income += income_amount(txn, amount_overrides)
+        elif txn.is_expense:
+            expenses += _expense_amount(txn, amount_overrides, as_of)
+
+    return income, expenses
 
 
 @dataclass(frozen=True)
@@ -111,11 +186,10 @@ def _subtotal_from_transactions(
     """Income / expense / net subtotal for one period's loaded txns.
 
     The shared per-period core of :func:`period_subtotals` (and thus
-    :func:`period_subtotal`, which delegates to it).  Delegates to the
-    engine's :func:`~app.services.balance_calculator.sum_projected`
-    (Projected-only, entry-aware expense reduction, ``effective_amount``
-    for income) and rounds ``net`` as ONE combined
-    ``round_money(income - expense)`` -- the once-at-the-boundary
+    :func:`period_subtotal`, which delegates to it).  Delegates to
+    :func:`sum_projected` above (Projected-only, entry-aware expense
+    reduction, ``effective_amount`` for income) and rounds ``net`` as ONE
+    combined ``round_money(income - expense)`` -- the once-at-the-boundary
     discipline that makes ``net`` reconcile with the balance
     roll-forward (DH-#62 / Batch V; rationale on :class:`PeriodSubtotal`).
 
@@ -132,10 +206,10 @@ def _subtotal_from_transactions(
     Returns:
         The period's :class:`PeriodSubtotal`.
     """
-    # This module is ``balance_calculator``'s sibling reducer (see the module
-    # docstring); the audit's E-25 mandate reuses the engine's public
-    # projected-sum rather than rewriting it (CLAUDE.md rule 10).
-    income, expense = balance_calculator.sum_projected(transactions, amount_overrides)
+    # The audit's E-25 mandate reuses the shared projected-sum engine beside
+    # this rather than rewriting it (CLAUDE.md rule 10); the balance walk
+    # calls the SAME function, which is what makes the delta invariant hold.
+    income, expense = sum_projected(transactions, amount_overrides)
     return PeriodSubtotal(
         income=round_money(income),
         expense=round_money(expense),
@@ -194,7 +268,7 @@ def period_subtotals(
 
     The canonical multi-period producer (and the implementation
     :func:`period_subtotal` delegates to).  Issues a SINGLE
-    :func:`~app.services.cash_events.load_balance_transactions` over all
+    :func:`~app.services.cash_ledger._facts.load_balance_transactions` over all
     ``periods`` then groups the rows by ``pay_period_id``, instead of one
     SELECT per period.
     This is what the grid footer consumes: the pre-existing per-period

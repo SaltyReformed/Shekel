@@ -318,26 +318,36 @@ _LOAN_RESOLVER_DEFINING_MODULES = frozenset({
     "app.services.loan_resolution",
     "app.services.resolution_context",
 })
-# The cash-event SOURCE modules (plan step D1a).  They are NOT on
-# :data:`_BALANCE_SEAM_MODULES` -- they call no balance producer, and W9906
-# correctly flags them if they ever try.  But they are scoped for the W9909
+# The cash LEDGER leaf (plan step D1c).  It is NOT on
+# :data:`_BALANCE_SEAM_MODULES` -- it calls no balance producer, and W9906
+# correctly flags it if it ever tries.  But it is scoped for the W9909
 # COMPLETENESS check, and the distinction is load-bearing: the two lists answer
 # different questions ("may this module CALL a producer?" vs "must a new public
 # function here be CLASSIFIED?"), and D1a's own adversarial review proved that
 # conflating them opens the exact hole W9909 exists to close.  Measured: a new
-# public ``running_balance_map`` in ``period_flows``, folded from
-# ``resolve_anchor`` + ``period_subtotals`` + ``round_money`` -- not one fenced
-# name among them -- rated 10.00/10, AND so did a route consuming it.  A real
-# balance-at-T on a screen outside the seam with every gate silent, which is the
-# third instance of the miss this checker's header calls "a design defect in the
-# FENCE, not a lapse in diligence".
+# public ``running_balance_map`` folded from ``resolve_anchor`` +
+# ``period_subtotals`` + ``round_money`` -- not one fenced name among them --
+# rated 10.00/10, AND so did a route consuming it.  A real balance-at-T on a
+# screen outside the seam with every gate silent, which is the third instance of
+# the miss this checker's header calls "a design defect in the FENCE, not a
+# lapse in diligence".
 #
-# These two modules are the likeliest birthplace of the next one: they hold
-# every ingredient of a cash balance-at-T, and plan step X2 ("a cash account is
-# an event stream") builds the cash fold directly on top of them.
-_CASH_EVENT_SOURCE_MODULES = frozenset({
-    "app.services.cash_events",
-    "app.services.period_flows",
+# This leaf is the likeliest birthplace of the next one: it holds every
+# ingredient of a cash balance-at-T -- the anchor FACT, the row loader, what one
+# row is WORTH, and what a set of rows SUMS TO -- and plan step X2 ("a cash
+# account is an event stream") builds the cash fold directly on top of it.
+#
+# **It is ONE package key, and that is the point (plan step D1c).**  Until D1c
+# these names lived in two flat modules (``cash_events`` / ``period_flows``)
+# plus five stranded inside ``balance_calculator``, so the scope had to be a
+# hand-written LIST -- which fails open exactly one level up: creating a sibling
+# module is how you escape a module-keyed gate (finding N-28, and Section 8's
+# "a fail-CLOSED gate is scoped by module identity").  A package is matched by
+# PREFIX (:func:`_fenced_module_ruling`), so a submodule added inside it is
+# scoped the day it is written, with no constant to remember.  Same shape as
+# ``app.services.loan_ledger`` below, for the same reason.
+_CASH_LEDGER_MODULES = frozenset({
+    "app.services.cash_ledger",
 })
 # The account-KIND classifier (plan step D1b).  Same asymmetry as the cash-event
 # sources above, reached from the other direction: it came OFF the W9906
@@ -403,32 +413,45 @@ _FENCED_MODULE_RULINGS = {
     # stays a registry KEY, so ``_fenced_module_ruling`` returns a ruling rather
     # than ``None``).
     "app.services.balance_resolver": (_BALANCE_PRODUCERS, frozenset()),
-    # The FACTS a cash balance is folded from (plan step D1a).  Scoped for
-    # completeness but NOT allowlisted -- see :data:`_CASH_EVENT_SOURCE_MODULES`
-    # for why the two are deliberately different answers.
-    "app.services.cash_events": (_BALANCE_PRODUCERS, frozenset({
-        # The stored anchor SoT row (a user-asserted FACT plus its date), not a
-        # computed projection.  Consumers read it for the "as of" caption; their
-        # balances come from the seam.
+    # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
+    # folded from, what one row is WORTH, and what a set of rows SUMS TO.
+    # Scoped WHOLE for completeness but NOT allowlisted -- see
+    # :data:`_CASH_LEDGER_MODULES` for why the two are deliberately different
+    # answers, and why the scope is a package rather than a list of modules.
+    "app.services.cash_ledger": (_BALANCE_PRODUCERS, frozenset({
+        # ``_facts`` -- the stored anchor SoT row (a user-asserted FACT plus its
+        # date), not a computed projection.  Consumers read it for the "as of"
+        # caption; their balances come from the seam.
         "resolve_anchor",
         # A loader: it selects rows, and carries no balance of any kind.
         "load_balance_transactions",
-        # What a row is worth RIGHT NOW when its stored amount is a stale cache
-        # -- an amount per transaction, never a balance per account.
+        # ``_amounts`` -- what ONE row is worth to checking.  An amount per
+        # TRANSACTION is not a balance per ACCOUNT: the live override map is
+        # what a row is worth right now when its stored amount is a stale
+        # cache, the income rule reads that map, and the three-bucket
+        # reservation is a decomposition of one row's budget.  The cash analog
+        # of ``loan_ledger``'s ``split_*`` rulings below, and carried for the
+        # same reason.  The three-bucket reservation formula itself is NOT here:
+        # D1c deleted its only external caller, so it went private and needs no
+        # ruling -- structure retiring a fence entry, which is Phase D's point.
         "live_amount_overrides",
-    })),
-    # Per-period NET sums: what MOVED during a period, not what is HELD at a
-    # date.  A peer reduction over the same rows a balance folds, not a step
-    # toward one.
-    "app.services.period_flows": (_BALANCE_PRODUCERS, frozenset({
+        "income_amount",
+        # ``_flows`` -- what a SET of rows sums to: what MOVED during a period,
+        # not what is HELD at a date.  A peer reduction over the same rows a
+        # balance folds, not a step toward one.  ``sum_projected`` is the shared
+        # engine the balance walk and the per-period subtotals both call, which
+        # is what makes ``balances[p] - balances[p-1] == subtotals[p].net`` hold
+        # by construction rather than by coincidence.
+        "sum_projected",
         "period_subtotal",
         "period_subtotals",
     })),
-    "app.services.balance_calculator": (_BALANCE_PRODUCERS, frozenset({
-        "entry_checking_impact",
-        "income_amount",
-        "sum_projected",
-    })),
+    # The cash balance WALK, and since plan step D1c only that: its five
+    # non-producers moved to the ``cash_ledger`` leaf above.  The empty
+    # non-producer set is the accurate state, not an oversight -- every public
+    # name this module still defines IS a producer -- and the module stays a
+    # registry KEY so W9909 still fires here on a new unclassified one.
+    "app.services.balance_calculator": (_BALANCE_PRODUCERS, frozenset()),
     # The account-KIND classifier.  NOT on the W9906 call allowlist, but scoped
     # here -- the deliberate asymmetry N-28 names; why it stays is recorded once,
     # at :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``

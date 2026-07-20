@@ -1,46 +1,20 @@
 """
-Shekel Budget App -- Cash account event sources (the balance fold's inputs).
+Shekel Budget App -- Cash ledger: the FACTS (what happened to this account).
 
-The FACTS a cash account's balance is folded from, and nothing that folds
-them.  Three things live here, and they share one job: answering "what
-happened to this account, and what was it worth?" -- never "what is the
-balance at T", which is the :mod:`app.services.balance_at` seam's question.
+The stored, user-asserted, or recorded events a cash balance is folded from,
+and nothing that folds them:
 
   * :class:`AnchorPoint` / :func:`resolve_anchor` -- the user's balance
     ASSERTION, read from the dated ``AccountAnchorHistory`` source of truth
     (E-19).  A stored fact, not a computed projection.
   * :func:`load_balance_transactions` -- the account's balance-contributing
     transaction rows, with ``entries`` eager-loaded.
-  * :func:`live_amount_overrides` -- what those rows are actually worth
-    right now, when the stored amount is a stale cache.
 
-Why its own module (plan step D1a).  These were four of the ten public names
-in ``balance_resolver``, which sat at exactly 1000 lines -- pylint's default
-module ceiling -- because it held three separable concerns: these event
-SOURCES, the per-period FLOW sums (now :mod:`app.services.period_flows`), and
-the balance PRODUCERS that fold the first over the second.  Only the producers
-belong inside the balance seam; a fact reader that answers no balance-at-T
-question would have had to be re-exported through the seam's public surface to
-keep four consumers working, which is the seam carrying names that are not its
-job (``docs/audits/balance_architecture/README.md``, step D1).
-
-The dependency arrow runs ONE way: the producers import this module, and this
-module imports none of them.  That is what makes the split safe, and it is
-verified by the call graph rather than asserted.
-
-Fence status, stated precisely because the two halves differ.  This module is
-NOT on the W9906 call allowlist -- it calls no balance producer, and W9906
-correctly flags it if it ever tries.  It IS scoped for the W9909 completeness
-check, so a new public function here must be classified as a producer or a
-non-producer rather than defaulting to unguarded.  D1a's adversarial review
-proved that second half load-bearing: a cash balance-at-T folded from the names
-in this module touches no fenced NAME, so without the W9909 scope it -- and a
-route rendering it -- both rated 10.00/10.
-
-Forward note: plan step X2 ("a cash account is an event stream") folds cash
-from exactly these sources, the way the loan fold already reads its anchors
-and payments.  This module is that stream's read side, assembled early so X2
-extends a layer rather than re-splitting a leftover.
+The loan analog is :mod:`app.services.loan_ledger._events`: both answer "what
+happened, and in what order", never "what is the balance at T" -- which is the
+:mod:`app.services.balance_at` seam's question.  What one of these rows is
+WORTH lives beside this in :mod:`._amounts`; what a SET of them sums to lives
+in :mod:`._flows`.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclass out; no ``flask`` / ``request`` / ``session`` /
@@ -254,7 +228,7 @@ def load_balance_transactions(
 
     The query MUST eager-load ``Transaction.entries`` so the
     entries-aware reduction in
-    :func:`~app.services.balance_calculator._entry_aware_amount`
+    :func:`app.services.cash_ledger._amounts._entry_aware_amount`
     applies unconditionally.  This is the structural fix for CRIT-01
     / F-009: by owning the query, the producer guarantees the
     selectinload that pre-remediation consumers each had to remember
@@ -289,52 +263,3 @@ def load_balance_transactions(
         )
         .all()
     )
-
-
-def live_amount_overrides(account, scenario_id, transactions):
-    """Build the live per-transaction amount-override map for ``transactions``.
-
-    Merges two read-time live-recompute seams, both keyed by transaction
-    id, both treating the stored amount as a cache a later profile,
-    calibration, escrow/rate, or financial-calc CODE change may have
-    invalidated without firing a regeneration:
-
-    * :func:`app.services.income_service.live_projected_net` -- projected
-      salary income reflects the current salary profile.
-    * :func:`app.services.loan_payment_service.live_loan_transfer_amounts`
-      -- a recurring loan-payment transfer's cash debit reflects the
-      loan's current monthly payment (P&I + escrow).
-
-    The two key sets are disjoint (salary income transactions vs
-    loan-payment transfer shadows), so the merge cannot collide.  Both
-    helpers are imported locally to keep their (paycheck/tax and
-    loan-resolver) stacks off this module's load path and out of any
-    import cycle.  Returns an empty dict when neither seam has a
-    candidate -- the common case -- so the override threading stays a
-    structural no-op for those surfaces.
-
-    Args:
-        account: The :class:`~app.models.account.Account` whose rows are
-            being priced; only its ``user_id`` is read (the income seam
-            scopes its salary lookup by user).
-        scenario_id: The scenario the amounts are resolved under.
-        transactions: The loaded rows to price.  Each seam picks its own
-            candidates out of this list and ignores the rest.
-
-    Returns:
-        ``dict`` mapping ``transaction_id`` to the live ``Decimal``
-        amount, empty when neither seam has a candidate.
-    """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off this module's load path and out of any import cycle; the
-    # helpers are only needed at call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
-    income_overrides = income_service.live_projected_net(
-        account.user_id, scenario_id, transactions,
-    )
-    loan_overrides = loan_payment_service.live_loan_transfer_amounts(
-        scenario_id, transactions,
-    )
-    return {**income_overrides, **loan_overrides}

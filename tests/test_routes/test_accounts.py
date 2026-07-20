@@ -26,7 +26,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, balance_calculator, cash_events, pay_period_service
+from app.services import account_service, balance_calculator, cash_ledger, pay_period_service
 from app.services.auth_service import hash_password
 
 
@@ -3032,7 +3032,7 @@ class TestCheckingDetail:
 
             # The caption shows the anchor event's DISPLAY-timezone civil date,
             # computed here from the same ``created_at`` the caption renders.
-            anchor = cash_events.resolve_anchor(
+            anchor = cash_ledger.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             anchor_date_str = to_display_date(anchor.created_at).strftime(
@@ -3047,7 +3047,7 @@ class TestCheckingDetail:
 # query without ``selectinload(Transaction.entries)`` (same shape as
 # the savings tile pre-Commit-6) and forked on the NULL-anchor case
 # differently from the grid.  The silent-degrade seam in
-# ``balance_calculator._entry_aware_amount`` (closed at the math layer
+# ``cash_ledger._amounts._entry_aware_amount`` (closed at the math layer
 # by Commit 5, structurally closed by the canonical producer in Commit
 # 5) yielded $160.00 on the grid and $114.29 on /accounts for the
 # audit's symptom #1 / #5 tuple.  Commit 7 routes the checking detail
@@ -3800,7 +3800,7 @@ class TestCashDetailContext:
             db.session.add(acct)
             db.session.commit()
 
-            anchor = cash_events.resolve_anchor(
+            anchor = cash_ledger.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             # Non-vacuity: the event date and the period start genuinely differ.

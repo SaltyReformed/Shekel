@@ -21,9 +21,9 @@ from app.services.auth_service import hash_password
 from app.services import (
     account_service,
     balance_at,
+    cash_ledger,
     income_service,
     pay_period_service,
-    period_flows,
     posting_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
@@ -4420,7 +4420,7 @@ class TestGridSubtotalsRegressionBaseline:
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
     effective_amount ...)`` loop in ``app/routes/grid.py``.  Commit 10
-    routes the subtotal through ``period_flows.period_subtotal``,
+    routes the subtotal through ``cash_ledger.period_subtotal``,
     which uses ``effective_amount`` for income and the entries-aware
     reduction for expenses; for income with no entries the
     ``effective_amount`` rule is unchanged, so this 5A.1-era regression
@@ -4439,7 +4439,7 @@ class TestGridSubtotalsRegressionBaseline:
         the corrected behavior: effective_amount now returns actual when
         populated, so the grid subtotal automatically shows 400.
         Commit 10 routes the subtotal through
-        ``period_flows.period_subtotal`` whose income leg still uses
+        ``cash_ledger.period_subtotal`` whose income leg still uses
         ``effective_amount``, so the assertion is unchanged.
         """
         with app.app_context():
@@ -4500,7 +4500,7 @@ class TestGridPeriodSubtotalCanonical:
     F-004 (Q-10) flagged this as a same-page divergence: the subtotal
     row and the balance row consumed the same in-memory transactions
     but with different expense formulas.  Commit 10 collapses the
-    grid subtotal onto ``period_flows.period_subtotal``, so a
+    grid subtotal onto ``cash_ledger.period_subtotal``, so a
     Projected envelope expense with cleared entries now reports the
     same entries-aware impact on both rows; ``balance[p] -
     balance[p-1] == subtotal[p].net`` by construction.
@@ -4655,7 +4655,7 @@ class TestGridPeriodSubtotalCanonical:
                 seed_user["scenario"].id,
                 periods,
             )
-            sub = period_flows.period_subtotal(
+            sub = cash_ledger.period_subtotal(
                 seed_user["account"],
                 seed_user["scenario"].id,
                 target_period,
@@ -4695,7 +4695,7 @@ class TestGridPeriodSubtotalCanonical:
         assert not offenders, (
             "app/routes/grid.py contains an inline subtotal loop "
             f"({offenders!r}); route through "
-            "period_flows.period_subtotal instead (F-002 Pair C, "
+            "cash_ledger.period_subtotal instead (F-002 Pair C, "
             "F-004 same-page regression)"
         )
 

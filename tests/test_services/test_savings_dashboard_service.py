@@ -2293,7 +2293,7 @@ class TestDTIRaiseAware:
 # Pre-Commit-6 the savings dashboard built its own transaction query
 # without ``selectinload(Transaction.entries)`` and called the engine
 # directly.  When an envelope expense had cleared debit entries, the
-# silent-degrade seam in ``balance_calculator._entry_aware_amount``
+# silent-degrade seam in ``cash_ledger._amounts._entry_aware_amount``
 # (removed at the math layer by Commit 5) returned
 # ``effective_amount`` unchanged.  Result: the same data shipped
 # $160.00 on the grid and $114.29 on /savings -- symptom #1.  Commit 6

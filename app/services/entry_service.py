@@ -674,7 +674,7 @@ def clear_entries_for_anchor_true_up(owner_id: int, account_id: int) -> int:
     that had already posted is now reflected in that number."  We
     flip those entries to is_cleared=TRUE so the balance calculator
     stops holding back the full estimated amount (see bug fix in
-    balance_calculator.py _entry_aware_amount).
+    cash_ledger._amounts._entry_aware_amount).
 
     Scope:
       - Entries whose parent transaction belongs to this owner

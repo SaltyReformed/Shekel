@@ -8,7 +8,7 @@ single-period subtotal ``period_subtotal``.
 CRIT-01 / F-009 / symptom #1: pre-Commit-5, the same Projected
 envelope expense yielded $160 on the grid (which eager-loaded
 entries) and $114.29 on /savings (which did not), because
-``balance_calculator._entry_aware_amount`` silently degraded to
+``cash_ledger._amounts._entry_aware_amount`` silently degraded to
 ``txn.effective_amount`` whenever the consuming query had not issued
 ``selectinload(Transaction.entries)``.  E-25's correction (this
 commit) makes the canonical producer own the query, so the
@@ -56,23 +56,26 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_resolver, cash_events, period_flows
+from app.services import balance_calculator, balance_resolver, cash_ledger
 from app.services.balance_resolver import (
     BalanceResult,
     balance_as_of_date,
     balances_for,
 )
-# The per-period FLOW sums moved to their own module at plan step D1a (they
-# answer what MOVED, not what is HELD).  Their tests still live here because
-# they share this module's ``_make_projected_expense`` / ``_add_entry``
-# fixtures with the balance tests; relocating them to ``test_period_flows.py``
-# means promoting those two into ``tests/_test_helpers``, which is its own
-# commit.
-from app.services.period_flows import (
+# The per-period FLOW sums moved out of this producer at plan step D1a (they
+# answer what MOVED, not what is HELD) and into the ``cash_ledger`` leaf at
+# D1c.  Their tests still live here because they share this module's
+# ``_make_projected_expense`` / ``_add_entry`` fixtures with the balance tests;
+# relocating them to a ``test_cash_ledger.py`` means promoting those two into
+# ``tests/_test_helpers``, which is its own commit.
+from app.services.cash_ledger import (
     PeriodSubtotal,
+    load_balance_transactions,
     period_subtotal,
     period_subtotals,
+    sum_projected,
 )
+from app.services.cash_ledger._amounts import _entry_aware_amount
 
 
 # ── Fixtures local to this test module ─────────────────────────────
@@ -498,24 +501,42 @@ class TestBalancesForEntriesAware:
         Mechanically asserts that the silent-degrade short-circuit
         text patterns named by the remediation plan's verification
         gate are not present in the producer (``balance_resolver.py``),
-        the consumed engine (``balance_calculator.py``), or
-        ``cash_events.py``.  A future regression that re-introduces the
-        seam in any of them fails this test loud.
+        the consumed engine (``balance_calculator.py``), or ANY module of
+        the ``cash_ledger`` package.  A future regression that
+        re-introduces the seam in any of them fails this test loud.
 
-        ``cash_events.py`` is scanned since plan step D1a moved
-        ``load_balance_transactions`` there -- and that function carries the
-        ``selectinload(Transaction.entries)`` guarantee this whole guard
-        rests on, so leaving it outside the scan would have let the seam
-        return in the one file that matters most.
+        ``cash_ledger`` is scanned WHOLE, by enumerating the package rather
+        than naming a file, and that is load-bearing rather than tidy.  Plan
+        step D1a moved ``load_balance_transactions`` out of the producer --
+        it carries the ``selectinload(Transaction.entries)`` guarantee this
+        whole guard rests on -- and D1c moved ``_entry_aware_amount``, which
+        is the function the forbidden patterns would actually appear IN, into
+        ``cash_ledger/_amounts.py``.  A scan keyed on a file NAME would have
+        gone quiet at exactly the moment the code it guards moved, which is
+        the "creating a module is how you escape a module-keyed gate" shape
+        (finding N-28).  Globbing the package means a new submodule is
+        covered the day it is written.
         """
+        services = Path(__file__).resolve().parents[2] / "app" / "services"
+        package = sorted((services / "cash_ledger").rglob("*.py"))
+        scanned = [
+            services / "balance_resolver.py",
+            services / "balance_calculator.py",
+            *package,
+        ]
+        # The package must really have been walked, and the walk must have
+        # reached the module the forbidden patterns would actually appear in.
+        # Asserting a total instead would be a magic count that breaks when the
+        # package legitimately gains or sheds a module; ``rglob`` (not
+        # ``glob``) so a future nested subpackage cannot escape the scan --
+        # the same shape this guard exists to close.
+        assert package, "the cash_ledger package enumerated to nothing"
+        assert any(p.name == "_amounts.py" for p in package), (
+            f"the entry-aware rule's module was not scanned: "
+            f"{[p.name for p in package]}"
+        )
         forbidden_patterns = ("not in txn.__dict__", "'entries' not in")
-        for module_name in (
-            "balance_resolver.py", "balance_calculator.py", "cash_events.py",
-        ):
-            source_path = (
-                Path(__file__).resolve().parents[2]
-                / "app" / "services" / module_name
-            )
+        for source_path in scanned:
             source = source_path.read_text(encoding="utf-8")
             for pattern in forbidden_patterns:
                 assert pattern not in source, (
@@ -808,7 +829,7 @@ class TestPeriodSubtotal:
         Every stored/override leg is cent-quantized in production, so the
         per-leg-vs-combined divergence is unreachable today.  The live
         override seam carries its value verbatim into the sum
-        (``balance_calculator.income_amount`` / ``_expense_amount``), so
+        (``cash_ledger.income_amount`` / ``_expense_amount``), so
         it is the only way to inject a sub-cent leg; this test does so
         directly to lock the rounding discipline against a regression to
         per-leg rounding.
@@ -1040,6 +1061,175 @@ class TestPeriodSubtotalsBatch:
             assert result[seed_periods[5].id].expense == Decimal("100.00")
 
 
+# ── One projected sum, one optional bound (plan step D1c) ──────────
+
+
+class TestSumProjectedAsOfBound:
+    """``sum_projected``'s ``as_of`` replaces a duplicated second loop (D1c).
+
+    ``balance_resolver`` carried a private ``_sum_period_as_of`` plus a private
+    ``_entry_aware_amount_dated``, whose own docstrings said they "mirror" the
+    engine and were "otherwise identical to the engine helper".  Two copies of
+    the checking-reservation rule, kept in step by hand, is the
+    agreeing-by-coincidence shape this arc exists to end -- and pylint's
+    cross-file ``duplicate-code`` reported it the moment D1c made both copies
+    call the same ``income_amount``.
+
+    They are now ONE rule with an optional date bound.  These tests pin the
+    equivalence in both directions, because a DRY refactor of a predicate can
+    move money: ``as_of=None`` must reproduce the unwindowed answer exactly,
+    and a bound must still cut.  The E-27 suite below (C9-1..C9-6) is the other
+    half of the proof -- it grades the DATED path end-to-end through
+    ``balance_as_of_date`` on hand-computed figures, unchanged by D1c.
+    """
+
+    @staticmethod
+    def _expense_with_two_cleared_debits(db_session, seed_user, period):
+        """Create est=500.00 with 200.00 cleared Jan 5 and 250.00 cleared Jan 20."""
+        txn = _make_projected_expense(
+            db_session,
+            seed_user=seed_user,
+            pay_period=period,
+            estimated=Decimal("500.00"),
+        )
+        for amount, day in ((Decimal("200.00"), 5), (Decimal("250.00"), 20)):
+            _add_entry(
+                db_session,
+                txn=txn,
+                user_id=seed_user["user"].id,
+                amount=amount,
+                is_cleared=True,
+                entry_date=_date(2026, 1, day),
+            )
+        db_session.commit()
+        return txn
+
+    def test_no_bound_counts_every_entry(self, app, db, seed_user, seed_periods):
+        """``as_of=None`` reduces over every loaded entry (the period-walk case).
+
+        cleared_debit = 200.00 + 250.00 = 450.00; uncleared = 0; credit = 0.
+        impact = max(500.00 - 450.00 - 0, 0) = 50.00.
+        """
+        with app.app_context():
+            self._expense_with_two_cleared_debits(
+                db.session, seed_user, seed_periods[0],
+            )
+            txns = load_balance_transactions(
+                seed_user["account"], seed_user["scenario"].id,
+                [seed_periods[0].id],
+            )
+
+            income, expense = sum_projected(txns)
+
+            assert income == Decimal("0.00")
+            assert expense == Decimal("50.00")
+
+    def test_bound_after_every_entry_equals_no_bound(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A bound past the last entry is indistinguishable from no bound.
+
+        The equivalence that makes ONE function safe for both callers: the
+        window is empty of exclusions, so the answer must be the identical
+        50.00 the unwindowed call returns.
+        """
+        with app.app_context():
+            self._expense_with_two_cleared_debits(
+                db.session, seed_user, seed_periods[0],
+            )
+            txns = load_balance_transactions(
+                seed_user["account"], seed_user["scenario"].id,
+                [seed_periods[0].id],
+            )
+
+            unwindowed = sum_projected(txns)
+            windowed = sum_projected(txns, as_of=_date(2026, 1, 31))
+
+            assert windowed == unwindowed
+            assert windowed[1] == Decimal("50.00")
+
+    def test_bound_before_an_entry_excludes_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """TEETH: a bound inside the entry span changes the answer.
+
+        With ``as_of`` = Jan 10 only the Jan 5 debit is in window:
+        cleared_debit = 200.00, impact = max(500.00 - 200.00, 0) = 300.00.
+
+        The strict inequality against the unwindowed 50.00 is what proves the
+        bound is actually threaded through ``_expense_amount`` into
+        ``_entry_aware_amount`` -- a parameter that silently went nowhere would
+        return 50.00 here and this assertion would fail.
+        """
+        with app.app_context():
+            self._expense_with_two_cleared_debits(
+                db.session, seed_user, seed_periods[0],
+            )
+            txns = load_balance_transactions(
+                seed_user["account"], seed_user["scenario"].id,
+                [seed_periods[0].id],
+            )
+
+            _, expense = sum_projected(txns, as_of=_date(2026, 1, 10))
+
+            assert expense == Decimal("300.00")
+            assert expense != sum_projected(txns)[1]
+
+    def test_live_override_wins_over_the_bound(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An override short-circuits the entry formula, windowed or not.
+
+        A live-derived amount is what the row is worth now and carries no
+        entries to window, so both calls must return the override verbatim --
+        the ordering the pre-D1c dated leg also had (override checked first).
+        """
+        with app.app_context():
+            txn = self._expense_with_two_cleared_debits(
+                db.session, seed_user, seed_periods[0],
+            )
+            txns = load_balance_transactions(
+                seed_user["account"], seed_user["scenario"].id,
+                [seed_periods[0].id],
+            )
+            overrides = {txn.id: Decimal("123.45")}
+
+            assert sum_projected(txns, overrides)[1] == Decimal("123.45")
+            assert sum_projected(
+                txns, overrides, as_of=_date(2026, 1, 10),
+            )[1] == Decimal("123.45")
+
+    def test_no_entries_short_circuits_before_the_status_read(self):
+        """The guard ORDER is preserved: no entries returns before ``is_projected``.
+
+        ``_entry_aware_amount`` checks ``not entries`` FIRST and that is
+        load-bearing rather than stylistic -- ``is_projected`` reads
+        ``status_id`` through ``ref_cache``, so a non-ORM fake with neither
+        attribute must still return ``effective_amount`` rather than raising.
+        The unified function moved the window BELOW both guards to keep this
+        exact property; a naive merge that windowed first would break it.
+
+        Mutation-verified: swapping the two guards fails this with
+        ``AttributeError: '_Fake' object has no attribute 'status_id'`` --
+        ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
+        so that attribute, not the cache, is what the ordering protects.
+
+        Note the DATED path gains this property rather than preserving it: the
+        deleted ``_entry_aware_amount_dated`` checked ``is_projected`` first and
+        so raised on this fake.  Nothing reached it that way in production
+        (``sum_projected`` gates on ``is_projected`` before calling the expense
+        leg at all), so the unification is safe in the direction that matters
+        and strictly more total in the other.
+        """
+        class _Fake:  # pylint: disable=too-few-public-methods
+            """A non-ORM stand-in with no ``entries`` and no ``status_id``."""
+
+            effective_amount = Decimal("77.00")
+
+        assert _entry_aware_amount(_Fake()) == Decimal("77.00")
+        assert _entry_aware_amount(_Fake(), _date(2026, 1, 10)) == Decimal("77.00")
+
+
 # ── balance_as_of_date (E-27, Commit 9) ────────────────────────────
 
 
@@ -1202,7 +1392,7 @@ class TestBalanceAsOfDate:
 
             # Count live_amount_overrides invocations while delegating to
             # the real implementation so the projected value is unchanged.
-            real_builder = cash_events.live_amount_overrides
+            real_builder = cash_ledger.live_amount_overrides
             call_count = {"n": 0}
 
             def _counting_builder(*args, **kwargs):
@@ -1591,12 +1781,11 @@ def test_balance_resolver_exports_only_the_producers():
     """The module's public surface is the two balance producers, and ONLY those.
 
     Pins plan step D1a's split, in both directions.  ``balance_resolver`` is
-    the cash BALANCE producer; the facts it folds over
-    (``cash_events``) and the per-period FLOW sums (``period_flows``) are
-    separate modules, because only a balance producer belongs inside the
-    ``balance_at`` seam at D1c -- a name that answers no balance-at-T question
-    would otherwise have to be re-exported through the seam's public surface
-    to keep its consumers working.
+    the cash BALANCE producer; the facts it folds over and the per-period FLOW
+    sums live in the ``cash_ledger`` leaf, because only a balance producer
+    belongs inside the ``balance_at`` seam at D1d -- a name that answers no
+    balance-at-T question would otherwise have to be re-exported through the
+    seam's public surface to keep its consumers working.
 
     The "only" is enforced as a SET EQUALITY over what the module DEFINES, and
     that is the load-bearing half.  An earlier version of this test asserted
@@ -1606,14 +1795,20 @@ def test_balance_resolver_exports_only_the_producers():
     because a new public definition here changes the set.
 
     It keys on ``__module__`` -- where each name is DEFINED -- rather than on
-    ``hasattr``.  ``balance_resolver`` imports the four ``cash_events`` names it
+    ``hasattr``.  ``balance_resolver`` imports the ``cash_ledger`` names it
     folds over, and an imported name IS a module attribute, so
     ``hasattr(balance_resolver, "resolve_anchor")`` is True and always will be.
     Worth stating rather than working around: this split relocates OWNERSHIP,
     and Python offers no way to stop a caller reaching a re-exported name. What
     will forbid reaching it is the D-gate package boundary, once these producers
-    move inside the seam at D1c -- structure, not this test. The deterministic
+    move inside the seam at D1d -- structure, not this test. The deterministic
     guard against a NEW unclassified producer here is W9909, not this either.
+
+    The ``cash_ledger`` half asserts the SUBMODULE, not just the package, which
+    is what pins D1c's cohesion split rather than merely its relocation: the
+    FACTS, what one row is WORTH, and what a set of rows SUMS TO are three
+    answers to three different questions, and collapsing them back into one
+    module would pass a package-level assertion unchanged.
     """
     defined_here = {
         name for name in dir(balance_resolver)
@@ -1627,12 +1822,64 @@ def test_balance_resolver_exports_only_the_producers():
         f"unexpected surface: {sorted(defined_here)}"
     )
 
-    for moved in ("resolve_anchor", "AnchorPoint", "load_balance_transactions",
-                  "live_amount_overrides"):
-        assert getattr(cash_events, moved).__module__ == (
-            "app.services.cash_events"
-        ), f"{moved} is owned by cash_events since D1a"
-    for moved in ("period_subtotal", "period_subtotals", "PeriodSubtotal"):
-        assert getattr(period_flows, moved).__module__ == (
-            "app.services.period_flows"
-        ), f"{moved} is owned by period_flows since D1a"
+    owners = {
+        # The FACTS (plan step D1a).
+        "resolve_anchor": "_facts",
+        "AnchorPoint": "_facts",
+        "load_balance_transactions": "_facts",
+        # What ONE row is WORTH (plan step D1c: the cash analog of
+        # ``loan_ledger._split``).
+        "live_amount_overrides": "_amounts",
+        "income_amount": "_amounts",
+        # What a SET of rows SUMS TO (plan steps D1a + D1c).
+        "sum_projected": "_flows",
+        "period_subtotal": "_flows",
+        "period_subtotals": "_flows",
+        "PeriodSubtotal": "_flows",
+    }
+    for moved, submodule in owners.items():
+        assert getattr(cash_ledger, moved).__module__ == (
+            f"app.services.cash_ledger.{submodule}"
+        ), f"{moved} is owned by cash_ledger.{submodule}"
+
+
+def test_balance_calculator_defines_only_the_balance_walk():
+    """``balance_calculator`` is a PRODUCER module and nothing else (D1c).
+
+    The other half of the same split, and the reason D1c exists.  This module
+    held five explicitly-ruled NON-producers -- the projected-sum reduction and
+    the per-row checking-valuation rules -- for as long as the fence has
+    existed, which is what made it unmovable into the seam: ``cash_ledger``
+    (outside the seam, correctly) calls ``sum_projected``, so moving the module
+    wholesale would have put a seam-private import in an out-of-seam consumer
+    (finding N-30).
+
+    Set equality, not ``not hasattr``, for the reason the sibling test above
+    records: the module still IMPORTS ``sum_projected``, so ``hasattr`` is True
+    and always will be.  What this pins is that nothing NEW that fails to answer
+    "what is the balance at T" gets defined here again -- which is what would
+    silently re-create the blocker.
+
+    Scope caveat, stated so this is not read as stronger than it is: the
+    ``__module__`` filter sees FUNCTIONS and CLASSES defined here, not a
+    module-level constant (a bare ``Decimal`` reports ``__module__``
+    ``'decimal'``, not this module).  That is the same structural gap W9909
+    names in its own header, and the deterministic guard against a new
+    unclassified PRODUCER here is W9909, not this test; this pins the
+    higher-level "only the two producers, by name" property that a reader
+    checks at a glance.
+    """
+    defined_here = {
+        name for name in dir(balance_calculator)
+        if not name.startswith("_")
+        and getattr(
+            getattr(balance_calculator, name), "__module__", None,
+        ) == "app.services.balance_calculator"
+    }
+    assert defined_here == {
+        "calculate_balances", "calculate_balances_with_interest",
+    }, (
+        "balance_calculator defines the balance walk and ONLY that; a "
+        "non-producer defined here is what stranded five of them before D1c. "
+        f"Unexpected surface: {sorted(defined_here)}"
+    )

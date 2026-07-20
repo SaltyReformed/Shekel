@@ -16,23 +16,33 @@ here:
 Split at plan step D1a.  This module held three separable concerns and sat at
 exactly 1000 lines, pylint's default module ceiling, because of it.  The other
 two moved out to modules named for what they are, leaving the producers ready
-to move INTO the seam at D1c:
+to move INTO the seam at D1d.  At D1c both landed in the one
+:mod:`app.services.cash_ledger` leaf -- the cash counterpart of
+:mod:`app.services.loan_ledger` -- alongside the per-row valuation rules that
+had been stranded inside ``balance_calculator`` (finding N-30):
 
-  * :mod:`app.services.cash_events` -- the FACTS a balance is folded from:
-    :func:`~app.services.cash_events.resolve_anchor` (the dated anchor SoT,
-    E-19 / CRIT-01 / F-001) with its :class:`~app.services.cash_events.AnchorPoint`,
-    :func:`~app.services.cash_events.load_balance_transactions`, and
-    :func:`~app.services.cash_events.live_amount_overrides`.
-  * :mod:`app.services.period_flows` -- the per-period FLOW sums
-    (``period_subtotal`` / ``period_subtotals`` / ``PeriodSubtotal``), a peer
-    reduction over the same rows rather than a step toward a balance.
+  * ``cash_ledger._facts`` -- the FACTS a balance is folded from:
+    :func:`~app.services.cash_ledger.resolve_anchor` (the dated anchor SoT,
+    E-19 / CRIT-01 / F-001) with its
+    :class:`~app.services.cash_ledger.AnchorPoint`, and
+    :func:`~app.services.cash_ledger.load_balance_transactions`.
+  * ``cash_ledger._amounts`` -- what ONE row is WORTH:
+    :func:`~app.services.cash_ledger.live_amount_overrides`,
+    :func:`~app.services.cash_ledger.income_amount`, and the private
+    three-bucket reservation formula they build on.  This module's own date-cut
+    variant of that formula is GONE: D1c made the window a parameter of the one
+    rule (see :func:`~app.services.cash_ledger.sum_projected`).
+  * ``cash_ledger._flows`` -- what a SET of rows SUMS TO: ``sum_projected``
+    and the per-period ``period_subtotal`` / ``period_subtotals`` /
+    ``PeriodSubtotal``, a peer reduction over the same rows rather than a step
+    toward a balance.
 
-The arrow runs one way: this module imports ``cash_events`` (it folds those
-facts); it does not import ``period_flows`` at all, and neither imports it.
+The arrow runs one way: this module imports ``cash_ledger`` (it folds those
+facts and reuses those per-row rules); ``cash_ledger`` imports no producer.
 
 Background (entries-aware producer, Commit 5).  CRIT-01 / F-009: the
 audit's symptom #1 ($160 on grid vs $114.29 on /savings for the same
-inputs) traced to ``balance_calculator._entry_aware_amount``'s
+inputs) traced to ``cash_ledger._amounts._entry_aware_amount``'s
 silent-degrade short-circuit: when the consuming query did NOT
 ``selectinload(Transaction.entries)``, the helper returned
 ``txn.effective_amount`` unchanged instead of applying the entry
@@ -43,8 +53,8 @@ query rather than of the underlying data.  E-25's correction:
 exactly one canonical producer owns the transaction query AND
 guarantees entries are loaded, so the formula is unconditionally
 applied; the seam is structurally gone for callers that route
-through this producer.  Commit 5 also softens the seam inside
-``balance_calculator`` itself so that any not-yet-routed caller
+through this producer.  Commit 5 also softens the seam inside the entry-aware
+rule itself (now ``cash_ledger._amounts``) so that any not-yet-routed caller
 lazy-loads entries via the relationship descriptor and gets the
 correct entries-aware value (rather than silently the wrong one) --
 the seam removal is therefore complete at the math layer even before
@@ -75,13 +85,13 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import balance_calculator
-from app.services.cash_events import (
+from app.services.cash_ledger import (
     AnchorPoint,
     live_amount_overrides,
     load_balance_transactions,
     resolve_anchor,
+    sum_projected,
 )
-from app.utils.balance_predicates import is_projected
 from app.utils.money import round_money
 
 
@@ -217,145 +227,6 @@ def balances_for(
     )
 
 
-def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:
-    """Date-cut variant of the balance-calculator entry-aware reduction (E-27).
-
-    Reuses the engine's shared three-bucket reservation core
-    (:func:`~app.services.balance_calculator.entry_checking_impact`,
-    the same math :func:`~app.services.balance_calculator._entry_aware_amount`
-    runs) but over only the entries whose ``entry_date`` is on or before
-    ``as_of``.  A purchase that has not happened yet (entry dated after
-    ``as_of``) cannot have cleared the bank as of that date and therefore
-    must not contribute to either bucket -- inclusion would reduce the
-    reservation prematurely and ship a wrong balance for the calendar
-    month-end (HIGH-02 / W-277).
-
-    The formula is otherwise identical to the engine helper:
-
-        cleared_debit   = sum(e.amount where
-                              not is_credit and is_cleared
-                              and entry_date <= as_of)
-        uncleared_debit = sum(e.amount where
-                              not is_credit and not is_cleared
-                              and entry_date <= as_of)
-        sum_credit      = sum(e.amount where
-                              is_credit and entry_date <= as_of)
-
-        impact = max(estimated_amount - cleared_debit - sum_credit, uncleared_debit)
-
-    Non-Projected transactions short-circuit to ``effective_amount``
-    (same as the engine helper) because Settled/Cancelled/Credit are
-    already handled correctly by that property: Settled returns
-    actual_amount (the realized hit, by definition dated on or before
-    settlement), and Cancelled/Credit return Decimal("0").
-
-    Args:
-        txn: The :class:`~app.models.transaction.Transaction` to size.
-            ``entries`` must be loaded (the canonical producer always
-            ``selectinload``s them; lazy-load is a safe fallback).
-        as_of: The calendar date that bounds entry inclusion.  Entries
-            with ``entry_date > as_of`` are excluded.
-
-    Returns:
-        ``Decimal`` -- the entries-aware checking impact at ``as_of``.
-    """
-    entries = getattr(txn, "entries", ())
-    # Non-Projected statuses short-circuit through ``effective_amount``
-    # (Settled returns ``actual_amount``; Cancelled / Credit return zero
-    # via ``excludes_from_balance``).  Routed through the centralized
-    # ``is_projected`` predicate (D6-09 / MED-02) so this entry-formula
-    # gate shares one definition with the engine helper and the
-    # ``_sum_*`` loops in ``balance_calculator``.
-    if not is_projected(txn):
-        return txn.effective_amount
-
-    # Window the entries to those that have occurred on or before
-    # ``as_of``: a purchase dated later cannot have cleared the bank yet,
-    # so it must not contribute to either bucket (HIGH-02 / W-277).
-    windowed = [entry for entry in entries if entry.entry_date <= as_of]
-    if not windowed:
-        # No purchase has occurred yet as of ``as_of``; the full
-        # estimated reservation is still pending.  ``effective_amount``
-        # collapses to estimated for an unfilled Projected expense
-        # (actual_amount is unset until the transaction settles), so
-        # this matches the engine helper's empty-entries branch.
-        return txn.effective_amount
-
-    # The credit / cleared-debit / uncleared-debit bucketing + reservation
-    # formula is the engine's public ``entry_checking_impact``.  The
-    # resolver is ``balance_calculator``'s sibling canonical producer
-    # (E-25/E-27) and reuses the engine's math over the windowed entries
-    # rather than keeping a second copy that could drift (CLAUDE.md rule
-    # 10); the as-of window stays here, the bucketing lives once in the
-    # engine.
-    return balance_calculator.entry_checking_impact(
-        windowed, txn.estimated_amount,
-    )
-
-
-def _sum_period_as_of(
-    transactions: list[Transaction],
-    as_of: date,
-    amount_overrides: dict[int, Decimal] | None = None,
-) -> tuple[Decimal, Decimal]:
-    """Sum Projected income / expense for the as-of period (E-27).
-
-    Mirrors :func:`~app.services.balance_calculator._sum_projected` but
-    routes expense impact through :func:`_entry_aware_amount_dated`
-    so the entry-date cut applies inside the period containing
-    ``as_of``.  Income uses the live projected-net override when present
-    (Workstream B), else ``effective_amount`` -- income transactions do
-    not carry entries (entries live on expense envelopes), so the
-    entry-date cut is a no-op for income either way.
-
-    Transactions are NOT filtered by ``due_date`` here.  ``balance
-    as of date D`` is the projected balance once the period
-    containing D has rolled forward; the date-sensitivity lives in
-    the per-entry reduction, not in transaction inclusion (that is
-    what the plan's "within the period containing as_of apply
-    entry-aware reduction only for entries dated on/before as_of"
-    specifies, and matches the calendar-surface UX where the
-    "End Balance" reflects the period's full settled+projected
-    delta but does not undo a not-yet-occurred purchase).
-
-    Args:
-        transactions: The Projected-gated, entries-loaded transaction
-            list for the period containing ``as_of``.
-        as_of: The calendar date that bounds entry inclusion.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map (Workstream B); the income line uses it
-            via :func:`~app.services.balance_calculator.income_amount`.
-
-    Returns:
-        ``(income, expense)`` as a ``Decimal`` tuple, both unquantized.
-    """
-    income = Decimal("0.00")
-    expense = Decimal("0.00")
-    for txn in transactions:
-        # Centralized ``is_projected`` predicate (D6-09 / MED-02);
-        # mirrors ``balance_calculator.sum_projected`` exactly so the
-        # date-cut path classifies non-Projected rows identically.
-        if not is_projected(txn):
-            continue
-        if txn.is_income:
-            # Workstream B live projected-net seam; reuse
-            # ``balance_calculator``'s public ``income_amount`` helper so the
-            # date-cut path and ``sum_projected`` cannot drift.
-            income += balance_calculator.income_amount(txn, amount_overrides)
-        elif txn.is_expense:
-            # The live-derive seam applies to the expense leg too (e.g. a
-            # derive-from-loan transfer's checking debit); fall back to
-            # the date-cut entry-aware amount when no override applies.
-            override = (
-                amount_overrides.get(txn.id) if amount_overrides else None
-            )
-            expense += (
-                override if override is not None
-                else _entry_aware_amount_dated(txn, as_of)
-            )
-    return income, expense
-
-
 def balance_as_of_date(
     account: Account,
     scenario_id: int,
@@ -395,12 +266,11 @@ def balance_as_of_date(
          the period immediately preceding ``target_period``.  When
          ``target_period == anchor_period`` there is no prior period
          and ``prior_balance = anchor.balance``.
-      5. Sum ``target_period`` with :func:`_sum_period_as_of`, which
-         routes the entry-aware reduction through
-         :func:`_entry_aware_amount_dated`: entries with
-         ``entry_date > as_of`` are excluded from the cleared /
-         uncleared / credit buckets, so a purchase that has not
-         occurred yet cannot reduce the reservation prematurely.
+      5. Sum ``target_period`` with the shared
+         :func:`~app.services.cash_ledger.sum_projected`, passing ``as_of``:
+         entries with ``entry_date > as_of`` are excluded from the cleared /
+         uncleared / credit buckets, so a purchase that has not occurred yet
+         cannot reduce the reservation prematurely.
       6. Return ``round_money(prior_balance + income - expense)``.
 
     Cross-checks against :func:`balances_for`:
@@ -500,7 +370,7 @@ def balance_as_of_date(
     prior_balance = _project_to_period_before(
         anchor, target_period, prefix_periods, prefix_txns, amount_overrides,
     )
-    income, expense = _sum_period_as_of(target_txns, as_of, amount_overrides)
+    income, expense = sum_projected(target_txns, amount_overrides, as_of=as_of)
 
     return round_money(prior_balance + income - expense)
 
@@ -525,7 +395,7 @@ def _project_to_period_before(
     The caller (:func:`balance_as_of_date`) loads ``prefix_periods`` /
     ``prefix_txns`` and builds ``amount_overrides`` once over the union of
     the prefix and target spans, then threads that single map here and into
-    :func:`_sum_period_as_of` -- so the live salary/loan recompute behind
+    the as-of sum -- so the live salary/loan recompute behind
     :func:`live_amount_overrides` runs once per call, not once per span.
 
     Args:

@@ -16,7 +16,7 @@ from pylint.testutils import CheckerTestCase, MessageTest
 from shekel_checkers import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
-    _CASH_EVENT_SOURCE_MODULES,
+    _CASH_LEDGER_MODULES,
     _ENGINE_CLUSTER_MODULES,
     _FENCED_MODULE_RULINGS,
     _LEDGER_LEAF_MODULE_NAMES,
@@ -1450,7 +1450,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         module families have NO such derivation -- their scope is a hand-written
         constant sitting a few lines from the registry entry it covers:
 
-        * ``_CASH_EVENT_SOURCE_MODULES`` (``cash_events`` / ``period_flows``, D1a)
+        * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
 
         For those, the set-equality guard is SELF-ATTESTING: delete the registry
@@ -1467,8 +1467,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         for module_name in (
             "app.services.account_projection",
-            "app.services.cash_events",
-            "app.services.period_flows",
+            "app.services.cash_ledger",
         ):
             node = self._function_def(
                 "def balance_on(account, target):\n    return None\n",
@@ -1484,6 +1483,63 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             ):
                 self.checker.visit_functiondef(node)
 
+    def test_package_scope_covers_a_submodule_that_does_not_exist_yet(
+        self,
+    ) -> None:
+        """A NEW submodule of a scoped PACKAGE is covered the day it is written.
+
+        This is what plan step D1c bought by making ``cash_ledger`` a package
+        instead of two flat modules plus five stranded functions, and it is
+        worth a behavioural pin rather than trust in
+        :func:`_fenced_module_ruling`'s prefix match.
+
+        The hole it closes is Section 8's: *a fail-CLOSED gate is scoped by
+        module identity, so creating a module is how you escape it.*  While the
+        cash layer was ``cash_events`` + ``period_flows``, its scope was a
+        hand-written LIST, and writing ``app/services/cash_amounts.py`` would
+        have left that scope silently -- which is exactly how N-28 happened at
+        D1a.  A package key is matched by PREFIX, so escaping now means leaving
+        the package, a far more visible act than adding a file to it.
+
+        Uses a submodule name that deliberately does NOT exist on disk: the
+        checker keys on the enclosing module's NAME, so coverage must not
+        depend on the file having been created yet.
+        """
+        node = self._function_def(
+            "def balance_on(account, target):\n    return None\n",
+            "app.services.cash_ledger._not_written_yet",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_on",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_package_scope_stops_at_the_package_boundary(self) -> None:
+        """Teeth for the prefix match: a look-alike SIBLING is not scoped.
+
+        The guard above would pass for the wrong reason if the match were a
+        bare string prefix, so this pins the trailing-dot half of
+        :func:`_module_in_allowlist`'s convention: ``cash_ledger_helpers``
+        starts with ``cash_ledger`` but is a different module, outside the
+        package, and must not inherit its ruling.
+
+        It also states the residual honestly -- a package scope does NOT cover
+        a sibling created beside it.  That is the remaining escape, and it is
+        deliberately louder than the one D1c closed: it requires leaving the
+        leaf the cash rules live in.
+        """
+        node = self._function_def(
+            "def balance_on(account, target):\n    return None\n",
+            "app.services.cash_ledger_helpers",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
     def test_rulings_cover_every_producer_defining_module(self) -> None:
         """The ruling registry scopes EXACTLY the producer-defining modules.
 
@@ -1497,7 +1553,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             _ENGINE_CLUSTER_MODULES
             | _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
-            | _CASH_EVENT_SOURCE_MODULES
+            | _CASH_LEDGER_MODULES
             | _KIND_CLASSIFIER_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected

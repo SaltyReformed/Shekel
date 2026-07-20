@@ -25,11 +25,10 @@ from app.models.ref import Status, TransactionType
 from app.services import (
     balance_at,
     baseline_service,
-    cash_events,
+    cash_ledger,
     grid_view_service,
     pay_period_admin,
     pay_period_service,
-    period_flows,
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
@@ -238,7 +237,7 @@ def _grid_amount_overrides(account, balance_ctx, all_periods):
     it already loads for row rendering; the self-refresh endpoints
     (:func:`balance_row`) call this helper, which loads the account's grid
     transactions via :func:`_load_grid_transactions` and delegates to
-    :func:`~app.services.cash_events.live_amount_overrides`.
+    :func:`~app.services.cash_ledger.live_amount_overrides`.
 
     Threading the map matters for an INTEREST grid account:
     :func:`~app.services.balance_at.grid_balance_view` falls back to the
@@ -248,7 +247,7 @@ def _grid_amount_overrides(account, balance_ctx, all_periods):
     balance row would flicker between them on refresh.
     """
     transactions = _load_grid_transactions(account, balance_ctx, all_periods)
-    return cash_events.live_amount_overrides(
+    return cash_ledger.live_amount_overrides(
         account, balance_ctx.scenario.id, transactions,
     )
 
@@ -307,7 +306,7 @@ def _build_grid_subtotals(account, balance_ctx, periods, amount_overrides=None):
     """Compute per-period subtotals via the canonical entries-aware producer.
 
     Routing the on-screen subtotal row through
-    :func:`period_flows.period_subtotals` (E-25 / Commit 10) closes
+    :func:`cash_ledger.period_subtotals` (E-25 / Commit 10) closes
     F-002 Pair C / F-004 (Q-10): the same Projected-only,
     entries-aware formula now generates both the subtotal row and the
     balance row, so ``balances[p] - balances[p-1] ==
@@ -316,14 +315,14 @@ def _build_grid_subtotals(account, balance_ctx, periods, amount_overrides=None):
     entries-aware balance row whenever a Projected envelope expense
     carried cleared/uncleared/credit entries.
 
-    Uses the batch :func:`period_flows.period_subtotals` (one
+    Uses the batch :func:`cash_ledger.period_subtotals` (one
     transaction query for the whole window), NOT a per-period
-    :func:`period_flows.period_subtotal` loop -- the latter was an
+    :func:`cash_ledger.period_subtotal` loop -- the latter was an
     N+1 (one SELECT per visible column) over a transaction set the page
     had already loaded (DH-#36; ``database.md`` flags grid N+1
     especially).
 
-    The :class:`period_flows.PeriodSubtotal` dataclass exposes
+    The :class:`cash_ledger.PeriodSubtotal` dataclass exposes
     ``.income``, ``.expense``, ``.net`` which the grid templates
     access by attribute (dict and dataclass behave identically
     through Jinja's attribute resolution).  Returns a dict keyed by
@@ -333,13 +332,13 @@ def _build_grid_subtotals(account, balance_ctx, periods, amount_overrides=None):
     rendered subtotals match the empty-balance projection.
     """
     if account is None:
-        zero = period_flows.PeriodSubtotal(
+        zero = cash_ledger.PeriodSubtotal(
             income=Decimal("0.00"),
             expense=Decimal("0.00"),
             net=Decimal("0.00"),
         )
         return {period.id: zero for period in periods}
-    return period_flows.period_subtotals(
+    return cash_ledger.period_subtotals(
         account, balance_ctx.scenario.id, periods, amount_overrides=amount_overrides,
     )
 
@@ -570,7 +569,7 @@ def index():
     # is a transient (non-mapped) attribute the cell templates read with a
     # safe ``is defined`` fallback, so it never persists and never affects
     # render paths that do not set it.
-    amount_overrides = cash_events.live_amount_overrides(
+    amount_overrides = cash_ledger.live_amount_overrides(
         ctx.account, ctx.balance_ctx.scenario.id, all_transactions,
     )
     for txn in all_transactions:

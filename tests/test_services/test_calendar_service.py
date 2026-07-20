@@ -20,13 +20,13 @@ from app.models.transaction_template import TransactionTemplate
 import pytest
 
 from app.services import calendar_service, resolution_context
-from app.services.period_flows import period_subtotal
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
     DailyView,
     _detect_third_paycheck_months,
     _is_infrequent,
 )
+from app.services.cash_ledger import period_subtotal
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1156,7 +1156,7 @@ class TestBalanceContributingPredicate:
         Same fixture as C10-2 (Projected $500 + Settled $200 +
         Cancelled $100 + Credit $50 on Jan 5).  The grid period
         subtotal is sourced from
-        ``period_flows.period_subtotal``, whose ``sum_projected``
+        ``cash_ledger.period_subtotal``, whose ``sum_projected``
         helper gates on ``is_projected(txn)`` -- so only the
         Projected $500 expense contributes; Settled, Cancelled, and
         Credit are all excluded.  Hand arithmetic: 500.00.

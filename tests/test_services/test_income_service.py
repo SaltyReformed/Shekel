@@ -37,10 +37,10 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
     balance_resolver,
+    cash_ledger,
     income_service,
     pay_period_service,
     paycheck_calculator,
-    period_flows,
     savings_dashboard_service,
 )
 from app.services.tax_config_service import load_tax_configs
@@ -342,7 +342,7 @@ class TestLiveIncomeThroughBalanceResolver:
             assert expected_net != Decimal("1.00")
 
             # period_subtotal income line reflects the live net.
-            subtotal = period_flows.period_subtotal(
+            subtotal = cash_ledger.period_subtotal(
                 account, scenario.id, period,
             )
             assert subtotal.income == expected_net, (
@@ -386,7 +386,7 @@ class TestLiveIncomeThroughBalanceResolver:
             )
             db.session.commit()
 
-            subtotal = period_flows.period_subtotal(
+            subtotal = cash_ledger.period_subtotal(
                 account, scenario.id, period,
             )
             assert subtotal.income == Decimal("1234.56"), (

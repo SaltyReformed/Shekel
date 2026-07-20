@@ -14,7 +14,7 @@ visibly disagreeing with a two-week-flat line.
 contributes on its :func:`~app.utils.dates.attribution_date` -- its
 ``due_date`` (fallback: the pay period ``start_date``) CLAMPED into its own
 period span -- using the SAME projected-only, entry-aware amount the period
-roll-forward sums (:func:`~app.services.balance_calculator.sum_projected`).
+roll-forward sums (:func:`~app.services.cash_ledger.sum_projected`).
 Because every one of a period's flows therefore lands on or before the
 period ``end_date``, the running balance summed through that day equals the
 period-end balance the grid shows:
@@ -59,7 +59,7 @@ eliminate.
 **Seam placement.**  This module is part of the ``balance_at`` seam cluster
 (``app.services.balance_at`` exposes it as ``cash_daily_balance_series``): it
 composes the fenced producer ``balance_as_of_date`` for the seed and reuses
-:func:`~app.services.cash_events.load_balance_transactions` (one
+:func:`~app.services.cash_ledger.load_balance_transactions` (one
 entries-eager query) and ``sum_projected`` for the per-day distribution, so
 no consumer re-invents the balance boundary the seam owns (W9906).  It
 imports no Flask symbol and performs no writes; all money is
@@ -73,12 +73,12 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.balance_calculator import sum_projected
 from app.services.balance_resolver import balance_as_of_date
-from app.services.cash_events import (
+from app.services.cash_ledger import (
     live_amount_overrides,
     load_balance_transactions,
     resolve_anchor,
+    sum_projected,
 )
 from app.services.pay_period_service import get_overlapping_periods
 from app.utils.dates import attribution_date
@@ -218,7 +218,7 @@ def _net_by_attribution_day(
     Groups the loaded transactions by their
     :func:`~app.utils.dates.attribution_date` (``due_date`` or period start,
     clamped into the owning period) and reduces each day's group through
-    :func:`~app.services.balance_calculator.sum_projected` -- the SAME
+    :func:`~app.services.cash_ledger.sum_projected` -- the SAME
     projected-only, entry-aware, override-aware sum the period roll-forward
     uses.  Because ``sum_projected`` is additive over disjoint transaction
     groups, the per-day nets of a period sum to that period's net exactly, so

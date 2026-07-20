@@ -105,7 +105,7 @@ positives, so that judgment lives in the code-reviewer subagent instead.
 from .balance_seam import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
-    _CASH_EVENT_SOURCE_MODULES,
+    _CASH_LEDGER_MODULES,
     _ENGINE_CLUSTER_MODULES,
     _FENCED_MODULE_RULINGS,
     _KIND_CLASSIFIER_MODULES,
@@ -137,7 +137,7 @@ from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassCh
 __all__ = [
     "_BALANCE_PRODUCERS",
     "_BALANCE_SEAM_MODULES",
-    "_CASH_EVENT_SOURCE_MODULES",
+    "_CASH_LEDGER_MODULES",
     "_ENGINE_CLUSTER_MODULES",
     "_FENCED_MODULE_RULINGS",
     "_KIND_CLASSIFIER_MODULES",

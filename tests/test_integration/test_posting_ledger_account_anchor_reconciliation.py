@@ -225,7 +225,7 @@ def _latest_assertion(account_id: int) -> tuple[datetime, Decimal]:
     """Return an account's latest ``(assertion instant, anchor balance)``.
 
     Reads ``account_anchor_history`` directly -- the row with the max
-    ``(created_at, id)``, exactly the row ``cash_events.resolve_anchor``
+    ``(created_at, id)``, exactly the row ``cash_ledger.resolve_anchor``
     picks -- so the "latest anchor" the invariant references is taken from the
     source of truth, not the ``current_anchor_balance`` cache the writer also
     maintains (which a bug could desync).  The instant is normalized to aware

@@ -1,10 +1,19 @@
 """
-Shekel Budget App -- Cash Event Source Tests (Commit 4 / E-19)
+Shekel Budget App -- Cash Ledger: anchor FACT tests (Commit 4 / E-19)
 
-Tests for ``app.services.cash_events.resolve_anchor`` (the dated anchor SoT).
-Renamed from ``test_balance_resolver_anchor.py`` at plan step D1a, which split
-the anchor out of ``balance_resolver`` into the module that owns the balance
-fold's INPUT facts.
+Tests for ``app.services.cash_ledger.resolve_anchor`` (the dated anchor SoT),
+which lives in the leaf's ``_facts`` submodule.  Renamed twice, each time
+following the code: ``test_balance_resolver_anchor.py`` -> ``test_cash_events.py``
+at plan step D1a (which split the anchor out of ``balance_resolver`` into the
+module owning the balance fold's INPUT facts), then to this name at D1c, when
+those facts became one submodule of the ``cash_ledger`` package.
+
+The leaf's other two concerns are covered elsewhere rather than here, and
+deliberately so: what one row is WORTH (``_amounts``) and what a set of rows
+SUMS TO (``_flows``) are graded in ``test_balance_resolver.py``, which owns the
+``_make_projected_expense`` / ``_add_entry`` fixtures they need.  Relocating
+those means promoting the two helpers into ``tests/_test_helpers``, which is its
+own commit.
 
 The resolver reads the most recent ``AccountAnchorHistory`` row as the
 dated source of truth for E-19; the ``Account.current_anchor_*``
@@ -40,7 +49,7 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services.cash_events import AnchorPoint, resolve_anchor
+from app.services.cash_ledger import AnchorPoint, resolve_anchor
 
 
 class _LogCapture:
@@ -173,7 +182,7 @@ class TestResolveAnchor:
             db.session.commit()
 
             with _LogCapture(logging.getLogger(
-                "app.services.cash_events",
+                "app.services.cash_ledger",
             )) as cap:
                 result = resolve_anchor(account, scenario.id)
 

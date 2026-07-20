@@ -352,7 +352,7 @@ EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP = _register(
 )
 EVT_ANCHOR_CACHE_RECONCILED = _register(
     "anchor_cache_reconciled", BUSINESS,
-    "cash_events.resolve_anchor found Account.current_anchor_* "
+    "cash_ledger.resolve_anchor found Account.current_anchor_* "
     "disagreeing with the latest AccountAnchorHistory row; the history "
     "row won (E-19 dated source of truth) and the divergence was logged.",
 )

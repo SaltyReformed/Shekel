@@ -20,7 +20,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services import (
     balance_resolver,
-    cash_events,
+    cash_ledger,
     net_worth_investment,
     pay_period_service,
 )
@@ -209,7 +209,7 @@ def balance_at(
     falls before the user's entire pay-period horizon (no period contains or
     precedes it) or the account has no projectable map, the seam returns the
     canonical anchor balance from
-    :func:`~app.services.cash_events.resolve_anchor`, rounded to cents.
+    :func:`~app.services.cash_ledger.resolve_anchor`, rounded to cents.
     This mirrors :func:`~app.services.balance_resolver.balance_as_of_date`'s
     pre-anchor convention (a date the projection cannot reach returns the
     anchor balance), so every kind answers an unreachable date the same way.
@@ -288,7 +288,7 @@ def balance_at(
     # as_of precedes the user's pay-period horizon, or the account has no
     # projectable map: fall back to the canonical anchor balance.
     return round_money(
-        cash_events.resolve_anchor(account, ctx.scenario.id).balance,
+        cash_ledger.resolve_anchor(account, ctx.scenario.id).balance,
     )
 
 

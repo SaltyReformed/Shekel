@@ -672,7 +672,7 @@ class TestEntryAwareBalance:
         Re-pinned under CLAUDE.md Section 1 rule 2 exception
         (F-009 / CRIT-01 / E-25): pre-Commit-5 this test pinned
         ``Decimal("4500.00")`` to lock the silent-degrade short-
-        circuit -- ``balance_calculator._entry_aware_amount`` returned
+        circuit -- ``cash_ledger._amounts._entry_aware_amount`` returned
         ``txn.effective_amount`` whenever the consuming query had not
         issued ``selectinload(Transaction.entries)``.  Symptom #1
         ($160 grid vs $114.29 /savings) is exactly that seam in
