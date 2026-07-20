@@ -1466,6 +1466,72 @@ def settle_instant_on(day):
     return _real_datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
 
 
+def create_transfer(
+    seed_user, db_session, from_account, to_account, period,
+    amount=Decimal("100.00"), *, due_date=None, name=None, scenario=None,
+):
+    """Create a PROJECTED transfer with its two shadows, via the real service.
+
+    The create half of :func:`create_settled_transfer`, which now builds on this
+    one -- so both helpers route through ``transfer_service.create_transfer``,
+    the sole transfer-creation chokepoint, and a test cannot accidentally
+    construct a transfer that bypasses a write guard production enforces.
+
+    Exposed separately because a test may need a transfer that is NOT settled
+    (a projection), or one carrying an explicit ``due_date``: on a LOAN payment
+    the due date is the installment the payment satisfies, which decides whether
+    the write is even allowed (ruling R-C, plan step C9b) and which installment
+    the fold splits it against.
+
+    Flushes via the service; the caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict (supplies ``user_id`` and the
+            baseline scenario).
+        db_session: The test ``db.session`` (unused directly -- the service owns
+            the session -- but accepted so call sites read uniformly).
+        from_account: The account money leaves (the expense shadow lands here).
+        to_account: The account money enters (the income shadow lands here).
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transfer (and both shadows) in.
+        amount: The transfer amount (Decimal).  Defaults to
+            ``Decimal("100.00")``.
+        due_date: Optional due date stored on the transfer and mirrored to both
+            shadows.  ``None`` (the default) leaves it unset, which is what the
+            ad-hoc transfer form produces; a loan payment's installment then
+            falls back to its pay-period start.
+        name: Optional transfer display name.
+        scenario: The :class:`~app.models.scenario.Scenario` to place the
+            transfer in.  Defaults to the seed user's baseline.
+
+    Returns:
+        The created (Projected) :class:`~app.models.transfer.Transfer`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.services import transfer_service
+
+    scenario_id = (
+        seed_user["scenario"].id if scenario is None else scenario.id
+    )
+    return transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=from_account.id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=scenario_id,
+            amount=amount,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            category_id=None,
+            name=name,
+            due_date=due_date,
+        ),
+    )
+
+
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), actual_amount=None,
@@ -1524,21 +1590,9 @@ def create_settled_transfer(
     from app.extensions import db
     from app.services import transfer_service
 
-    scenario_id = (
-        seed_user["scenario"].id if scenario is None else scenario.id
-    )
-    transfer = transfer_service.create_transfer(
-        transfer_service.TransferSpec(
-            user_id=seed_user["user"].id,
-            from_account_id=from_account.id,
-            to_account_id=to_account.id,
-            pay_period_id=period.id,
-            scenario_id=scenario_id,
-            amount=amount,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            category_id=None,
-            name=name,
-        ),
+    transfer = create_transfer(
+        seed_user, db_session, from_account, to_account, period,
+        amount=amount, name=name, scenario=scenario,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     update_kwargs["paid_at"] = (

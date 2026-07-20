@@ -16,6 +16,10 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
+from app.exceptions import (
+    NotFoundError,
+    ValidationError as ShekelValidationError,
+)
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
@@ -199,16 +203,34 @@ def create_payment_transfer(account_id):
         return namedup_redirect
 
     # Bound the new recurrence at BOTH ends BEFORE generating, so no shadow
-    # transaction is ever generated outside the loan's life (the template is
-    # flushed above, so the sync finds it): past the projected payoff (R-4), or
-    # -- the reason this call is load-bearing rather than merely tidy -- BEFORE
-    # the loan's first contractual installment (C9a).  Without the start bound
-    # this route generated a payment into every materialized pay period,
-    # including those preceding origination.
+    # transaction is ever generated outside the loan's life: past the projected
+    # payoff (R-4, the account-keyed sync below), or -- the reason this is
+    # load-bearing rather than merely tidy -- BEFORE the loan's first
+    # contractual installment (C9a).  Without the start bound this route
+    # generated a payment into every materialized pay period, including those
+    # preceding origination.
+    #
+    # The START bound is applied to THIS rule directly rather than through the
+    # account-keyed sync, which resolves the loan's FIRST active recurring
+    # template: on a loan that already has one, that would re-bound the OLD rule
+    # and leave the new one unbounded, generating the pre-origination payments
+    # this step exists to stop (and, since C9b, failing the write outright when
+    # they are refused).
+    loan_recurrence_sync.bind_rule_to_loan(rule, account.id)
     loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
 
-    # Generate transfers for existing pay periods.
-    generate_transfers_for_all_periods(template)
+    # Generate transfers for existing pay periods.  ``create_transfer`` refuses
+    # a payment dated before the loan originates (R-C) and a transfer OUT of a
+    # loan, and the recurrence engine fans out through it -- so an unbounded or
+    # mis-set rule surfaces here as a rejection rather than a 500 on a clean
+    # user action.  Roll back the flushed rule / template and flash, mirroring
+    # the generic transfer-template path.
+    try:
+        generate_transfers_for_all_periods(template)
+    except (NotFoundError, ShekelValidationError) as exc:
+        db.session.rollback()
+        flash(f"Could not create the recurring payment: {exc}", "danger")
+        return redirect(url_for("loan.dashboard", account_id=account_id))
 
     # ...and re-derive it AFTER, because since plan C8d the payoff is a fold over
     # the loan's forward PLAN -- and the payments just generated are part of that

@@ -66,14 +66,21 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     Raises:
         NotFoundError: If either period does not exist or does not
             belong to *user_id*.
-        ValidationError: Only on the envelope branch's ``AMBIGUOUS``
-            guard -- a destination period with more than one mutable
-            row for the same (template, scenario), a corrupt
-            pre-existing state.  The whole batch fails and the caller
-            must rollback the session before issuing any follow-up
-            writes.  All other former block conditions (inactive
-            template, finalised or soft-deleted destination) now create
-            a fresh override row instead.
+        ValidationError: On two conditions, either of which fails the WHOLE
+            batch -- the caller must rollback the session before issuing any
+            follow-up writes.  (a) The envelope branch's ``AMBIGUOUS`` guard: a
+            destination period with more than one mutable row for the same
+            (template, scenario), a corrupt pre-existing state.  All other
+            former block conditions (inactive template, finalised or
+            soft-deleted destination) now create a fresh override row instead.
+            (b) Since plan step C9b, a carried TRANSFER that is a loan payment
+            whose destination period would place its installment at or before
+            the loan's origination (``transfer_service.update_transfer``
+            enforces ruling R-C on the period move).  The refusal itself is
+            correct -- the moved payment would be erased by the fold -- but it
+            costs the rest of the batch, which is recorded as a finding rather
+            than fixed here: making it skip-and-report is a behaviour change to
+            carry-forward's batch semantics, not to the guard.
     """
     ctx = _build_carry_forward_context(
         source_period_id, target_period_id, user_id, scenario_id,

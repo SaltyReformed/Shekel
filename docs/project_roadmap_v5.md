@@ -1,6 +1,6 @@
 # Budget App -- Project Roadmap v5
 
-**Version:** 5.2 **Date:** June 25, 2026 **Parent Documents:** project_requirements_v2.md,
+**Version:** 5.3 **Date:** July 19, 2026 **Parent Documents:** project_requirements_v2.md,
 project_requirements_v3_addendum.md **Supersedes:** project_roadmap_v4-6.md (preserved for
 historical reference)
 
@@ -8,7 +8,40 @@ historical reference)
 
 ## Overview
 
-### What changed in v5.2 (this revision, June 25, 2026)
+### What changed in v5.3 (this revision, July 19, 2026)
+
+This revision records the largest architecture reversal in the project's history, marks the UI/UX
+overhaul complete, and adds the next feature arc. As with prior revisions, no future-work specs were
+deleted.
+
+1. **Section 2 Stage B (double-entry ledger): the deferral was reversed and the ledger was built.**
+   One day after v5.2 deferred Stage B indefinitely, the revisit valve fired: balance divergence
+   reappeared (net-worth views valuing a loan's pre-payment periods at original principal, PRs
+   #43/#44), and the follow-up investigation concluded the recurring balance and net-worth defects
+   were architectural -- the app had no single balance-at-T seam. The Option D decision record chose
+   a staged build guarded by parallel-run oracles instead of the big-bang migration the ROI review
+   had priced. Between June 27 and July 4 the whole program shipped to production: the `balance_at`
+   seam (Level 1), the append-only posting ledger piloted on transfers, cash/envelope postings, loan
+   real-split postings, the loan read switch, and confirmed-ledger financial statements. A follow-on
+   "fail-loud ledger authority" arc (complete through C8 on `dev`) rebuilt the loan balance as a
+   total fold over an event stream with the payoff date derived, never stored. Section 2.2 is
+   rewritten accordingly; the arc's tail is the current active work.
+2. **UI/UX overhaul marked COMPLETE.** Every screen on the rollout list has been rebuilt under the
+   Steel Ink design language and developer-accepted, and the cross-page polish pass (Waves 0-2,
+   sessions S1-S16) closed its register. Shipped to production through PR #63 (July 13). Small
+   residue is listed in the section.
+3. **New Section 7 (Credit Card Accounts).** An approved plan of record (July 19, 2026) replaces the
+   phantom-payback Credit workflow with a real revolving credit-card account. It executes ahead of
+   Sections 3-6, gated on the balance-arc tail, the interim prod ship, and X1.
+4. **Execution order updated.** Near-term: balance-arc tail (C9 -> Phase D) -> interim prod ship ->
+   X1 -> credit-card arc (Phases 0-5) -> balance-arc X2-X4/E1/F1 closeout -> credit-card UI.
+   Sections 3-6 (Smart Features, Notifications, Data Export, Multi-User) resume afterward, unchanged
+   in content and relative order.
+5. **Appendix A extended (A.21 through A.26)** with the completed work: the balance architecture
+   program, the escrow configuration redesign, the analytics/taxes overhaul, the per-screen UI
+   rollout completion, the UI/UX polish pass, and test-isolation/tooling hardening.
+
+### What changed in v5.2 (June 25, 2026)
 
 This revision re-prioritises post-overhaul work after a fresh ROI review grounded in the current
 code, and surfaces the in-progress UI/UX overhaul in the execution order. No future-work specs were
@@ -88,7 +121,8 @@ This version is a structural reorganisation of the roadmap; almost no content wa
 The app moved to production on March 23, 2026. It runs as a Docker container on an Arch Linux
 desktop, with internal access via Nginx and a DNS override, and external access via a Cloudflare
 Tunnel. The primary focus is now stabilization, daily-use polish, security hardening, and
-incremental feature development.
+incremental feature development. As of July 19, 2026, production runs the July 13 build (PR #63);
+`dev` carries the fail-loud ledger arc awaiting its F3 prod ship (Section 2.2).
 
 ### Completed phases
 
@@ -111,12 +145,27 @@ See **Appendix B** for the full deferred-items reference.
 | Section | Title                                | Status              | Summary                                                                                                  |
 | ------- | ------------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------- |
 | 1       | Security Remediation                 | Mostly complete     | Phases 1-7 done; Phase 8 low/info findings consolidated and largely shipped; Argon2id migration + config-drift script remain; Phase 9 and C-39 not pursued; Phase 10 operator-tracked. |
-| 2       | Financial Calculation Consistency    | Stage A complete    | Stage A (single source of truth for balances) shipped; 25-finding audit remediated. Stage B (double-entry) deferred indefinitely with a revisit valve; Stage C (envelopes) deferred, and does not require Stage B. |
-| UI/UX   | Fable 5 UI/UX Overhaul               | In progress         | Per-screen rebuild under the Steel Ink design language. Grid and Dashboard complete; Accounts in progress; remaining screens planned. Foundation shipped (Appendix A.19); live status in `docs/design/overhaul_plan.md`. |
-| 3       | Smart Features                       | Next (after UI/UX)  | Seasonal forecasting, smart estimates, inflation, third paycheck guidance, anomaly detection, etc.       |
+| 2       | Financial Calculation Consistency    | Stage B built; tail ACTIVE | Stage A shipped. Stage B's deferral was reversed June 26 and the posting ledger + `balance_at` seam program is in production; the fail-loud ledger arc is complete through C8 on `dev`. Tail (C9, Phase D, F3 prod ship, X1-X4, E1, F1) is the current active work. Stage C (envelopes) still deferred. |
+| UI/UX   | Fable 5 UI/UX Overhaul               | COMPLETE (July 2026) | Per-screen rebuild and the cross-page polish pass complete, developer-accepted, shipped through PR #63. Small residue tracked in `docs/design/ui_ux_polish_audit.md`. |
+| 7       | Credit Card Accounts                 | Approved -- next feature arc | Real revolving credit-card account replaces the phantom-payback Credit workflow. Plan of record approved July 19, 2026; gated on the balance-arc tail, the interim prod ship, and X1. |
+| 3       | Smart Features                       | After Section 7     | Seasonal forecasting, smart estimates, inflation, third paycheck guidance, anomaly detection, etc.       |
 | 4       | Notifications                        | After Smart Features | 15 notification types in 6 groups; bell + dropdown + `/notifications` page; email deferred. Several alerts build on Smart Features outputs. |
 | 5       | Data Export                          | Planned -- low priority | CSV, PDF reports, full data backup with restore. CSV (5.1) first.                                    |
 | 6       | Multi-User / Kid Accounts            | On the table -- deferred | Schema ready; companion role from Appendix A.10 is a precursor. Deferred until the app is ready to share. |
+
+**Near-term execution order (developer-ratified July 19, 2026;** the interleaving of the Section 2
+tail and Section 7 is load-bearing, recorded in `docs/plans/implementation_plan_credit_card.md`):
+
+1. Balance-arc tail: C9 (reject pre-origination loan payments; in flight), then Phase D (D1-D3:
+   engine cluster private, typed balances, fence shrunk to a smoke alarm).
+2. Interim prod ship: the `dev` -> `main` PR for the whole ledger arc (F3), including the
+   outstanding C2 real-clone history-window live-render check.
+3. X1 alone: a settled transaction counts from the instant it settled; lands the shared
+   instant-partition fold core the credit-card arc consumes.
+4. Section 7 credit-card arc, Phases 0-5 (landing into `dev` per phase).
+5. Balance-arc closeout: X2-X4 (the cash account becomes the same event-stream fold), E1 (postings
+   become a checked projection of the fold), F1 (Van Loan data correction).
+6. Section 7 Phase 6 (the card cockpit UI) any time after Phase 5; then Sections 3-6 resume.
 
 ---
 
@@ -192,18 +241,19 @@ The original Phase 3 -> Section 2 sequencing gate is satisfied: both have shippe
 
 **Status:** Stage A is COMPLETE and shipped. The May-June 2026 financial-calculation audit (25
 findings: 5 Critical, 8 High, 7 Medium, 5 Low) was remediated through the main and follow-up commit
-chains; the audit artefacts live in `docs/audits/financial_calculations/`. Stage B (double-entry) is
-DEFERRED INDEFINITELY with a revisit valve, and Stage C (envelope budgeting) is DEFERRED pending
-confirmed need; Stage C does not depend on Stage B. Stage A closed enough of the gap that neither is
-currently warranted.
+chains; the audit artefacts live in `docs/audits/financial_calculations/`. Stage B (double-entry)
+was deferred indefinitely in v5.2, but the revisit valve fired the next day and the stage has since
+been BUILT AND SHIPPED as the `balance_at` seam + posting ledger program (2.2); the program's
+fail-loud tail is the current active work. Stage C (envelope budgeting) remains DEFERRED pending
+confirmed need; Stage C does not depend on Stage B.
 
 **Goal:** The app produces identical monetary values regardless of which view, route, or service
 computes or displays them. Structural rules prevent new parallel computation paths from being
 introduced.
 
 This section has three stages: Stage A removed immediate inconsistency between existing computation
-paths; Stage B is an architectural change deferred indefinitely (revisit valve in 2.2); Stage C is
-an independent feature deferred pending confirmed need, and it does not depend on Stage B.
+paths; Stage B re-founded balances on a single seam and a double-entry posting ledger (2.2); Stage C
+is an independent feature deferred pending confirmed need, and it does not depend on Stage B.
 
 ### 2.1 Stage A -- Single source of truth for balances (COMPLETE)
 
@@ -237,42 +287,62 @@ guard test also forbids grid and accounts from re-deriving balances. The develop
 are resolved. Supporting docs: `remediation_plan.md` and `remediation_follow_up.md` in the same
 directory.
 
-### 2.2 Stage B -- Double-entry ledger (DEFERRED INDEFINITELY)
+### 2.2 Stage B -- Double-entry ledger (REVERSED AND BUILT, June-July 2026; tail ACTIVE)
 
-**Problem:** Even after Stage A, balances are derived from transaction records rather than recorded
-directly. Future architectural changes to transactions or transfers risk re-introducing the
-consistency problem because the table being read is the same table that holds the application's
-primary records.
+**Problem (unchanged):** Even after Stage A, balances were derived from transaction records rather
+than recorded directly. Every consumer re-derived "the balance at time T" its own way, so future
+architectural changes risked re-introducing the consistency problem.
 
-**Outcome after Stage B:**
+**The deferral, and why it was reversed.** v5.2 (June 25) deferred this stage indefinitely after an
+ROI review priced it as a big-bang migration: re-point E-25 and every consumer, rework the financial
+test suite, and carry a second source of truth through the window. The revisit valve ("revisit only
+if balance divergence reappears...") fired the next day: net-worth views valued a loan's pre-payment
+periods at original principal instead of current balance (fixed in PRs #43 and #44), and the
+follow-up investigation concluded the recurring balance and net-worth defects were a class, not a
+list -- the app had no single balance-at-T seam. The Option D decision record (in
+`docs/audits/balance_architecture/`) replaced the big-bang plan with a staged build: put in one seam
+first, then grow a real ledger under it one domain at a time, each step guarded by a parallel-run
+oracle against the old producer before any read switches over.
 
-- Every financial operation produces matched debit and credit entries in a dedicated journal table.
-- The journal is the authoritative source of account balances. Balance display becomes an
-  aggregation over the journal.
-- Transactions and transfers continue to exist as drivers that emit journal entries. The existing
-  transfer invariants (matched expense and income shadows for every transfer) extend naturally: each
-  shadow becomes a matched debit/credit pair in the journal.
+**What shipped (all in production):**
 
-The data model might look something like:
+- **Level 1 -- the `balance_at` seam (PR #45, prod June 27).** A single accessor produces every
+  balance-at-T the app shows. The custom pylint checker W9906 (balance-producer-bypass) fences the
+  seam so a new bypass path is a lint failure, and a per-kind cross-page oracle locks page
+  agreement. Kind-correct balances followed (PR #47, prod June 28): interest-bearing accounts show
+  accrued-interest balances on the grid and the obligations panel.
+- **Level 2 -- the posting ledger (Steps 2-5, prod June 28 through July 4).** An append-only
+  double-entry journal (`budget.journal_entries` + `budget.account_postings`, with a deferred
+  balanced trigger enforcing SUM=0 and COUNT>=2 per entry) over a chart of `ledger_accounts`, grown
+  one domain at a time, each with a backfill migration and a reconciliation oracle: transfers (Step
+  2, PR #48), cash and envelope transactions (Step 3, PRs #49/#50), loan payments as real
+  principal/interest/escrow splits from actual cash with effective-dated escrow (Step 4, PR #51),
+  the loan read switch making the ledger authoritative for loan balances (PR #52), and
+  account-anchor postings plus confirmed-ledger financial statements -- income statement and balance
+  sheet with CSV export (Step 5, PR #58).
+- **The July 2 adversarial review (R1-R10, PR #54 and follow-ups).** Settlement-time splits, dated
+  corrections, database-tier append-only enforcement, executable oracle teeth, transfer guards on
+  amortizing loans, and a package split of the custom checkers under their own 10.00/10 floor.
 
-```text
-budget.journal_entries
-- account_id, amount, dr_cr flag
-- transaction_id (nullable; FK to transactions)
-- transfer_id (nullable; FK to transfers)
-- pay_period_id, status_id
-- standard audit columns
-```
+**The fail-loud ledger-authority arc (IN PROGRESS -- the current active work).** With the ledger
+live, a second design pass asked why loan pages could still 500 or silently disagree: the honest
+ledger read was a partial function, and the derived posting cache was being treated as truth. The
+fix -- planned and tracked solely in `docs/audits/balance_architecture/README.md` (the arc forbids
+new planning docs) -- rebuilds the loan balance as a TOTAL fold over one event stream
+(ORIGINATION | ASSERTION | PAYMENT), exposed through the seam's `positions()`, `plan()`, and
+`events()` entries, with the payoff date derived by folding to zero, never persisted from a
+schedule. Phases A (stop the bleeding), B (the fold as oracle), and C1-C8 (the cutover: every reader
+folds) are complete on `dev` as of July 19, 2026.
 
-**Decision:** Deferred indefinitely; not on the active roadmap. A June 2026 ROI review, grounded in
-the current code, found this migration the highest-effort, highest-risk item on the roadmap: it
-re-points the canonical balance producer (E-25) and every consumer, reworks the ~242-test financial
-suite, and reintroduces a second source of truth during the migration window, all for no user-facing
-gain, while Stage A already holds balances consistent and correct under the HIGH-01 regression lock.
-**Revisit valve (unchanged):** revisit only if balance divergence reappears, if future architectural
-work on transactions or transfers risks re-introducing it, or if a feature lands that genuinely
-needs per-account journal semantics (for example multi-currency or formal double-entry accounting
-reports).
+**Remaining (the Section 2 tail; sequencing in the execution-order list above):** C9 (reject a loan
+payment dated before origination at the transfer write boundary; in flight), Phase D (D1-D3: engine
+cluster private inside the seam package, distinct cash-flow vs net-worth balance types, W9906 shrunk
+to a smoke alarm), the F3 interim prod ship (gated on the outstanding C2 real-clone history-window
+live-render check), X1-X4 (the cash account becomes the same event-stream fold: settled-instant
+partition, the fold itself, anchor history as the past, the anchor cache reconciled), E1 (postings
+become a checked projection -- `sum(postings) == fold(ACTUAL events)` asserted at write time), F1
+(the known-bad Van Loan history correction), and closeout. X5 (anchor `effective_date`) is an
+optional feature, not a prerequisite.
 
 ### 2.3 Stage C -- Envelope budgeting (DEFERRED; does not require Stage B)
 
@@ -314,30 +384,42 @@ need. It does not gate on, and need not be sequenced after, Stage B.
 
 ---
 
-## UI/UX Overhaul (Fable 5) -- In Progress
+### UI/UX Overhaul (Fable 5) -- COMPLETE (July 2026; small residue tracked)
 
-**Status:** In progress, and the current active work ahead of Section 3. A full UI/UX rebuild under
-the Steel Ink design language (not a reskin). The foundation and core shipped (Appendix A.19); the
-per-screen rebuild rollout is ongoing. This is a cross-cutting workstream, so it sits outside the
-1-6 feature numbering. Live status and per-screen audits are tracked in
-`docs/design/overhaul_plan.md`.
+**Status:** COMPLETE. Every screen on the rollout list has been rebuilt under the Steel Ink design
+language (not a reskin), developer-accepted, and shipped to production; the last UI ship was PR #63
+(July 13). The cross-page polish pass that followed (Waves 0-2 and sessions S1-S16, July 8-12)
+closed its register. The foundation and core are Appendix A.19; the rollout completion and the
+polish pass are Appendix A.24 and A.25. Per-screen audits live in `docs/design/`; the polish
+register (`docs/design/ui_ux_polish_audit.md`) remains the source of truth for residue.
 
-**Per-screen rollout:**
+**Per-screen rollout (all COMPLETE):** Grid; Dashboard; Accounts cockpit (`/savings` + `/accounts`
+unified into the Net Worth Cockpit, later extended with the P-AC1 net-worth diverging stream and the
+rebuilt property equity chart); Account detail (one cash-detail band page, PR #55); Retirement (PR
 
-- Grid: COMPLETE
-- Dashboard: COMPLETE
-- Accounts: IN PROGRESS (includes a home-equity / net-worth data-model mini-sprint; see
-  `docs/design/accounts_audit.md`)
-- Remaining (savings, salary, analytics, retirement, investment, loan, settings): planned
+## 56); Salary cockpit (PR #57); Analytics (Calendar, Taxes, Spending, Statements under a four-pill
+
+shell); Recurring (templates + transfers + obligations unified onto one surface); Loan detail (band
+grammar); Investment detail (band grammar); the app-wide navbar and brand (Steel Ink ink band,
+silver coin, Besley 700 wordmark); Settings retheme.
+
+**Remaining residue (small, tracked in the polish register and the closeout plan):** the per-user
+theme-selector UI (Scope B); the app-wide designed 4xx/5xx error-fragment follow-up; the two S8
+out-of-scope findings (the loan-cell anchor editor writes an inert row on amortizing loans; the
+amortization-schedule page's raw badge markup); P-DT1 and the P-DB4 layout half; the dashboard's two
+revisit-later presentational deviations and the anchor UTC-day-vs-Eastern bucketing ruling. The
+companion view was never scheduled for a rebuild (slots in per developer call), and hover/focus/HTMX
+in-flight states plus a few never-shot sub-pages were outside the audit's scope. The credit-card
+cockpit page (Section 7, Phase 6) is future UI work that runs through the same shekel-design loop.
 
 ---
 
-## 3. Smart Features
+### 3. Smart Features
 
-**Status:** Next major feature work, beginning after the in-progress UI/UX overhaul completes. The
-June 2026 ROI review prioritised this first among the remaining sections: it improves projection
-accuracy (the app's core value) and reduces manual estimate upkeep, at low risk to the balance
-invariants. Recommended starting set: 3.1 (seasonal), 3.2 (rolling average), 3.9 (confidence
+**Status:** Planned; resumes after the balance-arc closeout and Section 7 (Credit Card Accounts).
+The June 2026 ROI review prioritised this first among the pre-existing feature sections: it improves
+projection accuracy (the app's core value) and reduces manual estimate upkeep, at low risk to the
+balance invariants. Recommended starting set: 3.1 (seasonal), 3.2 (rolling average), 3.9 (confidence
 indicator), 3.12 (anomaly-at-entry).
 
 **Goal:** Make the app smarter about projecting future expenses based on historical patterns and
@@ -349,17 +431,17 @@ Budget variance analysis (3.5), annual expense calendar (3.6), and spending tren
 computation engines and display layers were built as part of Visualization and Reporting Overhaul
 (Appendix A.9), not in this section.
 
-### 3.1 Seasonal Expense Forecasting
+#### 3.1 Seasonal Expense Forecasting
 
 This is the primary feature of Phase 9.
 
-#### 3.1.1 Concept
+##### 3.1.1 Concept
 
 For a handful of expenses with predictable seasonal variation (electricity, gas, water, and possibly
 1-2 others), the user enters historical monthly amounts. The app uses this history to forecast
 future amounts, weighting recent years more heavily and detecting year-over-year trends.
 
-#### 3.1.2 Data Model
+##### 3.1.2 Data Model
 
 New table for historical expense data:
 
@@ -398,7 +480,7 @@ New columns on `budget.transaction_templates`:
     CHECK (seasonal_method IN ('weighted_trend', 'weighted_average'))
 ```
 
-#### 3.1.3 Historical Data Entry
+##### 3.1.3 Historical Data Entry
 
 - A "Seasonal History" tab or section on the transaction template edit page, visible only when
   `is_seasonal` is checked.
@@ -410,7 +492,7 @@ New columns on `budget.transaction_templates`:
   will use this feature (approximately 3-5).
 - The form should support entering partial years (e.g., only the months you have data for).
 
-#### 3.1.4 Forecasting Engine
+##### 3.1.4 Forecasting Engine
 
 New service: `services/seasonal_forecast.py`
 
@@ -432,7 +514,7 @@ New service: `services/seasonal_forecast.py`
   amount), the actual is automatically added to the seasonal history table for that month/year.
   Future forecasts for the same month in subsequent years will incorporate this new data point.
 
-#### 3.1.5 Integration with Recurrence Engine
+##### 3.1.5 Integration with Recurrence Engine
 
 - When the recurrence engine generates a transaction for a seasonal template, it calls the
   forecasting engine to get the projected amount for that transaction's target month.
@@ -441,18 +523,18 @@ New service: `services/seasonal_forecast.py`
 - The generated transaction should display an indicator (icon or label) showing that the amount is a
   seasonal forecast, not a flat recurring amount.
 
-#### 3.1.6 Applicable Templates
+##### 3.1.6 Applicable Templates
 
 Expected to apply to approximately 3-5 expense templates: electricity, gas, water, and possibly 1-2
 others (e.g., lawn care, heating oil). The feature is opt-in per template via the `is_seasonal`
 flag.
 
-### 3.2 Smart Estimates (Rolling Average)
+#### 3.2 Smart Estimates (Rolling Average)
 
 For non-seasonal variable expenses (groceries, fuel, dining out), suggest a future estimate based on
 a rolling average of recent actuals.
 
-#### 3.2.1 Concept
+##### 3.2.1 Concept
 
 - When the user views a future transaction for a variable expense template, the app calculates the
   average of the last N actuals (suggested default: N = 6, configurable).
@@ -461,7 +543,7 @@ a rolling average of recent actuals.
 - This feature becomes useful only after enough actuals have been recorded. Display the suggestion
   only when at least 3 actuals exist for the template.
 
-#### 3.2.2 Implementation
+##### 3.2.2 Implementation
 
 - New service: `services/smart_estimate.py`
 - Pure function: given a template_id and a count N, query the last N transactions for that template
@@ -469,7 +551,7 @@ a rolling average of recent actuals.
 - UI: A small "suggested: $X.XX" label next to the amount field on future transactions for eligible
   templates. Clicking it populates the amount field.
 
-### 3.3 Expense Inflation
+#### 3.3 Expense Inflation
 
 - Per-template inflation settings: opt-in per expense template with a global default rate (stored in
   `auth.user_settings.default_inflation_rate`, already exists) and per-template override.
@@ -484,7 +566,7 @@ a rolling average of recent actuals.
   double-counting. Recommended: seasonal templates should not also use explicit inflation. The trend
   component of the seasonal forecast serves this purpose.
 
-### 3.4 Deduction Inflation
+#### 3.4 Deduction Inflation
 
 - Applied at open enrollment time (user-specified month, likely November or December for a January
   effective date).
@@ -493,22 +575,22 @@ a rolling average of recent actuals.
   `new_amount = current_amount * (1 + deduction_inflation_rate)`.
 - The user is prompted to review and confirm adjusted amounts rather than having them auto-applied.
 
-### 3.5 Budget Variance Analysis -- COMPLETE
+#### 3.5 Budget Variance Analysis -- COMPLETE
 
 The computation engine and display layer were built as part of Visualization and Reporting Overhaul
 (Appendix A.9). See v4-6 Section 3.5 for the original spec.
 
-### 3.6 Annual Expense Calendar -- COMPLETE
+#### 3.6 Annual Expense Calendar -- COMPLETE
 
 Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 3.6 for the
 original spec.
 
-### 3.7 Spending Trend Detection -- COMPLETE
+#### 3.7 Spending Trend Detection -- COMPLETE
 
 Built as part of Visualization and Reporting Overhaul (Appendix A.9). See v4-6 Section 3.7 for the
 original spec.
 
-### 3.8 Third Paycheck Suggestions
+#### 3.8 Third Paycheck Suggestions
 
 - **Problem:** Biweekly pay results in two months per year containing a third paycheck. The calendar
   service detects these months (`is_third_paycheck_month` flag on the year overview, built in
@@ -541,7 +623,7 @@ original spec.
   from the debt summary (Appendix A.7 task 5.12) and savings goal trajectory (Appendix A.7 task
   5.15) features already implemented.
 
-### 3.9 Estimate Confidence Indicator
+#### 3.9 Estimate Confidence Indicator
 
 - **Problem:** Every future transaction in the grid displays an estimated amount, but the
   reliability of that estimate varies dramatically depending on its source. A seasonal forecast
@@ -574,7 +656,7 @@ original spec.
   service for actual count lookup). Benefits from 3.3 (inflation flag adds a medium-confidence
   signal).
 
-### 3.10 Bill Due Date Optimization
+#### 3.10 Bill Due Date Optimization
 
 - **Problem:** When expenses cluster unevenly across pay periods, one period may have a dangerously
   low projected end balance while the adjacent period has comfortable surplus. The user has no
@@ -584,7 +666,7 @@ original spec.
   does not automate -- the user decides how to act (change the due date, use the Credit/Credit
   Payback feature, or transfer from savings).
 
-#### 3.10.1 Data Model
+##### 3.10.1 Data Model
 
 New column on `budget.transaction_templates`:
 
@@ -597,7 +679,7 @@ This flag indicates whether the template's due date can realistically be moved. 
 (groceries, subscriptions, some utilities) can be marked `TRUE` by the user on the template edit
 form.
 
-#### 3.10.2 Analysis Engine
+##### 3.10.2 Analysis Engine
 
 New service: `services/due_date_optimizer.py`
 
@@ -625,7 +707,7 @@ New service: `services/due_date_optimizer.py`
   shortfall amount.
 - **Pure function:** Receives pre-loaded period and transaction data. Does not query the database.
 
-#### 3.10.3 Display
+##### 3.10.3 Display
 
 - **Dashboard integration:** When the optimizer detects an actionable imbalance in the next 2 pay
   periods, show a brief alert in the dashboard's "Alerts / Needs Attention" section: "Cash flow
@@ -635,14 +717,14 @@ New service: `services/due_date_optimizer.py`
   suggestion with template name, amount, source/target periods, balance improvement, and recommended
   action. All suggestions are informational -- no action buttons that automate the move.
 
-#### 3.10.4 Dependency
+##### 3.10.4 Dependency
 
 - **Requires:** Dashboard service (Appendix A.9) for alert integration; existing balance calculator
   for projected end balances.
 - **No dependency on 3.1-3.4.** Works with whatever amounts are in the generated transactions.
 - **Benefits from:** Section 4 (notifications) for delivering imbalance alerts.
 
-### 3.11 Year-over-Year Seasonal Comparison
+#### 3.11 Year-over-Year Seasonal Comparison
 
 - **Problem:** Seasonal forecasts are opaque. The user sees a forecasted amount for a future
   seasonal bill but has no easy way to verify whether it feels right without manually looking up
@@ -664,7 +746,7 @@ New service: `services/due_date_optimizer.py`
 - **Dependency:** Requires 3.1 (seasonal history table and forecasting engine). Should be
   implemented after 3.1 is complete and the user has entered at least one year of seasonal history.
 
-### 3.12 Expense Anomaly Detection
+#### 3.12 Expense Anomaly Detection
 
 - **Problem:** When a recurring bill comes in significantly different from its expected amount, the
   user may not notice until they've already confirmed the transaction. Billing errors, forgotten
@@ -673,7 +755,7 @@ New service: `services/due_date_optimizer.py`
   mark-as-paid), the app compares the actual to the expected amount and flags significant deviations
   inline before the transaction is confirmed.
 
-#### 3.12.1 Expected Amount Resolution
+##### 3.12.1 Expected Amount Resolution
 
 The comparison uses the most specific estimate source available, checked in priority order:
 
@@ -682,7 +764,7 @@ The comparison uses the most specific estimate source available, checked in prio
 2. **Rolling average (3.2):** If the template has 3+ paid actuals.
 3. **Template base amount:** The template's static `amount` field.
 
-#### 3.12.2 Anomaly Threshold
+##### 3.12.2 Anomaly Threshold
 
 An actual amount is flagged as anomalous when it deviates from the expected amount by more than a
 configurable percentage threshold.
@@ -691,7 +773,7 @@ configurable percentage threshold.
 - Global threshold (all templates). Per-template override deferred to a future enhancement.
 - Both over and under deviations are flagged.
 
-#### 3.12.3 Detection Timing and Display
+##### 3.12.3 Detection Timing and Display
 
 - **Primary trigger -- mark-as-paid flow:** When the user enters an actual amount during
   mark-as-paid (grid or dashboard), the anomaly check runs before the transaction is confirmed. If
@@ -706,7 +788,7 @@ configurable percentage threshold.
 - **Dashboard mark-as-paid:** Same anomaly check and two-step confirmation applies to the
   dashboard's mark-as-paid flow (built in Appendix A.9).
 
-#### 3.12.4 Implementation
+##### 3.12.4 Implementation
 
 - **New service:** `services/anomaly_detection.py`
 - **Primary function:**
@@ -725,7 +807,7 @@ configurable percentage threshold.
 - **No retroactive review screen.** Budget variance analysis (3.5, completed) already provides
   retroactive visibility into estimate-vs-actual gaps.
 
-#### 3.12.5 Interaction with Other Features
+##### 3.12.5 Interaction with Other Features
 
 - **3.1 course correction:** When a seasonal transaction is marked paid, 3.1.4 writes the actual to
   seasonal_history. Anomaly detection runs before this write. If the user confirms an anomalous
@@ -735,7 +817,7 @@ configurable percentage threshold.
 - **3.9 estimate confidence:** The anomaly service can reuse the confidence service's source
   resolution logic (or both use the shared utility).
 
-#### 3.12.6 Dependency
+##### 3.12.6 Dependency
 
 - **Requires:** 3.1 (seasonal forecast as comparison source) and 3.2 (rolling average as comparison
   source). Can function with only the template base amount if 3.1 and 3.2 are not yet implemented,
@@ -746,7 +828,7 @@ configurable percentage threshold.
 
 ---
 
-## 4. Notifications
+### 4. Notifications
 
 **Status:** Planned, sequenced after Section 3 (Smart Features). Intentional ordering: several
 notifications (estimate-confidence and anomaly alerts, smarter cash-flow warnings) build on Smart
@@ -759,9 +841,9 @@ once the self-hosted mail server is operational. All notification types default 
 and email disabled. Users manage preferences through a grouped settings UI with expandable sections
 at `/settings/notifications`.
 
-### 4.1 Notification Infrastructure
+#### 4.1 Notification Infrastructure
 
-#### 4.1.1 Data Model
+##### 4.1.1 Data Model
 
 The `system.notifications` and `system.notification_settings` tables are already stubbed in the
 schema. The implementation should include:
@@ -826,11 +908,11 @@ system.notification_email_preferences
 - updated_at: TIMESTAMPTZ DEFAULT NOW()
 ```
 
-#### 4.1.2 Notification Types
+##### 4.1.2 Notification Types
 
 Organized into 6 groups matching the settings UI layout.
 
-## Group 1: Balance & Cash Flow
+### Group 1: Balance & Cash Flow
 
 1. **Low projected balance (warning and critical):** Triggered when the projected end balance for
    any future pay period within the configured lookahead window drops below the configured
@@ -852,7 +934,7 @@ Organized into 6 groups matching the settings UI layout.
    not just alerts. Implementation: one query against generated transactions for the next period,
    formatted into a single notification. Runs during the daily scheduled check.
 
-## Group 2: Bills & Payments
+### Group 2: Bills & Payments
 
 4. **Upcoming large expense:** Triggered N days before a large expense is due (`days_before`
    configurable, default: 7). "Large" is configurable as a flat dollar threshold
@@ -873,7 +955,7 @@ Organized into 6 groups matching the settings UI layout.
    Auto-resolved when the period is reconciled (anchor balance set). The dashboard already computes
    this as an ephemeral alert (Appendix A.9) -- this notification persists it and adds escalation.
 
-## Group 3: Savings & Goals
+### Group 3: Savings & Goals
 
 7. **Savings milestone reached:** Triggered when a savings goal reaches a milestone percentage (25%,
    50%, 75%, 100%). Informational and motivational. The 100% milestone receives distinct celebratory
@@ -891,7 +973,7 @@ Organized into 6 groups matching the settings UI layout.
    before you fall behind, when there's still time to act. Depends on savings goal trajectory
    (Appendix A.7 task 5.15). Runs during the daily scheduled check.
 
-## Group 4: Debt
+### Group 4: Debt
 
 10. **Debt payoff milestone:** Triggered when a debt account's balance crosses a round-number
     threshold (e.g., drops below
@@ -906,7 +988,7 @@ Organized into 6 groups matching the settings UI layout.
     notice and update the rate history in the app. Depends on ARM rate support (Appendix A.7 task
     5.7). Runs during the daily scheduled check.
 
-## Group 5: Templates & Trends
+### Group 5: Templates & Trends
 
 12. **Recurring template change detection:** Triggered when the rolling average of a recurring
     transaction's actual amounts has diverged from the template's base amount by more than a
@@ -917,7 +999,7 @@ Organized into 6 groups matching the settings UI layout.
     after a legitimate rate change. Depends on Section 3 task 3.2 (rolling average engine). Runs
     during the daily scheduled check.
 
-## Group 6: Digests
+### Group 6: Digests
 
 13. **Weekly summary:** Generated once per week (day configurable, default: Monday). In-app:
     rendered as a pinned notification at the top of the notification dropdown. Email: sent as an
@@ -939,7 +1021,7 @@ Future notification types (not in initial build):
   analysis adjustment) -- depends on whether account parameter architecture stores future effective
   dates for rate changes
 
-### 4.1.3 Persist Dashboard Alerts as Notifications
+#### 4.1.3 Persist Dashboard Alerts as Notifications
 
 The dashboard (Appendix A.9) computes three alert types ephemerally (stale anchors, negative
 projected balances, overdue reconciliation). When the notification system is implemented, these
@@ -958,7 +1040,7 @@ Mapping:
   threshold of $0.00 produces equivalent behavior.
 - Overdue reconciliation alert -> covered by unreconciled period aging (#6).
 
-#### 4.1.4 Trigger Mechanism
+##### 4.1.4 Trigger Mechanism
 
 - **On transaction edit:** After any transaction is created, updated, or status-changed, the balance
   roll-forward is recalculated. At this point, check projected balances against thresholds for low
@@ -972,7 +1054,7 @@ Mapping:
 - **On savings goal update:** When a savings account balance changes (via transfer or anchor
   true-up), check goal progress for milestone notifications (#7) and pace alerts (#8).
 
-#### 4.1.5 Deduplication
+##### 4.1.5 Deduplication
 
 - The system should not generate duplicate notifications for the same event. Use a combination of
   notification_type + related_entity_type + related_entity_id + a time window to prevent duplicates.
@@ -984,7 +1066,7 @@ Mapping:
 - Savings milestones use the milestone percentage as part of the deduplication key (reaching 50%
   only fires once per goal, even if the balance fluctuates around the threshold).
 
-#### 4.1.6 Snooze
+##### 4.1.6 Snooze
 
 - Any notification can be snoozed. Snoozing sets `snoozed_until` to a future timestamp.
 - Snoozed notifications are hidden from the dropdown and the `/notifications` page until the snooze
@@ -996,7 +1078,7 @@ Mapping:
 - Snoozing does not prevent deduplication. If the same event would generate a new notification while
   the original is snoozed, no duplicate is created.
 
-#### 4.1.7 Auto-Resolve
+##### 4.1.7 Auto-Resolve
 
 - Notifications are automatically marked resolved (`resolved_at` set to current timestamp) when the
   underlying condition clears. Resolved notifications are visually distinct in the UI (muted
@@ -1020,9 +1102,9 @@ Mapping:
   - Weekly summary (#13): auto-resolved after 7 days (replaced by the next digest).
   - Payday reconciliation reminder (#14): auto-resolved when the period is reconciled.
 
-### 4.2 In-App Delivery
+#### 4.2 In-App Delivery
 
-#### 4.2.1 Notification Bell and Dropdown
+##### 4.2.1 Notification Bell and Dropdown
 
 - **Notification bell icon** in the app header (Bootstrap navbar). Displays an unread count badge.
   The badge counts only unread, non-snoozed, non-resolved notifications.
@@ -1037,7 +1119,7 @@ Mapping:
   dashboard; a template change detection links to the template edit page).
 - **"View all" link** at the bottom of the dropdown navigates to `/notifications`.
 
-#### 4.2.2 Notifications Page (`/notifications`)
+##### 4.2.2 Notifications Page (`/notifications`)
 
 - Full-page view of all notifications.
 - **Filters:** by notification type, by severity (info/warning/critical), by date range, by status
@@ -1049,7 +1131,7 @@ Mapping:
 - **No analytics or trends.** This is a filtered list, not a reporting tool. Historical analysis of
   notification patterns can be done via direct database queries if needed.
 
-### 4.3 Settings UI (`/settings/notifications`)
+#### 4.3 Settings UI (`/settings/notifications`)
 
 - Located as a new tab or section in the existing Settings area.
 - **Layout: Option B -- grouped settings with expandable sections.** Notification types are
@@ -1078,7 +1160,7 @@ Mapping:
   preferred delivery time, delivery window start, delivery window end. Greyed out until mail server
   is configured.
 
-### 4.4 Email Delivery (Deferred Sub-phase)
+#### 4.4 Email Delivery (Deferred Sub-phase)
 
 - **Dependency:** Requires a self-hosted mail server to be operational. This is infrastructure work
   outside the app (OPNsense mail features or a dedicated mail service on the Arch Linux host).
@@ -1102,7 +1184,7 @@ Mapping:
 
 ---
 
-## 5. Data Export
+### 5. Data Export
 
 **Status:** Planned, low priority. CSV export (5.1) is the cheapest and most broadly useful slice;
 PDF (5.2) and full backup (5.3) follow only if needed.
@@ -1116,21 +1198,21 @@ reporting overhaul (which built CSV export for analytics views as part of Append
   record-keeping.
 - **Feature:** Export functionality accessible from a settings or reports page. Three export types:
 
-### 5.1 CSV Export
+#### 5.1 CSV Export
 
 Export transactions for a configurable date range. Columns include: date, pay period, transaction
 name, category, estimated amount, actual amount, status, account, and notes. Transfers include both
 the transfer record and the shadow transaction detail. The user selects a date range and optionally
 filters by account, category, or status. The export downloads as a `.csv` file.
 
-### 5.2 PDF Export
+#### 5.2 PDF Export
 
 Generate printable PDF reports for account dashboards, payoff calculator results, amortization
 schedules, and the year-end financial summary (Appendix A.9). These are formatted for sharing with a
 financial advisor, lender, or for personal record-keeping. Each exportable page gets a "Download
 PDF" button.
 
-### 5.3 Full Data Backup
+#### 5.3 Full Data Backup
 
 A complete export of all user data as a structured file (JSON or SQL dump) that can be used for
 disaster recovery without requiring database-level access. Triggered from the settings page. The
@@ -1144,7 +1226,7 @@ rebuild their data from a backup file.
 
 ---
 
-## 6. Multi-User / Kid Accounts
+### 6. Multi-User / Kid Accounts
 
 **Status:** On the table, but deferred until the app is complete enough to share with other users.
 Not actively being built yet.
@@ -1172,13 +1254,66 @@ This section will be scoped when it becomes relevant.
 
 ---
 
-## Appendix A -- Completed Work
+### 7. Credit Card Accounts
+
+**Status:** Plan of record APPROVED July 19, 2026; not started -- gated on the ratified sequencing
+below. **Canonical plan:** `docs/plans/implementation_plan_credit_card.md` (the arc's live ledger;
+this roadmap entry is a status pointer only, following the Section 1 pattern). The section is
+numbered 7 because Sections 3-6 predate it; in execution order it runs ahead of them (see the
+execution-order table).
+
+**Goal:** Replace the phantom-payback Credit workflow with a real revolving credit-card account.
+Today, marking an expense "Credit" flips it to a balance-excluded status and auto-creates a phantom
+"CC Payback" expense in the next period, while the real card's debt, interest, due dates, and cash
+back are invisible to the app. After this arc: marking a purchase Credit MOVES the transaction to
+the card account and settles it there with its real category and period (the debt exists on the
+books, spending attribution is preserved, net worth stops being overstated); paying the card is a
+real checking -> card transfer, auto-maintained once per statement on the actual due date with the
+amount derived live from the statement balance; statement cycles, grace, finance charges (APR/365 x
+average daily balance), and flat-rate cash back with manual and auto-threshold redemptions all
+become modeled, derived quantities. Live Credit pairs are migrated in the Alembic migration; settled
+history is frozen; the old workflow code is deleted.
+
+**Phases (per the plan; land into `dev` per phase):**
+
+- **Phase 0 (CC0a-CC0c):** a revolving-credit account kind, the `budget.credit_card_params`
+  satellite table, and the params setup flow (params-absent means dormant plain liability).
+- **Phase 1 (CC1a-CC1c):** the revolving balance fold as an event stream, dispatched through the
+  `balance_at` seam (consumes the shared instant-partition fold core that X1 lands).
+- **Phase 2 (CC2a-CC2c):** pure statement math -- cycle windows, due dates, grace, minimum payment,
+  the finance charge folded over the daily balance, and card APR on `rate_history`.
+- **Phase 3 (CC3a-CC3d):** the charge-to-card action, the breaking mark-credit cutover with the
+  live-pair migration, envelope split tender, and guard rails (a card refuses what it cannot model).
+- **Phase 4 (CC4a-CC4c):** the derived statement payment (`card_payment_settings`, live amount
+  overrides beside the loan's), with an underpayment warning and a projected finance charge.
+- **Phase 5 (CC5a-CC5b):** rewards -- accrual as a derived figure; redemptions as real events,
+  manual or at an auto-redeem threshold.
+- **Phase 6 (outline):** the card cockpit page, grid affordances, and savings-cockpit tile states,
+  via a later shekel-design loop.
+
+**Locked developer rulings (July 19, 2026; recorded in the plan, do not reopen):** the re-account
+model; the full derived statement cycle; one derived statement payment per cycle on the due date;
+flat-rate cash back with redemption events; freeze-history/migrate-live-rows; zero-card owners get a
+$0 account at migration time; the semantic renames (`is_credit` -> `is_card_tender` and kin) ship
+in-arc at CC3c; APR/365 x average-daily-balance finance-charge math. Grid and companion hard
+requirements: a charged expense stays visible on the source grid as a display-only ghost row; the
+derived payment renders and deducts on the checking grid in its due-date period; the companion flow
+survives end to end, pinned by test.
+
+**Sequencing:** see the near-term execution order in the Overview -- balance-arc tail (C9 -> Phase
+D) first (the fence is frozen until D3 and this arc needs new fence classifications; D2's typed
+balances mean the revolving producer is born into the final structure), then the interim prod ship,
+then X1, then Phases 0-5, then balance-arc X2-X4/E1/F1, with Phase 6 any time after Phase 5.
+
+---
+
+### Appendix A -- Completed Work
 
 This appendix records work that has shipped. Each entry preserves its original v4-6 section label so
 prior commits, PRs, and design docs continue to resolve. Full historical detail remains in
 `project_roadmap_v4-6.md`; this appendix is a navigation index, not a duplicate.
 
-### A.1 Critical Bug Fixes (v4-6 Section 3) -- COMPLETE March 2026
+#### A.1 Critical Bug Fixes (v4-6 Section 3) -- COMPLETE March 2026
 
 10 production bug fixes including the tax-on-gross-pay calculation error (3.1), recurrence
 correctness audit (3.2), net biweekly mismatch (3.3), HTMX form re-render bugs (3.4, 3.7),
@@ -1186,7 +1321,7 @@ escrow-with-inflation entry (3.6), pension date validation (3.8), stale retireme
 and the paycheck calibration feature (3.10) which superseded the originally-planned Actual Paycheck
 Value Entry. See v4-6 Section 3 for full resolution notes.
 
-### A.2 Transfer Architecture Rework (v4-6 Section 3A) -- COMPLETE March 2026
+#### A.2 Transfer Architecture Rework (v4-6 Section 3A) -- COMPLETE March 2026
 
 Eliminated the dual-path `budget.transactions` / `budget.transfers` architecture. Every transfer now
 has two linked shadow transactions (one expense, one income); the balance calculator queries only
@@ -1194,7 +1329,7 @@ has two linked shadow transactions (one expense, one income); the balance calcul
 documents: `docs/transfer_rework_design.md`, `docs/transfer_rework_inventory.md`,
 `docs/transfer_rework_implementation.md`. See v4-6 Section 3A for full detail.
 
-### A.3 UX/Grid Overhaul (v4-6 Section 4) -- COMPLETE March 2026
+#### A.3 UX/Grid Overhaul (v4-6 Section 4) -- COMPLETE March 2026
 
 17 daily-use grid and detail-page improvements: full row headers (4.1), date format cleanup (4.3),
 status refactor and rename to ID-based lookups across all reference tables (4.4a/b/c), tax config
@@ -1205,7 +1340,7 @@ page (4.14), auto loan parameter fixes (4.15), retirement date validation UX (4.
 return rate clarity (4.17). Supporting document: `docs/implementation_plan_section4.md`. See v4-6
 Section 4 for full detail.
 
-### A.4 Account Parameter Architecture (v4-6 Section 4A) -- COMPLETE March 2026
+#### A.4 Account Parameter Architecture (v4-6 Section 4A) -- COMPLETE March 2026
 
 Architectural rework that completed the metadata-driven account parameter dispatch system.
 `HysaParams` renamed to `InterestParams`; `has_interest`, `has_amortization`, `has_parameters`,
@@ -1213,7 +1348,7 @@ Architectural rework that completed the metadata-driven account parameter dispat
 Money Market and CD types enabled. Supporting document: `docs/account_parameter_architecture.md`.
 See v4-6 Section 4A for full detail.
 
-### A.5 Adversarial Audit Remediation (v4-6 Section 4B) -- COMPLETE March 2026
+#### A.5 Adversarial Audit Remediation (v4-6 Section 4B) -- COMPLETE March 2026
 
 Comprehensive 17,844-line adversarial codebase audit identifying 1 Critical, 11 High, 17 Medium, and
 15 Low findings. Critical: silent paycheck fallback in the recurrence engine (broad
@@ -1227,7 +1362,7 @@ comparisons. All findings remediated. Supporting documents: `docs/adversarial_au
 > (`docs/audits/security-2026-04-15/`). That audit's remediation work is tracked as Section 1 in
 > this roadmap.
 
-### A.6 Cleanup Sprint (v4-6 Section 5A) -- COMPLETE April 2026
+#### A.6 Cleanup Sprint (v4-6 Section 5A) -- COMPLETE April 2026
 
 Five tasks from production feedback: estimated-vs-actual grid calculation fix that introduced
 `effective_amount` semantics (5A.1), category item sub-headers in grid (5A.2), salary listing page
@@ -1235,7 +1370,7 @@ button cleanup (5A.3), category management overhaul with edit, re-parent, and gr
 unified two-step delete/archive lifecycle pattern across templates, transfers, accounts, and
 categories (5A.5). Source: `fixes_improvements.md`. See v4-6 Section 5A for full detail.
 
-### A.7 Debt and Account Improvements (v4-6 Section 5) -- COMPLETE April 2026
+#### A.7 Debt and Account Improvements (v4-6 Section 5) -- COMPLETE April 2026
 
 16 tasks completing the debt account story: payment linkage to amortization engine (5.1),
 income-relative savings goals with `ref.goal_modes` and `ref.income_units` (5.4), payoff calculator
@@ -1249,13 +1384,13 @@ goal progress trajectory (5.15), recurring obligation summary page (5.16). Tasks
 audit) and 5.3 (actual paycheck value entry) were removed as superseded by Sections 3.2 and 3.10.
 See v4-6 Section 5 for full detail.
 
-### A.8 Mobile Responsiveness (Unplanned) -- COMPLETE April 2026
+#### A.8 Mobile Responsiveness (Unplanned) -- COMPLETE April 2026
 
 Unplanned work delivered in April 2026: CSS/JS/template-only changes for a mobile-responsive web
 experience, including bottom-sheet patterns for transaction detail, single-period grid navigation,
 and responsive layouts at Bootstrap `sm` and `md` breakpoints. No data model or service changes.
 
-### A.9 Visualization and Reporting Overhaul (v4-6 Section 8) -- COMPLETE May 2026
+#### A.9 Visualization and Reporting Overhaul (v4-6 Section 8) -- COMPLETE May 2026
 
 Replaced the existing `/charts` page with two major additions: a summary dashboard at `/` (now the
 app's landing page) and an analytics page at `/analytics` (tabbed container with calendar, year-end
@@ -1267,7 +1402,7 @@ x-axis date format bug (8.0a). Task 8.0b (inaccurate balance values) excluded pe
 document; no bug found in code audit. Supporting documents: `docs/section8_scope.md`,
 `docs/implementation_plan_section8.md`. See v4-6 Section 8 for full detail.
 
-### A.10 Spending Tracker and Companion View (v4-6 Section 9) -- COMPLETE May 2026
+#### A.10 Spending Tracker and Companion View (v4-6 Section 9) -- COMPLETE May 2026
 
 Three interconnected features: sub-transaction entry tracking via `budget.transaction_entries` on
 budget-type transactions with remaining balance visibility (9.1, 9.2, 9.4); entry-level credit card
@@ -1279,7 +1414,7 @@ debit/credit scenarios. Parent transactions with `track_individual_purchases` ca
 Credit status (entry-level credit replaces it). Supporting document:
 `phase_scope_spending_tracker.md`. See v4-6 Section 9 for full detail.
 
-### A.11 Carry-Forward Aftermath and Envelope View -- COMPLETE May 2026
+#### A.11 Carry-Forward Aftermath and Envelope View -- COMPLETE May 2026
 
 Reworked what happens to a budget row's leftover when a pay period closes. Carry-forward now
 branches by template kind (Option F): envelope templates settle the source row at real spend and
@@ -1293,7 +1428,7 @@ settle-and-roll model. Supporting docs: `docs/historical/carry-forward-aftermath
 `docs/historical/carry-forward-aftermath-implementation-plan.md`,
 `docs/historical/implementation_plan_envelope_view.md`.
 
-### A.12 Test Performance and Per-Worker Databases -- COMPLETE May 2026
+#### A.12 Test Performance and Per-Worker Databases -- COMPLETE May 2026
 
 A multi-phase effort to make the ~5,500-test suite fast and reliable under `pytest-xdist`. Each
 xdist worker now gets its own database cloned from a prebuilt template (`build_test_template.py`)
@@ -1305,7 +1440,7 @@ green. Result: the full suite runs in roughly 65 s at `-n 12`. Supporting docs:
 `docs/audits/test_improvements/test-performance-implementation-plan.md`,
 `docs/audits/test_improvements/phase1-flake-investigation.md`.
 
-### A.13 Mobile Experience v3 -- COMPLETE May 2026
+#### A.13 Mobile Experience v3 -- COMPLETE May 2026
 
 A follow-up to the April 2026 mobile work (A.8) that rebuilt the mobile grid around daily workflows:
 a "This Period" default tab with period navigation and a "Plan" multi-period accordion, per-card
@@ -1316,7 +1451,7 @@ drawer, and a static-only service worker plus a PWA manifest with maskable icons
 transaction rendering were de-duplicated into shared macros. Supporting docs:
 `docs/historical/implementation_plan_mobile_v3.md`, `docs/historical/mobile_follow_up.md`.
 
-### A.14 Amortization Engine Split -- COMPLETE May-June 2026
+#### A.14 Amortization Engine Split -- COMPLETE May-June 2026
 
 Split `amortization_engine` from one fused function into two primitives (replay confirmed history,
 project forward) plus a composer, which made a real bug syntactically impossible: the old code
@@ -1328,7 +1463,7 @@ by moving the engine into a package. Supporting docs:
 `docs/plans/historical/2026-05-21-amortization-engine-split-implementation.md`,
 `docs/plans/historical/2026-05-21-amortization-engine-split-replay-projection.md`.
 
-### A.15 Homelab Security Audit -- COMPLETE May 2026
+#### A.15 Homelab Security Audit -- COMPLETE May 2026
 
 A companion infrastructure audit (distinct from the app-level Section 1) of the operator's homelab
 Docker stack: Cloudflare Tunnel ingress, the shared Nginx vhost, real-IP pinning, security headers,
@@ -1337,7 +1472,7 @@ Six of ten findings were closed in a same-day remediation pass; the remainder (t
 UniFi upgrade, a Cloudflare Access scope) were deferred. It shares the C-33 network-isolation work
 with Section 1. Supporting doc: `docs/audits/homelab-security-2026-05-09/findings.md`.
 
-### A.16 Code Quality Audit and Remediation -- COMPLETE June 2026
+#### A.16 Code Quality Audit and Remediation -- COMPLETE June 2026
 
 A three-part internal quality program over `app/` and `scripts/`. (1) Both trees were driven to a
 hard pylint 10.00/10 floor, CI-locked, with custom Shekel checkers (decimal-from-float,
@@ -1350,7 +1485,7 @@ now exhausted, including correctness fixes (a delete-source payback-cleanup orph
 transfer-specific transition map). Supporting docs: `docs/audits/pylint-cleanup/plan.md`,
 `docs/audits/pylint-cleanup/quality-pass.md`, `docs/audits/pylint-cleanup/deep-quality-hunt.md`.
 
-### A.17 Polyglot Standards Cleanup -- COMPLETE June 2026
+#### A.17 Polyglot Standards Cleanup -- COMPLETE June 2026
 
 A standards audit of every non-Python surface (shell, JavaScript, CSS, Jinja templates, SQL, Docker,
 CI workflows, Markdown): 124 findings, of which 113 were judgment-only with no mechanical linter to
@@ -1361,7 +1496,7 @@ actionlint/zizmor, hadolint, yamllint, gitleaks, typos, rumdl) was wired into pr
 Shipped across PRs #33-#36. Supporting docs: `docs/audits/polyglot-cleanup/findings.md`,
 `docs/audits/polyglot-cleanup/tooling.md`.
 
-### A.18 Dev/Prod Container Parity -- COMPLETE June 2026
+#### A.18 Dev/Prod Container Parity -- COMPLETE June 2026
 
 An audit comparing the production container stack against the development setup, closing the gaps
 that mattered after stabilization: a dev app healthcheck, scoped Flask debug binds, a dev Redis with
@@ -1371,7 +1506,7 @@ pinning `TZ=America/New_York` on the app services so date-boundary logic matches
 `project_timezone_display_policy`). One operator action (a systemd audit-cleanup timer) is the only
 follow-up requiring host sudo. Supporting doc: `docs/audits/dev-prod-parity/findings.md`.
 
-### A.19 Fable 5 UI/UX Overhaul -- Core shipped June 2026 (per-screen rollout ongoing)
+#### A.19 Fable 5 UI/UX Overhaul -- Core shipped June 2026 (per-screen rollout ongoing)
 
 A full UI/UX overhaul (not a reskin) under a new design language. Shipped pieces: the grid rebuild
 (month-spine layout, an anchored action card replacing the three-tier edit system, a Ctrl+K command
@@ -1386,7 +1521,7 @@ theme-selector UI (Scope B) and the per-screen rollout to the remaining pages. S
 `docs/design/`: `fable5-design-language.md`, `grid_audit.md`, `css_architecture_audit.md`,
 `dashboard_card_audit.md`, `overhaul_plan.md`, `visual_loop.md`.
 
-### A.20 Pay-Period CRUD and Rolling Window -- COMPLETE June 2026
+#### A.20 Pay-Period CRUD and Rolling Window -- COMPLETE June 2026
 
 New feature (not previously on the roadmap): full lifecycle management of the pay-period schedule.
 Phase 0 hardened the schema (deferrable anchor FK, uniqueness constraint). Phase 1 added a
@@ -1398,9 +1533,82 @@ gate that wipes the schedule (including the anchor period) and re-anchors via a 
 `SET CONSTRAINTS ... DEFERRED`, re-phasing the recurrence offset. Shipped via PR #37. Supporting
 doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 
+#### A.21 Balance Architecture Program (Stage B built) -- Levels 1-2 SHIPPED July 2026
+
+The reversal and build-out of Section 2.2: the `balance_at` seam with the W9906 fence checker and
+per-kind cross-page oracle (PR #45, prod June 27), kind-correct grid/obligations balances (PR #47),
+and the append-only double-entry posting ledger grown one domain at a time with backfill migrations
+and reconciliation oracles -- transfers (Step 2, PR #48), cash and envelope transactions (Step 3,
+PRs #49/#50), loan real-splits with effective-dated escrow (Step 4, PR #51), the loan read switch
+(PR #52), and account anchors plus confirmed-ledger income statement and balance sheet (Step 5, PR
+
+## 58) -- hardened by the July 2 adversarial review remediation (R1-R10, PR #54). The follow-on
+
+fail-loud ledger-authority arc (the loan balance as a total fold over an event stream; derived
+payoff) is complete through C8 on `dev`; its open tail is tracked in Section 2.2, not here.
+Canonical doc: `docs/audits/balance_architecture/README.md` (the only live doc for the arc; 25
+predecessor planning docs are archived beside it).
+
+### A.22 Escrow Configuration Redesign and Loan-Date Correctness -- COMPLETE July 2026
+
+Escrow lines gained identity and time: supersession tables with effective dates (expand, reader
+cutover, legacy-table drop), date-aware loan-payment cash with capture-on-settle, a
+`loan_payment_settings` table replacing `derive_from_loan` with standing extra principal flowing
+into both live payment cash and the payoff projection, domain-dated escrow inflation, a merge tool
+to reunify a split line, and the plan-aware forward trajectory at the resolver seam. Shipped via PR
+
+## 60 (July 7). Alongside it, the loan-detail mortgage fixes (rename-duplicate escrow collapse
+
+tracking-start opening for mid-life-imported loans) and the due-date identity fix (a loan payment is
+dated by its own due date, not its pay period). Spec:
+`docs/design/escrow_line_identity_refactor.md`.
+
+### A.23 Analytics and Taxes Overhaul -- COMPLETE July 2026
+
+`/analytics` rebuilt as four slices under a four-pill shell (Calendar, Spending, Statements, Taxes)
+with unified basis chips and real tab URLs: the Calendar month cockpit with a daily running-balance
+data layer and ledger day cells; the Taxes tab, backed by a new annual filing-time tax liability
+engine, YTD withholding checkpoints, and a tax report producer (refund hero, derivation ledger,
+hybrid W-2 preview, Schedule A, refundable ACTC and NC filing extensions); the Spending months-lead
+cockpit (D7) on a unified spending producer; and the Statements restructure presenting Step 5's
+confirmed-ledger income statement and balance sheet with CSV export.
+
+#### A.24 Fable 5 Per-Screen Rollout -- COMPLETE July 2026
+
+Completion of the rollout A.19 started, all screens developer-accepted: the Accounts cockpit
+(`/savings` + `/accounts` unified, conditional sparklines, group cells, the P-AC1 net-worth
+diverging stream, and the rebuilt date-anchored property equity chart with the three-tier debt
+line); Account detail unified into one cash-detail band page (PR #55); the Retirement rebuild to
+direction D with readiness producer, lever solvers, and merit-raise horizon (PR #56); the Salary
+cockpit (PR #57); the Recurring surface unifying templates, transfers, and obligations with a
+recurrence-conflict chooser and shared form cards; Loan detail in band grammar with measured
+producers (chips, band chart, overlay); Investment detail in band grammar; and the app-wide navbar
+and brand (Steel Ink ink band, silver coin marks, Besley 700 wordmark).
+
+#### A.25 UI/UX Polish Pass -- COMPLETE July 2026
+
+A cross-page polish pass over the rebuilt app (register: `docs/design/ui_ux_polish_audit.md`; plans:
+`docs/plans/implementation_plan_ui_ux_polish.md`, `docs/plans/implementation_plan_ui_closeout.md`).
+Waves 0-2 fixed the screenshot instrument, the WCAG AA token skins, and the grid column contract;
+sessions S1-S16 delivered the credit-violet token split, the Graphite dark ladder, the Besley
+wordmark, the D12 chart ramp policy, and the dashboard, grid, accounts, spending, statements, and
+settings restructures; the closeout sessions added designed error fragments, status pre-hints, the
+quick-create name field, app-wide breadcrumb removal with back buttons, the D14 click-to-edit anchor
+idiom, and PWA manifest versioning. Shipped to production through PRs #61-#63 (July 7-13). Residue
+is listed in the UI/UX section.
+
+#### A.26 Test Isolation and Tooling Hardening -- COMPLETE July 2026
+
+Container-spawning deploy tests moved behind a docker marker with a fail-closed guard so bare pytest
+cannot touch the production daemon; a persistent Playwright auth-state helper for visual
+verification; `IDLE_TIMEOUT_MINUTES` pinned in TestConfig against environment drift; the
+`shekel_checkers` pylint plugin split into a package under its own CI-locked 10.00/10 floor; and new
+fence checkers W9907 (transaction-status bypass), W9908 (ledger-model import), and W9909
+(unclassified fenced export). The suite grew from ~5,500 to ~7,400 tests over the period.
+
 ---
 
-## Appendix B -- Deferred Items Reference
+### Appendix B -- Deferred Items Reference
 
 | Item                                  | Deferred From             | Notes                                                                  |
 | ------------------------------------- | ------------------------- | ---------------------------------------------------------------------- |
@@ -1422,12 +1630,12 @@ doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 | Charts: x-axis date format            | fixes_improvements.md     | Completed as Appendix A.9 task 8.0a                                    |
 | Charts: inaccurate values             | fixes_improvements.md     | Investigated as Appendix A.9 task 8.0b; no bug found in code audit; excluded |
 | Charts: total overhaul                | fixes_improvements.md     | Completed as Appendix A.9 (full visualization and reporting overhaul)  |
-| Double-entry ledger (Stage B)         | Roadmap v5 Section 2.2     | Deferred indefinitely; highest effort/risk for no user-facing gain; revisit valve in 2.2 |
+| Double-entry ledger (Stage B)         | Roadmap v5 Section 2.2     | Deferral REVERSED June 26, 2026: the revisit valve fired (balance divergence reappeared). Built as the posting ledger program; see Section 2.2 and Appendix A.21 |
 | Envelope budgeting (Stage C)          | Roadmap v5 Section 2.3     | Deferred pending confirmed need; standalone-capable, does not require Stage B            |
 
 ---
 
-## Change Log
+### Change Log
 
 | Version | Date       | Changes |
 | ------- | ---------- | ------- |
@@ -1442,3 +1650,4 @@ doc: `docs/plans/historical/implementation_plan_pay_period_crud.md`.
 | 5.0     | 2026-05-06 | Major reorganisation. Numbering: collapsed the dual Priority/Section system into a single sequential top-level track in execution order. Subsection numbers renumbered to follow their new parent: former 6.x became 3.x (Smart Features), former 7.x became 4.x (Notifications), former 8A.x became 5.x (Data Export). Internal cross-references updated to match. Completions: marked Visualization and Reporting Overhaul (was Priority 4 / Section 8, now Appendix A.9) and Spending Tracker and Companion View (was Priority 8 / Section 9, now Appendix A.10) complete (May 2026). Completed work relocated to Appendix A with original v4-6 section labels preserved on the appendix headings for cross-reference with prior commits and design docs. New Section 1 (Security Remediation) added, linking to `docs/audits/security-2026-04-15/remediation-plan.md` (in progress, 16 of 56 commits merged). New Section 2 (Financial Calculation Consistency) added with three sequenced stages (Stage A committed; Stages B and C decision-pending). Execution order for remaining work: Security, Financial Consistency, Smart Features, Notifications, Data Export, Multi-User. Phase 10 (was Section 7) became Section 4. Section 8A (Data Export) became Section 5. Section 10 (Multi-User) became Section 6. Section 11 (Deferred Items Reference) became Appendix B. Supersedes `project_roadmap_v4-6.md` (preserved as historical archive). |
 | 5.1     | 2026-06-14 | Realigned with shipped code. Section 1 (Security) re-scored against merged git history: Phases 1-7 complete, Phase 8 low/info findings consolidated into C-40/C-44/C-45/C-46 and largely shipped, Argon2id migration + config-drift script remain, Phase 9 (C-53..C-55) and C-39 not pursued (rationale recorded in 1.3), Phase 10 operator-tracked. Section 2 (Financial Calculation Consistency): Stage A marked COMPLETE (25-finding audit remediated; canonical producers E-18/E-19/E-25/E-26/E-27; HIGH-01 cross-page regression lock), Stages B and C deferred with revisit criteria. Appendix A extended with A.11-A.20 for work completed since v5.0: carry-forward aftermath and envelope view, test performance and per-worker databases, mobile v3, amortization engine split, homelab security audit, code quality audit and remediation (pylint 10.00/10 + quality-pass + deep-quality-hunt), polyglot standards cleanup, dev/prod container parity, the Fable 5 UI/UX overhaul, and pay-period CRUD with a rolling window. Folded in the still-valid decisions from the unmerged v5.1 draft on branch `claude/busy-thompson-rEhgG`. Future Sections 3-6 (Smart Features, Notifications, Data Export, Multi-User) unchanged. |
 | 5.2     | 2026-06-25 | Re-prioritised post-overhaul work after a fresh ROI review grounded in the current code, and surfaced the in-progress UI/UX overhaul. UI/UX: the Fable 5 per-screen rebuild was added to the execution order and a new in-progress section (Grid and Dashboard complete, Accounts in progress, remaining screens planned); Appendix A.19 retained for the shipped core. Section 2: Stage B (double-entry) deferred indefinitely with the revisit valve retained, as the highest-effort, highest-risk item for no user-facing gain while Stage A's canonical producers and HIGH-01 lock already hold balances correct; Stage C (envelopes) dependency on Stage B corrected (the entry-aware math already runs on budget.transactions via E-25 and Stage C is a single additive table, so it is standalone-capable) and deferred pending confirmed need. Execution order after the overhaul: Section 3 Smart Features next, then Section 4 Notifications (so alerts can build on Smart Features), then Section 5 Data Export (low priority, CSV first), then Section 6 Multi-User (on the table, deferred until ready to share). No future-work specs deleted; status and priority changes only. |
+| 5.3     | 2026-07-19 | Recorded the Stage B reversal and build-out: v5.2's double-entry deferral was reversed on June 26 when the revisit valve fired (balance divergence reappeared, PRs #43/#44) and the Option D investigation found the defect class architectural. Section 2.2 rewritten from DEFERRED INDEFINITELY to REVERSED AND BUILT: the balance_at seam (PR #45) with the W9906 fence, kind-correct balances (PR #47), the posting ledger Steps 2-5 (PRs #48-#52, #58), the July 2 adversarial review remediation (PR #54), and the in-progress fail-loud ledger-authority arc (Phases A/B and C1-C8 complete on dev; open tail = C9, Phase D, F3 prod ship, X1-X4, E1, F1). UI/UX overhaul marked COMPLETE: all screens rebuilt and accepted (accounts cockpit, account detail PR #55, retirement PR #56, salary PR #57, analytics, recurring, loan, investment, navbar/brand, settings) plus the polish pass (Waves 0-2, S1-S16); shipped through PR #63 (July 13); residue listed. New Section 7 (Credit Card Accounts) added from the plan of record approved 2026-07-19, with its eight locked rulings and the ratified cross-arc sequencing (C9 -> Phase D -> interim prod ship -> X1 -> CC Phases 0-5 -> X2-X4/E1/F1 -> CC Phase 6); execution-order table and Section 3's start gate updated to match. Appendix A extended with A.21-A.26 (balance architecture program, escrow configuration redesign + loan-date correctness, analytics/taxes overhaul, per-screen rollout completion, UI/UX polish pass, test-isolation and tooling hardening). Appendix B Stage B row updated. No future-work specs deleted. |

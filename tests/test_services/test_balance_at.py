@@ -2688,11 +2688,10 @@ class TestLoanNotYetOriginated:
         ``_is_retired`` is ``is_originated AND (current_balance <= 0)``, and
         ``_is_paid_off`` is that PLUS "the ledger shows a confirmed payment".
         Zeroing ``current_balance`` (above) satisfies the balance clause, and a
-        settled transfer INTO the loan -- a down payment, an earnest deposit --
-        satisfies the payment clause through the ordinary ``transfer_service``.
-        **Only the origination guard is left standing between an unclosed mortgage
-        and RETIRED**: badged paid off, dropped from the debt card's total, gone
-        from the Horizon, and erased from the property equity chart.
+        confirmed payment satisfies the payment clause.  **Only the origination
+        guard is left standing between an unclosed mortgage and RETIRED**: badged
+        paid off, dropped from the debt card's total, gone from the Horizon, and
+        erased from the property equity chart.
 
         This is the ONE shape in which that guard is the guard doing the work --
         every other unclosed-mortgage test has no confirmed payment, so the payment
@@ -2701,10 +2700,29 @@ class TestLoanNotYetOriginated:
 
         This bug did not exist before the origination fix; the fix CREATES it, and
         this is the test that keeps it dead.
+
+        **How the confirmed payment is built changed at plan step C9b, and the
+        new construction is the more honest one.**  It used to be a settled
+        transfer into the loan placed in ``periods[4]`` -- whose installment
+        (2026-03-01, from the period-start fallback) precedes the 2026-04-15
+        origination.  Ruling R-C now REFUSES that write at the transfer boundary,
+        because the fold erases such a payment: it splits against a zero balance,
+        books $0.00 principal, routes the whole amount to a Refund Receivable, and
+        the origination anchor then resets over it -- while the cash still leaves
+        checking (finding FU-5).  A test may not rest on a write production
+        forbids.
+
+        So the payment is now one production CAN produce: its installment
+        (2026-05-01, from ``periods[8]``) falls AFTER origination, so the boundary
+        allows it, and it is SETTLED EARLY -- ``paid_at`` 2026-03-10, before the
+        loan closes.  Paying an installment ahead of closing is legitimate and
+        the fold splits it correctly.  The state under test is unchanged: one
+        confirmed payment, a ``0.00`` balance, and a loan that has not
+        originated.
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import (
-            create_account_of_type, create_settled_transfer,
+            create_account_of_type, create_settled_transfer, settle_instant_on,
         )
 
         with app.app_context():
@@ -2715,9 +2733,14 @@ class TestLoanNotYetOriginated:
                 anchor_balance=Decimal("9000.00"),
             )
             db.session.commit()
+            # periods[8] starts 2026-04-24, so this payment's installment is
+            # 2026-05-01 -- after the 2026-04-15 origination, hence writable --
+            # while its settle instant precedes the loan's existence.
+            assert periods[8].start_date > self.ORIGINATION
             create_settled_transfer(
-                seed_user, db.session, checking, acct, periods[4],
+                seed_user, db.session, checking, acct, periods[8],
                 amount=Decimal("1200.00"),
+                paid_at=settle_instant_on(date(2026, 3, 10)),
             )
             db.session.commit()
 

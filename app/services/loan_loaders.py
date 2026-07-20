@@ -536,6 +536,43 @@ def projected_income_shadows(
     return projected
 
 
+def installment_for(
+    due_date: date | None, period_start: date, payment_day: int,
+) -> date:
+    """Return the installment a loan payment satisfies, from PLAIN DATA.
+
+    The arithmetic core of :func:`loan_payment_due_date`, over plain values
+    instead of a stored shadow: the payment's own ``due_date`` when it has one,
+    else the contractual day reconstructed from its pay-period start
+    (:func:`~app.services.rate_period_engine.monthly_due_date`).  See that
+    function for why the stored value is authoritative and when the fallback is
+    correct.
+
+    Extracted so a payment that does not EXIST yet can be keyed on the same rule
+    as one that does.  The transfer write boundary
+    (:func:`app.services._transfer_loan_posting._reject_payment_before_origination`,
+    plan step C9b) must decide "which installment would this be?" before any row
+    is written, and a guard keying on a rule of its own would refuse a different
+    set of payments than the fold erases -- the boundary-predicate drift this
+    architecture keeps paying for.  Same shape as ``split_payment_cash``
+    factored out of ``split_one_payment`` (C6a).
+
+    Pure: no I/O, no clock.
+
+    Args:
+        due_date: The payment's stored due date, or ``None``.
+        period_start: The start date of the payment's pay period (the fallback
+            basis).
+        payment_day: The loan's contractual day-of-month due day, 1-31.
+
+    Returns:
+        The date of the monthly installment this payment satisfies.
+    """
+    if due_date is not None:
+        return due_date
+    return monthly_due_date(period_start, payment_day)
+
+
 def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     """Return the monthly installment a loan payment shadow satisfies.
 
@@ -586,6 +623,13 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     ``due_date`` must therefore follow it with a posting reconcile --
     ``transfer_service._POSTING_RELEVANT_FIELDS`` is what enforces that.
 
+    Its ``pay_period`` is read on EVERY call since the derivation moved into the
+    shared :func:`installment_for` (previously only the no-``due_date`` branch
+    touched it), so a caller must hand it a shadow whose ``pay_period`` is
+    loaded -- :func:`query_shadow_income` eager-loads it, and every production
+    caller comes through there.  A shadow fetched by a bare ``session.get`` now
+    costs a lazy load here rather than only on the fallback path.
+
     Args:
         shadow: The loan-payment income shadow (its ``pay_period`` must be
             loaded; :func:`query_shadow_income` eager-loads it).
@@ -596,9 +640,9 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     Returns:
         The date of the monthly installment this payment satisfies.
     """
-    if shadow.due_date is not None:
-        return shadow.due_date
-    return monthly_due_date(shadow.pay_period.start_date, payment_day)
+    return installment_for(
+        shadow.due_date, shadow.pay_period.start_date, payment_day,
+    )
 
 
 def _settled_payment_due_dates(

@@ -40,6 +40,8 @@ from app.exceptions import ValidationError
 from app.services import account_posting_service
 from app.services import posting_service
 from app.services._transfer_loan_posting import (
+    _reject_installment_move_before_loan,
+    _reject_payment_before_origination,
     _reject_transfer_out_of_loan,
     _resync_loan_postings_after_delete,
     _reverse_loan_payment_before_delete,
@@ -249,6 +251,15 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     )
     _reject_transfer_out_of_loan(from_account)
     _get_owned_period(spec.pay_period_id, spec.user_id)
+    # R-C: a loan cannot receive a payment before it originates -- the fold
+    # would erase it while the cash side still debits the funding account.
+    # Deliberately AFTER ``_get_owned_period``: this guard reads that period's
+    # ``start_date`` (the installment fallback), so running it first would read
+    # an unowned row and answer a cross-user id with a 400 carrying a date from
+    # it, where the ownership rule requires an indistinguishable 404.
+    _reject_payment_before_origination(
+        to_account, spec.pay_period_id, spec.due_date,
+    )
     _get_owned_scenario(spec.scenario_id, spec.user_id)
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
@@ -508,6 +519,10 @@ def update_transfer(transfer_id, user_id, **kwargs):
     """
     xfer = _get_transfer_or_raise(transfer_id, user_id)
     expense_shadow, income_shadow = _get_shadow_transactions(transfer_id)
+
+    # R-C: refuse an edit that would move a loan payment before its loan, before
+    # any field is applied.  See :func:`_reject_installment_move_before_loan`.
+    _reject_installment_move_before_loan(xfer, user_id, kwargs)
 
     # ── amount ─────────────────────────────────────────────────────
     if "amount" in kwargs:
