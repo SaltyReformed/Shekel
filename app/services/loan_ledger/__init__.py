@@ -41,12 +41,21 @@ truth it was mistaken for.
   payments, merged into one chronological order.  Reads no clock.
 * :mod:`._fold` -- the running-balance walk over that stream, and the
   payment-split view of it.
+* :mod:`._visible` -- WHEN each fact becomes countable (the ONE clock), the
+  owner's calendar, and the date-to-period locator those rules resolve against.
+  Chronology only: every name here returns a ``date`` or a ``PayPeriod``, never a
+  figure.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes, no commits.  All
-money is :class:`~decimal.Decimal`.  Depends only on the models, the loan
-LOADERS, and the pure engines (``loan_resolver`` / ``escrow_calculator`` /
-``rate_period_engine`` / ``account_projection``) -- never on a consumer package,
-so nothing it needs can import it back.
+money is :class:`~decimal.Decimal`.  Depends on the models, the db session
+(:mod:`app.extensions`, for the one calendar query), the money and date utilities
+(:mod:`app.utils.money` / :mod:`app.utils.dates`), the loan LOADERS, and the pure
+engines (``loan_resolver`` / ``escrow_calculator`` / ``rate_period_engine``) --
+never on a consumer package, so nothing it needs can import it back.  The
+``account_projection`` dependency this list used to name is gone as of plan step
+D1b: the leaf had been importing a kind CLASSIFIER to reach
+``find_period_containing_date``, its own chronology primitive, which now lives in
+:mod:`._visible` beside the rules built on it.
 
 Plan of record: ``docs/audits/balance_architecture/README.md`` (step B1).
 """
@@ -72,6 +81,7 @@ from ._split import (
 )
 from ._visible import (
     anchor_visible_on,
+    find_period_containing_date,
     owner_pay_periods,
     payment_visible_on,
     resolve_anchor_pay_period,
@@ -85,6 +95,7 @@ __all__ = [
     "anchor_visible_on",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
+    "find_period_containing_date",
     "fold_from_walk",
     "fold_loan_balances",
     "merge_anchor_and_payment_events",

@@ -27,8 +27,8 @@ from app.services import (
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
-    find_period_containing_date,
 )
+from app.services.loan_ledger import find_period_containing_date
 from app.utils.money import round_money
 
 from app.services.resolution_context import BalanceContext

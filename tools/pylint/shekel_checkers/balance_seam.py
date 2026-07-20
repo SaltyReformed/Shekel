@@ -99,7 +99,6 @@ _BALANCE_SEAM_MODULES = frozenset({
     "app.services.balance_at",
     "app.services.balance_resolver",
     "app.services.balance_calculator",
-    "app.services.account_projection",
     "app.services.net_worth_kernel",
     # Investment growth sub-chain, extracted from net_worth_kernel (which hit
     # its module-size ceiling): builds an investment account's modeled balance
@@ -115,6 +114,12 @@ _BALANCE_SEAM_MODULES = frozenset({
     # rather than re-inventing the boundary from outside it.
     "app.services.daily_balance_series",
 })
+# ``account_projection`` came off THIS list at plan step D1b (it calls no
+# producer, so the exemption only ever permitted a bypass) and STAYED on the
+# W9909 completeness registry below.  Splitting those two removals is the step:
+# the lists answer different questions (finding N-28), and only the tightening is
+# safe.  Rationale for the half that stayed: :data:`_KIND_CLASSIFIER_MODULES`.
+
 
 # Genesis loan-ledger balance readers (W9906, the read switch's final commit):
 # the confirmed balance-at-T readers over the posting ledger.  Same fence, one
@@ -334,6 +339,34 @@ _CASH_EVENT_SOURCE_MODULES = frozenset({
     "app.services.cash_events",
     "app.services.period_flows",
 })
+# The account-KIND classifier (plan step D1b).  Same asymmetry as the cash-event
+# sources above, reached from the other direction: it came OFF the W9906
+# allowlist (it calls no producer) and STAYED scoped here.  It is not a cash
+# event source, so it carries its own constant rather than joining that set --
+# each scope entry names the reason it exists.
+#
+# **This is the canonical rationale for that entry; the registry entry below and
+# the module's own docstring point HERE rather than restating it.**  D1b as
+# planned deleted BOTH memberships, and dropping this one was measured unsafe:
+#
+#   * the module DEFINED the loan forward-projection producers through all of
+#     Phase C and shed the last at ``f445aa77``, ONE DAY before D1b -- so "it
+#     holds no producer" is a fact about a very recent tree, not a property; and
+#   * a module's reachability surface is its PARAMETERS, not its imports.
+#     ``classify_account`` takes a live ORM ``Account``, so a public
+#     ``balance_on(account, target)`` folding ``account.transactions`` needs no
+#     import this module lacks.  Measured with the entry dropped: that function,
+#     and a route rendering it, both rated 10.00/10.
+#
+# What W9909 actually covers is public FUNCTIONS and public METHODS of public
+# classes (see :func:`_is_public_export_surface`).  It does not see a balance
+# computed in a dunder and exposed as an attribute, nor a module-level alias of a
+# private function -- both rate 10.00/10 here and in every other scoped module.
+# That gap is structural and pre-dates D1b; it is named so this entry is not read
+# as a stronger guarantee than it is.
+_KIND_CLASSIFIER_MODULES = frozenset({
+    "app.services.account_projection",
+})
 
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
 # top-level function defined in one of these modules must appear in one of its
@@ -396,13 +429,16 @@ _FENCED_MODULE_RULINGS = {
         "income_amount",
         "sum_projected",
     })),
+    # The account-KIND classifier.  NOT on the W9906 call allowlist, but scoped
+    # here -- the deliberate asymmetry N-28 names; why it stays is recorded once,
+    # at :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``
+    # went to ``loan_ledger._visible`` at D1b (chronology belongs with the rules
+    # built on it), leaving two names.
     "app.services.account_projection": (_BALANCE_PRODUCERS, frozenset({
         # The canonical kind classifier and the payroll-funding predicate:
         # account metadata, not balances.
         "classify_account",
         "is_payroll_deduction_funded",
-        # A period lookup by date, not a balance.
-        "find_period_containing_date",
     })),
     "app.services.daily_balance_series": (_BALANCE_PRODUCERS, frozenset()),
     # The loan FOLD leaf (plan step B1): the event stream, the split, and the one
@@ -431,10 +467,12 @@ _FENCED_MODULE_RULINGS = {
             #     yields the loan's anchor FACTS, which carry an asserted
             #     ``anchor_balance`` -- but a user-asserted stored fact is not a
             #     balance-at-T, the same ruling ``resolve_anchor`` carries above.
-            #   * the two visibility rules and the calendar they resolve against:
-            #     these return a ``date`` / a ``PayPeriod`` / a list of them, and
-            #     cannot yield a figure at all.
+            #   * the two visibility rules, the calendar they resolve against, and
+            #     the date-to-period locator that resolution is built on: these
+            #     return a ``date`` / a ``PayPeriod`` / a list of them, and cannot
+            #     yield a figure at all.
             "merge_anchor_and_payment_events",
+            "find_period_containing_date",
             "resolve_anchor_pay_period",
             "owner_pay_periods",
             "anchor_visible_on",
@@ -634,7 +672,7 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "dashboards) must depend on it, never on a producer directly -- the "
             "SOLID dependency direction consumers -> seam -> engines. Only the "
             "seam and the engine cluster it composes (balance_resolver, "
-            "balance_calculator, account_projection, net_worth_kernel) may "
+            "balance_calculator, net_worth_kernel) may "
             "call a producer. The genesis loan-ledger "
             "readers (confirmed_loan_balance_at / confirmed_loan_balance_map) "
             "are fenced the same way with a wider allowlist: their defining "

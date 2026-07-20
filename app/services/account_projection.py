@@ -18,9 +18,19 @@ Pure functions over Account / AccountType / int.  No Flask imports
 ``ref_cache_module`` keeps this module free of circular import
 worries with :mod:`app.ref_cache` while preserving the IDs-for-logic
 standard (``docs/coding-standards.md:174-178``).
+
+**Kind metadata only: this module answers "what KIND is this account?",
+never "what is it worth on date T?".**  It came off the W9906 call
+allowlist at plan step D1b -- it calls no balance producer, so the
+exemption only permitted a bypass -- but it REMAINS on the W9909
+completeness registry, so a new public function here must be classified
+as a producer or a non-producer before it will lint.  Why that half
+stayed (it defined the loan forward-projection producers until one day
+before D1b, and :func:`classify_account` takes a live
+:class:`~app.models.account.Account`) is recorded once, at
+``shekel_checkers.balance_seam._KIND_CLASSIFIER_MODULES``.
 """
 
-from datetime import date
 from enum import Enum
 
 from app.enums import AcctTypeEnum
@@ -155,40 +165,3 @@ def is_payroll_deduction_funded(
         for t in _PAYROLL_DEDUCTION_FUNDED_TYPES
     }
     return account_type_id in funded_ids
-
-
-def find_period_containing_date(periods: list, target: date):
-    """Return the pay period whose interval contains *target*.
-
-    A period "contains" *target* when
-    ``period.start_date <= target <= period.end_date``.  When no
-    period contains *target* (the date falls in a gap or beyond the
-    user's generated horizon), falls back to the latest period whose
-    ``end_date`` is on or before *target*; if none exists either,
-    returns ``None``.
-
-    The fallback is the same shape the year-end summary's
-    :func:`_find_period_on_or_before_date` uses -- it preserves the
-    period-end-keyed semantic when a target date sits just past the
-    last generated period (the user's last known balance at the
-    horizon is the natural answer).
-
-    Args:
-        periods: List of :class:`~app.models.pay_period.PayPeriod`
-            objects.
-        target: The date to locate.
-
-    Returns:
-        The matching :class:`~app.models.pay_period.PayPeriod`, or
-        ``None`` when no period precedes *target*.
-    """
-    containing = None
-    fallback = None
-    for period in periods:
-        if period.start_date <= target <= period.end_date:
-            if containing is None or period.period_index > containing.period_index:
-                containing = period
-        elif period.end_date < target:
-            if fallback is None or period.period_index > fallback.period_index:
-                fallback = period
-    return containing if containing is not None else fallback

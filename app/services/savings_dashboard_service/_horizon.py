@@ -194,7 +194,7 @@ def _period_id_at(axis: list, target: date) -> int | None:
     local because the axis periods are
     :class:`~app.services.growth_engine.SyntheticPeriod` namedtuples, which
     carry no ``period_index`` for the general
-    :func:`app.services.account_projection.find_period_containing_date`.
+    :func:`app.services.loan_ledger.find_period_containing_date`.
 
     Args:
         axis: The chronological synthetic period axis.

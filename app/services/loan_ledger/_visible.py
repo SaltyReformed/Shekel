@@ -29,8 +29,25 @@ event on its own date closes that at the source: an anchor dated in the future i
 simply not yet visible, and the four ``origination_date`` guards that contained
 the leak are retired (N-10).
 
-Pure: no query, no clock, no writes.  An anchor's visible-on date no longer needs
-the owner's calendar at all -- it is the anchor's own date -- so the fold is now
+Also here, and for the same reason, the CALENDAR those rules resolve against:
+:func:`owner_pay_periods` (the owner's period list) and
+:func:`find_period_containing_date` (which period a date falls in), the primitive
+:func:`resolve_anchor_pay_period` is built on.  The locator arrived at plan step
+D1b from ``account_projection``, an account-KIND classifier that had no business
+owning a chronology rule -- a COHESION correction (the primitive belongs with the
+rules built on it, and this module had been importing the classifier to reach its
+own), not the private-import smell Section 8 names; that import was public and
+ordinary.
+
+**Chronology only.**  Every name here returns a ``date``, a ``PayPeriod``, or a
+list of them; none yields a balance-at-T, which is why all five are ruled
+non-producers of the balance fence.  (A returned ``PayPeriod`` is an ORM row, so
+money is reachable from it by relationship -- the ruling is that a period is not
+an account's balance, not that a figure is unreachable.  Claiming the stronger
+thing is how ``LoanState.current_balance`` shipped.)  No clock and no writes
+anywhere; :func:`owner_pay_periods` is the one function that queries (it loads
+the calendar), and the rest are pure.  An anchor's visible-on date no longer needs
+the owner's calendar at all -- it is the anchor's own date -- so the fold is
 total over the loan's facts without a period list.
 """
 
@@ -40,7 +57,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import account_projection
 from app.utils.dates import to_utc_civil_date
 
 
@@ -54,8 +70,8 @@ def owner_pay_periods(account_id: int) -> list[PayPeriod]:
     **"All", not "a window", is the load-bearing word.**  An anchor's visible-on
     date is derived from the period CONTAINING it, so a partial list silently
     changes the answer: with the containing period absent,
-    :func:`app.services.account_projection.find_period_containing_date` misses,
-    the ``periods[0]`` fallback fires, and the anchor lands on the wrong date.
+    :func:`find_period_containing_date` misses, the ``periods[0]`` fallback
+    fires, and the anchor lands on the wrong date.
     Measured: folding a $100,000.00 true-up against the owner's full calendar
     versus a window that excludes its period moves the balance by $150,000.00 on
     the days between.  That is why neither consumer may pass its own list -- the
@@ -81,6 +97,51 @@ def owner_pay_periods(account_id: int) -> list[PayPeriod]:
         .order_by(PayPeriod.period_index)
         .all()
     )
+
+
+def find_period_containing_date(
+    periods: list[PayPeriod], target: date,
+) -> PayPeriod | None:
+    """Return the pay period whose interval contains *target*.
+
+    A period "contains" *target* when
+    ``period.start_date <= target <= period.end_date``.  When no period contains
+    *target* (the date falls in a gap or beyond the user's generated horizon),
+    falls back to the latest period whose ``end_date`` is on or before *target*;
+    if none exists either, returns ``None``.
+
+    The fallback preserves the period-END-keyed semantic when a target date sits
+    just past the last generated period: the user's last known balance at the
+    horizon is the natural answer, rather than nothing at all.
+
+    **Chronology, not balance.**  It answers WHICH PERIOD a date falls in and
+    knows nothing of accounts or money -- the primitive
+    :func:`resolve_anchor_pay_period` is built on, and the reason both live here.
+    It moved from ``account_projection`` at plan step D1b: its only two callers
+    are this module and the balance seam, so a kind CLASSIFIER was holding a
+    chronology primitive that the chronology module then had to import back.  A
+    cohesion correction, decided on where the rule BELONGS -- not on the
+    private-import smell of Section 8, which this ordinary public import was not.
+
+    Args:
+        periods: The owner's pay periods.  Order-independent -- the scan keys on
+            ``period_index``, not on list position.
+        target: The date to locate.
+
+    Returns:
+        The matching :class:`~app.models.pay_period.PayPeriod`, or ``None`` when
+        no period contains or precedes *target*.
+    """
+    containing = None
+    fallback = None
+    for period in periods:
+        if period.start_date <= target <= period.end_date:
+            if containing is None or period.period_index > containing.period_index:
+                containing = period
+        elif period.end_date < target:
+            if fallback is None or period.period_index > fallback.period_index:
+                fallback = period
+    return containing if containing is not None else fallback
 
 
 def resolve_anchor_pay_period(
@@ -113,9 +174,7 @@ def resolve_anchor_pay_period(
         The containing :class:`~app.models.pay_period.PayPeriod`, or the earliest
         when *target_date* precedes all periods.
     """
-    containing = account_projection.find_period_containing_date(
-        periods, target_date,
-    )
+    containing = find_period_containing_date(periods, target_date)
     return containing if containing is not None else periods[0]
 
 

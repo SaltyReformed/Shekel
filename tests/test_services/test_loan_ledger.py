@@ -19,6 +19,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.pay_period import PayPeriod
 from app.services import loan_ledger, loan_loaders
 from app.services.loan_posting_service import confirmed_loan_balance_at
 from tests._test_helpers import (
@@ -257,6 +258,95 @@ class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
                 p.user_id for p in loan_ledger.owner_pay_periods(loan.id)
             }
             assert owners == {seed_user["user"].id}
+
+
+class TestFindPeriodContainingDate:
+    """The date-to-period locator: a hit, the period-END fallback, and ``None``.
+
+    It moved here from ``account_projection`` at plan step D1b -- a kind
+    CLASSIFIER had been holding a chronology rule that this package then imported
+    back -- and it arrived with no direct coverage of its own, which the move was
+    the moment to fix.
+
+    **All three branches are load-bearing, not defensive.**
+    :func:`~app.services.loan_ledger.resolve_anchor_pay_period` is built on it and
+    files every anchor correction's NOT NULL ``pay_period_id`` from the answer, so
+    a wrong branch mis-dates an anchor: ``owner_pay_periods``' own docstring
+    measures a **$150,000.00** balance swing on exactly that path when the
+    containing period is missing and the fallback fires instead.
+
+    Built on real unsaved :class:`~app.models.pay_period.PayPeriod` rows rather
+    than stubs -- the C9a ruling (a hand-rolled fake drifts the moment a column is
+    added, and fails on ``AttributeError`` instead of on behaviour).
+    """
+
+    @staticmethod
+    def _periods():
+        """Return three consecutive biweekly periods, deliberately UNSORTED.
+
+        Out of order on purpose: the scan keys on ``period_index``, never on list
+        position, and a caller is not required to pre-sort.
+
+        **The EARLIEST period is first, and that ordering is what gives the
+        fallback test teeth.**  With the LATEST first, "the first candidate the
+        scan meets" and "the candidate with the highest ``period_index``"
+        coincide, so a fallback that drops the max-by-index comparison passes
+        anyway -- verified: mutating the comparison to ``if fallback is None``
+        left all four tests green under a latest-first fixture.  Production hands
+        this function ASCENDING lists (``owner_pay_periods`` and
+        ``pay_period_service.get_all_periods`` both ``ORDER BY period_index``),
+        where that mutant returns the EARLIEST period instead of the latest, so
+        the fixture must be able to tell them apart.
+        """
+        rows = [
+            PayPeriod(
+                start_date=date(2026, 1, 2) + timedelta(days=14 * i),
+                end_date=date(2026, 1, 15) + timedelta(days=14 * i),
+                period_index=i,
+            )
+            for i in range(3)
+        ]
+        return [rows[0], rows[2], rows[1]]
+
+    def test_returns_the_period_whose_interval_contains_the_date(self):
+        """A date inside a period resolves to THAT period, inclusive at both ends."""
+        periods = self._periods()
+        # Period 1 spans 2026-01-16..2026-01-29.
+        for probe in (date(2026, 1, 16), date(2026, 1, 22), date(2026, 1, 29)):
+            located = loan_ledger.find_period_containing_date(periods, probe)
+            assert located is not None
+            assert located.period_index == 1, f"{probe} landed outside period 1"
+
+    def test_falls_back_to_the_latest_period_ending_before_the_date(self):
+        """Past the horizon: the LAST period that ended on or before *target*.
+
+        The user's last known position at the horizon is the honest answer for a
+        date beyond every generated period -- and it must be the LATEST such
+        period, not merely the first one the scan happens to meet.
+        """
+        periods = self._periods()
+        # Every period ends by 2026-02-12; period 2 is the last (index 2).
+        located = loan_ledger.find_period_containing_date(
+            periods, date(2027, 6, 1),
+        )
+        assert located is not None
+        assert located.period_index == 2
+
+    def test_returns_none_when_the_date_precedes_every_period(self):
+        """No containing period and nothing earlier: ``None``, never period[0].
+
+        The distinction is what makes the caller's own fallback meaningful --
+        ``resolve_anchor_pay_period`` turns this ``None`` into the EARLIEST period
+        deliberately, so an imported loan originating years before the app's first
+        period still books its opening somewhere real.
+        """
+        assert loan_ledger.find_period_containing_date(
+            self._periods(), date(2025, 12, 31),
+        ) is None
+
+    def test_an_empty_calendar_answers_none(self):
+        """A user with no periods at all: ``None``, not an IndexError."""
+        assert loan_ledger.find_period_containing_date([], date(2026, 1, 5)) is None
 
 
 class TestFoldValue:

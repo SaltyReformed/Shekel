@@ -22,6 +22,7 @@ from shekel_checkers import (
     _LEDGER_LEAF_MODULE_NAMES,
     _LEDGER_MODEL_ALLOWLIST,
     _LEDGER_MODEL_MODULES,
+    _KIND_CLASSIFIER_MODULES,
     _LEDGER_MODEL_NAMES,
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
@@ -510,8 +511,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
 
     Every screen must obtain an account's balance through
     ``app.services.balance_at``; only the seam and the engine cluster it
-    composes (balance_resolver, balance_calculator, account_projection,
-    net_worth_kernel) may call a balance producer directly. The
+    composes (balance_resolver, balance_calculator, net_worth_kernel) may
+    call a balance producer directly. The
     rule keys off the ENCLOSING module (``node.root().name``), so each case is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``)
     rather than the bare :func:`astroid.extract_node` the shape-only checkers
@@ -1439,6 +1440,50 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_functiondef(node)
 
+    def test_flags_unclassified_export_in_every_hand_scoped_module(self) -> None:
+        """The three HAND-SCOPED modules really are covered -- named literally.
+
+        Most of the registry's scope is DERIVED (``_ENGINE_CLUSTER_MODULES`` is
+        ``_BALANCE_SEAM_MODULES`` minus the seam), so dropping a module from the
+        W9906 allowlist automatically drops it from the completeness scope and
+        :meth:`test_rulings_cover_every_producer_defining_module` fires.  Three
+        module families have NO such derivation -- their scope is a hand-written
+        constant sitting a few lines from the registry entry it covers:
+
+        * ``_CASH_EVENT_SOURCE_MODULES`` (``cash_events`` / ``period_flows``, D1a)
+        * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
+
+        For those, the set-equality guard is SELF-ATTESTING: delete the registry
+        entry and empty the constant -- two adjacent edits in one file, which is
+        exactly the shape of the change that would do it -- and the suite stays
+        green.  Measured on this tree: **150 passed** with
+        ``account_projection`` dropped from both, and the balance-at-T probe that
+        motivated its entry then rated 10.00/10 again.
+
+        **So the module names below are written out LITERALLY, and that is the
+        point.**  Binding this loop to the constants would reproduce the hole one
+        level down: emptying a constant would make the loop vacuous instead of
+        failing.  A behavioural pin that names its subject cannot go quiet.
+        """
+        for module_name in (
+            "app.services.account_projection",
+            "app.services.cash_events",
+            "app.services.period_flows",
+        ):
+            node = self._function_def(
+                "def balance_on(account, target):\n    return None\n",
+                module_name,
+            )
+            with self.assertAddsMessages(
+                MessageTest(
+                    "shekel-unclassified-fenced-export",
+                    node=node,
+                    args=("balance_on",),
+                ),
+                ignore_position=True,
+            ):
+                self.checker.visit_functiondef(node)
+
     def test_rulings_cover_every_producer_defining_module(self) -> None:
         """The ruling registry scopes EXACTLY the producer-defining modules.
 
@@ -1453,6 +1498,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             | _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
             | _CASH_EVENT_SOURCE_MODULES
+            | _KIND_CLASSIFIER_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected
 
