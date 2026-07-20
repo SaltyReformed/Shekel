@@ -323,16 +323,12 @@ _FENCED_MODULE_RULINGS = {
     "app.services.net_worth_kernel": (_BALANCE_PRODUCERS, frozenset({
         # A transaction loader, not a balance.
         "load_account_period_transactions",
-        # A REDUCER over balance maps the caller already obtained through the
-        # seam: it sums given maps (asset-plus / liability-minus), it does not
-        # compute a balance from an account.
-        "sum_net_worth_at_period",
         # The loan's amortization ROWS -- no balance attached.  This is what the
-        # out-of-cluster consumers (the honest-history gate's first-payment date,
-        # the year-end + Schedule A interest hybrids) actually want, and handing
-        # them rows rather than the ``DebtSchedule`` bundle is what CLOSED the
-        # attribute hole: ``generate_debt_schedules`` is a producer now (below),
-        # so no consumer can reach ``DebtSchedule.current_balance`` at all.
+        # out-of-cluster consumer (the honest-history gate's first-payment
+        # date) actually wants, and handing it rows rather than the
+        # ``DebtSchedule`` bundle is what CLOSED the attribute hole:
+        # ``generate_debt_schedules`` is a producer now (below), so no consumer
+        # can reach the bundle's ``projection_seed`` balance at all.
         "debt_schedule_rows",
         # Interest EARNED per period -- a projection INPUT and an explanatory
         # row, not a balance-at-T figure.
@@ -595,7 +591,7 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "pre-first-data-point boundary rule; every new surface re-invented "
             "that boundary and shipped a balance bug at least once "
             "(docs/audits/balance_architecture/). The seam centralizes all four "
-            "per-kind rules, so consumers (routes, savings, year-end, "
+            "per-kind rules, so consumers (routes, savings, analytics, "
             "dashboards) must depend on it, never on a producer directly -- the "
             "SOLID dependency direction consumers -> seam -> engines. Only the "
             "seam and the engine cluster it composes (balance_resolver, "

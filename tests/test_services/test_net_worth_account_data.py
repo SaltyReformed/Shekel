@@ -2,12 +2,12 @@
 Shekel Budget App -- Net-Worth Account-Data Adapter Tests.
 
 Direct coverage for the shared :mod:`app.services.net_worth_account_data`
-bridge both net-worth consumers (savings cockpit, year-end summary) feed
-to ``net_worth_kernel.sum_net_worth_at_period``.  The asset-plus /
-liability-minus VALUE behavior is locked end-to-end by the cross-page
-balance oracle (its loan / secured cases exercise ``is_liability`` True);
-these tests pin the adapter's own contract: the missing-map skip and the
-degenerate-account-type guard.
+bridge the savings cockpit's net-worth producer reduces over (it was shared
+with the year-end summary until plan step F2 deleted that package).  The
+asset-plus / liability-minus VALUE behavior is locked end-to-end by the
+cross-page balance oracle (its loan / secured cases exercise
+``is_liability`` True); these tests pin the adapter's own contract: the
+missing-map skip and the degenerate-account-type guard.
 """
 
 from collections import OrderedDict

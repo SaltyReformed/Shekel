@@ -2186,8 +2186,8 @@ class TestLiabilityOwedAtDates:
 
         The rule that used to live in the horizon consumer.  Also pins the sign
         convention: a card's cash balance is NEGATIVE, and the seam returns the
-        POSITIVE owed magnitude (matching ``sum_net_worth_at_period``'s
-        ``total -= abs(bal)``).
+        POSITIVE owed magnitude (matching the net-worth reduction's
+        liability-minus rule, ``abs(bal)`` subtracted from the asset side).
         """
         with app.app_context():
             user_id = seed_user["user"].id

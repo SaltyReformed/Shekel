@@ -2,14 +2,15 @@
 Shekel Budget App -- Net-Worth Kernel (shared per-account balance chain).
 
 The single, Flask-free home for the per-account balance-map projection
-chain that BOTH the year-end summary's net-worth section and the savings
-cockpit's net-worth producer build on.  Promoted out of
-``year_end_summary_service._balances`` (Loop B Phase 1) so the two
-surfaces compute net worth from one set of math instead of two copies
-that could drift: the same dispatch (amortizing loan schedule / interest
-calculator / investment growth engine / canonical entries-aware
-resolver), the same investment forward/reverse growth sub-chain, and the
-same asset-plus / liability-minus net-worth sum.
+chain the ``balance_at`` seam dispatches through.  Promoted out of
+``year_end_summary_service._balances`` (Loop B Phase 1) when the year-end
+summary and the savings cockpit computed net worth from two copies of the
+same math that could drift; the year-end consumer has since been deleted
+(plan step F2), so what remains here is ONE dispatch (interest calculator /
+investment growth engine / appreciation growth curve / canonical
+entries-aware resolver) plus the investment forward/reverse growth
+sub-chain.  AMORTIZING loans are NOT dispatched here: the seam reads its own
+``positions()``-based map for them (plan step C3b3).
 
 The cockpit's forward net-worth trend PROJECTS investment and retirement
 growth forward, so the investment growth sub-chain lives here too (the
@@ -22,11 +23,12 @@ is :class:`~decimal.Decimal`; ``float`` belongs only at a route's Chart.js
 serialization boundary, never here.
 
 The public producers take loose, per-account parameters (the single
-account's debt schedule, its :class:`~app.models.investment_params.InvestmentParams`,
-its adapted deductions, and the engine gross-biweekly) rather than the
-year-end package's ``_ProjectionInputs`` bundle, so neither consumer has
-to construct that year-end-specific value object to call the kernel.  The
-year-end adapter unpacks its bundle per account at the call site.
+account's :class:`~app.models.investment_params.InvestmentParams`, its
+adapted deductions, and the engine gross-biweekly) rather than a caller's
+bundle, so a consumer need not construct a value object to call the kernel.
+:func:`account_balance_map_from_inputs` is the one entry that DOES take a
+bundle, duck-typed, and it slices it into those loose parameters here --
+beside the dispatcher it feeds.
 """
 
 from collections import OrderedDict
@@ -52,9 +54,12 @@ from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
 
-# The identity for the net-worth SUMS below -- unquantized on purpose, so it
-# imposes no exponent on what it accumulates.  Money RETURNED to a caller is
-# cent-quantized by the producer that computes it; this ZERO is only the seed.
+# The anchor-balance fallback for an account whose ``current_anchor_balance``
+# is NULL -- unquantized on purpose, so it imposes no exponent on the walk it
+# seeds.  Money RETURNED to a caller is cent-quantized by the producer that
+# computes it.  (It seeded the kernel's net-worth sum too, until that reducer
+# was deleted as dead code -- the live net-worth reduction lives with its
+# consumer in ``savings_dashboard_service._net_worth``.)
 ZERO = Decimal("0")
 
 
@@ -65,19 +70,20 @@ def load_account_period_transactions(
 ) -> list[Transaction]:
     """Return one account's non-deleted scenario transactions over periods.
 
-    The single home for the account/scenario/period transaction query
-    shared by the interest-bearing balance path
-    (:func:`base_account_balance_map`) and the year-end interest helpers
-    (``_compute_interest_for_year`` and ``_settled_net_by_period`` in
-    :mod:`._balances`).  All three select EVERY non-deleted row for the
-    account in the period span -- unlike
-    :func:`~app.services.balance_resolver.load_balance_transactions`,
-    which additionally drops Credit / Cancelled rows -- because their
-    downstream consumers (interest accrual and the settled-net walk)
-    apply their own status logic and need the full row set.
-    ``Transaction.status`` is ``lazy="joined"`` on the model, so the
-    settled-net walk reads ``txn.status.is_settled`` off these rows
-    without an N+1 and without an explicit eager-load.
+    The account/scenario/period transaction query behind the
+    interest-layered walk (:func:`_account_interest_projection`, its only
+    caller today).  It selects EVERY non-deleted row for the account in the
+    period span -- unlike
+    :func:`~app.services.balance_resolver.load_balance_transactions`, which
+    additionally drops Credit / Cancelled rows -- because the interest
+    accrual downstream applies its own status logic and needs the full row
+    set.  ``Transaction.status`` is ``lazy="joined"`` on the model, so a
+    consumer reads ``txn.status.is_settled`` off these rows without an N+1
+    and without an explicit eager-load.
+
+    It was shared with the year-end summary's interest and settled-net
+    helpers until plan step F2 deleted that package, which is why it is a
+    named function rather than an inline query.
 
     Args:
         account_id: The account whose transactions to load.
@@ -98,33 +104,6 @@ def load_account_period_transactions(
         )
         .all()
     )
-
-
-def sum_net_worth_at_period(
-    period_id: int, account_data: list[dict],
-) -> Decimal:
-    """Sum net worth across all accounts at a given period.
-
-    Assets add their balance; liabilities subtract their magnitude
-    (``-abs(bal)``), so a liability stored as a positive owed amount and
-    one stored as a negative both reduce net worth by the same amount.
-
-    Args:
-        period_id: The pay period ID to look up balances for.
-        account_data: List of dicts with ``balances`` (period_id ->
-            ``Decimal``) and ``is_liability`` (``bool``).
-
-    Returns:
-        Net worth at the period as a ``Decimal``.
-    """
-    total = ZERO
-    for data in account_data:
-        bal = data["balances"].get(period_id, ZERO)
-        if data["is_liability"]:
-            total -= abs(bal)
-        else:
-            total += bal
-    return total
 
 
 @dataclass(frozen=True)
@@ -254,10 +233,11 @@ def debt_schedule_rows(
     """Return each debt account's amortization ROWS -- no balance attached.
 
     The accessor every out-of-cluster consumer of the loan schedules reads,
-    instead of :func:`generate_debt_schedules`.  They all want the same thing --
-    the :class:`AmortizationRow` list, for a first-payment date (the net-worth
-    trend's honest-history gate) or a yearly interest sum (the year-end and
-    Schedule A mortgage-interest hybrids) -- and none of them wants a balance.
+    instead of :func:`generate_debt_schedules`.  They want the
+    :class:`AmortizationRow` list -- today, the net-worth trend's
+    honest-history gate needs a first-payment date -- and none of them wants a
+    balance.  (The year-end and Schedule A interest hybrids read it too until
+    plan steps F2 / C3c folded them onto the balance seam.)
 
     Handing them rows rather than the :class:`DebtSchedule` bundle is what keeps
     a balance out of an out-of-cluster consumer's hands.  W9906 binds on function
@@ -310,9 +290,9 @@ def _account_interest_projection(
     (:func:`interest_by_period_for_account`, which keeps the interest and
     discards the balances).  Folding the two into one helper keeps the
     transaction-scope query, the anchor-balance coalesce, and the
-    calculator kwargs identical between the balance figure a screen
-    renders and the interest figure the year-end savings-progress section
-    reports -- they cannot drift onto two copies of the same walk (R0801).
+    calculator kwargs identical between the balance figure a screen renders
+    and the interest figure the account-detail chip reports -- they cannot
+    drift onto two copies of the same walk (R0801).
 
     Args:
         account: The interest-bearing account.  Its ``current_anchor_*``
@@ -325,8 +305,8 @@ def _account_interest_projection(
             :class:`~app.models.interest_params.InterestParams` (APY +
             compounding frequency) the calculator layers interest from.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
-            forwarded verbatim to the calculator; ``None`` (the year-end
-            interest path) preserves the stored-amount behavior.
+            forwarded verbatim to the calculator; ``None`` (the
+            interest-earned path) preserves the stored-amount behavior.
 
     Returns:
         ``(balances, interest_by_period)`` -- the calculator's two outputs
@@ -423,21 +403,23 @@ def interest_by_period_for_account(
 ) -> dict[int, Decimal]:
     """Return period_id -> interest earned for an interest-bearing account.
 
-    The engine-cluster accessor the year-end savings-progress section
-    (:func:`app.services.year_end_summary_service._balances._compute_interest_for_year`)
-    reads instead of calling
+    The engine-cluster accessor the account-detail page's "Interest, next
+    12 mo" chip (``app.routes.accounts.detail``, its only caller) reads
+    instead of calling
     :func:`~app.services.balance_calculator.calculate_balances_with_interest`
     directly: interest EARNED is rich projection detail, not a
     balance-at-T figure, so it is not a ``balance_at`` seam concern, yet
     the producer that computes it is fenced to the engine cluster.  This
     accessor keeps that producer call inside the kernel (where it belongs
     with :func:`base_account_balance_map`, which shares the same
-    :func:`_account_interest_projection` walk) while the year-end consumer
-    sees only the interest map it needs.
+    :func:`_account_interest_projection` walk) while the consumer sees only
+    the interest map it needs.  (Its original caller was the year-end
+    savings-progress section, deleted at plan step F2.)
 
     A None-anchor account earns no projectable interest (the walk produces
     no balances to layer interest on), returned as the empty map so the
-    caller's year-filtered sum is ``Decimal("0")`` -- matching the prior
+    caller's windowed sum (``_interest_next_year``, a rolling next-12-months
+    window -- not a calendar year) is ``Decimal("0")`` -- matching the prior
     inline ``current_anchor_period_id is None -> ZERO`` early-out.
 
     Args:
@@ -610,10 +592,10 @@ def account_balance_map_from_inputs(
     :func:`build_account_balance_map` needs for *account* out of a pre-assembled
     bundle and calls it.  Kept here in the engine cluster, beside the dispatcher
     it feeds, so the bundle-field-to-kwarg slice rule lives with
-    :func:`build_account_balance_map` rather than in the seam.  (Until the
-    year-end summary was rerouted through the seam its adapter sliced an
-    identical bundle here too -- the R0801 the shared site closed; the seam is
-    now the sole caller.)
+    :func:`build_account_balance_map` rather than in the seam.  The seam is
+    its sole caller.  (The year-end summary's adapter sliced an identical
+    bundle here too -- the R0801 this shared site closed -- until that package
+    was deleted at plan step F2.)
 
     ``inputs`` is duck-typed: any bundle exposing ``investment_params_map``,
     ``deductions_by_account``, and ``salary_gross_biweekly`` qualifies (the
@@ -632,8 +614,8 @@ def account_balance_map_from_inputs(
         inputs: The per-set projection bundle (see the duck-typed contract
             above).
         amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
-            forwarded to the kernel's cash path; ``None`` (year-end and the
-            net-worth batch) never applies live overrides.
+            forwarded to the kernel's cash path; ``None`` (the net-worth
+            batch) never applies live overrides.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None when the

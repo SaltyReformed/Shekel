@@ -31,11 +31,13 @@ place, documented and tested together (the documented-once contract):
 The seam does NOT reimplement any of that math.  It assembles each
 account's inputs (its debt schedule, investment params, deductions, and the
 engine gross-biweekly) from the shared loaders and DELEGATES the per-kind
-dispatch to :func:`app.services.net_worth_kernel.build_account_balance_map`
--- the one dispatcher both the savings cockpit and the year-end summary
-already build on.  Centralising the dispatch the two existing dispatchers
-duplicate is the whole point: a third copy is exactly the duplication this
-work exists to kill.
+dispatch -- to
+:func:`app.services.net_worth_kernel.build_account_balance_map` for every
+NON-loan kind, and to its own ``positions()`` fold for an AMORTIZING loan,
+whose producer sits ABOVE the kernel and so cannot be dispatched from inside
+it (plan step C3b3).  Centralising a dispatch that two consumers had each
+grown their own copy of is the whole point: a third copy is exactly the
+duplication this work exists to kill.
 
 **Five shapes, one seam.**
 
@@ -44,7 +46,7 @@ work exists to kill.
   :func:`investment_seed_map` / :func:`investment_growth_since_anchor`) dispatch
   per account kind -- a HYSA accrues interest, a loan walks its amortization
   schedule, an investment / property compounds -- the view the NET-WORTH
-  surfaces (savings cockpit, year-end summary, dashboards) want.  See
+  surfaces (the savings cockpit and the dashboards) want.  See
   :mod:`._kind_correct`.
 * The CASH-FLOW entries (:func:`cash_balance_map`, :func:`cash_balance_at`,
   :func:`cash_daily_balance_series`) always return the account's pure
@@ -82,7 +84,7 @@ public surface -- consumers keep importing exactly as before
 W9906 fence follows automatically: its allowlist prefix-matches, so every
 ``app.services.balance_at.*`` submodule stays inside the seam.
 
-Dependency direction (SOLID).  Consumers (routes, savings, year-end,
+Dependency direction (SOLID).  Consumers (routes, savings, analytics,
 dashboards) depend on this seam; the seam depends only on the engine cluster
 (``net_worth_kernel`` / ``net_worth_investment`` / ``account_projection`` /
 ``balance_resolver`` / ``daily_balance_series`` / ``projection_inputs`` /
@@ -102,11 +104,16 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
 
 Liability classification is NOT a balance concern: the balance MAPS here are
-balances only, and the net-worth sum's asset-plus / liability-minus rule lives
-in :func:`~app.services.net_worth_kernel.sum_net_worth_at_period`.
-(:func:`liability_owed_at_dates` is the one entry that takes a caller's
-already-classified liability set and returns owed MAGNITUDES, matching that
-same sum's ``abs`` convention.)
+balances only, and the net-worth reduction lives with its consumers in
+``savings_dashboard_service``.  Two of them turn a signed balance into an owed
+MAGNITUDE with ``abs`` -- ``_net_worth.compute_net_worth_today`` (the hero) and
+``_net_worth._sum_composition_at_period`` (per-period, banded; the net-worth
+series derives assets / liabilities / net from those bands).  The third,
+``_horizon._liability_band``, does NOT: it takes its magnitudes from
+:func:`liability_owed_at_dates` below, which is the one seam entry that accepts
+a caller's already-classified liability set and returns owed magnitudes on that
+same ``abs`` convention.  All three classify asset-vs-liability through the one
+``net_worth_account_data.is_liability_account`` home.
 """
 
 from ._cash_flow import (

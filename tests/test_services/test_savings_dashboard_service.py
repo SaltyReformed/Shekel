@@ -2801,6 +2801,53 @@ class TestNetWorthHero:
             assert nw["total_liabilities"] == Decimal("240000.00")
             assert nw["total_liabilities"] > Decimal("0.00")
 
+    def test_a_negative_balance_liability_still_adds_its_magnitude(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A liability whose balance is stored NEGATIVE adds its magnitude.
+
+        The reduction is ``total_liabilities += abs(balance)``, so the sign a
+        liability happens to be stored with must not change net worth.  A
+        Credit Card's cash balance is negative (money owed leaves the
+        account), unlike a mortgage's positive owed figure -- so this is the
+        shape that actually exercises the ``abs``.  Every other liability in
+        this file's fixtures is stored POSITIVE, where ``abs`` is a no-op and
+        a regression to a bare ``+= balance`` would pass green.
+
+        Checking ($1,000) is the only asset; the card anchors at -$500.00:
+          total_assets       = 1000.00
+          total_liabilities  = abs(-500.00) = 500.00
+          net_worth          = 1000.00 - 500.00 = 500.00
+
+        Without the ``abs`` the card would ADD to net worth
+        (1000.00 - -500.00 = 1500.00), reporting a debt as an asset.
+        """
+        with app.app_context():
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None).one()
+            )
+            card = account_service.create_account(account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cc_type.id,
+                name="Visa",
+                anchor_balance=Decimal("-500.00"),
+                anchor_period_id=seed_periods[0].id,
+            ))
+            db.session.add(card)
+            db.session.commit()
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # Seed Checking only.
+            assert nw["total_assets"] == Decimal("1000.00")
+            # abs(-500.00) = 500.00 -- the magnitude, not the signed balance.
+            assert nw["total_liabilities"] == Decimal("500.00")
+            # 1000.00 - 500.00 = 500.00 (NOT 1500.00, the no-abs answer).
+            assert nw["net_worth"] == Decimal("500.00")
+
     def test_liquid_excludes_non_liquid(
         self, app, db, seed_user, seed_periods,
     ):
@@ -2894,6 +2941,56 @@ class TestNetWorthSeries:
                 assert series["net"][i] == (
                     series["assets"][i] - series["liabilities"][i]
                 )
+
+    def test_series_liability_band_holds_a_negative_balance_magnitude(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A negative-balance liability adds its MAGNITUDE to the series band.
+
+        The per-period reduction (``_sum_composition_at_period``) has its own
+        ``abs`` -- a SECOND site from the hero's -- and this is what pins it.
+        A Credit Card's cash balance is stored negative, and it carries no
+        amortization schedule, so it holds flat at its anchor across every
+        point:
+          liabilities[i]                = abs(-500.00) = 500.00
+          composition["liability"][i]   = 500.00
+          net[i]                        = 1000.00 - 500.00 = 500.00
+
+        Without the ``abs`` the band would read -500.00 and net[i] would read
+        1500.00 -- the card ADDING to net worth -- while the today hero on the
+        SAME page still read 500.00.  Two producers contradicting each other
+        on one screen is the failure this arc exists to end, so both ``abs``
+        sites need their own control; the hero's is
+        ``test_a_negative_balance_liability_still_adds_its_magnitude``.
+        """
+        with app.app_context():
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None).one()
+            )
+            card = account_service.create_account(account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cc_type.id,
+                name="Visa",
+                anchor_balance=Decimal("-500.00"),
+                anchor_period_id=seed_periods[0].id,
+            ))
+            db.session.add(card)
+            db.session.commit()
+
+            series = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]["series"]
+
+            assert len(series["liabilities"]) > 0
+            for i in range(len(series["liabilities"])):
+                # abs(-500.00) = 500.00 at every point (the card holds flat).
+                assert series["liabilities"][i] == Decimal("500.00")
+                assert series["composition"]["liability"][i] == Decimal(
+                    "500.00",
+                )
+                # Seed Checking 1000.00 - 500.00 = 500.00 (NOT 1500.00).
+                assert series["net"][i] == Decimal("500.00")
 
     def test_current_period_point_equals_hero_for_liquid_only(
         self, app, db, seed_user, seed_periods,

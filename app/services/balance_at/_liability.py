@@ -114,8 +114,9 @@ def liability_owed_at_dates(
     prevent.
 
     Sign convention: the result is a POSITIVE owed magnitude per date, matching
-    :func:`~app.services.net_worth_kernel.sum_net_worth_at_period`'s
-    liability-minus rule (``total -= abs(bal)``).  *current_balances* may be
+    the net-worth reduction's liability-minus rule (a liability contributes
+    ``abs(bal)``, subtracted from the asset side -- see
+    ``savings_dashboard_service._net_worth``).  *current_balances* may be
     signed either way (a loan resolves positive-owed, a Credit Card's cash
     balance is negative); ``abs`` is applied here.
 

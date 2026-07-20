@@ -2,12 +2,25 @@
 Shekel Budget App -- Net-Worth Kernel Tests (Loop B Phase 1)
 
 Direct coverage for the shared :mod:`app.services.net_worth_kernel`
-promoted out of the year-end summary package: the asset-plus /
-liability-minus net-worth sum, and the per-account balance-map dispatch
-over the canonical entries-aware resolver.  The year-end net-worth tests
-in ``test_year_end_summary_service.py`` are the behavior-preserving
-no-drift guard for the move; these tests pin the kernel's public
-contract independently of either consumer.
+promoted out of the year-end summary package: the per-account balance-map
+dispatch over the canonical entries-aware resolver.  These tests pin the
+kernel's public contract independently of its consumers.
+
+The asset-plus / liability-minus net-worth reduction is NOT covered here.
+It lives with its consumer in ``savings_dashboard_service._net_worth``
+(``_sum_composition_at_period`` / ``compute_net_worth_today``) and is
+covered on the live path by ``test_savings_dashboard_service.py``:
+``test_assets_minus_liabilities`` and
+``test_total_liabilities_is_positive_magnitude`` for the reduction, plus one
+control per ``abs`` site for a negatively-stored liability --
+
+    hero            test_a_negative_balance_liability_still_adds_its_magnitude
+    per-period band test_series_liability_band_holds_a_negative_balance_magnitude
+
+The kernel's own
+``sum_net_worth_at_period`` was deleted as dead code: it had no production
+caller, and its unit tests graded it against hand-built dicts rather than
+against anything a screen renders.
 """
 
 from decimal import Decimal
@@ -15,64 +28,6 @@ from decimal import Decimal
 from app.services import net_worth_kernel, pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.resolution_context import BalanceContext
-
-
-class TestSumNetWorthAtPeriod:
-    """Tests for ``sum_net_worth_at_period`` (asset-plus / liability-minus)."""
-
-    def test_asset_minus_abs_liability(self):
-        """Assets add their balance; liabilities subtract their magnitude.
-
-        One asset at 1,000.00 and one liability at 250.00 for period id 5:
-          1000.00 - abs(250.00) = 750.00.
-        """
-        account_data = [
-            {"balances": {5: Decimal("1000.00")}, "is_liability": False},
-            {"balances": {5: Decimal("250.00")}, "is_liability": True},
-        ]
-        # 1000.00 - abs(250.00) = 750.00
-        assert net_worth_kernel.sum_net_worth_at_period(
-            5, account_data,
-        ) == Decimal("750.00")
-
-    def test_liability_stored_negative_still_subtracts_magnitude(self):
-        """A liability stored as a negative balance subtracts its magnitude.
-
-        ``-abs(bal)`` makes the sign of the stored liability irrelevant:
-        a liability at -250.00 reduces net worth by 250.00, identically to
-        one stored at +250.00:
-          1000.00 - abs(-250.00) = 750.00.
-        """
-        account_data = [
-            {"balances": {5: Decimal("1000.00")}, "is_liability": False},
-            {"balances": {5: Decimal("-250.00")}, "is_liability": True},
-        ]
-        # 1000.00 - abs(-250.00) = 750.00
-        assert net_worth_kernel.sum_net_worth_at_period(
-            5, account_data,
-        ) == Decimal("750.00")
-
-    def test_missing_period_contributes_zero(self):
-        """An account with no balance at the period contributes zero.
-
-        The asset has 400.00 at period 5 but the liability map has no key
-        5 (only key 9), so the liability contributes its ZERO default:
-          400.00 - abs(0) = 400.00.
-        """
-        account_data = [
-            {"balances": {5: Decimal("400.00")}, "is_liability": False},
-            {"balances": {9: Decimal("100.00")}, "is_liability": True},
-        ]
-        # 400.00 - abs(0) = 400.00 (period 5 absent from the liability map)
-        assert net_worth_kernel.sum_net_worth_at_period(
-            5, account_data,
-        ) == Decimal("400.00")
-
-    def test_no_accounts_is_zero(self):
-        """An empty account list sums to zero."""
-        assert net_worth_kernel.sum_net_worth_at_period(
-            5, [],
-        ) == Decimal("0")
 
 
 class TestBuildAccountBalanceMap:
@@ -131,18 +86,21 @@ class TestInterestByPeriodForAccount:
     """Tests for ``interest_by_period_for_account`` (interest-earned accessor).
 
     The interest VALUE behavior (an account's per-period accrual matching
-    the calculator) is locked end-to-end by the HYSA savings-progress
-    tests in ``test_year_end_summary_service.py``, the accessor's only
-    consumer.  This pins the contract those tests cannot reach: the
-    no-anchor short-circuit that returns the empty map.
+    the calculator) is locked end-to-end by the HYSA interest tests in
+    ``test_balance_at.py`` and the account-detail route tests in
+    ``test_accounts.py`` -- the accessor's only consumer is that page's
+    "Interest, next 12 mo" chip.  (It was the year-end savings-progress
+    section until plan step F2 deleted that package.)  This pins the
+    contract those tests cannot reach: the no-anchor short-circuit that
+    returns the empty map.
     """
 
     def test_no_anchor_period_returns_empty(self, app, db, seed_user):
         """An account with no anchor period earns no projectable interest.
 
         A stand-in with ``current_anchor_period_id = None`` short-circuits
-        before any engine call to the empty map, so the year-end consumer's
-        year-filtered sum is ``Decimal("0")`` -- the prior inline
+        before any engine call to the empty map, so the consumer's windowed
+        sum is ``Decimal("0")`` -- the prior inline
         ``current_anchor_period_id is None -> ZERO`` early-out, preserved.
         """
         # Pylint: import-outside-toplevel -- deferred so the stand-in type

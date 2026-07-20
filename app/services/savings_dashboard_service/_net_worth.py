@@ -8,11 +8,16 @@ series.  No Flask imports; every function takes
 plain data (the projected account dicts, ORM rows, the loaded parameter
 maps) and returns plain ``Decimal`` / ``dict`` data the route serializes.
 
-The per-account balance projection -- including the investment / 401k
-growth sub-chain that the forward trend projects forward -- comes from
-the shared :mod:`app.services.net_worth_kernel`, the same math the
-year-end net-worth section consumes, so the cockpit trend and the
-year-end trend cannot drift onto two copies of it.
+Every per-account balance the NET-WORTH reduction reads arrives through the
+:mod:`app.services.balance_at` seam, so that path computes no balance of its
+own: the seam dispatches non-loan kinds to
+:mod:`app.services.net_worth_kernel` (including the investment / 401k growth
+sub-chain the forward trend projects forward) and answers an AMORTIZING loan
+from its own ``positions()`` fold (plan step C3b3).  What this module owns is
+the REDUCTION over those balances -- asset-plus / liability-minus -- not the
+balances themselves.  (:func:`compute_property_equity` is the exception that
+proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
+delegates to :mod:`app.services.home_equity_service`.)
 
 The dense per-account balance maps are built ONCE (over ALL periods, so
 ``balance_resolver`` always has its anchor seed) and shared by both the
@@ -31,10 +36,10 @@ from app.services.account_projection import (
     classify_account,
 )
 # The asset/liability rule and the net-worth account-data builder live in
-# the shared adapter so this cockpit and the year-end summary assemble
-# net-worth data one way; ``_is_liability_account`` keeps its local name
-# (this module's other net-worth helpers call it) as an alias over the one
-# definition.
+# the shared adapter so every net-worth surface -- these today figures, the
+# trend below, and the Horizon band in ``_horizon`` -- classifies an account
+# one way; ``_is_liability_account`` keeps its local name (this module's
+# other net-worth helpers call it) as an alias over the one definition.
 from app.services.net_worth_account_data import (
     is_liability_account as _is_liability_account,
     to_net_worth_account_data,
@@ -120,8 +125,7 @@ def build_account_net_worth_maps(
     :func:`compute_net_worth_series` (via
     :func:`_sum_composition_at_period`) and
     :func:`compute_sparklines` consume.  Accounts with no anchor period (no
-    dense map) are omitted by the seam, matching the year-end section's
-    ``balances is None`` skip.
+    dense map) are omitted by the seam and skipped here.
 
     Args:
         accounts: The user's active accounts.
@@ -137,8 +141,9 @@ def build_account_net_worth_maps(
         is_liability: bool}`` dicts, one per account that has a dense map,
         in ``accounts`` order.  The ``account_id`` lets the per-account
         sparkline producer (:func:`compute_sparklines`) reuse these maps, so
-        the sparklines and the net-worth math read one projection; the
-        net-worth reducers ignore it.
+        the sparklines and the net-worth math read one projection, and
+        :func:`_sum_composition_at_period` keys each account's composition
+        band off it.
     """
     if ctx.scenario is None:
         return []
@@ -163,11 +168,12 @@ def _sum_composition_at_period(
     liability band with a positive magnitude even if its category map entry
     were missing.
 
-    Summing the asset-side bands and subtracting the liability band
-    reproduces :func:`app.services.net_worth_kernel.sum_net_worth_at_period`
-    for the same period and maps (asset ``+bal`` / liability ``-abs(bal)``),
-    so the composition split reconciles to the series' ``assets`` /
-    ``liabilities`` / ``net`` by construction.
+    This is the ONE per-period net-worth reduction.  Summing the asset-side
+    bands and subtracting the liability band is exactly asset ``+bal`` /
+    liability ``-abs(bal)``, and :func:`compute_net_worth_series` derives its
+    ``assets`` / ``liabilities`` / ``net`` from these bands rather than
+    re-reducing the maps -- so the composition split reconciles to the series
+    by construction, not by two producers agreeing.
 
     Args:
         period_id: The pay period id to read balances at.
@@ -288,8 +294,8 @@ def _honest_history_start_index(
       (:func:`_loan_schedule_start_index`).
 
     INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
-    are defined at every period by the same modeling the year-end summary
-    uses, so they do not constrain the window.
+    are defined at every period by the seam's own modeling, so they do not
+    constrain the window.
 
     Returns the maximum gating index -- the earliest period at or after
     which every cash account has a real balance AND every loan is within
