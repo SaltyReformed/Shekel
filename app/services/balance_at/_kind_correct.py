@@ -20,7 +20,6 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services import (
     cash_ledger,
-    net_worth_investment,
     pay_period_service,
 )
 from app.services.account_projection import (
@@ -32,7 +31,7 @@ from app.utils.money import round_money
 
 from app.services.resolution_context import BalanceContext
 
-from . import _cash_engine
+from . import _cash_engine, _investment
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
 from ._positions import positions
 
@@ -308,7 +307,7 @@ def investment_seed_map(
     growth, re-growing the current period).
 
     The seam owns this read (delegating to
-    :func:`~app.services.net_worth_investment.investment_base_balance_map`) so
+    :func:`~app.services.balance_at._investment.investment_base_balance_map`) so
     that EVERY balance map -- the modeled one a screen DISPLAYS and the
     pre-growth one a chart SEEDS from -- flows through this one package, and the
     raw kernel producer stays fenced behind the W9906 seam checker.  A consumer
@@ -332,7 +331,7 @@ def investment_seed_map(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    return net_worth_investment.investment_base_balance_map(
+    return _investment.investment_base_balance_map(
         account, ctx.scenario, periods,
     )
 
@@ -347,7 +346,7 @@ def investment_growth_since_anchor(
     :func:`._inputs._assemble_inputs` the balance maps use -- so the
     decomposition reconciles with :func:`balance_map` to the cent -- and
     delegates to
-    :func:`~app.services.net_worth_investment.investment_growth_since_anchor`
+    :func:`~app.services.balance_at._investment.investment_growth_since_anchor`
     (its docstring owns the reconciliation contract).  ``None`` when the
     account has no investment params / anchor / post-anchor window; raises
     ``ValueError`` when ``scenario`` is None.
@@ -357,7 +356,7 @@ def investment_growth_since_anchor(
     params = inputs.investment_params_map.get(account.id)
     if params is None:
         return None
-    return net_worth_investment.investment_growth_since_anchor(
+    return _investment.investment_growth_since_anchor(
         account, params, ctx.scenario, periods,
         inputs.deductions_by_account.get(account.id, []),
         inputs.salary_gross_biweekly, current_period,

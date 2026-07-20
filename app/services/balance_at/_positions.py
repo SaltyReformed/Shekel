@@ -31,14 +31,14 @@ than walking the resolver's contractual schedule rows.  An overdue installment
 with NO settled record no longer pays the loan down (finding B-9, killed here),
 and a projected payment folds its LIVE cash, so the loan balance and the checking
 side move together.  The seed and the origination boundary still come from the
-resolver bundle (:func:`app.services.net_worth_kernel.generate_debt_schedules`),
+resolver bundle (:func:`app.services.balance_at._kernel.generate_debt_schedules`),
 and the plan is memoized on the read pass's context
 (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) so one build
 serves every forward date and every producer that reads it.
 
 **Why here, and not in the ``loan_ledger`` leaf.**  Section 3's end-state has the
 loan ledger answering a date on its own, but the forward half composes the
-resolver's seed (:func:`app.services.net_worth_kernel.generate_debt_schedules`)
+resolver's seed (:func:`app.services.balance_at._kernel.generate_debt_schedules`)
 with the seam-level plan (:func:`~app.services.balance_at._plan.loan_plan`, which
 reads the resolver, the escrow lines, the projected shadows, and their live cash)
 -- all above the pure leaf.  Composing them is a SEAM responsibility, not a leaf
@@ -61,10 +61,10 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import net_worth_kernel
 from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
 
+from . import _kernel
 from ._plan import (
     fold_forward,
     memoized_plan,
@@ -117,14 +117,14 @@ def _forward_seed(account: Account, ctx: BalanceContext, caller: str) -> Decimal
         caller: The public function's name, for the fail-loud message.
 
     Returns:
-        The loan's :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`.
+        The loan's :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`.
 
     Raises:
         ValueError: When ``scenario`` is None, or when *account* is not a
             configured loan.
     """
     require_scenario(ctx)
-    debt_schedule = net_worth_kernel.generate_debt_schedules(
+    debt_schedule = _kernel.generate_debt_schedules(
         [account], ctx,
     ).get(account.id)
     if debt_schedule is None:
@@ -154,7 +154,7 @@ def positions(
       forward PLAN fold** (:func:`~app.services.balance_at._plan.fold_forward` over
       the memoized :meth:`~app.services.resolution_context.BalanceContext.loan_plan`)
       -- the confirmed-present seed
-      (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`) folded
+      (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`) folded
       forward over the loan's projected payment records and contractual synthesis,
       gated at ``owed_from`` (the loan owes ``0.00`` before it originates).  A
       not-yet-originated loan has no confirmed past for the fold to own, so the plan
@@ -188,7 +188,7 @@ def positions(
             here).
     """
     require_scenario(ctx)
-    debt_schedule = net_worth_kernel.generate_debt_schedules(
+    debt_schedule = _kernel.generate_debt_schedules(
         [account], ctx,
     ).get(account.id)
     if debt_schedule is None:
@@ -335,7 +335,7 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     """Return *account*'s DERIVED payoff date -- the date its balance folds to zero.
 
     The payoff-date sibling of :func:`positions`: it composes the SAME confirmed
-    present seed (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`)
+    present seed (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`)
     and the SAME memoized forward plan
     (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) and folds
     them to zero (:func:`~app.services.balance_at._plan.plan_payoff_date`), so the

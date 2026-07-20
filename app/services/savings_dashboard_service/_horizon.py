@@ -288,7 +288,7 @@ def _retirement_investment_bands(
     The employer-contribution base is held CONSTANT (``employer_salary_basis``
     is ``None``), which is what the ruled oracle used and what every
     net-worth consumer does -- the ``2 years`` band's investment growth
-    (``net_worth_investment._forward_project_rows`` ->
+    (``balance_at._investment._forward_project_rows`` ->
     ``growth_engine.project_balance`` with no ``salary_basis``) keeps the
     constant base too, so the Horizon retirement band and the ``2 years``
     retirement band agree at their shared today point and share one growth

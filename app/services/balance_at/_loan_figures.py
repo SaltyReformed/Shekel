@@ -22,7 +22,7 @@ carries no balance, so a consumer holding one cannot render a wrong balance even
 by accident.  A consumer that wants a loan's balance has exactly one way to get
 it -- :func:`~app.services.balance_at.balance_at` -- which is the point.  This is
 the same "do not hand ``current_balance`` to out-of-cluster callers" move that
-:func:`~app.services.net_worth_kernel.debt_schedule_rows` makes for the
+:func:`~app.services.balance_at.debt_schedule_rows` makes for the
 ``DebtSchedule`` bundle (``followup_debt_schedule_attribute_fence.md``).
 
 ``is_paid_off`` lives here, not in a consumer, for the same reason: it is a

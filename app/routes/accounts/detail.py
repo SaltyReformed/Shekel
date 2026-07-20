@@ -61,7 +61,6 @@ from app.services import (
     balance_at,
     cash_ledger,
     home_equity_service,
-    net_worth_kernel,
     pay_period_service,
     property_equity_chart,
 )
@@ -273,7 +272,7 @@ def _cash_projection(
             balances = balance_at.balance_map(
                 account, balance_ctx, all_periods,
             ) or {}
-            interest_by_period = net_worth_kernel.interest_by_period_for_account(
+            interest_by_period = balance_at.interest_by_period_for_account(
                 account, scenario, all_periods, params,
             )
     elif scenario is not None and all_periods:

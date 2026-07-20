@@ -46,10 +46,11 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.balance_at import _calculator, _cash_engine
 from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
+
+from . import _calculator, _cash_engine, _investment
 
 # The anchor-balance fallback for an account whose ``current_anchor_balance``
 # is NULL -- unquantized on purpose, so it imposes no exponent on the walk it
@@ -531,18 +532,14 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
 
     # Investment accounts: use the growth engine.  The base balance
     # feeding the projection comes from the canonical entries-aware
-    # producer (E-25 / CRIT-01 / R-1).  The investment growth sub-chain was
-    # extracted to ``net_worth_investment`` (module-size ceiling); it composes
-    # this kernel's ``investment_base_balance_map`` seed, so the dispatch is a
-    # call-time import (the sub-chain imports back from here).
+    # producer (E-25 / CRIT-01 / R-1).  The investment growth sub-chain
+    # (``_investment``, extracted at the module-size ceiling) composes this
+    # kernel's ``investment_base_balance_map`` seed; it is a plain sibling
+    # import now that both live in the seam package (it imports nothing back,
+    # so there is no cycle -- the reason the old cross-module lazy import is
+    # gone, plan step D1d).
     if kind is AccountProjectionKind.INVESTMENT and investment_params is not None:
-        # Pylint: ``import-outside-toplevel`` -- lazy import so the static
-        # import graph carries no ``net_worth_kernel -> net_worth_investment``
-        # cycle at module load (the sub-chain imports back from here).
-        from app.services.net_worth_investment import (  # pylint: disable=import-outside-toplevel
-            build_investment_balance_map,
-        )
-        return build_investment_balance_map(
+        return _investment.build_investment_balance_map(
             account, investment_params, ctx.scenario, periods,
             deductions, salary_gross_biweekly,
         )
@@ -551,16 +548,11 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     # compounds forward at its annual rate.  The rate rides on the
     # account's eager ``asset_appreciation_params`` backref, so no new
     # dispatch kwarg is needed; the helper flat-carries when the params
-    # row is absent.  Same call-time import as the investment branch: the
-    # growth builders live in ``net_worth_investment`` (which imports back).
+    # row is absent.  Same ``_investment`` sibling as the investment branch.
     if kind is AccountProjectionKind.APPRECIATING:
-        # Pylint: ``import-outside-toplevel`` -- lazy import breaks the
-        # ``net_worth_kernel -> net_worth_investment`` cycle, the same lazy
-        # import as the investment branch above.
-        from app.services.net_worth_investment import (  # pylint: disable=import-outside-toplevel
-            build_appreciation_balance_map,
+        return _investment.build_appreciation_balance_map(
+            account, ctx.scenario, periods,
         )
-        return build_appreciation_balance_map(account, ctx.scenario, periods)
 
     # Interest-bearing and plain accounts share the base path, and it is the
     # only branch that forwards ``amount_overrides``: the override map only

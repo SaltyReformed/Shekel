@@ -15,7 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from app.services import net_worth_kernel, savings_goal_service
+from app.services import balance_at, savings_goal_service
 from app.services.resolution_context import BalanceContext
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
@@ -470,7 +470,7 @@ def _build_trend_window(
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
     debt_schedules = (
-        net_worth_kernel.debt_schedule_rows(loan_accounts, core.balance_ctx)
+        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx)
         if core.balance_ctx.scenario is not None else {}
     )
     return build_trend_periods(

@@ -67,12 +67,12 @@ from collections.abc import Callable
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import net_worth_kernel
 from app.services.loan_ledger import LoanLedgerWalk, LoanPaymentSplit
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.resolution_context import BalanceContext
 from app.utils.dates import to_display_civil_date
 
+from . import _kernel
 from ._inputs import _require_scenario
 from ._plan import memoized_plan, plan_interest_in_year
 
@@ -254,7 +254,7 @@ def loan_interest_in_year(
             baseline must guard first).
     """
     _require_scenario(ctx)
-    debt_schedule = net_worth_kernel.generate_debt_schedules(
+    debt_schedule = _kernel.generate_debt_schedules(
         [account], ctx,
     ).get(account.id)
     if debt_schedule is None:

@@ -3873,7 +3873,7 @@ class TestCashDetailContext:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import net_worth_kernel  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,

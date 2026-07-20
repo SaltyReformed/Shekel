@@ -82,38 +82,29 @@ _BALANCE_PRODUCERS = frozenset({
     # balance has no choice but ``balance_at.balance_at`` -- which is the point.
     "generate_debt_schedules",
 })
-# Modules allowed to call a balance producer directly: the balance_at seam plus
-# the net-worth engine modules it composes but that still live OUTSIDE it (the
-# SOLID dependency direction -- consumers depend on the seam, the seam depends on
-# these engines). Listed by their FULLY QUALIFIED module name, matched exactly or
-# as a package prefix (see :func:`_module_in_allowlist`). The full path -- not the
-# basename -- is deliberate: a same-named module in another package (a
-# hypothetical ``app/routes/balance_at.py``) must NOT be exempted, or the fence
-# could be silently bypassed by a name collision (a false negative is the
-# dangerous mode for a fence). Every gate runs pylint from the repo root, so a
-# cluster module always resolves to ``app.services.<name>`` (``pylint app/``, the
-# per-edit hook on a single file, and pre-commit all agree); the prefix match
-# additionally keeps the seam's own PRIVATE producer submodules inside the fence.
+# Modules allowed to call a balance producer directly.  As of plan step D1d
+# (both commits shipped) that is EXACTLY the balance_at seam package: every
+# balance producer now lives inside it as a private submodule, so the allowlist
+# is ONE package key.  Matched exactly or as a package PREFIX (see
+# :func:`_module_in_allowlist`), so every ``app.services.balance_at.*`` submodule
+# -- the public view modules AND the private engine submodules
+# (``_kernel`` / ``_investment`` / ``_cash_engine`` / ``_calculator`` /
+# ``_daily_series``) that compose each other -- is inside the fence.  The full
+# path, not the basename, is deliberate: a same-named module in another package
+# (a hypothetical ``app/routes/balance_at.py``) must NOT be exempted, or the
+# fence could be silently bypassed by a name collision (a false negative is the
+# dangerous mode for a fence).  Every gate runs pylint from the repo root, so the
+# seam always resolves to ``app.services.balance_at`` (``pylint app/``, the
+# per-edit hook on a single file, and pre-commit all agree).
 #
-# **The CASH producers moved INTO the seam at plan step D1d** (``_cash_engine`` /
-# ``_calculator`` / ``_daily_series``): they are now covered by the
-# ``app.services.balance_at`` prefix and need no entry of their own -- a balance
-# producer that lives INSIDE the seam is exactly what the arc is building toward.
-# The net-worth engine (``net_worth_kernel`` / ``net_worth_investment``) still
-# calls them from outside and so stays on the list until it follows in the second
-# D1d commit, after which this list collapses to ``{app.services.balance_at}`` and
-# the fence becomes ONE package boundary (Phase D's endgame).
+# **This is Phase D's endgame shape reached:** the allowlist is no longer a hand
+# curated list of engine modules a producer could be added beside; it is the one
+# boundary D-gate will enforce structurally, after which the name-fence deletes
+# (plan step D3).  The out-of-cluster consumers that once reached a producer now
+# read the seam's own public entries (``debt_schedule_rows`` /
+# ``interest_by_period_for_account`` for the two that wanted the kernel's rows).
 _BALANCE_SEAM_MODULES = frozenset({
     "app.services.balance_at",
-    # The net-worth engine, still OUTSIDE the seam (moves in at the second D1d
-    # commit). ``net_worth_kernel`` runs the per-kind balance dispatch;
-    # ``net_worth_investment`` (extracted from it at its module-size ceiling)
-    # builds an investment account's modeled balance map (the kernel dispatches
-    # here) and the growth-since-anchor decomposition off the SAME forward
-    # projection. Both compose the cash producers now inside the seam, so they
-    # call across the package boundary until they join it.
-    "app.services.net_worth_kernel",
-    "app.services.net_worth_investment",
 })
 # ``account_projection`` came off THIS list at plan step D1b (it calls no
 # producer, so the exemption only ever permitted a bypass) and STAYED on the
@@ -253,8 +244,9 @@ _CONTEXT_LOAN_PRODUCERS = frozenset({
     "loan_walk",
 })
 _CONTEXT_LOAN_MODULES = frozenset({
+    # The seam package -- covers ``_kernel`` (was ``net_worth_kernel``, which
+    # composes the memo) via the prefix match since plan step D1d.
     "app.services.balance_at",
-    "app.services.net_worth_kernel",
     "app.services.resolution_context",
 })
 
@@ -302,13 +294,19 @@ _FENCED_CALL_SURFACES = (
 # ``income_amount``, ``resolve_anchor`` are all generic enough to collide) --
 # which is the same fail-open shape, one level down.  Each module owns its own
 # ruling.
+# The engine modules that still live OUTSIDE the seam.  As of plan step D1d
+# (both commits) this is EMPTY -- every balance producer moved into the seam --
+# so it contributes nothing to the registry key set below; it stays a derived
+# constant (``_BALANCE_SEAM_MODULES`` minus the seam) so a future engine added
+# back outside the seam is scoped automatically.
 _ENGINE_CLUSTER_MODULES = _BALANCE_SEAM_MODULES - frozenset({
     "app.services.balance_at",
 })
-# The CASH balance producers, now PRIVATE submodules of the seam (plan step
-# D1d).  ``balance_resolver`` / ``balance_calculator`` / ``daily_balance_series``
-# moved to ``balance_at._cash_engine`` / ``._calculator`` / ``._daily_series``, so
-# their W9909 rulings TRAVEL with them (finding N-31) rather than deleting.  The
+# The balance producers, now PRIVATE submodules of the seam (plan step D1d, both
+# commits).  ``balance_resolver`` / ``balance_calculator`` / ``daily_balance_series``
+# moved to ``balance_at._cash_engine`` / ``._calculator`` / ``._daily_series``, and
+# ``net_worth_kernel`` / ``net_worth_investment`` to ``._kernel`` / ``._investment``,
+# so their W9909 rulings TRAVEL with them (finding N-31) rather than deleting.  The
 # reason they cannot just vanish into the seam: ``balance_at`` is deliberately
 # NOT W9909-scoped as a package -- its PUBLIC functions ARE the seam entries every
 # consumer calls, so "unclassified" is meaningless there -- which means a producer
@@ -318,12 +316,17 @@ _ENGINE_CLUSTER_MODULES = _BALANCE_SEAM_MODULES - frozenset({
 # until D-gate makes the package boundary structural and D3 deletes the name-fence
 # outright.  A hand-written list, NOT the ``app.services.balance_at`` prefix, and
 # that is deliberate: prefix-scoping the package would pull its public seam
-# entries into the completeness check, where the ruling has no meaning.  The
-# net-worth producers join this list when they move in at the second D1d commit.
+# entries into the completeness check, where the ruling has no meaning.  All five
+# balance producers are now here -- the net-worth pair joined at the second D1d
+# commit.
 _SEAM_PRIVATE_ENGINE_MODULES = frozenset({
     "app.services.balance_at._cash_engine",
     "app.services.balance_at._calculator",
     "app.services.balance_at._daily_series",
+    # The net-worth chain (second D1d commit): the per-kind balance dispatch and
+    # the investment / appreciation growth sub-chain.
+    "app.services.balance_at._kernel",
+    "app.services.balance_at._investment",
 })
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
@@ -405,21 +408,29 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 # does not answer "what is account A's balance at time T"; if in doubt, it is a
 # producer (a false negative is the dangerous mode for a fence).
 _FENCED_MODULE_RULINGS = {
-    "app.services.net_worth_kernel": (_BALANCE_PRODUCERS, frozenset({
+    # The per-kind balance dispatch, now the seam-private ``balance_at._kernel``
+    # (plan step D1d; was ``net_worth_kernel``).  Its ruling TRAVELLED with it
+    # (finding N-31, :data:`_SEAM_PRIVATE_ENGINE_MODULES`).
+    "app.services.balance_at._kernel": (_BALANCE_PRODUCERS, frozenset({
         # A transaction loader, not a balance.
         "load_account_period_transactions",
         # The loan's amortization ROWS -- no balance attached.  This is what the
-        # out-of-cluster consumer (the honest-history gate's first-payment
-        # date) actually wants, and handing it rows rather than the
-        # ``DebtSchedule`` bundle is what CLOSED the attribute hole:
-        # ``generate_debt_schedules`` is a producer now (below), so no consumer
-        # can reach the bundle's ``projection_seed`` balance at all.
+        # two out-of-cluster consumers (the savings orchestrator's debt cards,
+        # the honest-history gate's first-payment date) actually want, and
+        # handing them rows rather than the ``DebtSchedule`` bundle is what CLOSED
+        # the attribute hole: ``generate_debt_schedules`` is a producer (below),
+        # so no consumer can reach the bundle's ``projection_seed`` balance at all.
+        # RE-EXPORTED from ``balance_at.__init__`` as the public seam entry those
+        # consumers now read (they no longer import the private module).
         "debt_schedule_rows",
         # Interest EARNED per period -- a projection INPUT and an explanatory
-        # row, not a balance-at-T figure.
+        # row, not a balance-at-T figure.  Also re-exported through the seam for
+        # the account-detail route.
         "interest_by_period_for_account",
     })),
-    "app.services.net_worth_investment": (_BALANCE_PRODUCERS, frozenset({
+    # The investment / appreciation growth sub-chain, now the seam-private
+    # ``balance_at._investment`` (plan step D1d; was ``net_worth_investment``).
+    "app.services.balance_at._investment": (_BALANCE_PRODUCERS, frozenset({
         # An index into the period list, not a balance.
         "get_anchor_period_index",
         # A (growth, contributed) DECOMPOSITION of a balance the seam already
@@ -723,10 +734,11 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "per-kind rules, so consumers (routes, savings, analytics, "
             "dashboards) must depend on it, never on a producer directly -- the "
             "SOLID dependency direction consumers -> seam -> engines. Only the "
-            "seam (its cash producers moved INSIDE it at plan step D1d -- "
-            "balance_at._cash_engine / ._calculator / ._daily_series) and the "
-            "net-worth engine it still composes from outside (net_worth_kernel / "
-            "net_worth_investment) may call a producer. The genesis loan-ledger "
+            "seam may call a producer: plan step D1d moved every balance "
+            "producer INSIDE the balance_at package as a private submodule "
+            "(_cash_engine / _calculator / _daily_series / _kernel / "
+            "_investment), so the allowlist is now ONE package boundary. The "
+            "genesis loan-ledger "
             "readers (confirmed_loan_balance_at / confirmed_loan_balance_map) "
             "are fenced the same way with a wider allowlist: their defining "
             "loan_posting_service package and loan_payment_service, whose "
@@ -840,13 +852,13 @@ class ShekelBalanceSeamChecker(BaseChecker):
         """Flag importing a fenced producer NAME into a non-allowlisted module.
 
         Call-site name matching alone has one evasion class: an aliased import
-        (``from app.services.net_worth_kernel import build_account_balance_map as
-        calc``) makes every subsequent call read ``calc(...)``, which matches
+        (``from app.services.balance_at._kernel import build_account_balance_map
+        as calc``) makes every subsequent call read ``calc(...)``, which matches
         no producer name.  Importing the producer's NAME is therefore fenced at
         the ``ImportFrom`` itself, aliased or not -- a module outside the
         allowlist may not call the producer, so it has no legitimate reason to
-        import it.  Module imports (``from app.services import
-        net_worth_kernel``, plain ``import ...``) are untouched: an attribute
+        import it.  Module imports (``from app.services.balance_at import
+        _kernel``, plain ``import ...``) are untouched: an attribute
         call through a module alias keeps the producer's own name at the call
         site, where :meth:`visit_call` already sees it.  ``node.names`` holds
         ``(name, alias)`` pairs; each imported name is checked against the same

@@ -11,7 +11,7 @@ maps) and returns plain ``Decimal`` / ``dict`` data the route serializes.
 Every per-account balance the NET-WORTH reduction reads arrives through the
 :mod:`app.services.balance_at` seam, so that path computes no balance of its
 own: the seam dispatches non-loan kinds to
-:mod:`app.services.net_worth_kernel` (including the investment / 401k growth
+:mod:`app.services.balance_at._kernel` (including the investment / 401k growth
 sub-chain the forward trend projects forward) and answers an AMORTIZING loan
 from its own ``positions()`` fold (plan step C3b3).  What this module owns is
 the REDUCTION over those balances -- asset-plus / liability-minus -- not the
@@ -258,7 +258,7 @@ def _loan_schedule_start_index(
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
         schedule_rows: The loan's amortization rows
-            (:func:`app.services.net_worth_kernel.debt_schedule_rows`), or ``None``
+            (:func:`app.services.balance_at.debt_schedule_rows`), or ``None``
             when the context could not resolve the loan.
 
     Returns:
@@ -312,7 +312,7 @@ def _honest_history_start_index(
             id to its index).
         current_period: The period containing today (the upper clamp).
         debt_schedules: account_id -> the loan's amortization ROW list
-            (from :func:`app.services.net_worth_kernel.debt_schedule_rows`), for the
+            (from :func:`app.services.balance_at.debt_schedule_rows`), for the
             loan gate.  Not a ``DebtSchedule`` bundle: the rows carry no
             ``projection_seed``, which is the balance the fence keeps out of an
             out-of-cluster consumer's hands.  (A row does carry a
@@ -382,7 +382,7 @@ def build_trend_periods(
             ``period_index``.
         current_period: The period containing today, or ``None``.
         debt_schedules: account_id -> the loan's amortization ROW list
-            (:func:`app.services.net_worth_kernel.debt_schedule_rows`), for the loan
+            (:func:`app.services.balance_at.debt_schedule_rows`), for the loan
             gate.
 
     Returns:

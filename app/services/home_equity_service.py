@@ -11,7 +11,7 @@ anchor balance and each securing loan's balance comes from the balance-at seam
 and the net-worth liability column read -- so the equity number can never
 disagree with the loan surfaces.  Equity itself is plain presentation arithmetic
 over those canonical inputs; the emergent net-worth sum in
-:mod:`app.services.net_worth_kernel` is untouched.
+:mod:`app.services.balance_at._kernel` is untouched.
 
 Boundary discipline (``CLAUDE.md``: services are isolated from Flask): no
 Flask imports.  All money is :class:`~decimal.Decimal`.

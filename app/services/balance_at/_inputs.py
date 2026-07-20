@@ -11,7 +11,7 @@ Kept in one submodule so the view modules (:mod:`._kind_correct`,
 primitives and never on each other's internals.  The package's SOLID dependency
 direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends only on
 the leaf PRODUCERS its dispatch fans out to -- the engine cluster
-(:mod:`app.services.net_worth_kernel`) and the loan producer
+(:mod:`app.services.balance_at._kernel`) and the loan producer
 (:func:`._positions.positions_period_map`, the one per-kind branch that lives in
 the seam because it reads ``positions`` above the kernel).  Neither producer
 imports ``_inputs`` back (``_positions`` takes its no-baseline guard straight
@@ -25,10 +25,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.services import (
-    income_service,
-    net_worth_kernel,
-)
+from app.services import income_service
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -39,6 +36,7 @@ from app.services.projection_inputs import (
 )
 from app.services.resolution_context import BalanceContext, require_scenario
 
+from . import _kernel
 from ._positions import positions_period_map
 
 ZERO = Decimal("0")
@@ -49,7 +47,7 @@ class _AssembledInputs:
     """The batch-loaded per-account projection inputs for a set of accounts.
 
     Bundles the four shared-loader outputs that
-    :func:`app.services.net_worth_kernel.build_account_balance_map`
+    :func:`app.services.balance_at._kernel.build_account_balance_map`
     dispatches on -- the amortization schedules, the investment-params map,
     the per-account deductions, and the engine gross-biweekly -- so the
     single-account (:func:`~app.services.balance_at.balance_map`) and batch
@@ -62,7 +60,7 @@ class _AssembledInputs:
 
     Attributes:
         debt_schedules: account_id ->
-            :class:`~app.services.net_worth_kernel.DebtSchedule` for the
+            :class:`~app.services.balance_at._kernel.DebtSchedule` for the
             amortizing-loan subset (its schedule plus the resolver's current
             balance).  Non-loan accounts are absent.
         investment_params_map: account_id ->
@@ -78,7 +76,7 @@ class _AssembledInputs:
             the set.
     """
 
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule]
+    debt_schedules: dict[int, _kernel.DebtSchedule]
     investment_params_map: dict[int, InvestmentParams]
     deductions_by_account: dict[int, list]
     salary_gross_biweekly: Decimal
@@ -94,7 +92,7 @@ def _assemble_inputs(
     list) and :func:`~app.services.balance_at.build_maps` (called with the whole
     set), so single- and batch-assembly run identical loader logic and preserve
     the N+1 avoidance: one
-    :func:`~app.services.net_worth_kernel.generate_debt_schedules` over the
+    :func:`~app.services.balance_at._kernel.generate_debt_schedules` over the
     amortizing-loan subset, one investment-params query, one deductions query,
     and one raise-aware gross fetch for the whole set.
 
@@ -139,7 +137,7 @@ def _assemble_inputs(
         account for account in accounts
         if classify_account(account) is AccountProjectionKind.AMORTIZING
     ]
-    debt_schedules = net_worth_kernel.generate_debt_schedules(
+    debt_schedules = _kernel.generate_debt_schedules(
         loan_accounts, ctx,
     )
 
@@ -203,10 +201,10 @@ def _account_balance_map(
       the liability band all answer a loan from ``positions`` and cannot
       disagree.  This one per-kind branch lives HERE in the seam, not in the
       kernel's dispatcher, because ``positions`` sits ABOVE
-      :mod:`app.services.net_worth_kernel` (at its module-size cap, and it cannot
+      :mod:`app.services.balance_at._kernel` (at its module-size cap, and it cannot
       import the seam back).
     * **Every other kind** delegates to the shared
-      :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
+      :func:`app.services.balance_at._kernel.account_balance_map_from_inputs`,
       which unpacks the bundle for *account* and calls the kernel's per-kind
       ladder (cash / interest / investment / appreciation).  The seam does not
       re-implement that ladder.
@@ -241,7 +239,7 @@ def _account_balance_map(
         if account.current_anchor_period_id is None:
             return None
         return positions_period_map(account, ctx, periods)
-    return net_worth_kernel.account_balance_map_from_inputs(
+    return _kernel.account_balance_map_from_inputs(
         account, ctx, periods, inputs, amount_overrides=amount_overrides,
     )
 

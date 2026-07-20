@@ -560,7 +560,7 @@ def plan_payoff_date(
         seed: The balance the projection starts from -- the loan's confirmed
             present (an originated loan) or its opening balance (one not yet
             originated), the SAME
-            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`
+            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
             :func:`fold_forward` folds.
         plan: The loan's :func:`loan_plan` payment records.
         extra_monthly: A HYPOTHETICAL extra added to every payment, used only by
@@ -607,7 +607,7 @@ def plan_required_extra(
     Args:
         seed: The balance the projection starts from -- the loan's confirmed
             present, the SAME
-            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`
+            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
             the balance folds.
         plan: The loan's :func:`loan_plan` payment records.  Their cash already
             carries the loan's STANDING ``extra_principal``, so the result is the
@@ -783,7 +783,7 @@ def fold_forward(
         seed: The balance the projection starts from -- the loan's confirmed
             present for an originated loan, or the balance it will OPEN at for one
             not yet originated (the caller supplies the right one, as
-            :attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`
+            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
             does today).
         owed_from: The loan's ``origination_date``; a date before it owes
             ``0.00``.
@@ -835,7 +835,7 @@ def plan_interest_in_year(
 
     Args:
         seed: The balance the projection starts from -- the loan's confirmed
-            present (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`),
+            present (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`),
             the SAME seed :func:`positions` folds, so the interest accrues on the
             balance the loan actually projects.
         plan: The loan's :func:`loan_plan` payment records.

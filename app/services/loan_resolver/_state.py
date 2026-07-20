@@ -47,7 +47,7 @@ class LoanState:
             ``as_of``: it does not exist yet, so it owes nothing (see
             :func:`resolve_loan`).  This is NOT the forward projection's seed --
             for a not-yet-originated loan the two differ, and the seed is the
-            seam's (:attr:`~app.services.net_worth_kernel.DebtSchedule.projection_seed`).
+            seam's (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`).
         monthly_payment: P&I payment as of ``as_of``.  For an ARM
             inside its fixed-rate window this is held constant for
             every ``as_of`` in the window (E-02 invariant).  Outside
@@ -333,7 +333,7 @@ def resolve_loan(
         # loan's whole forward schedule to nothing.  "What is owed now" and
         # "what balance does the schedule start from" are two questions, and
         # this is where they separate.  The projection's seed is supplied by
-        # the seam (``net_worth_kernel.DebtSchedule.projection_seed``).
+        # the seam (``balance_at._kernel.DebtSchedule.projection_seed``).
         current_balance_full = ZERO_MONEY
     else:
         current_balance_full = (

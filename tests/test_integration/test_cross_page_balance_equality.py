@@ -75,9 +75,9 @@ from app.services import (
     investment_dashboard_service,
     loan_payment_service,
     loan_resolution,
-    net_worth_kernel,
     savings_dashboard_service,
 )
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.resolution_context import BalanceContext
 

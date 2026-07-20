@@ -148,20 +148,8 @@ from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import (
-    anchor_service,
-    balance_at,
-    loan_ledger,
-    loan_loaders,
-    loan_payment_service,
-    loan_posting_service,
-    loan_resolution,
-    loan_resolver,
-    net_worth_kernel,
-    pay_period_service,
-    posting_service,
-    transfer_service,
-)
+from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolution, loan_resolver, pay_period_service, posting_service, transfer_service
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids

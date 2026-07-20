@@ -33,15 +33,8 @@ from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
-from app.services import (
-    balance_at,
-    loan_loaders,
-    loan_payment_service,
-    loan_posting_service,
-    loan_resolution,
-    loan_resolver,
-    net_worth_kernel,
-)
+from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolution, loan_resolver
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.utils.dates import add_months
 from app.utils.money import round_money
 from app.services.resolution_context import BalanceContext

@@ -32,7 +32,7 @@ The seam does NOT reimplement any of that math.  It assembles each
 account's inputs (its debt schedule, investment params, deductions, and the
 engine gross-biweekly) from the shared loaders and DELEGATES the per-kind
 dispatch -- to
-:func:`app.services.net_worth_kernel.build_account_balance_map` for every
+:func:`app.services.balance_at._kernel.build_account_balance_map` for every
 NON-loan kind, and to its own ``positions()`` fold for an AMORTIZING loan,
 whose producer sits ABOVE the kernel and so cannot be dispatched from inside
 it (plan step C3b3).  Centralising a dispatch that two consumers had each
@@ -85,27 +85,33 @@ W9906 fence follows automatically: its allowlist prefix-matches, so every
 ``app.services.balance_at.*`` submodule stays inside the seam.
 
 Dependency direction (SOLID).  Consumers (routes, savings, analytics,
-dashboards) depend on this seam; the seam depends only on the engine cluster
-(``net_worth_kernel`` / ``net_worth_investment`` / ``account_projection`` /
-``projection_inputs`` / ``income_service`` / ``pay_period_service``) and the
-``cash_ledger`` leaf the cash producers fold over, the LOAN cluster it composes
-the loan shapes from (``resolution_context`` / ``loan_resolution`` /
-``loan_loaders`` / ``amortization_engine``, plus ``loan_posting_service`` behind
-a lazy import), and the models -- never a consumer package.  The CASH balance
-producers moved INTO the seam at plan step D1d: ``_cash_engine`` (``balances_for``
-/ ``balance_as_of_date``), ``_calculator`` (the pure carry-forward walk), and
-``_daily_series`` (the per-day distribution) are now PRIVATE submodules, not
-external cluster deps -- the net-worth producers (``net_worth_kernel`` /
-``net_worth_investment``) still call them from outside until they follow in the
-second D1d commit.  ``property_equity_chart`` and ``home_equity_service`` import
-FROM here, not the other way round.  Inside the package the direction is
+dashboards) depend on this seam; the seam depends only on the outer engine
+inputs (``account_projection`` / ``projection_inputs`` / ``income_service`` /
+``pay_period_service``) and the ``cash_ledger`` leaf the cash producers fold
+over, the LOAN cluster it composes the loan shapes from (``resolution_context``
+/ ``loan_resolution`` / ``loan_loaders`` / ``amortization_engine``, plus
+``loan_posting_service`` behind a lazy import), and the models -- never a
+consumer package.  **Plan step D1d moved ALL of the balance PRODUCERS INSIDE
+this package as private submodules**, so the fence is one package boundary: the
+CASH chain (``_cash_engine`` = ``balances_for`` / ``balance_as_of_date``,
+``_calculator`` = the pure carry-forward walk, ``_daily_series`` = the per-day
+distribution) and the NET-WORTH chain (``_kernel`` = the per-kind balance
+dispatch, ``_investment`` = the growth / appreciation sub-chain).  ``_kernel``'s
+``debt_schedule_rows`` and ``interest_by_period_for_account`` are re-exported
+below as the two non-balance seam entries the out-of-cluster consumers (the
+account-detail route, the savings orchestrator) read.
+``property_equity_chart`` and ``home_equity_service`` import FROM here, not the
+other way round.  Inside the package the direction is
 ``_grid -> {_cash_flow, _kind_correct} -> _inputs``,
 ``{_cash_flow, _kind_correct} -> _cash_engine -> _calculator``,
-``_cash_flow -> _daily_series -> _cash_engine``, ``_liability -> _inputs``,
-``_secured_debt -> {_loan_figures, _positions, _inputs}``, and
-``_loan_figures -> _positions -> _plan`` (the figures' payoff is the fold to
-zero, plan step C8d) -- a DAG with ``_inputs``, ``_plan`` and ``_calculator`` as
-leaves, so no view module imports a sibling that imports it back.
+``_cash_flow -> _daily_series -> _cash_engine``,
+``{_inputs, _positions, _loan_interest} -> _kernel -> {_calculator, _cash_engine,
+_investment}``, ``_kind_correct -> _investment -> _cash_engine``,
+``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
+_inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
+the fold to zero, plan step C8d) -- a DAG with ``_calculator`` / ``_cash_engine``
+/ ``_investment`` at the producer floor, so no module imports a sibling that
+imports it back.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
@@ -135,6 +141,10 @@ from ._inputs import (
     _AssembledInputs,
     _assemble_inputs,
     _require_scenario,
+)
+from ._kernel import (
+    debt_schedule_rows,
+    interest_by_period_for_account,
 )
 from ._kind_correct import (
     balance_at,
@@ -197,7 +207,9 @@ __all__ = [
     "cash_balance_at",
     "cash_balance_map",
     "cash_daily_balance_series",
+    "debt_schedule_rows",
     "grid_balance_view",
+    "interest_by_period_for_account",
     "investment_growth_since_anchor",
     "investment_seed_map",
     "liability_owed_at_dates",

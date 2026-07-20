@@ -35,7 +35,8 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
-from app.services import balance_at, net_worth_kernel, paycheck_calculator
+from app.services import balance_at, paycheck_calculator
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.auth_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (

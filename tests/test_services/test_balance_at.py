@@ -55,10 +55,9 @@ from app.services import (
     balance_at,
     cash_ledger,
     income_service,
-    net_worth_investment,
-    net_worth_kernel,
     pay_period_service,
 )
+from app.services.balance_at import _investment as net_worth_investment, _kernel as net_worth_kernel
 from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,

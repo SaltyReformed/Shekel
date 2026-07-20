@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- Investment growth balance sub-chain.
 
-The investment / retirement growth projection, extracted from
-:mod:`app.services.net_worth_kernel` (which reached its module-size
+The investment / retirement growth projection, extracted from the kernel
+(:mod:`app.services.balance_at._kernel`, which reached its module-size
 ceiling).  Two views built on ONE assembly and ONE forward projection so
 they cannot drift:
 
@@ -10,7 +10,7 @@ they cannot drift:
   investment account DISPLAYS: the anchor compounded forward at the assumed
   return (plus contributions), reverse-projected before the anchor, spliced
   over the canonical cash basis.  The kernel's
-  :func:`~app.services.net_worth_kernel.build_account_balance_map` dispatches
+  :func:`~app.services.balance_at._kernel.build_account_balance_map` dispatches
   here for INVESTMENT accounts.
 * :func:`investment_growth_since_anchor` -- the growth-vs-contributed
   decomposition the detail page's Growth chip reads.  It sums the SAME
@@ -28,13 +28,13 @@ builders -- :func:`investment_base_balance_map` (the cash-basis seed),
 :func:`get_anchor_period_index`, and :func:`_load_shadow_contributions` (the
 contribution feed) -- and the appreciating-asset builder
 :func:`build_appreciation_balance_map` (Property market value compounded
-forward), the other kind the kernel dispatches here.  The ``balance_at`` seam
-and the year-end service import those primitives FROM here.  It imports
-NOTHING back from :mod:`~app.services.net_worth_kernel`, so the static import
-graph carries no cycle; the kernel's
-:func:`~app.services.net_worth_kernel.build_account_balance_map` reaches the
-two builders through a call-time import (the same lazy-seam pattern the kernel
-uses for its loan-ledger reader).
+forward), the other kind the kernel dispatches here.  Other ``balance_at``
+seam modules import those primitives FROM here.  It imports NOTHING back from
+the kernel (:mod:`~app.services.balance_at._kernel`), so the static import
+graph carries no cycle; now that both are siblings in the seam package the
+kernel's :func:`~app.services.balance_at._kernel.build_account_balance_map`
+reaches the two builders through a plain sibling import (plan step D1d retired
+the cross-module lazy import its rationale no longer justified).
 
 Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"):
 this module imports no Flask symbol and performs no writes.  All money is
@@ -50,10 +50,11 @@ from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import growth_engine
-from app.services.balance_at import _cash_engine
 from app.services.investment_projection import InvestmentInputs, adapt_deductions
 from app.services.loan_loaders import query_shadow_income
 from app.services.projection_inputs import build_investment_projection_inputs
+
+from . import _cash_engine
 
 ZERO = Decimal("0")
 
@@ -174,7 +175,7 @@ class _InvestmentProjectionInputs:
 
     Attributes:
         base_balances: Cash-basis (pre-growth) period_id -> balance map from
-            :func:`~app.services.net_worth_kernel.investment_base_balance_map`;
+            :func:`~app.services.balance_at._kernel.investment_base_balance_map`;
             the anchor period's entry is the seed both projections pivot on.
         pre_anchor: Periods before the anchor (chronological), reverse-projected.
         post_anchor: Periods after the anchor (chronological), forward-projected.
@@ -429,7 +430,7 @@ def build_appreciation_balance_map(
     Degrades to the flat base map when the account has no
     :class:`~app.models.asset_appreciation_params.AssetAppreciationParams` row
     yet (Property created, rate not set) or has no post-anchor periods.  The
-    kernel's :func:`~app.services.net_worth_kernel.build_account_balance_map`
+    kernel's :func:`~app.services.balance_at._kernel.build_account_balance_map`
     dispatches here for APPRECIATING accounts.
 
     Args:

@@ -29,7 +29,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
-from app.services import balance_at, loan_posting_service, net_worth_kernel
+from app.services import balance_at, loan_posting_service
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._plan import loan_plan
 from app.services.loan_ledger import split_payment_cash
 from app.services.resolution_context import BalanceContext

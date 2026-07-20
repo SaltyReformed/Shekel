@@ -46,7 +46,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 def _fenced_module_sources(module_name: str) -> list[Path]:
     """Return every source file a fenced *module_name* scope covers.
 
-    A flat module (``app.services.net_worth_kernel``) is one file.  A PACKAGE
+    A flat module (``app.services.account_projection``) is one file.  A PACKAGE
     (``app.services.loan_posting_service``) is every ``.py`` file inside it --
     because the checker scopes a package by prefix, so a producer born in ANY
     submodule (``_reader``, ``_display``, ``_walk``) is in scope and must be
@@ -511,9 +511,10 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     """``shekel-balance-producer-bypass``: balances come through the seam only.
 
     Every screen must obtain an account's balance through
-    ``app.services.balance_at``; only the seam and the engine cluster it
-    composes (balance_resolver, balance_calculator, net_worth_kernel) may
-    call a balance producer directly. The
+    ``app.services.balance_at``; only the seam package may call a balance
+    producer directly -- plan step D1d moved every producer inside it as a
+    private submodule (``_cash_engine`` / ``_calculator`` / ``_daily_series`` /
+    ``_kernel`` / ``_investment``). The
     rule keys off the ENCLOSING module (``node.root().name``), so each case is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``)
     rather than the bare :func:`astroid.extract_node` the shape-only checkers
@@ -579,12 +580,13 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_flags_investment_builder_from_consumer(self) -> None:
         """build_investment_balance_map is guarded too: no reaching past the seam.
 
-        Extracted from net_worth_kernel to net_worth_investment and made public
-        (the kernel dispatches into it), but it stays a fenced balance producer:
+        Extracted from the kernel (``_kernel``) to the growth sub-chain
+        (``_investment``) and made public (the kernel dispatches into it), but it
+        stays a fenced balance producer:
         a consumer outside the engine cluster must go through the balance_at seam.
         """
         node = self._producer_call(
-            "net_worth_investment.build_investment_balance_map("
+            "_investment.build_investment_balance_map("
             "account, params, scenario, periods)",
             "app.services.investment_dashboard_service",
         )
@@ -856,7 +858,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """Each engine-cluster module may import a producer (they compose each other)."""
         for module_name in sorted(_BALANCE_SEAM_MODULES):
             node = self._import_node(
-                "from app.services.net_worth_kernel import "
+                "from app.services.balance_at._kernel import "
                 "build_account_balance_map",
                 module_name,
             )
@@ -898,7 +900,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """Each reader-allowlisted module may import a genesis reader.
 
         Covers the two real in-tree import shapes: the defining package's
-        ``__init__`` re-export and net_worth_kernel's documented private
+        ``__init__`` re-export and ``loan_payment_service``'s documented private
         ``_reader`` reach-in (both resolve through the reader allowlist).
         """
         for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
@@ -949,7 +951,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_flags_investment_base_balance_map_from_consumer(self) -> None:
         """The cash-basis seed accessor IS guarded: a consumer call is flagged.
 
-        Closing the fence hole made ``net_worth_kernel.investment_base_balance_map``
+        Closing the fence hole made ``_investment.investment_base_balance_map``
         a guarded producer.  It returns a DISPLAY-shaped cash-basis (pre-growth)
         map -- the one balance-map accessor a consumer could have rendered as a
         real balance (the investment understatement bug the seam exists to
@@ -959,7 +961,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         because the prose comment in ``shekel_checkers/balance_seam.py`` names it.
         """
         node = self._producer_call(
-            "net_worth_kernel.investment_base_balance_map(account, scenario, periods)",
+            "_investment.investment_base_balance_map(account, scenario, periods)",
             "app.services.investment_dashboard_service",
         )
         with self.assertAddsMessages(
@@ -1070,7 +1072,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         but the seam.
         """
         node = self._producer_call(
-            "net_worth_kernel.generate_debt_schedules(loans, ctx)",
+            "_kernel.generate_debt_schedules(loans, ctx)",
             "app.services.tax_report_service",
         )
         with self.assertAddsMessages(
@@ -1092,7 +1094,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         balance.
         """
         node = self._producer_call(
-            "net_worth_kernel.debt_schedule_rows(loans, ctx)",
+            "_kernel.debt_schedule_rows(loans, ctx)",
             "app.services.tax_report_service",
         )
         with self.assertNoMessages():
@@ -1147,7 +1149,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         node = self._function_def(
             "def owed_at_some_dates(accounts, scenario_id):\n    return {}\n",
-            "app.services.net_worth_kernel",
+            "app.services.balance_at._kernel",
         )
         with self.assertAddsMessages(
             MessageTest(
@@ -1196,7 +1198,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """A private (underscore) cluster function is not part of the export surface."""
         node = self._function_def(
             "def _account_interest_projection(account, scenario):\n    return {}\n",
-            "app.services.net_worth_kernel",
+            "app.services.balance_at._kernel",
         )
         with self.assertNoMessages():
             self.checker.visit_functiondef(node)
@@ -1233,7 +1235,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "    def owed_at_some_dates(dates):\n"
             "        return {}\n"
             "    return owed_at_some_dates\n",
-            module_name="app.services.net_worth_kernel",
+            module_name="app.services.balance_at._kernel",
         )
         nested = module.body[0].body[0]
         with self.assertNoMessages():
@@ -1389,9 +1391,14 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_call(node)
 
     def test_allows_context_loan_handle_inside_the_kernel(self) -> None:
-        """The engine cluster composing the memo is the sanctioned path."""
+        """The seam-private kernel composing the memo is the sanctioned path.
+
+        Since plan step D1d the kernel is ``balance_at._kernel``, covered by the
+        ``app.services.balance_at`` prefix in :data:`_CONTEXT_LOAN_MODULES` (was a
+        standalone ``net_worth_kernel`` entry before the move).
+        """
         node = self._producer_call(
-            "ctx.resolved_loan(account)", "app.services.net_worth_kernel",
+            "ctx.resolved_loan(account)", "app.services.balance_at._kernel",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
@@ -1456,11 +1463,12 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
 
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
-        * ``_SEAM_PRIVATE_ENGINE_MODULES`` (the cash producers moved INSIDE the
-          seam at D1d: ``balance_at._cash_engine`` / ``._calculator`` /
-          ``._daily_series`` -- their rulings TRAVEL with them, finding N-31, and
-          cannot ride the ``app.services.balance_at`` prefix because that would
-          pull the public seam entries into the check)
+        * ``_SEAM_PRIVATE_ENGINE_MODULES`` (all five balance producers moved
+          INSIDE the seam at D1d: the cash chain ``balance_at._cash_engine`` /
+          ``._calculator`` / ``._daily_series`` and the net-worth chain
+          ``._kernel`` / ``._investment`` -- their rulings TRAVEL with them,
+          finding N-31, and cannot ride the ``app.services.balance_at`` prefix
+          because that would pull the public seam entries into the check)
 
         For those, the set-equality guard is SELF-ATTESTING: delete the registry
         entry and empty the constant -- two adjacent edits in one file, which is
@@ -1480,6 +1488,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.balance_at._cash_engine",
             "app.services.balance_at._calculator",
             "app.services.balance_at._daily_series",
+            "app.services.balance_at._kernel",
+            "app.services.balance_at._investment",
         ):
             node = self._function_def(
                 "def balance_on(account, target):\n    return None\n",
@@ -1609,8 +1619,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                         f"balance-at-T) or the non-producer set (it does not)"
                     )
             # Only the module's OWN non-producer rulings are pinned for staleness:
-            # the producer set is shared across the cluster (a producer defined in
-            # balance_resolver is legitimately absent from net_worth_kernel).
+            # the producer set is shared across the cluster (a producer defined
+            # in ``_cash_engine`` is legitimately absent from ``_kernel``).
             stale = non_producers - defined
             assert not stale, (
                 f"{module}: non-producer rulings for functions it no longer "

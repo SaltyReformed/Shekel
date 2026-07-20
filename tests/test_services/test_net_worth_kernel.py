@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Net-Worth Kernel Tests (Loop B Phase 1)
 
-Direct coverage for the shared :mod:`app.services.net_worth_kernel`
+Direct coverage for the shared :mod:`app.services.balance_at._kernel`
 promoted out of the year-end summary package: the per-account balance-map
 dispatch over the canonical entries-aware resolver.  These tests pin the
 kernel's public contract independently of its consumers.
@@ -25,7 +25,8 @@ against anything a screen renders.
 
 from decimal import Decimal
 
-from app.services import net_worth_kernel, pay_period_service
+from app.services import pay_period_service
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.resolution_context import BalanceContext
 
