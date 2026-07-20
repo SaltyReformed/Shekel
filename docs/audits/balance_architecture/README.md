@@ -84,7 +84,16 @@ then forced two more, both root-cause fixes rather than touch-ups: **C8e** (`6e0
 rate / payment-amount write surfaces are no longer coupled to a baseline scenario) and **C8f**
 (`fe424560`, the target-date calculator folds the plan; `target_date_outlook` and its
 `project_forward` walk deleted, so the panel can no longer contradict the payoff chip) -- **the C8
-arc is CLOSED.** Next: **C9** (R-C: reject a loan payment dated before origination).
+arc is CLOSED.** **C9 DECOMPOSED** (2026-07-19) once the trace found the app MANUFACTURES the
+shape R-C guards against -- the loan-payment setup generated 3 of 4 installments
+pre-origination ($3,220.92 of phantom cash debits), so the guard alone was measured to 500 its
+own route. **C9a** (`2976614b` + data `7c021281`, the recurrence gains a real `start_date` bound
+filtered unconditionally in `match_periods`, derived from the loan's first contractual
+installment; its review caught a `day_of_month` desync that emptied a loan's whole payment
+schedule, and an unbounded second door at `POST /transfers`) and **C9b** (`d5a02ad2`, the R-C
+guard at BOTH write doors on the shared installment derivation; the boundary is `<=`, correcting
+R-C's "before") shipped -- **the C9 arc is CLOSED, and FU-5 with it.** Next: **Phase D**
+(structure replaces policy), or **X1** (the cash side) -- the loan cutover is complete.
 
 ---
 
@@ -222,7 +231,7 @@ review, all gates green throughout). The fold deletes the generator; the minimal
 |---|---|---|
 | **R-A** | An ACTUAL payment's balance event is VISIBLE on its **settled date** (`paid_at` civil date; due date is the fallback when `paid_at` is NULL). The split math stays keyed to the DUE date -- ordering, rate, AND escrow -- so out-of-order or late settlement can never reorder installments or re-split one (concretely: the July payment settled 2026-07-07, one day after the 07-06 escrow change; due-date keying keeps its escrow $616.99, where settled-date keying would move the split by $0.34 and the baseline with it). Rejected: due-date visibility, which double-counts ~$1,911 in net worth for the days between due and settle every month (real case: due 07-01, settled 07-07). The cash ledger already dates cash by `paid_at`, so loan and checking now move together. | C2 |
 | **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. | X1 |
-| **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. | C9 |
+| **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. **Two corrections at C9 (2026-07-19), both measured:** (a) the boundary is `<=` origination, not "before" -- a payment due exactly ON the origination date sorts ahead of that anchor and is subsumed by its reset, erased identically ($0.00 principal, the whole cash to Refund); (b) the write boundary alone was NOT the root cause. The app's own loan-payment setup GENERATED the shape (3 of 4 payments pre-origination on a mortgage closing next month, $3,220.92 of phantom cash debits), so the guard shipped second, behind a recurrence start bound -- shipping it first was measured to 500 the loan's own create-transfer route. | C9a (generator), C9b (guard) |
 | **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. ~~`_income_tax` survives -- the live Taxes tab uses it.~~ **Corrected 2026-07-16 (A2):** only TWO functions are live -- `_compute_mortgage_interest` -> `_loan_year_interest` -- reached because `tax_report_service.py:84` imports a PRIVATE name across packages, and their only real coverage sits in the file F2 deletes (`TestMortgageInterestGenesisHybrid`). Both die at **C3**, which deletes their input type; by F2 nothing is stranded, so F2 stays a clean whole-package deletion. If C3 has not landed when F2 runs, F2 must move the two functions to `tax_report_service` (their only caller) rather than leave the private import. | F2 (C3 first) |
 | **R-E** (N-11; answered 2026-07-17) | A raw transaction typed onto a loan account (which moves the posted balance but not the fold) is **FORBIDDEN AT THE SOURCE**, not modeled as a third event kind. Every write path that could type one onto an amortizing loan refuses it on the D4/R6 predicate (`classify_account is AMORTIZING` / `has_amortization`): the two transaction-create routes, the recurrence-template form, AND -- found in the guard's own adversarial review, so BROADER than the plan's cited `create.py:78` -- the salary-profile account picker (which copies `template.account_id` into `recurrence_engine`). Rejected: a third event kind, which keeps a cash-basis paydown path the grid refuses to render and contradicts D4. This makes the fold complete BY CONSTRUCTION, so B2's every-day equality needs no N-11 exception. Any pre-guard row is an F1-class data item; the two real loans carry none (B1's 212-day match). | BG (guard), B2 |
 
@@ -886,8 +895,78 @@ what is written here is decided in the commit itself, not in a new document.
     that did not survive is pinned in a note where the class stood. Real data: `extra @ payoff` is
     `0.00` on both loans (the panel and the chip agree by construction), and a year early costs
     `$25.71/mo` on the Mortgage, `$290.66/mo` on the Van Loan.
-- [ ] **C9** `fix(transfers): a loan cannot receive a payment before it originates` -- R-C
-  ruled 2026-07-16: reject at the transfer write boundary.
+- **C9 (DECOMPOSED, 2026-07-19)** `a loan cannot receive a payment before it originates` --
+  R-C ruled 2026-07-16 as a write-boundary reject. **The trace found the one-liner was half
+  the step, and measuring it decided the decomposition:** the app MANUFACTURES the shape
+  itself, so a guard alone would have 500ed its own flow. `create_payment_transfer` built its
+  `RecurrenceRule` with no start bound and generated across every materialized pay period, so
+  a mortgage closing 2026-04-15 got 3 of 4 payments dated PRE-ORIGINATION -- $3,220.92 of
+  phantom cash debits on a 10-period fixture (production materializes ~52), each an FU-5
+  erasure the moment it settled. Shipping the R-C guard first was measured to raise
+  `ValidationError` straight out of the loan's create-transfer route. So it ships **C9a**
+  (bound generation, so the app stops producing the shape) -> **C9b** (the guard, which
+  nothing legitimate then trips) -- the fix-the-model-then-cut-over shape of C6a->C6b and
+  C8a->C8d. Developer rulings (2026-07-19): the bound is a new nullable `start_date` column
+  (not `start_period_id`, which regeneration discards); the guard covers the UPDATE path too;
+  the tests are made real rather than deleted; and C9 cleans up the rows the defect created.
+  - [x] **C9a** `fix(loan): a recurring payment does not start before the loan does` --
+    **SHIPPED `2976614b`** (+ the data half `7c021281`). A recurrence rule had a real END
+    bound (`end_date`, filtered unconditionally in `match_periods`) but no real START bound:
+    `start_period_id` only seeds `effective_from` when the caller passes none, and
+    `regenerate_for_template` and the unarchive path both pass their own, so it is silently
+    discarded there. The fix is the SYMMETRIC partner: `recurrence_rules.start_date`, filtered
+    in `match_periods` unconditionally so no caller can bypass it, written by
+    `loan_recurrence_sync` (renamed `sync_recurring_payment_end_date` ->
+    `sync_recurring_payment_bounds`, ONE entry for both ends so no chokepoint can move one and
+    leave the other stale). The start half runs AHEAD of the scenario guard -- C8e's lesson,
+    since it needs only params. `rate_period_engine.first_installment_date` is the derivation
+    and it is the ENGINE's convention, not a calendar guess: one month after origination on
+    `payment_day`, so 2026-04-15 + day 20 bills 2026-05-20, NOT 2026-04-20 (which
+    `monthly_due_date`, a different question, would give); pinned against
+    `contractual_schedule_from_origination(...)[0].payment_date` over six shapes.
+    **Adversarial review found two defects, both measured and fixed in-commit:** (1)
+    `day_of_month` is ALSO derived from `payment_day` and nothing re-pointed it, so with only
+    `start_date` moving (day 1 -> 20) the bound advanced past the day the rule still matched
+    and regeneration produced **ZERO** installments -- the loan's whole recurring payment
+    vanished; `_sync_loan_cadence` now moves both together, leaving a day-less
+    (every-paycheck) rule alone. (2) `POST /transfers` builds its rule from the FORM and never
+    synced, so a loan payment set up there reproduced the defect exactly (3 pre-origination
+    installments, `start_date` NULL) -- `bind_rule_to_loan` bounds the new rule at
+    materialization, taking the rule DIRECTLY because the account-keyed lookup returns the
+    FIRST active template and would leave a second one unbounded. Also replaced the hand-rolled
+    `FakeRule` stub (the B-17 anti-pattern) with a real unsaved `RecurrenceRule`: it drifted the
+    moment a column was added, killing 17 tests on `AttributeError` rather than on behaviour.
+    Migration `a1c7e2f4b930` is additive; the purge `b2d8f3a6c541` deletes only what a routine
+    regeneration would (the engine's own `partition_regeneration_rows` predicate) and LEAVES a
+    settled pre-origination payment with a loud warning -- its cash really moved and it carries
+    postings, so it is an F1-class item for a human. Verified on a scratch DB built to CARRY the
+    shape (the real one has none): 2 purged, 4 correctly kept, shadows by CASCADE, and
+    `downgrade` restored all six from the jsonb snapshot. Baseline UNMOVED.
+  - [x] **C9b** `fix(transfers): a loan cannot receive a payment before it originates` --
+    **SHIPPED `d5a02ad2`.** The guard, at `create_transfer` AND `update_transfer`.
+    **The boundary is `<=`, and correcting R-C's "before" is part of the step:** a payment due
+    exactly ON the origination date sorts ahead of that anchor and is subsumed by its reset,
+    erased identically. Swept on a 2026-03-01 origination: due 01-15 / 02-28 / 03-01 all book
+    $0.00 principal and $1,200.00 to Refund; 03-02 books $366.67 principal. The installment is
+    the SHARED `loan_loaders.installment_for` (extracted from `loan_payment_due_date`, which
+    delegates to it), so the guard refuses exactly what the fold erases -- including a transfer
+    with NO `due_date`, keyed on its pay-period start, which is the ad-hoc shape FU-5 was found
+    in. The UPDATE door is guarded because the transfers PATCH route forwards `due_date` /
+    `pay_period_id`; the check runs before any field is applied and fires only when one of
+    those two moves, so a legacy pre-origination row stays editable otherwise. A payment
+    between origination and the first contractual installment stays ALLOWED (an early extra
+    payment folds correctly) -- C9b is about EXISTENCE, C9a about the contract.
+    **Adversarial review fixes:** the guard read an un-ownership-checked `PayPeriod` ahead of
+    `_get_owned_period` (a cross-user id answered 400-with-a-date where the rule requires an
+    indistinguishable 404); `create_payment_transfer` bounded via the account-keyed lookup, so
+    a SECOND recurring payment left the new rule unbounded, and had no `ValidationError`
+    handler; and the atomicity test had no teeth -- its `rollback()` erased the evidence and it
+    passed with the guard moved after the amount mutation. All fixed, all controls shown to
+    fire. Recorded not fixed: **N-23** (carry-forward batch blast radius) and **N-24**
+    (`period_population` / unarchive have no handler). The FU-5 test is REWORKED, not deleted:
+    its old construction is now a forbidden write, so it builds the same state a way production
+    still can -- an installment dated after origination, settled EARLY -- and its negative
+    control still fires. Full suite 7468, baseline unmoved.
 
 ### Phase D -- structure replaces policy
 
@@ -970,7 +1049,7 @@ archive names so old references resolve here.
 | N-12 (B1) | **The two ledger readers disagree about when an anchor becomes visible.** `confirmed_loan_balance_at` bounds an anchor by `LEAST(entry_date, period.start)` (`_asof.effective_date`); `confirmed_loan_history_rows` bounds its non-payment events by raw `entry_date` (`_reader.py:_classify_linked_nets`). They therefore diverge for any `as_of` in `[period.start, entry_date)` -- two readers of ONE ledger, contradicting each other about one loan. Measured on the real Mortgage: on 2026-03-26..03-30 the scalar says **$178,103.41** and the history rows' last `remaining_balance` says **-$272.02** -- a NEGATIVE liability, the B-5 shape. Contained today, not by design but by two unrelated gates: a user true-up is schema-bound to `anchor_date <= today` (`routes/loan/params.py:244`), and the future-origination case is stopped by N-10's four `origination_date` predicates -- so no surface passes an `as_of` inside the window. One clock retires both bounds | $178,375.43 (the divergence; the rendered figure is a negative liability) | **closed (`eb5de4ac`)** -- the scalar now bounds anchors by `entry_date` (their own civil date), the same rule the history reader already used, so the two agree | C2 (`remaining_balance` itself dies at C6) |
 | FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
-| FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case | ruled: reject at write boundary (R-C) | C9 |
+| FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case; **$3,220.92 phantom cash** on the generator found at C9 | **closed (`2976614b` + `7c021281` generator; `d5a02ad2` guard)** -- the fold erases such a payment ($0.00 principal, the whole cash to a Refund Receivable) while the cash side still debits, so it is now REFUSED at both transfer write doors on the SHARED installment derivation, and the recurrence can no longer generate one (`start_date` bound). The shape's real source was not the hand-made transfer the finding names but the app's own loan-payment setup, which generated 3 of 4 payments pre-origination on a mortgage closing next month; existing rows are purged, settled ones reported | C9a (generator + data); C9b (guard) |
 | FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | **closed (`821dd0eb`)** -- an empty schedule now draws NO back-projection (`_back_projection_by_month` returns `{}`); the loan's real balance comes from the fold, which answers $0.00 after payoff | C5 |
 | cash D1 | Settled post-anchor transactions counted by NO producer | $9,431.72/17 days | **LIVE** (the re-anchor treadmill) | X1 |
 | cash D2 | Scalar is period-flat; contradicts the daily series | $999.48 on 07-16 | **LIVE** | X2 |
@@ -996,6 +1075,8 @@ archive names so old references resolve here.
 | N-21 (C8f) | **A target date in the PAST was answered with a six-figure extra instead of "not achievable".** The reachability guard and the search's own predicate both keyed on the clearing installment's DUE date, but ruling D1 clamps an overdue-but-still-projected payment's EFFECTIVE date to `as_of + 1d` while its due date stays in the past. One such record -- i.e. exactly the delinquent loan this arc exists for -- made a past target look reachable, the fold "cleared" the loan on a past due date, and the panel rendered `Add on Top of Your Current Plan: $248,854.17/mo` for a date on which no money can be paid. A REGRESSION: the retired `required_extra_for_projection` guarded it explicitly (`target_months <= 0 -> None`). Root fix: every comparison in the search keys on the EFFECTIVE date (when the cash actually moves); the payoff DATE the seam reports stays the DUE date per C8b. Note the schema still has no minimum on `target_date` | `$248,854.17/mo` rendered for a past date | **closed (`fe424560`)** -- the randomized sweep now generates D1-clamped records and catches it independently of its unit test | C8f |
 | N-22 (C8d) | **A loan that never pays off was DROPPED from the debt-free date, so /savings claimed debt-free while the loan still owed.** C8d made `payoff_date` legitimately `None`; both debt-free producers filtered those out and took `max()` over the rest. Measured: a $900,000 never-clearing loan beside a healthy $12,000 one reported `projected_debt_free_date` 2028-03-01 -- the small loan's payoff -- on a page whose own loan chip says "No payoff at current payment", and `_resolve_horizon_domain` planted a "Debt-free" milestone there. With EVERY loan in that state it returned `is_loan_free=True` and gave a borrower the loan-free horizon window. Impossible pre-C8d (`LoanState.payoff_date` was non-nullable). Fixed: an active non-retired loan with no payoff POISONS the aggregate -- no date, `is_loan_free=False` -- and the cockpit SAYS "No debt-free date at current payments" rather than omitting the line, matching the treatment its loan page already gives the same condition | debt-free 2028-03-01 claimed against $912,000.00 owed | **closed (`2f0130f5`)** | C8d |
 | N-17 (C8d) | **Three modules sit on the W9906 resolver allowlist that no longer resolve a loan.** `_LOAN_RESOLVER_MODULES` exempts `loan_payment_service`, `_transfer_loan_posting`, and `app.routes.loan` from the `resolve_account_loan` / `resolve_loan_seeded` / `resolve_loan_bundle` fence, but a whole-repo grep finds NO call to any of the three in any of them (only docstring mentions) -- they shed their direct resolves at C4 and C8a. After C8d removed the fourth (`loan_recurrence_sync`, whose exemption this step actually killed), **`resolution_context` is the only remaining caller in `app/`** -- the arc's "one resolution site" goal, reached without anyone noticing. A stale ALLOWLIST entry is fail-OPEN for that module (it permits a bypass nobody currently makes), not a wrong number, so it is a guard gap rather than a live defect. Removing the other three belongs to the Phase-D fence pass, not to C8d's scope | -- | recorded, deferred | D1 / D3 |
+| N-23 (C9b) | **A refused loan payment now fails an entire carry-forward batch.** Carry-forward moves transfers via `update_transfer(pay_period_id=...)`, which since C9b runs the R-C guard, and `routes/transactions/carry_forward.py` rolls the whole batch back on `ValidationError` -- so one un-movable loan payment costs the user every other carried item. The guard's DECISION is correct there (the moved payment would still be erased); the blast radius is the defect. Reachable on a row the C9a purge deliberately leaves: an ad-hoc (template-less) or `is_override` pre-origination payment on a future-originating loan. Worked: loan originates 2026-08-01 payment_day 1, current period 2026-07-10..07-23, no due_date -> installment 2026-08-01 `<=` origination -> refused -> 400, nothing carries. Fixing it means skip-and-report (leave the row in the source period, count it in the message), which is a change to carry-forward's batch semantics rather than to the guard -- a developer call, not a touch-up. Both stale docstrings that claimed the old raise conditions are corrected in-commit | whole batch lost | recorded, deferred | own commit |
+| N-24 (C9b) | **Three generation call sites have no `ValidationError` handler, so a refused write 500s.** `create_transfer` can now raise R-C (as it already could raise `_reject_transfer_out_of_loan`), and the recurrence engine fans out through it. `transfers/templates.py:690` wraps generation correctly and C9b added the same wrap to `create_payment_transfer`; `period_population.py:86` (pay-period EXTEND / regenerate -- one bad loan template breaks the whole extension) and `transfers/templates.py:457` (unarchive) do not. Largely closed in practice by C9a: every loan-payment rule now carries a `start_date` (migration-backfilled + synced + bound at creation), and `first_installment_date` is strictly `>` origination for every input, so a bounded rule cannot generate a refused installment. This is the residual exposure for an unbounded rule, and it is partly PRE-EXISTING (the out-of-loan guard has the same reach) -- C9b widens an existing hole rather than inventing one | 500 on extend / unarchive | recorded, deferred | own commit |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
