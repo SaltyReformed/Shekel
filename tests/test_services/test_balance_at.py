@@ -53,14 +53,13 @@ from app.models.transaction import Transaction
 from app.services import (
     account_service,
     balance_at,
-    balance_calculator,
-    balance_resolver,
     cash_ledger,
     income_service,
     net_worth_investment,
     net_worth_kernel,
     pay_period_service,
 )
+from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,

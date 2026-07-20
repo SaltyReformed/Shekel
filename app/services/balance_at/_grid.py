@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import balance_resolver
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -46,7 +45,7 @@ from app.services.account_projection import (
 from app.services.resolution_context import BalanceContext
 from app.utils.money import round_money
 
-from . import _cash_flow, _kind_correct
+from . import _cash_engine, _cash_flow, _kind_correct
 from ._inputs import ZERO, _require_scenario
 
 
@@ -88,7 +87,7 @@ class GridBalanceView:
 
 def _accruing_grid_view(
     kc_balances: "OrderedDict[int, Decimal]",
-    cash_result: balance_resolver.BalanceResult,
+    cash_result: _cash_engine.BalanceResult,
 ) -> GridBalanceView:
     """Assemble a :class:`GridBalanceView` for an INTEREST account.
 
@@ -122,7 +121,7 @@ def _accruing_grid_view(
             anchor-forward periods as the cash producer, except a possible
             leading anchor-cache-divergence prefix (cash periods the interest
             map lacks), which the loop handles.
-        cash_result: The cash-flow :class:`~app.services.balance_resolver.BalanceResult`
+        cash_result: The cash-flow :class:`~app.services.balance_at._cash_engine.BalanceResult`
             (its cent-quantized ``balances`` are the premium baseline, and
             its ``stale_anchor_warning`` rides through unchanged).
 

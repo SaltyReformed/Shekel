@@ -44,13 +44,13 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.services import (
-    balance_resolver,
     loan_posting_service,
     pay_period_admin,
     pay_period_service,
     pay_schedule_service,
     posting_service,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,

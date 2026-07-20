@@ -23,7 +23,7 @@ it is this module's whole point:
 
 It holds by construction because both sides reduce the SAME rows through the
 SAME engine (:func:`sum_projected` below, which
-:func:`app.services.balance_calculator.calculate_balances` also calls) with the
+:func:`app.services.balance_at._calculator.calculate_balances` also calls) with the
 same entries-aware expense reduction and the same live override map, and
 because ``net`` is rounded ONCE at the boundary
 (``round_money(income - expense)``) rather than as the difference of two
@@ -79,7 +79,7 @@ def sum_projected(transactions, amount_overrides=None, *, as_of=None):
     settled yet.  Either way only the projected remainder is summed.  The
     anchor-vs-roll-forward distinction -- which starting balance this sum
     is added to -- lives solely in
-    :func:`~app.services.balance_calculator.calculate_balances`, not here,
+    :func:`~app.services.balance_at._calculator.calculate_balances`, not here,
     which is why a single helper serves both branches (collapsed from the
     historically-separate ``_sum_remaining`` / ``_sum_all`` once both
     became Projected-only).

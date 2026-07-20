@@ -26,7 +26,12 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, balance_calculator, cash_ledger, pay_period_service
+from app.services import (
+    account_service,
+    cash_ledger,
+    pay_period_service,
+)
+from app.services.balance_at import _calculator as balance_calculator
 from app.services.auth_service import hash_password
 
 
@@ -3016,7 +3021,7 @@ class TestCheckingDetail:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
@@ -3190,7 +3195,7 @@ class TestCheckingDetailCanonicalProducer:
         reported the silent-degrade value Decimal("114.29") via the
         unloaded-entries seam.
         """
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current_period = pay_period_service.get_current_period(
@@ -3782,7 +3787,7 @@ class TestCashDetailContext:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(

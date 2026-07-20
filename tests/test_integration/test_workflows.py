@@ -28,12 +28,12 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.services import (
-    balance_calculator,
     carry_forward_service,
     credit_workflow,
     recurrence_engine,
     transfer_recurrence,
 )
+from app.services.balance_at import _calculator as balance_calculator
 
 
 class TestSalaryToGrid:

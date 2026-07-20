@@ -15,9 +15,12 @@ here:
 
 Split at plan step D1a.  This module held three separable concerns and sat at
 exactly 1000 lines, pylint's default module ceiling, because of it.  The other
-two moved out to modules named for what they are, leaving the producers ready
-to move INTO the seam at D1d.  At D1c both landed in the one
-:mod:`app.services.cash_ledger` leaf -- the cash counterpart of
+two moved out to modules named for what they are, and at D1d the producers
+moved INTO the seam: this is now ``balance_at._cash_engine``, private to the
+package, reached only by the seam's own ``_cash_flow`` / ``_grid`` /
+``_kind_correct`` views (and, until the net-worth chain follows, by the two
+kernel modules that compose it).  At D1c the FACTS it folds over landed in the
+one :mod:`app.services.cash_ledger` leaf -- the cash counterpart of
 :mod:`app.services.loan_ledger` -- alongside the per-row valuation rules that
 had been stranded inside ``balance_calculator`` (finding N-30):
 
@@ -84,7 +87,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import balance_calculator
 from app.services.cash_ledger import (
     AnchorPoint,
     live_amount_overrides,
@@ -93,6 +95,8 @@ from app.services.cash_ledger import (
     sum_projected,
 )
 from app.utils.money import round_money
+
+from . import _calculator
 
 
 @dataclass(frozen=True)
@@ -138,7 +142,7 @@ def balances_for(
     The canonical entries-aware producer.  Resolves the anchor via
     :func:`resolve_anchor`, owns the transaction query (which always
     eager-loads ``entries``), reuses
-    :func:`~app.services.balance_calculator.calculate_balances` for
+    :func:`~app.services.balance_at._calculator.calculate_balances` for
     the pure carry-forward math (CLAUDE.md rule 10: do not rewrite
     the engine), and applies :func:`~app.utils.money.round_money` at
     the boundary so every returned balance is a 2dp ``Decimal`` with
@@ -209,7 +213,7 @@ def balances_for(
             account, scenario_id, transactions,
         )
 
-    raw_balances, stale_anchor_warning = balance_calculator.calculate_balances(
+    raw_balances, stale_anchor_warning = _calculator.calculate_balances(
         anchor_balance=anchor.balance,
         anchor_period_id=anchor.period.id,
         periods=periods,
@@ -259,7 +263,7 @@ def balance_as_of_date(
          cannot reach), return the anchor balance (E-27's
          "pre-anchor returns anchor" convention; the producer does
          not project backward).
-      4. Run :func:`~app.services.balance_calculator.calculate_balances`
+      4. Run :func:`~app.services.balance_at._calculator.calculate_balances`
          over ``[anchor_period .. target_period - 1]`` (entries
          eager-loaded via :func:`load_balance_transactions`).  The
          result is ``prior_balance`` -- the projected end balance of
@@ -387,7 +391,7 @@ def _project_to_period_before(
     When ``target_period`` is the anchor period itself the prior
     balance is simply ``anchor.balance`` (the engine starts here).
     Otherwise walk
-    :func:`~app.services.balance_calculator.calculate_balances` over
+    :func:`~app.services.balance_at._calculator.calculate_balances` over
     ``prefix_periods`` (the span ``[anchor_period .. target_period - 1]``,
     with ``prefix_txns`` entries eager-loaded) and return the engine's end
     balance for the period immediately before ``target_period``.
@@ -423,7 +427,7 @@ def _project_to_period_before(
     if target_period.id == anchor.period.id:
         return anchor.balance
 
-    raw_balances, _ = balance_calculator.calculate_balances(
+    raw_balances, _ = _calculator.calculate_balances(
         anchor_balance=anchor.balance,
         anchor_period_id=anchor.period.id,
         periods=prefix_periods,

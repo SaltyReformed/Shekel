@@ -14,7 +14,7 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
-from app.services import balance_calculator
+from app.services.balance_at import _calculator as balance_calculator
 from app.services.loan_payment_service import get_payment_history
 from tests._test_helpers import create_loan_account, loan_params_for
 

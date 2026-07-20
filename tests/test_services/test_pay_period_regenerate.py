@@ -29,12 +29,12 @@ from app.enums import StatusEnum
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
-    balance_resolver,
     pay_period_admin,
     pay_period_service,
     pay_schedule_service,
     period_population,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,

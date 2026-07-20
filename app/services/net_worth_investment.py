@@ -49,7 +49,8 @@ from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import balance_resolver, growth_engine
+from app.services import growth_engine
+from app.services.balance_at import _cash_engine
 from app.services.investment_projection import InvestmentInputs, adapt_deductions
 from app.services.loan_loaders import query_shadow_income
 from app.services.projection_inputs import build_investment_projection_inputs
@@ -68,7 +69,7 @@ def investment_base_balance_map(
     plus contributions, with NO modeled growth layered on -- the seed a forward
     growth projection compounds from.  It is the canonical entries-aware
     producer's map verbatim
-    (:func:`~app.services.balance_resolver.balances_for`), so it agrees
+    (:func:`~app.services.balance_at._cash_engine.balances_for`), so it agrees
     penny-for-penny with the figure the grid and every cash surface render for
     the same rows.
 
@@ -93,7 +94,7 @@ def investment_base_balance_map(
     Returns:
         The ``OrderedDict`` period_id -> Decimal cash-basis balance.
     """
-    return balance_resolver.balances_for(account, scenario.id, periods).balances
+    return _cash_engine.balances_for(account, scenario.id, periods).balances
 
 
 def get_anchor_period_index(
@@ -440,7 +441,7 @@ def build_appreciation_balance_map(
     Returns:
         OrderedDict mapping period_id to Decimal balance.
     """
-    base_balances = balance_resolver.balances_for(
+    base_balances = _cash_engine.balances_for(
         account, scenario.id, periods,
     ).balances
 

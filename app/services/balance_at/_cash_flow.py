@@ -14,13 +14,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services import (
-    balance_resolver,
-    daily_balance_series,
-)
-
 from app.services.resolution_context import BalanceContext
 
+from . import _cash_engine, _daily_series
 from ._inputs import _require_scenario
 
 
@@ -30,7 +26,7 @@ def cash_balance_map(
     periods: list,
     *,
     amount_overrides: "dict[int, Decimal] | None" = None,
-) -> balance_resolver.BalanceResult:
+) -> _cash_engine.BalanceResult:
     """Return one account's cash-flow running balance across *periods*.
 
     The cash-flow view: the account's projected end balance per period as a
@@ -53,9 +49,9 @@ def cash_balance_map(
     return any kind).  So these surfaces ask for the cash-flow balance of
     whatever account they are pointed at, regardless of its kind.
 
-    Delegates to :func:`~app.services.balance_resolver.balances_for` -- the
+    Delegates to :func:`~app.services.balance_at._cash_engine.balances_for` -- the
     canonical entries-aware producer -- and returns its
-    :class:`~app.services.balance_resolver.BalanceResult` verbatim, so the
+    :class:`~app.services.balance_at._cash_engine.BalanceResult` verbatim, so the
     caller also gets the ``stale_anchor_warning`` flag the grid surfaces in
     its banner (a data-quality signal ABOUT the projection, not a balance,
     so it rides on the result rather than becoming a separate seam concern).
@@ -76,7 +72,7 @@ def cash_balance_map(
             projected-net map (the grid threads its pre-built map here).
 
     Returns:
-        The :class:`~app.services.balance_resolver.BalanceResult`: the
+        The :class:`~app.services.balance_at._cash_engine.BalanceResult`: the
         period_id -> Decimal balance map plus the ``stale_anchor_warning``
         flag.
 
@@ -85,7 +81,7 @@ def cash_balance_map(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    return balance_resolver.balances_for(
+    return _cash_engine.balances_for(
         account, ctx.scenario.id, periods, amount_overrides=amount_overrides,
     )
 
@@ -97,7 +93,7 @@ def cash_balance_at(
 
     The scalar cash-flow view -- the date-precise counterpart of
     :func:`cash_balance_map`.  Delegates to
-    :func:`~app.services.balance_resolver.balance_as_of_date`, which sums
+    :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which sums
     the account's Projected, entry-aware transaction rows up to *as_of*
     (intra-period precise: entries dated after *as_of* are excluded).  Used
     by the calendar's month-end balance, which must reconcile with the day
@@ -125,7 +121,7 @@ def cash_balance_at(
             the underlying producer).
     """
     _require_scenario(ctx)
-    return balance_resolver.balance_as_of_date(account, ctx.scenario.id, as_of)
+    return _cash_engine.balance_as_of_date(account, ctx.scenario.id, as_of)
 
 
 def cash_daily_balance_series(
@@ -140,7 +136,7 @@ def cash_daily_balance_series(
 
     The daily-granularity cash-flow view -- the running-balance counterpart
     of the period-flat :func:`cash_balance_at`.  Delegates to
-    :func:`app.services.daily_balance_series.build_daily_series`, which walks
+    :func:`app.services.balance_at._daily_series.build_daily_series`, which walks
     each calendar day in ``[first_day, last_day]`` as a true checkbook
     balance that steps on that day's projected, period-clamped, entry-aware
     flows and reconciles with the grid at every period end
@@ -174,7 +170,7 @@ def cash_daily_balance_series(
             :class:`datetime.date`.
     """
     _require_scenario(ctx)
-    return daily_balance_series.build_daily_series(
+    return _daily_series.build_daily_series(
         account, ctx.scenario.id, first_day, last_day,
         amount_overrides=amount_overrides,
     )

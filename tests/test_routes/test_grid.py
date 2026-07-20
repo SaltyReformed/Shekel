@@ -4606,7 +4606,7 @@ class TestGridPeriodSubtotalCanonical:
           balance[periods[5]] - balance[periods[4]] = -50.00 == net.
         """
         from app.models.transaction_entry import TransactionEntry
-        from app.services import balance_resolver
+        from app.services.balance_at import _cash_engine as balance_resolver
 
         with app.app_context():
             projected = db.session.query(Status).filter_by(

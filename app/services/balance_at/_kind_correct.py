@@ -19,7 +19,6 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services import (
-    balance_resolver,
     cash_ledger,
     net_worth_investment,
     pay_period_service,
@@ -33,6 +32,7 @@ from app.utils.money import round_money
 
 from app.services.resolution_context import BalanceContext
 
+from . import _cash_engine
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
 from ._positions import positions
 
@@ -61,11 +61,11 @@ def balance_map(
     uniform across kinds, and that asymmetry is load-bearing for callers:
 
     * **PLAIN** routes to
-      :func:`~app.services.balance_resolver.balances_for`, which AUTO-BUILDS a
+      :func:`~app.services.balance_at._cash_engine.balances_for`, which AUTO-BUILDS a
       live projected-net map when ``amount_overrides`` is None -- so omitting
       it yields LIVE income.
     * **INTEREST** routes to
-      :func:`~app.services.balance_calculator.calculate_balances_with_interest`,
+      :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`,
       which does NOT auto-build -- so omitting it yields STORED income (the
       stored ``estimated_amount``), not live.
 
@@ -174,7 +174,7 @@ def balance_at(
     :func:`~app.services.account_projection.classify_account`:
 
     * **PLAIN (checking / plain savings)** -> the date-precise
-      :func:`~app.services.balance_resolver.balance_as_of_date`, which owns
+      :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which owns
       its own period loading and intra-period entry-date precision.  PLAIN is
       the only kind whose KIND-CORRECT balance IS its transaction balance, so
       the scalar can answer it date-precisely.
@@ -210,7 +210,7 @@ def balance_at(
     precedes it) or the account has no projectable map, the seam returns the
     canonical anchor balance from
     :func:`~app.services.cash_ledger.resolve_anchor`, rounded to cents.
-    This mirrors :func:`~app.services.balance_resolver.balance_as_of_date`'s
+    This mirrors :func:`~app.services.balance_at._cash_engine.balance_as_of_date`'s
     pre-anchor convention (a date the projection cannot reach returns the
     anchor balance), so every kind answers an unreachable date the same way.
     A genuinely corrupt account with no anchor history makes
@@ -250,7 +250,7 @@ def balance_at(
     # consistent with the map for an HYSA (the no-interest transaction balance
     # is ``cash_balance_at``'s job, not this kind-correct scalar's).
     if kind is AccountProjectionKind.PLAIN:
-        return balance_resolver.balance_as_of_date(
+        return _cash_engine.balance_as_of_date(
             account, ctx.scenario.id, as_of,
         )
 
@@ -264,7 +264,7 @@ def balance_at(
         # the routing amortizing_balance_at did internally before the cutover
         # (``ctx.resolved_loan is None`` iff generate_debt_schedules would skip it).
         if ctx.resolved_loan(account) is None:
-            return balance_resolver.balance_as_of_date(
+            return _cash_engine.balance_as_of_date(
                 account, ctx.scenario.id, as_of,
             )
         return positions(account, ctx, [as_of])[as_of]

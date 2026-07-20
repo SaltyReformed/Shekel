@@ -28,6 +28,7 @@ from shekel_checkers import (
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_RESOLVER_DEFINING_MODULES,
+    _SEAM_PRIVATE_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
     _is_public_export_surface,
     ShekelBalanceSeamChecker,
@@ -645,15 +646,18 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                 self.checker.visit_call(node)
 
     def test_allows_producer_from_cluster_package_submodule(self) -> None:
-        """A submodule of a cluster module (if one is split into a package) stays inside the fence.
+        """A private submodule of the seam PACKAGE stays inside the fence.
 
-        Locks the package-prefix match in :func:`_in_balance_seam_cluster`: a
-        future ``app/services/balance_resolver/_core.py`` resolves to
-        ``app.services.balance_resolver._core`` and must remain exempt.
+        Locks the package-prefix match in :func:`_module_in_allowlist`: since
+        plan step D1d the cash producers live in ``balance_at._cash_engine`` and
+        call each other, so a seam submodule -- any ``app.services.balance_at.*``
+        -- resolves under the ``app.services.balance_at`` prefix and must remain
+        exempt.  (Before D1d this test used a hypothetical
+        ``balance_resolver._core``; the real thing exists now.)
         """
         node = self._producer_call(
             "balances_for(account, scenario_id, periods)",
-            "app.services.balance_resolver._core",
+            "app.services.balance_at._cash_engine",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
@@ -1441,7 +1445,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_flags_unclassified_export_in_every_hand_scoped_module(self) -> None:
-        """The three HAND-SCOPED modules really are covered -- named literally.
+        """The HAND-SCOPED modules really are covered -- named literally.
 
         Most of the registry's scope is DERIVED (``_ENGINE_CLUSTER_MODULES`` is
         ``_BALANCE_SEAM_MODULES`` minus the seam), so dropping a module from the
@@ -1452,6 +1456,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
 
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
+        * ``_SEAM_PRIVATE_ENGINE_MODULES`` (the cash producers moved INSIDE the
+          seam at D1d: ``balance_at._cash_engine`` / ``._calculator`` /
+          ``._daily_series`` -- their rulings TRAVEL with them, finding N-31, and
+          cannot ride the ``app.services.balance_at`` prefix because that would
+          pull the public seam entries into the check)
 
         For those, the set-equality guard is SELF-ATTESTING: delete the registry
         entry and empty the constant -- two adjacent edits in one file, which is
@@ -1468,6 +1477,9 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         for module_name in (
             "app.services.account_projection",
             "app.services.cash_ledger",
+            "app.services.balance_at._cash_engine",
+            "app.services.balance_at._calculator",
+            "app.services.balance_at._daily_series",
         ):
             node = self._function_def(
                 "def balance_on(account, target):\n    return None\n",
@@ -1551,6 +1563,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         expected = (
             _ENGINE_CLUSTER_MODULES
+            | _SEAM_PRIVATE_ENGINE_MODULES
             | _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
             | _CASH_LEDGER_MODULES

@@ -177,7 +177,7 @@ def _entry_aware_amount(txn, as_of=None):
     production: the grid eager-loaded entries and computed the
     reduction; /savings did not and got back ``estimated_amount``
     unchanged.  E-25's correction makes the canonical producer
-    ``app.services.balance_resolver.balances_for`` always
+    ``app.services.balance_at._cash_engine.balances_for`` always
     eager-load entries (through
     :func:`app.services.cash_ledger._facts.load_balance_transactions`),
     so this function never sees an unloaded relationship from a routed

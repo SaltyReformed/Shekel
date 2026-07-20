@@ -2443,7 +2443,7 @@ class TestCanonicalProducerRouting:
         return Decimal("160.00").  Pre-Commit-6, /savings returned
         Decimal("114.29") via the silent-degrade seam.
         """
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             # Current period == anchor period: seed_periods_today

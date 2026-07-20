@@ -29,12 +29,12 @@ from app.services.resolution_context import BalanceContext
 from app.services import (
     account_service,
     balance_at,
-    balance_resolver,
     growth_engine,
     pay_period_service,
     paycheck_calculator,
     retirement_dashboard_service,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from tests._test_helpers import make_investment_account
 
 

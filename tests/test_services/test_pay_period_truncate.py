@@ -36,13 +36,13 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
-    balance_resolver,
     pay_period_admin,
     pay_period_service,
     period_population,
     posting_service,
     transfer_service,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.pay_period_admin import PeriodLockReason
 from scripts.integrity_check import (
     check_balance_anomalies,

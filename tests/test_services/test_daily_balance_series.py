@@ -2,7 +2,7 @@
 Shekel Budget App -- Daily end-of-day cash-flow balance series tests.
 
 Pins the calendar's flagship running-balance producer
-(:mod:`app.services.daily_balance_series`, exposed via the seam as
+(:mod:`app.services.balance_at._daily_series`, exposed via the seam as
 ``balance_at.cash_daily_balance_series``).  The load-bearing property is the
 reconciliation invariant: the day-textured running balance STEPS on each
 day's projected flow yet lands exactly on the period-flat seam scalar at
@@ -33,7 +33,8 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import balance_at, daily_balance_series
+from app.services import balance_at
+from app.services.balance_at import _daily_series as daily_balance_series
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.resolution_context import BalanceContext
 

@@ -5,7 +5,7 @@ The one-pass daily producer behind the analytics calendar's flagship
 running-balance line and its day-cell end-of-day hero.  It answers "what is
 the projected checking balance at the end of each calendar day?" as a true
 "checkbook" balance that STEPS on each day's projected flows -- rather than
-the period-flat value :func:`app.services.balance_resolver.balance_as_of_date`
+the period-flat value :func:`app.services.balance_at._cash_engine.balance_as_of_date`
 (the seam scalar :func:`app.services.balance_at.cash_balance_at`) returns for
 every day of a pay period, which would leave the calendar's day cells
 visibly disagreeing with a two-week-flat line.
@@ -52,7 +52,7 @@ eliminate.
   override.  Both come straight from ``sum_projected``, so a day's step and
   the period roll-forward cannot drift.
 * **Pre-anchor days stay flat at the anchor balance**, matching
-  :func:`~app.services.balance_resolver.balance_as_of_date`'s "pre-anchor
+  :func:`~app.services.balance_at._cash_engine.balance_as_of_date`'s "pre-anchor
   returns anchor" convention: the projection never walks backward from the
   anchor.
 
@@ -73,7 +73,6 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.balance_resolver import balance_as_of_date
 from app.services.cash_ledger import (
     live_amount_overrides,
     load_balance_transactions,
@@ -83,6 +82,8 @@ from app.services.cash_ledger import (
 from app.services.pay_period_service import get_overlapping_periods
 from app.utils.dates import attribution_date
 from app.utils.money import round_money
+
+from ._cash_engine import balance_as_of_date
 
 _ZERO = Decimal("0")
 
@@ -98,7 +99,7 @@ def build_daily_series(
     """Return the projected end-of-day cash-flow balance for each day in a range.
 
     The daily counterpart of
-    :func:`~app.services.balance_resolver.balance_as_of_date`, built for the
+    :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, built for the
     calendar's running-balance line: a true checkbook balance that steps on
     each day's projected, period-clamped, entry-aware flows and reconciles
     with the grid at every period end (see the module docstring's

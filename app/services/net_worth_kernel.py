@@ -42,14 +42,11 @@ from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import (
-    balance_calculator,
-    balance_resolver,
-)
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.balance_at import _calculator, _cash_engine
 from app.services.loan_resolution import ResolvedLoan
 from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
@@ -283,7 +280,7 @@ def _account_interest_projection(
     """Run the interest-layered balance walk for one account.
 
     The single home for the "load this account's transactions and run
-    :func:`~app.services.balance_calculator.calculate_balances_with_interest`
+    :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
     over them" sequence shared by the interest BALANCE path
     (:func:`base_account_balance_map`, which keeps the balances and
     discards the interest) and the interest-EARNED accessor
@@ -317,7 +314,7 @@ def _account_interest_projection(
         account.id, scenario.id, [p.id for p in periods],
     )
     anchor_balance = account.current_anchor_balance or ZERO
-    return balance_calculator.calculate_balances_with_interest(
+    return _calculator.calculate_balances_with_interest(
         anchor_balance=anchor_balance,
         anchor_period_id=account.current_anchor_period_id,
         periods=periods,
@@ -351,9 +348,9 @@ def base_account_balance_map(
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
             projected-net / loan-derive map (Workstream B), forwarded
             verbatim to whichever cash producer this account routes to
-            (:func:`~app.services.balance_calculator.calculate_balances_with_interest`
+            (:func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
             for the interest path,
-            :func:`~app.services.balance_resolver.balances_for` for the
+            :func:`~app.services.balance_at._cash_engine.balances_for` for the
             plain path).  Default ``None`` lets each producer build its own
             live override map internally, byte-identical to the prior
             behavior; the ``balance_at`` seam threads the grid's pre-built
@@ -389,7 +386,7 @@ def base_account_balance_map(
     # ``selectinload(Transaction.entries)`` and resolves the anchor via
     # the dated ``AccountAnchorHistory`` SoT, so the net-worth aggregate
     # cannot disagree with the grid for the same input.
-    return balance_resolver.balances_for(
+    return _cash_engine.balances_for(
         account, scenario.id, periods,
         amount_overrides=amount_overrides,
     ).balances
@@ -406,7 +403,7 @@ def interest_by_period_for_account(
     The engine-cluster accessor the account-detail page's "Interest, next
     12 mo" chip (``app.routes.accounts.detail``, its only caller) reads
     instead of calling
-    :func:`~app.services.balance_calculator.calculate_balances_with_interest`
+    :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
     directly: interest EARNED is rich projection detail, not a
     balance-at-T figure, so it is not a ``balance_at`` seam concern, yet
     the producer that computes it is fenced to the engine cluster.  This

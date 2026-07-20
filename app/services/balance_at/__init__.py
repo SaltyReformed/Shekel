@@ -87,18 +87,25 @@ W9906 fence follows automatically: its allowlist prefix-matches, so every
 Dependency direction (SOLID).  Consumers (routes, savings, analytics,
 dashboards) depend on this seam; the seam depends only on the engine cluster
 (``net_worth_kernel`` / ``net_worth_investment`` / ``account_projection`` /
-``balance_resolver`` / ``daily_balance_series`` / ``projection_inputs`` /
-``income_service`` / ``pay_period_service``), the LOAN cluster it composes the
-loan shapes from (``resolution_context`` / ``loan_resolution`` / ``loan_loaders``
-/ ``amortization_engine``, plus ``loan_posting_service`` behind a lazy import),
-and the models -- never a consumer package.  ``property_equity_chart`` and
-``home_equity_service`` import FROM here, not the other way round.  Inside the
-package the direction is
-``_grid -> {_cash_flow, _kind_correct} -> _inputs``, ``_liability -> _inputs``,
+``projection_inputs`` / ``income_service`` / ``pay_period_service``) and the
+``cash_ledger`` leaf the cash producers fold over, the LOAN cluster it composes
+the loan shapes from (``resolution_context`` / ``loan_resolution`` /
+``loan_loaders`` / ``amortization_engine``, plus ``loan_posting_service`` behind
+a lazy import), and the models -- never a consumer package.  The CASH balance
+producers moved INTO the seam at plan step D1d: ``_cash_engine`` (``balances_for``
+/ ``balance_as_of_date``), ``_calculator`` (the pure carry-forward walk), and
+``_daily_series`` (the per-day distribution) are now PRIVATE submodules, not
+external cluster deps -- the net-worth producers (``net_worth_kernel`` /
+``net_worth_investment``) still call them from outside until they follow in the
+second D1d commit.  ``property_equity_chart`` and ``home_equity_service`` import
+FROM here, not the other way round.  Inside the package the direction is
+``_grid -> {_cash_flow, _kind_correct} -> _inputs``,
+``{_cash_flow, _kind_correct} -> _cash_engine -> _calculator``,
+``_cash_flow -> _daily_series -> _cash_engine``, ``_liability -> _inputs``,
 ``_secured_debt -> {_loan_figures, _positions, _inputs}``, and
 ``_loan_figures -> _positions -> _plan`` (the figures' payoff is the fold to
-zero, plan step C8d) -- a DAG with ``_inputs`` and ``_plan`` as leaves, so no
-view module imports a sibling that imports it back.
+zero, plan step C8d) -- a DAG with ``_inputs``, ``_plan`` and ``_calculator`` as
+leaves, so no view module imports a sibling that imports it back.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.

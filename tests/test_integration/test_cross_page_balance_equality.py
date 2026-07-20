@@ -68,7 +68,6 @@ import pytest
 
 from app.services import (
     balance_at,
-    balance_resolver,
     calendar_service,
     cash_ledger,
     dashboard_service,
@@ -79,6 +78,7 @@ from app.services import (
     net_worth_kernel,
     savings_dashboard_service,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.resolution_context import BalanceContext
 
 

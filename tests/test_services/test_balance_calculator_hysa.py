@@ -12,7 +12,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum, StatusEnum
-from app.services.balance_calculator import (
+from app.services.balance_at._calculator import (
     calculate_balances,
     calculate_balances_with_interest,
 )

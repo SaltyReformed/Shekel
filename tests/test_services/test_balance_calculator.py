@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
-from app.services import balance_calculator
+from app.services.balance_at import _calculator as balance_calculator
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import account_service

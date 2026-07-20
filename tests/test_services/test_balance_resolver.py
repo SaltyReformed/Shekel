@@ -2,7 +2,7 @@
 Shekel Budget App -- Balance Resolver Producer Tests (Commit 5 / E-25)
 
 Tests for the canonical entries-aware balance producer
-``app.services.balance_resolver.balances_for`` and the matching
+``app.services.balance_at._cash_engine.balances_for`` and the matching
 single-period subtotal ``period_subtotal``.
 
 CRIT-01 / F-009 / symptom #1: pre-Commit-5, the same Projected
@@ -56,8 +56,9 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_calculator, balance_resolver, cash_ledger
-from app.services.balance_resolver import (
+from app.services import cash_ledger
+from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
+from app.services.balance_at._cash_engine import (
     BalanceResult,
     balance_as_of_date,
     balances_for,
@@ -500,9 +501,10 @@ class TestBalancesForEntriesAware:
 
         Mechanically asserts that the silent-degrade short-circuit
         text patterns named by the remediation plan's verification
-        gate are not present in the producer (``balance_resolver.py``),
-        the consumed engine (``balance_calculator.py``), or ANY module of
-        the ``cash_ledger`` package.  A future regression that
+        gate are not present in the producer
+        (``balance_at/_cash_engine.py``), the consumed engine
+        (``balance_at/_calculator.py``), or ANY module of the
+        ``cash_ledger`` package.  A future regression that
         re-introduces the seam in any of them fails this test loud.
 
         ``cash_ledger`` is scanned WHOLE, by enumerating the package rather
@@ -519,9 +521,12 @@ class TestBalancesForEntriesAware:
         """
         services = Path(__file__).resolve().parents[2] / "app" / "services"
         package = sorted((services / "cash_ledger").rglob("*.py"))
+        # The cash producers moved INTO the seam at plan step D1d
+        # (``balance_resolver`` -> ``balance_at._cash_engine``,
+        # ``balance_calculator`` -> ``balance_at._calculator``).
         scanned = [
-            services / "balance_resolver.py",
-            services / "balance_calculator.py",
+            services / "balance_at" / "_cash_engine.py",
+            services / "balance_at" / "_calculator.py",
             *package,
         ]
         # The package must really have been walked, and the walk must have
@@ -1800,9 +1805,10 @@ def test_balance_resolver_exports_only_the_producers():
     ``hasattr(balance_resolver, "resolve_anchor")`` is True and always will be.
     Worth stating rather than working around: this split relocates OWNERSHIP,
     and Python offers no way to stop a caller reaching a re-exported name. What
-    will forbid reaching it is the D-gate package boundary, once these producers
-    move inside the seam at D1d -- structure, not this test. The deterministic
-    guard against a NEW unclassified producer here is W9909, not this either.
+    will forbid reaching it is the D-gate package boundary, now that these
+    producers have moved inside the seam at D1d -- structure, not this test. The
+    deterministic guard against a NEW unclassified producer here is W9909, not
+    this either.
 
     The ``cash_ledger`` half asserts the SUBMODULE, not just the package, which
     is what pins D1c's cohesion split rather than merely its relocation: the
@@ -1815,10 +1821,10 @@ def test_balance_resolver_exports_only_the_producers():
         if not name.startswith("_")
         and getattr(
             getattr(balance_resolver, name), "__module__", None,
-        ) == "app.services.balance_resolver"
+        ) == "app.services.balance_at._cash_engine"
     }
     assert defined_here == {"balances_for", "balance_as_of_date", "BalanceResult"}, (
-        "balance_resolver defines the cash balance producers and ONLY those; "
+        "the cash engine defines the cash balance producers and ONLY those; "
         f"unexpected surface: {sorted(defined_here)}"
     )
 
@@ -1874,12 +1880,12 @@ def test_balance_calculator_defines_only_the_balance_walk():
         if not name.startswith("_")
         and getattr(
             getattr(balance_calculator, name), "__module__", None,
-        ) == "app.services.balance_calculator"
+        ) == "app.services.balance_at._calculator"
     }
     assert defined_here == {
         "calculate_balances", "calculate_balances_with_interest",
     }, (
-        "balance_calculator defines the balance walk and ONLY that; a "
+        "the calculator defines the balance walk and ONLY that; a "
         "non-producer defined here is what stranded five of them before D1c. "
         f"Unexpected surface: {sorted(defined_here)}"
     )
