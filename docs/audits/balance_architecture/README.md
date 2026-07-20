@@ -6,7 +6,7 @@ document are at the bottom (Section 9); the short version: amendments are edits 
 step gets its checkbox ticked with its commit hash HERE, and no new planning documents get
 written for this arc.
 
-**State as of 2026-07-19:** design verified and locked; ALL rulings answered (D1-D5,
+**State as of 2026-07-20:** design verified and locked; ALL rulings answered (D1-D5,
 R-A..R-E, Section 4); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
@@ -107,6 +107,12 @@ ONE invariant (every balance producer is private to `balance_at`) enforced by ON
 step removing the REASON a fence surface exists rather than shrinking it: **D1** (engines in) ->
 **D-ctx** (context in; retires D0a's injection) -> **D-fold** (folds in; the walk stops being a
 "producer") -> **D-gate** -> **D3** (delete, not shrink). Then **X1** (the cash side).
+**D-docs** (`8e9a0517`) and **D-dead** (`cef81202`, the dead net-worth reducer -- and the two
+unpinned `abs` sites its deletion exposed, **N-27**) shipped as D1 prerequisites. **D1 is now
+DECOMPOSED into D1a/D1b/D1c** (developer ruling 2026-07-20): re-measuring its scope with an AST
+scan found the plan's own correction (a) undercounted the out-of-cluster surface 2 -> 4 consumers
+and 2 -> 7 names, and that all 7 are ruled NON-producers -- so the step splits the cluster along
+that line (producers IN, non-producers OUT) instead of moving it wholesale.
 
 ---
 
@@ -1078,17 +1084,76 @@ standing exceptions rather than training the exemption habit it exists to preven
   in the new docstrings, the very class the commit exists to kill; all corrected, and the
   `.pylintrc` comment now states the gate's real boundary (a docstring with no `Args:` section still
   passes -- closing that is 213 findings and its own arc).
-- [ ] **D1** engine cluster private inside the seam package.
-  **Two scope corrections from the 2026-07-19 trace, both measured.** (a) The MOVE is far smaller
-  than the fence-entry count implies: the cluster is already near-fully encapsulated, and the whole
-  out-of-cluster surface in `app/` is one `net_worth_kernel.debt_schedule_rows` call
-  (`savings_dashboard_service/_orchestrator.py:472`), two FALSE `DebtSchedule` type hints, and a
-  `TYPE_CHECKING` `AnchorPoint` import -- 14 test files carry a real import, not the 53 that mention
-  the names. (b) **`account_projection` comes OFF the fence, not INTO the seam**: it is on
-  `_BALANCE_SEAM_MODULES` and carries three non-producer rulings, but it defines no balance producer
-  and CALLS none (it imports only `app.enums`). It is a classifier with 19 consumers; moving it
-  inside would make 19 modules import a private name. Removing it deletes four fence entries and
-  stops calling a classifier a balance engine.
+- [x] **D-dead** `refactor(net-worth): delete the dead net-worth reducer` -- **SHIPPED
+  `cef81202`.** A D1 prerequisite: `net_worth_kernel.sum_net_worth_at_period` had ZERO production
+  callers, so D1 would have moved dead code INTO the seam. The live per-period reduction is
+  `_net_worth._sum_composition_at_period` (banded, strictly richer; `compute_net_worth_series`
+  derives assets/liabilities/net from it), so deletion leaves the rule ONE home, not zero. **The
+  deletion exposed a real hole and closing it was the larger half:** the 5 deleted tests were the
+  repo's only negative-sign liability assertions, and the reduction's `abs(bal)` has TWO sites
+  (hero + per-period band). Every live liability fixture stores a POSITIVE balance, so both
+  `abs` calls could be deleted with the whole suite green (measured: 7466 passed with the band's
+  removed) -- a Credit Card's negative balance would then read as an ASSET, with the hero and the
+  trend contradicting each other on one page. One test per site, each control shown to fire. Also
+  corrected the F2 year-end residue and the seam's stale "DELEGATES the per-kind dispatch to
+  `build_account_balance_map`" claim (wrong for AMORTIZING since C3b3), plus removed the untracked
+  `year_end_summary_service/` namespace-package residue.
+- **D1 (DECOMPOSED, 2026-07-20)** engine cluster private inside the seam package -- **the plan's
+  scope correction (a) was itself WRONG, and re-measuring it forced the decomposition.**
+  It claimed the whole out-of-cluster surface in `app/` was one `debt_schedule_rows` call, two
+  false `DebtSchedule` hints, and a `TYPE_CHECKING` `AnchorPoint` import. An AST scan (regex
+  import-greps miss `from app.services import (\n  balance_resolver,\n)` -- see the Section 8
+  lesson) measures **4 consumer modules reaching 7 names**, and **18** test files with a real
+  import, not 14:
+
+  | consumer | reaches |
+  |---|---|
+  | `routes/accounts/detail.py` | `resolve_anchor`, `interest_by_period_for_account`, `AnchorPoint` |
+  | `routes/grid.py` | `live_amount_overrides`, `period_subtotals`, `PeriodSubtotal` |
+  | `services/investment_dashboard_service.py` | `resolve_anchor` |
+  | `savings_dashboard_service/_orchestrator.py` | `debt_schedule_rows` |
+
+  **Every one of the 7 is an explicitly-ruled NON-producer; not one consumer reaches a balance
+  producer.** So the cluster's entire out-of-cluster surface IS its non-producer set -- which is
+  the D0b signal repeating. Moving the five modules in wholesale would force `balance_at/__init__`
+  to re-export 7 non-balance names (a stored anchor FACT, per-period net SUMS, live override
+  amounts, interest EARNED, amortization ROWS), growing the public seam with things that are
+  definitionally not balance-at-T. **The dual of D0b's lesson: a producer moves deeper INTO the
+  seam; a NON-producer moves OUT of it** -- exactly the reasoning correction (b) already applies to
+  `account_projection`.
+
+  **The code DECIDES most of the split, so it is not a judgment call.** The line is *does this
+  compose a balance producer?* Two must be INSIDE: `interest_by_period_for_account` (runs
+  `_account_interest_projection` -> `calculate_balances_with_interest`, a real money walk, and its
+  own docstring says the two halves share one walk so they "cannot drift onto two copies") and
+  `debt_schedule_rows` (composes `generate_debt_schedules`). Five must be OUTSIDE: the
+  `balance_resolver` call graph shows `resolve_anchor` / `AnchorPoint` / `load_balance_transactions`
+  / `live_amount_overrides` / `period_subtotal(s)` / `PeriodSubtotal` touch NO producer, and the
+  producers depend on THEM -- one-way, no cycle.
+
+  Developer ruling 2026-07-20: split along the ruling line, place the non-producers by cohesion,
+  ship D1c as two commits. `balance_resolver.py` is at EXACTLY 1000 lines (pylint's default
+  `max-module-lines`) because it holds three concerns; the three split at ~250 / ~190 / ~460.
+  Phase X is the reason the grouping matters: **X2 is "a cash account is an event stream"**, and the
+  anchor fact + transaction loader + live amounts ARE that stream -- so D1a builds the layer X2
+  needs instead of a leftover module X2 must re-split.
+  - [ ] **D1a** split `balance_resolver` three ways, all still OUTSIDE the seam: a cash-EVENTS
+    module (`AnchorPoint`, `resolve_anchor`, `load_balance_transactions`, `live_amount_overrides`),
+    a period-FLOWS module (`PeriodSubtotal`, `_subtotal_from_transactions`, `period_subtotal(s)`),
+    and the producer half (`balances_for`, `balance_as_of_date`, `BalanceResult` + 3 privates).
+    Pure moves, no logic change, baseline unmoved by construction. The two non-producer modules come
+    OFF the fence entirely (like `account_projection`), deleting their W9909 rulings.
+  - [ ] **D1b** `account_projection` off the fence, staying where it is. **Correction (b) VERIFIED
+    2026-07-20**: it imports only `app.enums`, defines no producer and calls none. It is a
+    classifier with 18 real importers; moving it inside would make 18 modules import a private name.
+    Deletes four fence entries (one allowlist membership + three non-producer rulings).
+  - [ ] **D1c** move the producers in as private (`_cash_engine` from D1a, plus `_calculator`,
+    `_kernel`, `_investment`, `_daily_series` -- the last four have ZERO out-of-cluster consumers,
+    so they move whole with no new exports). Export exactly TWO new public seam names,
+    `debt_schedule_rows` and `interest_by_period_for_account`, both forced by the code above.
+    Updates 18 test files; collapses `_BALANCE_SEAM_MODULES` to `{app.services.balance_at}` and
+    deletes the engine-cluster W9909 rulings. **Ships as TWO commits** (developer ruling): the cash
+    chain, then the net-worth chain.
 - [ ] **D-ctx** `the read pass's context belongs to the seam that defines it` -- move
   `resolution_context` to `balance_at/_context.py`; `BalanceContext` and `require_scenario` are
   re-exported from the seam's public `__init__` (28 and 3 importers respectively, a one-line import
@@ -1228,6 +1293,7 @@ archive names so old references resolve here.
 | N-24 (C9b) | **Three generation call sites have no `ValidationError` handler, so a refused write 500s.** `create_transfer` can now raise R-C (as it already could raise `_reject_transfer_out_of_loan`), and the recurrence engine fans out through it. `transfers/templates.py:690` wraps generation correctly and C9b added the same wrap to `create_payment_transfer`; `period_population.py:86` (pay-period EXTEND / regenerate -- one bad loan template breaks the whole extension) and `transfers/templates.py:457` (unarchive) do not. Largely closed in practice by C9a: every loan-payment rule now carries a `start_date` (migration-backfilled + synced + bound at creation), and `first_installment_date` is strictly `>` origination for every input, so a bounded rule cannot generate a refused installment. This is the residual exposure for an unbounded rule, and it is partly PRE-EXISTING (the out-of-loan guard has the same reach) -- C9b widens an existing hole rather than inventing one | 500 on extend / unarchive | recorded, deferred | own commit |
 | N-25 (D0a) | **A real runtime import cycle in the balance cluster was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge.** pylint's `_add_imported_module` drops an edge into `_excluded_edges` when `in_type_checking_block(node)`, keyed by the `(importer, imported)` MODULE pair -- so one type-checking import silences the check for EVERY import of that module, including a runtime one elsewhere in the file. `resolution_context.py` had exactly that: a `TYPE_CHECKING` `PlannedPayment` import (line 73) masking the lazy runtime `loan_plan` import inside the method (line 305), which closed a genuine cycle with `balance_at._plan`. Measured both directions on this repo: neutralise the type-only edge on the PRE-D0a code and pylint reports `R0401 (app.services.balance_at._plan -> app.services.resolution_context)`; neutralise it on the D0a code and it reports nothing. Reproduced from scratch on a 3-file probe (8.75/10 -> 10.00/10 by adding a type-only import and nothing else). **The instance is fixed; the CLASS is not** -- the masking still applies anywhere a module imports another both for types and at runtime. Residual risk is bounded by two accidents rather than a gate: a top-level re-import would `ImportError` at load (`_plan` imports `BalanceContext` at module scope), and a function-level one now trips stock `import-outside-toplevel` since D0a deleted the scoped disable. The remaining path is re-adding the lazy import WITH a rationale comment -- which is what the pre-D0a code was, and it passed every gate | a cycle + an inverted dependency, gate-green | **instance closed (`8285fcad`)**; class recorded | D0a (instance); own commit (class, if ever) |
 | N-26 (D0a) | **pylint's stock `import-private-name` (C2701) does not flag `from pkg._module import public_name`** -- only `from pkg import _module`. Measured on a 2-file probe: the first form rates 10.00/10, the second is flagged. The unflagged form is the natural one and the one D1 depends on being caught, so the "engine cluster private inside the seam package" step CANNOT rest on the stock extension; it needs the custom package-privacy checker (D-gate). Recorded because the alternative -- assuming the stock gate covers it -- would have shipped D1's ~60 fence-entry deletion against a fence with a hole in it | a fence that permits the bypass it exists to stop | recorded, closing at D-gate | D-gate |
+| N-27 (D1) | **The net-worth reducer with no callers, and the `abs` nothing pinned.** `net_worth_kernel.sum_net_worth_at_period` had ZERO production callers (app/, scripts/, templates, no dynamic reach) while four docstrings named it as the home of the asset-plus / liability-minus rule -- including the balance seam's own front door. The live reduction had silently moved to `_net_worth._sum_composition_at_period` (banded) with `compute_net_worth_series` deriving from it, and to `compute_net_worth_today` for the hero; the dead copy's only tests graded it against hand-built dicts (the B-17 anti-pattern), so it read as covered. **The deletion exposed the real defect:** those tests were the repo's ONLY negative-sign liability assertions, and the surviving rule has TWO `abs(bal)` sites. Every live liability fixture stores a POSITIVE balance, where `abs` is a no-op -- measured: the per-period band's `abs` could be deleted and all **7466** tests passed. A Credit Card's balance is stored NEGATIVE, so a regression would add a debt to the ASSET side and put the hero and the trend in contradiction on one page | `abs` deletable with a green suite; a $1,000 swing on a $500 card, hero vs trend disagreeing | **closed (`cef81202`)** -- reducer + its 5 tests deleted, W9909 ruling with them (the reverse-staleness guard fired); one new real-path test per `abs` site, each control shown to fire | D-dead |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
@@ -1269,6 +1335,13 @@ archive names so old references resolve here.
   deduction ($495.01). The exclusion set must be the SAME set the inclusion sum draws from -- and the
   plan's own "airtight because as_of=today" reasoning was the trap, because `as_of` is a display date,
   not a UTC one.
+* **Scan imports with an AST, not a regex.** A line-anchored grep cannot see
+  `from app.services import (\n    balance_resolver,\n)`, and that is the form this codebase
+  actually uses. D1's scope was set with one and undercounted its consumers 4 -> 2, the names they
+  reach 7 -> 2, and the test files 18 -> 14 -- which inverted the step's whole design, because the
+  names it could not see were the ones that decide where the boundary goes. The same grep was run
+  again at D1's rebuild and reproduced the same wrong answer before an AST scan caught it. A
+  measurement that silently under-reports is worse than none: it reads as evidence.
 * A safety that is a predicate is not a safety.
 * Boundary predicates standing in for instants or records are this codebase's signature defect
   (the walk clock, the period-start payment date, the archived X0 rule). When a rule says
