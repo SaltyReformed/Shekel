@@ -76,6 +76,7 @@ from app.services.resolution_context import BalanceContext
 from app.utils.dates import add_months, months_between
 
 from ._loan_figures import LoanFigures, loan_figures
+from ._plan import memoized_plan
 from ._positions import positions, window_sample_date
 
 # ``debt_tier`` values: the per-month confidence of the summed debt line, so the
@@ -243,7 +244,7 @@ def _debt_span_upper(
         return max(figures.payoff_date, ctx.as_of)
     if figures.is_retired:
         return ctx.as_of
-    plan = ctx.loan_plan(loan)
+    plan = memoized_plan(loan, ctx)
     if not plan:
         # Reachable, and not a degenerate: a loan whose whole TERM has already
         # matured while it still owes (a balloon, or a long-delinquent loan).

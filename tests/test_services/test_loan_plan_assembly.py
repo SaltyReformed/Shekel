@@ -19,6 +19,7 @@ from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
     fold_forward,
     loan_plan,
+    memoized_plan,
 )
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.resolution_context import BalanceContext
@@ -220,3 +221,75 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     # The genuinely-uncovered July installment still is (ESTIMATED).
     assert date(2026, 7, 1) in dues
     assert all(payment.is_estimated for payment in plan)
+
+
+# ── D0a: the plan memo is INJECTED, and the injection is the constraint ──────
+#
+# The builder used to be imported lazily INSIDE
+# ``BalanceContext.loan_plan``, which made the seam's dependency inversion a real
+# runtime cycle -- one that pylint's ``cyclic-import`` could not see, because a
+# type-only import of the same module excludes the edge from its graph (finding
+# N-25).  It is now passed in, keyed into the memo, and funnelled through the ONE
+# seam entry ``memoized_plan`` so no reader names the builder itself.
+
+
+def test_the_plan_is_built_once_per_read_pass(seed_user, db):
+    """Two seam reads of one loan's forward plan build it ONCE.
+
+    The memo exists because a single ``/savings`` or property render folds the
+    same loan's future from four readers (the scalar, the per-period map, the
+    liability band, the equity chart).  Proven by identity: the second read
+    returns the SAME list object, so no second build happened.
+    """
+    account, ctx = _configured_loan(seed_user, db)
+    assert not ctx._plans, "the memo starts empty"  # pylint: disable=protected-access
+
+    first = memoized_plan(account, ctx)
+    assert first, "precondition: this loan has a non-empty forward plan"
+
+    # The slot the seam's own funnel filled -- the wiring claim.
+    key = (account.id, loan_plan)
+    assert key in ctx._plans  # pylint: disable=protected-access
+    assert ctx._plans[key] is first  # pylint: disable=protected-access
+
+    assert memoized_plan(account, ctx) is first, (
+        "the second read must be served from the memo, not rebuilt"
+    )
+
+
+def test_a_second_builder_gets_its_own_slot(seed_user, db):
+    """A DIFFERENT builder never receives the real builder's plan.
+
+    The memo keys on ``(account, build)``, so "every caller must pass the same
+    builder" is structural rather than a note in a docstring.  Keyed by account
+    alone, this sentinel would silently receive the real plan -- the exact
+    silent-wrong-answer shape ``resolution_context`` exists to replace.
+    """
+    account, ctx = _configured_loan(seed_user, db)
+    real = memoized_plan(account, ctx)
+    assert real, "precondition: the real builder returns a non-empty plan"
+
+    sentinel_calls = []
+
+    def _sentinel(acct, context):
+        """A builder that is not the seam's, returning an empty plan."""
+        sentinel_calls.append((acct.id, context.as_of))
+        return []
+
+    assert ctx.loan_plan(account, _sentinel) == [], (
+        "a second builder must be CALLED, not served the first one's answer"
+    )
+    assert sentinel_calls == [(account.id, _AS_OF)]
+
+    # An EMPTY result must memoize like any other.  The memo tests membership
+    # (``key not in slots``), never the value's truthiness -- a truthiness check
+    # would re-derive an empty plan (and a ``None`` payoff) on every read of every
+    # pass, unbounded, with every other test still green.  Both injected memos
+    # share one mechanism now, so this pins it for the payoff too.
+    assert ctx.loan_plan(account, _sentinel) == []
+    assert sentinel_calls == [(account.id, _AS_OF)], (
+        "an empty plan must be served from the memo, not rebuilt"
+    )
+
+    # ...and none of it clobbered the real slot.
+    assert memoized_plan(account, ctx) is real

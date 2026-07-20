@@ -74,7 +74,7 @@ from app.services.resolution_context import BalanceContext
 from app.utils.dates import to_display_civil_date
 
 from ._inputs import _require_scenario
-from ._plan import plan_interest_in_year
+from ._plan import memoized_plan, plan_interest_in_year
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -277,7 +277,7 @@ def loan_interest_in_year(
         for split in walk.payment_splits
     )
     projected_interest = plan_interest_in_year(
-        debt_schedule.projection_seed, ctx.loan_plan(account), year,
+        debt_schedule.projection_seed, memoized_plan(account, ctx), year,
         exclude_slots=settled_slots,
     )
     return settled_interest + projected_interest

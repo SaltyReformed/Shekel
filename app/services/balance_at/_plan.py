@@ -380,6 +380,51 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
     )
 
 
+def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
+    """Return *account*'s forward plan for this read pass, built at most once.
+
+    The seam's ONE injection site for the plan: it hands :func:`loan_plan` to the
+    read pass's memo
+    (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`), which
+    calls it once per account per pass and replays the result after.  Every seam
+    reader that folds a loan's future -- the balance
+    (:func:`~app.services.balance_at.positions`), the derived payoff, the
+    required-extra search, the projected interest, the equity chart's axis --
+    goes through here, so one ``/savings`` or property render builds a loan's
+    plan exactly once.
+
+    **Why this funnel exists, stated honestly.**  Injecting the builder is what
+    keeps the seam's dependency arrow pointing one way (the context cannot import
+    the seam that imports it), and it buys that DAG at the cost of an ARGUMENT --
+    which this codebase's own Section 8 lesson, "an argument a caller can get
+    wrong is a defect, not a contract", argues against.  The lesson's remedy
+    ("load it, do not take it") is not available here: loading the builder IS the
+    cycle.  So the argument stays and this funnel is the mitigation -- one place
+    that can pass the wrong builder instead of one per reader.  The memo keys on
+    the builder, so a wrong one gets its own slot and cannot corrupt this one's
+    (:meth:`~app.services.resolution_context.BalanceContext._memoized`); what it
+    cannot do is make the caller's answer right.
+
+    Args:
+        account: The loan account to plan.  Must belong to ``ctx.user_id`` (the
+            caller owns the ownership check).
+        ctx: The read pass's
+            :class:`~app.services.resolution_context.BalanceContext`.
+
+    Returns:
+        The pass's memoized :class:`PlannedPayment` list for this loan.
+
+    Raises:
+        ValueError: When ``ctx.scenario`` is None -- on EVERY call, not just the
+            first.  A build that raises is never memoized (the memo assigns only
+            on a returned value), and ``ctx.scenario`` is frozen for the pass, so
+            the guard cannot be worn down by retrying: there is no state in which
+            a no-baseline context starts answering.  That is the property that
+            makes the fail-loud trustworthy rather than first-call-only.
+    """
+    return ctx.loan_plan(account, loan_plan)
+
+
 @dataclass(frozen=True)
 class _PlanSplit:
     """One planned payment's fold result: its visible date and the split parts.

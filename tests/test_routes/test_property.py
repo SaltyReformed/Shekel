@@ -26,6 +26,7 @@ from app.services import (
     home_equity_service,
     property_equity_chart,
 )
+from app.services.balance_at._plan import memoized_plan
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.loan_resolution import (
     contractual_schedule_from_origination,
@@ -820,7 +821,7 @@ class TestPropertyEquityChartProducer:
             )
             # It runs to the plan's last modelled installment, and the debt is
             # still real there (growing, not zero).
-            plan_end = max(payment.due_date for payment in ctx.loan_plan(loan))
+            plan_end = max(payment.due_date for payment in memoized_plan(loan, ctx))
             assert last_month == (plan_end.year, plan_end.month)
             assert series.month_balances[last_month][0] > Decimal("240000.00")
 
@@ -854,7 +855,7 @@ class TestPropertyEquityChartProducer:
             db.session.commit()
 
             ctx = BalanceContext.build(prop.user_id, as_of=today)
-            assert ctx.loan_plan(loan) == [], (
+            assert memoized_plan(loan, ctx) == [], (
                 "precondition: the whole term and its extension must be past, "
                 "or this does not exercise the empty-plan fallback"
             )

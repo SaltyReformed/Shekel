@@ -57,7 +57,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -66,17 +66,22 @@ from app.services.loan_resolution import ResolvedLoan, resolve_loan_bundle
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
-    # Type-only: the memoized forward plan lives in the balance_at seam
-    # (:mod:`app.services.balance_at._plan`), which imports THIS module, so a
-    # runtime import would cycle.  :meth:`BalanceContext.loan_plan` imports the
-    # builder lazily (see there); the annotation resolves through here.
+    # Type-only: the forward plan's RECORD type lives in the balance_at seam
+    # (:mod:`app.services.balance_at._plan`), which imports THIS module.  The
+    # builder is INJECTED (see :meth:`BalanceContext.loan_plan`), so this is the
+    # last remaining edge back into the seam and it carries no runtime import.
     from app.services.balance_at._plan import PlannedPayment
 
-# The shape :meth:`BalanceContext.loan_payoff` takes: the seam's payoff
-# derivation, injected rather than imported so this module never reaches up into
-# the seam that imports it (see that method's docstring).  Named here so the
-# signature reads as a contract instead of a bare callable.
+# What the two INJECTED memos take: a seam derivation this module calls but must
+# never import (see :meth:`_memoized`).  Named so each signature reads as a
+# contract instead of a bare callable.
 PayoffDeriver = Callable[[Account, "BalanceContext"], date | None]
+PlanBuilder = Callable[[Account, "BalanceContext"], "list[PlannedPayment]"]
+
+# What a memo slot's derivation yields.  The two injected memos differ only in
+# this type, so :meth:`BalanceContext._memoized` is generic over it and there is
+# ONE memo mechanism rather than a copy per derived value.
+_Derived = TypeVar("_Derived")
 
 
 @dataclass(frozen=True)
@@ -112,7 +117,7 @@ class BalanceContext:
     _walks: dict[int, LoanLedgerWalk] = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _plans: "dict[int, list[PlannedPayment]]" = field(
+    _plans: "dict[tuple[int, PlanBuilder], list[PlannedPayment]]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     _payoffs: "dict[tuple[int, PayoffDeriver], date | None]" = field(
@@ -250,7 +255,61 @@ class BalanceContext:
             )
         return self._walks[account.id]
 
-    def loan_plan(self, account: Account) -> "list[PlannedPayment]":
+    def _memoized(
+        self,
+        account: Account,
+        derive: "Callable[[Account, BalanceContext], _Derived]",
+        slots: "dict[tuple[int, Callable[[Account, BalanceContext], _Derived]], _Derived]",
+    ) -> "_Derived":
+        """Return ``derive(account, self)`` for this pass, deriving it at most once.
+
+        The ONE memo mechanism behind the two INJECTED memos (:meth:`loan_plan`
+        and :meth:`loan_payoff`).  They differ only in the type they memoize, so
+        they share this rather than each carrying a copy of the same four lines --
+        a copy is where two memos drift on the very property they exist to
+        guarantee.
+
+        **Why these two are injected while :meth:`resolved_loan` and
+        :meth:`loan_walk` are not.**  Those two derive from the ``loan_resolution``
+        / ``loan_ledger`` leaves BELOW this module, so it imports them outright.
+        The plan and the payoff are derived in the ``balance_at`` seam ABOVE it --
+        the seam imports this module -- so importing them back here would invert
+        the cluster's dependency direction.  Taking the derivation as an argument
+        keeps the arrow pointing one way: this layer owns the pass's memo SLOTS,
+        the seam owns what fills them.
+
+        **The key includes the DERIVATION, so the constraint is structural.**  A
+        memo keyed by account alone would hand a second, different *derive* the
+        FIRST one's answer -- silently, with no error and nothing for a checker to
+        see.  That is precisely the "discipline nobody could enforce" this module
+        exists to replace (see its opening paragraph), so the derivation is part of
+        the key rather than a rule in prose: a different function gets its own slot
+        and its own answer.  In practice each has exactly one call site (the seam
+        funnels both), so neither key grows.
+
+        Args:
+            account: The account to derive for.  Must belong to ``user_id`` (the
+                caller owns the ownership check).
+            derive: The seam derivation, called at most once per account per pass.
+                A call that RAISES is not memoized (the slot is assigned only from
+                a returned value), so a fail-loud guard inside it fires on every
+                call rather than being swallowed after the first.
+            slots: The memo dict this derivation's answers live in.  Typed to the
+                exact ``(account id, deriver) -> derived`` shape both fields
+                declare, so the two aliases (``PlanBuilder`` / ``PayoffDeriver``)
+                and this signature cannot drift.
+
+        Returns:
+            The memoized result of ``derive(account, self)``.
+        """
+        key = (account.id, derive)
+        if key not in slots:
+            slots[key] = derive(account, self)
+        return slots[key]
+
+    def loan_plan(
+        self, account: Account, build: "PlanBuilder",
+    ) -> "list[PlannedPayment]":
         """Return *account*'s forward payment plan for this pass, building it once.
 
         The memo that collapses a read pass's N builds of one loan's forward plan
@@ -272,6 +331,18 @@ class BalanceContext:
         plan.  ``positions`` samples that one plan at every forward date, so a plan
         built once serves the whole future axis.
 
+        **The builder is INJECTED, not imported** (:meth:`_memoized`) -- it lives
+        in the ``balance_at`` seam ABOVE this module, so reaching up for it here
+        would invert the cluster's dependency direction.  It used to be imported
+        lazily inside this method, which made the inversion a real runtime cycle
+        (``_plan`` imports this module at load, this method imported ``_plan`` back
+        at first use).  **That cycle was invisible to pylint, and the reason is
+        worth keeping**: ``cyclic-import`` drops an edge from its graph when ANY
+        import of that module sits in a ``TYPE_CHECKING`` block, keyed by module
+        pair -- so the type-only ``PlannedPayment`` import at the top of this file
+        excluded the runtime one below it (finding N-25).  A gate that green-lights
+        the shape is not a reason to keep it.
+
         **NOT fenced (a non-producer).**  The plan is a list of
         :class:`~app.services.balance_at._plan.PlannedPayment` RECORDS carrying
         cash, not a balance-at-T -- the same ruling
@@ -292,21 +363,14 @@ class BalanceContext:
                 account plans to an empty list (the builder's own no-params
                 contract), which the seam never reaches for -- it resolves the
                 schedule first.
+            build: The seam's plan builder, called at most once per account per
+                pass.  See :meth:`_memoized` on why it is a parameter.
 
         Returns:
             The memoized :class:`~app.services.balance_at._plan.PlannedPayment`
             list for this loan under the pass's scenario and ``as_of``.
         """
-        if account.id not in self._plans:
-            # Pylint: ``import-outside-toplevel`` -- the plan builder lives in the
-            # balance_at seam, which imports this module for BalanceContext, so a
-            # top-level import would cycle.  Deferred to first use, after both
-            # modules have loaded (the same cycle-break app/__init__.py uses).
-            from app.services.balance_at._plan import (  # pylint: disable=import-outside-toplevel
-                loan_plan as build_loan_plan,
-            )
-            self._plans[account.id] = build_loan_plan(account, self)
-        return self._plans[account.id]
+        return self._memoized(account, build, self._plans)
 
     def loan_payoff(
         self, account: Account, derive: "PayoffDeriver",
@@ -329,24 +393,9 @@ class BalanceContext:
         (the plan it folds is memoized on those same two pins), so memoizing it
         per account for the pass is exactly as safe as the three memos above.
 
-        **The derivation is INJECTED, not imported, and that is the point.**  The
-        payoff producer lives in the ``balance_at`` seam, which sits ABOVE this
-        module and imports it -- so reaching up for the producer here inverts the
-        cluster's dependency direction.  :meth:`loan_plan` above does reach up,
-        through a deferred import that exists only to break the cycle it creates;
-        pylint reports that shape as ``cyclic-import`` the moment a second such
-        edge lands on it.  Taking the deriver as an argument keeps the arrow
-        pointing one way: this layer owns the pass's memo SLOTS, the seam owns
-        what fills them.  (Migrating :meth:`loan_plan` to the same shape is a
-        Phase-D candidate.)
-
-        **The key includes the DERIVER, so the constraint is structural.**  A memo
-        keyed by account alone would hand a second, different *derive* the FIRST
-        one's answer -- silently, with no error and nothing for a checker to see.
-        That is precisely the "discipline nobody could enforce" this module exists
-        to replace (see its opening paragraph), so the deriver is part of the key
-        rather than a rule in prose: a different function gets its own slot and
-        its own answer. In practice there is exactly one
+        **The derivation is INJECTED, not imported** (:meth:`_memoized`, which owns
+        the rationale and the deriver-in-the-key rule this shares with
+        :meth:`loan_plan`).  In practice there is exactly one deriver here
         (:func:`app.services.balance_at.loan_figures` is the single funnel every
         payoff consumer reads through), so the key never grows.
 
@@ -362,7 +411,7 @@ class BalanceContext:
                 that contract passes through here rather than being softened into
                 a ``None`` a caller would read as "never pays off".
             derive: The seam's payoff derivation, called at most once per account
-                per pass.  See the one-slot-one-derivation note above.
+                per pass.  See :meth:`_memoized` on why it is a parameter.
 
         Returns:
             The memoized payoff date, or ``None`` when the loan is already
@@ -370,10 +419,7 @@ class BalanceContext:
             :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the
             two apart).
         """
-        key = (account.id, derive)
-        if key not in self._payoffs:
-            self._payoffs[key] = derive(account, self)
-        return self._payoffs[key]
+        return self._memoized(account, derive, self._payoffs)
 
 
 def require_scenario(ctx: BalanceContext) -> None:

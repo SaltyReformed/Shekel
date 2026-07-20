@@ -65,7 +65,12 @@ from app.services import net_worth_kernel
 from app.services.loan_ledger import fold_from_walk
 from app.services.resolution_context import BalanceContext, require_scenario
 
-from ._plan import fold_forward, plan_payoff_date, plan_required_extra
+from ._plan import (
+    fold_forward,
+    memoized_plan,
+    plan_payoff_date,
+    plan_required_extra,
+)
 
 
 def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
@@ -218,7 +223,7 @@ def positions(
     if forward_dates:
         # The future is a FOLD over the loan's forward PLAN (step C6b): its
         # projected payment RECORDS at their live cash, then contractual synthesis
-        # beyond the record horizon (``ctx.loan_plan``, memoized so one plan serves
+        # beyond the record horizon (``memoized_plan``, so one plan serves
         # every forward date), folded from the confirmed-present seed
         # (``fold_forward``).  The plan carries the origination gate too -- a date
         # before ``owed_from`` owes ``0.00``.  This replaces the resolver's
@@ -227,7 +232,7 @@ def positions(
         # cash, not the stored amount the walk amortized.
         result.update(fold_forward(
             debt_schedule.projection_seed, debt_schedule.owed_from,
-            ctx.loan_plan(account), forward_dates,
+            memoized_plan(account, ctx), forward_dates,
         ))
     return result
 
@@ -381,7 +386,7 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     """
     return plan_payoff_date(
         _forward_seed(account, ctx, "loan_payoff_date"),
-        ctx.loan_plan(account),
+        memoized_plan(account, ctx),
     )
 
 
@@ -422,6 +427,6 @@ def loan_required_extra(
     """
     return plan_required_extra(
         _forward_seed(account, ctx, "loan_required_extra"),
-        ctx.loan_plan(account),
+        memoized_plan(account, ctx),
         target_date,
     )
