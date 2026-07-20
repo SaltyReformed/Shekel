@@ -92,8 +92,16 @@ filtered unconditionally in `match_periods`, derived from the loan's first contr
 installment; its review caught a `day_of_month` desync that emptied a loan's whole payment
 schedule, and an unbounded second door at `POST /transfers`) and **C9b** (`d5a02ad2`, the R-C
 guard at BOTH write doors on the shared installment derivation; the boundary is `<=`, correcting
-R-C's "before") shipped -- **the C9 arc is CLOSED, and FU-5 with it.** Next: **Phase D**
-(structure replaces policy), or **X1** (the cash side) -- the loan cutover is complete.
+R-C's "before") shipped -- **the C9 arc is CLOSED, and FU-5 with it.** **Phase D is in flight.** Tracing D1
+found that its premise -- a package boundary replacing ~60 name-keyed fence entries -- rested on a
+gate that does not exist: pylint's stock `import-private-name` is fail-OPEN for
+`from pkg._module import name` (**N-26**), and the seam already carried a cross-package private
+import hiding a real runtime cycle that `cyclic-import` structurally could not report
+(**N-25**). So Phase D gained **D0** (the arrow points one way) and **D-gate** (the custom
+package-privacy checker) ahead of D1. **D0a** (`8285fcad`, the plan memo takes its builder; the
+cycle is gone, proven in both directions; the two injected memos land on one mechanism) shipped.
+Next: **D0b** (the plan's fold half moves to the leaf, which closes D3's `fold_forward` fence gap
+STRUCTURALLY), then D-gate, D1, D3 -- then **X1** (the cash side).
 
 ---
 
@@ -970,7 +978,64 @@ what is written here is decided in the commit itself, not in a new document.
 
 ### Phase D -- structure replaces policy
 
+- **D0 (added 2026-07-19)** `the seam's dependency arrow points one way` -- not in the plan as
+  written; the trace for D1 found it, and D1 cannot be honest without it. D1's whole claim is that
+  a PACKAGE BOUNDARY can replace ~60 name-keyed fence entries, which holds only if something
+  enforces the boundary. Two measurements decided the shape. (1) **pylint's stock
+  `import-private-name` is fail-OPEN for the exact form D1 needs**: `from pkg._engine import
+  build_balance_map` rates 10.00/10 while only `from pkg import _engine` is flagged (**N-26**), so
+  the gate must be a custom checker. (2) **The seam already had a cross-package private import that
+  a real runtime cycle hid behind** (**N-25**). D0 clears it so the gate can ship fail-CLOSED with
+  no type-checking exemption -- an exemption being the very shape N-25 is made of.
+  - [x] **D0a** `refactor(balance): the read pass's plan memo takes its builder` -- **SHIPPED
+    `8285fcad`.** `BalanceContext.loan_plan` INJECTS the builder (C8d's `loan_payoff` shape,
+    developer-ratified there) instead of importing it lazily mid-method; the runtime cycle
+    `balance_at._plan -> resolution_context -> balance_at._plan` is gone, proven in both directions
+    by neutralising the masking edge (see N-25). Two copies of one four-line memo collapse onto a
+    generic `BalanceContext._memoized`, whose `key not in slots` membership test is load-bearing and
+    now SHARED -- a truthiness check would re-derive an empty plan and a `None` payoff on every read
+    forever, which the refactor made a two-memo failure instead of one. The builder is funnelled
+    through ONE `balance_at._plan.memoized_plan` rather than named at each of the five seam readers,
+    since the memo keys on the derivation handed to it. Honest about the trade in the docstring:
+    injection buys the DAG at the cost of an argument, which Section 8 argues against, and the
+    lesson's remedy ("load it, do not take it") is unavailable because loading it IS the cycle.
+    Three controls shown to fire. Adversarial review fixed four pre-commit: a provably false
+    `Raises:` contract (a raised build is never memoized, so the guard fires on EVERY call -- the
+    property that makes it trustworthy), an out-of-scope rewrite of the frozen-fence ruling, the
+    untested "an empty result memoizes" property, and a bare `Callable` that described neither call
+    site. Baseline UNMOVED on the dev clone (Mortgage $177,277.97, Van Loan $15,663.59; payoffs
+    2048-12-01 / 2029-02-22); full suite 7470, pylint 10.00.
+  - [ ] **D0b** `the plan's fold is leaf-native; its builder stays in the seam` -- relocate
+    `_plan.py`'s FOLD half (~461 of its 814 lines: `PlannedPayment`, `_PlanSplit`, `_split_plan`,
+    `fold_forward`, `plan_payoff_date`, `plan_required_extra`, `plan_interest_in_year`,
+    `_paydown_steps`, `_sample_from_steps`) to the `loan_ledger` leaf, leaving the ~250-line
+    resolver-dependent BUILDER (`loan_plan`, `_planned_from_shadows`, `_estimated_from_contract`,
+    `_ForwardInputs`) in the seam. Measured: the fold half touches only `split_payment_cash` /
+    `sample_cumulative` / `period_for_date`, all already leaf. Three things fall out. The plan
+    becomes symmetric with the walk (the leaf owns the record TYPE and the fold; the seam owns
+    CONSTRUCTION), so `resolution_context` names `PlannedPayment` from the leaf it already imports
+    and the last cross-package private import into the seam is gone. `fold_forward` lands inside
+    W9909's scope automatically, **closing D3's "name-fence `fold_forward`" (the C6b L1 gap)
+    structurally rather than by adding a name to the frozen fence** -- which is Phase D's thesis
+    applied to itself. And C3a's deferred "it moves to `loan_ledger` when fold-native" is settled:
+    the FOLD is fold-native, only the builder is not.
+- [ ] **D-gate** `a package's private modules are private` -- the custom checker N-26 forces:
+  a module outside package `P` may not import `P._x`, nor any name from it. Name-INDEPENDENT and
+  fail-closed, unlike the name-keyed deny list it lets D3 delete. Measured over `app/`: the rule is
+  already clean today except the one edge D0 removes, so it ships green with negative controls.
+  Type-checking imports are NOT exempt -- a public signature's type sourced from another package's
+  private module is a boundary leak, and an exemption there is exactly N-25's shape.
 - [ ] **D1** engine cluster private inside the seam package (~60 fence entries delete).
+  **Two scope corrections from the 2026-07-19 trace, both measured.** (a) The MOVE is far smaller
+  than the fence-entry count implies: the cluster is already near-fully encapsulated, and the whole
+  out-of-cluster surface in `app/` is one `net_worth_kernel.debt_schedule_rows` call
+  (`savings_dashboard_service/_orchestrator.py:472`), two FALSE `DebtSchedule` type hints, and a
+  `TYPE_CHECKING` `AnchorPoint` import -- 14 test files carry a real import, not the 53 that mention
+  the names. (b) **`account_projection` comes OFF the fence, not INTO the seam**: it is on
+  `_BALANCE_SEAM_MODULES` and carries three non-producer rulings, but it defines no balance producer
+  and CALLS none (it imports only `app.enums`). It is a classifier with 19 consumers; moving it
+  inside would make 19 modules import a private name. Removing it deletes four fence entries and
+  stops calling a classifier a balance engine.
 - [ ] **D2** distinct types: cash-flow balance vs net-worth balance.
 - [ ] **D3** ~~retire W9905;~~ shrink W9906 to a smoke alarm. **W9905 already RETIRED at C6b**
   (`f445aa77`) -- C6b deleted the only two functions it guarded, so it moved earlier. Name-fence
@@ -1077,6 +1142,8 @@ archive names so old references resolve here.
 | N-17 (C8d) | **Three modules sit on the W9906 resolver allowlist that no longer resolve a loan.** `_LOAN_RESOLVER_MODULES` exempts `loan_payment_service`, `_transfer_loan_posting`, and `app.routes.loan` from the `resolve_account_loan` / `resolve_loan_seeded` / `resolve_loan_bundle` fence, but a whole-repo grep finds NO call to any of the three in any of them (only docstring mentions) -- they shed their direct resolves at C4 and C8a. After C8d removed the fourth (`loan_recurrence_sync`, whose exemption this step actually killed), **`resolution_context` is the only remaining caller in `app/`** -- the arc's "one resolution site" goal, reached without anyone noticing. A stale ALLOWLIST entry is fail-OPEN for that module (it permits a bypass nobody currently makes), not a wrong number, so it is a guard gap rather than a live defect. Removing the other three belongs to the Phase-D fence pass, not to C8d's scope | -- | recorded, deferred | D1 / D3 |
 | N-23 (C9b) | **A refused loan payment now fails an entire carry-forward batch.** Carry-forward moves transfers via `update_transfer(pay_period_id=...)`, which since C9b runs the R-C guard, and `routes/transactions/carry_forward.py` rolls the whole batch back on `ValidationError` -- so one un-movable loan payment costs the user every other carried item. The guard's DECISION is correct there (the moved payment would still be erased); the blast radius is the defect. Reachable on a row the C9a purge deliberately leaves: an ad-hoc (template-less) or `is_override` pre-origination payment on a future-originating loan. Worked: loan originates 2026-08-01 payment_day 1, current period 2026-07-10..07-23, no due_date -> installment 2026-08-01 `<=` origination -> refused -> 400, nothing carries. Fixing it means skip-and-report (leave the row in the source period, count it in the message), which is a change to carry-forward's batch semantics rather than to the guard -- a developer call, not a touch-up. Both stale docstrings that claimed the old raise conditions are corrected in-commit | whole batch lost | recorded, deferred | own commit |
 | N-24 (C9b) | **Three generation call sites have no `ValidationError` handler, so a refused write 500s.** `create_transfer` can now raise R-C (as it already could raise `_reject_transfer_out_of_loan`), and the recurrence engine fans out through it. `transfers/templates.py:690` wraps generation correctly and C9b added the same wrap to `create_payment_transfer`; `period_population.py:86` (pay-period EXTEND / regenerate -- one bad loan template breaks the whole extension) and `transfers/templates.py:457` (unarchive) do not. Largely closed in practice by C9a: every loan-payment rule now carries a `start_date` (migration-backfilled + synced + bound at creation), and `first_installment_date` is strictly `>` origination for every input, so a bounded rule cannot generate a refused installment. This is the residual exposure for an unbounded rule, and it is partly PRE-EXISTING (the out-of-loan guard has the same reach) -- C9b widens an existing hole rather than inventing one | 500 on extend / unarchive | recorded, deferred | own commit |
+| N-25 (D0a) | **A real runtime import cycle in the balance cluster was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge.** pylint's `_add_imported_module` drops an edge into `_excluded_edges` when `in_type_checking_block(node)`, keyed by the `(importer, imported)` MODULE pair -- so one type-checking import silences the check for EVERY import of that module, including a runtime one elsewhere in the file. `resolution_context.py` had exactly that: a `TYPE_CHECKING` `PlannedPayment` import (line 73) masking the lazy runtime `loan_plan` import inside the method (line 305), which closed a genuine cycle with `balance_at._plan`. Measured both directions on this repo: neutralise the type-only edge on the PRE-D0a code and pylint reports `R0401 (app.services.balance_at._plan -> app.services.resolution_context)`; neutralise it on the D0a code and it reports nothing. Reproduced from scratch on a 3-file probe (8.75/10 -> 10.00/10 by adding a type-only import and nothing else). **The instance is fixed; the CLASS is not** -- the masking still applies anywhere a module imports another both for types and at runtime. Residual risk is bounded by two accidents rather than a gate: a top-level re-import would `ImportError` at load (`_plan` imports `BalanceContext` at module scope), and a function-level one now trips stock `import-outside-toplevel` since D0a deleted the scoped disable. The remaining path is re-adding the lazy import WITH a rationale comment -- which is what the pre-D0a code was, and it passed every gate | a cycle + an inverted dependency, gate-green | **instance closed (`8285fcad`)**; class recorded | D0a (instance); own commit (class, if ever) |
+| N-26 (D0a) | **pylint's stock `import-private-name` (C2701) does not flag `from pkg._module import public_name`** -- only `from pkg import _module`. Measured on a 2-file probe: the first form rates 10.00/10, the second is flagged. The unflagged form is the natural one and the one D1 depends on being caught, so the "engine cluster private inside the seam package" step CANNOT rest on the stock extension; it needs the custom package-privacy checker (D-gate). Recorded because the alternative -- assuming the stock gate covers it -- would have shipped D1's ~60 fence-entry deletion against a fence with a hole in it | a fence that permits the bypass it exists to stop | recorded, closing at D-gate | D-gate |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
