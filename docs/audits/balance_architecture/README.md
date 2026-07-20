@@ -1064,6 +1064,20 @@ module below the seam with a real `BalanceContext` import (`loan_ledger/_fold.py
 until the engines have. **D1 precedes D-ctx**, and D-gate lands LAST so it ships green with zero
 standing exceptions rather than training the exemption habit it exists to prevent.
 
+- [x] **D-docs** `fix(pylint): a private function's docstring is gated like a public one` --
+  **SHIPPED `8e9a0517`.** A D1 prerequisite, found tracing it: the two FALSE
+  `dict[int, net_worth_kernel.DebtSchedule]` hints in `savings_dashboard_service/_net_worth.py`
+  (the caller passes ROW LISTS) were the only reason that module imported the kernel at all, so D1
+  could not cleanly make the kernel private until they were corrected. Root cause was a gate hole:
+  pylint's `no-docstring-rgx` defaults to `^_`, exempting every private function from needing a
+  docstring AND -- docparams keying on the same option -- from having one CHECKED, which is most of
+  this codebase. Now `^__repr__$` (measured: 60 findings without the exemption, 58 of them model
+  `__repr__`; 7 with it, all fixed). Two of the 7 were a config defect, not a doc defect:
+  `ignored-argument-names` matched `^kwargs$` by NAME, so it exempted two ORDINARY parameters that
+  are genuinely read -- both renamed `updates`. Its own adversarial review caught FOUR false claims
+  in the new docstrings, the very class the commit exists to kill; all corrected, and the
+  `.pylintrc` comment now states the gate's real boundary (a docstring with no `Args:` section still
+  passes -- closing that is 213 findings and its own arc).
 - [ ] **D1** engine cluster private inside the seam package.
   **Two scope corrections from the 2026-07-19 trace, both measured.** (a) The MOVE is far smaller
   than the fence-entry count implies: the cluster is already near-fully encapsulated, and the whole
