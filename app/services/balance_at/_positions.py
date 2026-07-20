@@ -33,7 +33,7 @@ and a projected payment folds its LIVE cash, so the loan balance and the checkin
 side move together.  The seed and the origination boundary still come from the
 resolver bundle (:func:`app.services.balance_at._kernel.generate_debt_schedules`),
 and the plan is memoized on the read pass's context
-(:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) so one build
+(:meth:`~app.services.balance_at.BalanceContext.loan_plan`) so one build
 serves every forward date and every producer that reads it.
 
 **Why here, and not in the ``loan_ledger`` leaf.**  Section 3's end-state has the
@@ -62,8 +62,8 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services.loan_ledger import fold_from_walk
-from app.services.resolution_context import BalanceContext, require_scenario
 
+from ._context import BalanceContext, require_scenario
 from . import _kernel
 from ._plan import (
     fold_forward,
@@ -113,7 +113,7 @@ def _forward_seed(account: Account, ctx: BalanceContext, caller: str) -> Decimal
 
     Args:
         account: The amortizing loan account.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         caller: The public function's name, for the fail-loud message.
 
     Returns:
@@ -152,7 +152,7 @@ def positions(
       the sum-of-postings reader the seam read before the cutover.
     * **A date after the NOW, OR any date for a loan not yet originated by it: the
       forward PLAN fold** (:func:`~app.services.balance_at._plan.fold_forward` over
-      the memoized :meth:`~app.services.resolution_context.BalanceContext.loan_plan`)
+      the memoized :meth:`~app.services.balance_at.BalanceContext.loan_plan`)
       -- the confirmed-present seed
       (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`) folded
       forward over the loan's projected payment records and contractual synthesis,
@@ -169,7 +169,7 @@ def positions(
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its scenario scopes the fold and the resolver; its ``as_of`` is the
             resolver's NOW and the past/future boundary (the SAME ``ctx.as_of`` the
             scalar splits on, so the two cannot disagree about which dates are
@@ -297,7 +297,7 @@ def positions_period_map(
             :class:`~app.models.loan_params.LoanParams`) is the seam dispatch's
             cash-degrade case, resolved before this is reached, so
             :func:`positions` raises for it.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its ``as_of`` is the resolver's NOW and the begun/future boundary
             (the SAME ``ctx.as_of`` the kernel map splices on).
         periods: The pay periods to key the map by, in the desired output order.
@@ -337,7 +337,7 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     The payoff-date sibling of :func:`positions`: it composes the SAME confirmed
     present seed (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`)
     and the SAME memoized forward plan
-    (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`) and folds
+    (:meth:`~app.services.balance_at.BalanceContext.loan_plan`) and folds
     them to zero (:func:`~app.services.balance_at._plan.plan_payoff_date`), so the
     payoff is the date :func:`positions` shows the balance reaching ``0.00`` -- the
     chip, the equity chart, and the payoff cannot disagree about WHETHER the loan
@@ -370,7 +370,7 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its scenario scopes the resolution and plan, and its ``as_of`` is
             the projection's now (the ``max(due, as_of + 1d)`` clamp floor).
 
@@ -410,7 +410,7 @@ def loan_required_extra(
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         target_date: The date the user wants the loan retired by.
 
     Returns:

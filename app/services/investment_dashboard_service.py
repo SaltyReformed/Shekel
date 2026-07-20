@@ -58,7 +58,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_account,
     load_shadow_income_contributions_for_account,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.dates import to_display_date
 from app.utils.money import percent_complete, round_money
 

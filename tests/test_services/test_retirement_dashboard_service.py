@@ -25,7 +25,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services import (
     account_service,
     balance_at,

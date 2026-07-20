@@ -55,7 +55,7 @@ from app.services.balance_at._plan import (
     plan_required_extra,
 )
 from app.services.loan_resolution import contractual_schedule_from_origination
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from tests._test_helpers import (
     create_loan_account,
@@ -559,7 +559,7 @@ class TestPayoffCutover:
     ):
         """Reading the figures twice folds the plan to zero ONCE.
 
-        The memo (:meth:`~app.services.resolution_context.BalanceContext.loan_payoff`)
+        The memo (:meth:`~app.services.balance_at.BalanceContext.loan_payoff`)
         exists because a single ``/savings`` render asks two callers for the same
         loan's figures.  Proven by inspecting the pass's memo directly: after
         ``loan_figures`` runs, the slot keyed by the REAL deriver is populated, so
@@ -594,7 +594,7 @@ class TestPayoffCutover:
         The memo keys on ``(account, derive)``, so the "every caller must pass the
         same function" rule is structural rather than a note in a docstring.  Keyed
         by account alone, this sentinel would silently receive the real payoff --
-        the exact silent-wrong-answer shape ``resolution_context`` exists to
+        the exact silent-wrong-answer shape ``BalanceContext`` exists to
         replace.
         """
         with app.app_context():

@@ -21,7 +21,7 @@ from app.services import pay_period_service
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service._types import (
     _AccountParams,
     _DashboardCoreData,
@@ -36,7 +36,7 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
     transactions, so this loader no longer pre-fetches a transaction set.
 
     It builds the read pass's
-    :class:`~app.services.resolution_context.BalanceContext` (resolving the
+    :class:`~app.services.balance_at.BalanceContext` (resolving the
     baseline scenario once) unless the caller supplies one.  Every producer in
     the build then shares it, so each loan is resolved exactly once for the whole
     render rather than once per surface that asks.
@@ -44,7 +44,7 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An existing
-            :class:`~app.services.resolution_context.BalanceContext` to reuse, or
+            :class:`~app.services.balance_at.BalanceContext` to reuse, or
             ``None`` to build one for this pass.  A caller that has already
             started a read pass (the budget dashboard's tracks section runs three
             savings producers back to back) passes its own so all of them share

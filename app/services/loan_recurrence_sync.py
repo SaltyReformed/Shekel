@@ -51,7 +51,7 @@ from app.services import balance_at, loan_loaders, rate_period_engine
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.log_events import (
     BUSINESS,
     EVT_LOAN_RECURRENCE_END_DATE_UPDATED,
@@ -230,7 +230,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
 
     **A FRESH context per call, deliberately.**  This runs mid-mutation, so it
     must see the loan as the just-flushed write left it; a
-    :class:`~app.services.resolution_context.BalanceContext` is a plain value with
+    :class:`~app.services.balance_at.BalanceContext` is a plain value with
     a memo scoped to one read, never a request cache, so building one here is how
     a writer reads post-write state (see that module's "read pass, not request").
 

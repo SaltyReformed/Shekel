@@ -32,7 +32,7 @@ from app.services.loan_resolution import (
     contractual_schedule_from_origination,
     resolve_account_loan,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from app.utils.money import round_money
 from tests._test_helpers import (
@@ -292,7 +292,7 @@ def _series_for(prop, loan, today):
     also passes to ``build_property_equity_chart``, and building the context off an
     independent ``date.today()`` would resolve the series at one date while the
     chart was built at another -- silently, and only correct by the grace of
-    ``freeze_today`` happening to patch ``resolution_context`` too.
+    ``freeze_today`` happening to patch ``balance_at._context`` too.
 
     Args:
         prop: The Property account the loan is secured by.
@@ -1160,7 +1160,7 @@ class TestPropertyDetailChartContext:
         """Each secured loan is resolved exactly once per GET (D1: no double resolve).
 
         The equity hero, the LTV, and the debt chart all read the request's ONE
-        :class:`~app.services.resolution_context.BalanceContext`, so a spy on the
+        :class:`~app.services.balance_at.BalanceContext`, so a spy on the
         db-facing resolver (``resolve_loan_bundle`` -- the single load the memo
         wraps) sees exactly one call for the secured loan.
 
@@ -1184,8 +1184,8 @@ class TestPropertyDetailChartContext:
 
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
-        from app.services import (  # pylint: disable=import-outside-toplevel
-            resolution_context,
+        from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+            _context as resolution_context,
         )
 
         calls = []

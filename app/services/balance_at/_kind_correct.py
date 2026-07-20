@@ -29,7 +29,7 @@ from app.services.account_projection import (
 from app.services.loan_ledger import find_period_containing_date
 from app.utils.money import round_money
 
-from app.services.resolution_context import BalanceContext
+from ._context import BalanceContext
 
 from . import _cash_engine, _investment
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
@@ -81,7 +81,7 @@ def balance_map(
         account: The account to project.  Its ``user_id`` scopes the
             deduction / gross loaders; its ``account_type`` drives the
             classifier.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the producers; its ``as_of`` is the resolver's
             now, and it memoizes each loan's resolution for the pass).
         periods: The pay periods to project over, ordered by
@@ -138,7 +138,7 @@ def build_maps(
 
     Args:
         accounts: The accounts to project (the same user's active set).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the dense domain -- pass
             ALL of the user's periods so the cash / investment paths have
             their anchor seed).
@@ -227,7 +227,7 @@ def balance_at(
 
     Args:
         account: The account to value.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the resolver / loan schedule; its ``as_of`` is
             the resolver's NOW -- see above).
         as_of: The calendar date to value the account at.
@@ -317,7 +317,7 @@ def investment_seed_map(
 
     Args:
         account: The investment account.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the resolver).
         periods: The pay periods to span (ordered by ``period_index``; must
             include the anchor so the resolver has its running seed).

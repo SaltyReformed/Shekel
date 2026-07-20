@@ -43,7 +43,7 @@ from app.services.tax_report_service import (
     TaxReport,
     compute_tax_report,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
     create_loan_with_trueup,

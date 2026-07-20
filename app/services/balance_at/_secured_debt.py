@@ -72,9 +72,9 @@ from app.services.loan_resolution import (
     ResolvedLoan,
     contractual_schedule_from_origination,
 )
-from app.services.resolution_context import BalanceContext
 from app.utils.dates import add_months, months_between
 
+from ._context import BalanceContext
 from ._loan_figures import LoanFigures, loan_figures
 from ._plan import memoized_plan
 from ._positions import positions, window_sample_date
@@ -224,7 +224,7 @@ def _debt_span_upper(
       (negative amortization, or an underpayment too severe for the
       post-contractual extension).  It still owes money for every month ahead, so
       the span runs to the last installment the PLAN models
-      (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`, already
+      (:meth:`~app.services.balance_at.BalanceContext.loan_plan`, already
       memoized -- no extra derivation).  Falling back to *as_of* here would draw
       NO forward debt for a loan that never stops owing, and the property's
       appreciation line would carry on beside it -- future equity overstated by
@@ -235,7 +235,7 @@ def _debt_span_upper(
         figures: Its seam :class:`~app.services.balance_at.LoanFigures` (the
             derived payoff and the retired predicate), resolved once by the
             caller.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         The span's last date, never earlier than ``ctx.as_of``.
@@ -305,7 +305,7 @@ def _loan_month_balances(
             and the /savings chip show -- the chart's axis cannot end at a
             different month from the payoff rendered beside it.
         ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`; its ``as_of``
+            :class:`~app.services.balance_at.BalanceContext`; its ``as_of``
             is the fold/projection boundary that :func:`positions` also splits on.
 
     Returns:
@@ -366,7 +366,7 @@ def secured_loan_series(
         property_account: The Property :class:`~app.models.account.Account`; its
             ``secured_loans`` backref lists the liabilities it secures.
         ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`.
+            :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         One :class:`SecuredLoanSeries` per configured secured loan.

@@ -40,7 +40,7 @@ from app.models.user import UserSettings
 from app.services import balance_at, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import is_projected_clause
 
 _ZERO = Decimal("0")

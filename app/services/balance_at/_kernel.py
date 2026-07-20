@@ -47,9 +47,9 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.loan_resolution import ResolvedLoan
-from app.services.resolution_context import BalanceContext
 from app.utils.balance_predicates import account_period_scope_clause
 
+from ._context import BalanceContext
 from . import _calculator, _cash_engine, _investment
 
 # The anchor-balance fallback for an account whose ``current_anchor_balance``
@@ -109,7 +109,7 @@ class DebtSchedule:
     """Everything the FORWARD projection needs to value one loan at any date.
 
     The outputs of ONE resolution
-    (:meth:`~app.services.resolution_context.BalanceContext.loan`), bundled so
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`), bundled so
     the schedule, its seed, and the loan's origination cannot come from
     different places and drift.
 
@@ -143,7 +143,7 @@ def generate_debt_schedules(
     """Return each debt account's :class:`DebtSchedule` from the pass's resolutions.
 
     Projects the read pass's memoized loan resolutions
-    (:meth:`~app.services.resolution_context.BalanceContext.loan`) into the narrow
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`) into the narrow
     ``(schedule, projection_seed, owed_from)`` bundle the balance dispatcher
     needs.
     Same resolver output the loan dashboard and the /savings debt card consume,
@@ -163,7 +163,7 @@ def generate_debt_schedules(
             context cannot resolve (no ``LoanParams`` -- not a configured loan)
             is absent from the result, and the caller's per-kind dispatch then
             falls through to its non-loan path.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (it pins the scenario and the as-of, and memoizes each resolution).
 
     Returns:
@@ -254,7 +254,7 @@ def debt_schedule_rows(
 
     Args:
         debt_accounts: The amortizing loan accounts whose rows to return.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (each loan is resolved at most once for the pass).
 
     Returns:
@@ -484,7 +484,7 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
 
     Args:
         account: The account to project.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Only its ``scenario`` is read here -- every remaining branch is a
             leaf producer with no clock -- so the branches take ``ctx.scenario``.
             The whole context is threaded (rather than a bare ``scenario``)
@@ -598,7 +598,7 @@ def account_balance_map_from_inputs(
 
     Args:
         account: The account to project.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over.
         inputs: The per-set projection bundle (see the duck-typed contract
             above).

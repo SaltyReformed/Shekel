@@ -42,9 +42,9 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.resolution_context import BalanceContext
 from app.utils.money import round_money
 
+from ._context import BalanceContext
 from . import _cash_engine, _cash_flow, _kind_correct
 from ._inputs import ZERO, _require_scenario
 
@@ -206,7 +206,7 @@ def grid_balance_view(
     Args:
         account: The account to project (the grid / obligations account; any
             kind).  ``classify_account`` drives the dispatch.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over, ordered by
             ``period_index`` (pass the full anchor-forward set so the
             previous-period premium baseline is available at the window's

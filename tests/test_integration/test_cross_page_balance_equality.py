@@ -79,7 +79,7 @@ from app.services import (
 )
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import _cash_engine as balance_resolver
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────

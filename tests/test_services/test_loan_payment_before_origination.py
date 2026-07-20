@@ -108,7 +108,7 @@ class TestTheBoundaryIsInclusive:
           principal = 1,200.00 - 833.33 - 0.00 escrow = 366.67
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.resolution_context import BalanceContext
+        from app.services.balance_at import BalanceContext
 
         acct, checking = loan_and_checking
         with app.app_context():
@@ -417,7 +417,7 @@ class TestTheMoneyItProtects:
         Receivable) -- while the cash has left checking.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.resolution_context import BalanceContext
+        from app.services.balance_at import BalanceContext
 
         acct, checking = loan_and_checking
         with app.app_context():

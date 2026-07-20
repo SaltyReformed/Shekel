@@ -41,7 +41,7 @@ from app.services.loan_posting_service import (
     confirmed_loan_payment_history,
     loan_balance_anchor_history,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 
@@ -433,7 +433,7 @@ def _build_measured_context(account, balance_ctx: BalanceContext, current_year):
         account: The loan account (its ``id`` scopes the history / anchor readers;
             the object itself keys the seam's memoized walk for the chips).
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext` -- its
+            :class:`~app.services.balance_at.BalanceContext` -- its
             ``scenario_id`` scopes every producer and its ``as_of``
             (``date.today()``) is the history / anchor display boundary.  Shared
             with the balance hero so the chips fold the memoized walk.

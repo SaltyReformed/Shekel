@@ -22,7 +22,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.resolution_context import BalanceContext
+from ._context import BalanceContext
 
 from ._inputs import ZERO
 from ._positions import positions
@@ -147,7 +147,7 @@ def liability_owed_at_dates(
             result).  ``account_type`` must be loaded -- the canonical
             :func:`~app.services.account_projection.classify_account` selects the
             amortizing subset.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Its ``as_of`` is the present/future boundary AND the "now" its
             *sample_dates* were built against -- one clock, so this guard cannot
             reject the caller's own index-0 sample.  Its ``scenario`` may be

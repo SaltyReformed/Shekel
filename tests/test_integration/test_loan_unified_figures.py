@@ -37,7 +37,7 @@ from app.services import balance_at, loan_loaders, loan_payment_service, loan_po
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.utils.dates import add_months
 from app.utils.money import round_money
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     create_loan_account,
     freeze_today,

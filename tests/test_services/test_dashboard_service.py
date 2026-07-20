@@ -24,7 +24,7 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import balance_at, dashboard_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_txn as _add_txn,
     make_investment_account,

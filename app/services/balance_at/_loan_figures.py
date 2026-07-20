@@ -37,7 +37,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services.loan_resolution import ResolvedLoan
-from app.services.resolution_context import BalanceContext
+from ._context import BalanceContext
 
 # The payoff derivation this module INJECTS into the read pass's memo (see
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
@@ -192,7 +192,7 @@ def loan_terms(
 
     The scenario-INDEPENDENT read (plan step C8e): payment, rate, originated, ARM,
     all off the read pass's ONE memoized resolution
-    (:meth:`~app.services.resolution_context.BalanceContext.resolved_loan`).  It
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`).  It
     needs no baseline scenario and derives no balance, so the loan's non-balance
     WRITE surfaces -- the escrow editor, the rate-history swap, the recurring
     payment's amount -- take this rather than the scenario-scoped
@@ -208,7 +208,7 @@ def loan_terms(
     Args:
         account: The account to read.  A non-loan (no ``LoanParams``) returns
             ``None``.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Its ``scenario`` may be ``None``.
 
     Returns:
@@ -250,7 +250,7 @@ def loan_figures(
     """Return *account*'s scenario-scoped loan figures, or ``None`` if not a loan.
 
     Reads the read pass's ONE memoized resolution
-    (:meth:`~app.services.resolution_context.BalanceContext.resolved_loan`), so
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`), so
     these figures and the balance the same consumer reads from
     :func:`~app.services.balance_at.balance_at` come from the SAME resolution --
     identical by construction, not by two producers agreeing.  The payoff is the
@@ -258,7 +258,7 @@ def loan_figures(
     every payoff consumer reads through (the loan card, the /savings cockpit and
     Horizon, the equity chart's axis), so it is where the derivation is INJECTED
     into the pass's memo
-    (:meth:`~app.services.resolution_context.BalanceContext.loan_payoff` --
+    (:meth:`~app.services.balance_at.BalanceContext.loan_payoff` --
     injected rather than imported there, so the context never reaches up into the
     seam that imports it).
 
@@ -273,7 +273,7 @@ def loan_figures(
     Args:
         account: The account to read.  A non-loan (no ``LoanParams``) returns
             ``None``; the caller renders its non-loan tile.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         The :class:`LoanFigures`, or ``None`` when *account* is not a configured

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.services import balance_at
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 ZERO = Decimal("0")
 # LTV is a display ratio (debt / value), not a money amount; four-place
@@ -97,7 +97,7 @@ def resolve_home_equity(
     last-set valuation, the honest "as of today" figure -- the appreciation
     projection is a forward estimate, not a known present value).  Each loan in
     ``property_account.secured_loans`` is valued through the balance-at seam off
-    the read pass's :class:`~app.services.resolution_context.BalanceContext`, so
+    the read pass's :class:`~app.services.balance_at.BalanceContext`, so
     its contribution is the SAME figure the debt card and the net-worth liability
     column read -- one resolution, not a parallel one that has to agree.  A linked
     account with no ``LoanParams`` row (not a configured loan) contributes
@@ -116,7 +116,7 @@ def resolve_home_equity(
         property_account: The Property :class:`~app.models.account.Account`
             (its ``secured_loans`` backref lists the liabilities it
             secures).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the payment history; its ``as_of`` is the
             resolver's now).
 

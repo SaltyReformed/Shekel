@@ -15,7 +15,7 @@ the leaf PRODUCERS its dispatch fans out to -- the engine cluster
 (:func:`._positions.positions_period_map`, the one per-kind branch that lives in
 the seam because it reads ``positions`` above the kernel).  Neither producer
 imports ``_inputs`` back (``_positions`` takes its no-baseline guard straight
-from :mod:`app.services.resolution_context`, the C3b3 cycle break), so the
+from :mod:`app.services.balance_at._context`, the C3b3 cycle break), so the
 direction stays acyclic.
 """
 
@@ -34,8 +34,8 @@ from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
 )
-from app.services.resolution_context import BalanceContext, require_scenario
 
+from ._context import BalanceContext, require_scenario
 from . import _kernel
 from ._positions import positions_period_map
 
@@ -111,7 +111,7 @@ def _assemble_inputs(
         accounts: The accounts to assemble inputs for, each with its
             ``account_type`` relationship available for the classifier.  An
             empty list returns an empty bundle without issuing any query.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (it scopes the loan resolver's payment history and memoizes each
             loan's resolution for the pass).
 
@@ -211,7 +211,7 @@ def _account_balance_map(
 
     Args:
         account: The account to project.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the output domain).
         inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
             ``debt_schedules`` membership gates the loan arm.
@@ -247,6 +247,6 @@ def _account_balance_map(
 # The seam's fail-loud no-baseline guard.  It lives on the context (the object
 # that OWNS the scenario) rather than here, and is re-exported so every seam
 # entry keeps calling ``_require_scenario(ctx)`` under one name; see
-# :func:`app.services.resolution_context.require_scenario` for the contract and
+# :func:`app.services.balance_at.require_scenario` for the contract and
 # the one entry (``liability_owed_at_dates``) that deliberately skips it.
 _require_scenario = require_scenario

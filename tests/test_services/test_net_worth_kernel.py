@@ -28,7 +28,7 @@ from decimal import Decimal
 from app.services import pay_period_service
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 
 class TestBuildAccountBalanceMap:

@@ -35,7 +35,7 @@ from app.services.debt_strategy_service import (
     calculate_strategy,
 )
 from app.services import account_service, balance_at
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
 

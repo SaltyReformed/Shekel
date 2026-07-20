@@ -13,7 +13,7 @@ from app.models.asset_appreciation_params import AssetAppreciationParams  # noqa
 from app.models.ref import AccountType
 from app.services import account_service, home_equity_service
 from app.services.home_equity_service import HomeEquity, compute_home_equity
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import create_loan_account
 
 

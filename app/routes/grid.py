@@ -33,7 +33,7 @@ from app.services import (
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)

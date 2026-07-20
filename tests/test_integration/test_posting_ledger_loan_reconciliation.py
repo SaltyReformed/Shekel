@@ -154,7 +154,7 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,

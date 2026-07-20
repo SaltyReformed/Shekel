@@ -301,7 +301,9 @@ class TestCalendarTab:
     ):
         """C11-2 (route): unresolvable baseline scenario returns 404."""
         # The baseline scenario is resolved inside the balance context now.
-        from app.services import resolution_context  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+            _context as resolution_context,
+        )
         monkeypatch.setattr(
             resolution_context, "get_baseline_scenario",
             lambda _user_id: None,

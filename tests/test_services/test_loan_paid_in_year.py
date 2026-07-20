@@ -37,7 +37,7 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.scenario import Scenario
 from app.services import balance_at, loan_posting_service, transfer_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
     clear_loan_ledger,

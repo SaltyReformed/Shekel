@@ -36,7 +36,7 @@ from app.services import (
     rate_period_engine,
     transfer_recurrence,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,

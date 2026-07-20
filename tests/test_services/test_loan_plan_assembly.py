@@ -22,7 +22,7 @@ from app.services.balance_at._plan import (
     memoized_plan,
 )
 from app.services.loan_resolution import contractual_schedule_from_origination
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -263,7 +263,7 @@ def test_a_second_builder_gets_its_own_slot(seed_user, db):
     The memo keys on ``(account, build)``, so "every caller must pass the same
     builder" is structural rather than a note in a docstring.  Keyed by account
     alone, this sentinel would silently receive the real plan -- the exact
-    silent-wrong-answer shape ``resolution_context`` exists to replace.
+    silent-wrong-answer shape ``BalanceContext`` exists to replace.
     """
     account, ctx = _configured_loan(seed_user, db)
     real = memoized_plan(account, ctx)

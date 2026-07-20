@@ -36,7 +36,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at
 from app.services.balance_at import _daily_series as daily_balance_series
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 _JAN_FIRST = date(2026, 1, 1)
 _JAN_LAST = date(2026, 1, 31)

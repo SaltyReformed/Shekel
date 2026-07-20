@@ -14,7 +14,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.resolution_context import BalanceContext
+from ._context import BalanceContext
 
 from . import _cash_engine, _daily_series
 from ._inputs import _require_scenario
@@ -64,7 +64,7 @@ def cash_balance_map(
     Args:
         account: The account whose cash-flow balance to project.  Its
             ``user_id`` scopes the producer; its kind is NOT consulted.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over, ordered by
             ``period_index`` (must include the anchor period; pre-anchor
             periods are omitted from the result by the producer).
@@ -106,7 +106,7 @@ def cash_balance_at(
 
     Args:
         account: The account to value.  Its kind is NOT consulted.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the producer).
         as_of: The calendar date to value the account at.
 
@@ -150,7 +150,7 @@ def cash_daily_balance_series(
     Args:
         account: The account to project.  Its kind is NOT consulted; must be
             session-attached.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the producer).
         first_day: Inclusive first calendar day of the range.
         last_day: Inclusive last calendar day of the range.

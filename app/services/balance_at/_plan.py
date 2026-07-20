@@ -52,8 +52,9 @@ from app.services.loan_loaders import loan_payment_due_date
 from app.services.loan_payment_service import live_loan_transfer_amounts
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.rate_period_engine import period_for_date
-from app.services.resolution_context import BalanceContext, require_scenario
 from app.utils.dates import add_months
+
+from ._context import BalanceContext, require_scenario
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
@@ -323,7 +324,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its scenario scopes the shadows and the resolution, and its
             ``as_of`` is the clamp floor and the past/future boundary.
 
@@ -385,7 +386,7 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]
 
     The seam's ONE injection site for the plan: it hands :func:`loan_plan` to the
     read pass's memo
-    (:meth:`~app.services.resolution_context.BalanceContext.loan_plan`), which
+    (:meth:`~app.services.balance_at.BalanceContext.loan_plan`), which
     calls it once per account per pass and replays the result after.  Every seam
     reader that folds a loan's future -- the balance
     (:func:`~app.services.balance_at.positions`), the derived payoff, the
@@ -402,14 +403,14 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]
     cycle.  So the argument stays and this funnel is the mitigation -- one place
     that can pass the wrong builder instead of one per reader.  The memo keys on
     the builder, so a wrong one gets its own slot and cannot corrupt this one's
-    (:meth:`~app.services.resolution_context.BalanceContext._memoized`); what it
+    (:meth:`~app.services.balance_at.BalanceContext._memoized`); what it
     cannot do is make the caller's answer right.
 
     Args:
         account: The loan account to plan.  Must belong to ``ctx.user_id`` (the
             caller owns the ownership check).
         ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`.
+            :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         The pass's memoized :class:`PlannedPayment` list for this loan.

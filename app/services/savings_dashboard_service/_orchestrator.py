@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from app.services import balance_at, savings_goal_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -159,7 +159,7 @@ def _project_loan_accounts(
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An existing read pass's
-            :class:`~app.services.resolution_context.BalanceContext` to share, or
+            :class:`~app.services.balance_at.BalanceContext` to share, or
             ``None`` to start one.  The budget dashboard's tracks section runs
             two of these producers back to back, so it passes ONE context and
             each loan is resolved once for the pair, not once per producer.

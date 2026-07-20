@@ -23,7 +23,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.services import savings_dashboard_service, pay_period_service
 from app.services import account_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 
 class TestComputeDashboardData:
@@ -4343,7 +4343,7 @@ class TestOneResolutionPerLoanPerReadPass:
     """Every producer resolves each loan EXACTLY ONCE per read pass.
 
     The DRY property made into a deterministic gate rather than a hope.  Before
-    the read-pass :class:`~app.services.resolution_context.BalanceContext`, ONE
+    the read-pass :class:`~app.services.balance_at.BalanceContext`, ONE
     ``compute_dashboard_data`` ran the loan resolver ELEVEN times for two loans:
     the balance maps, the trend window's honest-history gate, the liability band,
     the loan tile, the property-equity card, and an "ever paid off" probe each
@@ -4366,8 +4366,8 @@ class TestOneResolutionPerLoanPerReadPass:
         """Spy on the db-facing loan resolver; return the per-account call list."""
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
-        from app.services import (  # pylint: disable=import-outside-toplevel
-            resolution_context,
+        from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+            _context as resolution_context,
         )
 
         calls = []

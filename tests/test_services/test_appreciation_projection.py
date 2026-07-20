@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.ref import AccountType
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services import account_service, growth_engine, pay_period_service, savings_dashboard_service
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.account_projection import (

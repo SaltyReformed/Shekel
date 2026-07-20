@@ -66,11 +66,12 @@ from app.services.loan_resolution import ResolvedLoan, resolve_loan_bundle
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
-    # Type-only: the forward plan's RECORD type lives in the balance_at seam
-    # (:mod:`app.services.balance_at._plan`), which imports THIS module.  The
-    # builder is INJECTED (see :meth:`BalanceContext.loan_plan`), so this is the
-    # last remaining edge back into the seam and it carries no runtime import.
-    from app.services.balance_at._plan import PlannedPayment
+    # Type-only: the forward plan's RECORD type is defined by the seam SIBLING
+    # :mod:`app.services.balance_at._plan`, which imports THIS module at runtime.
+    # The builder is INJECTED (see :meth:`BalanceContext.loan_plan`), so this
+    # type-only import carries NO runtime edge back to ``_plan`` -- the sibling
+    # cycle a runtime import would close (finding N-25) stays open.
+    from ._plan import PlannedPayment
 
 # What the two INJECTED memos take: a seam derivation this module calls but must
 # never import (see :meth:`_memoized`).  Named so each signature reads as a

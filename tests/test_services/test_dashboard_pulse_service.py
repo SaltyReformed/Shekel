@@ -37,7 +37,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
 from app.services import balance_at, pay_period_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_entry,

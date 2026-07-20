@@ -157,10 +157,9 @@ _LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
     # The read pass's memo (``BalanceContext.loan_walk``) walks a loan's ledger
     # ONCE per pass and hands the memoized walk to ``fold_from_walk``, so the
     # scalar, map, and liability band that all fold the same loan (step C3b) do not
-    # each re-walk it -- the same redundant-derivation the context's resolver memo
-    # already kills.  It composes the walk exactly as it composes the resolver, so
-    # it joins this allowlist beside the resolver one it already sits on.
-    "app.services.resolution_context",
+    # each re-walk it.  Plan step D-ctx moved that memo INTO the seam
+    # (``balance_at._context``), so the ``_BALANCE_SEAM_MODULES`` prefix above now
+    # covers it -- it no longer needs its own entry here.
 })
 
 # ── The loan RESOLVER entries (W9906) ───────────────────────────────
@@ -187,8 +186,9 @@ _LOAN_RESOLVER_PRODUCERS = frozenset({
 })
 # Who may still resolve a loan directly:
 #   * ``loan_resolution`` -- defines them.
-#   * ``resolution_context`` -- the read pass's memo; the ONE place a loan is
-#     resolved for a read, and what the seam's loan entries compose.
+#   * ``balance_at._context`` -- the read pass's memo (plan step D-ctx moved it
+#     INTO the seam as a private submodule); the ONE place a loan is resolved for
+#     a read, and what the seam's loan entries compose.
 #   * ``loan_payment_service`` -- the live grid/transfer amount producer, inside
 #     the loan cluster (it composes the resolver for a payment's P&I, not for a
 #     displayed account balance).
@@ -207,7 +207,7 @@ _LOAN_RESOLVER_PRODUCERS = frozenset({
 # pass's job, not this step's.
 _LOAN_RESOLVER_MODULES = frozenset({
     "app.services.loan_resolution",
-    "app.services.resolution_context",
+    "app.services.balance_at._context",
     "app.services.loan_payment_service",
     "app.services._transfer_loan_posting",
     "app.routes.loan",
@@ -245,9 +245,10 @@ _CONTEXT_LOAN_PRODUCERS = frozenset({
 })
 _CONTEXT_LOAN_MODULES = frozenset({
     # The seam package -- covers ``_kernel`` (was ``net_worth_kernel``, which
-    # composes the memo) via the prefix match since plan step D1d.
+    # composes the memo) via the prefix match since plan step D1d, and
+    # ``_context`` (the memo's own defining module) since plan step D-ctx moved it
+    # INTO the seam.
     "app.services.balance_at",
-    "app.services.resolution_context",
 })
 
 # Every fenced CALL surface: ``(guarded names, modules allowed to reach them)``.
@@ -332,15 +333,32 @@ _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
     "app.services.loan_posting_service",
 })
-# The loan-RESOLVER defining modules.  They were fenced as a CALL surface
+# The read pass's resolution CONTEXT, now the seam-private ``balance_at._context``
+# (plan step D-ctx; was the outside-the-seam ``app.services.resolution_context``).
+# It is NOT a balance producer -- it is the memo that resolves each loan ONCE per
+# read pass -- but it defines the fenced ``resolved_loan`` / ``loan_walk`` handles
+# (:data:`_CONTEXT_LOAN_PRODUCERS`) plus the plumbing the seam composes, so its
+# public surface must stay CLASSIFIED.  It carries its own registry entry keyed on
+# the full private path for the SAME reason the engine modules do (finding N-31),
+# and -- sharper here than for the engines -- moving INTO the seam put it under the
+# W9906 allowlist too, so the CALL fence no longer backstops a producer born here:
+# W9909 is now the ONLY gate on this module.  Its scope must therefore fail CLOSED,
+# which a hand-written constant does only when it cannot be quietly emptied -- so it
+# is self-attest-pinned by
+# ``test_flags_unclassified_export_in_every_hand_scoped_module``.
+_SEAM_PRIVATE_CONTEXT_MODULES = frozenset({
+    "app.services.balance_at._context",
+})
+# The loan-RESOLVER defining module.  It was fenced as a CALL surface
 # (:data:`_LOAN_RESOLVER_PRODUCERS`) and then left out of the completeness check
 # -- the same fail-open shape the check exists to close, reintroduced by the very
 # commit that added the surface.  Proven: a new public
 # ``loan_balance_right_now()`` added to ``loan_resolution`` rated 10.00/10, and
 # ``contractual_schedule_from_origination`` sat there public and unclassified.
+# ``resolution_context`` used to sit here too, before plan step D-ctx moved it into
+# the seam and onto :data:`_SEAM_PRIVATE_CONTEXT_MODULES`.
 _LOAN_RESOLVER_DEFINING_MODULES = frozenset({
     "app.services.loan_resolution",
-    "app.services.resolution_context",
 })
 # The cash LEDGER leaf (plan step D1c).  It is NOT on
 # :data:`_BALANCE_SEAM_MODULES` -- it calls no balance producer, and W9906
@@ -589,9 +607,11 @@ _FENCED_MODULE_RULINGS = {
         # ``debt_schedule_rows`` carries).
         "contractual_schedule_from_origination",
     })),
-    # The read pass's resolution context.  ``resolved_loan`` is the fenced memo
-    # (:data:`_CONTEXT_LOAN_PRODUCERS`); its public siblings are plumbing.
-    "app.services.resolution_context": (
+    # The read pass's resolution context, now the seam-private
+    # ``balance_at._context`` (plan step D-ctx; :data:`_SEAM_PRIVATE_CONTEXT_MODULES`).
+    # ``resolved_loan`` is the fenced memo (:data:`_CONTEXT_LOAN_PRODUCERS`); its
+    # public siblings are plumbing.
+    "app.services.balance_at._context": (
         _CONTEXT_LOAN_PRODUCERS, frozenset({
             # The context CONSTRUCTOR: it resolves the baseline scenario and pins
             # the as-of.  It builds the object a producer is called WITH; it

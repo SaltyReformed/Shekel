@@ -66,7 +66,7 @@ from app.services.projection_inputs import (
 from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -1104,7 +1104,7 @@ class TestMultiLoanIsolation:
         keyed by account id, not positional.
 
         The seam folds each loan from its OWN memoized walk
-        (:meth:`~app.services.resolution_context.BalanceContext.loan_walk`, keyed
+        (:meth:`~app.services.balance_at.BalanceContext.loan_walk`, keyed
         by account) for begun periods and projects its OWN per-account re-derived
         schedule for the future, so two loans in one ``build_maps`` cannot
         cross-contaminate.  Pinning all three regions catches a regression that

@@ -19,7 +19,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 import pytest
 
-from app.services import calendar_service, resolution_context
+from app.services import calendar_service
+from app.services.balance_at import _context as resolution_context
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
     DailyView,

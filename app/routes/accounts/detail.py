@@ -64,7 +64,7 @@ from app.services import (
     pay_period_service,
     property_equity_chart,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.account_validation import (
     _appreciation_params_schema,
     _interest_params_schema,
@@ -664,7 +664,7 @@ def _property_chart_context(
         property_account: The Property account; the seam reads its
             ``secured_loans`` to pack the chart's debt series.
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`; its ``as_of``
+            :class:`~app.services.balance_at.BalanceContext`; its ``as_of``
             is the chart's compounding origin.
 
     Returns:

@@ -113,6 +113,7 @@ from .balance_seam import (
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_RESOLVER_DEFINING_MODULES,
+    _SEAM_PRIVATE_CONTEXT_MODULES,
     _SEAM_PRIVATE_ENGINE_MODULES,
     ShekelBalanceSeamChecker,
     _is_public_export_surface,
@@ -132,7 +133,7 @@ from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassCh
 # Re-exported so the plugin's import surface is identical to the pre-split
 # single module: ``.pylintrc`` names the package in ``load-plugins`` and calls
 # ``register``; the checker unit tests import the six checker classes and
-# the sixteen module/producer sets straight ``from shekel_checkers``.  The underscore-
+# the seventeen module/producer sets straight ``from shekel_checkers``.  The underscore-
 # prefixed sets are internal-but-tested, listed here so re-export is explicit
 # rather than an unused-import.
 __all__ = [
@@ -150,6 +151,7 @@ __all__ = [
     "_LOAN_LEDGER_READER_MODULES",
     "_LOAN_LEDGER_READER_PRODUCERS",
     "_LOAN_RESOLVER_DEFINING_MODULES",
+    "_SEAM_PRIVATE_CONTEXT_MODULES",
     "_SEAM_PRIVATE_ENGINE_MODULES",
     "_is_public_export_surface",
     "_STATUS_SEAM_MODULES",

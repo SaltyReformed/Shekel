@@ -17,7 +17,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.services.balance_at import LoanFigures
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class _DashboardCoreData:
     Attributes:
         accounts: The user's active accounts, ordered for display.
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext` -- the
+            :class:`~app.services.balance_at.BalanceContext` -- the
             baseline scenario, the pinned ``as_of``, and the memo that resolves
             each loan exactly ONCE for the whole build.  It replaces the bare
             ``scenario`` this bundle used to carry: every seam call in the pass

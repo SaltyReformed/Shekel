@@ -51,7 +51,7 @@ from app.services.recurring_transfer_query import (
 class ResolvedLoan:
     """Everything one loan resolution produced, from ONE load of its inputs.
 
-    The unit of work :class:`~app.services.resolution_context.BalanceContext`
+    The unit of work :class:`~app.services.balance_at.BalanceContext`
     memoizes: a loan's loaded inputs AND the :class:`LoanState` they resolve to,
     bundled so that every surface reading any part of a loan -- its balance, its
     schedule, its payment / rate / payoff, its payment feed -- reads ONE
@@ -108,7 +108,7 @@ def resolve_loan_seeded(
 
     The injection helper :func:`resolve_loan_bundle` routes every summary-surface
     resolution through (the bundle is what
-    :class:`~app.services.resolution_context.BalanceContext` memoizes), so no
+    :class:`~app.services.balance_at.BalanceContext` memoizes), so no
     surface can drift on HOW a loan is resolved.  It threads two seeded inputs
     into the pure resolver:
 
@@ -164,7 +164,7 @@ def resolve_loan_bundle(
     loan's params, anchor facts, and context, runs
     :func:`resolve_loan_seeded`, and returns all four bundled as a
     :class:`ResolvedLoan`.  :func:`resolve_account_loan` is a thin projection of
-    it, and :class:`~app.services.resolution_context.BalanceContext` memoizes it
+    it, and :class:`~app.services.balance_at.BalanceContext` memoizes it
     per ``(account, scenario, as_of)`` so a read pass resolves each loan exactly
     once no matter how many surfaces ask.
 
@@ -234,7 +234,7 @@ def resolve_account_loan(
     call, which is how one ``/savings`` render came to run the resolver eleven
     times for two loans.  Read surfaces ask the seam
     (:func:`app.services.balance_at.loan_state`), whose
-    :class:`~app.services.resolution_context.BalanceContext` memoizes the bundle
+    :class:`~app.services.balance_at.BalanceContext` memoizes the bundle
     for the read pass.
 
     Returns ``None`` when the account has no ``LoanParams`` row (it is not a

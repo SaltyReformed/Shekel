@@ -80,7 +80,7 @@ from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_liability_service import (
     AnnualLiability,
@@ -641,7 +641,7 @@ def _build_schedule_a(
         user_id: The owning user (scopes the debt-account load).
         year: The tax year (interest is summed in the year PAID).
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext` (scopes the
+            :class:`~app.services.balance_at.BalanceContext` (scopes the
             fold + schedule read, and pins the display-tz ``as_of``).
         withholding: The summed withholding-to-date (state component).
         liability: The liability (its federal standard deduction).

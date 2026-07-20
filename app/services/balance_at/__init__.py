@@ -88,15 +88,19 @@ Dependency direction (SOLID).  Consumers (routes, savings, analytics,
 dashboards) depend on this seam; the seam depends only on the outer engine
 inputs (``account_projection`` / ``projection_inputs`` / ``income_service`` /
 ``pay_period_service``) and the ``cash_ledger`` leaf the cash producers fold
-over, the LOAN cluster it composes the loan shapes from (``resolution_context``
-/ ``loan_resolution`` / ``loan_loaders`` / ``amortization_engine``, plus
-``loan_posting_service`` behind a lazy import), and the models -- never a
-consumer package.  **Plan step D1d moved ALL of the balance PRODUCERS INSIDE
-this package as private submodules**, so the fence is one package boundary: the
-CASH chain (``_cash_engine`` = ``balances_for`` / ``balance_as_of_date``,
-``_calculator`` = the pure carry-forward walk, ``_daily_series`` = the per-day
-distribution) and the NET-WORTH chain (``_kernel`` = the per-kind balance
-dispatch, ``_investment`` = the growth / appreciation sub-chain).  ``_kernel``'s
+over, the LOAN cluster it composes the loan shapes from (``loan_resolution`` /
+``loan_loaders`` / ``amortization_engine``, plus ``loan_posting_service`` behind
+a lazy import), and the models -- never a consumer package.  **Plan step D1d
+moved ALL of the balance PRODUCERS INSIDE this package as private submodules**,
+so the fence is one package boundary: the CASH chain (``_cash_engine`` =
+``balances_for`` / ``balance_as_of_date``, ``_calculator`` = the pure
+carry-forward walk, ``_daily_series`` = the per-day distribution) and the
+NET-WORTH chain (``_kernel`` = the per-kind balance dispatch, ``_investment`` =
+the growth / appreciation sub-chain).  **Plan step D-ctx then moved the read
+pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
+``require_scenario``, re-exported below as the seam's public read-pass handle):
+it sits at the internal DAG's FLOOR, importing only the outer loan leaves it
+memoizes and depended on by every producer that folds a loan.  ``_kernel``'s
 ``debt_schedule_rows`` and ``interest_by_period_for_account`` are re-exported
 below as the two non-balance seam entries the out-of-cluster consumers (the
 account-detail route, the savings orchestrator) read.
@@ -111,7 +115,11 @@ _investment}``, ``_kind_correct -> _investment -> _cash_engine``,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
 the fold to zero, plan step C8d) -- a DAG with ``_calculator`` / ``_cash_engine``
 / ``_investment`` at the producer floor, so no module imports a sibling that
-imports it back.
+imports it back.  ``_context`` sits BELOW that floor: every loan producer
+(``_plan`` / ``_positions`` / ``_inputs`` / ``_loan_figures`` / ``_liability`` /
+``_kernel`` and their kin) imports it for ``BalanceContext`` / ``require_scenario``,
+and it imports NONE of them at runtime (``_plan``'s ``PlannedPayment`` is a
+type-only edge), so the arrow stays one-way.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
@@ -134,6 +142,7 @@ from ._cash_flow import (
     cash_balance_map,
     cash_daily_balance_series,
 )
+from ._context import BalanceContext, require_scenario
 from ._grid import GridBalanceView, _accruing_grid_view, grid_balance_view
 from ._inputs import (
     ZERO,
@@ -189,6 +198,7 @@ from ._secured_debt import (
 # explicit rather than an unused import.
 __all__ = [
     "ZERO",
+    "BalanceContext",
     "GridBalanceView",
     "LoanFigures",
     "LoanTerms",
@@ -222,5 +232,6 @@ __all__ = [
     "loan_principal_paid_in_year",
     "positions",
     "positions_period_map",
+    "require_scenario",
     "secured_loan_series",
 ]

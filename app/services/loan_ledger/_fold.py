@@ -328,7 +328,7 @@ def fold_from_walk(
     several date lists (the seam's scalar, per-period map, and liability band all
     read :func:`app.services.balance_at.positions`) can walk it ONCE and sample the
     memoized walk here each time -- the redundant-derivation the read pass's
-    context exists to kill (:meth:`~app.services.resolution_context.BalanceContext.loan_walk`).
+    context exists to kill (:meth:`~app.services.balance_at.BalanceContext.loan_walk`).
 
     Re-keys each event by its visible-on date (:func:`_dated_deltas`), prefix-sums
     the deltas, and reads each requested date off the cumulative -- ``0.00`` for a

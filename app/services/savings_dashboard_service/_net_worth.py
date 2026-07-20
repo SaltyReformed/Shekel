@@ -30,7 +30,7 @@ from decimal import Decimal
 from app.models.pay_period import PayPeriod
 from app.services import balance_at, home_equity_service
 from app.services.amortization_engine import AmortizationRow
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -129,7 +129,7 @@ def build_account_net_worth_maps(
 
     Args:
         accounts: The user's active accounts.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             With no baseline scenario on it the seam's resolver path cannot run,
             so an empty list is returned (the degraded no-scenario state)
             WITHOUT calling the seam -- the seam raises on a ``None`` scenario by
@@ -511,7 +511,7 @@ def compute_property_equity(
 
     Args:
         accounts: The user's active accounts.
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Each secured loan is read from its memo, so the mortgage leg of this
             card is the SAME resolution the debt card and the net-worth liability
             column read -- one resolution, not a fourth one that has to agree.

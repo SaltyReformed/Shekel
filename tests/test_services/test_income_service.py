@@ -44,7 +44,7 @@ from app.services import (
 )
 from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.tax_config_service import load_tax_configs
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
 
 

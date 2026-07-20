@@ -46,7 +46,7 @@ from app.services.loan_payment_service import (
     load_loan_context,
 )
 from app.services.rate_period_engine import payment_number
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 from app.utils.money import round_money

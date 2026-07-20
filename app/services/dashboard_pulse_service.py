@@ -39,7 +39,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import balance_at, pay_period_service
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.dashboard_service import (
     _DEFAULT_STALENESS_DAYS,
     _get_last_anchor_date,
@@ -216,7 +216,7 @@ def _pulse_hero(
         account: The resolved dashboard account (``resolve_grid_account``'s
             pick; may be any kind).
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`.
+            :class:`~app.services.balance_at.BalanceContext`.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
 

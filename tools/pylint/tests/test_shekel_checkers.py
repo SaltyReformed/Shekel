@@ -28,6 +28,7 @@ from shekel_checkers import (
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_RESOLVER_DEFINING_MODULES,
+    _SEAM_PRIVATE_CONTEXT_MODULES,
     _SEAM_PRIVATE_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
     _is_public_export_surface,
@@ -999,11 +1000,15 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
-    def test_allows_resolve_loan_bundle_inside_the_resolution_context(self) -> None:
-        """The read-pass memo may resolve a loan: it IS the one resolution site."""
+    def test_allows_resolve_loan_bundle_inside_the_seam_context(self) -> None:
+        """The read-pass memo may resolve a loan: it IS the one resolution site.
+
+        Since plan step D-ctx the memo is the seam-private ``balance_at._context``;
+        it stays on the resolver allowlist (:data:`_LOAN_RESOLVER_MODULES`).
+        """
         node = self._producer_call(
             "resolve_loan_bundle(account.id, scenario_id, as_of)",
-            "app.services.resolution_context",
+            "app.services.balance_at._context",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
@@ -1269,7 +1274,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "class BalanceContext:\n"
             "    def balance_right_now(self, account):\n"
             "        return self.resolved_loan(account).state.current_balance\n",
-            "app.services.resolution_context",
+            "app.services.balance_at._context",
         )
         with self.assertAddsMessages(
             MessageTest(
@@ -1288,7 +1293,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "class BalanceContext:\n"
             "    def _memoize(self, account):\n"
             "        return None\n",
-            "app.services.resolution_context",
+            "app.services.balance_at._context",
         )
         with self.assertNoMessages():
             self.checker.visit_functiondef(node)
@@ -1299,7 +1304,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "class _Memo:\n"
             "    def balance_right_now(self, account):\n"
             "        return None\n",
-            "app.services.resolution_context",
+            "app.services.balance_at._context",
         )
         with self.assertNoMessages():
             self.checker.visit_functiondef(node)
@@ -1319,7 +1324,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "    class Inner:\n"
             "        def balance_right_now(self, account):\n"
             "            return None\n",
-            module_name="app.services.resolution_context",
+            module_name="app.services.balance_at._context",
         )
         node = module.body[0].body[0].body[0]
         with self.assertAddsMessages(
@@ -1469,6 +1474,10 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
           ``._kernel`` / ``._investment`` -- their rulings TRAVEL with them,
           finding N-31, and cannot ride the ``app.services.balance_at`` prefix
           because that would pull the public seam entries into the check)
+        * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (the read-pass memo
+          ``balance_at._context``, moved INSIDE the seam at D-ctx -- N-31 again,
+          and sharper: it now sits under the W9906 allowlist too, so W9909 is the
+          ONLY gate left on it)
 
         For those, the set-equality guard is SELF-ATTESTING: delete the registry
         entry and empty the constant -- two adjacent edits in one file, which is
@@ -1490,6 +1499,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.balance_at._daily_series",
             "app.services.balance_at._kernel",
             "app.services.balance_at._investment",
+            "app.services.balance_at._context",
         ):
             node = self._function_def(
                 "def balance_on(account, target):\n    return None\n",
@@ -1574,6 +1584,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         expected = (
             _ENGINE_CLUSTER_MODULES
             | _SEAM_PRIVATE_ENGINE_MODULES
+            | _SEAM_PRIVATE_CONTEXT_MODULES
             | _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
             | _CASH_LEDGER_MODULES

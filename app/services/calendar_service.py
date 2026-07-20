@@ -27,7 +27,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import balance_at
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
@@ -865,7 +865,7 @@ def _compute_month_end_balance(
         year: Target calendar year.
         month: Target calendar month (1-12).
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext`.
+            :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         ``Decimal`` -- the projected balance on the last day of the

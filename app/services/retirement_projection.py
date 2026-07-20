@@ -48,7 +48,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_shadow_income_contributions_for_accounts,
 )
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.utils.money import round_money
 
 
@@ -477,7 +477,7 @@ def _resolve_balance_maps(
     Args:
         ctx: The read-only projection context.
         balance_ctx: The read pass's
-            :class:`~app.services.resolution_context.BalanceContext` (its
+            :class:`~app.services.balance_at.BalanceContext` (its
             scenario may be ``None``).
 
     Returns:

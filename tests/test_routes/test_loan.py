@@ -21,7 +21,7 @@ from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
 from app.models.ref import AccountType
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.transfer_service import TransferSpec, create_transfer

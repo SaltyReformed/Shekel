@@ -4,7 +4,7 @@ Plan steps **C3c** and **C6c** (``docs/audits/balance_architecture/README.md``).
 The seam's paid-in-year figures, all folded from the loan's SOURCE events (the
 running-balance walk :func:`app.services.loan_ledger.walk_loan_ledger`, sampled
 through the read pass's memoized
-:meth:`~app.services.resolution_context.BalanceContext.loan_walk`) so a figure and
+:meth:`~app.services.balance_at.BalanceContext.loan_walk`) so a figure and
 the balance it describes come from the ONE total producer and cannot disagree:
 
 * :func:`loan_interest_paid_in_year` / :func:`loan_principal_paid_in_year` (step
@@ -69,9 +69,9 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services.loan_ledger import LoanLedgerWalk, LoanPaymentSplit
 from app.services.loan_loaders import loan_payment_due_date
-from app.services.resolution_context import BalanceContext
 from app.utils.dates import to_display_civil_date
 
+from ._context import BalanceContext
 from . import _kernel
 from ._inputs import _require_scenario
 from ._plan import memoized_plan, plan_interest_in_year
@@ -107,7 +107,7 @@ def loan_interest_paid_in_year(
     Args:
         account: The loan account whose paid interest to sum (the caller owns the
             ownership check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its scenario scopes the walk, memoized so the balance hero and both
             YTD chips fold the loan once.
         year: The calendar year to sum interest paid within (the DISPLAY-tz civil
@@ -146,7 +146,7 @@ def loan_principal_paid_in_year(
     Args:
         account: The loan account whose paid principal to sum (the caller owns the
             ownership check).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the memoized walk).
         year: The calendar year to sum principal paid within (the DISPLAY-tz civil
             year).
@@ -218,7 +218,7 @@ def loan_interest_in_year(
       its facts -- closing B-6 -- rather than falling back to the schedule.
     * **PROJECTED (future) interest -- the PLAN.**  Each of the loan's forward
       payment records (:func:`app.services.balance_at._plan.plan_interest_in_year`
-      over :meth:`~app.services.resolution_context.BalanceContext.loan_plan`), folded
+      over :meth:`~app.services.balance_at.BalanceContext.loan_plan`), folded
       from the SAME ``projection_seed`` the loan's projected BALANCE folds and
       attributed to the year the payment is projected to be PAID (its EFFECTIVE
       date).  An overdue installment with NO record is absent from the plan (finding
@@ -239,7 +239,7 @@ def loan_interest_in_year(
     Args:
         account: The loan account whose paid interest to sum (the caller owns the
             ownership check and the mortgage-kind selection).
-        ctx: The read pass's :class:`~app.services.resolution_context.BalanceContext`
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its scenario scopes the fold and the plan, and its memoized resolution
             supplies the ``projection_seed`` (the same seed :func:`positions` folds).
         year: The calendar / tax year to sum interest paid within.

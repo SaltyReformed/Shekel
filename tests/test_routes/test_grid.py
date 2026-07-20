@@ -27,7 +27,7 @@ from app.services import (
     posting_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
-from app.services.resolution_context import BalanceContext
+from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
     create_hysa_account,
@@ -1772,7 +1772,7 @@ class TestCreateBaseline:
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
         from app.services import balance_at, loan_posting_service
-        from app.services.resolution_context import BalanceContext
+        from app.services.balance_at import BalanceContext
         from tests._test_helpers import create_loan_account
 
         with app.app_context():
