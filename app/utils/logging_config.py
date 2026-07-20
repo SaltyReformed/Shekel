@@ -448,6 +448,21 @@ _RESERVED_RECORD_ATTRS = frozenset({
 
 
 def _resolve_log_level(app: Flask) -> str:
+    """Return the log level this process should emit at.
+
+    A NON-EMPTY ``LOG_LEVEL`` wins, so an operator can raise or lower verbosity
+    without touching the debug flag; it is upper-cased but not validated, so a
+    typo surfaces later in ``dictConfig`` rather than here.  Set-but-empty falls
+    through.  Failing that, a debug run (``FLASK_DEBUG=1`` or ``app.debug``) gets
+    DEBUG and everything else INFO -- production never silently drops to DEBUG,
+    since it sets neither.
+
+    Args:
+        app: The Flask application, read for its ``debug`` flag.
+
+    Returns:
+        The upper-case level name for :mod:`logging`.
+    """
     explicit = os.getenv("LOG_LEVEL")
     if explicit:
         return explicit.upper()

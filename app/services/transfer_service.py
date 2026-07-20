@@ -415,7 +415,7 @@ def _apply_actual_amount(
     income_shadow.actual_amount = actual
 
 
-def _reconcile_postings_after_update(xfer: Transfer, kwargs: dict) -> None:
+def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object]) -> None:
     """Bring the posting ledger back in step after an ``update_transfer`` edit.
 
     Extracted from :func:`update_transfer` (which was at its branch/statement
@@ -456,10 +456,10 @@ def _reconcile_postings_after_update(xfer: Transfer, kwargs: dict) -> None:
 
     Args:
         xfer: The updated, flushed :class:`Transfer`.
-        kwargs: The ``update_transfer`` kwargs that were applied.
+        updates: The ``update_transfer`` kwargs that were applied.
     """
-    needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & kwargs.keys())
-    paid_at_edited = "paid_at" in kwargs
+    needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
+    paid_at_edited = "paid_at" in updates
     if not (needs_reconcile or paid_at_edited):
         return
     current_status = db.session.get(Status, xfer.status_id)

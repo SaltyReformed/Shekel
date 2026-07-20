@@ -168,7 +168,7 @@ _POSTING_RELEVANT_INSTALLMENT_FIELDS = frozenset({"pay_period_id", "due_date"})
 
 
 def _reject_installment_move_before_loan(
-    xfer: Transfer, user_id: int, kwargs: dict,
+    xfer: Transfer, user_id: int, updates: dict[str, object],
 ) -> None:
     """Refuse an ``update_transfer`` edit that drags a loan payment behind its loan.
 
@@ -203,21 +203,22 @@ def _reject_installment_move_before_loan(
         xfer: The transfer being updated (supplies the current period / due date
             for any field the edit does not move, and the destination account).
         user_id: The acting user, for the pay-period ownership check.
-        kwargs: The :func:`update_transfer` kwargs.
+        updates: The :func:`update_transfer` kwargs about to be applied --
+            read, not written; *xfer* still holds its pre-edit values.
 
     Raises:
         NotFoundError: If a submitted ``pay_period_id`` is not the user's.
         ValidationError: If the resulting installment falls at or before the
             destination loan's origination.
     """
-    if not _POSTING_RELEVANT_INSTALLMENT_FIELDS & kwargs.keys():
+    if not _POSTING_RELEVANT_INSTALLMENT_FIELDS & updates.keys():
         return
-    if "pay_period_id" in kwargs:
-        _get_owned_period(kwargs["pay_period_id"], user_id)
+    if "pay_period_id" in updates:
+        _get_owned_period(updates["pay_period_id"], user_id)
     _reject_payment_before_origination(
         xfer.to_account,
-        kwargs.get("pay_period_id", xfer.pay_period_id),
-        kwargs.get("due_date", xfer.due_date),
+        updates.get("pay_period_id", xfer.pay_period_id),
+        updates.get("due_date", xfer.due_date),
     )
 
 

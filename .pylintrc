@@ -41,7 +41,7 @@ disable=
     # logging filter/formatter subclasses. None are anemic domain classes;
     # 52 per-class inline disables would be pure noise.
     too-few-public-methods,
-    # missing-type-doc (W9015) + redundant-returns-doc (W9011): signature type
+    # missing-type-doc (W9016) + redundant-returns-doc (W9008): signature type
     # hints are the single source of truth for types (coding-standards requires
     # them on every signature), so repeating the type in the docstring is a DRY
     # violation. Param/return DESCRIPTIONS are still enforced via
@@ -74,6 +74,32 @@ enable=
 # because it reads as a constant assignment).
 good-names=id,db,bp,app,fs,e,f,i,j,k,n,v,_initialized
 
+# Which names are EXEMPT from needing a docstring. pylint's default is ``^_``,
+# which exempts every private function -- and, because docparams keys on the same
+# option, every private function's docstring from being CHECKED as well. That is
+# most of this codebase: the service internals, the route helpers, the seam's
+# private modules are all underscore-named, so their Args/Returns sections drifted
+# with nothing to catch it. Measured 2026-07-19: one live instance
+# (``_loan_schedule_start_index`` documented a parameter ``schedule_info`` that had
+# been renamed to ``schedule_rows``, and typed it as a bundle where the caller
+# passes a row list -- the same false-type-hint defect finding B-19 names).
+#
+# So the default is inverted, with ONE exemption. ``__repr__`` is a one-line debug
+# string whose body is its own documentation, and 58 model classes carry one;
+# requiring prose there would be noise, which is how a gate gets disabled
+# wholesale. Everything else -- public or private, method or function -- is gated.
+#
+# What this DOES and does NOT guarantee, stated exactly, because the gap is the
+# kind a future author will find by accident: every function must HAVE a
+# docstring, and a docstring that HAS an ``Args:`` section must name the right
+# parameters. A docstring with NO ``Args:`` section passes with any number of
+# parameters, because ``accept-no-param-doc`` defaults to yes. The perverse
+# incentive is real -- the cheapest way to clear a ``missing-param-doc`` is to
+# delete the ``Args:`` section, and this gate rewards that. Closing it means
+# ``accept-no-param-doc=no``, measured 2026-07-19 at 213 ``missing-any-param-doc``
+# in ``app/``: its own arc, not a rider on this one.
+no-docstring-rgx=^__repr__$
+
 [VARIABLES]
 # Marshmallow schema hooks (@validates_schema, @post_load, @pre_load,
 # @validates) receive framework-passed keyword arguments (many, partial,
@@ -82,4 +108,14 @@ good-names=id,db,bp,app,fs,e,f,i,j,k,n,v,_initialized
 # is not dead code.  Extend pylint's default ignored-argument-names
 # (_.*|^ignored_|^unused_) with kwargs so these framework-mandated parameters
 # do not raise unused-argument.
+#
+# HAZARD, and the reason it is written down: this matches the NAME, so it
+# exempts an ordinary parameter called ``kwargs`` just as readily as a framework
+# ``**kwargs`` -- meaning a real one going unused would never be reported, and
+# documenting it (correctly) is reported as useless-param-doc instead.  Two such
+# parameters existed (``_reject_installment_move_before_loan``,
+# ``_reconcile_postings_after_update``); both are named ``updates`` now, which is
+# what they are.  An ORDINARY parameter -- one that is not a ``**`` catch-all --
+# is never to be named ``kwargs``; a genuine splat bag still may be
+# (``app/routes/_redirect_target.py`` holds one).
 ignored-argument-names=_.*|^ignored_|^unused_|^kwargs$

@@ -23,7 +23,8 @@ the orchestrator builds them and threads the result into both producers.
 from decimal import Decimal
 
 from app.models.pay_period import PayPeriod
-from app.services import balance_at, home_equity_service, net_worth_kernel
+from app.services import balance_at, home_equity_service
+from app.services.amortization_engine import AmortizationRow
 from app.services.resolution_context import BalanceContext
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -223,7 +224,7 @@ _CASH_GATING_KINDS = frozenset({
 
 def _loan_schedule_start_index(
     all_periods: list[PayPeriod],
-    schedule_rows: list | None,
+    schedule_rows: list[AmortizationRow] | None,
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
@@ -250,10 +251,9 @@ def _loan_schedule_start_index(
     Args:
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
-        schedule_info: The loan's
-            :class:`~app.services.net_worth_kernel.DebtSchedule` (the
-            :func:`app.services.net_worth_kernel.generate_debt_schedules`
-            entry for it), or ``None``.
+        schedule_rows: The loan's amortization rows
+            (:func:`app.services.net_worth_kernel.debt_schedule_rows`), or ``None``
+            when the context could not resolve the loan.
 
     Returns:
         The first honest ``period_index``, or ``None`` when the loan does
@@ -272,7 +272,7 @@ def _honest_history_start_index(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod,
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
+    debt_schedules: dict[int, list[AmortizationRow]],
 ) -> int:
     """Earliest period_index whose net worth is real for every account.
 
@@ -305,10 +305,12 @@ def _honest_history_start_index(
         all_periods: All of the user's pay periods (maps an anchor period
             id to its index).
         current_period: The period containing today (the upper clamp).
-        debt_schedules: account_id -> :class:`~app.services.net_worth_kernel.DebtSchedule`
-            (from
-            :func:`app.services.net_worth_kernel.generate_debt_schedules`),
-            for the loan gate.
+        debt_schedules: account_id -> the loan's amortization ROW list
+            (from :func:`app.services.net_worth_kernel.debt_schedule_rows`), for the
+            loan gate.  Not a ``DebtSchedule`` bundle: the rows carry no
+            ``projection_seed``, which is the balance the fence keeps out of an
+            out-of-cluster consumer's hands.  (A row does carry a
+            ``remaining_balance``; this module reads only ``payment_date``.)
 
     Returns:
         The earliest honest history ``period_index`` (``0`` ..
@@ -338,7 +340,7 @@ def build_trend_periods(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod | None,
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
+    debt_schedules: dict[int, list[AmortizationRow]],
 ) -> tuple[list[PayPeriod], int, int]:
     """Build the net-worth trend's window, current index, and honest start.
 
@@ -373,9 +375,9 @@ def build_trend_periods(
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
         current_period: The period containing today, or ``None``.
-        debt_schedules: account_id ->
-            :class:`~app.services.net_worth_kernel.DebtSchedule`, for the
-            loan gate.
+        debt_schedules: account_id -> the loan's amortization ROW list
+            (:func:`app.services.net_worth_kernel.debt_schedule_rows`), for the loan
+            gate.
 
     Returns:
         ``(periods, current_index, honest_start)`` -- ``periods`` is the
