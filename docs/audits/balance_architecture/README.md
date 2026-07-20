@@ -98,10 +98,15 @@ gate that does not exist: pylint's stock `import-private-name` is fail-OPEN for
 `from pkg._module import name` (**N-26**), and the seam already carried a cross-package private
 import hiding a real runtime cycle that `cyclic-import` structurally could not report
 (**N-25**). So Phase D gained **D0** (the arrow points one way) and **D-gate** (the custom
-package-privacy checker) ahead of D1. **D0a** (`8285fcad`, the plan memo takes its builder; the
-cycle is gone, proven in both directions; the two injected memos land on one mechanism) shipped.
-Next: **D0b** (the plan's fold half moves to the leaf, which closes D3's `fold_forward` fence gap
-STRUCTURALLY), then D-gate, D1, D3 -- then **X1** (the cash side).
+package-privacy checker). **D0a** (`8285fcad`, the plan memo takes its builder; the cycle is gone,
+proven in both directions; the two injected memos land on one mechanism) shipped. **D0b was then
+CANCELLED and Phase D redesigned** (developer ruling 2026-07-19: "use structure, not fences") --
+scoping D0b showed it would ADD four fence entries, which was the design saying the arrow was
+backwards: a balance producer moves deeper INTO the seam, never out to a public leaf. Phase D is now
+ONE invariant (every balance producer is private to `balance_at`) enforced by ONE gate, with each
+step removing the REASON a fence surface exists rather than shrinking it: **D1** (engines in) ->
+**D-ctx** (context in; retires D0a's injection) -> **D-fold** (folds in; the walk stops being a
+"producer") -> **D-gate** -> **D3** (delete, not shrink). Then **X1** (the cash side).
 
 ---
 
@@ -1005,27 +1010,61 @@ what is written here is decided in the commit itself, not in a new document.
     untested "an empty result memoizes" property, and a bare `Callable` that described neither call
     site. Baseline UNMOVED on the dev clone (Mortgage $177,277.97, Van Loan $15,663.59; payoffs
     2048-12-01 / 2029-02-22); full suite 7470, pylint 10.00.
-  - [ ] **D0b** `the plan's fold is leaf-native; its builder stays in the seam` -- relocate
-    `_plan.py`'s FOLD half (~461 of its 814 lines: `PlannedPayment`, `_PlanSplit`, `_split_plan`,
-    `fold_forward`, `plan_payoff_date`, `plan_required_extra`, `plan_interest_in_year`,
-    `_paydown_steps`, `_sample_from_steps`) to the `loan_ledger` leaf, leaving the ~250-line
-    resolver-dependent BUILDER (`loan_plan`, `_planned_from_shadows`, `_estimated_from_contract`,
-    `_ForwardInputs`) in the seam. Measured: the fold half touches only `split_payment_cash` /
-    `sample_cumulative` / `period_for_date`, all already leaf. Three things fall out. The plan
-    becomes symmetric with the walk (the leaf owns the record TYPE and the fold; the seam owns
-    CONSTRUCTION), so `resolution_context` names `PlannedPayment` from the leaf it already imports
-    and the last cross-package private import into the seam is gone. `fold_forward` lands inside
-    W9909's scope automatically, **closing D3's "name-fence `fold_forward`" (the C6b L1 gap)
-    structurally rather than by adding a name to the frozen fence** -- which is Phase D's thesis
-    applied to itself. And C3a's deferred "it moves to `loan_ledger` when fold-native" is settled:
-    the FOLD is fold-native, only the builder is not.
-- [ ] **D-gate** `a package's private modules are private` -- the custom checker N-26 forces:
-  a module outside package `P` may not import `P._x`, nor any name from it. Name-INDEPENDENT and
-  fail-closed, unlike the name-keyed deny list it lets D3 delete. Measured over `app/`: the rule is
-  already clean today except the one edge D0 removes, so it ships green with negative controls.
-  Type-checking imports are NOT exempt -- a public signature's type sourced from another package's
-  private module is a boundary leak, and an exemption there is exactly N-25's shape.
-- [ ] **D1** engine cluster private inside the seam package (~60 fence entries delete).
+  - ~~**D0b** relocate `_plan.py`'s fold half to the `loan_ledger` leaf~~ -- **CANCELLED
+    2026-07-19, and cancelling it is what produced the design below.** Scoped as "move the fold
+    DOWN to the public leaf", it was measured to cost **four NEW fence entries** (`fold_forward` as
+    a producer, plus non-producer rulings for `plan_payoff_date` / `plan_required_extra` /
+    `plan_interest_in_year`), because `loan_ledger` is W9909-scoped whole. Those four entries were
+    the design telling us the ARROW WAS BACKWARDS: a balance producer moved into a PUBLIC package
+    needs a fence precisely because it is now reachable. **A balance producer should move deeper
+    INTO the seam, never out of it.** The `PlannedPayment` problem D0b existed to solve dissolves on
+    its own once the context lives inside the seam (**D-ctx**). Also corrected here: D0b's claim
+    that the move closed the `fold_forward` gap "structurally" was **wrong** -- `loan_ledger` is
+    public, so the move would have forced CLASSIFICATION (fail-closed, a real gain) but left the
+    CALL restriction name-keyed.
+
+**The from-scratch design (developer ruling 2026-07-19: "use structure, not fences").** One
+invariant, one gate, no lists:
+
+> A balance-at-T can only be produced by code inside `app/services/balance_at/`, and every module
+> in that package is private.
+
+`D-gate` alone enforces it: *no module may import another package's private module, or a name from
+it.* Name-INDEPENDENT and fail-closed, so it cannot rot the way a name-keyed deny list does -- and
+it needs no completeness checker, because W9909 exists ONLY to compensate for a deny list failing
+open.
+
+**Why today's fence needs a "wider allowlist", and what that was telling us.** It classifies
+`walk_loan_ledger` as a balance producer on the grounds that "the walk IS a balance-at-T
+computation". It is not: it returns FACTS, and it takes `fold_from_walk` to turn them into money.
+Both ends are fenced because the fold is one call away -- which forced an allowlist wide enough to
+admit the write side, which needs the walk 20+ times. Measured caller split (2026-07-19):
+
+| name | real call sites | what it is |
+|---|---|---|
+| `walk_loan_ledger` | `resolution_context` + 3 `loan_posting_service` modules | **facts**, both sides need it |
+| `fold_from_walk` | `balance_at/_positions.py`, nothing else | **balance** |
+| `fold_loan_balances` | **zero in production** (B2's oracle tests only) | **balance** |
+
+So move the FOLDS into the seam and the WALK needs no fence at all: a consumer holding a walk can no
+longer reach a balance from it. Structure does what the allowlist was straining to do.
+
+**What Python's structure can and cannot do, stated so no step over-claims.** A package boundary can
+stop a consumer IMPORTING or CALLING a producer, and can stop it NAMING a balance-carrying type.
+It cannot stop an attribute read on an object the consumer legitimately holds. So the residual rule
+is a DATA rule -- *a public seam output carries no balance unless that is its purpose* -- which the
+design already follows (`loan_figures` deliberately carries none; `debt_schedule_rows` hands out
+rows, not the bundle). `ResolvedLoan` is the one violator left, via `LoanState.current_balance`
+(kept at C4 for two in-cluster readers); deleting it is what finally retires
+`_CONTEXT_LOAN_PRODUCERS`, since a bundle with no balance on it needs no fence.
+
+**Ordering, forced by a measured import (not a preference).** `net_worth_kernel.py:52` is the ONLY
+module below the seam with a real `BalanceContext` import (`loan_ledger/_fold.py` and
+`loan_resolution.py` merely mention it in docstrings), so the context cannot move into the seam
+until the engines have. **D1 precedes D-ctx**, and D-gate lands LAST so it ships green with zero
+standing exceptions rather than training the exemption habit it exists to prevent.
+
+- [ ] **D1** engine cluster private inside the seam package.
   **Two scope corrections from the 2026-07-19 trace, both measured.** (a) The MOVE is far smaller
   than the fence-entry count implies: the cluster is already near-fully encapsulated, and the whole
   out-of-cluster surface in `app/` is one `net_worth_kernel.debt_schedule_rows` call
@@ -1036,11 +1075,42 @@ what is written here is decided in the commit itself, not in a new document.
   and CALLS none (it imports only `app.enums`). It is a classifier with 19 consumers; moving it
   inside would make 19 modules import a private name. Removing it deletes four fence entries and
   stops calling a classifier a balance engine.
-- [ ] **D2** distinct types: cash-flow balance vs net-worth balance.
-- [ ] **D3** ~~retire W9905;~~ shrink W9906 to a smoke alarm. **W9905 already RETIRED at C6b**
-  (`f445aa77`) -- C6b deleted the only two functions it guarded, so it moved earlier. Name-fence
-  `fold_forward` here (the C6b L1 gap: the plan-fold path lacks the walk path's double fence). Until
-  then the fence is FROZEN: no new entries, no new lists.
+- [ ] **D-ctx** `the read pass's context belongs to the seam that defines it` -- move
+  `resolution_context` to `balance_at/_context.py`; `BalanceContext` and `require_scenario` are
+  re-exported from the seam's public `__init__` (28 and 3 importers respectively, a one-line import
+  change each). Three things fall out. The builder INJECTION D0a added is retired -- it existed only
+  because the context sat OUTSIDE the seam, so once inside, a plain sibling import is honest and the
+  cycle cannot recur (`memoized_plan`, the funnel, stays). The last cross-package private import
+  (`PlannedPayment`) dissolves without moving any producer to a public package, which is what
+  cancelled D0b. And `_LOAN_RESOLVER_PRODUCERS` deletes: N-17 already found `resolution_context` is
+  the only `app/` caller of the three resolver entries, so once it is inside the seam they are
+  seam-internal by structure. The memo ACCESSORS stay methods for now: making them private module
+  functions only pays off once `LoanState.current_balance` is deleted (see the DATA-rule note
+  above), which is what actually retires `_CONTEXT_LOAN_PRODUCERS`.
+- [ ] **D-fold** `a fold is a balance; a walk is a fact` -- move `fold_from_walk` and
+  `fold_loan_balances` out of the `loan_ledger` leaf into the seam as private. The leaf keeps the
+  walk, the events, the split and the loaders -- everything BOTH sides need, none of which answers
+  "what is owed at T". `_LOAN_LEDGER_READER_PRODUCERS` then shrinks to the two posting readers, and
+  `walk_loan_ledger`'s own entry deletes: a walk that is no longer one call from a balance needs no
+  fence. B2's oracle keeps calling `fold_loan_balances` (its only caller), through the seam.
+- [ ] **D-gate** `a package's private modules are private` -- the custom checker N-26 forces: a
+  module outside package `P` may not import `P._x`, nor any name from it. Ships LAST so it is green
+  with **zero** standing exceptions. Type-checking imports are NOT exempt: a public signature's type
+  sourced from another package's private module is a boundary leak, and an exemption there is
+  precisely N-25's shape.
+- [ ] **D2** distinct types: cash-flow balance vs net-worth balance. Design AFTER D1/D-ctx/D-fold
+  (developer ruling 2026-07-19): the package boundary changes what a type would still have to
+  defend against, and the answer may be "nothing" -- in which case D2 is gold-plating and says so.
+- [ ] **D3** ~~retire W9905;~~ ~~shrink W9906 to a smoke alarm~~ **-> DELETE W9906 and W9909 down to
+  what genuinely cannot be private.** W9905 already RETIRED at C6b (`f445aa77`). The steps above
+  remove the reason each surface exists, so D3 is a deletion, not a shrink: `_BALANCE_PRODUCERS` +
+  its allowlist + ~30 rulings (D1), `_LOAN_RESOLVER_PRODUCERS` (D-ctx), most of
+  `_LOAN_LEDGER_READER_PRODUCERS` incl. `walk_loan_ledger` (D-fold), N-17's three dead entries.
+  **The honest residue** is `confirmed_loan_balance_at` / `confirmed_loan_balance_map`: they answer
+  balance-at-T from the WRITE cluster's own table, so they cannot be private to the read seam, and
+  their fate is E1's (does the posting cache stay readable at all?). Whatever survives D3 is named
+  with its reason and its resolving step -- one small surface, not a policy layer. Until D3 the
+  fence stays FROZEN: no new entries, no new lists.
 
 ### Phase E -- the ledger becomes a checked projection
 
