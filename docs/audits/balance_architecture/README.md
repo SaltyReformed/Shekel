@@ -112,7 +112,14 @@ unpinned `abs` sites its deletion exposed, **N-27**) shipped as D1 prerequisites
 shipped; **D1 is DECOMPOSED into D1a/D1b/D1c** (developer ruling 2026-07-20): re-measuring its scope with an AST
 scan found the plan's own correction (a) undercounted the out-of-cluster surface 2 -> 4 consumers
 and 2 -> 7 names, and that all 7 are ruled NON-producers -- so the step splits the cluster along
-that line (producers IN, non-producers OUT) instead of moving it wholesale.
+that line (producers IN, non-producers OUT) instead of moving it wholesale. **D1b** (`1616acd8`)
+shipped, and HALVED: "off the fence" bundled a TIGHTENING (the W9906 call allowlist, correct) with
+a LOOSENING (the W9909 completeness registry), and the loosening was MEASURED to re-open N-28's
+hole at 10.00/10 -- a module's reachability surface is its PARAMETERS, not its imports, and this
+one held four balance producers until the day before. The registry entry STAYS;
+`find_period_containing_date` moved to `loan_ledger._visible` on cohesion. Two adversarial reviews
+changed the commit (the CRITICAL, then a self-attesting guard and a toothless test); one deferred
+fork recorded as **N-29**.
 
 ---
 
@@ -1163,10 +1170,65 @@ standing exceptions rather than training the exemption habit it exists to preven
     that no longer exists. Full suite 7467, pylint 10.00, 150 checker tests. Deferred: the
     `period_subtotal` tests stay in `test_balance_resolver.py` (they share its fixtures; relocating
     means promoting two helpers into the conftest-imported `tests/_test_helpers`, its own commit).
-  - [ ] **D1b** `account_projection` off the fence, staying where it is. **Correction (b) VERIFIED
-    2026-07-20**: it imports only `app.enums`, defines no producer and calls none. It is a
-    classifier with 18 real importers; moving it inside would make 18 modules import a private name.
-    Deletes four fence entries (one allowlist membership + three non-producer rulings).
+  - [x] **D1b** `refactor(balance): a kind classifier is not a chronology module` --
+    **SHIPPED `1616acd8`.** Correction (b)'s premise VERIFIED (`account_projection` imports only
+    `app.enums`, defines no producer, calls none; 18 real importers, so moving it inside would make
+    18 modules import a private name) -- **but the step as written deleted FOUR fence entries, and
+    only ONE of the two removals is safe. Measuring that is the step.** The entries answer
+    different questions (N-28): coming OFF the **W9906 call allowlist** is a pure TIGHTENING (it
+    never used the exemption), while coming off the **W9909 completeness registry** is a LOOSENING,
+    and "it defines no producer" would justify it with a fact about the TREE. **Measured both
+    ways:** with the registry entry dropped, a public `balance_on(account, target)` folding
+    `account.transactions` -- **needing no new import at all**, since the module's reachability
+    surface is its PARAMETERS (`classify_account` takes a live `Account`) -- rated **10.00/10**,
+    and so did a route rendering it. N-28's shape, a fourth time. The history settles it: this
+    module DEFINED the loan forward-projection producers (`forward_balance_at_date` /
+    `balance_from_schedule_at_date` / `compute_forward_loan_period_balance_map` /
+    `splice_confirmed_and_projected_loan_balances`) through all of Phase C and shed the last one at
+    `f445aa77`, **one day before D1b**. So the W9909 entry STAYS (now two names, on a new
+    `_KIND_CLASSIFIER_MODULES` scope constant, since `_ENGINE_CLUSTER_MODULES` no longer covers
+    it); only the allowlist membership and the W9906 message's stale cluster list go. **Also in
+    the step, and the reason the ruling is honest:** `find_period_containing_date` MOVED to
+    `loan_ledger/_visible.py`. Its only two callers were the balance seam (`_kind_correct.py:278`)
+    and that chronology leaf, which had been importing a kind CLASSIFIER to reach its own primitive
+    -- a COHESION correction (where does the rule belong?), NOT Section 8's private-import smell;
+    that import was public and ordinary, and calling it Section 8 would have condemned the new
+    arrangement too (see N-29).
+    The ruling travelled WITH the name into a package the registry scopes WHOLE (N-28's rule),
+    verified live: W9909 fired at the destination the instant the name landed. Pure move (function
+    body AST-identical; the signature gained the type hints the bare `list` lacked); `loan_ledger`
+    loses its `account_projection` dependency. Baseline UNMOVED, proven by running pre- and
+    post-change code side by side on the dev clone: **all seven** non-plain accounts identical to
+    the cent (Mortgage $177,277.97, Van Loan $15,663.59, and the INTEREST / INVESTMENT /
+    APPRECIATING kinds that actually route through the moved function). Full suite 7471 (7467 + 4
+    new locator tests -- it had NO direct coverage, and `resolve_anchor_pay_period` files every
+    anchor correction's NOT NULL `pay_period_id` from its answer, the path whose
+    miss-and-fall-through-to-`periods[0]` case `owner_pay_periods` measures at $150,000.00), 151
+    checker tests, pylint 10.00. Three docstring corrections found on the way: `_visible.py`'s "Pure: no query" (false --
+    `owner_pay_periods` queries), `loan_ledger.__init__`'s dependency list (omitted
+    `app.extensions` / `app.utils`), and `_horizon.py`'s cross-reference. **Adversarial review
+    caught the loosening as a CRITICAL** after it had been built, measured, and live-verified
+    green -- Section 7.5 in one finding; its three dependent false docstring claims and a false
+    "the one module with no fence entry" superlative (B-12 names `loan_resolver` and others) went
+    with it. **A SECOND review of the correction found two more, both measured and both fixed:**
+    (H1) the restored registry entry was SELF-ATTESTING -- most of the W9909 scope is DERIVED from
+    the W9906 allowlist, but this one now sits on a hand-written constant nine lines from the entry
+    it covers, so deleting both (the "D1b redux" a later agent would write) passed **150 green**
+    and re-opened the probe at 10.00/10. Fixed by a BEHAVIOURAL pin that names its three
+    hand-scoped modules LITERALLY (`test_flags_unclassified_export_in_every_hand_scoped_module`);
+    binding it to the constants would reproduce the hole one level down. It closes the same gap for
+    D1a's `cash_events` / `period_flows`, which had it too. (H2) the new fallback test had NO
+    TEETH: the fixture listed the LATEST period first, where "first met" and "max by index"
+    coincide, so mutating the comparison to `if fallback is None` left all four tests green --
+    while production (both callers `ORDER BY period_index` ASCENDING) would have returned the
+    EARLIEST period. Fixture reordered; mutant verified dead. Also corrected: a **misquote of
+    Section 8** in three places (it names a PRIVATE-import smell; this was an ordinary public
+    import, and the paraphrase would have condemned the new arrangement too -- the move stands on
+    COHESION), an overstated W9909 claim (it sees public functions and public methods, not a
+    dunder-computed attribute or a module-level alias -- both rate 10.00/10, structural and
+    pre-existing), "none can yield a figure" about an ORM row, and the rationale written five times
+    now written once. **Deferred, developer ruling wanted: N-29** (the seam's non-loan branch now
+    reaches into a loan-named package for a generic calendar primitive).
   - [ ] **D1c** move the producers in as private (`_cash_engine` from D1a, plus `_calculator`,
     `_kernel`, `_investment`, `_daily_series` -- the last four have ZERO out-of-cluster consumers,
     so they move whole with no new exports). Export exactly TWO new public seam names,
@@ -1314,6 +1376,7 @@ archive names so old references resolve here.
 | N-25 (D0a) | **A real runtime import cycle in the balance cluster was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge.** pylint's `_add_imported_module` drops an edge into `_excluded_edges` when `in_type_checking_block(node)`, keyed by the `(importer, imported)` MODULE pair -- so one type-checking import silences the check for EVERY import of that module, including a runtime one elsewhere in the file. `resolution_context.py` had exactly that: a `TYPE_CHECKING` `PlannedPayment` import (line 73) masking the lazy runtime `loan_plan` import inside the method (line 305), which closed a genuine cycle with `balance_at._plan`. Measured both directions on this repo: neutralise the type-only edge on the PRE-D0a code and pylint reports `R0401 (app.services.balance_at._plan -> app.services.resolution_context)`; neutralise it on the D0a code and it reports nothing. Reproduced from scratch on a 3-file probe (8.75/10 -> 10.00/10 by adding a type-only import and nothing else). **The instance is fixed; the CLASS is not** -- the masking still applies anywhere a module imports another both for types and at runtime. Residual risk is bounded by two accidents rather than a gate: a top-level re-import would `ImportError` at load (`_plan` imports `BalanceContext` at module scope), and a function-level one now trips stock `import-outside-toplevel` since D0a deleted the scoped disable. The remaining path is re-adding the lazy import WITH a rationale comment -- which is what the pre-D0a code was, and it passed every gate | a cycle + an inverted dependency, gate-green | **instance closed (`8285fcad`)**; class recorded | D0a (instance); own commit (class, if ever) |
 | N-26 (D0a) | **pylint's stock `import-private-name` (C2701) does not flag `from pkg._module import public_name`** -- only `from pkg import _module`. Measured on a 2-file probe: the first form rates 10.00/10, the second is flagged. The unflagged form is the natural one and the one D1 depends on being caught, so the "engine cluster private inside the seam package" step CANNOT rest on the stock extension; it needs the custom package-privacy checker (D-gate). Recorded because the alternative -- assuming the stock gate covers it -- would have shipped D1's ~60 fence-entry deletion against a fence with a hole in it | a fence that permits the bypass it exists to stop | recorded, closing at D-gate | D-gate |
 | N-28 (D1a) | **Relocating a name out of a W9909-scoped module silently un-scopes it, and the two fence lists were being treated as one.** D1a moved `resolve_anchor` / `load_balance_transactions` / `live_amount_overrides` / `period_subtotal(s)` out of `balance_resolver` into two new modules, and left both new modules off BOTH fence lists on the reasoning that they call no producer. The first half is right (W9906's allowlist), the second is not (W9909's completeness scope), and conflating them removed the fail-closed default from the two files likeliest to grow the next cash producer -- they hold every ingredient of a balance-at-T, and X2 builds the cash fold on top of them. Measured in the step's own adversarial review: a public `running_balance_map` in `period_flows` folded from `resolve_anchor` + `period_subtotals` + `round_money` touches no fenced NAME, so it rated **10.00/10**, and a route consuming it rated 10.00/10 too. The generalisation is the finding: **W9909's scope must follow a relocated public name, or the move itself is the hole** -- a deny list keyed on module identity fails open the moment a module is created | a balance-at-T on a screen outside the seam, every gate green | **closed (`a2149145`)** -- `_CASH_EVENT_SOURCE_MODULES` scopes both new modules for W9909 while keeping them off the W9906 allowlist; probe re-run fires | D1a |
+| N-29 (D1b) | **The balance seam's NON-loan branch now reaches into a loan-named package for a generic calendar primitive.** D1b moved `find_period_containing_date` to `loan_ledger/_visible.py` -- correct on cohesion (it is chronology, it sat in a kind CLASSIFIER, and `_visible` had to import that classifier to reach its own primitive) and correct on the fence (`loan_ledger` is W9909-scoped WHOLE, so the ruling travelled with the name per N-28). But its seam call site is `_kind_correct.py:278`, the INTEREST / INVESTMENT / APPRECIATING fallthrough -- HYSAs, brokerages, properties -- which now imports from the loan fold leaf, two lines below an existing `pay_period_service.get_all_periods` call. `pay_period_service` is the neutral home that owns the calendar and carries no loan semantics; the reason D1b did NOT use it is that it is W9909-UNSCOPED, so relocating a classified public name there would drop its classification -- N-28's hole exactly. So the honest fork is: leave it in the loan leaf (a naming wart), or move it to `pay_period_service` AND scope that module for W9909 (a registry entry on a module holding the T of balance-at-T but no money). Not a correctness defect either way -- the function is pure and its two callers are proven -- and worth deciding before D-fold locks the leaf's surface | -- | recorded, deferred | D-fold-adjacent (developer ruling) |
 | N-27 (D1) | **The net-worth reducer with no callers, and the `abs` nothing pinned.** `net_worth_kernel.sum_net_worth_at_period` had ZERO production callers (app/, scripts/, templates, no dynamic reach) while four docstrings named it as the home of the asset-plus / liability-minus rule -- including the balance seam's own front door. The live reduction had silently moved to `_net_worth._sum_composition_at_period` (banded) with `compute_net_worth_series` deriving from it, and to `compute_net_worth_today` for the hero; the dead copy's only tests graded it against hand-built dicts (the B-17 anti-pattern), so it read as covered. **The deletion exposed the real defect:** those tests were the repo's ONLY negative-sign liability assertions, and the surviving rule has TWO `abs(bal)` sites. Every live liability fixture stores a POSITIVE balance, where `abs` is a no-op -- measured: the per-period band's `abs` could be deleted and all **7466** tests passed. A Credit Card's balance is stored NEGATIVE, so a regression would add a debt to the ASSET side and put the hero and the trend in contradiction on one page | `abs` deletable with a green suite; a $1,000 swing on a $500 card, hero vs trend disagreeing | **closed (`cef81202`)** -- reducer + its 5 tests deleted, W9909 ruling with them (the reverse-staleness guard fired); one new real-path test per `abs` site, each control shown to fire | D-dead |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
