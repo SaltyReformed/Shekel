@@ -120,6 +120,18 @@ one held four balance producers until the day before. The registry entry STAYS;
 `find_period_containing_date` moved to `loan_ledger._visible` on cohesion. Two adversarial reviews
 changed the commit (the CRITICAL, then a self-attesting guard and a toothless test); one deferred
 fork recorded as **N-29**.
+**D1c is REDESIGNED and the move renumbered D1d** (developer ruling 2026-07-20, "make the fences
+structurally unnecessary"; the C8c precedent for seating a prerequisite ahead of a cutover). Tracing
+the step found its "ZERO out-of-cluster consumers" claim FALSE for `balance_calculator`:
+`period_flows` -- the module D1a deliberately placed OUTSIDE the seam -- calls its `sum_projected`,
+and the call graph drags FIVE explicitly-ruled non-producers out with it (**N-30**). Placing them
+re-opened the larger question, and the answer is the shape the LOAN side already proved:
+`loan_ledger` is ONE package the fence scopes with ONE key, while the cash layer is THREE flat
+modules whose scope is the hand-written, self-attesting `_CASH_EVENT_SOURCE_MODULES`. So the new
+**D1c** builds the cash leaf as a package (`cash_ledger`), finishing the layer D1a explicitly built
+for X2 and DELETING a fence rather than adding one; **D1d** then moves the producers in. Also
+measured: deleting the engine-cluster W9909 rulings at the move re-opens the fail-open hole until
+D-gate ships (**N-31**), so they TRAVEL with their modules and die at D3.
 
 ---
 
@@ -1229,13 +1241,43 @@ standing exceptions rather than training the exemption habit it exists to preven
     pre-existing), "none can yield a figure" about an ORM row, and the rationale written five times
     now written once. **Deferred, developer ruling wanted: N-29** (the seam's non-loan branch now
     reaches into a loan-named package for a generic calendar primitive).
-  - [ ] **D1c** move the producers in as private (`_cash_engine` from D1a, plus `_calculator`,
-    `_kernel`, `_investment`, `_daily_series` -- the last four have ZERO out-of-cluster consumers,
-    so they move whole with no new exports). Export exactly TWO new public seam names,
-    `debt_schedule_rows` and `interest_by_period_for_account`, both forced by the code above.
-    Updates 18 test files; collapses `_BALANCE_SEAM_MODULES` to `{app.services.balance_at}` and
-    deletes the engine-cluster W9909 rulings. **Ships as TWO commits** (developer ruling): the cash
-    chain, then the net-worth chain.
+  - [ ] **D1c** `build the cash leaf as a package` -- the prerequisite the move's own trace found,
+    and the one step in Phase D that DELETES a fence surface rather than adding one. **Premise is
+    N-30:** `balance_calculator` is not a whole-module move, because `period_flows` calls its
+    `sum_projected` and the call graph (`sum_projected` -> `income_amount` / `_expense_amount` ->
+    `_entry_aware_amount` -> `entry_checking_impact`) takes FIVE explicitly-ruled NON-producers out
+    with it. Placing them by cohesion (the D1 ruling line, developer ruling 2026-07-20) gives the
+    cash side the shape the LOAN side already proved: `app/services/cash_ledger/` --
+    `_facts` (`resolve_anchor` / `load_balance_transactions`), `_amounts` (`live_amount_overrides`
+    plus the five: the cash analog of `loan_ledger/_split`, what ONE row is worth to checking),
+    `_flows` (`sum_projected` + `period_subtotal(s)` / `PeriodSubtotal`: what a SET of rows sums to),
+    and a public `__init__`. `cash_events.py` and `period_flows.py` fold in; D1a's reason for keeping
+    the flows OUT of the balance seam is untouched, since the package is not the seam. What remains
+    in `balance_calculator` is EXACTLY the producer pair (`calculate_balances` /
+    `calculate_balances_with_interest`), so D1d's split is decided by the code, not by judgment.
+    **The fence gain is the point:** the hand-written two-module `_CASH_EVENT_SOURCE_MODULES` --
+    which D1b's H1 review found SELF-ATTESTING (deleting the constant and its entry together passed
+    150 green while re-opening the probe at 10.00/10) -- collapses into ONE package key that
+    prefix-matches, exactly as `app.services.loan_ledger` is scoped today, so creating a module
+    inside the package can no longer escape the scope (Section 8's fail-closed lesson, closed
+    STRUCTURALLY instead of by a literal-string test). It also finishes the layer D1a explicitly
+    built for X2 ("the anchor fact + transaction loader + live amounts ARE that stream") rather than
+    leaving X1/X2 a scattered layer to re-split. Pure move, proven AST-identical per definition; the
+    baseline cannot move.
+  - [ ] **D1d** move the producers in as private (`_cash_engine` from D1a, plus `_calculator`,
+    `_kernel`, `_investment`, `_daily_series`). **Two corrections to this step as written**, both
+    measured with an AST scan (the regex it was scoped with undercounts -- Section 8, again): the
+    "ZERO out-of-cluster consumers" claim holds only for `_investment` and `_daily_series`
+    (`_calculator` is N-30; `_kernel` has the two the next sentence exports), and the test-file count
+    is **30**, not 18. Export exactly TWO new public seam names, `debt_schedule_rows` and
+    `interest_by_period_for_account`, both forced by the code above. Collapses
+    `_BALANCE_SEAM_MODULES` to `{app.services.balance_at}` -- a pure TIGHTENING -- but the
+    engine-cluster W9909 rulings TRAVEL with their modules (re-keyed
+    `app.services.balance_at._kernel`, etc.) rather than deleting: **N-31** measures the hole the
+    deletion opens, and D3 is where they die, once D-gate has made the privacy structural. **Ships
+    as TWO commits** (developer ruling): the cash chain, then the net-worth chain -- the allowlist
+    collapse lands with the SECOND, since after the first the net-worth modules are still outside and
+    still calling producers.
 - [ ] **D-ctx** `the read pass's context belongs to the seam that defines it` -- move
   `resolution_context` to `balance_at/_context.py`; `BalanceContext` and `require_scenario` are
   re-exported from the seam's public `__init__` (28 and 3 importers respectively, a one-line import
@@ -1378,6 +1420,8 @@ archive names so old references resolve here.
 | N-28 (D1a) | **Relocating a name out of a W9909-scoped module silently un-scopes it, and the two fence lists were being treated as one.** D1a moved `resolve_anchor` / `load_balance_transactions` / `live_amount_overrides` / `period_subtotal(s)` out of `balance_resolver` into two new modules, and left both new modules off BOTH fence lists on the reasoning that they call no producer. The first half is right (W9906's allowlist), the second is not (W9909's completeness scope), and conflating them removed the fail-closed default from the two files likeliest to grow the next cash producer -- they hold every ingredient of a balance-at-T, and X2 builds the cash fold on top of them. Measured in the step's own adversarial review: a public `running_balance_map` in `period_flows` folded from `resolve_anchor` + `period_subtotals` + `round_money` touches no fenced NAME, so it rated **10.00/10**, and a route consuming it rated 10.00/10 too. The generalisation is the finding: **W9909's scope must follow a relocated public name, or the move itself is the hole** -- a deny list keyed on module identity fails open the moment a module is created | a balance-at-T on a screen outside the seam, every gate green | **closed (`a2149145`)** -- `_CASH_EVENT_SOURCE_MODULES` scopes both new modules for W9909 while keeping them off the W9906 allowlist; probe re-run fires | D1a |
 | N-29 (D1b) | **The balance seam's NON-loan branch now reaches into a loan-named package for a generic calendar primitive.** D1b moved `find_period_containing_date` to `loan_ledger/_visible.py` -- correct on cohesion (it is chronology, it sat in a kind CLASSIFIER, and `_visible` had to import that classifier to reach its own primitive) and correct on the fence (`loan_ledger` is W9909-scoped WHOLE, so the ruling travelled with the name per N-28). But its seam call site is `_kind_correct.py:278`, the INTEREST / INVESTMENT / APPRECIATING fallthrough -- HYSAs, brokerages, properties -- which now imports from the loan fold leaf, two lines below an existing `pay_period_service.get_all_periods` call. `pay_period_service` is the neutral home that owns the calendar and carries no loan semantics; the reason D1b did NOT use it is that it is W9909-UNSCOPED, so relocating a classified public name there would drop its classification -- N-28's hole exactly. So the honest fork is: leave it in the loan leaf (a naming wart), or move it to `pay_period_service` AND scope that module for W9909 (a registry entry on a module holding the T of balance-at-T but no money). Not a correctness defect either way -- the function is pure and its two callers are proven -- and worth deciding before D-fold locks the leaf's surface | -- | recorded, deferred | D-fold-adjacent (developer ruling) |
 | N-27 (D1) | **The net-worth reducer with no callers, and the `abs` nothing pinned.** `net_worth_kernel.sum_net_worth_at_period` had ZERO production callers (app/, scripts/, templates, no dynamic reach) while four docstrings named it as the home of the asset-plus / liability-minus rule -- including the balance seam's own front door. The live reduction had silently moved to `_net_worth._sum_composition_at_period` (banded) with `compute_net_worth_series` deriving from it, and to `compute_net_worth_today` for the hero; the dead copy's only tests graded it against hand-built dicts (the B-17 anti-pattern), so it read as covered. **The deletion exposed the real defect:** those tests were the repo's ONLY negative-sign liability assertions, and the surviving rule has TWO `abs(bal)` sites. Every live liability fixture stores a POSITIVE balance, where `abs` is a no-op -- measured: the per-period band's `abs` could be deleted and all **7466** tests passed. A Credit Card's balance is stored NEGATIVE, so a regression would add a debt to the ASSET side and put the hero and the trend in contradiction on one page | `abs` deletable with a green suite; a $1,000 swing on a $500 card, hero vs trend disagreeing | **closed (`cef81202`)** -- reducer + its 5 tests deleted, W9909 ruling with them (the reverse-staleness guard fired); one new real-path test per `abs` site, each control shown to fire | D-dead |
+| N-30 (D1c) | **The cash balance layer is three flat modules plus five functions stranded in a PRODUCER, and its fence scope is a hand-written list.** D1c as written moved `balance_calculator` whole on a claim of "ZERO out-of-cluster consumers"; an AST scan measures one -- `period_flows.py:138` calls `sum_projected`, and `period_flows` is the module D1a deliberately placed OUTSIDE the seam. The call graph takes five explicitly-ruled NON-producers with it (`sum_projected`, `income_amount`, `_expense_amount`, `_entry_aware_amount`, `entry_checking_impact`), so the producer module has been holding the per-row checking-VALUATION rules all along -- including `entry_checking_impact`, the entries-aware reservation formula behind the grid-vs-savings divergence, reached by a sibling (`balance_resolver._entry_aware_amount_dated`) that documents itself as "mirroring" it. The generalisation is the finding: the LOAN side's facts / split / chronology live in ONE package the fence scopes with ONE key, while the CASH side's equivalents are scattered across `cash_events` / `period_flows` / `balance_calculator` and scoped by the hand-written `_CASH_EVENT_SOURCE_MODULES`. The asymmetry IS the hole, and structuring the cash side like the loan side deletes the hand-written scope | structure; the formula it strands is the $160 vs $114.29 (F-002 Pair C / E-25) class | recorded, closing at D1c | D1c |
+| N-31 (D1c) | **Relocating a module INTO the seam silently un-scopes it for W9909 -- N-28's rule, reached from the opposite direction.** `balance_at` is deliberately NOT on the W9909 registry ("its public functions ARE the seam entries every consumer is supposed to call"), so the moment an engine module becomes `balance_at/_kernel.py` and its ruling deletes, a new public producer born there is unclassified AND unfenced (its name is not in `_BALANCE_PRODUCERS`). Measured on this tree, both halves: a public `probe_balance_map_at` added to `balance_at/_positions.py` rated **10.00/10**, and an `app/routes/probe_consumer.py` importing it privately and rendering it rated **10.00/10** under the full CI `--fail-on` set (exit 0). Stock `import-private-name` does not cover the import form either (N-26). So the engine-cluster rulings must TRAVEL with their modules at D1d and delete at D3, once D-gate has made the boundary structural -- the same "only the TIGHTENING is safe" split D1b reached from the other side (the W9906 allowlist collapse is the tightening; the W9909 deletion is the loosening) | a balance producer inside the seam, and a route rendering it, with every gate green | recorded, closing at D3 | D1d (travel); D-gate / D3 (deletion) |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
@@ -1434,6 +1478,13 @@ archive names so old references resolve here.
   scope with it. Related: two fence lists that look alike can answer different questions ("may this
   module CALL a producer?" vs "must a new public function here be CLASSIFIED?"); treating them as
   one is what opened the hole.
+* **When two sides of ONE problem have different SHAPES, the loose side is where the next hole is.**
+  The loan side's facts / split / chronology are one package the fence scopes with one key; the cash
+  side's equivalents were three flat modules plus five functions stranded inside a producer, scoped
+  by a hand-written list its own review found self-attesting. Nothing was failing -- the asymmetry
+  itself was the finding, and structuring the second side like the first is what let a fence surface
+  be DELETED instead of maintained. Ask of every guard: is this compensating for a shape the other
+  half of the codebase already got right?
 * A safety that is a predicate is not a safety.
 * Boundary predicates standing in for instants or records are this codebase's signature defect
   (the walk clock, the period-start payment date, the archived X0 rule). When a rule says
