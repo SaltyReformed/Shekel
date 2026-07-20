@@ -26,7 +26,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, balance_calculator, pay_period_service
+from app.services import account_service, balance_calculator, cash_events, pay_period_service
 from app.services.auth_service import hash_password
 
 
@@ -3032,7 +3032,7 @@ class TestCheckingDetail:
 
             # The caption shows the anchor event's DISPLAY-timezone civil date,
             # computed here from the same ``created_at`` the caption renders.
-            anchor = balance_resolver.resolve_anchor(
+            anchor = cash_events.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             anchor_date_str = to_display_date(anchor.created_at).strftime(
@@ -3800,7 +3800,7 @@ class TestCashDetailContext:
             db.session.add(acct)
             db.session.commit()
 
-            anchor = balance_resolver.resolve_anchor(
+            anchor = cash_events.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             # Non-vacuity: the event date and the period start genuinely differ.

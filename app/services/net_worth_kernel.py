@@ -74,7 +74,7 @@ def load_account_period_transactions(
     interest-layered walk (:func:`_account_interest_projection`, its only
     caller today).  It selects EVERY non-deleted row for the account in the
     period span -- unlike
-    :func:`~app.services.balance_resolver.load_balance_transactions`, which
+    :func:`~app.services.cash_events.load_balance_transactions`, which
     additionally drops Credit / Cancelled rows -- because the interest
     accrual downstream applies its own status logic and needs the full row
     set.  ``Transaction.status`` is ``lazy="joined"`` on the model, so a

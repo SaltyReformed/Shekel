@@ -72,7 +72,7 @@ def _create_savings_account(
             through ``account_service.create_account`` so the dated
             ``AccountAnchorHistory`` SoT (E-19, Commit 4) and the
             cache columns agree from t0.  Required by Commit 6:
-            ``balance_resolver.resolve_anchor`` reads history, so
+            ``cash_events.resolve_anchor`` reads history, so
             mutating only the cache columns after creation no longer
             propagates to ``/savings``.
         anchor_period_id: Pay period to anchor the new account

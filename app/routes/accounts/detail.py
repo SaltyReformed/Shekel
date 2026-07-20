@@ -59,7 +59,7 @@ from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     balance_at,
-    balance_resolver,
+    cash_events,
     home_equity_service,
     net_worth_kernel,
     pay_period_service,
@@ -77,7 +77,7 @@ if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
     from app.models.pay_period import PayPeriod
-    from app.services.balance_resolver import AnchorPoint
+    from app.services.cash_events import AnchorPoint
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +269,7 @@ def _cash_projection(
     scenario = balance_ctx.scenario
     if is_interest:
         if scenario is not None:
-            anchor = balance_resolver.resolve_anchor(account, scenario.id)
+            anchor = cash_events.resolve_anchor(account, scenario.id)
             balances = balance_at.balance_map(
                 account, balance_ctx, all_periods,
             ) or {}
@@ -279,7 +279,7 @@ def _cash_projection(
     elif scenario is not None and all_periods:
         result = balance_at.cash_balance_map(account, balance_ctx, all_periods)
         balances = result.balances
-        anchor = balance_resolver.resolve_anchor(account, scenario.id)
+        anchor = cash_events.resolve_anchor(account, scenario.id)
     return balances, interest_by_period, anchor
 
 

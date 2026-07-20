@@ -56,12 +56,20 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_resolver
+from app.services import balance_resolver, cash_events, period_flows
 from app.services.balance_resolver import (
     BalanceResult,
-    PeriodSubtotal,
     balance_as_of_date,
     balances_for,
+)
+# The per-period FLOW sums moved to their own module at plan step D1a (they
+# answer what MOVED, not what is HELD).  Their tests still live here because
+# they share this module's ``_make_projected_expense`` / ``_add_entry``
+# fixtures with the balance tests; relocating them to ``test_period_flows.py``
+# means promoting those two into ``tests/_test_helpers``, which is its own
+# commit.
+from app.services.period_flows import (
+    PeriodSubtotal,
     period_subtotal,
     period_subtotals,
 )
@@ -489,13 +497,21 @@ class TestBalancesForEntriesAware:
 
         Mechanically asserts that the silent-degrade short-circuit
         text patterns named by the remediation plan's verification
-        gate are not present in either the producer
-        (``balance_resolver.py``) or the consumed engine
-        (``balance_calculator.py``).  A future regression that
-        re-introduces the seam in either file fails this test loud.
+        gate are not present in the producer (``balance_resolver.py``),
+        the consumed engine (``balance_calculator.py``), or
+        ``cash_events.py``.  A future regression that re-introduces the
+        seam in any of them fails this test loud.
+
+        ``cash_events.py`` is scanned since plan step D1a moved
+        ``load_balance_transactions`` there -- and that function carries the
+        ``selectinload(Transaction.entries)`` guarantee this whole guard
+        rests on, so leaving it outside the scan would have let the seam
+        return in the one file that matters most.
         """
         forbidden_patterns = ("not in txn.__dict__", "'entries' not in")
-        for module_name in ("balance_resolver.py", "balance_calculator.py"):
+        for module_name in (
+            "balance_resolver.py", "balance_calculator.py", "cash_events.py",
+        ):
             source_path = (
                 Path(__file__).resolve().parents[2]
                 / "app" / "services" / module_name
@@ -1186,7 +1202,7 @@ class TestBalanceAsOfDate:
 
             # Count live_amount_overrides invocations while delegating to
             # the real implementation so the projected value is unchanged.
-            real_builder = balance_resolver.live_amount_overrides
+            real_builder = cash_events.live_amount_overrides
             call_count = {"n": 0}
 
             def _counting_builder(*args, **kwargs):
@@ -1571,10 +1587,52 @@ class TestBalanceAsOfDate:
 # ── Module surface ─────────────────────────────────────────────────
 
 
-def test_balance_resolver_exports_producer():
-    """The producer names are importable from the module's public surface."""
-    assert hasattr(balance_resolver, "balances_for")
-    assert hasattr(balance_resolver, "period_subtotal")
-    assert hasattr(balance_resolver, "balance_as_of_date")
-    assert hasattr(balance_resolver, "BalanceResult")
-    assert hasattr(balance_resolver, "PeriodSubtotal")
+def test_balance_resolver_exports_only_the_producers():
+    """The module's public surface is the two balance producers, and ONLY those.
+
+    Pins plan step D1a's split, in both directions.  ``balance_resolver`` is
+    the cash BALANCE producer; the facts it folds over
+    (``cash_events``) and the per-period FLOW sums (``period_flows``) are
+    separate modules, because only a balance producer belongs inside the
+    ``balance_at`` seam at D1c -- a name that answers no balance-at-T question
+    would otherwise have to be re-exported through the seam's public surface
+    to keep its consumers working.
+
+    The "only" is enforced as a SET EQUALITY over what the module DEFINES, and
+    that is the load-bearing half.  An earlier version of this test asserted
+    ``not hasattr`` for the relocated names, which does not enforce "only" at
+    all: adding a fresh non-producer back to ``balance_resolver`` passed it
+    green (measured in D1a's adversarial review).  Equality catches that,
+    because a new public definition here changes the set.
+
+    It keys on ``__module__`` -- where each name is DEFINED -- rather than on
+    ``hasattr``.  ``balance_resolver`` imports the four ``cash_events`` names it
+    folds over, and an imported name IS a module attribute, so
+    ``hasattr(balance_resolver, "resolve_anchor")`` is True and always will be.
+    Worth stating rather than working around: this split relocates OWNERSHIP,
+    and Python offers no way to stop a caller reaching a re-exported name. What
+    will forbid reaching it is the D-gate package boundary, once these producers
+    move inside the seam at D1c -- structure, not this test. The deterministic
+    guard against a NEW unclassified producer here is W9909, not this either.
+    """
+    defined_here = {
+        name for name in dir(balance_resolver)
+        if not name.startswith("_")
+        and getattr(
+            getattr(balance_resolver, name), "__module__", None,
+        ) == "app.services.balance_resolver"
+    }
+    assert defined_here == {"balances_for", "balance_as_of_date", "BalanceResult"}, (
+        "balance_resolver defines the cash balance producers and ONLY those; "
+        f"unexpected surface: {sorted(defined_here)}"
+    )
+
+    for moved in ("resolve_anchor", "AnchorPoint", "load_balance_transactions",
+                  "live_amount_overrides"):
+        assert getattr(cash_events, moved).__module__ == (
+            "app.services.cash_events"
+        ), f"{moved} is owned by cash_events since D1a"
+    for moved in ("period_subtotal", "period_subtotals", "PeriodSubtotal"):
+        assert getattr(period_flows, moved).__module__ == (
+            "app.services.period_flows"
+        ), f"{moved} is owned by period_flows since D1a"

@@ -313,6 +313,27 @@ _LOAN_RESOLVER_DEFINING_MODULES = frozenset({
     "app.services.loan_resolution",
     "app.services.resolution_context",
 })
+# The cash-event SOURCE modules (plan step D1a).  They are NOT on
+# :data:`_BALANCE_SEAM_MODULES` -- they call no balance producer, and W9906
+# correctly flags them if they ever try.  But they are scoped for the W9909
+# COMPLETENESS check, and the distinction is load-bearing: the two lists answer
+# different questions ("may this module CALL a producer?" vs "must a new public
+# function here be CLASSIFIED?"), and D1a's own adversarial review proved that
+# conflating them opens the exact hole W9909 exists to close.  Measured: a new
+# public ``running_balance_map`` in ``period_flows``, folded from
+# ``resolve_anchor`` + ``period_subtotals`` + ``round_money`` -- not one fenced
+# name among them -- rated 10.00/10, AND so did a route consuming it.  A real
+# balance-at-T on a screen outside the seam with every gate silent, which is the
+# third instance of the miss this checker's header calls "a design defect in the
+# FENCE, not a lapse in diligence".
+#
+# These two modules are the likeliest birthplace of the next one: they hold
+# every ingredient of a cash balance-at-T, and plan step X2 ("a cash account is
+# an event stream") builds the cash fold directly on top of them.
+_CASH_EVENT_SOURCE_MODULES = frozenset({
+    "app.services.cash_events",
+    "app.services.period_flows",
+})
 
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
 # top-level function defined in one of these modules must appear in one of its
@@ -341,14 +362,32 @@ _FENCED_MODULE_RULINGS = {
         # owns, and itself wrapped by the seam's counterpart entry.
         "investment_growth_since_anchor",
     })),
-    "app.services.balance_resolver": (_BALANCE_PRODUCERS, frozenset({
+    # The cash balance producers, and since plan step D1a ONLY those:
+    # ``balances_for`` and ``balance_as_of_date``.  Its five non-producers moved
+    # OUT to the two modules below.  The empty non-producer set is the accurate
+    # state, not an oversight: every public name this module still defines IS a
+    # producer, and W9909 still fires here on a new unclassified one (the module
+    # stays a registry KEY, so ``_fenced_module_ruling`` returns a ruling rather
+    # than ``None``).
+    "app.services.balance_resolver": (_BALANCE_PRODUCERS, frozenset()),
+    # The FACTS a cash balance is folded from (plan step D1a).  Scoped for
+    # completeness but NOT allowlisted -- see :data:`_CASH_EVENT_SOURCE_MODULES`
+    # for why the two are deliberately different answers.
+    "app.services.cash_events": (_BALANCE_PRODUCERS, frozenset({
         # The stored anchor SoT row (a user-asserted FACT plus its date), not a
         # computed projection.  Consumers read it for the "as of" caption; their
         # balances come from the seam.
         "resolve_anchor",
+        # A loader: it selects rows, and carries no balance of any kind.
         "load_balance_transactions",
+        # What a row is worth RIGHT NOW when its stored amount is a stale cache
+        # -- an amount per transaction, never a balance per account.
         "live_amount_overrides",
-        # Per-period NET sums (what moved), not a running balance (what is held).
+    })),
+    # Per-period NET sums: what MOVED during a period, not what is HELD at a
+    # date.  A peer reduction over the same rows a balance folds, not a step
+    # toward one.
+    "app.services.period_flows": (_BALANCE_PRODUCERS, frozenset({
         "period_subtotal",
         "period_subtotals",
     })),

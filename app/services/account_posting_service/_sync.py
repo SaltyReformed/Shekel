@@ -194,7 +194,7 @@ def _latest_anchor_instant(account_id: int) -> datetime | None:
 
     The self-heal predicate's right-hand side: ``MAX(created_at)`` over the
     account's :class:`~app.models.account.AccountAnchorHistory` rows -- the
-    assertion instant of the row ``balance_resolver.resolve_anchor`` resolves
+    assertion instant of the row ``cash_events.resolve_anchor`` resolves
     -- normalized through the walk's UTC convention
     (:func:`._walk._as_utc_instant`).  One indexed lookup
     (``idx_anchor_history_account`` covers ``(account_id, created_at)``).

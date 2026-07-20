@@ -62,7 +62,7 @@ class AccountAnchorFact:
     Wraps one :class:`~app.models.account.AccountAnchorHistory` row as a
     plain fact the walk and the reconcile consume.  The rows are ordered by
     ``(created_at, id)`` -- the same latest-``created_at`` chronology
-    ``balance_resolver.resolve_anchor`` reads, with ``id`` as the
+    ``cash_events.resolve_anchor`` reads, with ``id`` as the
     deterministic tie-breaker -- and the FIRST row is the account's OPENING
     (the origination row ``account_service.create_account`` appends);
     every later row is a user TRUE-UP.
@@ -160,7 +160,7 @@ def _anchor_facts(account_id: int) -> list[AccountAnchorFact]:
 
     Loads every :class:`~app.models.account.AccountAnchorHistory` row for
     the account ordered by ``(created_at, id)`` -- so the latest fact is the
-    row ``balance_resolver.resolve_anchor`` resolves, with ``id`` breaking a
+    row ``cash_events.resolve_anchor`` resolves, with ``id`` breaking a
     (practically unreachable) same-instant tie deterministically -- and
     marks the first row as the OPENING.  The balance routes through
     ``Decimal(str(...))`` per the project's Decimal-construction rule.

@@ -1,37 +1,34 @@
 """
-Shekel Budget App -- Balance Resolver (Anchor + entries-aware producer)
+Shekel Budget App -- Cash balance PRODUCERS (the entries-aware fold).
 
-Single-source-of-truth resolver for "what is this account's anchor"
-(governing intent E-19; finding CRIT-01 / F-001) plus the canonical
-entries-aware balance/subtotal producer (E-25; CRIT-01 / F-009).  This
-module exposes:
+The two producers that answer "what is this cash account's balance" -- and
+only those.  Everything they fold OVER now lives beside them rather than in
+here:
 
-  * :func:`resolve_anchor` -- Commit 4, the dated anchor SoT.
-  * :func:`balances_for`, :func:`period_subtotal`, and
-    :func:`period_subtotals` (its batch sibling) -- Commit 5, the
-    canonical entries-aware producer that grid, dashboard, and
-    (post-Commits 6-8) every other balance consumer route through.
-  * :class:`AnchorPoint`, :class:`BalanceResult`,
-    :class:`PeriodSubtotal` -- frozen dataclasses that lock the
-    producer's outputs against in-place mutation.
+  * :func:`balances_for` -- the canonical entries-aware producer (E-25;
+    CRIT-01 / F-009) that grid, dashboard, and every other balance consumer
+    route through, via the :mod:`app.services.balance_at` seam.
+  * :func:`balance_as_of_date` -- the same projection evaluated at a calendar
+    date rather than a period boundary (E-27 / HIGH-02).
+  * :class:`BalanceResult` -- the frozen dataclass locking the output against
+    in-place mutation.
 
-Background (anchor section, Commit 4).  Before the remediation, five
-balance producers (grid, ``/accounts``, ``/savings``, dashboard,
-year-end / net-worth) each forked four different ways for the
-NULL-anchor case and additionally each read the anchor by a slightly
-different recipe.  Commit 3 (migration ``cfb15e782f86`` plus the
-canonical ``account_service.create_account`` factory) made the NULL
-state unreachable at the storage tier.  Commit 4 (this file) makes
-the "which anchor is current" question answered in one place at the
-service tier, reading the dated source of truth -- the latest
-``AccountAnchorHistory`` row -- rather than the
-``Account.current_anchor_*`` columns directly.  Those columns are
-treated as a denormalized cache of the latest history row; if they
-ever disagree (a future regression that updates the cache without
-appending the matching event), the resolver wins from the history
-row and emits ``EVT_ANCHOR_CACHE_RECONCILED`` so the divergence is
-detectable in observability rather than silently shipping a wrong
-balance.
+Split at plan step D1a.  This module held three separable concerns and sat at
+exactly 1000 lines, pylint's default module ceiling, because of it.  The other
+two moved out to modules named for what they are, leaving the producers ready
+to move INTO the seam at D1c:
+
+  * :mod:`app.services.cash_events` -- the FACTS a balance is folded from:
+    :func:`~app.services.cash_events.resolve_anchor` (the dated anchor SoT,
+    E-19 / CRIT-01 / F-001) with its :class:`~app.services.cash_events.AnchorPoint`,
+    :func:`~app.services.cash_events.load_balance_transactions`, and
+    :func:`~app.services.cash_events.live_amount_overrides`.
+  * :mod:`app.services.period_flows` -- the per-period FLOW sums
+    (``period_subtotal`` / ``period_subtotals`` / ``PeriodSubtotal``), a peer
+    reduction over the same rows rather than a step toward a balance.
+
+The arrow runs one way: this module imports ``cash_events`` (it folds those
+facts); it does not import ``period_flows`` at all, and neither imports it.
 
 Background (entries-aware producer, Commit 5).  CRIT-01 / F-009: the
 audit's symptom #1 ($160 on grid vs $114.29 on /savings for the same
@@ -58,199 +55,34 @@ retirement) through ``balances_for``.
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).
 This module takes plain data, returns a frozen dataclass, never
 imports ``flask``/``request``/``session``/``current_app``/
-``render_template``.  ``log_event`` is from ``app.utils.log_events``,
-which is the project's Flask-free structured-logging helper.
+``render_template``.
 
-Decimal discipline (``docs/coding-standards.md``).  The returned
-``AnchorPoint.balance`` is constructed via ``Decimal(str(...))`` from
-the storage value.  ``Account.current_anchor_balance`` and
-``AccountAnchorHistory.anchor_balance`` are ``Numeric(12,2)`` columns,
-so the SQLAlchemy adapter already returns ``Decimal`` -- but routing
-through ``str`` is the project convention and is the cheap insurance
-against a future column-type change silently coercing through float.
+Decimal discipline (``docs/coding-standards.md``).  Every returned balance is
+quantized to cents via :func:`~app.utils.money.round_money`
+(``ROUND_HALF_UP``), never Python's implicit ``ROUND_HALF_EVEN`` (E-26 /
+HIGH-04).
 """
 
 from __future__ import annotations
 
-import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import balance_calculator
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    is_projected,
+from app.services.cash_events import (
+    AnchorPoint,
+    live_amount_overrides,
+    load_balance_transactions,
+    resolve_anchor,
 )
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_ANCHOR_CACHE_RECONCILED,
-    log_event,
-)
+from app.utils.balance_predicates import is_projected
 from app.utils.money import round_money
-
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class AnchorPoint:
-    """Immutable date-anchored anchor (E-19 single source of truth).
-
-    Attributes:
-        balance: The real-money anchor balance as a ``Decimal``.  Zero
-            is a legitimate value per E-12 and is preserved verbatim;
-            consumers MUST NOT treat ``Decimal("0.00")`` as "missing".
-        period: The :class:`~app.models.pay_period.PayPeriod` the
-            anchor is anchored against.  The pay-period row is
-            authoritative; the resolver returns the relationship-loaded
-            object so callers can read ``period.id``, ``period.start_date``,
-            ``period.end_date``, etc. without re-querying.
-        as_of_date: The UTC calendar date the anchor event was created
-            (``AccountAnchorHistory.created_at`` truncated to a UTC
-            day).  UTC is chosen for consistency with the
-            ``uq_anchor_history_account_period_balance_day`` partial
-            unique index (see ``app/models/account.py``), which
-            truncates the same column at UTC.  A canonical UTC identity,
-            not a display value (convert ``created_at`` instead).
-        created_at: The anchor event's stored UTC instant, carried so a
-            reader renders the anchor "as of" in the DISPLAY timezone via
-            ``local_datetime`` (not the UTC-day ``as_of_date``).
-    """
-
-    balance: Decimal
-    period: PayPeriod
-    as_of_date: date
-    created_at: datetime
-
-
-def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
-    """Return the canonical :class:`AnchorPoint` for ``account``.
-
-    Reads the most recent ``AccountAnchorHistory`` row for the account
-    (by ``created_at`` descending) as the dated source of truth (E-19).
-    ``Account.current_anchor_balance`` and
-    ``Account.current_anchor_period_id`` are treated as a denormalized
-    cache of that latest event:
-
-      * Cache matches latest event -- the canonical state.  Return the
-        history row's values.
-      * Cache disagrees -- the history row wins (E-19 dated SoT) and
-        the divergence is logged via
-        ``EVT_ANCHOR_CACHE_RECONCILED`` so the regression that wrote
-        the cache without appending the matching event is detectable
-        in observability.  The cache is NOT mutated here -- this
-        resolver is read-only; correcting the cache is the
-        responsibility of the next legitimate true-up path.
-
-    The Decimal balance is constructed via ``Decimal(str(...))`` to
-    obey the project's "construct Decimal from strings" rule
-    (``docs/coding-standards.md``) even though the storage column is
-    already ``Numeric(12,2)``.
-
-    Never returns ``None``: Commit 3 (migration ``cfb15e782f86`` plus
-    the canonical ``account_service.create_account`` factory)
-    guarantees every account row has a matching origination history
-    row from the moment it exists, so the latest-row query always
-    succeeds.  The defensive ``RuntimeError`` exists so that a future
-    regression -- e.g. a code path that bypasses the factory by
-    calling ``db.session.add(Account(...))`` directly -- fails loudly
-    here rather than silently returning a wrong number to every
-    downstream consumer.
-
-    Args:
-        account: The :class:`~app.models.account.Account` to resolve.
-            Must be attached to ``db.session`` (the history-row query
-            reads via the session).
-        scenario_id: The scenario the caller is operating under.  The
-            current data model is per-account -- ``AccountAnchorHistory``
-            carries no ``scenario_id`` column and accounts are not
-            scenario-scoped at the storage tier -- so the anchor
-            returned is identical across scenarios for the same
-            account.  The parameter is kept in the signature for two
-            reasons: API symmetry with the post-Commit-5
-            ``balances_for(account, scenario_id, periods)`` producer
-            that does need scenario for transaction filtering, and
-            forward compatibility with a possible future per-scenario
-            anchor override.  The value is included in the
-            reconciliation log payload so a future scenario-scoped
-            divergence is traceable.
-
-    Returns:
-        :class:`AnchorPoint` -- balance, period, and as-of-date.
-
-    Raises:
-        RuntimeError: When no ``AccountAnchorHistory`` row exists for
-            the account.  Unreachable in production after Commit 3;
-            see the function docstring above for the regression-trap
-            rationale.
-    """
-    latest: AccountAnchorHistory | None = (
-        db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at.desc())
-        .first()
-    )
-    if latest is None:
-        raise RuntimeError(
-            f"resolve_anchor: account id={account.id} has zero "
-            "AccountAnchorHistory rows.  Commit 3 (migration "
-            "cfb15e782f86 plus account_service.create_account) makes "
-            "this state unreachable; investigate any code path that "
-            "constructed the Account row without routing through the "
-            "canonical factory."
-        )
-
-    history_balance = Decimal(str(latest.anchor_balance))
-    history_period_id = latest.pay_period_id
-
-    cached_balance = account.current_anchor_balance
-    cached_period_id = account.current_anchor_period_id
-    cache_disagrees = (
-        cached_balance is None
-        or Decimal(str(cached_balance)) != history_balance
-        or cached_period_id != history_period_id
-    )
-    if cache_disagrees:
-        log_event(
-            logger,
-            logging.WARNING,
-            EVT_ANCHOR_CACHE_RECONCILED,
-            BUSINESS,
-            "Account.current_anchor_* cache disagreed with the latest "
-            "AccountAnchorHistory row; history row wins (E-19 SoT).",
-            account_id=account.id,
-            scenario_id=scenario_id,
-            cached_balance=(
-                str(cached_balance) if cached_balance is not None else None
-            ),
-            cached_period_id=cached_period_id,
-            history_balance=str(history_balance),
-            history_period_id=history_period_id,
-            history_created_at=latest.created_at.isoformat(),
-        )
-
-    # ``created_at`` is TIMESTAMPTZ NOT NULL with a server default of
-    # NOW() (see ``CreatedAtMixin``), so it is always populated and
-    # always timezone-aware.  Convert to UTC before truncating to a
-    # date so the resolver's as-of-date matches the
-    # ``uq_anchor_history_account_period_balance_day`` index's UTC-day
-    # bucket exactly.
-    as_of_date = latest.created_at.astimezone(timezone.utc).date()
-
-    return AnchorPoint(
-        balance=history_balance,
-        period=latest.pay_period,
-        as_of_date=as_of_date,
-        created_at=latest.created_at,
-    )
 
 
 @dataclass(frozen=True)
@@ -282,144 +114,6 @@ class BalanceResult:
 
     balances: OrderedDict
     stale_anchor_warning: bool
-
-
-@dataclass(frozen=True)
-class PeriodSubtotal:
-    """Immutable producer output for one period's entries-aware subtotal.
-
-    Returned by :func:`period_subtotal`.  ``income`` and ``expense``
-    use the same entries-aware reduction the balance calculator
-    applies; ``net`` is the combined-rounded period delta
-    (``round_money(income - expense)``), so by construction
-    ``balances[p] - balances[p-1] == period_subtotal(..., p).net`` --
-    the same-page same-formula property F-002 Pair C / F-004 break
-    and E-25 restore.
-
-    Attributes:
-        income: Sum of Projected income transactions in the period.
-            Income uses :attr:`Transaction.effective_amount` (entries
-            do not apply to income -- they live on expenses only).
-        expense: Sum of Projected expense transactions, each reduced
-            by the entries-aware formula
-            ``max(estimated - cleared_debit - sum_credit,
-            uncleared_debit)`` when the transaction carries entries.
-            For an expense with no entries this collapses to
-            ``effective_amount``, which matches the no-entries
-            consumer behavior pre-Commit-5 (regression-safe for
-            grid/dashboard whose pinned tests stay byte-identical).
-        net: ``round_money(income - expense)`` -- the period delta
-            rounded once at the boundary (NOT the difference of the two
-            separately-rounded legs), so it equals the balance
-            roll-forward's once-rounded period delta and the E-25
-            reconciliation ``balances[p] - balances[p-1] == net`` holds
-            by construction (see :func:`period_subtotal`).  Returned
-            pre-computed so a consumer never has to re-derive it (and
-            risk a divergent sign or rounding mode).  Equals
-            ``income - expense`` exactly on all current data (every leg
-            is cent-quantized); only a hypothetical sub-cent leg would
-            make it differ from the displayed legs' difference by a
-            cent, with ``net`` being the balance-reconciling value.
-    """
-
-    income: Decimal
-    expense: Decimal
-    net: Decimal
-
-
-def load_balance_transactions(
-    account: Account,
-    scenario_id: int,
-    period_ids: list[int],
-) -> list[Transaction]:
-    """Return the transactions that participate in a balance projection.
-
-    The single point where the producer's query lives.  Filters:
-
-      * ``account_id`` -- balance is per-account; never mix accounts.
-      * ``scenario_id`` -- balance is per-scenario.
-      * ``pay_period_id IN period_ids`` -- only the periods the caller
-        is projecting over.
-      * :func:`balance_contributing_clause` -- the centralized
-        ``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``
-        gate from ``app.utils.balance_predicates`` (E-15, Commit 2).
-        Using the shared clause here means the SQL filter and the
-        Python summation predicate cannot disagree.
-
-    The query MUST eager-load ``Transaction.entries`` so the
-    entries-aware reduction in
-    :func:`~app.services.balance_calculator._entry_aware_amount`
-    applies unconditionally.  This is the structural fix for CRIT-01
-    / F-009: by owning the query, the producer guarantees the
-    selectinload that pre-remediation consumers each had to remember
-    to add themselves (and ``/savings``, ``/accounts``, calendar,
-    year-end, investment, and retirement collectively forgot to).
-    ``Transaction.status`` is already ``lazy='joined'`` on the model
-    so the joined load suffices; no extra ``selectinload(status)``
-    is needed and adding one would emit a redundant SELECT.
-
-    Args:
-        account: The :class:`~app.models.account.Account` to project.
-            Must be attached to ``db.session``.
-        scenario_id: The scenario the balance is being projected
-            under.
-        period_ids: Pay period ids the projection covers.  An empty
-            list yields an empty result (the empty-projection case;
-            the caller is expected to handle that upstream).
-
-    Returns:
-        ``list[Transaction]`` with ``entries`` eagerly populated.
-    """
-    if not period_ids:
-        return []
-    return (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
-            balance_contributing_clause(),
-        )
-        .all()
-    )
-
-
-def live_amount_overrides(account, scenario_id, transactions):
-    """Build the live per-transaction amount-override map for ``transactions``.
-
-    Merges two read-time live-recompute seams, both keyed by transaction
-    id, both treating the stored amount as a cache a later profile,
-    calibration, escrow/rate, or financial-calc CODE change may have
-    invalidated without firing a regeneration:
-
-    * :func:`app.services.income_service.live_projected_net` -- projected
-      salary income reflects the current salary profile.
-    * :func:`app.services.loan_payment_service.live_loan_transfer_amounts`
-      -- a recurring loan-payment transfer's cash debit reflects the
-      loan's current monthly payment (P&I + escrow).
-
-    The two key sets are disjoint (salary income transactions vs
-    loan-payment transfer shadows), so the merge cannot collide.  Both
-    helpers are imported locally to keep their (paycheck/tax and
-    loan-resolver) stacks off ``balance_resolver``'s module-load path and
-    out of any import cycle.  Returns an empty dict when neither seam has
-    a candidate -- the common case -- so the override threading stays a
-    structural no-op for those surfaces.
-    """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off ``balance_resolver``'s module-load path and out of any import
-    # cycle; the helpers are only needed at call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
-    income_overrides = income_service.live_projected_net(
-        account.user_id, scenario_id, transactions,
-    )
-    loan_overrides = loan_payment_service.live_loan_transfer_amounts(
-        scenario_id, transactions,
-    )
-    return {**income_overrides, **loan_overrides}
 
 
 def balances_for(
@@ -521,134 +215,6 @@ def balances_for(
         balances=quantized,
         stale_anchor_warning=stale_anchor_warning,
     )
-
-
-def _subtotal_from_transactions(
-    transactions: list[Transaction],
-    amount_overrides: dict[int, Decimal],
-) -> PeriodSubtotal:
-    """Income / expense / net subtotal for one period's loaded txns.
-
-    The shared per-period core of :func:`period_subtotals` (and thus
-    :func:`period_subtotal`, which delegates to it).  Delegates to the
-    engine's :func:`~app.services.balance_calculator.sum_projected`
-    (Projected-only, entry-aware expense reduction, ``effective_amount``
-    for income) and rounds ``net`` as ONE combined
-    ``round_money(income - expense)`` -- the once-at-the-boundary
-    discipline that makes ``net`` reconcile with the balance
-    roll-forward (DH-#62 / Batch V; rationale on :class:`PeriodSubtotal`).
-
-    ``transactions`` is one ``pay_period_id``'s balance-contributing
-    rows (``entries`` eager-loaded); an empty list yields a zero
-    subtotal.  Only the ``amount_overrides`` keys for ``transactions``
-    are read, so a map built over a wider set (the batch case) is
-    equivalent to a per-period one.
-    """
-    # The resolver is ``balance_calculator``'s sibling canonical producer
-    # (see module docstring); the audit's E-25 mandate reuses the engine's
-    # public projected-sum rather than rewriting it (CLAUDE.md rule 10).
-    income, expense = balance_calculator.sum_projected(transactions, amount_overrides)
-    return PeriodSubtotal(
-        income=round_money(income),
-        expense=round_money(expense),
-        net=round_money(income - expense),
-    )
-
-
-def period_subtotal(
-    account: Account,
-    scenario_id: int,
-    period: PayPeriod,
-    *,
-    amount_overrides: dict[int, Decimal] | None = None,
-) -> PeriodSubtotal:
-    """Entries-aware income / expense / net subtotal for one period (E-25).
-
-    The single source of truth for "what is the projected net change
-    in checking for this period" -- the grid footer, obligations
-    summary, and any per-period roll-up consume this so the same
-    entries-aware formula generates both the subtotal and the balance
-    row (closing the F-002 Pair C / F-004 divergence).  ``net`` is the
-    combined-rounded delta, so ``balances[p] - balances[p-1] ==
-    period_subtotal(..., p).net`` by construction (rounding rationale on
-    :class:`PeriodSubtotal`).
-
-    A thin single-period adapter over :func:`period_subtotals` (returns
-    its :class:`PeriodSubtotal` for ``period``); to subtotal MANY
-    periods (the grid footer) call that directly -- it issues ONE
-    transaction load for the whole window, not one per period.
-    ``amount_overrides`` is the optional Workstream-B live projected-net
-    ``{transaction_id: Decimal}`` map, built when None so income
-    reflects the live paycheck consistently with the balance row.
-    """
-    return period_subtotals(
-        account, scenario_id, [period], amount_overrides=amount_overrides,
-    )[period.id]
-
-
-def period_subtotals(
-    account: Account,
-    scenario_id: int,
-    periods: list[PayPeriod],
-    *,
-    amount_overrides: dict[int, Decimal] | None = None,
-) -> dict[int, PeriodSubtotal]:
-    """Batch entries-aware subtotal -- one query for the whole window.
-
-    The canonical multi-period producer (and the implementation
-    :func:`period_subtotal` delegates to).  Issues a SINGLE
-    :func:`load_balance_transactions` over all ``periods`` then groups
-    the rows by ``pay_period_id``, instead of one SELECT per period.
-    This is what the grid footer consumes: the pre-existing per-period
-    loop was an N+1 (one transaction query per visible column, over a
-    set the page had already loaded twice) -- exactly the N+1 the
-    ``database.md`` rule calls out for the grid route "especially"
-    (DH-#36).
-
-    Byte-identical to per-period :func:`_subtotal_from_transactions`
-    calls: the grouping reproduces the single-period filter exactly,
-    and the override map is read per transaction (so a union-set build
-    equals per-period maps -- the build-once-and-thread property
-    :func:`balances_for` relies on), so the E-25 balance-delta
-    invariant ``balances[p] - balances[p-1] == ...[p].net`` holds for
-    every period.
-
-    Args:
-        account: The :class:`~app.models.account.Account`.  Must be
-            attached to ``db.session``.
-        scenario_id: The scenario id.
-        periods: The pay periods to subtotal.  A period with no
-            contributing transactions maps to a zero subtotal.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map (Workstream B); built ONCE here over the
-            whole loaded set when None, so the income line reflects the
-            live paycheck consistently with the balance row.
-
-    Returns:
-        ``dict`` mapping each ``period.id`` to its
-        :class:`PeriodSubtotal`.  Every input period is present as a
-        key (a zero subtotal when it has no contributing transactions).
-    """
-    transactions = load_balance_transactions(
-        account, scenario_id, [period.id for period in periods],
-    )
-    # Build the live override map ONCE over the union set (the same
-    # build-once-and-thread pattern ``balances_for`` uses); each period's
-    # subtotal reads only the keys for its own transactions, so a union
-    # map is equivalent to per-period maps.
-    if amount_overrides is None:
-        amount_overrides = live_amount_overrides(
-            account, scenario_id, transactions,
-        )
-    grouped: dict[int, list[Transaction]] = {}
-    for txn in transactions:
-        grouped.setdefault(txn.pay_period_id, []).append(txn)
-    return {
-        period.id: _subtotal_from_transactions(
-            grouped.get(period.id, []), amount_overrides,
-        )
-        for period in periods
-    }
 
 
 def _entry_aware_amount_dated(txn: Transaction, as_of: date) -> Decimal:

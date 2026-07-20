@@ -16,6 +16,7 @@ from pylint.testutils import CheckerTestCase, MessageTest
 from shekel_checkers import (
     _BALANCE_PRODUCERS,
     _BALANCE_SEAM_MODULES,
+    _CASH_EVENT_SOURCE_MODULES,
     _ENGINE_CLUSTER_MODULES,
     _FENCED_MODULE_RULINGS,
     _LEDGER_LEAF_MODULE_NAMES,
@@ -1451,6 +1452,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             _ENGINE_CLUSTER_MODULES
             | _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
+            | _CASH_EVENT_SOURCE_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected
 

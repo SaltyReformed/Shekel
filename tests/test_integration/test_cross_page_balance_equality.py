@@ -76,6 +76,7 @@ from app.services import (
     loan_payment_service,
     loan_resolution,
     net_worth_kernel,
+    period_flows,
     savings_dashboard_service,
 )
 from app.services.resolution_context import BalanceContext
@@ -527,7 +528,7 @@ class TestSubtotalReconciliation:
             balance_result = balance_resolver.balances_for(
                 ctx["account"], ctx["scenario_id"], ctx["all_periods"],
             )
-            subtotal = balance_resolver.period_subtotal(
+            subtotal = period_flows.period_subtotal(
                 ctx["account"], ctx["scenario_id"], ctx["anchor_period"],
             )
 
@@ -565,7 +566,7 @@ class TestSubtotalReconciliation:
             )
             next_period = ctx["all_periods"][anchor_idx_in_list + 1]
             next_balance = balance_result.balances[next_period.id]
-            next_subtotal = balance_resolver.period_subtotal(
+            next_subtotal = period_flows.period_subtotal(
                 ctx["account"], ctx["scenario_id"], next_period,
             )
             forward_delta = next_balance - projected_balance

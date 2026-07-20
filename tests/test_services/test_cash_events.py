@@ -1,7 +1,10 @@
 """
-Shekel Budget App -- Balance Resolver Anchor Tests (Commit 4 / E-19)
+Shekel Budget App -- Cash Event Source Tests (Commit 4 / E-19)
 
-Tests for ``app.services.balance_resolver.resolve_anchor``.
+Tests for ``app.services.cash_events.resolve_anchor`` (the dated anchor SoT).
+Renamed from ``test_balance_resolver_anchor.py`` at plan step D1a, which split
+the anchor out of ``balance_resolver`` into the module that owns the balance
+fold's INPUT facts.
 
 The resolver reads the most recent ``AccountAnchorHistory`` row as the
 dated source of truth for E-19; the ``Account.current_anchor_*``
@@ -37,7 +40,7 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.services.balance_resolver import AnchorPoint, resolve_anchor
+from app.services.cash_events import AnchorPoint, resolve_anchor
 
 
 class _LogCapture:
@@ -170,7 +173,7 @@ class TestResolveAnchor:
             db.session.commit()
 
             with _LogCapture(logging.getLogger(
-                "app.services.balance_resolver",
+                "app.services.cash_events",
             )) as cap:
                 result = resolve_anchor(account, scenario.id)
 

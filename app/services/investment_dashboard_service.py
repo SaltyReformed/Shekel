@@ -41,7 +41,7 @@ from app.services.recurring_transfer_query import (
 from app.models.user import UserSettings
 from app.services import (
     balance_at,
-    balance_resolver,
+    cash_events,
     growth_engine,
     income_service,
     pay_period_service,
@@ -187,7 +187,7 @@ def _resolve_anchor_as_of(
 
     Dates the hero's "anchored <date>" caption against the dated anchor SoT
     (the latest :class:`AccountAnchorHistory` row via
-    :func:`~app.services.balance_resolver.resolve_anchor`, the same accessor
+    :func:`~app.services.cash_events.resolve_anchor`, the same accessor
     the cockpit "as of" uses), NOT the anchor period's ``start_date``.  The
     UTC ``created_at`` is converted to display tz
     (:func:`~app.utils.dates.to_display_date`); ``None`` when no baseline
@@ -195,7 +195,7 @@ def _resolve_anchor_as_of(
     """
     if balance_ctx.scenario is None:
         return None
-    anchor = balance_resolver.resolve_anchor(account, balance_ctx.scenario.id)
+    anchor = cash_events.resolve_anchor(account, balance_ctx.scenario.id)
     return to_display_date(anchor.created_at)
 
 

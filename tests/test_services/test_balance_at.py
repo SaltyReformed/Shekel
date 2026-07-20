@@ -55,10 +55,12 @@ from app.services import (
     balance_at,
     balance_calculator,
     balance_resolver,
+    cash_events,
     income_service,
     net_worth_investment,
     net_worth_kernel,
     pay_period_service,
+    period_flows,
 )
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -1369,7 +1371,7 @@ class TestBalanceAtDegrade:
 
             seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
             expected = round_money(
-                balance_resolver.resolve_anchor(inv, scenario.id).balance,
+                cash_events.resolve_anchor(inv, scenario.id).balance,
             )
             assert seam == expected
             assert seam == Decimal("10000.00")  # the 401k's anchor balance
@@ -1772,7 +1774,7 @@ class TestInterestDetailRerouteParity:
             # OLD interest_detail path: the dated-SoT anchor over the
             # account's transactions, scoped exactly as the (now deleted)
             # ``_load_account_transactions`` helper scoped them.
-            anchor = balance_resolver.resolve_anchor(hysa, scenario.id)
+            anchor = cash_events.resolve_anchor(hysa, scenario.id)
             old_txns = (
                 db.session.query(Transaction)
                 .filter(
@@ -1818,7 +1820,7 @@ def _assert_grid_view_reconciles(account, scenario, periods, view):
     (the E-25 invariant carries the cash leg; the accrual carries the rest).
     Only meaningful for an accruing account (``increments`` populated).
     """
-    subtotals = balance_resolver.period_subtotals(account, scenario.id, periods)
+    subtotals = period_flows.period_subtotals(account, scenario.id, periods)
     items = list(view.balances.items())
     assert len(items) >= 2, "need >= 2 projected periods to reconcile a delta"
     for (_prev_id, prev_bal), (pid, bal) in zip(items, items[1:]):

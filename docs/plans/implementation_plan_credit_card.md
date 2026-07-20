@@ -246,9 +246,9 @@ After C8 is NOT the start signal; the ratified order is:
   Straddling close/due periods: due-date-wins placement pinned.
 - [ ] **CC4b** `feat(cards): the payment you owe is the payment the card derives` --
       `card_payment_service.live_card_transfer_amounts` wired into
-      `balance_resolver.live_amount_overrides` beside the loan's: projected payment amount =
-      statement balance at last close minus `reward_redemption` rows posted since close, floor 0;
-      min mode substitutes CC2a's minimum; fixed leaves `default_amount`. ONE override map per pass
+      `cash_events.live_amount_overrides` beside the loan's: projected payment amount = statement
+      balance at last close minus `reward_redemption` rows posted since close, floor 0; min mode
+      substitutes CC2a's minimum; fixed leaves `default_amount`. ONE override map per pass
       (`BalanceContext` memo, injection shape). Oracles: derived amount renders identically on
       grid/card/checking; redemption after close reduces, before close does not (both controls);
       floor-0.
