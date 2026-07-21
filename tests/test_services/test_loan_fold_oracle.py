@@ -1,7 +1,7 @@
 """B2: the reference fold is the oracle, and it is exhaustive.
 
 Plan step B2 (``docs/audits/balance_architecture/README.md``).  Parallel-runs
-the loan fold (:func:`app.services.loan_ledger.fold_loan_balances`) against the
+the loan fold (:func:`app.services.balance_at._fold.fold_loan_balances`) against the
 shipping sum-of-postings reader
 (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) on
 **EVERY DAY** of each generated loan shape's domain -- the shape matrix step C3
@@ -45,6 +45,7 @@ from app.models.loan_features import RateHistory
 from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.services import loan_ledger, loan_loaders, loan_resolver
+from app.services.balance_at._fold import fold_loan_balances
 from app.services.loan_posting_service import confirmed_loan_balance_at
 from app.services.rate_period_engine import period_for_date
 from tests._test_helpers import (
@@ -123,7 +124,7 @@ def _assert_fold_matches_reader_every_day(
     while day <= end:
         days.append(day)
         day += timedelta(days=1)
-    folded = loan_ledger.fold_loan_balances(loan_id, scenario_id, days)
+    folded = fold_loan_balances(loan_id, scenario_id, days)
     mismatches = [
         (day.isoformat(), str(folded[day]), str(read))
         for day in days
@@ -319,7 +320,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             splits = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
             assert any(s.excess > Decimal("0.00") for s in splits)
             paid_off = seed_periods[2].start_date
-            assert loan_ledger.fold_loan_balances(
+            assert fold_loan_balances(
                 loan.id, scenario_id, [paid_off],
             )[paid_off] == Decimal("0.00")
             end = seed_periods[6].start_date
@@ -473,7 +474,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             on = seed_periods[2].start_date
             freeze_today(monkeypatch, seed_periods[3].start_date)
 
-            before_fold = loan_ledger.fold_loan_balances(
+            before_fold = fold_loan_balances(
                 loan.id, scenario_id, [on],
             )[on]
             before_read = confirmed_loan_balance_at(loan.id, scenario_id, on)
@@ -486,7 +487,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             )
             db.session.commit()
 
-            after_fold = loan_ledger.fold_loan_balances(
+            after_fold = fold_loan_balances(
                 loan.id, scenario_id, [on],
             )[on]
             after_read = confirmed_loan_balance_at(loan.id, scenario_id, on)

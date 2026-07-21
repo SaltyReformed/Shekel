@@ -241,7 +241,7 @@ class BalanceContext:
         derivation :meth:`resolved_loan` already removes for the resolver.  The
         first call walks; every later call in the same pass samples that same
         :class:`~app.services.loan_ledger.LoanLedgerWalk` through
-        :func:`~app.services.loan_ledger.fold_from_walk`.
+        :func:`~app.services.balance_at._fold.fold_from_walk`.
 
         The walk takes NO as-of and reads no clock -- it replays the loan's FACTS
         whole (:func:`~app.services.loan_ledger.walk_loan_ledger`) -- so this memo
@@ -249,11 +249,13 @@ class BalanceContext:
         like the resolver memo above.  A reader bounds the walk to a date; the memo
         does not.
 
-        **FENCED (W9906), the same as :meth:`resolved_loan`.**  The walk is a
-        balance-at-T computation over a loan's events, so only the seam
-        (:mod:`app.services.balance_at`) and the kernel cluster it composes may
-        reach it; a consumer that wants a loan's balance takes
-        :func:`app.services.balance_at.balance_at`.
+        **FENCED (W9906), the same as :meth:`resolved_loan`.**  The walk itself is
+        FACTS, not a balance-at-T (plan step D-fold) -- but it is one seam-private
+        :func:`~app.services.balance_at._fold.fold_from_walk` away from one, so
+        handing the memoized handle to a consumer would put a balance a single call
+        outside the seam.  Only the seam (:mod:`app.services.balance_at`) and the
+        kernel cluster it composes may reach it; a consumer that wants a loan's
+        balance takes :func:`app.services.balance_at.balance_at`.
 
         Args:
             account: The loan account to walk.  Must belong to ``user_id`` (the

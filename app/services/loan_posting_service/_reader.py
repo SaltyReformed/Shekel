@@ -26,7 +26,7 @@ carries the ``anchor_date`` it asserts
 (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  So
 ``entry_date <= as_of`` selects exactly the events that have happened by *as_of*,
 with no per-source special-casing and no pay-period join -- the same cut the fold
-applies from source (:func:`app.services.loan_ledger.fold_loan_balances`, whose
+applies from source (:func:`app.services.balance_at._fold.fold_loan_balances`, whose
 visible-on rule is the SAME settled-date / anchor-date derivation), which is what
 keeps the two equal on every day (step B2).
 

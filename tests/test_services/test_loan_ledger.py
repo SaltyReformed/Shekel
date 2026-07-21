@@ -1,8 +1,11 @@
-"""The loan fold: ``app.services.loan_ledger.fold_loan_balances``.
+"""The loan fold: ``app.services.balance_at._fold.fold_loan_balances``.
 
 Plan step B1 (``docs/audits/balance_architecture/README.md``).  These tests pin
 the fold's CONTRACT -- totality, the delta each event contributes, and the two
-visibility rules it reproduces -- against HAND-COMPUTED figures.
+visibility rules it reproduces -- against HAND-COMPUTED figures.  The fold moved
+into the balance seam at step D-fold (*a fold is a balance*); the WALK it samples
+and the chronology primitives it reproduces stay in the ``loan_ledger`` leaf (*a
+walk is a fact*), and this file also pins those leaf primitives directly.
 
 **Hand-computed, deliberately.**  The fold and the posted ledger share the walk
 (that is the design: the postings are a PROJECTION of the fold), so grading the
@@ -21,6 +24,7 @@ import pytest
 
 from app.models.pay_period import PayPeriod
 from app.services import loan_ledger, loan_loaders
+from app.services.balance_at._fold import fold_loan_balances
 from app.services.loan_posting_service import confirmed_loan_balance_at
 from tests._test_helpers import (
     create_loan_account,
@@ -57,7 +61,7 @@ def _make_loan(seed_user, db, **kwargs):
 
 def _fold(loan, seed_user, on_dates):
     """Fold *loan*'s balance at *on_dates*."""
-    return loan_ledger.fold_loan_balances(
+    return fold_loan_balances(
         loan.id, seed_user["scenario"].id, on_dates,
     )
 
@@ -223,7 +227,7 @@ class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
         partial-calendar divergence with every other gate silent.
         """
         import inspect
-        params = inspect.signature(loan_ledger.fold_loan_balances).parameters
+        params = inspect.signature(fold_loan_balances).parameters
         assert list(params) == ["loan_account_id", "scenario_id", "dates"]
 
     def test_owner_pay_periods_returns_the_WHOLE_calendar_ascending(
@@ -668,7 +672,7 @@ class TestFoldNegativeControls:
             _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
 
-            real_split = loan_ledger._fold.split_one_payment
+            real_split = loan_ledger._walk.split_one_payment
 
             def fake(shadow, balance, periods, monthly_escrow):
                 split, _after = real_split(
@@ -682,7 +686,7 @@ class TestFoldNegativeControls:
                 return forced, balance - bad_principal
 
             monkeypatch.setattr(
-                "app.services.loan_ledger._fold.split_one_payment", fake,
+                "app.services.loan_ledger._walk.split_one_payment", fake,
             )
             on = seed_periods[1].end_date
             assert _fold(loan, seed_user, [on])[on] == expected

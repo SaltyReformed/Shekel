@@ -1,9 +1,14 @@
 """
-Shekel Budget App -- the loan ledger: a loan's balance is a fold over its events.
+Shekel Budget App -- the loan ledger: a loan's FACTS and the walk over them.
 
-**A loan's balance is a fold over its event stream.**  This package owns that
-fold -- the event stream, the split, and the running-balance walk over them -- as
-the LEAF the rest of the loan architecture derives from.
+**A loan's balance is a fold over its event stream.**  This package owns the WALK
+half of that -- the event stream, the split, and the running-balance replay over
+them -- as the LEAF the rest of the loan architecture derives from.  It yields
+FACTS (per-payment splits, per-anchor corrections in contract-time order); turning
+those facts into a balance owed on a DATE -- the FOLD -- lives in the balance seam
+(:mod:`app.services.balance_at._fold`) as of plan step **D-fold**, above this leaf.
+*A fold is a balance; a walk is a fact*, and the two live on opposite sides of the
+seam boundary.
 
 ```text
 LoanEvent = (event_date, kind, payload)
@@ -23,15 +28,17 @@ it reconciles onto the chart of accounts, which is what makes the posted rows a
 re-derivable projection of the loan's facts rather than a second opinion about
 them.  The dependency runs one way::
 
-    loan_posting_service (the general ledger)  ->  loan_ledger (the fold)
-    balance_at (the read seam)                 ->  loan_ledger (the fold)
+    loan_posting_service (the general ledger)  ->  loan_ledger (the walk)
+    balance_at (the read seam)                 ->  loan_ledger (the walk)
 
-The walk lived INSIDE the posting package until this commit, which put the
-general ledger in the position of owning the answer to "what do I owe" and left
-every other consumer reaching through its privates for the split.  Moving it here
-is what lets the ledger become a CHECKED PROJECTION of the fold
+The walk lived INSIDE the posting package until step B0, which put the general
+ledger in the position of owning the answer to "what do I owe" and left every
+other consumer reaching through its privates for the split.  Moving it here is
+what lets the ledger become a CHECKED PROJECTION of the walk
 (``sum(postings) == fold(ACTUAL events)``, plan step E1) instead of the source of
-truth it was mistaken for.
+truth it was mistaken for.  A consumer holding a walk cannot reach a balance from
+any public name here -- the fold that would is seam-private -- which is why the
+walk needs no fence (plan step D-fold).
 
 ## The modules
 
@@ -39,8 +46,10 @@ truth it was mistaken for.
   into interest / escrow / principal / refund.  Pure.
 * :mod:`._events` -- the event stream: the loan's anchors and its settled
   payments, merged into one chronological order.  Reads no clock.
-* :mod:`._fold` -- the running-balance walk over that stream, and the
-  payment-split view of it.
+* :mod:`._walk` -- the running-balance replay over that stream (the loan's FACTS:
+  per-payment splits and per-anchor corrections), and the payment-split view of
+  it.  Renamed from ``_fold`` at step D-fold, when the fold (the balance) left for
+  the seam and only the walk (the facts) remained.
 * :mod:`._visible` -- WHEN each fact becomes countable (the ONE clock), the
   owner's calendar, and the date-to-period locator those rules resolve against.
   Chronology only: every name here returns a ``date`` or a ``PayPeriod``, never a
@@ -64,13 +73,10 @@ from ._events import (
     confirmed_shadows_through,
     merge_anchor_and_payment_events,
 )
-from ._fold import (
+from ._walk import (
     LoanAnchorCorrection,
     LoanLedgerWalk,
     compute_loan_payment_splits,
-    fold_from_walk,
-    fold_loan_balances,
-    sample_cumulative,
     walk_loan_ledger,
 )
 from ._split import (
@@ -96,13 +102,10 @@ __all__ = [
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "find_period_containing_date",
-    "fold_from_walk",
-    "fold_loan_balances",
     "merge_anchor_and_payment_events",
     "owner_pay_periods",
     "payment_visible_on",
     "resolve_anchor_pay_period",
-    "sample_cumulative",
     "split_one_payment",
     "split_payment_cash",
     "walk_loan_ledger",

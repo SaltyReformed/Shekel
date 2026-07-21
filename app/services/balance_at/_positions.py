@@ -3,7 +3,7 @@
 Plan step **C3a/C3b** (``docs/audits/balance_architecture/README.md``).
 :func:`positions` is the ONE total loan balance-at-T producer the seam's AMORTIZING
 dispatch reads: the event FOLD
-(:func:`app.services.loan_ledger.fold_from_walk` over the read pass's memoized
+(:func:`app.services.balance_at._fold.fold_from_walk` over the read pass's memoized
 walk) for a date at or before the resolver's NOW, and the forward schedule
 projection after.  The seam's SCALAR
 (:func:`app.services.balance_at.balance_at`) and its LIABILITY band
@@ -61,9 +61,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.loan_ledger import fold_from_walk
 
 from ._context import BalanceContext, _memoize_once, require_scenario
+from ._fold import fold_from_walk
 from . import _kernel
 from ._plan import (
     fold_forward,
@@ -147,7 +147,7 @@ def positions(
     date on the loan's own timeline:
 
     * **A date at or before the resolver's NOW, for an ORIGINATED loan: the fold**
-      (:func:`app.services.loan_ledger.fold_from_walk` over the read pass's memoized
+      (:func:`app.services.balance_at._fold.fold_from_walk` over the read pass's memoized
       walk) over the loan's source events -- the past that step B2 proves equal to
       the sum-of-postings reader the seam read before the cutover.
     * **A date after the NOW, OR any date for a loan not yet originated by it: the

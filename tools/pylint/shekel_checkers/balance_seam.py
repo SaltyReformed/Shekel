@@ -115,51 +115,44 @@ _BALANCE_SEAM_MODULES = frozenset({
 
 # Genesis loan-ledger balance readers (W9906, the read switch's final commit):
 # the confirmed balance-at-T readers over the posting ledger.  Same fence, one
-# WIDER allowlist: beyond the seam + engine cluster, exactly two modules may
-# call them -- ``loan_posting_service`` (the defining package; its sync/oracle
-# internals legitimately compose its own readers) and ``loan_payment_service``
-# (whose ``confirmed_loan_view`` is the ONE sanctioned injection seam the
-# resolver-bound consumers read the ledger through).  Any other caller is
-# re-inventing the read switch's seam.  NOT listed, by the same SRP line the
-# header comment draws: ``confirmed_loan_history_rows`` (rich schedule-row
-# detail the view seam composes, the ledger analog of ``resolve_loan``).  The
-# paid-in-year tax / chip figures are no longer here at all -- they fold from the
-# loan ledger in the balance seam (steps C3c / C6c).
+# WIDER allowlist: beyond the seam, exactly two modules may call them --
+# ``loan_posting_service`` (the defining package; its sync/oracle internals
+# legitimately compose its own readers) and ``loan_payment_service`` (whose
+# ``confirmed_loan_view`` is the ONE sanctioned injection seam the resolver-bound
+# consumers read the ledger through).  Any other caller is re-inventing the read
+# switch's seam.  NOT listed, by the same SRP line the header comment draws:
+# ``confirmed_loan_history_rows`` (rich schedule-row detail the view seam
+# composes, the ledger analog of ``resolve_loan``).  The paid-in-year tax / chip
+# figures are no longer here at all -- they fold from the loan ledger in the
+# balance seam (steps C3c / C6c).
+#
+# The loan FOLD is no longer here either (plan step D-fold): ``fold_loan_balances``
+# and ``fold_from_walk`` moved INTO the seam (``balance_at._fold``) as seam-private
+# names -- the past-side twin of the forward fold ``balance_at._plan.fold_forward``,
+# which has lived seam-private since step C6a and was ruled OFF the frozen fence at
+# step C6b (finding L1).  A balance producer moving DEEPER into the seam sheds its
+# name-fence rather
+# than gaining one (the D0b lesson: a fence gained by moving inward means the arrow
+# was backwards); the private module plus D-gate is what protects it.  And
+# ``walk_loan_ledger`` came OFF this set to the leaf's NON-producer ruling: with the
+# fold gone from the leaf, the walk yields only FACTS, and no public leaf name turns
+# them into a balance, so the walk needs no fence (see the ``loan_ledger`` ruling
+# below).
 _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
-    # The running-balance walk the two readers above are built on: it IS the
-    # balance-at-T computation over a loan's events.  It now lives in the
-    # ``loan_ledger`` LEAF that both the posting ledger and the read seam derive
-    # from (plan step B0), so its allowlist admits its own defining package; the
-    # fence still keeps a consumer from reaching the raw walk instead of a reader.
-    "walk_loan_ledger",
-    # The fold's read side: "what did this loan owe on date D", answered from the
-    # loan's SOURCE events rather than the postings (plan step B1).  A balance-at-T
-    # in the most literal sense there is, and fenced from birth -- the two holes
-    # this checker exists to close (``investment_base_balance_map``,
-    # ``loan_owed_at_dates``) were both producers that went unlisted while they had
-    # no consumer yet.  It has none today (B2's oracle is a test); C3 makes the
-    # seam's AMORTIZING dispatch its first, and the seam is already allowlisted.
-    "fold_loan_balances",
-    # The date-sampling core of ``fold_loan_balances``, taking an already-computed
-    # walk so a read pass can walk one loan ONCE and sample the memoized walk at
-    # several date lists (step C3b: the scalar, the map, and the liability band all
-    # read the fold through ``balance_at.positions``).  A balance-at-T producer like
-    # its parent, and fenced the same -- only the seam (which memoizes the walk on
-    # its context) and the leaf itself reach it.
-    "fold_from_walk",
 })
-_LOAN_LEDGER_READER_MODULES = _BALANCE_SEAM_MODULES | frozenset({
-    "app.services.loan_ledger",
+# Who may call the two posting readers: only ``loan_posting_service`` (the
+# defining package, whose sync/oracle internals compose its own readers) and
+# ``loan_payment_service`` (whose ``confirmed_loan_view`` is the read switch's one
+# injection seam).  The seam and the ``loan_ledger`` leaf both came OFF this
+# allowlist at plan step D-fold: the seam reads a loan's balance through the FOLD
+# now, not the posting readers (measured -- ``confirmed_loan_balance_at``'s only
+# app caller outside its own package is ``loan_payment_service``), and the leaf
+# never read the postings.  A pure TIGHTENING.
+_LOAN_LEDGER_READER_MODULES = frozenset({
     "app.services.loan_posting_service",
     "app.services.loan_payment_service",
-    # The read pass's memo (``BalanceContext.loan_walk``) walks a loan's ledger
-    # ONCE per pass and hands the memoized walk to ``fold_from_walk``, so the
-    # scalar, map, and liability band that all fold the same loan (step C3b) do not
-    # each re-walk it.  Plan step D-ctx moved that memo INTO the seam
-    # (``balance_at._context``), so the ``_BALANCE_SEAM_MODULES`` prefix above now
-    # covers it -- it no longer needs its own entry here.
 })
 
 # ── The loan RESOLVER entries (W9906) ───────────────────────────────
@@ -522,15 +515,28 @@ _FENCED_MODULE_RULINGS = {
     # public name, all producer; its private path stays a registry KEY (N-31
     # travel).
     "app.services.balance_at._daily_series": (_BALANCE_PRODUCERS, frozenset()),
-    # The loan FOLD leaf (plan step B1): the event stream, the split, and the one
-    # running-balance walk over them, which the posting ledger and the read seam
-    # both derive from.  Scoped WHOLE for the same reason its sibling below is: a
-    # new balance-at-T reader born in any of its submodules would reproduce
-    # exactly the hole this check exists to kill.  Its walk IS a balance-at-T
-    # computation and is fenced as one (:data:`_LOAN_LEDGER_READER_PRODUCERS`);
-    # everything else it exports must say why it is not.
+    # The loan WALK leaf (plan step B1, renamed ``_fold`` -> ``_walk`` at D-fold):
+    # the event stream, the split, and the one running-balance replay over them,
+    # which the posting ledger and the read seam both derive from.  Scoped WHOLE
+    # for the same reason its sibling below is: a new balance-at-T reader born in
+    # any of its submodules would reproduce exactly the hole this check exists to
+    # kill.  It DEFINES no balance producer since D-fold moved the fold to the seam
+    # -- its producer slot is the shared ``_LOAN_LEDGER_READER_PRODUCERS`` (the two
+    # posting readers, defined in the sibling package below), and every public name
+    # this leaf defines is a non-producer that must say why.
     "app.services.loan_ledger": (
         _LOAN_LEDGER_READER_PRODUCERS, frozenset({
+            # The running-balance WALK: it replays the loan's events into
+            # per-payment splits and per-anchor corrections -- FACTS in
+            # CONTRACT-time order, not a balance-at-T.  Turning those facts into a
+            # balance owed on a DATE is the FOLD (re-key by visible date,
+            # prefix-sum), which moved INTO the balance seam (``balance_at._fold``)
+            # at plan step D-fold.  So a consumer holding a walk cannot reach a
+            # balance from a public leaf name, and the walk needs no fence -- it was
+            # fenced only while the fold was one call away in the same leaf.  Both
+            # sides take it: the posting writer projects it into corrections, the
+            # seam's read pass folds it.
+            "walk_loan_ledger",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list,
             # its per-payment step, and the pure arithmetic core the step shares
@@ -538,10 +544,6 @@ _FENCED_MODULE_RULINGS = {
             "compute_loan_payment_splits",
             "split_one_payment",
             "split_payment_cash",
-            # A generic prefix-sum sampler over (date, delta) steps: it reads a
-            # running total at dates, but knows nothing of loans or accounts --
-            # the shared date-sampling core the past and forward folds both use.
-            "sample_cumulative",
             # Chronology, not balance: each answers WHEN a fact happened or
             # becomes countable, and the walk answers what it COST.
             #   * the event stream's ORDER (which fact the walk applies next).  It

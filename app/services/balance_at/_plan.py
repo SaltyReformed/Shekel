@@ -45,7 +45,6 @@ from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders, loan_resolver
 from app.services.loan_ledger import (
     confirmed_shadows_through,
-    sample_cumulative,
     split_payment_cash,
 )
 from app.services.loan_loaders import loan_payment_due_date
@@ -55,6 +54,7 @@ from app.services.rate_period_engine import period_for_date
 from app.utils.dates import add_months
 
 from ._context import BalanceContext, _memoize_once, require_scenario
+from ._fold import sample_cumulative
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
@@ -735,7 +735,7 @@ def _sample_from_steps(
 
     Re-keys the (contract-order) steps by their visible date, prefix-sums from the
     seed, and bisects for each requested date -- the same visible-order read
-    :func:`app.services.loan_ledger.fold_from_walk` makes for the ACTUAL past.  A
+    :func:`app.services.balance_at._fold.fold_from_walk` makes for the ACTUAL past.  A
     date before *owed_from* owes ``0.00`` (the loan does not exist yet).
 
     Args:
@@ -772,7 +772,7 @@ def fold_forward(
     running balance in DUE (contract) order (:func:`_paydown_steps`), then re-keys
     each paydown by its EFFECTIVE (visible) date and prefix-sums
     (:func:`_sample_from_steps`) -- the SAME contract-order-split / visible-order-read
-    shape :func:`app.services.loan_ledger.fold_from_walk` uses for the ACTUAL past,
+    shape :func:`app.services.balance_at._fold.fold_from_walk` uses for the ACTUAL past,
     so the past and the future fold consistently.  A date before ``owed_from`` (the
     loan's origination) owes ``0.00``.
 
