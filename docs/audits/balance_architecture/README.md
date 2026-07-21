@@ -144,8 +144,15 @@ D-gate ships (**N-31**), so they TRAVEL with their modules and die at D3.
 are now private inside `balance_at` and `_BALANCE_SEAM_MODULES` collapsed to
 `{app.services.balance_at}` -- the one package boundary D-gate will enforce. The plan's scope text
 was stale ("`_calculator` is N-30" was false post-D1c; only `_kernel` needed the two exports); the
-net-worth move promoted a lazy import off a FALSE cycle rationale (**N-32**). **NEXT: D-ctx** (move
-the context into the seam, retiring D0a's injection).
+net-worth move promoted a lazy import off a FALSE cycle rationale (**N-32**).
+**D-ctx SHIPPED (D-ctx-a move `0dd6395d`, D-ctx-b dissolution `00036224`, 2026-07-20):** the read-pass
+context is now `balance_at._context`, and D0a's builder injection is GONE -- the forward plan/payoff
+are PUBLIC pass-through caches the seam FILLS, not injected memo methods. Two plan-text claims were
+DISPROVED and corrected in the step (the "sibling import, cycle cannot recur" -- a probe showed
+sibling mutual top-level imports still trip `R0401`; and "`_LOAN_RESOLVER_PRODUCERS` deletes" -- it
+guards a live `current_balance` leak, so it is RE-KEYED, deletion deferred to D3). The context's
+W9909 ruling travels to a self-attest-pinned `_SEAM_PRIVATE_CONTEXT_MODULES` (N-31 applied). **NEXT:
+D-fold** (the folds move out of the `loan_ledger` leaf into the seam as private).
 
 ---
 
@@ -1325,18 +1332,56 @@ standing exceptions rather than training the exemption habit it exists to preven
     $15,663.59) and investment / property / interest all compute; 8 (cash) + 6 (net-worth) fence
     probes fire; adversarial `code-reviewer` clean on each (no Critical/High/Medium; 4 Low doc-drift
     fixed across the two).
-- [ ] **D-ctx** `the read pass's context belongs to the seam that defines it` -- move
-  `resolution_context` to `balance_at/_context.py`; `BalanceContext` and `require_scenario` are
-  re-exported from the seam's public `__init__` (28 and 3 importers respectively, a one-line import
-  change each). Three things fall out. The builder INJECTION D0a added is retired -- it existed only
-  because the context sat OUTSIDE the seam, so once inside, a plain sibling import is honest and the
-  cycle cannot recur (`memoized_plan`, the funnel, stays). The last cross-package private import
-  (`PlannedPayment`) dissolves without moving any producer to a public package, which is what
-  cancelled D0b. And `_LOAN_RESOLVER_PRODUCERS` deletes: N-17 already found `resolution_context` is
-  the only `app/` caller of the three resolver entries, so once it is inside the seam they are
-  seam-internal by structure. The memo ACCESSORS stay methods for now: making them private module
-  functions only pays off once `LoanState.current_balance` is deleted (see the DATA-rule note
-  above), which is what actually retires `_CONTEXT_LOAN_PRODUCERS`.
+- **D-ctx (DECOMPOSED, 2026-07-20)** `the read pass's context belongs to the seam that defines it`
+  -- move `resolution_context` into the seam and retire D0a's injection. **The plan text carried two
+  claims the trace DISPROVED, and correcting them was the step** (developer-ratified 2026-07-20).
+  (1) "once inside, a plain sibling import is honest and the cycle cannot recur" is FALSE: a 2-module
+  probe proved a top-level mutual import between siblings still trips `R0401` (9.00/10) -- moving into
+  one package does not dissolve a module-level cycle, and `_plan`/`_positions` import `require_scenario`
+  from the context at RUNTIME, so a context method that called the builder back would reintroduce
+  N-25's exact cycle. (2) "`_LOAN_RESOLVER_PRODUCERS` deletes" is PREMATURE: it guards the same
+  `LoanState.current_balance` leak (still live, two in-cluster readers `_kernel._projection_seed` /
+  `_loan_figures._is_retired`) the DATA-rule note above says survives until that field dies -- deleting
+  the fence now is the N-28/N-31 loosening trap, so it is RE-KEYED, not deleted (deletion stays D3's).
+  So the step ships as two commits: the pure MOVE, then the structural DISSOLUTION (public pass-through
+  caches, NOT the plan's "sibling import"). The last cross-package private import (`PlannedPayment`)
+  dissolves as a cross-PACKAGE concern (it becomes an intra-seam sibling), which is what cancelled D0b.
+  - [x] **D-ctx-a** `refactor(balance): the read pass's context moves into the seam` -- **SHIPPED
+    `0dd6395d`.** `git mv resolution_context.py` -> `balance_at/_context.py`; `BalanceContext` /
+    `require_scenario` re-exported from the seam; 53 importers rewired (11 seam siblings to a sibling
+    import, 42 consumers/tests to the seam re-export). PROVEN PURE: all 9 definitions
+    AST-body-identical, the only content change the `PlannedPayment` import going cross-package ->
+    sibling. Fence re-key: `_LOAN_RESOLVER_MODULES` and the W9909 ruling KEY move to `balance_at._context`;
+    the redundant `_LOAN_LEDGER_READER_MODULES` / `_CONTEXT_LOAN_MODULES` entries drop (the `balance_at`
+    prefix covers them). **N-31 applied, and needed MORE here than for the engines**: the move newly
+    puts the context under the W9906 allowlist (as `resolution_context` it was NOT in
+    `_BALANCE_SEAM_MODULES`, so it could not call a balance producer), so W9909 becomes its ONLY
+    completeness gate -- its ruling travels to a dedicated, self-attest-pinned
+    `_SEAM_PRIVATE_CONTEXT_MODULES` (named literally in the H1 test), not just a re-key. pylint 10.00,
+    153 checker tests, full suite 7477; adversarial review clean (2 Low fixed: import-group
+    consistency in `_inputs`/`_positions`, a stale `BalanceContext.loan` doc ref in `_kernel`).
+  - [x] **D-ctx-b** `refactor(balance): the forward memos are filled by the seam, not injected` --
+    **SHIPPED `00036224`.** The dissolution: `BalanceContext.plans` / `payoffs` become PUBLIC
+    pass-through caches (keyed by `account.id`) the seam FILLS through `_plan.memoized_plan` and a new
+    symmetric `_positions.memoized_payoff`, sharing one private `_memoize_once`. `ctx.loan_plan` /
+    `ctx.loan_payoff` / `ctx._memoized` and the `PlanBuilder` / `PayoffDeriver` aliases DELETE -- the
+    context receives NO builder now. **This is where the plan's "sibling import" was wrong and the fix
+    is the shape**: the memo LOGIC moves UP into the builder modules (which already import the context),
+    the caches are inert state the seam fills, and protected-access (W0212) forces the fields public --
+    an asymmetry that ENCODES the DAG (the resolver/walk memos derive from below-context leaves and
+    stay PRIVATE methods; the plan/payoff derive from above-context builders and are PUBLIC caches).
+    The `PlannedPayment` edge is now an intra-seam sibling `TYPE_CHECKING` import typing the `plans`
+    field. Behaviour-preserving (derivations byte-unchanged; build-once, membership-not-truthiness, and
+    fail-loud-on-every-call all preserved); dev-clone baseline UNMOVED (Mortgage `$177,277.97` /
+    payoff 2048-12-01, Van Loan `$15,663.59` / payoff 2029-02-22, both caches confirmed filling). The
+    two builder-in-key defense tests DELETED (that failure mode is structurally gone -- no builder to
+    pass); the memo tests reworked onto the public caches with teeth intact; two tests ADDED for the
+    fail-loud-every-call property the docstrings asserted but nothing pinned before. pylint 10.00, 153
+    checker tests, full suite 7478; adversarial review clean (Low #2 -- untested fail-loud -- closed by
+    the two added tests; Low #1 -- public caches -- weighed and kept per the reviewer). **The memo
+    ACCESSORS did NOT all "stay methods" as the plan said**: `loan_plan`/`loan_payoff` became the
+    module funnels, while `resolved_loan`/`loan_walk` stay fenced methods (tied to
+    `LoanState.current_balance`'s deletion, which retires `_CONTEXT_LOAN_PRODUCERS`).
 - [ ] **D-fold** `a fold is a balance; a walk is a fact` -- move `fold_from_walk` and
   `fold_loan_balances` out of the `loan_ledger` leaf into the seam as private. The leaf keeps the
   walk, the events, the split and the loaders -- everything BOTH sides need, none of which answers
@@ -1459,7 +1504,7 @@ archive names so old references resolve here.
 | N-20 (C8f) | **The required-extra search returned amounts that did not do what they said, twice over -- found by a randomized sweep, invisible to hand-written cases.** (1) The answer was rounded to the NEAREST cent; the threshold rarely lands on a whole cent, so rounding DOWN left a fraction of a cent owing, and at the payoff boundary that pushes the payoff a whole INSTALLMENT past the target -- **99 of 300 generated loans returned an extra that missed**. (2) The bisection ASSUMED the loan's own balance was a valid upper bound ('pay the whole balance as extra and the first installment clears it'), which is false whenever the period interest exceeds the payment cash: `split_payment_cash` takes interest out FIRST, so on $100,000 at 25% against $500 payments an extra of the full balance still leaves $1,583.33 owing, and the search then bisected against a bound that never satisfied its own predicate and returned garbage. Fixed: the bound is DOUBLED until it genuinely reaches the target (capped, else `None`), and the answer is the exactly-minimal CENT (try `ceil(low)`, else `ceil(high)`) so it can neither miss nor overcharge. Both controls shown to fire; the sweep is now a permanent seeded test | 99/300 wrong answers (measured) | **closed (`fe424560`)** | C8f |
 | N-21 (C8f) | **A target date in the PAST was answered with a six-figure extra instead of "not achievable".** The reachability guard and the search's own predicate both keyed on the clearing installment's DUE date, but ruling D1 clamps an overdue-but-still-projected payment's EFFECTIVE date to `as_of + 1d` while its due date stays in the past. One such record -- i.e. exactly the delinquent loan this arc exists for -- made a past target look reachable, the fold "cleared" the loan on a past due date, and the panel rendered `Add on Top of Your Current Plan: $248,854.17/mo` for a date on which no money can be paid. A REGRESSION: the retired `required_extra_for_projection` guarded it explicitly (`target_months <= 0 -> None`). Root fix: every comparison in the search keys on the EFFECTIVE date (when the cash actually moves); the payoff DATE the seam reports stays the DUE date per C8b. Note the schema still has no minimum on `target_date` | `$248,854.17/mo` rendered for a past date | **closed (`fe424560`)** -- the randomized sweep now generates D1-clamped records and catches it independently of its unit test | C8f |
 | N-22 (C8d) | **A loan that never pays off was DROPPED from the debt-free date, so /savings claimed debt-free while the loan still owed.** C8d made `payoff_date` legitimately `None`; both debt-free producers filtered those out and took `max()` over the rest. Measured: a $900,000 never-clearing loan beside a healthy $12,000 one reported `projected_debt_free_date` 2028-03-01 -- the small loan's payoff -- on a page whose own loan chip says "No payoff at current payment", and `_resolve_horizon_domain` planted a "Debt-free" milestone there. With EVERY loan in that state it returned `is_loan_free=True` and gave a borrower the loan-free horizon window. Impossible pre-C8d (`LoanState.payoff_date` was non-nullable). Fixed: an active non-retired loan with no payoff POISONS the aggregate -- no date, `is_loan_free=False` -- and the cockpit SAYS "No debt-free date at current payments" rather than omitting the line, matching the treatment its loan page already gives the same condition | debt-free 2028-03-01 claimed against $912,000.00 owed | **closed (`2f0130f5`)** | C8d |
-| N-17 (C8d) | **Three modules sit on the W9906 resolver allowlist that no longer resolve a loan.** `_LOAN_RESOLVER_MODULES` exempts `loan_payment_service`, `_transfer_loan_posting`, and `app.routes.loan` from the `resolve_account_loan` / `resolve_loan_seeded` / `resolve_loan_bundle` fence, but a whole-repo grep finds NO call to any of the three in any of them (only docstring mentions) -- they shed their direct resolves at C4 and C8a. After C8d removed the fourth (`loan_recurrence_sync`, whose exemption this step actually killed), **`resolution_context` is the only remaining caller in `app/`** -- the arc's "one resolution site" goal, reached without anyone noticing. A stale ALLOWLIST entry is fail-OPEN for that module (it permits a bypass nobody currently makes), not a wrong number, so it is a guard gap rather than a live defect. Removing the other three belongs to the Phase-D fence pass, not to C8d's scope | -- | recorded, deferred | D1 / D3 |
+| N-17 (C8d) | **Three modules sit on the W9906 resolver allowlist that no longer resolve a loan.** `_LOAN_RESOLVER_MODULES` exempts `loan_payment_service`, `_transfer_loan_posting`, and `app.routes.loan` from the `resolve_account_loan` / `resolve_loan_seeded` / `resolve_loan_bundle` fence, but a whole-repo grep finds NO call to any of the three in any of them (only docstring mentions) -- they shed their direct resolves at C4 and C8a. After C8d removed the fourth (`loan_recurrence_sync`, whose exemption this step actually killed), the read-pass memo is **the only remaining caller in `app/`** -- the arc's "one resolution site" goal, reached without anyone noticing (D-ctx-a re-keyed that entry `resolution_context` -> `balance_at._context` when the memo moved into the seam, but the three DEAD entries are untouched -- their removal is still D3's). A stale ALLOWLIST entry is fail-OPEN for that module (it permits a bypass nobody currently makes), not a wrong number, so it is a guard gap rather than a live defect. Removing the other three belongs to the Phase-D fence pass, not to C8d's scope | -- | recorded, deferred | D1 / D3 |
 | N-23 (C9b) | **A refused loan payment now fails an entire carry-forward batch.** Carry-forward moves transfers via `update_transfer(pay_period_id=...)`, which since C9b runs the R-C guard, and `routes/transactions/carry_forward.py` rolls the whole batch back on `ValidationError` -- so one un-movable loan payment costs the user every other carried item. The guard's DECISION is correct there (the moved payment would still be erased); the blast radius is the defect. Reachable on a row the C9a purge deliberately leaves: an ad-hoc (template-less) or `is_override` pre-origination payment on a future-originating loan. Worked: loan originates 2026-08-01 payment_day 1, current period 2026-07-10..07-23, no due_date -> installment 2026-08-01 `<=` origination -> refused -> 400, nothing carries. Fixing it means skip-and-report (leave the row in the source period, count it in the message), which is a change to carry-forward's batch semantics rather than to the guard -- a developer call, not a touch-up. Both stale docstrings that claimed the old raise conditions are corrected in-commit | whole batch lost | recorded, deferred | own commit |
 | N-24 (C9b) | **Three generation call sites have no `ValidationError` handler, so a refused write 500s.** `create_transfer` can now raise R-C (as it already could raise `_reject_transfer_out_of_loan`), and the recurrence engine fans out through it. `transfers/templates.py:690` wraps generation correctly and C9b added the same wrap to `create_payment_transfer`; `period_population.py:86` (pay-period EXTEND / regenerate -- one bad loan template breaks the whole extension) and `transfers/templates.py:457` (unarchive) do not. Largely closed in practice by C9a: every loan-payment rule now carries a `start_date` (migration-backfilled + synced + bound at creation), and `first_installment_date` is strictly `>` origination for every input, so a bounded rule cannot generate a refused installment. This is the residual exposure for an unbounded rule, and it is partly PRE-EXISTING (the out-of-loan guard has the same reach) -- C9b widens an existing hole rather than inventing one | 500 on extend / unarchive | recorded, deferred | own commit |
 | N-25 (D0a) | **A real runtime import cycle in the balance cluster was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge.** pylint's `_add_imported_module` drops an edge into `_excluded_edges` when `in_type_checking_block(node)`, keyed by the `(importer, imported)` MODULE pair -- so one type-checking import silences the check for EVERY import of that module, including a runtime one elsewhere in the file. `resolution_context.py` had exactly that: a `TYPE_CHECKING` `PlannedPayment` import (line 73) masking the lazy runtime `loan_plan` import inside the method (line 305), which closed a genuine cycle with `balance_at._plan`. Measured both directions on this repo: neutralise the type-only edge on the PRE-D0a code and pylint reports `R0401 (app.services.balance_at._plan -> app.services.resolution_context)`; neutralise it on the D0a code and it reports nothing. Reproduced from scratch on a 3-file probe (8.75/10 -> 10.00/10 by adding a type-only import and nothing else). **The instance is fixed; the CLASS is not** -- the masking still applies anywhere a module imports another both for types and at runtime. Residual risk is bounded by two accidents rather than a gate: a top-level re-import would `ImportError` at load (`_plan` imports `BalanceContext` at module scope), and a function-level one now trips stock `import-outside-toplevel` since D0a deleted the scoped disable. The remaining path is re-adding the lazy import WITH a rationale comment -- which is what the pre-D0a code was, and it passed every gate | a cycle + an inverted dependency, gate-green | **instance closed (`8285fcad`)**; class recorded | D0a (instance); own commit (class, if ever) |
