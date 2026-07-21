@@ -17,10 +17,12 @@ init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); 
 # Transaction.status_id change must go through the
 # transaction_service.apply_status_change seam), shekel-ledger-model-bypass
 # (every posted-ledger model import must stay inside the posting-ledger
-# services), and shekel-unclassified-fenced-export (every public function in a
+# services), shekel-unclassified-fenced-export (every public function in a
 # fenced module must be explicitly classified as a balance producer or not, so
 # the balance fence fails CLOSED rather than leaking a new producer nobody
-# listed). See docs/coding-standards.md
+# listed), and shekel-private-module-import (a package's private modules are
+# private: no module may import another package's _module, nor any name from
+# it -- the balance arc's D-gate). See docs/coding-standards.md
 # (Type Safety, Reference Tables) for the rules they enforce.
 load-plugins=pylint.extensions.docparams,shekel_checkers
 

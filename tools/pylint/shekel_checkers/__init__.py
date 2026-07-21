@@ -93,6 +93,16 @@ Rules implemented:
   <anything>``, ``from app.models import journal_entry``, or ``import
   app.models.ledger_account``, reached as ``<module>.Posting``). The import
   analog of the W9906/W9907 read/write fences.
+* ``shekel-private-module-import`` (W9910, :mod:`.package_privacy`): the
+  balance arc's Phase D gate (step D-gate) -- a package's private modules are
+  private. A module outside package ``P`` may not import ``P._x``, nor any
+  name from it, in any spelling: ``from P._x import name`` (the form the stock
+  ``import-private-name`` extension is fail-open for, finding N-26),
+  ``from P import _x``, or ``import P._x``, aliased or not, relative or
+  absolute, TYPE_CHECKING included. Name-INDEPENDENT and fail-closed (no
+  allowlist, no producer list), it is the structural boundary that lets the
+  name fences above delete at plan step D3 instead of being maintained
+  forever.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -127,12 +137,13 @@ from .ledger_model_fence import (
     ShekelLedgerModelFenceChecker,
 )
 from .money import ShekelMoneyChecker
+from .package_privacy import ShekelPackagePrivacyChecker
 from .refname import ShekelRefNameChecker
 from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassChecker
 
 # Re-exported so the plugin's import surface is identical to the pre-split
 # single module: ``.pylintrc`` names the package in ``load-plugins`` and calls
-# ``register``; the checker unit tests import the six checker classes and
+# ``register``; the checker unit tests import the seven checker classes and
 # the seventeen module/producer sets straight ``from shekel_checkers``.  The underscore-
 # prefixed sets are internal-but-tested, listed here so re-export is explicit
 # rather than an unused-import.
@@ -159,6 +170,7 @@ __all__ = [
     "ShekelDisableRationaleChecker",
     "ShekelLedgerModelFenceChecker",
     "ShekelMoneyChecker",
+    "ShekelPackagePrivacyChecker",
     "ShekelRefNameChecker",
     "ShekelTransactionStatusBypassChecker",
     "register",
@@ -177,3 +189,4 @@ def register(linter) -> None:
     linter.register_checker(ShekelBalanceSeamChecker(linter))
     linter.register_checker(ShekelTransactionStatusBypassChecker(linter))
     linter.register_checker(ShekelLedgerModelFenceChecker(linter))
+    linter.register_checker(ShekelPackagePrivacyChecker(linter))

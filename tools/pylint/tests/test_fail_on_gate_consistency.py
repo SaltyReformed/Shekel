@@ -1,12 +1,13 @@
 """Consistency guard for the pylint hard-gate ``--fail-on`` symbol list.
 
 The project's custom financial-correctness checkers are enforced as pylint hard
-failures (``--fail-on=E,F,shekel-...``) in seven executable locations: the three
+failures (``--fail-on=E,F,shekel-...``) in eight executable locations: the three
 ``pylint`` floor steps in CI (``.github/workflows/ci.yml``: app/, scripts/, and
 the ``shekel_checkers`` package), the ``pylint-app`` / ``pylint-scripts`` /
-``pylint-checkers`` pre-commit hooks (``.pre-commit-config.yaml``), and the
+``pylint-checkers`` pre-commit hooks (``.pre-commit-config.yaml``), the
 hard-block tier of the per-edit hook (``scripts/hooks/post-edit-python.sh``,
-which spells the same symbols as ``--enable``).
+which spells the same symbols as ``--enable``), and the ``/standards`` command
+spec (``.claude/commands/standards.md``, which instructs the same gate).
 
 Two drift classes make a hard gate silently stop firing, and pylint reports
 NEITHER as an error -- an unknown ``--fail-on`` symbol is ignored, not rejected:
@@ -52,7 +53,8 @@ _CANONICAL_FAIL_ON = (
     "shekel-balance-producer-bypass,"
     "shekel-transaction-status-bypass,"
     "shekel-ledger-model-bypass,"
-    "shekel-unclassified-fenced-export"
+    "shekel-unclassified-fenced-export,"
+    "shekel-private-module-import"
 )
 
 # repo root: this file is <root>/tools/pylint/tests/test_*.py
@@ -67,12 +69,16 @@ _LIST_RE = re.compile(r"E,F,shekel-[a-z-]+(?:,shekel-[a-z-]+)*")
 
 # Every executable gate file and the minimum number of full-list occurrences it
 # must carry (CI: the app + scripts pylint steps; pre-commit: the app + scripts
-# hooks; the per-edit hook: the hard-block tier).  ``>=`` so an added gate does
+# hooks; the per-edit hook: the hard-block tier; the /standards command, which
+# instructs the full quality gate and was measured to drift when the W9910
+# checker was added -- every other location was sed-updated and this one was
+# missed until a repo-wide sweep caught it).  ``>=`` so an added gate does
 # not trip the floor; the per-occurrence content check pins the actual text.
 _GATE_FILES = (
     (Path(".github/workflows/ci.yml"), 2),
     (Path(".pre-commit-config.yaml"), 2),
     (Path("scripts/hooks/post-edit-python.sh"), 1),
+    (Path(".claude/commands/standards.md"), 1),
 )
 
 
