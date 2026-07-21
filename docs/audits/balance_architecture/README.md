@@ -151,8 +151,21 @@ are PUBLIC pass-through caches the seam FILLS, not injected memo methods. Two pl
 DISPROVED and corrected in the step (the "sibling import, cycle cannot recur" -- a probe showed
 sibling mutual top-level imports still trip `R0401`; and "`_LOAN_RESOLVER_PRODUCERS` deletes" -- it
 guards a live `current_balance` leak, so it is RE-KEYED, deletion deferred to D3). The context's
-W9909 ruling travels to a self-attest-pinned `_SEAM_PRIVATE_CONTEXT_MODULES` (N-31 applied). **NEXT:
-D-fold** (the folds move out of the `loan_ledger` leaf into the seam as private).
+W9909 ruling travels to a self-attest-pinned `_SEAM_PRIVATE_CONTEXT_MODULES` (N-31 applied).
+**D-fold SHIPPED (`3dc32d14`, 2026-07-20):** the loan BALANCE fold moved into the seam as a private
+module (`balance_at/_fold.py`: `sample_cumulative` / `_dated_deltas` / `fold_from_walk` /
+`fold_loan_balances`), and `loan_ledger/_fold.py` was renamed `_walk.py` -- the leaf now holds only
+the WALK (facts). A PROVEN pure move (all 9 defs AST-body-identical to HEAD). Scope was FOUR names,
+not the plan's two: `_dated_deltas` is `fold_from_walk`'s helper, and `sample_cumulative` is
+balance-side only (no writer caller), so moving it out is what makes un-fencing the walk safe -- no
+public leaf name then turns a walk into a balance. Fence = **Option B** (developer-ratified over
+N-31 travel): the folds are plain seam-private like their twin `fold_forward`, OFF the frozen fence
+(the D0b lesson; D-gate closes the residual). All leaf fence edits TIGHTEN: `walk_loan_ledger` ->
+the leaf's W9909 NON-producer set (a fact), `sample_cumulative` dropped, `_LOAN_LEDGER_READER_PRODUCERS`
+shrunk to the two posting readers, allowlist tightened to `{loan_posting_service,
+loan_payment_service}`. Baseline UNMOVED on the dev clone (Mortgage $177,277.97, Van Loan
+$15,663.59); pylint 10.00, 153 checker tests, full suite 7478; adversarial review clean after one Low
+(a stale `_context.loan_walk` docstring). **NEXT: D-gate** (the custom package-privacy checker, N-26).
 
 ---
 
@@ -1104,11 +1117,13 @@ rows, not the bundle). `ResolvedLoan` is the one violator left, via `LoanState.c
 (kept at C4 for two in-cluster readers); deleting it is what finally retires
 `_CONTEXT_LOAN_PRODUCERS`, since a bundle with no balance on it needs no fence.
 
-**Ordering, forced by a measured import (not a preference).** `net_worth_kernel.py:52` is the ONLY
-module below the seam with a real `BalanceContext` import (`loan_ledger/_fold.py` and
-`loan_resolution.py` merely mention it in docstrings), so the context cannot move into the seam
-until the engines have. **D1 precedes D-ctx**, and D-gate lands LAST so it ships green with zero
-standing exceptions rather than training the exemption habit it exists to prevent.
+**Ordering, forced by a measured import (not a preference).** When this ordering was set,
+`net_worth_kernel.py:52` was the ONLY module below the seam with a real `BalanceContext` import (the
+loan leaf and `loan_resolution.py` merely mentioned it in docstrings), so the context could not move
+into the seam until the engines had. **D1 preceded D-ctx** (both shipped -- the engines are now
+`balance_at._kernel` etc., the context `balance_at._context`, and the loan leaf's `_fold.py` -> `_walk.py`
+no longer mentions `BalanceContext` at all since D-fold), and D-gate lands LAST so it ships green with
+zero standing exceptions rather than training the exemption habit it exists to prevent.
 
 - [x] **D-docs** `fix(pylint): a private function's docstring is gated like a public one` --
   **SHIPPED `8e9a0517`.** A D1 prerequisite, found tracing it: the two FALSE
@@ -1382,12 +1397,33 @@ standing exceptions rather than training the exemption habit it exists to preven
     ACCESSORS did NOT all "stay methods" as the plan said**: `loan_plan`/`loan_payoff` became the
     module funnels, while `resolved_loan`/`loan_walk` stay fenced methods (tied to
     `LoanState.current_balance`'s deletion, which retires `_CONTEXT_LOAN_PRODUCERS`).
-- [ ] **D-fold** `a fold is a balance; a walk is a fact` -- move `fold_from_walk` and
-  `fold_loan_balances` out of the `loan_ledger` leaf into the seam as private. The leaf keeps the
-  walk, the events, the split and the loaders -- everything BOTH sides need, none of which answers
-  "what is owed at T". `_LOAN_LEDGER_READER_PRODUCERS` then shrinks to the two posting readers, and
-  `walk_loan_ledger`'s own entry deletes: a walk that is no longer one call from a balance needs no
-  fence. B2's oracle keeps calling `fold_loan_balances` (its only caller), through the seam.
+- [x] **D-fold** `a fold is a balance; a walk is a fact` -- **SHIPPED `3dc32d14` (2026-07-20).** The
+  loan BALANCE fold moved OUT of the `loan_ledger` leaf INTO the seam as a private module
+  (`balance_at/_fold.py`), and `loan_ledger/_fold.py` was renamed `_walk.py` -- the leaf keeps the
+  walk, the events, the split and the loaders, the FACTS both sides need. **The plan's "move two
+  names" was incomplete, and re-tracing it was the step:** the move is FOUR names -- `fold_from_walk`
+  and `fold_loan_balances` (the plan's two), plus `_dated_deltas` (`fold_from_walk`'s private helper)
+  and `sample_cumulative` (used ONLY by the two folds, never the writer/leaf side, so the leaf's own
+  "everything BOTH sides need" rule ejects it). Moving `sample_cumulative` out is what makes
+  un-fencing the walk SAFE: once it leaves, no public leaf name turns a `LoanLedgerWalk` into a
+  balance-at-T. A PROVEN pure move (all nine moved/kept definitions AST-body-identical to pre-split
+  HEAD). **Fence = Option B (developer-ratified, over N-31 travel):** the moved folds become plain
+  seam-private names like their twin `fold_forward` (ruled off the frozen fence at C6b/L1), NOT a
+  traveled name-fence -- a balance producer moving DEEPER into the seam sheds its fence rather than
+  gaining one (the D0b lesson), and D-gate closes the residual for every seam-private at once. All the
+  leaf-side fence edits are TIGHTENING/reclassification: `walk_loan_ledger` moved from
+  `_LOAN_LEDGER_READER_PRODUCERS` into the `loan_ledger` W9909 NON-producer set (a fact, no longer a
+  balance-at-T); `sample_cumulative` dropped from the leaf's non-producers (it left);
+  `_LOAN_LEDGER_READER_PRODUCERS` shrank to the two posting readers; the allowlist tightened to
+  `{loan_posting_service, loan_payment_service}` (measured: `confirmed_loan_balance_at`'s only app
+  caller outside its own package is `loan_payment_service`). B2's oracle keeps calling
+  `fold_loan_balances` through the seam. Dev-clone baseline UNMOVED to the cent (Mortgage $177,277.97
+  / payoff 2048-12-01, Van Loan $15,663.59 / payoff 2029-02-22); pylint 10.00, 153 checker tests, full
+  suite 7478; adversarial review clean after one Low (a stale `_context.loan_walk` docstring still
+  calling the walk a balance-at-T, realigned). The accepted residual -- like `_plan.py` today,
+  `_fold.py` is an unscoped seam module whose folds are ungated-BY-NAME until D-gate -- is Option B's
+  known posture, closed structurally at D-gate. N-29 (the calendar primitive's home) was not taken up
+  here; still deferred.
 - [ ] **D-gate** `a package's private modules are private` -- the custom checker N-26 forces: a
   module outside package `P` may not import `P._x`, nor any name from it. Ships LAST so it is green
   with **zero** standing exceptions. Type-checking imports are NOT exempt: a public signature's type
