@@ -63,7 +63,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services.loan_ledger import fold_from_walk
 
-from ._context import BalanceContext, require_scenario
+from ._context import BalanceContext, _memoize_once, require_scenario
 from . import _kernel
 from ._plan import (
     fold_forward,
@@ -387,6 +387,44 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     return plan_payoff_date(
         _forward_seed(account, ctx, "loan_payoff_date"),
         memoized_plan(account, ctx),
+    )
+
+
+def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
+    """Return *account*'s DERIVED payoff for this read pass, deriving it once.
+
+    The seam's ONE funnel for the payoff (the :func:`loan_payoff_date` analog of
+    :func:`~app.services.balance_at._plan.memoized_plan`): it fills the read pass's
+    per-loan payoff cache (:attr:`~app.services.balance_at.BalanceContext.payoffs`)
+    from :func:`loan_payoff_date` through the shared store-once primitive
+    (``_context._memoize_once``), so the fold-to-zero runs at most once per account
+    per pass.  A single ``/savings`` render asks for the payoff twice on one loan
+    (the debt tile's :func:`~app.services.balance_at.loan_figures`, and the
+    home-equity card's configured-loan test), and the property page asks again per
+    secured loan -- one derivation now serves them all.
+
+    **The context receives no deriver (plan step D-ctx-b).**  Like the plan funnel,
+    this FILLS a public pass-through cache rather than injecting the derivation into
+    a context method: :func:`loan_payoff_date` lives ABOVE the context, which cannot
+    import it back without inverting the dependency arrow (finding N-25).
+
+    Args:
+        account: The loan account to derive the payoff for.  Must belong to
+            ``ctx.user_id`` (the caller owns the ownership check), and must be a
+            CONFIGURED loan -- :func:`loan_payoff_date` fails loud otherwise.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+
+    Returns:
+        The memoized payoff date, or ``None`` when the loan is already retired or
+        never pays off within its plan (the caller reads
+        :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell them apart).
+
+    Raises:
+        ValueError: When ``ctx.scenario`` is None, or when *account* is not a
+            configured loan -- on EVERY call (a raising derivation is never cached).
+    """
+    return _memoize_once(
+        ctx.payoffs, account.id, lambda: loan_payoff_date(account, ctx),
     )
 
 

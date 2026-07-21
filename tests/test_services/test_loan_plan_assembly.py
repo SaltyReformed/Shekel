@@ -12,6 +12,8 @@ record pays nothing).
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import loan_loaders, transfer_service
@@ -23,6 +25,7 @@ from app.services.balance_at._plan import (
 )
 from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._context import _memoize_once
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -223,73 +226,88 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     assert all(payment.is_estimated for payment in plan)
 
 
-# ── D0a: the plan memo is INJECTED, and the injection is the constraint ──────
+# ── D-ctx-b: the plan memo is a PUBLIC pass-through cache the seam fills ──────
 #
-# The builder used to be imported lazily INSIDE
-# ``BalanceContext.loan_plan``, which made the seam's dependency inversion a real
-# runtime cycle -- one that pylint's ``cyclic-import`` could not see, because a
-# type-only import of the same module excludes the edge from its graph (finding
-# N-25).  It is now passed in, keyed into the memo, and funnelled through the ONE
-# seam entry ``memoized_plan`` so no reader names the builder itself.
+# ``loan_plan`` used to be imported lazily INSIDE a ``BalanceContext.loan_plan``
+# method, which made the seam's dependency inversion a real runtime cycle -- one
+# that pylint's ``cyclic-import`` could not see, because a type-only import of the
+# same module excludes the edge from its graph (finding N-25).  Plan step D0a
+# worked around it by INJECTING the builder into the method; plan step D-ctx-b
+# retired the injection entirely: the plan is a PUBLIC per-pass cache
+# (``BalanceContext.plans``, keyed by account id) that the seam FILLS through the
+# ONE funnel ``memoized_plan`` and the shared ``_memoize_once`` primitive.  No
+# builder crosses into the context -- the seam owns the derivation, the context
+# owns the storage.
 
 
 def test_the_plan_is_built_once_per_read_pass(seed_user, db):
     """Two seam reads of one loan's forward plan build it ONCE.
 
-    The memo exists because a single ``/savings`` or property render folds the
+    The cache exists because a single ``/savings`` or property render folds the
     same loan's future from four readers (the scalar, the per-period map, the
     liability band, the equity chart).  Proven by identity: the second read
     returns the SAME list object, so no second build happened.
     """
     account, ctx = _configured_loan(seed_user, db)
-    assert not ctx._plans, "the memo starts empty"  # pylint: disable=protected-access
+    assert not ctx.plans, "the cache starts empty"
 
     first = memoized_plan(account, ctx)
     assert first, "precondition: this loan has a non-empty forward plan"
 
-    # The slot the seam's own funnel filled -- the wiring claim.
-    key = (account.id, loan_plan)
-    assert key in ctx._plans  # pylint: disable=protected-access
-    assert ctx._plans[key] is first  # pylint: disable=protected-access
+    # The slot the seam's funnel filled -- keyed on the account id alone now the
+    # builder is no longer injected (plan step D-ctx-b).
+    assert ctx.plans[account.id] is first
 
     assert memoized_plan(account, ctx) is first, (
-        "the second read must be served from the memo, not rebuilt"
+        "the second read must be served from the cache, not rebuilt"
     )
 
 
-def test_a_second_builder_gets_its_own_slot(seed_user, db):
-    """A DIFFERENT builder never receives the real builder's plan.
+def test_the_cache_stores_on_membership_not_truthiness():
+    """An empty result is CACHED, not re-derived on every read.
 
-    The memo keys on ``(account, build)``, so "every caller must pass the same
-    builder" is structural rather than a note in a docstring.  Keyed by account
-    alone, this sentinel would silently receive the real plan -- the exact
-    silent-wrong-answer shape ``BalanceContext`` exists to replace.
+    ``_memoize_once`` -- the ONE primitive both forward memos
+    (``memoized_plan`` / ``memoized_payoff``) fill through -- tests
+    ``key not in cache``, never the value's truthiness, because both derivations
+    have a legitimately falsy answer: an empty plan (a not-yet-configured or
+    retired loan) and a ``None`` payoff (a loan that never clears).  A truthiness
+    check would rebuild those on EVERY read of every pass, unbounded and green
+    under any test that happens to use a loan with a non-empty plan.  Pinned
+    directly on the shared primitive, so it holds for the payoff cache too.
     """
-    account, ctx = _configured_loan(seed_user, db)
-    real = memoized_plan(account, ctx)
-    assert real, "precondition: the real builder returns a non-empty plan"
+    cache: dict[int, list] = {}
+    builds = []
 
-    sentinel_calls = []
-
-    def _sentinel(acct, context):
-        """A builder that is not the seam's, returning an empty plan."""
-        sentinel_calls.append((acct.id, context.as_of))
+    def _build_empty():
+        """A derivation whose answer is legitimately falsy."""
+        builds.append(1)
         return []
 
-    assert ctx.loan_plan(account, _sentinel) == [], (
-        "a second builder must be CALLED, not served the first one's answer"
-    )
-    assert sentinel_calls == [(account.id, _AS_OF)]
+    assert _memoize_once(cache, 7, _build_empty) == []
+    # The SECOND read must be served from the cache even though the value is falsy.
+    assert _memoize_once(cache, 7, _build_empty) == []
+    assert builds == [1], "an empty result must cache, not re-derive"
 
-    # An EMPTY result must memoize like any other.  The memo tests membership
-    # (``key not in slots``), never the value's truthiness -- a truthiness check
-    # would re-derive an empty plan (and a ``None`` payoff) on every read of every
-    # pass, unbounded, with every other test still green.  Both injected memos
-    # share one mechanism now, so this pins it for the payoff too.
-    assert ctx.loan_plan(account, _sentinel) == []
-    assert sentinel_calls == [(account.id, _AS_OF)], (
-        "an empty plan must be served from the memo, not rebuilt"
-    )
 
-    # ...and none of it clobbered the real slot.
-    assert memoized_plan(account, ctx) is real
+def test_the_cache_does_not_store_a_raising_build():
+    """A build that RAISES is never cached, so a fail-loud guard fires every call.
+
+    ``_memoize_once`` assigns ``cache[key]`` only from a returned value, so the
+    seam's ``require_scenario`` guard (raised inside the build for a no-baseline
+    context) cannot be worn down by retrying: the key stays absent and the next
+    read re-raises.  Pinned on the primitive both forward funnels fill through --
+    the property the funnel docstrings assert.
+    """
+    cache: dict[int, list] = {}
+    attempts = []
+
+    def _raising_build():
+        """A derivation that fails loud, as the no-baseline guard does."""
+        attempts.append(1)
+        raise ValueError("no baseline")
+
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            _memoize_once(cache, 7, _raising_build)
+    assert attempts == [1, 1], "a raising build must re-run, never be cached"
+    assert 7 not in cache

@@ -42,7 +42,7 @@ from ._context import BalanceContext
 # The payoff derivation this module INJECTS into the read pass's memo (see
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
 # seam's internal graph stays a DAG.
-from ._positions import loan_payoff_date
+from ._positions import memoized_payoff
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -254,13 +254,13 @@ def loan_figures(
     these figures and the balance the same consumer reads from
     :func:`~app.services.balance_at.balance_at` come from the SAME resolution --
     identical by construction, not by two producers agreeing.  The payoff is the
-    pass's ONE memoized derivation for the same reason: this is the single funnel
-    every payoff consumer reads through (the loan card, the /savings cockpit and
-    Horizon, the equity chart's axis), so it is where the derivation is INJECTED
-    into the pass's memo
-    (:meth:`~app.services.balance_at.BalanceContext.loan_payoff` --
-    injected rather than imported there, so the context never reaches up into the
-    seam that imports it).
+    pass's ONE memoized derivation for the same reason: it reads through the single
+    seam funnel every payoff consumer shares
+    (:func:`~app.services.balance_at._positions.memoized_payoff`), which fills the
+    pass's public payoff cache from
+    :func:`~app.services.balance_at.loan_payoff_date` -- the seam owns the
+    derivation, the context owns the storage (plan step D-ctx-b), so the context
+    never reaches up into the seam that imports it.
 
     **A CONFIGURED loan needs a baseline scenario here**, and that is the whole
     point of the :class:`LoanTerms` split (step C8e): every field on this value is
@@ -288,7 +288,7 @@ def loan_figures(
         return None
     return LoanFigures(
         terms=_terms_from(resolved, ctx.as_of),
-        payoff_date=ctx.loan_payoff(account, loan_payoff_date),
+        payoff_date=memoized_payoff(account, ctx),
         is_retired=_is_retired(resolved, ctx.as_of),
         is_paid_off=_is_paid_off(resolved, ctx.as_of),
     )

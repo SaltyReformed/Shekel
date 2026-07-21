@@ -54,7 +54,7 @@ from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.rate_period_engine import period_for_date
 from app.utils.dates import add_months
 
-from ._context import BalanceContext, require_scenario
+from ._context import BalanceContext, _memoize_once, require_scenario
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
@@ -384,27 +384,23 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
 def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
     """Return *account*'s forward plan for this read pass, built at most once.
 
-    The seam's ONE injection site for the plan: it hands :func:`loan_plan` to the
-    read pass's memo
-    (:meth:`~app.services.balance_at.BalanceContext.loan_plan`), which
-    calls it once per account per pass and replays the result after.  Every seam
-    reader that folds a loan's future -- the balance
-    (:func:`~app.services.balance_at.positions`), the derived payoff, the
-    required-extra search, the projected interest, the equity chart's axis --
-    goes through here, so one ``/savings`` or property render builds a loan's
-    plan exactly once.
+    The seam's ONE funnel for the plan: it fills the read pass's per-loan plan
+    cache (:attr:`~app.services.balance_at.BalanceContext.plans`) from
+    :func:`loan_plan` through the shared store-once primitive
+    (``_context._memoize_once``), so a build happens at most once per account per
+    pass and every later read replays it.  Every seam reader that folds a loan's
+    future -- the balance (:func:`~app.services.balance_at.positions`), the derived
+    payoff, the required-extra search, the projected interest, the equity chart's
+    axis -- goes through here, so one ``/savings`` or property render builds a
+    loan's plan exactly once.
 
-    **Why this funnel exists, stated honestly.**  Injecting the builder is what
-    keeps the seam's dependency arrow pointing one way (the context cannot import
-    the seam that imports it), and it buys that DAG at the cost of an ARGUMENT --
-    which this codebase's own Section 8 lesson, "an argument a caller can get
-    wrong is a defect, not a contract", argues against.  The lesson's remedy
-    ("load it, do not take it") is not available here: loading the builder IS the
-    cycle.  So the argument stays and this funnel is the mitigation -- one place
-    that can pass the wrong builder instead of one per reader.  The memo keys on
-    the builder, so a wrong one gets its own slot and cannot corrupt this one's
-    (:meth:`~app.services.balance_at.BalanceContext._memoized`); what it
-    cannot do is make the caller's answer right.
+    **The context receives no builder (plan step D-ctx-b).**  ``loan_plan`` lives
+    in this seam module ABOVE the context, so the context cannot import it back to
+    build the plan itself without inverting the dependency arrow and closing a real
+    import cycle (finding N-25).  The earlier design INJECTED the builder into a
+    context method; this funnel now fills a PUBLIC pass-through cache instead -- the
+    seam owns the derivation, the context owns the storage -- so there is no builder
+    argument a caller could get wrong (the Section 8 lesson the injection conceded).
 
     Args:
         account: The loan account to plan.  Must belong to ``ctx.user_id`` (the
@@ -417,13 +413,13 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]
 
     Raises:
         ValueError: When ``ctx.scenario`` is None -- on EVERY call, not just the
-            first.  A build that raises is never memoized (the memo assigns only
-            on a returned value), and ``ctx.scenario`` is frozen for the pass, so
-            the guard cannot be worn down by retrying: there is no state in which
-            a no-baseline context starts answering.  That is the property that
-            makes the fail-loud trustworthy rather than first-call-only.
+            first.  A build that raises is never cached (the cache assigns only on
+            a returned value), and ``ctx.scenario`` is frozen for the pass, so the
+            guard cannot be worn down by retrying: there is no state in which a
+            no-baseline context starts answering.  That is the property that makes
+            the fail-loud trustworthy rather than first-call-only.
     """
-    return ctx.loan_plan(account, loan_plan)
+    return _memoize_once(ctx.plans, account.id, lambda: loan_plan(account, ctx))
 
 
 @dataclass(frozen=True)

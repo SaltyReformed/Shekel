@@ -623,22 +623,14 @@ _FENCED_MODULE_RULINGS = {
             # The fail-loud no-baseline guard.  It raises or returns None; it
             # answers nothing about an account.
             "require_scenario",
-            # The memoized forward PLAN -- a list of PlannedPayment RECORDS
-            # carrying cash, NOT a balance-at-T (the same ruling
-            # ``merge_anchor_and_payment_events`` carries).  Folding it into a
-            # balance takes the seam-internal ``fold_forward``, which is protected
-            # by the private ``balance_at._plan`` module boundary rather than a
-            # name-fence.  That is a WEAKER guard than ``loan_walk``'s (a balance
-            # one NAME-FENCED ``fold_from_walk`` away, both ends fenced);
-            # name-fencing ``fold_forward`` to close the gap is a Phase-D candidate,
-            # kept off the frozen fence here.
-            "loan_plan",
-            # The memoized DERIVED payoff date (plan step C8): a ``date``, not a
-            # balance-at-T.  There is nothing a consumer can render as money, and
-            # the producer it memoizes (``balance_at.loan_payoff_date``) composes
-            # the fenced surfaces -- ``generate_debt_schedules`` and ``loan_plan``
-            # -- INSIDE the seam, which is where the fence binds.
-            "loan_payoff",
+            # NOTE: the forward PLAN and PAYOFF are no longer METHODS here -- plan
+            # step D-ctx-b retired the injected memos and made them PUBLIC
+            # pass-through caches (``BalanceContext.plans`` /
+            # ``BalanceContext.payoffs``) the seam FILLS through the private
+            # ``_memoize_once``.  W9909 classifies public FUNCTIONS and METHODS,
+            # not data attributes, so the caches need no entry here; and a plan is
+            # payment RECORDS, a payoff a ``date`` -- neither a balance-at-T a
+            # consumer could render as money.
         }),
     ),
 }

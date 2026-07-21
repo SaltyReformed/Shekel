@@ -47,7 +47,7 @@ from app.services import (
     loan_payment_service,
     loan_resolver,
 )
-from app.services.balance_at._positions import loan_payoff_date
+from app.services.balance_at._positions import memoized_payoff
 from app.services.loan_ledger import split_payment_cash
 from app.services.balance_at._plan import (
     PlannedPayment,
@@ -559,11 +559,11 @@ class TestPayoffCutover:
     ):
         """Reading the figures twice folds the plan to zero ONCE.
 
-        The memo (:meth:`~app.services.balance_at.BalanceContext.loan_payoff`)
+        The payoff cache (:attr:`~app.services.balance_at.BalanceContext.payoffs`)
         exists because a single ``/savings`` render asks two callers for the same
-        loan's figures.  Proven by inspecting the pass's memo directly: after
-        ``loan_figures`` runs, the slot keyed by the REAL deriver is populated, so
-        the second read is served from it rather than re-folding.
+        loan's figures.  Proven by inspecting the pass's cache directly: after
+        ``loan_figures`` runs, the slot keyed by the account id is populated, so the
+        second read is served from it rather than re-folding.
         """
         with app.app_context():
             today = date.today()
@@ -573,55 +573,29 @@ class TestPayoffCutover:
             )
 
             ctx = BalanceContext.build(seed_user["user"].id)
-            assert not ctx._payoffs, "the memo starts empty"  # pylint: disable=protected-access
+            assert not ctx.payoffs, "the cache starts empty"
             first = balance_at.loan_figures(account, ctx)
             assert first is not None
 
-            # The slot the seam's own deriver filled -- the wiring claim.
-            key = (account.id, loan_payoff_date)
-            assert key in ctx._payoffs  # pylint: disable=protected-access
-            assert ctx._payoffs[key] == first.payoff_date  # pylint: disable=protected-access
+            # The slot the seam's funnel filled -- keyed on the account id now the
+            # deriver is no longer injected (plan step D-ctx-b).
+            assert account.id in ctx.payoffs
+            assert ctx.payoffs[account.id] == first.payoff_date
 
             second = balance_at.loan_figures(account, ctx)
             assert second is not None
             assert second.payoff_date == first.payoff_date
 
-    def test_a_second_deriver_gets_its_own_slot(
-        self, app, seed_user, seed_periods_today,
-    ):
-        """A DIFFERENT deriver never reads the first one's answer.
-
-        The memo keys on ``(account, derive)``, so the "every caller must pass the
-        same function" rule is structural rather than a note in a docstring.  Keyed
-        by account alone, this sentinel would silently receive the real payoff --
-        the exact silent-wrong-answer shape ``BalanceContext`` exists to
-        replace.
-        """
-        with app.app_context():
-            today = date.today()
-            current = _current_period(seed_periods_today, today)
-            account, _ = _create_loan(
-                seed_user, current, current.start_date, name="Memo Slots",
-            )
-            sentinel = date(1999, 12, 31)
-
-            ctx = BalanceContext.build(seed_user["user"].id)
-            real = balance_at.loan_figures(account, ctx)
-            assert real is not None
-            assert real.payoff_date != sentinel
-
-            assert ctx.loan_payoff(
-                account, lambda _account, _ctx: sentinel,
-            ) == sentinel
-
     def test_a_fresh_pass_derives_again(
         self, app, seed_user, seed_periods_today,
     ):
-        """The memo is scoped to ONE read pass, never cached across passes.
+        """The payoff cache is scoped to ONE read pass, never carried across passes.
 
-        The counterpart to the test above, and the property that lets a WRITE
-        path (``loan_recurrence_sync``) build a context mid-mutation and see the
-        post-write loan: a new context derives from scratch.
+        The property that lets a WRITE path (``loan_recurrence_sync``) build a
+        context mid-mutation and see the post-write loan: a new context starts with
+        an empty payoff cache and derives from scratch.  (Plan step D-ctx-b retired
+        the injected-deriver design, so this observes the PUBLIC cache filling
+        rather than counting deriver calls.)
         """
         with app.app_context():
             today = date.today()
@@ -630,22 +604,44 @@ class TestPayoffCutover:
                 seed_user, current, current.start_date, name="Cutover Fresh",
             )
 
-            derived = []
-
-            def _counting(account_arg, ctx_arg):
-                derived.append(account_arg.id)
-                return balance_at.loan_payoff_date(account_arg, ctx_arg)
-
             first_ctx = BalanceContext.build(seed_user["user"].id)
-            first_ctx.loan_payoff(account, _counting)
-            first_ctx.loan_payoff(account, _counting)
-            assert derived == [account.id], "one pass must derive once"
+            assert account.id not in first_ctx.payoffs
+            memoized_payoff(account, first_ctx)
+            assert account.id in first_ctx.payoffs, "one pass derives and caches"
 
             second_ctx = BalanceContext.build(seed_user["user"].id)
-            second_ctx.loan_payoff(account, _counting)
-            assert derived == [account.id, account.id], (
-                "a NEW pass must derive again -- the memo is per-pass, and a "
-                "write path depends on that to see its own writes"
+            assert account.id not in second_ctx.payoffs, (
+                "a NEW pass starts empty -- the cache is per-pass, and a write "
+                "path depends on that to see its own writes"
+            )
+            memoized_payoff(account, second_ctx)
+            assert account.id in second_ctx.payoffs, "the new pass derives again"
+
+    def test_a_no_baseline_context_fails_loud_on_every_call(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """``memoized_payoff`` raises on a no-baseline context -- on EVERY call.
+
+        The payoff funnel folds through ``loan_payoff_date``, whose
+        ``require_scenario`` raises when the context has no baseline scenario.
+        ``_memoize_once`` caches only a returned value, so the raising build is
+        never cached and the guard cannot be worn down by retrying -- the property
+        the funnel docstrings assert but no test pinned before plan step D-ctx-b.
+        """
+        with app.app_context():
+            today = date.today()
+            current = _current_period(seed_periods_today, today)
+            account, _ = _create_loan(
+                seed_user, current, current.start_date, name="No Baseline Payoff",
+            )
+            no_baseline = BalanceContext(
+                user_id=seed_user["user"].id, scenario=None, as_of=today,
+            )
+            for _ in range(2):
+                with pytest.raises(ValueError):
+                    memoized_payoff(account, no_baseline)
+            assert account.id not in no_baseline.payoffs, (
+                "a raising build must never cache"
             )
 
 
