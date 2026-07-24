@@ -260,9 +260,10 @@ def debt_schedule_rows(
     The bundle exists precisely so the forward projection CAN seed from a balance;
     that made it a loaded gun whose safety was a docstring.  The rows carry no
     seed, so a consumer that wants a balance has no choice but
-    ``balance_at.balance_at`` -- which
-    is the point.  :func:`generate_debt_schedules` is fenced as a producer now,
-    and its remaining callers are all inside the cluster.
+    ``balance_at.balance_at`` -- which is the point.
+    :func:`generate_debt_schedules` lives in this PRIVATE seam module (W9910
+    structurally stops any outside import since plan step D3 retired its name
+    fence), and its callers are all inside the seam.
 
     Args:
         debt_accounts: The amortizing loan accounts whose rows to return.

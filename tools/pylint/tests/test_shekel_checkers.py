@@ -16,11 +16,10 @@ from astroid import nodes
 from pylint.testutils import CheckerTestCase, MessageTest
 
 from shekel_checkers import (
-    _BALANCE_PRODUCERS,
-    _BALANCE_SEAM_MODULES,
     _CASH_LEDGER_MODULES,
-    _ENGINE_CLUSTER_MODULES,
     _FENCED_MODULE_RULINGS,
+    _LOAN_PAYMENT_SEAM_MODULES,
+    _SEAM_PRIVATE_CONTEXT_MODULES,
     _LEDGER_LEAF_MODULE_NAMES,
     _LEDGER_MODEL_ALLOWLIST,
     _LEDGER_MODEL_MODULES,
@@ -30,8 +29,7 @@ from shekel_checkers import (
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_RESOLVER_DEFINING_MODULES,
-    _SEAM_PRIVATE_CONTEXT_MODULES,
-    _SEAM_PRIVATE_ENGINE_MODULES,
+    _LOAN_RESOLVER_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
     _is_public_export_surface,
     ShekelBalanceSeamChecker,
@@ -550,166 +548,30 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         )
         return module.body[0].value
 
-    def test_flags_attribute_producer_from_consumer(self) -> None:
-        """A route calling balance_resolver.balances_for directly is flagged."""
-        node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.routes.grid",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_bare_name_producer_from_consumer(self) -> None:
-        """A bare-imported producer call from a consumer is flagged.
-
-        Uses build_account_balance_map -- called by its bare name, the form a
-        module that imported the producer directly (aliased or not) would use.
-        """
-        node = self._producer_call(
-            "build_account_balance_map(account, ctx, periods, inputs)",
-            "app.services.savings_dashboard_service._projections",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("build_account_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_investment_builder_from_consumer(self) -> None:
-        """build_investment_balance_map is guarded too: no reaching past the seam.
-
-        Extracted from the kernel (``_kernel``) to the growth sub-chain
-        (``_investment``) and made public (the kernel dispatches into it), but it
-        stays a fenced balance producer:
-        a consumer outside the engine cluster must go through the balance_at seam.
-        """
-        node = self._producer_call(
-            "_investment.build_investment_balance_map("
-            "account, params, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("build_investment_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_every_guarded_producer_from_a_consumer(self) -> None:
-        """EVERY name in _BALANCE_PRODUCERS is flagged when called from a consumer.
-
-        Binds the test to the producer set itself, so a name added to (or
-        dropped from) the frozenset is automatically covered -- the fence is
-        only as strong as that set is complete.
-        """
-        for producer in sorted(_BALANCE_PRODUCERS):
-            node = self._producer_call(
-                f"{producer}(account, scenario, periods)", "app.routes.grid",
-            )
-            with self.assertAddsMessages(
-                MessageTest(
-                    "shekel-balance-producer-bypass",
-                    node=node,
-                    args=(producer,),
-                ),
-                ignore_position=True,
-            ):
-                self.checker.visit_call(node)
-
-    def test_allows_producer_from_seam(self) -> None:
-        """The seam itself (app.services.balance_at) may call a producer; not flagged."""
-        node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.services.balance_at",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_producer_from_every_engine_cluster_module(self) -> None:
-        """Each allowlisted engine-cluster module may call a producer (they compose each other).
-
-        The companion to the every-producer loop: asserts the allowlist covers
-        every module the seam's documented dependency direction names, so
-        narrowing the set would surface here rather than as a surprise W9906 on
-        an engine module. The allowlist holds fully-qualified names, so each is
-        used directly as the enclosing module.
-        """
-        for module_name in sorted(_BALANCE_SEAM_MODULES):
-            node = self._producer_call(
-                "build_account_balance_map(account, ctx, periods, inputs)",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_call(node)
-
-    def test_allows_producer_from_cluster_package_submodule(self) -> None:
-        """A private submodule of the seam PACKAGE stays inside the fence.
-
-        Locks the package-prefix match in :func:`_module_in_allowlist`: since
-        plan step D1d the cash producers live in ``balance_at._cash_engine`` and
-        call each other, so a seam submodule -- any ``app.services.balance_at.*``
-        -- resolves under the ``app.services.balance_at`` prefix and must remain
-        exempt.  (Before D1d this test used a hypothetical
-        ``balance_resolver._core``; the real thing exists now.)
-        """
-        node = self._producer_call(
-            "balances_for(account, scenario_id, periods)",
-            "app.services.balance_at._cash_engine",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
+    # The general balance-producer tests (flag-from-consumer, allow-from-seam,
+    # allow-from-cluster) died with their surface at plan step D3: the producers
+    # are private ``balance_at`` submodules now, and the W9910 package-privacy
+    # tests own every import spelling of reaching one.  The reader-surface tests
+    # below carry the same behaviors (flag, allow, fail-closed, basename,
+    # aliased import) for the ONE surface that remains.
 
     def test_flags_same_basename_in_another_package(self) -> None:
         """A same-named module in another package is NOT exempted (no silent bypass by collision).
 
         The fence keys off the FULL module path, so a hypothetical
-        ``app/routes/balance_at.py`` -- basename ``balance_at`` -- is still
-        flagged for a direct producer call. This is the false-negative the
-        basename-only match would have allowed.
+        ``app/routes/loan_posting_service.py`` -- basename
+        ``loan_posting_service`` -- is still flagged for a direct reader call.
+        This is the false-negative a basename-only match would have allowed.
         """
         node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.routes.balance_at",
+            "confirmed_loan_balance_at(loan_id, scenario_id, as_of)",
+            "app.routes.loan_posting_service",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_producer_in_unresolvable_module(self) -> None:
-        """An empty / unresolvable module name fails closed: the producer call is flagged.
-
-        Locks the documented fail-closed behavior of
-        :func:`_in_balance_seam_cluster` -- when the module name cannot be
-        resolved, the safe direction for a fence is to flag, not exempt.
-        """
-        node = self._producer_call(
-            "balances_for(account, scenario_id, periods)", "",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
+                args=("confirmed_loan_balance_at",),
             ),
             ignore_position=True,
         ):
@@ -742,10 +604,10 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_allows_loan_ledger_reader_from_every_sanctioned_module(self) -> None:
         """Each reader-allowlisted module may call a genesis reader; not flagged.
 
-        The reader allowlist is the seam cluster PLUS the defining
-        ``loan_posting_service`` package and the ``loan_payment_service``
-        view seam; each is asserted, so narrowing the set surfaces here
-        rather than as a surprise W9906 on the injection path.
+        The reader allowlist is exactly two modules since plan step D-fold: the
+        defining ``loan_posting_service`` package and the
+        ``loan_payment_service`` view seam; each is asserted, so narrowing the
+        set surfaces here rather than as a surprise W9906 on the injection path.
         """
         for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
             node = self._producer_call(
@@ -797,92 +659,37 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         module = astroid.parse(f"{import_source}\n", module_name=module_name)
         return module.body[0]
 
-    def test_flags_aliased_producer_import_from_consumer(self) -> None:
-        """``from ... import balances_for as bf`` from a consumer is flagged.
-
-        This is the evasion class the import fence exists for: after the
-        aliased import every call reads ``bf(...)``, which matches no producer
-        name, so call-site matching alone would never fire again.
-        """
+    def test_flags_multi_name_reader_import_reports_each(self) -> None:
+        """One import statement naming both readers reports both."""
         node = self._import_node(
-            "from app.services.balance_resolver import balances_for as bf",
+            "from app.services.loan_posting_service import "
+            "confirmed_loan_balance_at, confirmed_loan_balance_map",
             "app.routes.grid",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_importfrom(node)
-
-    def test_flags_every_producer_import_from_consumer(self) -> None:
-        """EVERY name in _BALANCE_PRODUCERS is flagged when imported by a consumer.
-
-        The unaliased form is flagged too -- a module that may not call a
-        producer has no legitimate reason to import it.  Bound to the producer
-        set itself, like the call-site loop, so the import fence can never
-        silently cover fewer names than the call fence.
-        """
-        for producer in sorted(_BALANCE_PRODUCERS):
-            node = self._import_node(
-                f"from app.services.engine import {producer}",
-                "app.routes.grid",
-            )
-            with self.assertAddsMessages(
-                MessageTest(
-                    "shekel-balance-producer-bypass",
-                    node=node,
-                    args=(producer,),
-                ),
-                ignore_position=True,
-            ):
-                self.checker.visit_importfrom(node)
-
-    def test_flags_multi_name_producer_import_reports_each(self) -> None:
-        """One import statement naming two producers reports both."""
-        node = self._import_node(
-            "from app.services.balance_calculator import "
-            "calculate_balances, calculate_balances_with_interest",
-            "app.routes.grid",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("calculate_balances",),
+                args=("confirmed_loan_balance_at",),
             ),
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("calculate_balances_with_interest",),
+                args=("confirmed_loan_balance_map",),
             ),
             ignore_position=True,
         ):
             self.checker.visit_importfrom(node)
-
-    def test_allows_producer_import_from_every_cluster_module(self) -> None:
-        """Each engine-cluster module may import a producer (they compose each other)."""
-        for module_name in sorted(_BALANCE_SEAM_MODULES):
-            node = self._import_node(
-                "from app.services.balance_at._kernel import "
-                "build_account_balance_map",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_importfrom(node)
 
     def test_allows_module_import_from_consumer(self) -> None:
-        """``from app.services import balance_calculator`` imports the MODULE; not flagged.
+        """``from app.services import loan_posting_service`` imports the MODULE; not flagged.
 
-        A module import keeps the producer's own name at every call site
-        (``balance_calculator.calculate_balances(...)``), where the call fence
-        already sees it -- so it needs no import-level guard.
+        A module import keeps the reader's own name at every call site
+        (``loan_posting_service.confirmed_loan_balance_at(...)``), where the
+        call fence already sees it -- so it needs no import-level guard.
         """
         node = self._import_node(
-            "from app.services import balance_calculator",
+            "from app.services import loan_posting_service",
             "app.routes.grid",
         )
         with self.assertNoMessages():
@@ -957,108 +764,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_call(node)
 
-    def test_flags_investment_base_balance_map_from_consumer(self) -> None:
-        """The cash-basis seed accessor IS guarded: a consumer call is flagged.
-
-        Closing the fence hole made ``_investment.investment_base_balance_map``
-        a guarded producer.  It returns a DISPLAY-shaped cash-basis (pre-growth)
-        map -- the one balance-map accessor a consumer could have rendered as a
-        real balance (the investment understatement bug the seam exists to
-        kill).  A consumer reaching it directly is now flagged; the sanctioned
-        seed read is the seam entry (see the next test).  This is also covered
-        by ``test_flags_every_guarded_producer_from_a_consumer``; kept explicit
-        because the prose comment in ``shekel_checkers/balance_seam.py`` names it.
-        """
-        node = self._producer_call(
-            "_investment.investment_base_balance_map(account, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("investment_base_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_resolve_loan_bundle_from_a_consumer(self) -> None:
-        """The loan RESOLVER is fenced: a consumer call is flagged.
-
-        ``LoanState`` bundled rich detail WITH ``current_balance`` -- a
-        balance-at-today -- and the fence cannot see an attribute read.  So while
-        the resolver was excluded as a "rich primitive", the loan's displayed
-        balance reached the screen outside the seam: the /savings tile, the
-        net-worth hero, the debt card, the Horizon's index-0 point, the equity
-        card's mortgage leg, and /debt-strategy.  They agreed with the seam only
-        because both paths bottomed out in the same ledger -- agreement by luck.
-        (Plan step D2a deleted the field; the surface's retirement is D3's.)
-        """
-        node = self._producer_call(
-            "resolve_loan_bundle(account.id, scenario_id, today)",
-            "app.routes.debt_strategy",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("resolve_loan_bundle",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_allows_resolve_loan_bundle_inside_the_seam_context(self) -> None:
-        """The read-pass memo may resolve a loan: it IS the one resolution site.
-
-        Since plan step D-ctx the memo is the seam-private ``balance_at._context``;
-        it stays on the resolver allowlist (:data:`_LOAN_RESOLVER_MODULES`).
-        """
-        node = self._producer_call(
-            "resolve_loan_bundle(account.id, scenario_id, as_of)",
-            "app.services.balance_at._context",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_resolve_loan_bundle_on_a_write_path(self) -> None:
-        """A WRITE path may resolve a loan mid-mutation; a writer is not a reader.
-
-        This is also why the read-pass context is a value object rather than a
-        request-scoped cache: the write paths resolve inside a mutation, so a
-        request-scoped memo would go stale across the write.
-        """
-        node = self._producer_call(
-            "resolve_loan_bundle(account_id, scenario_id, today)",
-            "app.services._transfer_loan_posting",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_flags_resolve_loan_bundle_from_the_recurrence_sync(self) -> None:
-        """The recurrence sync came OFF the resolver allowlist at plan C8d.
-
-        It used to resolve a loan to walk its committed schedule for the payoff;
-        it now reads the seam's DERIVED payoff (``balance_at.loan_figures``), so
-        the exemption guarded nothing.  Pins the removal: re-introducing a direct
-        resolve there is flagged rather than silently allowed.
-        """
-        node = self._producer_call(
-            "resolve_loan_bundle(account_id, scenario_id, today)",
-            "app.services.loan_recurrence_sync",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("resolve_loan_bundle",),
-                line=1, col_offset=9,
-                end_line=1, end_col_offset=60,
-            ),
-        ):
-            self.checker.visit_call(node)
-
     def test_allows_loan_figures_seam_entry_from_a_consumer(self) -> None:
         """The seam's loan_figures is the compliant rich read; never flagged.
 
@@ -1070,33 +775,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.savings_dashboard_service._projections",
         )
         with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_flags_generate_debt_schedules_from_consumer(self) -> None:
-        """The DebtSchedule bundle IS guarded: a consumer call is flagged.
-
-        ``generate_debt_schedules`` returns a bundle carrying the loan's
-        ledger-confirmed ``current_balance``.  The fence binds on function NAMES
-        and cannot see an ATTRIBUTE read, so while any consumer could call it,
-        one line -- ``schedules[a.id].current_balance`` into a template context --
-        would have put a balance-at-T on a screen with every gate silent
-        (``followup_debt_schedule_attribute_fence.md``).  The bundle is fenced to
-        the cluster now; consumers that want the ROWS take
-        ``debt_schedule_rows``, and a consumer that wants a BALANCE has no choice
-        but the seam.
-        """
-        node = self._producer_call(
-            "_kernel.generate_debt_schedules(loans, ctx)",
-            "app.services.tax_report_service",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("generate_debt_schedules",),
-            ),
-            ignore_position=True,
-        ):
             self.checker.visit_call(node)
 
     def test_allows_debt_schedule_rows_from_consumer(self) -> None:
@@ -1153,17 +831,19 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         module = astroid.parse(source, module_name=module_name)
         return module.body[0]
 
-    def test_flags_unclassified_public_function_in_engine_cluster(self) -> None:
-        """A NEW public function in the kernel, classified as neither, is flagged.
+    def test_flags_unclassified_public_function_in_loan_resolver(self) -> None:
+        """A NEW public function in the loan-resolver tier is flagged (B-12 closed).
 
-        This is the regression test for the fence's fail-open default: it is
-        exactly the shape of ``loan_owed_at_dates`` (born inside the cluster,
-        never listed, silently reachable) and of ``investment_base_balance_map``
-        before it. It must fail the moment the function is DEFINED.
+        This is the regression test for the fence's fail-open default: exactly
+        the shape of ``loan_owed_at_dates`` (born inside a covered tier, never
+        listed, silently reachable) -- and the ``loan_resolver`` package was
+        the findings ledger's "wholly unfenced producer tier" until plan step
+        D3 scoped it.  It must fail the moment the function is DEFINED, in any
+        submodule (the package key prefix-matches).
         """
         node = self._function_def(
             "def owed_at_some_dates(accounts, scenario_id):\n    return {}\n",
-            "app.services.balance_at._kernel",
+            "app.services.loan_resolver._state",
         )
         with self.assertAddsMessages(
             MessageTest(
@@ -1275,23 +955,29 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ``visit_functiondef`` used to return early for anything whose parent was
         not the Module, so a public method was never classified at all -- and
         ``BalanceContext.loan`` became exactly that: a public method handing any
-        caller a ``ResolvedLoan``, whose ``state.current_balance`` is a
-        balance-at-today one attribute read away. Measured before the fix: a route
-        reading ``ctx.loan_state(account).current_balance`` rated 10.00/10.
+        caller a ``ResolvedLoan`` whose then-extant ``state.current_balance`` was
+        a balance-at-today one attribute read away. Measured before the fix: a
+        route reading ``ctx.loan_state(account).current_balance`` rated 10.00/10.
+        D3's adversarial review re-measured the same shape from the other side
+        (a ``ctx.balance_now(account)`` folding the memoized walk rated
+        10.00/10 with the ``_context`` ruling deleted), which is why that
+        ruling is the ONE seam-private scope D3 keeps: ``BalanceContext`` is
+        publicly re-exported, and W9910 cannot see a method on an object a
+        consumer holds.
         """
         node = self._method_def(
             "class BalanceContext:\n"
-            "    def balance_right_now(self, account):\n"
-            "        return self.resolved_loan(account).state.current_balance\n",
+            "    def balance_now(self, account):\n"
+            "        return fold_from_walk(self.loan_walk(account), [self.as_of])\n",
             "app.services.balance_at._context",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-unclassified-fenced-export",
                 node=node,
-                args=("balance_right_now",),
+                args=("balance_now",),
                 line=2, col_offset=4,
-                end_line=2, end_col_offset=25,
+                end_line=2, end_col_offset=19,
             ),
         ):
             self.checker.visit_functiondef(node)
@@ -1333,7 +1019,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "    class Inner:\n"
             "        def balance_right_now(self, account):\n"
             "            return None\n",
-            module_name="app.services.balance_at._context",
+            module_name="app.services.loan_resolution",
         )
         node = module.body[0].body[0].body[0]
         with self.assertAddsMessages(
@@ -1374,72 +1060,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_functiondef(node)
 
-    def test_flags_context_loan_handle_called_from_a_route(self) -> None:
-        """A route calling ``ctx.resolved_loan(...)`` is a build failure.
-
-        The memo hands back a whole ``ResolvedLoan``, so a route holding one is a
-        route one attribute read from putting an unfenced loan balance on a
-        screen. Routes take ``balance_at.loan_figures`` (no balance) plus
-        ``balance_at.balance_at`` (the balance).
-        """
-        node = self._producer_call(
-            "ctx.resolved_loan(account)", "app.routes.accounts.detail",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("resolved_loan",),
-                line=1, col_offset=9,
-                end_line=1, end_col_offset=35,
-            ),
-        ):
-            self.checker.visit_call(node)
-
-    def test_allows_context_loan_handle_inside_the_seam(self) -> None:
-        """The seam composing its own memo is the sanctioned path."""
-        node = self._producer_call(
-            "ctx.resolved_loan(account)", "app.services.balance_at._loan_figures",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_context_loan_handle_inside_the_kernel(self) -> None:
-        """The seam-private kernel composing the memo is the sanctioned path.
-
-        Since plan step D1d the kernel is ``balance_at._kernel``, covered by the
-        ``app.services.balance_at`` prefix in :data:`_CONTEXT_LOAN_MODULES` (was a
-        standalone ``net_worth_kernel`` entry before the move).
-        """
-        node = self._producer_call(
-            "ctx.resolved_loan(account)", "app.services.balance_at._kernel",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_flags_context_loan_handle_from_a_loan_resolver_module(self) -> None:
-        """The memo's allowlist is NARROWER than the resolver's, deliberately.
-
-        ``loan_payment_service`` / ``loan_recurrence_sync`` / ``app.routes.loan``
-        may resolve a loan directly (they need the rich primitives), but none of
-        them may reach into a READ PASS's memo -- that object belongs to the seam
-        and the cluster that composes it. Pins the two allowlists as genuinely
-        different sets rather than one copied into two names.
-        """
-        node = self._producer_call(
-            "ctx.resolved_loan(account)", "app.routes.loan.dashboard",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("resolved_loan",),
-                line=1, col_offset=9,
-                end_line=1, end_col_offset=35,
-            ),
-        ):
-            self.checker.visit_call(node)
-
     def test_flags_unclassified_public_function_in_loan_resolution(self) -> None:
         """A NEW public producer in ``loan_resolution`` is flagged at its DEFINITION.
 
@@ -1466,34 +1086,33 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_flags_unclassified_export_in_every_hand_scoped_module(self) -> None:
-        """The HAND-SCOPED modules really are covered -- named literally.
+        """Every W9909-scoped module really is covered -- named literally.
 
-        Most of the registry's scope is DERIVED (``_ENGINE_CLUSTER_MODULES`` is
-        ``_BALANCE_SEAM_MODULES`` minus the seam), so dropping a module from the
-        W9906 allowlist automatically drops it from the completeness scope and
-        :meth:`test_rulings_cover_every_producer_defining_module` fires.  Three
-        module families have NO such derivation -- their scope is a hand-written
-        constant sitting a few lines from the registry entry it covers:
+        Since plan step D3 the whole registry scope is hand-written constants
+        sitting a few lines from the entries they cover -- the residue of
+        PUBLIC balance-ingredient packages W9910 cannot protect:
 
+        * ``_LOAN_LEDGER_DEFINING_MODULES`` (``loan_ledger`` +
+          ``loan_posting_service``, the walk and the posting readers)
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
-        * ``_SEAM_PRIVATE_ENGINE_MODULES`` (all five balance producers moved
-          INSIDE the seam at D1d: the cash chain ``balance_at._cash_engine`` /
-          ``._calculator`` / ``._daily_series`` and the net-worth chain
-          ``._kernel`` / ``._investment`` -- their rulings TRAVEL with them,
-          finding N-31, and cannot ride the ``app.services.balance_at`` prefix
-          because that would pull the public seam entries into the check)
-        * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (the read-pass memo
-          ``balance_at._context``, moved INSIDE the seam at D-ctx -- N-31 again,
-          and sharper: it now sits under the W9906 allowlist too, so W9909 is the
-          ONLY gate left on it)
+        * ``_LOAN_RESOLVER_DEFINING_MODULES`` (``loan_resolution``)
+        * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's
+          "wholly unfenced tier", closed)
+        * ``_LOAN_PAYMENT_SEAM_MODULES`` (``loan_payment_service``, D3's
+          review -- the one reader-allowlisted module outside the defining
+          package)
+        * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (``balance_at._context`` -- the
+          one seam-private ruling D3 keeps: ``BalanceContext`` is publicly
+          re-exported, so a new public METHOD on it reaches every route with
+          no ``__init__`` edit, and W9910 cannot see attribute access)
 
-        For those, the set-equality guard is SELF-ATTESTING: delete the registry
-        entry and empty the constant -- two adjacent edits in one file, which is
-        exactly the shape of the change that would do it -- and the suite stays
-        green.  Measured on this tree: **150 passed** with
-        ``account_projection`` dropped from both, and the balance-at-T probe that
-        motivated its entry then rated 10.00/10 again.
+        For those, a set-equality guard would be SELF-ATTESTING: delete the
+        registry entry and empty the constant -- two adjacent edits in one
+        file, which is exactly the shape of the change that would do it -- and
+        the suite stays green.  Measured on an earlier tree: **150 passed**
+        with ``account_projection`` dropped from both, and the balance-at-T
+        probe that motivated its entry then rated 10.00/10 again.
 
         **So the module names below are written out LITERALLY, and that is the
         point.**  Binding this loop to the constants would reproduce the hole one
@@ -1503,11 +1122,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         for module_name in (
             "app.services.account_projection",
             "app.services.cash_ledger",
-            "app.services.balance_at._cash_engine",
-            "app.services.balance_at._calculator",
-            "app.services.balance_at._daily_series",
-            "app.services.balance_at._kernel",
-            "app.services.balance_at._investment",
+            "app.services.loan_ledger",
+            "app.services.loan_posting_service",
+            "app.services.loan_payment_service",
+            "app.services.loan_resolution",
+            "app.services.loan_resolver",
             "app.services.balance_at._context",
         ):
             node = self._function_def(
@@ -1582,20 +1201,23 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_rulings_cover_every_producer_defining_module(self) -> None:
-        """The ruling registry scopes EXACTLY the producer-defining modules.
+        """The ruling registry scopes EXACTLY the declared module scopes.
 
         The completeness check can only protect a module it scopes, so the scope
-        itself needs a guard: if an engine-cluster module (or the loan-ledger
-        package) were added to the fence but not given a ruling, W9909 would
-        silently stop covering it -- the fail-open hole one level up. Pins the
-        registry's key set against the two module scopes the fence is built from.
+        itself needs a guard: if a package were added to a scope constant but
+        not given a ruling (or the reverse), W9909 would silently stop covering
+        it -- the fail-open hole one level up. Pins the registry's key set
+        against the five scope constants the D3 residue is built from.  (The
+        LITERAL module-name pin lives in
+        :meth:`test_flags_unclassified_export_in_every_hand_scoped_module`,
+        so emptying a constant AND its entry together still fails.)
         """
         expected = (
-            _ENGINE_CLUSTER_MODULES
-            | _SEAM_PRIVATE_ENGINE_MODULES
-            | _SEAM_PRIVATE_CONTEXT_MODULES
-            | _LOAN_LEDGER_DEFINING_MODULES
+            _LOAN_LEDGER_DEFINING_MODULES
             | _LOAN_RESOLVER_DEFINING_MODULES
+            | _LOAN_RESOLVER_ENGINE_MODULES
+            | _LOAN_PAYMENT_SEAM_MODULES
+            | _SEAM_PRIVATE_CONTEXT_MODULES
             | _CASH_LEDGER_MODULES
             | _KIND_CLASSIFIER_MODULES
         )

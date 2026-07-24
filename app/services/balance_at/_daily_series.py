@@ -58,10 +58,11 @@ eliminate.
 
 **Seam placement.**  This module is part of the ``balance_at`` seam cluster
 (``app.services.balance_at`` exposes it as ``cash_daily_balance_series``): it
-composes the fenced producer ``balance_as_of_date`` for the seed and reuses
+composes the sibling producer ``balance_as_of_date`` for the seed and reuses
 :func:`~app.services.cash_ledger.load_balance_transactions` (one
 entries-eager query) and ``sum_projected`` for the per-day distribution, so
-no consumer re-invents the balance boundary the seam owns (W9906).  It
+no consumer re-invents the balance boundary the seam owns (the private
+submodules are W9910's since plan step D3).  It
 imports no Flask symbol and performs no writes; all money is
 :class:`~decimal.Decimal`.
 """

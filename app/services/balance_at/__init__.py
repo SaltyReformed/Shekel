@@ -76,14 +76,17 @@ duplication this work exists to kill.
   unfenced loan balance.  See :mod:`._secured_debt`.
 
 Every family routes through this one package, so no screen reaches a producer
-directly (the W9906 ``shekel-balance-producer-bypass`` fence).
+directly -- structurally, since plan step D3: every producer is a PRIVATE
+submodule here, and the package-privacy gate W9910
+(``shekel-private-module-import``) hard-fails any outside import of one in any
+spelling, so the name-keyed W9906 producer fence deleted.
 
 Package layout.  The seam outgrew a single module (the 1000-line cap), so each
 view lives in its own private submodule and this ``__init__`` re-exports the
 public surface -- consumers keep importing exactly as before
-(``from app.services import balance_at``; ``balance_at.balance_map(...)``).  The
-W9906 fence follows automatically: its allowlist prefix-matches, so every
-``app.services.balance_at.*`` submodule stays inside the seam.
+(``from app.services import balance_at``; ``balance_at.balance_map(...)``).
+Re-exporting a name HERE is what makes it public: this file is the one
+reviewed door a new seam entry ships through.
 
 Dependency direction (SOLID).  Consumers (routes, savings, analytics,
 dashboards) depend on this seam; the seam depends only on the outer engine

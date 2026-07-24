@@ -196,21 +196,17 @@ class BalanceContext:
         does not re-issue its params query each time.  That is why the membership
         test is ``in self._loans`` and not a truthiness check on the value.
 
-        **FENCED (W9906), and named so it CAN be.**  A :class:`ResolvedLoan`
-        REACHED ``state.current_balance`` -- a balance-at-today -- in one
-        attribute read, so handing one to a route put a loan balance on a screen
-        without passing the seam.  That is the hole this method WAS: it was called
-        ``loan``, a name too generic to fence (``_called_name_in`` matches a
-        call's attribute name, and ``.loan`` collides with unrelated code), so the
-        checker could not see it and a route reading
-        ``ctx.loan(account).state.current_balance`` rated 10.00/10 -- measured, on
-        this codebase, before the rename.  The distinctive name is what makes the
-        fence bind.  Plan step D2a then DELETED the field itself (the bundle
-        carries schedule detail, no balance), so the fence's reason is gone;
-        retiring the surface is plan step D3's.
+        **Un-FENCED at plan step D3, because D2a removed the reason at the
+        root.**  A :class:`ResolvedLoan` once reached ``state.current_balance``
+        -- a balance-at-today -- in one attribute read, so this method was
+        name-fenced (W9906) for as long as that field existed; the field is
+        DELETED, the bundle carries schedule detail and no balance, and the
+        fence went with its reason.  The module stays W9909-scoped (the one
+        seam-private completeness ruling D3 keeps): ``BalanceContext`` is
+        publicly re-exported, so any NEW public method here must be classified
+        the moment it is defined.
 
-        Only the seam (:mod:`app.services.balance_at`) and the kernel cluster it
-        composes may call it.  A consumer that wants a loan's rich figures takes
+        A consumer that wants a loan's rich figures takes
         :func:`app.services.balance_at.loan_figures` (which carries no balance,
         deliberately); one that wants its balance takes
         :func:`app.services.balance_at.balance_at`.
@@ -251,12 +247,12 @@ class BalanceContext:
         like the resolver memo above.  A reader bounds the walk to a date; the memo
         does not.
 
-        **FENCED (W9906), the same as :meth:`resolved_loan`.**  The walk itself is
-        FACTS, not a balance-at-T (plan step D-fold) -- but it is one seam-private
-        :func:`~app.services.balance_at._fold.fold_from_walk` away from one, so
-        handing the memoized handle to a consumer would put a balance a single call
-        outside the seam.  Only the seam (:mod:`app.services.balance_at`) and the
-        kernel cluster it composes may reach it; a consumer that wants a loan's
+        **Un-FENCED at plan step D3, the same ground as :meth:`resolved_loan`.**
+        The walk is FACTS, not a balance-at-T (plan step D-fold), and the leaf's
+        own :func:`~app.services.loan_ledger.walk_loan_ledger` is public and
+        deliberately unfenced -- so this memo hands a consumer nothing it could
+        not already obtain, and the fold that turns a walk into a balance is a
+        seam-private module W9910 protects.  A consumer that wants a loan's
         balance takes :func:`app.services.balance_at.balance_at`.
 
         Args:

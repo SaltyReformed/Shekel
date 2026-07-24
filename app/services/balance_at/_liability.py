@@ -10,7 +10,7 @@ rule each liability takes.  It composes the seam's total loan producer
 (:func:`~app.services.balance_at.positions`) once per amortizing loan over the
 whole future sample axis, and holds every other liability flat -- so the band
 cannot drift from the balance the rest of the app reports, and no consumer holds a
-balance-at-T boundary rule the W9906 fence exists to keep out of consumer hands
+balance-at-T boundary rule the seam exists to keep out of consumer hands
 (``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``).
 """
 

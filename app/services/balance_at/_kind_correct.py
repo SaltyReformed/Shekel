@@ -310,7 +310,7 @@ def investment_seed_map(
     :func:`~app.services.balance_at._investment.investment_base_balance_map`) so
     that EVERY balance map -- the modeled one a screen DISPLAYS and the
     pre-growth one a chart SEEDS from -- flows through this one package, and the
-    raw kernel producer stays fenced behind the W9906 seam checker.  A consumer
+    raw producer sits in a private seam module W9910 protects.  A consumer
     that needs the seed reads it HERE, never the kernel function directly; the
     distinct name (``investment_seed_map`` vs ``balance_map``) is the signal
     that its value is a projection seed, not a balance to render.

@@ -1,11 +1,37 @@
-"""Balance-seam fence: ``shekel-balance-producer-bypass`` (W9906).
+"""Balance-seam fence residue: W9906 (call fence) + W9909 (completeness).
 
-Flags any module OUTSIDE the ``app.services.balance_at`` seam and the engine
-cluster it composes from calling (or importing by name) a balance producer
-directly. The seam owns all four per-kind balance-at-T boundary rules (cash /
-loan / investment / property) in ONE tested place; a consumer re-inventing that
-boundary is how the loan/investment balance-bug family kept recurring across
-files for months (``docs/audits/balance_architecture/``).
+**Plan step D3 deleted the name-keyed fence down to its honest residue.**  The
+structural rules do the old lists' jobs now: every balance producer is a
+PRIVATE submodule of ``app.services.balance_at`` (plan steps D1/D-ctx/D-fold),
+and the package-privacy gate W9910 (``shekel-private-module-import``) plus
+stock ``protected-access`` make reaching one from outside the seam a hard
+failure in every import spelling -- name-INDEPENDENT and fail-closed, so
+nothing here can rot open the way the deleted allowlists could (finding N-17:
+three stale exemptions permitting calls nobody made).  Named non-goal, shared
+with W9910: dynamic reflection (``importlib`` / ``getattr`` chains) is outside
+every static gate's sight -- a deliberate evader was always one rename past
+the name fence too, so the deletion cedes nothing there.
+
+What remains, each named with its reason and its resolving step:
+
+* **W9906, ONE call surface** -- the two genesis posting readers
+  (:data:`_LOAN_LEDGER_READER_PRODUCERS`).  They answer balance-at-T from the
+  WRITE cluster's own table, so they cannot be private to the read seam; the
+  fence funnels them to their defining package and the one injection seam.
+  Resolves at plan step E1: once the resolver's confirmed slice seeds from the
+  WALK (source facts) instead of the posting view, ``confirmed_loan_view``
+  dies, the readers go package-private behind W9910, and this surface deletes.
+* **W9909, the completeness registry on the PUBLIC ingredient packages**
+  (:data:`_FENCED_MODULE_RULINGS`).  "Is this new public function a balance
+  producer?" is a human judgment no AST rule can decide, and these packages
+  hold every ingredient of one (facts, splits, sums, schedules) OUTSIDE
+  W9910's protection -- measured four times (N-28/N-31): a public balance-at-T
+  born in one rates 10.00/10 with every other gate green.  The registry forces
+  that judgment loudly at definition time.  Its rot direction is SAFE: a stale
+  classification entry names a dead function (inert, and the reverse-staleness
+  meta-test flags it); it can never permit a bypass.  Resolves only if the
+  read seam, write cluster, and shared leaves ever move under one private
+  super-package boundary (recorded in the plan as a post-E1 option).
 """
 
 from astroid import nodes
@@ -14,113 +40,27 @@ from pylint.checkers import BaseChecker
 
 from ._common import _called_name_in, _module_in_allowlist
 
-# Balance producers (W9906): the functions that answer "what is account A's
-# balance at time T?". Every screen must obtain a balance through the
-# app.services.balance_at seam; a module outside the seam + engine cluster
-# calling one of these directly re-invents the per-kind boundary rule the seam
-# centralizes -- the recurrence generator behind the months-long
-# loan/investment balance-bug family (docs/audits/balance_architecture/). The
-# private (``_build_*``) producers are listed by their bare name: a consumer
-# reaching one is already past the seam.
-#
-# ``project_balance`` / ``reverse_project_balance`` are NOT listed: they return a
-# ProjectedBalance carrying contribution/growth detail, a different
-# responsibility from a balance map, and the charts compose them legitimately.
-#
-# The LOAN RESOLVER entries (``resolve_loan_seeded`` /
-# ``resolve_loan_bundle``) WERE excluded on the same "rich detail, not a balance"
-# reasoning -- and that was the hole. ``LoanState`` bundles the rich detail WITH
-# ``current_balance``, a balance-at-today, and a name-keyed fence cannot see an
-# attribute read. So the loan's displayed balance -- the /savings tile, the
-# net-worth hero, the debt card, the Horizon's index-0 point, the equity card's
-# mortgage leg, /debt-strategy -- was produced outside the seam with every gate
-# silent, agreeing with it only because both paths happened to bottom out in the
-# same ledger. They are fenced now (:data:`_LOAN_RESOLVER_PRODUCERS`), and
-# consumers take ``balance_at.loan_figures`` (rich detail, deliberately WITHOUT a
-# balance) plus ``balance_at.balance_at`` (the balance).
-#
-# ``investment_base_balance_map`` IS guarded (below).  It returns a
-# DISPLAY-shaped cash-basis (pre-growth) map -- the one balance-map accessor a
-# consumer could have rendered as if it were a real balance (the investment
-# understatement bug the seam exists to kill), so the seam wraps it as
-# ``balance_at.investment_seed_map`` and the chart-seed consumers (investment /
-# retirement / year-end growth) read the seed through THAT seam entry.  The
-# kernel producer itself is fenced to the cluster, so every balance map -- the
-# modeled one a screen displays AND the pre-growth one a chart seeds from --
-# now flows through the seam (the plan's "full fence, zero exceptions").
-# ``test_flags_investment_base_balance_map_from_consumer`` locks the guard.
-#
-# One engine-cluster accessor that DOES return a per-period map is still
-# excluded by the SRP line, and must NOT be added here:
-#   * ``interest_by_period_for_account`` -- interest EARNED per period, not a
-#     balance-at-T figure.  The seam owns the balance to DISPLAY at time T;
-#     this owns a projection INPUT (and is semantically distinct, not a
-#     balance map a consumer could mistake for one).
-_BALANCE_PRODUCERS = frozenset({
-    "balances_for",
-    "balance_as_of_date",
-    "build_daily_series",
-    "calculate_balances",
-    "calculate_balances_with_interest",
-    "build_account_balance_map",
-    "base_account_balance_map",
-    "account_balance_map_from_inputs",
-    "investment_base_balance_map",
-    "build_investment_balance_map",
-    "build_appreciation_balance_map",
-    # The resolver bundle: an amortization schedule AND the loan's
-    # ledger-confirmed ``current_balance``.  It was ruled a non-producer while
-    # the claim "no consumer reads that attribute" held -- but the fence binds on
-    # function NAMES and cannot see an attribute read, so the ruling rested on a
-    # fact about the tree, not a property of the code, and one line
-    # (``schedules[a.id].current_balance`` in a template context) would have put
-    # a balance-at-T on a screen with every gate silent
-    # (``followup_debt_schedule_attribute_fence.md``).  Fenced now: the
-    # out-of-cluster consumers all wanted rows, and they take
-    # ``debt_schedule_rows`` (which carries no balance), so the bundle's only
-    # remaining callers are inside the cluster.  A consumer that wants a loan's
-    # balance has no choice but ``balance_at.balance_at`` -- which is the point.
-    "generate_debt_schedules",
-})
-# Modules allowed to call a balance producer directly.  As of plan step D1d
-# (both commits shipped) that is EXACTLY the balance_at seam package: every
-# balance producer now lives inside it as a private submodule, so the allowlist
-# is ONE package key.  Matched exactly or as a package PREFIX (see
-# :func:`_module_in_allowlist`), so every ``app.services.balance_at.*`` submodule
-# -- the public view modules AND the private engine submodules
-# (``_kernel`` / ``_investment`` / ``_cash_engine`` / ``_calculator`` /
-# ``_daily_series``) that compose each other -- is inside the fence.  The full
-# path, not the basename, is deliberate: a same-named module in another package
-# (a hypothetical ``app/routes/balance_at.py``) must NOT be exempted, or the
-# fence could be silently bypassed by a name collision (a false negative is the
-# dangerous mode for a fence).  Every gate runs pylint from the repo root, so the
-# seam always resolves to ``app.services.balance_at`` (``pylint app/``, the
-# per-edit hook on a single file, and pre-commit all agree).
-#
-# **This is Phase D's endgame shape reached:** the allowlist is no longer a hand
-# curated list of engine modules a producer could be added beside; it is the one
-# boundary D-gate will enforce structurally, after which the name-fence deletes
-# (plan step D3).  The out-of-cluster consumers that once reached a producer now
-# read the seam's own public entries (``debt_schedule_rows`` /
-# ``interest_by_period_for_account`` for the two that wanted the kernel's rows).
-_BALANCE_SEAM_MODULES = frozenset({
-    "app.services.balance_at",
-})
-# ``account_projection`` came off THIS list at plan step D1b (it calls no
-# producer, so the exemption only ever permitted a bypass) and STAYED on the
-# W9909 completeness registry below.  Splitting those two removals is the step:
-# the lists answer different questions (finding N-28), and only the tightening is
-# safe.  Rationale for the half that stayed: :data:`_KIND_CLASSIFIER_MODULES`.
+# The balance-producer deny list and its one-package allowlist are GONE (plan
+# step D3).  Every producer is a private ``balance_at`` submodule, so W9910
+# already flags every import spelling from outside the seam and W0212 the
+# attribute-access residual -- a name list here could only duplicate (and rot
+# behind) the structural gate.  The seam-private W9909 rulings the moved
+# producers carried (finding N-31's "travel") died with it, for the same
+# reason: a producer born inside a private module is unreachable until someone
+# deliberately re-exports it on the seam's public ``__init__``, which is the
+# reviewed, one-place act the fence always wanted.
 
 
-# Genesis loan-ledger balance readers (W9906, the read switch's final commit):
-# the confirmed balance-at-T readers over the posting ledger.  Same fence, one
-# WIDER allowlist: beyond the seam, exactly two modules may call them --
-# ``loan_posting_service`` (the defining package; its sync/oracle internals
-# legitimately compose its own readers) and ``loan_payment_service`` (whose
-# ``confirmed_loan_view`` is the ONE sanctioned injection seam the resolver-bound
-# consumers read the ledger through).  Any other caller is re-inventing the read
-# switch's seam.  NOT listed, by the same SRP line the header comment draws:
+# Genesis loan-ledger balance readers -- W9906's ONE remaining call surface
+# (the D3 residue), named with its reason and resolving step: they answer
+# balance-at-T from the WRITE cluster's own postings table, so they cannot be
+# private to the read seam, and the fence funnels them to their defining
+# package plus the one injection seam.  They DELETE at plan step E1: seed the
+# resolver's confirmed slice from the WALK (source facts) instead of the
+# posting view, and ``confirmed_loan_view`` dies, the readers' only callers
+# become the write cluster's own reconcile/oracle internals, they go
+# package-private behind W9910, and this surface goes with them.
+# NOT listed, by the standing SRP line:
 # ``confirmed_loan_history_rows`` (rich schedule-row detail the view seam
 # composes, the ledger analog of ``resolve_loan``).  The paid-in-year tax / chip
 # figures are no longer here at all -- they fold from the loan ledger in the
@@ -155,134 +95,46 @@ _LOAN_LEDGER_READER_MODULES = frozenset({
     "app.services.loan_payment_service",
 })
 
-# ── The loan RESOLVER entries (W9906) ───────────────────────────────
-#
-# ``LoanState`` USED to bundle rich projection detail (schedule, payment, rate)
-# with ``current_balance`` -- a balance-at-TODAY.  The fence binds on function
-# NAMES and cannot see an attribute read, so for as long as any consumer could
-# call these and hold a ``LoanState``, the loan's DISPLAYED balance reached the
-# screen without passing the seam: the /savings loan tile, the net-worth hero
-# that reduces over it, the debt card, the Horizon's index-0 liability, the
-# property-equity card's mortgage leg, and /debt-strategy were ALL produced
-# outside the one tested place, and every gate stayed silent.  They agreed with
-# the seam only because both paths happened to bottom out in the same genesis
-# ledger -- agreement by luck, which is the exact failure signature of the
-# balance-bug family this fence exists to end.  Plan step D2a DELETED that
-# field (the seam's readers fold the loan's recorded events instead), so the
-# bundle no longer carries a balance; retiring this surface on that ground is
-# plan step D3's, not a per-edit judgment call.
-#
-# Consumers now take ``balance_at.loan_figures`` (rich detail, deliberately
-# WITHOUT a balance) plus ``balance_at.balance_at`` (the balance), so a consumer
-# holding loan figures cannot render a wrong balance even by accident.
-_LOAN_RESOLVER_PRODUCERS = frozenset({
-    # ``resolve_account_loan`` came off this set at plan step D2a: the function
-    # was production-dead (its docstring's write/sync callers shed their calls
-    # at C4 / C8a) and was deleted outright, so the entry named nothing.
-    "resolve_loan_seeded",
-    "resolve_loan_bundle",
-})
-# Who may still resolve a loan directly:
-#   * ``loan_resolution`` -- defines them.
-#   * ``balance_at._context`` -- the read pass's memo (plan step D-ctx moved it
-#     INTO the seam as a private submodule); the ONE place a loan is resolved for
-#     a read, and what the seam's loan entries compose.
-#   * ``loan_payment_service`` -- the live grid/transfer amount producer, inside
-#     the loan cluster (it composes the resolver for a payment's P&I, not for a
-#     displayed account balance).
-#   * ``_transfer_loan_posting`` -- a WRITE path.  It resolves mid-mutation,
-#     which is exactly why the read-pass context is not a request-scoped cache;
-#     a writer is not a balance reader.
-#   * ``app.routes.loan`` -- the loan DETAIL page, a genuine rich-primitive
-#     consumer (the amortization table, the payoff and refinance calculators).
-#     It reads the resolver through its own ``_resolve`` seam.
-#
-# ``loan_recurrence_sync`` came OFF this list at plan step C8d: it stopped
-# resolving a loan to walk a schedule for the payoff and now reads the seam's
-# DERIVED payoff (``balance_at.loan_figures``), so its exemption guarded nothing
-# and its entry claimed a call that no longer exists.  Three entries above are
-# now in the same state -- see finding N-17; retiring them is the Phase-D fence
-# pass's job, not this step's.
-_LOAN_RESOLVER_MODULES = frozenset({
-    "app.services.loan_resolution",
-    "app.services.balance_at._context",
-    "app.services.loan_payment_service",
-    "app.services._transfer_loan_posting",
-    "app.routes.loan",
-})
-
-# ── The read pass's memoized loan handle (W9906) ─────────────────────
-#
-# ``BalanceContext.resolved_loan`` hands the caller a whole ``ResolvedLoan`` --
-# and ``resolved.state.current_balance`` is a balance-at-today, one attribute read
-# away.  Fencing the three resolver FUNCTIONS above and then exposing the same
-# bundle as a public METHOD was the hole: the fence binds on names, and the method
-# was called ``loan``, which is far too generic to guard (it would collide with
-# every unrelated ``.loan`` attribute in the codebase).  Proven silent before this
-# commit: a probe consumer in ``app/routes/companion.py`` reading
-# ``ctx.loan_state(account).current_balance`` rated 10.00/10.
-#
-# The rename to ``resolved_loan`` is therefore load-bearing, not cosmetic -- a
-# distinctive name is what makes the call site catchable.  Its sibling
-# ``loan_state`` was DELETED rather than renamed: it had zero callers, and its
-# entire purpose was to hand a consumer the ``LoanState`` this fence exists to
-# keep out of consumer hands.
-#
-# The allowlist is deliberately NARROWER than the resolver's: the seam and the
-# kernel cluster compose the memo, and nothing else may touch it.  Routes and
-# dashboards get ``balance_at.loan_figures`` (rich detail, no balance) plus
-# ``balance_at.balance_at`` (the balance).
-_CONTEXT_LOAN_PRODUCERS = frozenset({
-    "resolved_loan",
-    # The read pass's memoized loan WALK (``BalanceContext.loan_walk``), the fold
-    # analog of ``resolved_loan``: it hands back a ``LoanLedgerWalk``, which a
-    # single ``fold_from_walk`` turns into a balance-at-T, so it is fenced like the
-    # resolver memo beside it -- only the seam and the kernel cluster compose it,
-    # and a consumer that wants a balance takes ``balance_at.balance_at``.
-    "loan_walk",
-})
-_CONTEXT_LOAN_MODULES = frozenset({
-    # The seam package -- covers ``_kernel`` (was ``net_worth_kernel``, which
-    # composes the memo) via the prefix match since plan step D1d, and
-    # ``_context`` (the memo's own defining module) since plan step D-ctx moved it
-    # INTO the seam.
-    "app.services.balance_at",
-})
+# The loan RESOLVER call-fence and the context-memo handle fence are GONE (plan
+# step D3), because plan step D2a removed their reason at the ROOT:
+# ``LoanState.current_balance`` -- the balance-at-today that made a resolver
+# bundle a leak -- is DELETED, so ``resolve_loan_bundle`` / ``resolve_loan_seeded``
+# hand back schedule detail of the same sanctioned class ``debt_schedule_rows``
+# already exposes, and ``BalanceContext.resolved_loan`` / ``loan_walk`` hand back
+# nothing a consumer cannot already reach through public leaf names
+# (``walk_loan_ledger`` is a ruled NON-producer: FACTS, not a balance).  A
+# consumer that wants a loan's balance still has exactly one way to get it --
+# ``balance_at.balance_at`` -- but by construction now, not by list.
 
 # Every fenced CALL surface: ``(guarded names, modules allowed to reach them)``.
-# ``visit_call`` and ``visit_importfrom`` both walk this one table, so a new
-# fenced surface is a data change here rather than a third copy of the same
-# branch in two visitors (the duplication that let the earlier surfaces drift).
+# ``visit_call`` and ``visit_importfrom`` both walk this one table.  ONE surface
+# remains (the D3 residue); it deletes whole at plan step E1.
 _FENCED_CALL_SURFACES = (
-    (_BALANCE_PRODUCERS, _BALANCE_SEAM_MODULES),
     (_LOAN_LEDGER_READER_PRODUCERS, _LOAN_LEDGER_READER_MODULES),
-    (_LOAN_RESOLVER_PRODUCERS, _LOAN_RESOLVER_MODULES),
-    (_CONTEXT_LOAN_PRODUCERS, _CONTEXT_LOAN_MODULES),
 )
 
 # ── Fail-closed completeness (W9909) ────────────────────────────────
 #
-# The producer lists above are a DENY list keyed on function NAME, and for two
-# years that made the fence fail OPEN: a new function added inside an
-# allowlisted module was unguarded by default, invisible to W9906 until a human
-# remembered to list it.  That is not a hypothetical -- it shipped twice:
-#   * ``investment_base_balance_map`` (closed by Level-1 Commit 10), and
-#   * ``loan_owed_at_dates`` (closed above; a consumer called it directly for a
-#     month with the fence silent).
-# Two identical misses is a design defect in the FENCE, not a lapse in
-# diligence, so the default is inverted here: every PUBLIC top-level function
-# defined in a fenced module must be explicitly classified as either a producer
-# (fenced) or a non-producer (deliberately callable), and one that is neither is
-# an error AT ITS DEFINITION -- the moment it is typed, in the same per-edit hook
-# run.  A producer can no longer slip through by omission; forgetting is now the
-# loud path, and exporting one to consumers is a deliberate act recorded in one
-# place.
+# A name-keyed deny list fails OPEN: a new function added inside a covered
+# module is unguarded by default until a human remembers to list it.  That is
+# not a hypothetical -- it shipped twice (``investment_base_balance_map``,
+# ``loan_owed_at_dates``: each called past the seam with the fence silent), and
+# the same hole was re-measured four more times during Phase D (findings
+# N-28 / N-31).  Two identical misses is a design defect in the FENCE, not a
+# lapse in diligence, so the default is inverted here: every PUBLIC top-level
+# function defined in a scoped module must be explicitly classified as either a
+# producer (fenced) or a non-producer (deliberately callable), and one that is
+# neither is an error AT ITS DEFINITION -- the moment it is typed, in the same
+# per-edit hook run.  A producer can no longer slip through by omission;
+# forgetting is now the loud path.
 #
-# Scope: every module that DEFINES a fenced producer -- the engine cluster (the
-# balance producers) and the whole genesis loan-ledger package (the confirmed
-# balance readers and the walk they are built on).  The ``balance_at`` seam
-# package is deliberately NOT scoped: its public functions ARE the seam entries
-# every consumer is supposed to call, so "unclassified" is meaningless there.
+# Scope (the D3 residue): the PUBLIC packages that hold balance INGREDIENTS
+# outside W9910's protection -- the two genesis loan-ledger packages (the
+# confirmed readers and the walk they are built on), the cash ledger leaf, the
+# loan resolver tier and its db-facing seeding module, and the account-kind
+# classifier.  The ``balance_at`` seam package is deliberately NOT scoped: its
+# public functions ARE the seam entries every consumer is supposed to call, so
+# "unclassified" is meaningless there, and its private submodules are W9910's.
 # Classes are not scoped either -- the historical misses were functions, and a
 # dataclass (``DebtSchedule`` / ``BalanceResult``) is data the seam passes
 # around, not an answer to "what is the balance at T".
@@ -293,78 +145,71 @@ _FENCED_CALL_SURFACES = (
 # ``income_amount``, ``resolve_anchor`` are all generic enough to collide) --
 # which is the same fail-open shape, one level down.  Each module owns its own
 # ruling.
-# The engine modules that still live OUTSIDE the seam.  As of plan step D1d
-# (both commits) this is EMPTY -- every balance producer moved into the seam --
-# so it contributes nothing to the registry key set below; it stays a derived
-# constant (``_BALANCE_SEAM_MODULES`` minus the seam) so a future engine added
-# back outside the seam is scoped automatically.
-_ENGINE_CLUSTER_MODULES = _BALANCE_SEAM_MODULES - frozenset({
-    "app.services.balance_at",
-})
-# The balance producers, now PRIVATE submodules of the seam (plan step D1d, both
-# commits).  ``balance_resolver`` / ``balance_calculator`` / ``daily_balance_series``
-# moved to ``balance_at._cash_engine`` / ``._calculator`` / ``._daily_series``, and
-# ``net_worth_kernel`` / ``net_worth_investment`` to ``._kernel`` / ``._investment``,
-# so their W9909 rulings TRAVEL with them (finding N-31) rather than deleting.  The
-# reason they cannot just vanish into the seam: ``balance_at`` is deliberately
-# NOT W9909-scoped as a package -- its PUBLIC functions ARE the seam entries every
-# consumer calls, so "unclassified" is meaningless there -- which means a producer
-# born unclassified in the package is ALSO unfenced (its name is not in
-# :data:`_BALANCE_PRODUCERS`), N-28's hole reached from the inside.  So each moved
-# producer module keeps an explicit registry entry keyed on its full PRIVATE path
-# until D-gate makes the package boundary structural and D3 deletes the name-fence
-# outright.  A hand-written list, NOT the ``app.services.balance_at`` prefix, and
-# that is deliberate: prefix-scoping the package would pull its public seam
-# entries into the completeness check, where the ruling has no meaning.  All five
-# balance producers are now here -- the net-worth pair joined at the second D1d
-# commit.
-_SEAM_PRIVATE_ENGINE_MODULES = frozenset({
-    "app.services.balance_at._cash_engine",
-    "app.services.balance_at._calculator",
-    "app.services.balance_at._daily_series",
-    # The net-worth chain (second D1d commit): the per-kind balance dispatch and
-    # the investment / appreciation growth sub-chain.
-    "app.services.balance_at._kernel",
-    "app.services.balance_at._investment",
+# The five SEAM-PRIVATE ENGINE rulings are GONE (plan step D3).  They existed
+# only as N-31's "travel": a name-keyed fence could not see a producer born
+# inside the seam, so each moved module kept a classification entry UNTIL the
+# package boundary became structural.  D-gate shipped (W9910): a private
+# ``balance_at`` submodule cannot be imported from outside the package in any
+# spelling, so a producer born there is unreachable until someone re-exports it
+# on the seam's public ``__init__`` -- the deliberate, reviewed act the
+# classification existed to force.  The ``balance_at`` package itself stays
+# deliberately un-scoped: its public functions ARE the seam entries every
+# consumer calls.
+#
+# ``_context`` is the ONE seam-private module whose ruling SURVIVES D3, because
+# the engine rationale above does not reach it (D3's own adversarial review
+# measured the gap): ``BalanceContext`` is already re-exported on the seam's
+# public ``__init__``, so a new public METHOD on it reaches every route holder
+# with NO ``__init__`` edit -- a probe ``ctx.balance_now(account)`` folding the
+# memoized walk rated 10.00/10 with the ruling deleted.  W9910 sees imports,
+# never attribute access on an object a consumer legitimately holds, so W9909
+# is the only gate on this module's surface; a producer belongs in a private
+# seam MODULE, never on the context.
+_SEAM_PRIVATE_CONTEXT_MODULES = frozenset({
+    "app.services.balance_at._context",
 })
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
     "app.services.loan_posting_service",
 })
-# The read pass's resolution CONTEXT, now the seam-private ``balance_at._context``
-# (plan step D-ctx; was the outside-the-seam ``app.services.resolution_context``).
-# It is NOT a balance producer -- it is the memo that resolves each loan ONCE per
-# read pass -- but it defines the fenced ``resolved_loan`` / ``loan_walk`` handles
-# (:data:`_CONTEXT_LOAN_PRODUCERS`) plus the plumbing the seam composes, so its
-# public surface must stay CLASSIFIED.  It carries its own registry entry keyed on
-# the full private path for the SAME reason the engine modules do (finding N-31),
-# and -- sharper here than for the engines -- moving INTO the seam put it under the
-# W9906 allowlist too, so the CALL fence no longer backstops a producer born here:
-# W9909 is now the ONLY gate on this module.  Its scope must therefore fail CLOSED,
-# which a hand-written constant does only when it cannot be quietly emptied -- so it
-# is self-attest-pinned by
-# ``test_flags_unclassified_export_in_every_hand_scoped_module``.
-_SEAM_PRIVATE_CONTEXT_MODULES = frozenset({
-    "app.services.balance_at._context",
-})
-# The loan-RESOLVER defining module.  It was fenced as a CALL surface
-# (:data:`_LOAN_RESOLVER_PRODUCERS`) and then left out of the completeness check
-# -- the same fail-open shape the check exists to close, reintroduced by the very
-# commit that added the surface.  Proven: a new public
-# ``loan_balance_right_now()`` added to ``loan_resolution`` rated 10.00/10, and
-# ``contractual_schedule_from_origination`` sat there public and unclassified.
-# ``resolution_context`` used to sit here too, before plan step D-ctx moved it into
-# the seam and onto :data:`_SEAM_PRIVATE_CONTEXT_MODULES`.
+# The loan-RESOLVER defining module (the db-facing seeding wrappers).  Its CALL
+# fence died at D3 (the bundle carries no balance since D2a), but the
+# completeness scope STAYS: it is a public module holding the schedule composer
+# and every loan ingredient, outside W9910's protection.  Proven need: a new
+# public ``loan_balance_right_now()`` added here rated 10.00/10, and
+# ``contractual_schedule_from_origination`` sat here public and unclassified.
 _LOAN_RESOLVER_DEFINING_MODULES = frozenset({
     "app.services.loan_resolution",
 })
-# The cash LEDGER leaf (plan step D1c).  It is NOT on
-# :data:`_BALANCE_SEAM_MODULES` -- it calls no balance producer, and W9906
-# correctly flags it if it ever tries.  But it is scoped for the W9909
-# COMPLETENESS check, and the distinction is load-bearing: the two lists answer
-# different questions ("may this module CALL a producer?" vs "must a new public
-# function here be CLASSIFIED?"), and D1a's own adversarial review proved that
-# conflating them opens the exact hole W9909 exists to close.  Measured: a new
+# The loan-payment view module (plan step D3, from its adversarial review):
+# the ONE module the reader allowlist above admits beyond the defining
+# package.  Privileged AND public AND -- until this entry -- completeness
+# UNSCOPED: a documented public wrapper ``loan_balance_for_tile()`` returning
+# ``confirmed_loan_balance_at(...)`` rated 10.00/10 under the full fail-on set
+# (the N-28 shape on the single most reader-privileged module).  Pre-existing,
+# not a D3 loosening -- but D3 is the fence-truth step, so the gap closes here
+# rather than being claimed closed.
+_LOAN_PAYMENT_SEAM_MODULES = frozenset({
+    "app.services.loan_payment_service",
+})
+# The PURE loan-resolver package (plan step D3, closing finding B-12): the
+# schedule composer, the rate-period machinery, and the anchor replay -- the
+# "wholly unfenced producer tier below the fence" the findings ledger named.
+# Until D2a its ``resolve_loan`` returned a bundle carrying a balance-at-T with
+# NO fence entry anywhere; the field is deleted, and this scope makes the
+# package fail CLOSED the same way ``cash_ledger`` does: a new public
+# balance-at-T born in any of its submodules errors at its definition instead
+# of shipping reachable with every gate green (the N-28 shape, measured four
+# times elsewhere).  A package key, prefix-matched, so a new submodule is
+# scoped the day it is written.
+_LOAN_RESOLVER_ENGINE_MODULES = frozenset({
+    "app.services.loan_resolver",
+})
+# The cash LEDGER leaf (plan step D1c), scoped for the W9909 COMPLETENESS
+# check: "may this module CALL a producer?" and "must a new public function
+# here be CLASSIFIED?" are different questions, and D1a's own adversarial
+# review proved that conflating them opens the exact hole W9909 exists to
+# close.  Measured: a new
 # public ``running_balance_map`` folded from ``resolve_anchor`` +
 # ``period_subtotals`` + ``round_money`` -- not one fenced name among them --
 # rated 10.00/10, AND so did a route consuming it.  A real balance-at-T on a
@@ -424,50 +269,16 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 # does not answer "what is account A's balance at time T"; if in doubt, it is a
 # producer (a false negative is the dangerous mode for a fence).
 _FENCED_MODULE_RULINGS = {
-    # The per-kind balance dispatch, now the seam-private ``balance_at._kernel``
-    # (plan step D1d; was ``net_worth_kernel``).  Its ruling TRAVELLED with it
-    # (finding N-31, :data:`_SEAM_PRIVATE_ENGINE_MODULES`).
-    "app.services.balance_at._kernel": (_BALANCE_PRODUCERS, frozenset({
-        # A transaction loader, not a balance.
-        "load_account_period_transactions",
-        # The loan's amortization ROWS -- no balance attached.  This is what the
-        # two out-of-cluster consumers (the savings orchestrator's debt cards,
-        # the honest-history gate's first-payment date) actually want, and
-        # handing them rows rather than the ``DebtSchedule`` bundle is what CLOSED
-        # the attribute hole: ``generate_debt_schedules`` is a producer (below),
-        # so no consumer can reach the bundle's ``projection_seed`` balance at all.
-        # RE-EXPORTED from ``balance_at.__init__`` as the public seam entry those
-        # consumers now read (they no longer import the private module).
-        "debt_schedule_rows",
-        # Interest EARNED per period -- a projection INPUT and an explanatory
-        # row, not a balance-at-T figure.  Also re-exported through the seam for
-        # the account-detail route.
-        "interest_by_period_for_account",
-    })),
-    # The investment / appreciation growth sub-chain, now the seam-private
-    # ``balance_at._investment`` (plan step D1d; was ``net_worth_investment``).
-    "app.services.balance_at._investment": (_BALANCE_PRODUCERS, frozenset({
-        # An index into the period list, not a balance.
-        "get_anchor_period_index",
-        # A (growth, contributed) DECOMPOSITION of a balance the seam already
-        # owns, and itself wrapped by the seam's counterpart entry.
-        "investment_growth_since_anchor",
-    })),
-    # The cash balance producers ``balances_for`` and ``balance_as_of_date``,
-    # now the seam-private ``balance_at._cash_engine`` (plan step D1d; was
-    # ``balance_resolver``, split to only these at D1a).  The empty non-producer
-    # set is the accurate state, not an oversight: every public name this module
-    # defines IS a producer, and W9909 still fires here on a new unclassified one
-    # (its private path is a registry KEY, so ``_fenced_module_ruling`` returns a
-    # ruling rather than ``None`` -- the travel N-31 requires,
-    # :data:`_SEAM_PRIVATE_ENGINE_MODULES`).
-    "app.services.balance_at._cash_engine": (_BALANCE_PRODUCERS, frozenset()),
     # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
     # folded from, what one row is WORTH, and what a set of rows SUMS TO.
-    # Scoped WHOLE for completeness but NOT allowlisted -- see
-    # :data:`_CASH_LEDGER_MODULES` for why the two are deliberately different
-    # answers, and why the scope is a package rather than a list of modules.
-    "app.services.cash_ledger": (_BALANCE_PRODUCERS, frozenset({
+    # Scoped WHOLE for completeness but never call-allowlisted -- see
+    # :data:`_CASH_LEDGER_MODULES` for why, and why the scope is a package
+    # rather than a list of modules.  The EMPTY producer set is the D3
+    # invariant stated as data: a public balance producer outside the seam is
+    # not a thing, so a new public name here is either ruled a NON-producer
+    # (with its why) or it belongs inside ``balance_at`` -- there is no third
+    # classification.
+    "app.services.cash_ledger": (frozenset(), frozenset({
         # ``_facts`` -- the stored anchor SoT row (a user-asserted FACT plus its
         # date), not a computed projection.  Consumers read it for the "as of"
         # caption; their balances come from the seam.
@@ -495,31 +306,16 @@ _FENCED_MODULE_RULINGS = {
         "period_subtotal",
         "period_subtotals",
     })),
-    # The cash balance WALK, now the seam-private ``balance_at._calculator``
-    # (plan step D1d; was ``balance_calculator``).  Since D1c it defines only the
-    # producer pair (``calculate_balances`` / ``calculate_balances_with_interest``);
-    # its five per-row valuation non-producers moved to the ``cash_ledger`` leaf.
-    # The empty non-producer set is the accurate state -- every public name it
-    # defines IS a producer -- and its private path stays a registry KEY so W9909
-    # still fires here on a new unclassified one (N-31 travel).
-    "app.services.balance_at._calculator": (_BALANCE_PRODUCERS, frozenset()),
-    # The account-KIND classifier.  NOT on the W9906 call allowlist, but scoped
-    # here -- the deliberate asymmetry N-28 names; why it stays is recorded once,
-    # at :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``
+    # The account-KIND classifier -- why it is scoped is recorded once, at
+    # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``
     # went to ``loan_ledger._visible`` at D1b (chronology belongs with the rules
     # built on it), leaving two names.
-    "app.services.account_projection": (_BALANCE_PRODUCERS, frozenset({
+    "app.services.account_projection": (frozenset(), frozenset({
         # The canonical kind classifier and the payroll-funding predicate:
         # account metadata, not balances.
         "classify_account",
         "is_payroll_deduction_funded",
     })),
-    # The daily distribution producer ``build_daily_series``, now the
-    # seam-private ``balance_at._daily_series`` (plan step D1d; was
-    # ``daily_balance_series``).  A balance producer at daily granularity, one
-    # public name, all producer; its private path stays a registry KEY (N-31
-    # travel).
-    "app.services.balance_at._daily_series": (_BALANCE_PRODUCERS, frozenset()),
     # The loan WALK leaf (plan step B1, renamed ``_fold`` -> ``_walk`` at D-fold):
     # the event stream, the split, and the one running-balance replay over them,
     # which the posting ledger and the read seam both derive from.  Scoped WHOLE
@@ -599,10 +395,23 @@ _FENCED_MODULE_RULINGS = {
             "resync_user_loan_postings",
         }),
     ),
-    # The loan-resolver seeding layer.  Its three db-facing wrappers ARE the
-    # fenced resolver producers; everything else it exports must say why it is
-    # not.
-    "app.services.loan_resolution": (_LOAN_RESOLVER_PRODUCERS, frozenset({
+    # The loan-resolver SEEDING layer (:data:`_LOAN_RESOLVER_DEFINING_MODULES`).
+    # Its call fence died at D3 -- the bundle carries no balance since D2a --
+    # so every public name here is a ruled non-producer.
+    "app.services.loan_resolution": (frozenset(), frozenset({
+        # The whole-loan db-facing read: ONE load + resolve, returning a
+        # ``ResolvedLoan`` of params / anchor facts / payment context / state.
+        # No balance on it anywhere since D2a (the state carries the committed
+        # SCHEDULE -- sanctioned display rows, the ``debt_schedule_rows``
+        # class -- plus payment / rate / life-of-loan interest); the read
+        # pass's memo (``BalanceContext.resolved_loan``) is the one production
+        # caller, and a new direct caller pays a redundant resolution, not a
+        # balance leak.
+        "resolve_loan_bundle",
+        # The injection helper the bundle routes through: threads the
+        # confirmed view + standing extra into the pure resolver.  Same
+        # no-balance bundle as above.
+        "resolve_loan_seeded",
         # PURE contractual rows from the loan's IMMUTABLE params (its origination
         # principal / term / rate feed), for the property chart's pre-tracking
         # back-projection.  It reads no ledger, takes no scenario, and answers no
@@ -614,32 +423,82 @@ _FENCED_MODULE_RULINGS = {
         # ``debt_schedule_rows`` carries).
         "contractual_schedule_from_origination",
     })),
-    # The read pass's resolution context, now the seam-private
-    # ``balance_at._context`` (plan step D-ctx; :data:`_SEAM_PRIVATE_CONTEXT_MODULES`).
-    # ``resolved_loan`` is the fenced memo (:data:`_CONTEXT_LOAN_PRODUCERS`); its
-    # public siblings are plumbing.
-    "app.services.balance_at._context": (
-        _CONTEXT_LOAN_PRODUCERS, frozenset({
-            # The context CONSTRUCTOR: it resolves the baseline scenario and pins
-            # the as-of.  It builds the object a producer is called WITH; it
-            # computes no balance.
-            "build",
-            # The baseline scenario's id -- an int, and the ONE place the
-            # no-baseline degradation is expressed.
-            "scenario_id",
-            # The fail-loud no-baseline guard.  It raises or returns None; it
-            # answers nothing about an account.
-            "require_scenario",
-            # NOTE: the forward PLAN and PAYOFF are no longer METHODS here -- plan
-            # step D-ctx-b retired the injected memos and made them PUBLIC
-            # pass-through caches (``BalanceContext.plans`` /
-            # ``BalanceContext.payoffs``) the seam FILLS through the private
-            # ``_memoize_once``.  W9909 classifies public FUNCTIONS and METHODS,
-            # not data attributes, so the caches need no entry here; and a plan is
-            # payment RECORDS, a payoff a ``date`` -- neither a balance-at-T a
-            # consumer could render as money.
-        }),
-    ),
+    # The read pass's context (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`) -- the
+    # ONE seam-private ruling D3 keeps, because ``BalanceContext`` is publicly
+    # re-exported and W9910 cannot see a method on an object a consumer holds.
+    # A new public method here MUST be classified, and the answer is always
+    # "non-producer or move it into a private seam module".
+    "app.services.balance_at._context": (frozenset(), frozenset({
+        # The context CONSTRUCTOR: it resolves the baseline scenario and pins
+        # the as-of.  It builds the object a producer is called WITH; it
+        # computes no balance.
+        "build",
+        # The baseline scenario's id -- an int, and the ONE place the
+        # no-baseline degradation is expressed.
+        "scenario_id",
+        # The fail-loud no-baseline guard.  It raises or returns None; it
+        # answers nothing about an account.
+        "require_scenario",
+        # The read pass's two memo handles, un-FENCED at D3 and ruled
+        # NON-producers on the D2a ground: ``resolved_loan`` hands a bundle
+        # carrying NO balance (schedule rows are the sanctioned
+        # ``debt_schedule_rows`` display class), and ``loan_walk`` hands the
+        # leaf's public FACTS (``walk_loan_ledger``'s own ruling).  The
+        # forward PLAN and PAYOFF are pass-through data caches, not methods.
+        "resolved_loan",
+        "loan_walk",
+    })),
+    # The loan-payment view module (:data:`_LOAN_PAYMENT_SEAM_MODULES`): the
+    # one reader-allowlisted module outside the defining package, so a public
+    # balance wrapper born here would be the privileged N-28 shape -- every
+    # public name must say what it is.
+    "app.services.loan_payment_service": (frozenset(), frozenset({
+        # The unified loan-context loader: params, payments, rate changes,
+        # escrow lines -- inputs a resolution is built FROM, no balance.
+        "load_loan_context",
+        # Payment ROWS (the transfer-shadow feed), chronological -- records,
+        # not a balance.
+        "get_payment_history",
+        # The contractual P&I sizing rule -- a payment amount, not a balance.
+        "compute_contractual_pi",
+        # PaymentRecord adaptation for the amortization engine -- shaping, no
+        # figure of any kind.
+        "prepare_payments_for_engine",
+        # The read switch's ONE sanctioned view composer: it bundles the
+        # ledger reader's balance with the ledger history rows for the
+        # schedule composer's seeding (its ``balance`` field is the composer's
+        # forward starting balance, plan step D2a).  It is the reason this
+        # module sits on the reader allowlist at all, and it DIES at plan step
+        # E1 (the resolver's confirmed slice seeds from the walk); routes that
+        # read it today are the loan detail cluster's own surfaces.
+        "confirmed_loan_view",
+        # A projected payment's LIVE cash (P&I + current escrow + standing
+        # extra) -- what a payment is worth, not what an account owes.
+        "live_loan_payment_amount",
+        "live_loan_transfer_amounts",
+    })),
+    # The PURE loan-resolver tier (:data:`_LOAN_RESOLVER_ENGINE_MODULES`,
+    # closing finding B-12).  Package-scoped, so a new submodule is covered the
+    # day it is written; every public name is a ruled non-producer, and a new
+    # balance-at-T born here errors at its definition.
+    "app.services.loan_resolver": (frozenset(), frozenset({
+        # The state producer: payment, rate, committed schedule, life-of-loan
+        # interest.  Its balance field was DELETED at plan step D2a; the
+        # schedule rows it carries are the sanctioned display class.
+        "resolve_loan",
+        # The scenario composer: replayed history rows + projected forward
+        # slices (schedule ROWS and aggregate interest, no balance-at-T).
+        "compute_payoff_scenarios",
+        # Rate-period machinery: the level P&I and the annual rate of the
+        # period containing a date -- contract terms, not balances.
+        "compute_monthly_payment_baseline",
+        "current_rate_baseline",
+        "resolve_periods",
+        "engine_terms",
+        # The latest anchor FACT (a user-asserted row plus its date) -- the
+        # same ruling ``resolve_anchor`` carries on the cash side.
+        "select_latest_anchor",
+    })),
 }
 
 
@@ -717,86 +576,78 @@ def _fenced_module_ruling(
 
 
 class ShekelBalanceSeamChecker(BaseChecker):
-    """Forbid obtaining an account balance outside the balance_at seam.
+    """The balance-seam fence's honest residue (plan step D3).
 
-    Every screen must read an account's balance-at-T through
-    ``app.services.balance_at`` -- the single seam that owns all four per-kind
-    boundary rules (cash / loan / investment / property) in ONE tested place.
-    A module outside the seam and the engine cluster it composes calling a
-    balance producer directly re-invents that boundary; that re-invention is how
-    the loan/investment balance-bug family kept recurring across different files
-    for months (docs/audits/balance_architecture/). This checker is the
-    deterministic fence Level 1 adds: the seam + engine cluster may call the
-    producers (they compose each other), and everything else must depend on the
-    seam.  The fence binds at two layers: the call site (:meth:`visit_call`)
-    and the import (:meth:`visit_importfrom`), the latter closing the
-    aliased-import evasion the 2026-07-02 adversarial review named (R3):
-    ``from ... import balances_for as bf`` would otherwise strip the
-    producer's name from every subsequent call.
+    The structural rules own the old fence's job now: every balance producer is
+    a private ``app.services.balance_at`` submodule, unreachable from outside
+    the seam under W9910 (``shekel-private-module-import``) in every import
+    spelling, so consumers obtain balances through the seam's public entries by
+    construction.  What this checker still enforces, each with its resolving
+    step (see the module docstring): the two genesis posting readers' call
+    surface (W9906, deletes at plan step E1) and the fail-closed classification
+    of new public exports in the balance-ingredient packages W9910 cannot
+    protect (W9909).  The call fence binds at two layers: the call site
+    (:meth:`visit_call`) and the import (:meth:`visit_importfrom`), the latter
+    closing the aliased-import evasion (R3): ``from ... import
+    confirmed_loan_balance_at as bal`` would otherwise strip the producer's
+    name from every subsequent call.
     """
 
     name = "shekel-balance-seam"
     msgs = {
         "W9906": (
-            "Balance producer '%s' called or imported outside the balance_at "
-            "seam; obtain balances through app.services.balance_at instead",
+            "Balance producer '%s' called or imported outside its sanctioned "
+            "modules; obtain balances through app.services.balance_at instead",
             "shekel-balance-producer-bypass",
             "app.services.balance_at is the single seam through which every "
-            "screen must obtain an account's balance over time (balance_map / "
-            "build_maps / balance_at, plus the cash-flow views cash_balance_map "
-            "/ cash_balance_at). Six producers historically answered 'what is "
-            "account A's balance at time T?', and the three recompute-at-read "
-            "kinds (loan, investment, property) each bolted on their own "
-            "pre-first-data-point boundary rule; every new surface re-invented "
-            "that boundary and shipped a balance bug at least once "
-            "(docs/audits/balance_architecture/). The seam centralizes all four "
-            "per-kind rules, so consumers (routes, savings, analytics, "
-            "dashboards) must depend on it, never on a producer directly -- the "
-            "SOLID dependency direction consumers -> seam -> engines. Only the "
-            "seam may call a producer: plan step D1d moved every balance "
-            "producer INSIDE the balance_at package as a private submodule "
-            "(_cash_engine / _calculator / _daily_series / _kernel / "
-            "_investment), so the allowlist is now ONE package boundary. The "
-            "genesis loan-ledger "
-            "readers (confirmed_loan_balance_at / confirmed_loan_balance_map) "
-            "are fenced the same way with a wider allowlist: their defining "
-            "loan_posting_service package and loan_payment_service, whose "
-            "confirmed_loan_view is the read switch's single injection seam. "
-            "The rich projection-detail "
-            "primitives project_balance and resolve_loan "
-            "are NOT producers and are not flagged -- they return "
-            "ProjectedBalance / LoanState detail the seam composes, kept "
-            "callable by the chart and loan-route consumers by design. The "
-            "fence also binds at the import: a non-allowlisted module "
-            "importing a producer by name (from ... import balances_for as "
-            "bf) is flagged at the ImportFrom, closing the aliased-import "
-            "evasion of call-site name matching.",
+            "screen must obtain an account's balance over time; the seam owns "
+            "all four per-kind boundary rules (cash / loan / investment / "
+            "property) in ONE tested place, and every producer lives inside it "
+            "as a private submodule the package-privacy gate W9910 protects "
+            "structurally (docs/audits/balance_architecture/). This message's "
+            "ONE remaining surface (plan step D3) is the pair of genesis "
+            "posting readers (confirmed_loan_balance_at / "
+            "confirmed_loan_balance_map): they answer balance-at-T from the "
+            "WRITE cluster's own table, so they cannot be private to the read "
+            "seam, and only their defining loan_posting_service package and "
+            "loan_payment_service (whose confirmed_loan_view is the read "
+            "switch's single injection seam) may call them. Any other caller "
+            "is re-inventing the read switch. This surface deletes at plan "
+            "step E1, when the resolver's confirmed slice seeds from the walk "
+            "and the readers go package-private. The fence also binds at the "
+            "import: a non-allowlisted module importing a reader by name "
+            "(from ... import confirmed_loan_balance_at as bal) is flagged at "
+            "the ImportFrom, closing the aliased-import evasion of call-site "
+            "name matching.",
         ),
         "W9909": (
             "Public function '%s' in a fenced module is unclassified; add it to "
             "the producer set (it answers balance-at-T) or the non-producer set "
             "(it does not) in shekel_checkers/balance_seam.py",
             "shekel-unclassified-fenced-export",
-            "The W9906 producer lists are keyed on function NAME, which made the "
-            "fence fail OPEN: a new function defined inside an allowlisted "
-            "engine-cluster module was unguarded by default until someone "
-            "remembered to list it. That shipped twice -- "
-            "investment_base_balance_map (Level-1 Commit 10) and "
-            "loan_owed_at_dates (a consumer read it past the seam for a month "
-            "with the fence silent). This check inverts the default: every "
-            "public top-level function in a fenced module (the engine cluster "
-            "that defines balance producers, and the genesis loan-ledger "
-            "_reader) must be explicitly classified as a producer or a "
-            "non-producer, so an unclassified one fails AT ITS DEFINITION rather "
-            "than silently becoming a hole a consumer can reach through. "
-            "Resolve it by deciding what the function IS: if it answers 'what is "
-            "account A's balance at time T' it belongs in the producer set (and "
-            "consumers must reach it through an app.services.balance_at seam "
-            "entry); if it answers something else -- a loader, a classifier, a "
-            "reducer over balances the caller already holds, interest earned -- "
-            "add it to the non-producer set with a comment saying why. If in "
-            "doubt, it is a producer: a false negative is the dangerous mode for "
-            "a fence.",
+            "A name-keyed fence fails OPEN: a new function defined inside a "
+            "covered module is unguarded by default until someone remembers to "
+            "list it. That shipped twice (investment_base_balance_map, "
+            "loan_owed_at_dates -- each read past the seam with the fence "
+            "silent) and was re-measured four more times during Phase D "
+            "(findings N-28 / N-31). This check inverts the default for the "
+            "PUBLIC balance-ingredient packages the package-privacy gate W9910 "
+            "cannot protect (the loan_ledger and loan_posting_service "
+            "packages, the cash_ledger leaf, the loan_resolver tier and its "
+            "loan_resolution seeding module, and the account_projection "
+            "classifier): every public top-level function or public method "
+            "there must be explicitly classified as a producer or a "
+            "non-producer, so an unclassified one fails AT ITS DEFINITION "
+            "rather than silently becoming a hole a consumer can reach "
+            "through. Resolve it by deciding what the function IS: if it "
+            "answers 'what is account A's balance at time T' it belongs "
+            "INSIDE app.services.balance_at as a private submodule (a public "
+            "balance producer outside the seam is not a thing); if it answers "
+            "something else -- a loader, a classifier, a reducer over "
+            "balances the caller already holds, interest earned, schedule "
+            "rows -- add it to its module's non-producer set with a comment "
+            "saying why. If in doubt, it is a producer: a false negative is "
+            "the dangerous mode for a fence.",
         ),
     }
 
@@ -851,10 +702,9 @@ class ShekelBalanceSeamChecker(BaseChecker):
         balance producers from a module NOT in its allowlist is reported.  The
         producer-name check (a frozenset lookup on the called name) runs
         first, so the module-identity walk runs only for an actual producer
-        call.  Two producer sets share the one message: the general balance
-        producers (seam + engine cluster only) and the genesis loan-ledger
-        readers (additionally the defining ``loan_posting_service`` package
-        and the ``loan_payment_service`` view seam -- the read switch's single
+        call.  ONE surface remains since plan step D3: the genesis loan-ledger
+        readers (their defining ``loan_posting_service`` package and the
+        ``loan_payment_service`` view seam -- the read switch's single
         injection point).
         """
         for producers, allowlist in _FENCED_CALL_SURFACES:
@@ -871,17 +721,18 @@ class ShekelBalanceSeamChecker(BaseChecker):
         """Flag importing a fenced producer NAME into a non-allowlisted module.
 
         Call-site name matching alone has one evasion class: an aliased import
-        (``from app.services.balance_at._kernel import build_account_balance_map
-        as calc``) makes every subsequent call read ``calc(...)``, which matches
-        no producer name.  Importing the producer's NAME is therefore fenced at
-        the ``ImportFrom`` itself, aliased or not -- a module outside the
-        allowlist may not call the producer, so it has no legitimate reason to
-        import it.  Module imports (``from app.services.balance_at import
-        _kernel``, plain ``import ...``) are untouched: an attribute
-        call through a module alias keeps the producer's own name at the call
-        site, where :meth:`visit_call` already sees it.  ``node.names`` holds
-        ``(name, alias)`` pairs; each imported name is checked against the same
-        two producer-set/allowlist pairs the call check uses.
+        (``from app.services.loan_posting_service import
+        confirmed_loan_balance_at as bal``) makes every subsequent call read
+        ``bal(...)``, which matches no producer name.  Importing the producer's
+        NAME is therefore fenced at the ``ImportFrom`` itself, aliased or not
+        -- a module outside the allowlist may not call the producer, so it has
+        no legitimate reason to import it.  Module imports (``from app.services
+        import loan_posting_service``, plain ``import ...``) are untouched: an
+        attribute call through a module alias keeps the producer's own name at
+        the call site, where :meth:`visit_call` already sees it.
+        ``node.names`` holds ``(name, alias)`` pairs; each imported name is
+        checked against the same producer-set/allowlist pairs the call check
+        uses.
         """
         for name, _alias in node.names:
             for producers, allowlist in _FENCED_CALL_SURFACES:

@@ -30,11 +30,12 @@ it inherits the scope instead of escaping it.  That is the Section 8 lesson --
 "a fail-CLOSED gate is scoped by module identity, so creating a module is how
 you escape it" -- closed structurally rather than by a literal-string test.
 
-Fence status, stated precisely because the two halves differ.  This package is
-NOT on the W9906 call allowlist: it calls no balance producer, and W9906
-correctly flags it if it ever tries.  It IS scoped for the W9909 completeness
-check, so a new public function in ANY submodule must be classified as a
-producer or a non-producer rather than defaulting to unguarded.  D1a's
+Fence status (post-D3).  This package calls no balance producer -- since plan
+step D3 the producers are private ``balance_at`` submodules, so any attempt to
+reach one fails structurally at the import (W9910).  It IS scoped for the
+W9909 completeness check, so a new public function in ANY submodule must be
+classified as a producer or a non-producer rather than defaulting to
+unguarded.  D1a's
 adversarial review proved that half load-bearing: a cash balance-at-T folded
 from these names touches no fenced NAME, so without the scope it -- and a route
 rendering it -- both rated 10.00/10.
