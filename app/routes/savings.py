@@ -367,7 +367,7 @@ def cockpit_balance(account_id):
     maps the editor's ``revert=accounts`` token here, mirroring how
     ``revert=dashboard`` maps to ``dashboard.balance_section``.  Renders
     ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>`` cell the
-    editor replaced -- with the resolver ``current_balance`` from the
+    editor replaced -- with the seam-derived balance from the
     narrow :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
     producer, so the reverted cell shows the exact figure the grid showed.
 

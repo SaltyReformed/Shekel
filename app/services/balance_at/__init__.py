@@ -13,13 +13,14 @@ place, documented and tested together (the documented-once contract):
   balances are materialized transaction sums carried forward from the
   anchor period; flat-carrying them backward would fabricate balances the
   account never had.
-* **AMORTIZING (loan)** -- the genesis LEDGER for a date at or before today
-  (the only complete record of the past: it books the balance events -- true-ups
-  above all -- that never appear as schedule rows), and the forward schedule
-  projection after.  Periods before the first scheduled payment, and every
-  period of an empty / paid-off schedule, return the resolver's current_balance
-  held flat -- NEVER the loan's original principal (which made the liability
-  leap down the moment the first payment landed).
+* **AMORTIZING (loan)** -- ONE total producer, :func:`positions` (plan C3):
+  the FOLD of the loan's recorded events (anchors + settled payments -- the
+  complete record of the past, true-ups above all) for a date at or before the
+  pass's as-of, and the forward PLAN fold (payment records, then contractual
+  synthesis) after.  A date before any event folds to ``0.00`` (the loan does
+  not exist yet), and a paid-off loan holds its folded ``0.00`` flat -- NEVER
+  the loan's original principal (which made the liability leap down the moment
+  the first payment landed).
 * **INVESTMENT** -- model-from-anchor: the anchor compounded forward at the
   assumed return (plus contributions) for post-anchor periods, and
   reverse-projected backward for pre-anchor periods.

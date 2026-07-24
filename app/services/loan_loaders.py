@@ -310,7 +310,7 @@ def load_loan_params(account_id: int) -> LoanParams | None:
 
     The one-line "is this a configured loan, and if so what are its terms"
     lookup shared by every loan consumer
-    (:func:`app.services.loan_resolution.resolve_account_loan`, the loan
+    (:func:`app.services.loan_resolution.resolve_loan_bundle`, the loan
     PITI resolver, and the fold's
     :func:`app.services.loan_ledger.compute_loan_payment_splits`), so
     none of them re-spells the same query and a future change to how a loan's

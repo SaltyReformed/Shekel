@@ -819,21 +819,14 @@ def _trend_liabilities_value(ctx):
 
 
 def _loan_detail_value(ctx):
-    """Read the loan-detail balance (``resolve_account_loan`` current_balance).
+    """Read the loan-detail balance (the seam scalar the page renders).
 
-    The service-level equivalent of ``GET /accounts/<id>/loan``: the
-    resolver's ``LoanState.current_balance`` as of today, a positive amount
-    owed.
+    The service-level equivalent of ``GET /accounts/<id>/loan``: since plan
+    step C4 the loan detail page reads ``balance_at.balance_at`` (the fold)
+    for its displayed balance, and since D2a the resolver bundle carries no
+    balance at all, so this window reads exactly what the page reads.
     """
-    resolved = loan_resolution.resolve_account_loan(
-        ctx["account_id"], ctx["scenario_id"], date.today(),
-    )
-    assert resolved is not None, (
-        f"resolve_account_loan returned None for loan "
-        f"account_id={ctx['account_id']}"
-    )
-    _params, state = resolved
-    return state.current_balance
+    return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
 
 
 def _property_detail_value(ctx):
@@ -864,20 +857,21 @@ def _loan_schedule_table_value(ctx):
     user beside their most recent real payment.  Since the C11 history read
     switch those confirmed rows are ledger-derived, so this must equal the
     loan card / tile to the penny.  A loan with no confirmed row yet reads
-    the card's ``current_balance`` (an empty table shows no history), keeping
+    the card's seam-folded balance (an empty table shows no history), keeping
     the reader total for the on-schedule kind test too.
     """
-    resolved = loan_resolution.resolve_account_loan(
+    resolved = loan_resolution.resolve_loan_bundle(
         ctx["account_id"], ctx["scenario_id"], date.today(),
     )
     assert resolved is not None, (
-        f"resolve_account_loan returned None for loan "
+        f"resolve_loan_bundle returned None for loan "
         f"account_id={ctx['account_id']}"
     )
-    _params, state = resolved
-    confirmed_rows = [row for row in state.schedule if row.is_confirmed]
+    confirmed_rows = [
+        row for row in resolved.state.schedule if row.is_confirmed
+    ]
     if not confirmed_rows:
-        return state.current_balance
+        return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
     return confirmed_rows[-1].remaining_balance
 
 
@@ -1115,7 +1109,7 @@ class TestLoanCrossPageEquality:
 
         The C8 read switch (plan Section 8) flipped the two SCALAR surfaces --
         the /savings tile (``_compute_loan_account``) and the loan-detail
-        producer (``resolve_account_loan``).  The C9 per-period read switch
+        balance (the ``balance_at`` seam scalar).  The C9 per-period read switch
         (plan Section 9) flipped the two MAP surfaces -- the year-end
         net-worth aggregate and the net-worth-trend liabilities lane, both
         fed by the ``balance_at`` seam's per-period map, spliced from the
@@ -1175,11 +1169,11 @@ class TestLoanCrossPageEquality:
             # nothing has settled since -- the ledger-derived rows make the
             # walk read the REAL balance, equal to today's card, and NOT the
             # replay's scheduled figure.
-            resolved = loan_resolution.resolve_account_loan(
+            resolved = loan_resolution.resolve_loan_bundle(
                 ctx["account_id"], ctx["scenario_id"], date.today(),
             )
             confirmed_rows = [
-                row for row in resolved[1].schedule if row.is_confirmed
+                row for row in resolved.state.schedule if row.is_confirmed
             ]
             assert confirmed_rows, "fixture lost its confirmed payment"
             scalar = _balance_at_scalar_value(
@@ -1386,13 +1380,13 @@ class TestSecuredHomeEquityEquality:
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
             )["current_balance"]
-            resolved = loan_resolution.resolve_account_loan(
-                ctx["mortgage_account_id"], ctx["scenario_id"], date.today(),
+            # The loan-detail balance is the seam scalar the page renders
+            # (plan step C4; the resolver bundle carries no balance since D2a).
+            loan_detail = balance_at.balance_at(
+                ctx["mortgage_account"],
+                BalanceContext.build(ctx["mortgage_account"].user_id),
+                date.today(),
             )
-            assert resolved is not None, "securing mortgage did not resolve"
-            # resolved is (LoanParams, LoanState); the loan-detail balance is
-            # the state's current_balance (index 1).
-            loan_detail = resolved[1].current_balance
 
             # Property leg: market value == the property tile == PV.
             assert equity.market_value == prop_tile == pv, (

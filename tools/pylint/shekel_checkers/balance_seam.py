@@ -27,7 +27,7 @@ from ._common import _called_name_in, _module_in_allowlist
 # ProjectedBalance carrying contribution/growth detail, a different
 # responsibility from a balance map, and the charts compose them legitimately.
 #
-# The LOAN RESOLVER entries (``resolve_account_loan`` / ``resolve_loan_seeded`` /
+# The LOAN RESOLVER entries (``resolve_loan_seeded`` /
 # ``resolve_loan_bundle``) WERE excluded on the same "rich detail, not a balance"
 # reasoning -- and that was the hole. ``LoanState`` bundles the rich detail WITH
 # ``current_balance``, a balance-at-today, and a name-keyed fence cannot see an
@@ -157,7 +157,7 @@ _LOAN_LEDGER_READER_MODULES = frozenset({
 
 # ── The loan RESOLVER entries (W9906) ───────────────────────────────
 #
-# ``LoanState`` bundles rich projection detail (schedule, payment, rate, payoff)
+# ``LoanState`` USED to bundle rich projection detail (schedule, payment, rate)
 # with ``current_balance`` -- a balance-at-TODAY.  The fence binds on function
 # NAMES and cannot see an attribute read, so for as long as any consumer could
 # call these and hold a ``LoanState``, the loan's DISPLAYED balance reached the
@@ -167,13 +167,18 @@ _LOAN_LEDGER_READER_MODULES = frozenset({
 # outside the one tested place, and every gate stayed silent.  They agreed with
 # the seam only because both paths happened to bottom out in the same genesis
 # ledger -- agreement by luck, which is the exact failure signature of the
-# balance-bug family this fence exists to end.
+# balance-bug family this fence exists to end.  Plan step D2a DELETED that
+# field (the seam's readers fold the loan's recorded events instead), so the
+# bundle no longer carries a balance; retiring this surface on that ground is
+# plan step D3's, not a per-edit judgment call.
 #
 # Consumers now take ``balance_at.loan_figures`` (rich detail, deliberately
 # WITHOUT a balance) plus ``balance_at.balance_at`` (the balance), so a consumer
 # holding loan figures cannot render a wrong balance even by accident.
 _LOAN_RESOLVER_PRODUCERS = frozenset({
-    "resolve_account_loan",
+    # ``resolve_account_loan`` came off this set at plan step D2a: the function
+    # was production-dead (its docstring's write/sync callers shed their calls
+    # at C4 / C8a) and was deleted outright, so the entry named nothing.
     "resolve_loan_seeded",
     "resolve_loan_bundle",
 })
@@ -758,7 +763,7 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "loan_posting_service package and loan_payment_service, whose "
             "confirmed_loan_view is the read switch's single injection seam. "
             "The rich projection-detail "
-            "primitives project_balance and resolve_loan / resolve_account_loan "
+            "primitives project_balance and resolve_loan "
             "are NOT producers and are not flagged -- they return "
             "ProjectedBalance / LoanState detail the seam composes, kept "
             "callable by the chart and loan-route consumers by design. The "

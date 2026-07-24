@@ -5,7 +5,7 @@ payment, the current rate, the payoff date, and whether the loan is retired.
 Those are rich projection detail, not a balance-at-T, and the seam has always
 been happy for a consumer to hold them.
 
-What it must NOT hand out is the BALANCE.  ``LoanState.current_balance`` is a
+What it must NOT hand out is the BALANCE.  ``LoanState.current_balance`` was a
 balance-at-today, and the W9906 fence binds on function NAMES -- it cannot see
 an attribute read.  So for as long as consumers held a ``LoanState``, the loan's
 displayed balance reached the screen without passing the seam: the /savings loan
@@ -15,7 +15,9 @@ produced outside the one tested place, and the fence was structurally incapable
 of noticing.  They agreed with the seam only because both paths happened to
 bottom out in the same genesis ledger -- agreement by luck, not by construction,
 which is the exact failure signature of the whole balance-bug family
-(``docs/audits/balance_architecture/``).
+(``docs/audits/balance_architecture/``).  Plan step D2a deleted that field
+outright -- the bundle now carries NO balance for any holder to leak -- and the
+retired predicates below fold the loan's recorded events instead.
 
 :class:`LoanFigures` closes that by CONSTRUCTION rather than by policing: it
 carries no balance, so a consumer holding one cannot render a wrong balance even
@@ -38,6 +40,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.services.loan_resolution import ResolvedLoan
 from ._context import BalanceContext
+from ._fold import fold_from_walk
 
 # The payoff derivation this module INJECTS into the read pass's memo (see
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
@@ -151,9 +154,9 @@ class LoanFigures:
             pays off within its plan (negative amortization, or an underpayment
             too severe to clear the post-contractual extension -- say so; do not
             hide the chip).
-        is_retired: Whether the loan is DONE -- it has ORIGINATED and its
-            LEDGER-confirmed balance is ``<= 0``.  It has no debt line left: no
-            balance now, and nothing scheduled ahead.
+        is_retired: Whether the loan is DONE -- it has ORIGINATED and the fold
+            of its recorded events answers ``<= 0``.  It has no debt line left:
+            no balance now, and nothing scheduled ahead.
 
             THE single definition of "this loan has no debt to draw", which the
             property equity chart drops on.  A loan that has NOT been borrowed yet
@@ -289,8 +292,8 @@ def loan_figures(
     return LoanFigures(
         terms=_terms_from(resolved, ctx.as_of),
         payoff_date=memoized_payoff(account, ctx),
-        is_retired=_is_retired(resolved, ctx.as_of),
-        is_paid_off=_is_paid_off(resolved, ctx.as_of),
+        is_retired=_is_retired(resolved, account, ctx),
+        is_paid_off=_is_paid_off(resolved, account, ctx),
     )
 
 
@@ -313,19 +316,27 @@ def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
     return resolved.params.origination_date <= as_of
 
 
-def _is_retired(resolved: ResolvedLoan, as_of: date) -> bool:
+def _is_retired(
+    resolved: ResolvedLoan, account: Account, ctx: BalanceContext,
+) -> bool:
     """Return whether the loan is DONE -- borrowed, and now owing nothing.
 
     THE one definition of "this loan has no debt line left", shared by
     :attr:`LoanFigures.is_retired` and :func:`_is_paid_off` (which is this plus a
     badging guard), so the seam cannot answer it two ways.
 
-    ``resolved.state.current_balance`` is the ledger-confirmed balance (the read
-    switch seeds it from ``confirmed_loan_balance_at``), so this asks the ONE
-    producer that books what each payment actually paid.
+    The owed figure is the FOLD of the loan's recorded events at the pass's
+    ``as_of`` (:func:`~app.services.balance_at._fold.fold_from_walk` over the
+    read pass's memoized walk) -- the SAME derivation
+    :func:`app.services.balance_at.positions` reads the past through, so this
+    predicate and the balance rendered beside it cannot disagree.  It replaced
+    ``LoanState.current_balance`` (plan step D2a), which for a loan whose
+    posting ledger cannot answer fell back to the money-blind anchor replay --
+    the one place in the seam that could still contradict the folded balance on
+    the same page.
 
     **A loan that has not ORIGINATED is not retired; it has not been taken out.**
-    That guard is load-bearing, not defensive: ``current_balance`` is correctly
+    That guard is load-bearing, not defensive: the fold correctly answers
     ``0.00`` for a loan configured before it closes, so without it an unclosed
     mortgage reads as DONE -- dropped from the debt card, gone from the Horizon's
     liabilities, and erased from the property equity chart, which then draws ten
@@ -334,18 +345,24 @@ def _is_retired(resolved: ResolvedLoan, as_of: date) -> bool:
     Args:
         resolved: The loan's
             :class:`~app.services.loan_resolution.ResolvedLoan`.
-        as_of: The read pass's as-of, against which the loan's origination is
-            tested.
+        account: The loan account, for the pass's memoized walk.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its ``as_of`` is what the origination and the fold are tested
+            against).
 
     Returns:
-        ``True`` when the loan has originated and the ledger says nothing is owed.
+        ``True`` when the loan has originated and its folded events say nothing
+        is owed.
     """
-    if not _is_originated(resolved, as_of):
+    if not _is_originated(resolved, ctx.as_of):
         return False
-    return resolved.state.current_balance <= ZERO_MONEY
+    owed = fold_from_walk(ctx.loan_walk(account), [ctx.as_of])[ctx.as_of]
+    return owed <= ZERO_MONEY
 
 
-def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
+def _is_paid_off(
+    resolved: ResolvedLoan, account: Account, ctx: BalanceContext,
+) -> bool:
     """Return whether the loan is retired AND has a confirmed payment behind it.
 
     Strictly narrower than :func:`_is_retired`, and BUILT ON IT so the two cannot
@@ -374,11 +391,12 @@ def _is_paid_off(resolved: ResolvedLoan, as_of: date) -> bool:
     Args:
         resolved: The loan's
             :class:`~app.services.loan_resolution.ResolvedLoan`.
-        as_of: The read pass's as-of.
+        account: The loan account, threaded to :func:`_is_retired`'s fold.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         ``True`` when the loan is retired and at least one payment is confirmed.
     """
-    if not _is_retired(resolved, as_of):
+    if not _is_retired(resolved, account, ctx):
         return False
     return any(p.is_confirmed for p in resolved.context.payments)

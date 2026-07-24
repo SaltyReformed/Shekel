@@ -50,6 +50,7 @@ from app.services.loan_resolution import ResolvedLoan
 from app.utils.balance_predicates import account_period_scope_clause
 
 from ._context import BalanceContext
+from ._fold import fold_from_walk
 from . import _calculator, _cash_engine, _investment
 
 # The anchor-balance fallback for an account whose ``current_anchor_balance``
@@ -177,21 +178,30 @@ def generate_debt_schedules(
         origination = resolved.params.origination_date
         schedules[account.id] = DebtSchedule(
             schedule=resolved.state.schedule,
-            projection_seed=_projection_seed(resolved, ctx.as_of),
+            projection_seed=_projection_seed(resolved, account, ctx),
             owed_from=origination,
         )
     return schedules
 
 
-def _projection_seed(resolved: ResolvedLoan, as_of: date) -> Decimal:
+def _projection_seed(
+    resolved: ResolvedLoan, account: Account, ctx: "BalanceContext",
+) -> Decimal:
     """Return the balance the loan's forward projection starts from.
 
     See :attr:`DebtSchedule.projection_seed` for the contract.  The fork is the
     loan's own existence:
 
-    * **Originated by *as_of*** -- the resolver's ``current_balance``: the
-      ledger-confirmed present, which is what the projection amortizes down.
-    * **NOT originated yet** -- the resolver correctly reports ``0.00`` owed (the
+    * **Originated by the pass's ``as_of``** -- the FOLD of the loan's recorded
+      events at ``as_of`` (:func:`~app.services.balance_at._fold.fold_from_walk`
+      over the read pass's memoized walk): the confirmed present, which is what
+      the projection amortizes down.  This is the SAME derivation
+      :func:`app.services.balance_at.positions` reads the past through, so the
+      balance a page shows at ``as_of`` and the seed its forward figures start
+      from cannot fork -- including for a loan whose posting ledger cannot
+      answer, which the pre-D2a seed (``LoanState.current_balance``) answered
+      from the money-blind anchor replay while every displayed balance folded.
+    * **NOT originated yet** -- the fold correctly reports ``0.00`` owed (the
       loan does not exist), but the projection still has to know what it will owe
       the day it closes.  That is the loan's OPENING ANCHOR balance -- the same
       fact the genesis walk posts as the ``loan_opening``
@@ -211,13 +221,15 @@ def _projection_seed(resolved: ResolvedLoan, as_of: date) -> Decimal:
 
     Args:
         resolved: The pass's :class:`~app.services.loan_resolution.ResolvedLoan`.
-        as_of: The read pass's as-of (the resolver's NOW).
+        account: The loan account, for the pass's memoized walk.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its ``as_of`` is the resolver's NOW; its walk memo serves the fold).
 
     Returns:
         The projection's seed as a ``Decimal``.
     """
-    if resolved.params.origination_date <= as_of:
-        return resolved.state.current_balance
+    if resolved.params.origination_date <= ctx.as_of:
+        return fold_from_walk(ctx.loan_walk(account), [ctx.as_of])[ctx.as_of]
     opening = next(
         fact for fact in resolved.anchor_facts if fact.is_opening
     )

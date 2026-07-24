@@ -30,7 +30,7 @@ from app.services.balance_at._plan import memoized_plan
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.services.loan_resolution import (
     contractual_schedule_from_origination,
-    resolve_account_loan,
+    resolve_loan_bundle,
 )
 from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
@@ -647,13 +647,19 @@ class TestPropertyEquityChartProducer:
             db.session.commit()
 
             # ONE resolution feeds both the equity hero and the chart (D1).
-            params, state = resolve_account_loan(loan.id, scenario_id, today)
+            resolved = resolve_loan_bundle(loan.id, scenario_id, today)
+            assert resolved is not None, "configured loan must resolve"
+            state = resolved.state
             confirmed = [row for row in state.schedule if row.is_confirmed]
             assert confirmed, "settled payments must produce confirmed history"
             last_confirmed = confirmed[-1]
-            # The resolver guarantee the whole reconciliation rests on: the last
-            # confirmed schedule row IS the current balance the hero nets.
-            assert last_confirmed.remaining_balance == state.current_balance
+            # The loan's balance is the seam's fold (plan step D2a deleted the
+            # resolver's balance field); the reconciliation guarantee is that
+            # the last confirmed schedule row IS that folded balance.
+            fold_balance = balance_at.balance_at(
+                loan, BalanceContext.build(seed_user["user"].id), today,
+            )
+            assert last_confirmed.remaining_balance == fold_balance
 
             # The loan's series comes from the PRODUCTION seam
             # (``balance_at.secured_loan_series``), which is what the property
@@ -667,20 +673,20 @@ class TestPropertyEquityChartProducer:
                 for _balance, tier in series.month_balances.values()
             ), "precondition: this loan has pre-tracking months to estimate"
             equity = home_equity_service.compute_home_equity(
-                _FOUR_HUNDRED_K, [state.current_balance],
+                _FOUR_HUNDRED_K, [fold_balance],
             )
             chart = property_equity_chart.build_property_equity_chart(
                 [series], _FOUR_HUNDRED_K, Decimal("0.03000"), today,
             )
 
             # Reconcile at the LAST CONFIRMED month, found by its label.  No payment
-            # settles between it and today, so the fold holds ``current_balance``
+            # settles between it and today, so the fold holds the balance
             # flat from there to today.
             index = chart.labels.index(
                 last_confirmed.payment_date.strftime("%b %Y"),
             )
             assert chart.debt_tier[index] == "confirmed"
-            assert chart.debt[index] == state.current_balance
+            assert chart.debt[index] == fold_balance
             assert chart.debt[index] == equity.total_debt
             assert chart.equity[index] == equity.equity
             # The last confirmed month is at/before today, so value holds the
@@ -689,12 +695,12 @@ class TestPropertyEquityChartProducer:
 
             # C5 closed the M1 gap: TODAY's month now reconciles too.  The fold
             # values the current month at ``ctx.as_of`` itself (not a projected
-            # month end), so its debt is ``current_balance`` -- the hero's balance
+            # month end), so its debt is the folded balance -- the hero's balance
             # -- and its tier is ``confirmed``, where the pre-C5 schedule-row
             # producer read today's still-projected row one payment below.
             assert index < chart.today_index
             assert chart.debt_tier[chart.today_index] == "confirmed"
-            assert chart.debt[chart.today_index] == state.current_balance
+            assert chart.debt[chart.today_index] == fold_balance
             assert chart.equity[chart.today_index] == equity.equity
 
     def test_debt_span_ends_at_the_derived_payoff(
@@ -915,8 +921,9 @@ class TestPropertyEquityChartProducer:
             # The tracking start -- where the recorded ledger opens -- is the
             # resolved schedule's first month, the same boundary the seam clips the
             # back-projection at.
-            _params, state = resolve_account_loan(loan.id, scenario_id, today)
-            tracking_start = state.schedule[0].payment_date
+            resolved = resolve_loan_bundle(loan.id, scenario_id, today)
+            assert resolved is not None, "configured loan must resolve"
+            tracking_start = resolved.state.schedule[0].payment_date
 
             # Re-derive the expected pre-tracking rows from the same contractual
             # producer the seam feeds in, clipped to the months before tracking

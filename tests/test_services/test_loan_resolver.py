@@ -37,9 +37,12 @@ from app.services.loan_resolver import (
     compute_payoff_scenarios,
     current_rate_baseline,
     resolve_loan,
+    resolve_periods,
 )
+from app.services.loan_resolver._periods import _replay_from_anchor
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.dates import add_months
+from app.utils.money import round_money
 
 
 def _loan_resolver_package_source() -> str:
@@ -161,6 +164,21 @@ def _rate_feed(
     if rate_changes:
         feed.extend(rate_changes)
     return feed
+
+
+def _replay_balance(inputs: LoanInputs, as_of: date) -> Decimal:
+    """Return the anchor + confirmed-payment replay balance for *inputs*.
+
+    The window the deleted ``LoanState.current_balance`` carried (plan step
+    D2a): the same production derivation one level down
+    (:func:`app.services.loan_resolver._periods._replay_from_anchor`, which
+    still seeds the schedule composer's starting state on the unseeded path),
+    so every hand-computed pin below keeps its value while the resolver's
+    public bundle carries no balance.  Rounded to the cent exactly as the
+    deleted field was.
+    """
+    periods = resolve_periods(inputs.loan_params, inputs.rate_changes)
+    return round_money(_replay_from_anchor(inputs, periods, as_of).balance_as_of)
 
 
 # -- C13-1 -- ARM payment constant across the fixed-rate window -------------
@@ -349,12 +367,9 @@ def test_confirmed_payment_reduces_balance():
         is_confirmed=True,
     )
 
-    state = resolve_loan(
-        LoanInputs(params, [anchor], [payment], _rate_feed(params)),
-        date(2026, 3, 1),
-    )
+    inputs = LoanInputs(params, [anchor], [payment], _rate_feed(params))
 
-    assert state.current_balance == Decimal("299701.35")
+    assert _replay_balance(inputs, date(2026, 3, 1)) == Decimal("299701.35")
 
 
 # -- C13-4 -- projected payment is not replayed -----------------------------
@@ -382,14 +397,11 @@ def test_projected_payment_not_replayed():
         is_confirmed=False,
     )
 
-    state = resolve_loan(
-        LoanInputs(params, [anchor], [projected], _rate_feed(params)),
-        date(2026, 3, 1),
-    )
+    inputs = LoanInputs(params, [anchor], [projected], _rate_feed(params))
 
-    # No confirmed payments; balance equals the anchor balance
+    # No confirmed payments; the replay balance equals the anchor balance
     # (= original_principal for the Commit-12 origination anchor).
-    assert state.current_balance == Decimal("300000.00")
+    assert _replay_balance(inputs, date(2026, 3, 1)) == Decimal("300000.00")
 
 
 def test_projected_overpayment_routes_into_the_forward_schedule():
@@ -423,10 +435,10 @@ def test_projected_overpayment_routes_into_the_forward_schedule():
         is_confirmed=False,
     )
 
-    planned = resolve_loan(
-        LoanInputs(params, [anchor], [projected_overpay], _rate_feed(params)),
-        date(2026, 1, 15),
+    planned_inputs = LoanInputs(
+        params, [anchor], [projected_overpay], _rate_feed(params),
     )
+    planned = resolve_loan(planned_inputs, date(2026, 1, 15))
     contractual = resolve_loan(
         LoanInputs(params, [anchor], [], _rate_feed(params)),
         date(2026, 1, 15),
@@ -441,9 +453,9 @@ def test_projected_overpayment_routes_into_the_forward_schedule():
     # The projected outlay rides the March forward row; without it, contractual.
     assert _march(planned).payment == Decimal("2500.00")
     assert _march(contractual).payment == Decimal("1798.65")
-    # A projected payment never reduces the balance -- it stays the origination
-    # anchor (C13-4 invariant), even though it now shapes the forward schedule.
-    assert planned.current_balance == Decimal("300000.00")
+    # A projected payment never reduces the balance -- the replay stays at the
+    # origination anchor (C13-4 invariant), even though it shapes the schedule.
+    assert _replay_balance(planned_inputs, date(2026, 1, 15)) == Decimal("300000.00")
 
 
 # -- C13-5 -- fixed-rate, three confirmed payments --------------------------
@@ -478,12 +490,9 @@ def test_fixed_rate_replays_from_origination_anchor():
         PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
     ]
 
-    state = resolve_loan(
-        LoanInputs(params, [anchor], payments, _rate_feed(params)),
-        date(2026, 5, 1),
-    )
+    inputs = LoanInputs(params, [anchor], payments, _rate_feed(params))
 
-    assert state.current_balance == Decimal("299099.57")
+    assert _replay_balance(inputs, date(2026, 5, 1)) == Decimal("299099.57")
 
 
 # -- C13-6 -- trueup anchor resets the replay -------------------------------
@@ -536,17 +545,14 @@ def test_anchor_trueup_resets_replay():
         PaymentRecord(date(2026, 5, 1), monthly_due_date(date(2026, 5, 1), 1), Decimal("1798.65"), True),
     ]
 
-    state = resolve_loan(
-        LoanInputs(
-            params,
-            [origination_anchor, trueup_anchor],
-            payments,
-            _rate_feed(params),
-        ),
-        date(2026, 6, 1),
+    inputs = LoanInputs(
+        params,
+        [origination_anchor, trueup_anchor],
+        payments,
+        _rate_feed(params),
     )
 
-    assert state.current_balance == Decimal("249451.35")
+    assert _replay_balance(inputs, date(2026, 6, 1)) == Decimal("249451.35")
 
 
 def test_payment_due_after_trueup_replays_though_pay_period_started_before():
@@ -599,20 +605,18 @@ def test_payment_due_after_trueup_replays_though_pay_period_started_before():
         PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), Decimal("1798.65"), True),
     ]
 
-    state = resolve_loan(
-        LoanInputs(
-            params,
-            [origination_anchor, trueup_anchor],
-            payments,
-            _rate_feed(params),
-        ),
-        date(2026, 6, 2),
+    inputs = LoanInputs(
+        params,
+        [origination_anchor, trueup_anchor],
+        payments,
+        _rate_feed(params),
     )
 
     # The 06-01 payment reduced the balance; the card is NOT frozen at the
     # anchor (the bug) and the two pre-trueup payments did not double-count.
-    assert state.current_balance == Decimal("176920.33")
-    assert state.current_balance != trueup_anchor.anchor_balance
+    replayed = _replay_balance(inputs, date(2026, 6, 2))
+    assert replayed == Decimal("176920.33")
+    assert replayed != trueup_anchor.anchor_balance
 
 
 # -- C13-7 -- rate change after window applied ------------------------------
@@ -757,14 +761,12 @@ def test_zero_rate_loan_payment_is_principal_over_n():
     )
     anchor = _origination_anchor(params)
 
-    state = resolve_loan(
-        LoanInputs(params, [anchor], None, _rate_feed(params)),
-        date(2026, 2, 1),
-    )
+    inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
+    state = resolve_loan(inputs, date(2026, 2, 1))
 
     assert state.monthly_payment == Decimal("1000.00")
     # Balance unchanged with no confirmed payments.
-    assert state.current_balance == Decimal("12000.00")
+    assert _replay_balance(inputs, date(2026, 2, 1)) == Decimal("12000.00")
 
 
 # -- C13-11 -- payoff date and total_interest -------------------------------
@@ -894,14 +896,11 @@ def test_latest_anchor_breaks_tie_by_created_at():
                    + timedelta(seconds=5),
     )
 
-    state = resolve_loan(
-        LoanInputs(params, [earlier, later], None, _rate_feed(params)),
-        date(2026, 7, 1),
-    )
+    inputs = LoanInputs(params, [earlier, later], None, _rate_feed(params))
 
     # Latest anchor's balance is returned (no confirmed payments
     # to replay forward from it).
-    assert state.current_balance == Decimal("275000.00")
+    assert _replay_balance(inputs, date(2026, 7, 1)) == Decimal("275000.00")
 
 
 def test_loan_state_is_frozen():
@@ -921,7 +920,7 @@ def test_loan_state_is_frozen():
 
     with pytest.raises(AttributeError):
         # Type-checked at runtime by @dataclass(frozen=True).
-        state.current_balance = Decimal("0")  # type: ignore[misc]
+        state.monthly_payment = Decimal("0")  # type: ignore[misc]
 
 
 def test_arm_trueup_does_not_change_payment():
@@ -950,26 +949,18 @@ def test_arm_trueup_does_not_change_payment():
     )
 
     # Resolve at two as_of dates past the trueup.
-    state_a = resolve_loan(
-        LoanInputs(
-            params, [origination_anchor, trueup_anchor], None,
-            _rate_feed(params),
-        ),
-        date(2028, 6, 1),
+    inputs = LoanInputs(
+        params, [origination_anchor, trueup_anchor], None,
+        _rate_feed(params),
     )
-    state_b = resolve_loan(
-        LoanInputs(
-            params, [origination_anchor, trueup_anchor], None,
-            _rate_feed(params),
-        ),
-        date(2030, 6, 1),
-    )
+    state_a = resolve_loan(inputs, date(2028, 6, 1))
+    state_b = resolve_loan(inputs, date(2030, 6, 1))
 
     # Payment unchanged by the true-up: the origination-period level P&I.
     assert state_a.monthly_payment == Decimal("2398.20")
     assert state_a.monthly_payment == state_b.monthly_payment
     # The true-up DID move the balance (no confirmed payments after it).
-    assert state_a.current_balance == Decimal("380000.00")
+    assert _replay_balance(inputs, date(2028, 6, 1)) == Decimal("380000.00")
 
 
 def test_arm_second_period_uses_recorded_recast_held_constant():
@@ -2195,18 +2186,21 @@ class TestConfirmedLedgerView:
         )
         return params, _origination_anchor(params)
 
-    def test_resolve_loan_seed_overrides_balance_and_projection(self):
-        """A seed overrides current_balance AND the projection, not the payment.
+    def test_resolve_loan_seed_overrides_the_projection_not_the_payment(self):
+        """A seed overrides the forward projection's start, not the payment.
 
-        The origination anchor puts the un-seeded balance at the full $300,000.
+        The origination anchor puts the un-seeded replay at the full $300,000.
         Seeding $290,000 (a $10,000 lower confirmed balance, as an off-schedule
-        paydown would leave) makes ``current_balance`` exactly the seed, and the
-        forward projection amortizes the seed: at $1,798.65 contractual P&I and
-        0.5% monthly interest the first projected row pays
-        1,798.65 - round(290000 * 0.005)=1,450.00 -> 348.65 of principal, leaving
-        289,651.35 (vs 299,701.35 un-seeded: 300000 - (1798.65 - 1500.00)).  The
-        seed is balance-only: the rate-period-derived payment and rate do not
-        move, while the lower balance pays off sooner with less total interest.
+        paydown would leave) makes the forward projection amortize the seed: at
+        $1,798.65 contractual P&I and 0.5% monthly interest the first projected
+        row pays 1,798.65 - round(290000 * 0.005)=1,450.00 -> 348.65 of
+        principal, leaving 289,651.35 (vs 299,701.35 un-seeded:
+        300000 - (1798.65 - 1500.00)).  The seed is projection-only: the
+        rate-period-derived payment and rate do not move, while the lower
+        balance pays off sooner with less total interest.  (The seed's old
+        second job -- the headline ``current_balance`` -- was deleted at plan
+        step D2a: the bundle carries no balance, and the seam folds one from
+        the loan's recorded events.)
         """
         params, anchor = self._fixed_300k()
         loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
@@ -2216,11 +2210,7 @@ class TestConfirmedLedgerView:
         )
         unseeded = resolve_loan(loan_inputs, self.AS_OF)
 
-        # Headline: the seed IS the current balance; None keeps the anchor replay.
-        assert seeded.current_balance == self.SEED
-        assert unseeded.current_balance == Decimal("300000.00")
-
-        # Forward projection seeds from the same value (first projected row).
+        # Forward projection seeds from the view's balance (first projected row).
         assert seeded.schedule[0].remaining_balance == Decimal("289651.35")
         assert unseeded.schedule[0].remaining_balance == Decimal("299701.35")
 

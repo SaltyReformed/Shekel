@@ -53,10 +53,9 @@ def _spliced_owed_series(
     ``abs`` is applied to the projected value for the same reason it is applied
     to *current*: this view's contract is a POSITIVE owed magnitude at every
     date.  A schedule row's ``remaining_balance`` is non-negative, but the
-    empty / paid-off fallback is the resolver's ``current_balance``, which has no
-    zero floor (an overpaid payoff resolves negative) -- so without this an
-    overpaid loan would ADD its overpayment to the liability band today and
-    SUBTRACT it at every future point.
+    folded balance has no zero floor (an overpaid payoff folds negative) -- so
+    without this an overpaid loan would ADD its overpayment to the liability
+    band today and SUBTRACT it at every future point.
 
     Args:
         sample_dates: The dates to build the series over (the output order).

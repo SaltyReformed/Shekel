@@ -42,6 +42,8 @@ from app.services import (
     savings_dashboard_service,
     transfer_service,
 )
+from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.money import round_money
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -160,6 +162,30 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
     db.session.expire_all()
 
 
+def _replay_window(account_id, loan_params, ctx):
+    """Return the anchor + confirmed-payment replay balance as of today.
+
+    The sanity-floor window the deleted ``LoanState.current_balance`` carried
+    (plan step D2a): the same production derivation one level down
+    (``_replay_from_anchor``, which still seeds the schedule composer's
+    starting state), so the hand-computed pins keep their values while the
+    display surfaces under test read the seam.
+    """
+    del account_id  # identity carried by loan_params; kept for call clarity
+    inputs = loan_resolver.LoanInputs(
+        loan_params,
+        loan_loaders.load_loan_anchor_facts(loan_params),
+        ctx.payments,
+        ctx.rate_changes,
+    )
+    periods = loan_resolver.resolve_periods(
+        inputs.loan_params, inputs.rate_changes,
+    )
+    return round_money(
+        _replay_from_anchor(inputs, periods, date.today()).balance_as_of
+    )
+
+
 def _loan_card_principal(auth_client, account_id):
     """Extract the loan detail band's owed balance from the dashboard HTML.
 
@@ -223,8 +249,8 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
 
     Fresh fixed-rate mortgage with one origination event and zero
     confirmed payments.  Both display surfaces must show
-    ``$300,000.00`` exactly -- the resolver's
-    ``state.current_balance`` for ``as_of = date.today()``.
+    ``$300,000.00`` exactly -- the seam-folded balance for
+    ``as_of = date.today()`` (the anchor replay agrees, the sanity floor).
 
     Pre-Commit-15 this would have rendered the stored
     ``LoanParams.current_principal`` ($300,000) on the loan card and
@@ -242,18 +268,10 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         ctx = loan_payment_service.load_loan_context(
             account.id, seed_user["scenario"].id, loan_params,
         )
-        resolver_state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                loan_params,
-                loan_loaders.load_loan_anchor_facts(loan_params),
-                ctx.payments,
-                ctx.rate_changes,
-            ),
-            date.today(),
-        )
-        assert resolver_state.current_balance == FIXED_PRINCIPAL, (
-            f"Sanity floor: resolver should report {FIXED_PRINCIPAL} "
-            f"for a fresh loan, got {resolver_state.current_balance}."
+        replayed = _replay_window(account.id, loan_params, ctx)
+        assert replayed == FIXED_PRINCIPAL, (
+            f"Sanity floor: the anchor replay should report {FIXED_PRINCIPAL} "
+            f"for a fresh loan, got {replayed}."
         )
 
         card_balance = _loan_card_principal(auth_client, account.id)
@@ -298,28 +316,21 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
         ctx = loan_payment_service.load_loan_context(
             account.id, scenario_id, loan_params,
         )
-        resolver_state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                loan_params,
-                loan_loaders.load_loan_anchor_facts(loan_params),
-                ctx.payments,
-                ctx.rate_changes,
-            ),
-            date.today(),
-        )
-        assert resolver_state.current_balance == BALANCE_AFTER_ONE_SETTLE
+        assert _replay_window(
+            account.id, loan_params, ctx,
+        ) == BALANCE_AFTER_ONE_SETTLE
 
         # F-008 / F-015 / F-016 / symptom #5 re-pin: loan card display
-        # equals the resolver's current_balance, not the stored
+        # equals the seam-folded balance, not the stored
         # ``current_principal`` column.  Arithmetic above; same Decimal
-        # the resolver returns.
+        # the replay window reports.
         card_balance = _loan_card_principal(auth_client, account.id)
         assert card_balance == BALANCE_AFTER_ONE_SETTLE, (
             f"Loan card displayed {card_balance}, expected "
             f"{BALANCE_AFTER_ONE_SETTLE} (resolver-derived)."
         )
 
-        # /savings debt card: total_debt sums resolver current_balance
+        # /savings debt card: total_debt sums the seam-folded balances
         # across loan accounts.  Single loan, so total == card balance.
         debt_balance = _savings_debt_card_total_debt(seed_user["user"].id)
         assert debt_balance == BALANCE_AFTER_ONE_SETTLE, (

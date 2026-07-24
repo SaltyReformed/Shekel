@@ -1017,17 +1017,24 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             load_loan_anchor_facts, load_loan_params,
         )
         from app.services.loan_payment_service import load_loan_context
+        from app.services.loan_resolver._periods import _replay_from_anchor
+        from app.utils.money import round_money
 
         params = load_loan_params(acct.id)
         loan_ctx = load_loan_context(acct.id, scenario_id, params)
-        state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                params, load_loan_anchor_facts(params),
-                loan_ctx.payments, loan_ctx.rate_changes,
-            ),
-            date.max,
+        inputs = loan_resolver.LoanInputs(
+            params, load_loan_anchor_facts(params),
+            loan_ctx.payments, loan_ctx.rate_changes,
         )
-        return state.current_balance == Decimal("0.00")
+        # The replay derivation directly (``LoanState.current_balance`` carried
+        # it until plan step D2a deleted the field): the same money-blind
+        # schedule-step probe the retired ``_loan_ever_paid_off`` ran.
+        replayed = round_money(_replay_from_anchor(
+            inputs,
+            loan_resolver.resolve_periods(params, inputs.rate_changes),
+            date.max,
+        ).balance_as_of)
+        return replayed == Decimal("0.00")
 
     def test_off_schedule_payoff_needs_no_trueup_band_aid(
         self, app, db, seed_user, seed_periods_today,

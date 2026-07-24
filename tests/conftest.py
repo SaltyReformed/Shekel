@@ -1638,16 +1638,21 @@ def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     # the convention every helper in this conftest follows.
     # pylint: disable=import-outside-toplevel
     from app.services import loan_loaders, loan_payment_service, loan_resolver
+    from app.services.loan_resolver._periods import _replay_from_anchor
+    from app.utils.money import round_money
 
     params = loan_loaders.load_loan_params(loan_id)
     ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
-    return loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            params, loan_loaders.load_loan_anchor_facts(params),
-            ctx.payments, ctx.rate_changes,
-        ),
-        as_of,
-    ).current_balance
+    inputs = loan_resolver.LoanInputs(
+        params, loan_loaders.load_loan_anchor_facts(params),
+        ctx.payments, ctx.rate_changes,
+    )
+    # The replay derivation directly: ``LoanState.current_balance`` carried it
+    # until plan step D2a deleted the field (the seam folds displayed balances).
+    periods = loan_resolver.resolve_periods(params, inputs.rate_changes)
+    return round_money(
+        _replay_from_anchor(inputs, periods, as_of).balance_as_of
+    )
 
 
 @pytest.fixture()
@@ -1660,8 +1665,8 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     split) and its one confirmed payment pays cash far above the scheduled P&I,
     so the REAL principal it books down diverges from the schedule replay.  The
     read switch (plan Section 8) makes the SCALAR surfaces -- the /savings tile
-    (``_compute_loan_account``) and the loan-detail producer
-    (``resolve_account_loan``) -- read that real ledger balance, NOT the replay.
+    (``_compute_loan_account``) and the loan-detail page (the ``balance_at``
+    seam scalar since plan C4) -- read that real ledger balance, NOT the replay.
 
     Returns the reader-shaped ctx plus ``ledger`` (the genesis reader's balance,
     what the surfaces must now show) and ``replay`` (the un-seeded resolver's

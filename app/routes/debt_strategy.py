@@ -97,9 +97,9 @@ def _load_debt_accounts(user_id):
     """Load all active debt accounts with loan parameters for a user.
 
     Queries accounts where the account type has ``has_amortization=True``,
-    runs the loan resolver (E-18 / Commit 13) for each, and builds
-    :class:`DebtAccount` instances from the resolver state.  The same
-    ``current_balance`` / ``monthly_payment`` figures appear on the
+    reads each loan's terms and its seam-folded balance through ONE
+    ``BalanceContext`` pass, and builds :class:`DebtAccount` instances from
+    them.  The same balance / ``monthly_payment`` figures appear on the
     loan card, /savings debt card, and net-worth liability, so the
     strategy comparison cannot diverge from the per-loan displays
     (E-18 / Commit 15).

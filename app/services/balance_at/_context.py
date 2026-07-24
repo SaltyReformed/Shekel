@@ -197,15 +197,17 @@ class BalanceContext:
         test is ``in self._loans`` and not a truthiness check on the value.
 
         **FENCED (W9906), and named so it CAN be.**  A :class:`ResolvedLoan`
-        reaches ``state.current_balance`` -- a balance-at-today -- in one
-        attribute read, so handing one to a route puts a loan balance on a screen
+        REACHED ``state.current_balance`` -- a balance-at-today -- in one
+        attribute read, so handing one to a route put a loan balance on a screen
         without passing the seam.  That is the hole this method WAS: it was called
         ``loan``, a name too generic to fence (``_called_name_in`` matches a
         call's attribute name, and ``.loan`` collides with unrelated code), so the
         checker could not see it and a route reading
         ``ctx.loan(account).state.current_balance`` rated 10.00/10 -- measured, on
         this codebase, before the rename.  The distinctive name is what makes the
-        fence bind.
+        fence bind.  Plan step D2a then DELETED the field itself (the bundle
+        carries schedule detail, no balance), so the fence's reason is gone;
+        retiring the surface is plan step D3's.
 
         Only the seam (:mod:`app.services.balance_at`) and the kernel cluster it
         composes may call it.  A consumer that wants a loan's rich figures takes

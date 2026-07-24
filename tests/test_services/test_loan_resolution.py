@@ -85,7 +85,7 @@ class TestContractualScheduleFromOrigination:
     ):
         """The producer seeds from origination even when a tracking-start exists.
 
-        ``resolve_account_loan`` opens a mid-life-imported loan at its
+        ``resolve_loan_bundle`` opens a mid-life-imported loan at its
         tracking-start balance; this producer must NOT -- it is the
         from-origination contractual reference the chart back-projects the
         pre-tracking months with.  Adding a tracking-start opening (recent, below

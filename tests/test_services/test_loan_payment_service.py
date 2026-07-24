@@ -1037,5 +1037,9 @@ class TestReadSwitchSeedHelpers:
             )
             unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
 
-            assert seeded.current_balance == unseeded.current_balance
-            assert seeded.current_balance > Decimal("0.00")
+            # The whole state is identical -- STRONGER than the old single
+            # current_balance equality (that field died at plan step D2a): a
+            # wrong fallback seed would move the schedule's forward rows.
+            assert seeded == unseeded
+            assert seeded.schedule, "resolver produced no schedule rows"
+            assert seeded.schedule[0].remaining_balance > Decimal("0.00")

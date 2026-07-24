@@ -40,7 +40,7 @@ Rules implemented:
   tested place; a consumer re-inventing that boundary is how the
   loan/investment balance-bug family kept recurring across files for months
   (``docs/audits/balance_architecture/``). The rich projection-detail
-  primitives ``project_balance`` and ``resolve_loan`` / ``resolve_account_loan``
+  primitives ``project_balance`` and ``resolve_loan``
   are NOT producers (they return ProjectedBalance / LoanState detail the seam
   composes) and stay callable by the chart and loan-route consumers.
 * ``shekel-unclassified-fenced-export`` (W9909, :mod:`.balance_seam`): the

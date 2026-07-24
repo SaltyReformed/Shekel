@@ -7,7 +7,7 @@ payment preparation utilities (escrow subtraction, biweekly
 redistribution), a unified data-loading function (load_loan_context)
 shared by all consumers of amortization schedules, and the read-switch
 ledger-view builder (confirmed_loan_view).  The resolver-seeding wrappers that
-read that view -- resolve_loan_seeded / resolve_account_loan -- live in
+read that view -- resolve_loan_seeded / resolve_loan_bundle -- live in
 app.services.loan_resolution (they compose these loaders with the pure
 resolver); this module does not import that one, so there is no cycle.
 

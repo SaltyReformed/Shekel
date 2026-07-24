@@ -645,7 +645,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
     of the payment ALREADY debits the extra from checking, the contractual
     liability made projected net worth wrong.
 
-    This pins the fix: the summary seam (``resolve_account_loan``) and the
+    This pins the fix: the summary seam (``resolve_loan_bundle``) and the
     year-end debt aggregation must report the SAME payoff and life-of-loan
     interest as the committed detail trajectory.  The sibling
     ``test_arm_payoff_date_consistent_across_surfaces`` locks the no-payment case
@@ -702,13 +702,13 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             "vacuous (contractual == committed)."
         )
 
-        # Summary seam: net worth, year-end, and debt-strategy all resolve a
-        # debt account through resolve_account_loan.
-        resolved = loan_resolution.resolve_account_loan(
+        # Summary seam: every summary surface resolves a debt account through
+        # the one memoized bundle (resolve_loan_bundle).
+        resolved = loan_resolution.resolve_loan_bundle(
             account.id, scenario_id, today,
         )
         assert resolved is not None
-        _params, state = resolved
+        state = resolved.state
         summary_payoff = (
             state.schedule[-1].payment_date if state.schedule else None
         )

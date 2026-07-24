@@ -6345,12 +6345,14 @@ class TestRefinanceForwardOnlyBaseline:
             total_interest_accelerated=Decimal("250.00"),
         )
         state = LoanState(
-            current_balance=Decimal("99000.00"),
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
             schedule=confirmed + committed_forward,
             total_interest=Decimal("1247.50"),
         )
+        # The balance the route threads in explicitly (C4); a LoanState field
+        # until plan step D2a deleted it (the route reads the seam's fold).
+        current_balance = Decimal("99000.00")
         # The route context stand-in.  ``_build_refinance_comparison`` reads only
         # ``monthly_payment`` and ``payoff_date`` off it, and since plan C8d the
         # payoff is the seam's DERIVED figure carried on the route context, not a
@@ -6373,7 +6375,7 @@ class TestRefinanceForwardOnlyBaseline:
         # ``route_ctx`` stands in for the route context's monthly_payment /
         # payoff_date.
         comparison = _build_refinance_comparison(
-            state.current_balance, route_ctx, scenarios, data, params,
+            current_balance, route_ctx, scenarios, data, params,
         )
 
         # Current side reads the CONTRACTUAL original_forward: 2 months,

@@ -20,7 +20,7 @@ import back, so there is no cycle.
 It also hosts one PURE (no-I/O) producer, :func:`contractual_schedule_from_origination`:
 the property equity chart's from-origination contractual schedule, which seeds the
 same resolver composer with a synthesized origination anchor instead of a confirmed
-view.  It lives here beside :func:`resolve_account_loan` because it too composes the
+view.  It lives here beside :func:`resolve_loan_bundle` because it too composes the
 loaders' anchor synthesis with the pure resolver; the caller supplies its one loaded
 input (the rate-change feed), so the function itself stays I/O-free.
 """
@@ -79,8 +79,10 @@ class ResolvedLoan:
             -- "has this loan ever had a confirmed payment?" above all -- and
             re-loading it was one of the redundant resolutions.
         state: The resolved :class:`~app.services.loan_resolver.LoanState` as of
-            the context's ``as_of``: the genesis-ledger confirmed balance, the
-            committed (plan-aware) schedule, the payment, rate, and payoff.
+            the context's ``as_of``: the committed (plan-aware) schedule, the
+            payment, the rate, and the life-of-loan interest.  No balance and no
+            payoff -- the ``balance_at`` seam derives both from the fold (plan
+            steps C8d / D2a).
         extra_principal: The loan's standing monthly overpayment
             (:func:`~app.services.recurring_transfer_query.loan_standing_extra_for_account`),
             loaded ONCE here and threaded into :func:`resolve_loan_seeded` so
@@ -113,12 +115,14 @@ def resolve_loan_seeded(
     into the pure resolver:
 
     * The genesis-ledger confirmed view (:func:`confirmed_loan_view`, loaded
-      here): its balance overrides BOTH the headline balance and the forward
-      projection's seed, and its ledger-derived rows become the schedule's
-      confirmed slice, so the balance, the history, and the projection cannot
-      desync off-schedule.  When the ledger cannot answer (``None`` -- a loan it
-      has not opened, or one that has not originated by *as_of*) the resolver
-      falls back to its anchor replay, the pre-switch behaviour.
+      here): its balance seeds the schedule composer's forward starting
+      balance, and its ledger-derived rows become the schedule's confirmed
+      slice, so the history and the projection cannot desync off-schedule.
+      When the ledger cannot answer (``None`` -- a loan it has not opened, or
+      one that has not originated by *as_of*) the composer falls back to its
+      anchor replay, the pre-switch behaviour.  The loan's displayed BALANCE
+      is not derived here at all (plan step D2a): the ``balance_at`` seam
+      folds it from the loan's recorded events.
     * The loan's standing overpayment (``extra_principal``, loaded by the
       caller): applied to every forward month so ``LoanState``'s schedule,
       payoff, and interest are the COMMITTED (plan-aware) trajectory every
@@ -163,10 +167,9 @@ def resolve_loan_bundle(
     The single db-facing loan read the whole app resolves through: it loads the
     loan's params, anchor facts, and context, runs
     :func:`resolve_loan_seeded`, and returns all four bundled as a
-    :class:`ResolvedLoan`.  :func:`resolve_account_loan` is a thin projection of
-    it, and :class:`~app.services.balance_at.BalanceContext` memoizes it
-    per ``(account, scenario, as_of)`` so a read pass resolves each loan exactly
-    once no matter how many surfaces ask.
+    :class:`ResolvedLoan`.  :class:`~app.services.balance_at.BalanceContext`
+    memoizes it per ``(account, scenario, as_of)`` so a read pass resolves each
+    loan exactly once no matter how many surfaces ask.
 
     Returning the loaded ``context`` alongside the ``state`` is what removes the
     last reason for a consumer to re-load: the loan tile previously called
@@ -218,45 +221,6 @@ def resolve_loan_bundle(
     )
 
 
-def resolve_account_loan(
-    account_id: int, scenario_id: int, today: date
-) -> tuple[LoanParams, loan_resolver.LoanState] | None:
-    """Load a debt account's ``LoanParams`` and run the resolver as of ``today``.
-
-    The ``(params, state)`` PROJECTION of :func:`resolve_loan_bundle` -- the
-    narrow view the write / sync paths want (the recurrence-sync writer, the
-    transfer posting sync), which need the params and the resolved state but
-    not the loaded payment feed.  It performs no load of its own, so it cannot
-    drift from the bundle every READ surface resolves through: both are one
-    resolution, seeded from the genesis ledger via :func:`resolve_loan_seeded`.
-
-    A READ surface should NOT call this: it resolves the loan afresh on every
-    call, which is how one ``/savings`` render came to run the resolver eleven
-    times for two loans.  Read surfaces ask the seam
-    (:func:`app.services.balance_at.loan_state`), whose
-    :class:`~app.services.balance_at.BalanceContext` memoizes the bundle
-    for the read pass.
-
-    Returns ``None`` when the account has no ``LoanParams`` row (it is not a
-    configured loan); the caller skips it.
-
-    Args:
-        account_id: The debt account to resolve.
-        scenario_id: The active budget scenario (for payment history and the
-            ledger seed scope).
-        today: The as-of date passed through to the resolver.
-
-    Returns:
-        ``(params, state)`` -- the loaded :class:`LoanParams` and the
-        resolved :class:`~app.services.loan_resolver.LoanState` -- or
-        ``None`` if the account has no ``LoanParams``.
-    """
-    resolved = resolve_loan_bundle(account_id, scenario_id, today)
-    if resolved is None:
-        return None
-    return resolved.params, resolved.state
-
-
 def contractual_schedule_from_origination(
     loan_params: LoanParams,
     rate_changes: list[RateChangeRecord] | None,
@@ -267,7 +231,7 @@ def contractual_schedule_from_origination(
     back-projection,
     ``docs/plans/implementation_plan_property_equity_chart_rebuild.md``): a
     mid-life-imported loan's confirmed ledger opens at its ``tracking_start``, so
-    :func:`resolve_account_loan`'s schedule begins there and the
+    :func:`resolve_loan_bundle`'s schedule begins there and the
     origination-to-tracking-start months are absent.  This producer supplies
     them as the contractual schedule the loan's origination terms imply
     (``original_principal`` amortized over ``term_months`` at the rate-period

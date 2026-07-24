@@ -58,6 +58,8 @@ from app.services import (
     loan_resolver,
     transfer_service,
 )
+from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.money import round_money
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
@@ -221,28 +223,32 @@ def _income_shadow(transfer_id: int, loan_account_id: int) -> Transaction:
 def _resolve_balance(
     account_id: int, loan_params, scenario_id: int, as_of: date,
 ) -> Decimal:
-    """Load the resolver inputs and return the current_balance Decimal.
+    """Load the resolver inputs and return the anchor-replay balance.
 
-    Mirrors the production consumer path (``loan_resolution.resolve_loan_bundle``):
-    load the anchor FACTS via :func:`loan_loaders.load_loan_anchor_facts` (the
+    The window the deleted ``LoanState.current_balance`` carried on this
+    (unseeded) path (plan step D2a): the anchor + confirmed-payment replay
+    (``_replay_from_anchor``), the same production derivation that still seeds
+    the schedule composer's starting state.  Loads mirror the production
+    bundle: anchor FACTS via :func:`loan_loaders.load_loan_anchor_facts` (the
     origination opening SYNTHESIZED from params plus every stored true-up /
-    tracking-start assertion -- never a raw ``LoanAnchorEvent`` query, which since
-    the read switch would miss the synthesized origination), prepare the payment
-    feed via :func:`loan_payment_service.load_loan_context`, then call
-    :func:`loan_resolver.resolve_loan`.
+    tracking-start assertion -- never a raw ``LoanAnchorEvent`` query, which
+    since the read switch would miss the synthesized origination), and the
+    payment feed via :func:`loan_payment_service.load_loan_context`.
     """
     anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     context = loan_payment_service.load_loan_context(
         account_id, scenario_id, loan_params,
     )
-    state = loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            loan_params, anchor_events, context.payments,
-            context.rate_changes,
-        ),
-        as_of,
+    inputs = loan_resolver.LoanInputs(
+        loan_params, anchor_events, context.payments,
+        context.rate_changes,
     )
-    return state.current_balance
+    periods = loan_resolver.resolve_periods(
+        inputs.loan_params, inputs.rate_changes,
+    )
+    return round_money(
+        _replay_from_anchor(inputs, periods, as_of).balance_as_of
+    )
 
 
 # -- Test class -------------------------------------------------------------

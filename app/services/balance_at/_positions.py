@@ -42,8 +42,11 @@ resolver's seed (:func:`app.services.balance_at._kernel.generate_debt_schedules`
 with the seam-level plan (:func:`~app.services.balance_at._plan.loan_plan`, which
 reads the resolver, the escrow lines, the projected shadows, and their live cash)
 -- all above the pure leaf.  Composing them is a SEAM responsibility, not a leaf
-one; the leaf stays pure.  A later step makes the seed fold-native (retiring
-``LoanState.current_balance``), at which point this can move to ``loan_ledger``.
+one; the leaf stays pure.  (An earlier note here said this producer "can move to
+``loan_ledger``" once the seed went fold-native -- step D2a made it fold-native,
+and the note was WRONG: the D0b ruling is that a balance producer moves deeper
+INTO the seam, never out to a public leaf, where it would need the very fence
+Phase D deletes.)
 
 **Proven equal before it was wired.**  C3a shipped this ADDITIVE, with an oracle
 that parallel-ran it against the scalar it replaced on EVERY day past and future,

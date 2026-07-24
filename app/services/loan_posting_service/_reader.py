@@ -14,9 +14,10 @@ sum the read-switch arc exists to reach, superseding the resolver's read-time
 replay of confirmed history.  Because every source posts onto the one linked
 ledger, at ``as_of = date.today()`` this equals
 ``round_money(-posting_service.account_posting_total(loan, scenario))`` -- the
-quantity the reconciliation oracle already proves equals the resolver's
-replayed ``current_balance``; the ``entry_date`` bound generalises it to any
-historical date, and the per-period map applies it at every period boundary.
+quantity the reconciliation oracle grades against the independent anchor
+replay (and B2's fold, which the seam reads); the ``entry_date`` bound
+generalises it to any historical date, and the per-period map applies it at
+every period boundary.
 
 **The as-of bound is ONE clock: each posting counts from its ``entry_date`` --
 the day the event it records happened** (step C2).  The writer already stamps
@@ -97,8 +98,9 @@ def confirmed_loan_balance_at(
     (``-original_principal``), every confirmed payment's net principal (the
     Step-2 cash leg plus the Step-4 split correction), and every true-up, with
     no kind filter and no eligibility lower bound (see the module docstring).
-    At ``as_of = date.today()`` this is the resolver's confirmed
-    ``current_balance``, proven penny-exact by the reconciliation oracle.
+    At ``as_of = date.today()`` this is the loan's confirmed balance, graded
+    penny-exact by the reconciliation oracle's independent replay window and
+    equal to the seam's fold on every day (B2).
 
     Returns ``None`` when the loan has no OPENING posting in the scenario (an
     unconfigured loan -- :func:`_has_opening_posting`), so the caller routes to

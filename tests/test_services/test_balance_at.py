@@ -2650,21 +2650,24 @@ class TestLoanNotYetOriginated:
                 self.ZERO, self.OPENING, self.AFTER_FIRST_PAYMENT,
             ]
 
-    def test_resolver_reports_nothing_owed_today(
+    def test_seam_reports_nothing_owed_today(
         self, app, db, seed_user, seed_periods,
     ):
-        """``LoanState.current_balance`` is the number six surfaces read.
+        """An unclosed mortgage owes $0.00 on every surface -- the fold's rule.
 
         The loan detail page's "current principal", the payoff and refinance
-        calculators, home equity, and the property equity chart all read this
-        field directly.  It reported $200,000.00 for a mortgage that had not
-        closed; the guard lives in the resolver precisely so all of them are fixed
-        at once, which no seam-local guard could have done.
+        calculators, home equity, and the property equity chart all read the
+        seam's folded balance (plan step D2a deleted the resolver's
+        ``current_balance`` field; the fold answers ``0.00`` for a date before
+        any event -- the honest fold of an empty prefix).  The pre-D2a resolver
+        guard existed because its replay reported $200,000.00 for a mortgage
+        that had not closed; the fold needs no guard, since a future-dated
+        origination event simply has not happened yet.
 
-        The SCHEDULE must survive that guard: it is what the projection walks once
+        The SCHEDULE must survive: it is what the projection walks once
         the loan closes, and filtering the anchor out of ``_replay_from_anchor``
-        (rather than guarding the derived balance) would have collapsed it to
-        nothing.
+        (rather than the balance following the events) would have collapsed it
+        to nothing.
         """
         with app.app_context():
             periods = seed_periods
@@ -2672,7 +2675,7 @@ class TestLoanNotYetOriginated:
             bctx = BalanceContext.build(seed_user["user"].id)
             resolved = bctx.resolved_loan(acct)
 
-            assert resolved.state.current_balance == self.ZERO
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.ZERO
             # The schedule is intact: 360 contractual rows from the first payment.
             assert len(resolved.state.schedule) == 360
             assert resolved.state.schedule[0].payment_date == date(2026, 5, 1)
@@ -2747,7 +2750,7 @@ class TestLoanNotYetOriginated:
             resolved = bctx.resolved_loan(acct)
             # The two clauses that would otherwise conspire.
             assert any(p.is_confirmed for p in resolved.context.payments)
-            assert resolved.state.current_balance == self.ZERO
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.ZERO
 
             figures = balance_at.loan_figures(acct, bctx)
             assert figures.is_paid_off is False
@@ -3042,6 +3045,90 @@ class TestBrokenLoanFailsLoud:
             # No payment ever recorded -> the origination principal held flat, the
             # same $240,000.00 the scalar folds (not a fail-loud raise).
             assert result[begun[-1].id] == Decimal("240000.00")
+
+    def test_broken_loan_figures_follow_the_fold_not_the_replay(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A broken loan's is_retired / payoff read the FOLD (plan step D2a).
+
+        The control for the D2a re-route: with the posting ledger cleared, the
+        pre-D2a ``LoanState.current_balance`` fell back to the money-blind
+        anchor replay (it advances one SCHEDULED step per confirmed payment and
+        discards the cash), while every displayed balance already folded the
+        SOURCE facts -- one loan, one page, two derivations.  D2a deleted the
+        field and pointed the seam's last two readers (the ``is_retired``
+        predicate and the forward projection's seed) at the fold.
+
+        Arithmetic, hand-computed.  $240,000 at 6% for 360 months (scheduled
+        P&I 1,438.92); ONE settled payment of $241,200.00 cash:
+
+            interest  = 240000.00 * 0.06/12          =   1,200.00
+            principal = 241200.00 - 1200.00          = 240,000.00
+            fold      = 240000.00 - 240000.00        =       0.00  (paid off)
+
+        The replay instead advances one scheduled step:
+
+            principal = 1438.92 - 1200.00            =     238.92
+            replay    = 240000.00 - 238.92           = 239,761.08
+
+        So under the old reader this loan reads as owing $239,761.08 --
+        ``is_retired`` False and a REAL payoff date -- while its page shows
+        $0.00.  Under D2a both follow the fold: retired, paid off, no forward
+        payoff to date.  The replay figure is pinned in-test so the divergence
+        (the control's teeth) is proven, not assumed.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import (
+            loan_loaders, loan_payment_service, loan_resolver,
+        )
+        from app.services.loan_resolver._periods import _replay_from_anchor
+        from app.utils.money import round_money
+        from tests._test_helpers import (
+            clear_loan_ledger, create_settled_transfer, settle_instant_on,
+        )
+
+        with app.app_context():
+            periods = seed_periods
+            acct = self._broken_loan(seed_user, db.session, periods)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], acct,
+                periods[1], amount=Decimal("241200.00"),
+                paid_at=settle_instant_on(date(2024, 10, 1)),
+            )
+            db.session.commit()
+            # Re-break the cache: settling re-synced the loan's postings.
+            clear_loan_ledger(acct.id)
+            db.session.commit()
+
+            # The control's teeth: the money-blind replay genuinely diverges.
+            params = loan_loaders.load_loan_params(acct.id)
+            ctx = loan_payment_service.load_loan_context(
+                acct.id, seed_user["scenario"].id, params,
+            )
+            inputs = loan_resolver.LoanInputs(
+                params, loan_loaders.load_loan_anchor_facts(params),
+                ctx.payments, ctx.rate_changes,
+            )
+            replayed = round_money(_replay_from_anchor(
+                inputs,
+                loan_resolver.resolve_periods(params, inputs.rate_changes),
+                date.today(),
+            ).balance_as_of)
+            assert replayed == Decimal("239761.08")
+
+            bctx = BalanceContext.build(seed_user["user"].id)
+            # The fold: the whole cash paid the loan off.
+            assert balance_at.balance_at(acct, bctx, bctx.as_of) == (
+                Decimal("0.00")
+            )
+            figures = balance_at.loan_figures(acct, bctx)
+            assert figures is not None
+            # Both re-routed readers follow the fold, not the $239,761.08 replay:
+            # retired (fold <= 0) with a confirmed payment behind it, and no
+            # forward payoff left to date (the seed folds to 0.00).
+            assert figures.is_retired is True
+            assert figures.is_paid_off is True
+            assert figures.payoff_date is None
 
     def test_an_amortizing_account_with_no_loan_params_does_NOT_raise(
         self, app, db, seed_user, seed_periods,

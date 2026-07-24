@@ -240,8 +240,9 @@ class ConfirmedLedgerView:
     Attributes:
         balance: The ledger-confirmed balance owed as of the evaluation date
             (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).
-            Becomes BOTH ``LoanState.current_balance`` and the forward
-            projection's starting balance.
+            Becomes the schedule composer's forward starting balance (the
+            loan's displayed balance folds in the ``balance_at`` seam, plan
+            step D2a).
         history_rows: The ledger-derived confirmed schedule rows
             (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
             chronological, each carrying its payment's ACTUAL principal /

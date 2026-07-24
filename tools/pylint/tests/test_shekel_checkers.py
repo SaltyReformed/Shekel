@@ -983,26 +983,27 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         ):
             self.checker.visit_call(node)
 
-    def test_flags_resolve_account_loan_from_a_consumer(self) -> None:
+    def test_flags_resolve_loan_bundle_from_a_consumer(self) -> None:
         """The loan RESOLVER is fenced: a consumer call is flagged.
 
-        ``LoanState`` bundles rich detail WITH ``current_balance`` -- a
+        ``LoanState`` bundled rich detail WITH ``current_balance`` -- a
         balance-at-today -- and the fence cannot see an attribute read.  So while
         the resolver was excluded as a "rich primitive", the loan's displayed
         balance reached the screen outside the seam: the /savings tile, the
         net-worth hero, the debt card, the Horizon's index-0 point, the equity
         card's mortgage leg, and /debt-strategy.  They agreed with the seam only
         because both paths bottomed out in the same ledger -- agreement by luck.
+        (Plan step D2a deleted the field; the surface's retirement is D3's.)
         """
         node = self._producer_call(
-            "resolve_account_loan(account.id, scenario_id, today)",
+            "resolve_loan_bundle(account.id, scenario_id, today)",
             "app.routes.debt_strategy",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("resolve_account_loan",),
+                args=("resolve_loan_bundle",),
             ),
             ignore_position=True,
         ):
@@ -1021,7 +1022,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_call(node)
 
-    def test_allows_resolve_account_loan_on_a_write_path(self) -> None:
+    def test_allows_resolve_loan_bundle_on_a_write_path(self) -> None:
         """A WRITE path may resolve a loan mid-mutation; a writer is not a reader.
 
         This is also why the read-pass context is a value object rather than a
@@ -1029,13 +1030,13 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         request-scoped memo would go stale across the write.
         """
         node = self._producer_call(
-            "resolve_account_loan(account_id, scenario_id, today)",
+            "resolve_loan_bundle(account_id, scenario_id, today)",
             "app.services._transfer_loan_posting",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)
 
-    def test_flags_resolve_account_loan_from_the_recurrence_sync(self) -> None:
+    def test_flags_resolve_loan_bundle_from_the_recurrence_sync(self) -> None:
         """The recurrence sync came OFF the resolver allowlist at plan C8d.
 
         It used to resolve a loan to walk its committed schedule for the payoff;
@@ -1044,16 +1045,16 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         resolve there is flagged rather than silently allowed.
         """
         node = self._producer_call(
-            "resolve_account_loan(account_id, scenario_id, today)",
+            "resolve_loan_bundle(account_id, scenario_id, today)",
             "app.services.loan_recurrence_sync",
         )
         with self.assertAddsMessages(
             MessageTest(
                 "shekel-balance-producer-bypass",
                 node=node,
-                args=("resolve_account_loan",),
+                args=("resolve_loan_bundle",),
                 line=1, col_offset=9,
-                end_line=1, end_col_offset=61,
+                end_line=1, end_col_offset=60,
             ),
         ):
             self.checker.visit_call(node)
